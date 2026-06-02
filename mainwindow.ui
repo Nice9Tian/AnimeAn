@@ -250,6 +250,19 @@
      <string>Delete Frame</string>
     </property>
    </widget>
+   <widget class="QPushButton" name="PythonAxisButton">
+    <property name="geometry">
+     <rect>
+      <x>20</x>
+      <y>500</y>
+      <width>75</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Py Axis Test</string>
+    </property>
+   </widget>
   </widget>
   <widget class="QMenuBar" name="menubar">
    <property name="geometry">

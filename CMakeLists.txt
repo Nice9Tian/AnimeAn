@@ -28,6 +28,8 @@ find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets OpenGLWidgets)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets OpenGLWidgets)
 
 set(PROJECT_SOURCES
+        animemodel.cpp
+        animemodel.h
         main.cpp
         mainwindow.cpp
         mainwindow.h
@@ -62,6 +64,7 @@ endif()
 target_link_libraries(AnimeAn PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::OpenGLWidgets)
 
 if(ANIMEAN_WITH_PYTHON)
+    target_sources(AnimeAn PRIVATE python_bindings.cpp)
     target_link_libraries(AnimeAn PRIVATE pybind11::embed)
     target_compile_definitions(AnimeAn PRIVATE
         ANIMEAN_WITH_PYTHON
@@ -89,8 +92,9 @@ if(ANIMEAN_BUILD_PYTHON_MODULE)
         message(FATAL_ERROR "ANIMEAN_BUILD_PYTHON_MODULE is ON, but ANIMEAN_PYTHON_BINDINGS does not exist: ${ANIMEAN_PYTHON_BINDINGS}")
     endif()
 
-    pybind11_add_module(animean_python MODULE "${ANIMEAN_PYTHON_BINDINGS}")
+    pybind11_add_module(animean_python MODULE "${ANIMEAN_PYTHON_BINDINGS}" animemodel.cpp animemodel.h)
     target_include_directories(animean_python PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_definitions(animean_python PRIVATE ANIMEAN_BUILDING_PYTHON_MODULE)
     target_link_libraries(animean_python PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::OpenGLWidgets)
 endif()
 

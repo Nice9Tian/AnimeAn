@@ -127,6 +127,26 @@ MainWindow::MainWindow(QWidget *parent)
         ui->SmoothValue_print->setText(QStringLiteral("Smooth: %1").arg(value));
     });
 
+    connect(ui->PythonAxisButton, &QPushButton::clicked, this, [this]() {
+#ifdef ANIMEAN_WITH_PYTHON
+        try {
+            py::module_::import("animean_python");
+            const std::string result = py::module_::import("hello_world")
+                                           .attr("draw_axis_test")(
+                                               py::cast(&m_paintWidget->model(), py::return_value_policy::reference),
+                                               m_paintWidget->width(),
+                                               m_paintWidget->height())
+                                           .cast<std::string>();
+            m_paintWidget->update();
+            ui->label->setText(QString::fromStdString(result));
+        } catch (const py::error_already_set &error) {
+            ui->label->setText(QStringLiteral("Python axis error: %1").arg(QString::fromUtf8(error.what())));
+        }
+#else
+        ui->label->setText(QStringLiteral("Python disabled"));
+#endif
+    });
+
     connect(ui->LayerList, &QListWidget::currentRowChanged, this, [this](int row) {
         if (!m_refreshingLists && row >= 0) {
             m_paintWidget->setCurrentLayer(row);

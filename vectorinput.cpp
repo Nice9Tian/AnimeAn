@@ -117,311 +117,11 @@ QVector<QPointF> densifySegment(const QPointF &from, const QPointF &to, qreal st
 }
 }
 
-const QVector<PaintOpenGLWidget::VectorStrokeNode> &PaintOpenGLWidget::VectorImageModel::strokeNodes() const
-{
-    return m_strokes;
-}
-
-int PaintOpenGLWidget::VectorImageModel::strokeCount() const
-{
-    return m_strokes.size();
-}
-
-const PaintOpenGLWidget::VectorStroke &PaintOpenGLWidget::VectorImageModel::strokeAt(int index) const
-{
-    return m_strokes[index].stroke;
-}
-
-const PaintOpenGLWidget::VectorStrokeNode &PaintOpenGLWidget::VectorImageModel::strokeNodeAt(int index) const
-{
-    return m_strokes[index];
-}
-
-QRectF PaintOpenGLWidget::VectorImageModel::bounds() const
-{
-    return m_bounds;
-}
-
-void PaintOpenGLWidget::VectorImageModel::addStroke(const VectorStroke &stroke)
-{
-    VectorStrokeNode node;
-    node.stroke = stroke;
-    addStrokeNode(node);
-}
-
-void PaintOpenGLWidget::VectorImageModel::addStrokeNode(const VectorStrokeNode &node)
-{
-    m_strokes.append(node);
-    if (m_bounds.isNull()) {
-        m_bounds = node.stroke.bounds;
-    } else {
-        m_bounds = m_bounds.united(node.stroke.bounds);
-    }
-}
-
-void PaintOpenGLWidget::VectorImageModel::removeStrokeAt(int index)
-{
-    if (index < 0 || index >= m_strokes.size()) {
-        return;
-    }
-
-    m_strokes.removeAt(index);
-    rebuildBounds();
-}
-
-void PaintOpenGLWidget::VectorImageModel::replaceStrokeWithPieces(int index, const QVector<VectorStroke> &pieces)
-{
-    if (index < 0 || index >= m_strokes.size()) {
-        return;
-    }
-
-    m_strokes.removeAt(index);
-    for (int i = pieces.size() - 1; i >= 0; --i) {
-        if (pieces[i].points.size() >= 2 && pieces[i].totalLength > kEpsilon) {
-            VectorStrokeNode node;
-            node.stroke = pieces[i];
-            m_strokes.insert(index, node);
-        }
-    }
-    rebuildBounds();
-}
-
-void PaintOpenGLWidget::VectorImageModel::clear()
-{
-    m_strokes.clear();
-    m_bounds = QRectF();
-}
-
-void PaintOpenGLWidget::VectorImageModel::rebuildBounds()
-{
-    m_bounds = QRectF();
-    for (const VectorStrokeNode &node : m_strokes) {
-        if (m_bounds.isNull()) {
-            m_bounds = node.stroke.bounds;
-        } else {
-            m_bounds = m_bounds.united(node.stroke.bounds);
-        }
-    }
-}
-
-PaintOpenGLWidget::VectorImageModel *PaintOpenGLWidget::AnimeLevel::frame(int frameId, bool create)
-{
-    if (frameId <= 0) {
-        return nullptr;
-    }
-
-    auto it = m_frames.find(frameId);
-    if (it == m_frames.end()) {
-        if (!create) {
-            return nullptr;
-        }
-        it = m_frames.insert(frameId, VectorImageModel());
-    }
-    return &it.value();
-}
-
-const PaintOpenGLWidget::VectorImageModel *PaintOpenGLWidget::AnimeLevel::frame(int frameId) const
-{
-    if (frameId <= 0) {
-        return nullptr;
-    }
-
-    auto it = m_frames.constFind(frameId);
-    if (it == m_frames.constEnd()) {
-        return nullptr;
-    }
-    return &it.value();
-}
-
-QVector<int> PaintOpenGLWidget::AnimeLevel::frameIds() const
-{
-    return m_frames.keys().toVector();
-}
-
-PaintOpenGLWidget::AnimeCell PaintOpenGLWidget::AnimeColumn::cellAt(int row) const
-{
-    if (row < 0 || row < m_firstRow || row >= m_firstRow + m_cells.size()) {
-        return AnimeCell();
-    }
-    return m_cells[row - m_firstRow];
-}
-
-void PaintOpenGLWidget::AnimeColumn::setCell(int row, const AnimeCell &cell)
-{
-    if (row < 0) {
-        return;
-    }
-
-    if (m_cells.isEmpty()) {
-        if (!cell.isEmpty()) {
-            m_firstRow = row;
-            m_cells.append(cell);
-        }
-        return;
-    }
-
-    const int lastRow = m_firstRow + m_cells.size() - 1;
-    if (row < m_firstRow) {
-        if (cell.isEmpty()) {
-            return;
-        }
-        const int delta = m_firstRow - row;
-        m_cells.insert(0, delta - 1, AnimeCell());
-        m_cells.insert(0, cell);
-        m_firstRow = row;
-        return;
-    }
-
-    if (row > lastRow) {
-        if (cell.isEmpty()) {
-            return;
-        }
-        const int gap = row - lastRow - 1;
-        for (int i = 0; i < gap; ++i) {
-            m_cells.append(AnimeCell());
-        }
-        m_cells.append(cell);
-        return;
-    }
-
-    m_cells[row - m_firstRow] = cell;
-    while (!m_cells.isEmpty() && m_cells.last().isEmpty()) {
-        m_cells.removeLast();
-    }
-    while (!m_cells.isEmpty() && m_cells.first().isEmpty()) {
-        m_cells.removeFirst();
-        ++m_firstRow;
-    }
-    if (m_cells.isEmpty()) {
-        m_firstRow = 0;
-    }
-}
-
-void PaintOpenGLWidget::AnimeColumn::insertCell(int row)
-{
-    if (row < 0) {
-        return;
-    }
-
-    QVector<AnimeCell> cells = denseCells(realMax(maxRow() + 1, row + 1));
-    cells.insert(row, AnimeCell());
-    setDenseCells(cells);
-}
-
-void PaintOpenGLWidget::AnimeColumn::removeCell(int row)
-{
-    if (row < 0) {
-        return;
-    }
-
-    QVector<AnimeCell> cells = denseCells(realMax(maxRow() + 1, row + 1));
-    if (row >= cells.size()) {
-        return;
-    }
-    cells.removeAt(row);
-    setDenseCells(cells);
-}
-
-void PaintOpenGLWidget::AnimeColumn::moveCell(int fromRow, int toRow)
-{
-    if (fromRow < 0 || toRow < 0 || fromRow == toRow) {
-        return;
-    }
-
-    QVector<AnimeCell> cells = denseCells(realMax(maxRow() + 1, realMax(fromRow + 1, toRow + 1)));
-    if (fromRow >= cells.size() || toRow >= cells.size()) {
-        return;
-    }
-
-    const AnimeCell cell = cells.takeAt(fromRow);
-    cells.insert(toRow, cell);
-    setDenseCells(cells);
-}
-
-int PaintOpenGLWidget::AnimeColumn::maxRow() const
-{
-    if (m_cells.isEmpty()) {
-        return -1;
-    }
-    return m_firstRow + m_cells.size() - 1;
-}
-
-QVector<PaintOpenGLWidget::AnimeCell> PaintOpenGLWidget::AnimeColumn::denseCells(int rowCount) const
-{
-    QVector<AnimeCell> cells;
-    cells.resize(realMax(0, rowCount));
-    for (int row = 0; row < cells.size(); ++row) {
-        cells[row] = cellAt(row);
-    }
-    return cells;
-}
-
-void PaintOpenGLWidget::AnimeColumn::setDenseCells(const QVector<AnimeCell> &cells)
-{
-    m_cells.clear();
-    m_firstRow = 0;
-
-    int first = 0;
-    while (first < cells.size() && cells[first].isEmpty()) {
-        ++first;
-    }
-    if (first >= cells.size()) {
-        return;
-    }
-
-    int last = cells.size() - 1;
-    while (last >= first && cells[last].isEmpty()) {
-        --last;
-    }
-
-    m_firstRow = first;
-    for (int row = first; row <= last; ++row) {
-        m_cells.append(cells[row]);
-    }
-}
-
-PaintOpenGLWidget::AnimeCell PaintOpenGLWidget::AnimeXsheet::cellAt(int row, int column) const
-{
-    if (row < 0 || column < 0 || column >= columns.size()) {
-        return AnimeCell();
-    }
-    return columns[column].cellAt(row);
-}
-
-void PaintOpenGLWidget::AnimeXsheet::setCell(int row, int column, const AnimeCell &cell)
-{
-    if (row < 0 || column < 0) {
-        return;
-    }
-    ensureColumnCount(column + 1);
-    columns[column].setCell(row, cell);
-    if (!cell.isEmpty() && row >= frameCount) {
-        frameCount = row + 1;
-    }
-}
-
-void PaintOpenGLWidget::AnimeXsheet::ensureColumnCount(int count)
-{
-    while (columns.size() < count) {
-        AnimeColumn column;
-        column.name = QStringLiteral("Layer %1").arg(columns.size() + 1);
-        columns.append(column);
-    }
-}
-
-void PaintOpenGLWidget::AnimeXsheet::ensureFrameCount(int count)
-{
-    if (count > frameCount) {
-        frameCount = count;
-    }
-}
-
 PaintOpenGLWidget::PaintOpenGLWidget(QWidget *parent)
     : QOpenGLWidget(parent)
 {
     setAutoFillBackground(false);
     setMouseTracking(true);
-    initializeScene(2, 2);
 }
 
 void PaintOpenGLWidget::setPenColor(const QColor &color)
@@ -452,11 +152,7 @@ void PaintOpenGLWidget::setSmoothValue(int value)
 
 void PaintOpenGLWidget::setCurrentLayer(int layerIndex)
 {
-    if (layerIndex < 0) {
-        return;
-    }
-    m_scene.xsheet.ensureColumnCount(layerIndex + 1);
-    m_currentLayer = layerIndex;
+    m_model.setCurrentLayer(layerIndex);
     m_points.clear();
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
@@ -465,11 +161,7 @@ void PaintOpenGLWidget::setCurrentLayer(int layerIndex)
 
 void PaintOpenGLWidget::setCurrentFrame(int frameIndex)
 {
-    if (frameIndex < 0) {
-        return;
-    }
-    m_scene.xsheet.ensureFrameCount(frameIndex + 1);
-    m_currentFrame = frameIndex;
+    m_model.setCurrentFrame(frameIndex);
     m_points.clear();
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
@@ -478,150 +170,92 @@ void PaintOpenGLWidget::setCurrentFrame(int frameIndex)
 
 int PaintOpenGLWidget::layerCount() const
 {
-    return m_scene.xsheet.columns.size();
+    return m_model.layerCount();
 }
 
 int PaintOpenGLWidget::frameCount() const
 {
-    return m_scene.xsheet.frameCount;
+    return m_model.frameCount();
 }
 
 QString PaintOpenGLWidget::layerName(int layerIndex) const
 {
-    if (layerIndex < 0 || layerIndex >= m_scene.xsheet.columns.size()) {
-        return QString();
-    }
-    return m_scene.xsheet.columns[layerIndex].name;
+    return m_model.layerName(layerIndex);
 }
 
 QString PaintOpenGLWidget::frameName(int frameIndex) const
 {
-    if (frameIndex < 0) {
-        return QString();
-    }
-    return QString::number(frameIndex + 1);
+    return m_model.frameName(frameIndex);
 }
 
 int PaintOpenGLWidget::addLayer()
 {
-    AnimeColumn column;
-    column.name = QStringLiteral("Layer %1").arg(m_scene.xsheet.columns.size() + 1);
-    const int columnIndex = m_scene.xsheet.columns.size();
-    m_scene.xsheet.columns.append(column);
-
-    AnimeLevel level;
-    level.name = QStringLiteral("Level %1").arg(m_scene.levels.size() + 1);
-    const int levelIndex = m_scene.levels.size();
-    m_scene.levels.append(level);
-
-    for (int row = 0; row < m_scene.xsheet.frameCount; ++row) {
-        AnimeCell cell;
-        cell.levelIndex = levelIndex;
-        cell.frameId = nextFrameId();
-        m_scene.xsheet.setCell(row, columnIndex, cell);
-        m_scene.levels[levelIndex].frame(cell.frameId, true);
-    }
-
-    setCurrentLayer(columnIndex);
+    const int columnIndex = m_model.addLayer();
+    m_points.clear();
+    m_hasCurrentStroke = false;
+    m_hasLastEraserPos = false;
+    update();
     return columnIndex;
 }
 
 bool PaintOpenGLWidget::deleteLayer(int layerIndex)
 {
-    if (layerIndex < 0 || layerIndex >= m_scene.xsheet.columns.size() ||
-        m_scene.xsheet.columns.size() <= 1) {
+    if (!m_model.deleteLayer(layerIndex)) {
         return false;
     }
 
-    m_scene.xsheet.columns.removeAt(layerIndex);
-    if (m_currentLayer >= m_scene.xsheet.columns.size()) {
-        m_currentLayer = m_scene.xsheet.columns.size() - 1;
-    } else if (m_currentLayer > layerIndex) {
-        --m_currentLayer;
-    }
     update();
     return true;
 }
 
 bool PaintOpenGLWidget::moveLayer(int fromIndex, int toIndex)
 {
-    if (fromIndex < 0 || fromIndex >= m_scene.xsheet.columns.size() ||
-        toIndex < 0 || toIndex >= m_scene.xsheet.columns.size() ||
-        fromIndex == toIndex) {
+    if (!m_model.moveLayer(fromIndex, toIndex)) {
         return false;
     }
 
-    const AnimeColumn column = m_scene.xsheet.columns.takeAt(fromIndex);
-    m_scene.xsheet.columns.insert(toIndex, column);
-    if (m_currentLayer == fromIndex) {
-        m_currentLayer = toIndex;
-    } else if (fromIndex < m_currentLayer && m_currentLayer <= toIndex) {
-        --m_currentLayer;
-    } else if (toIndex <= m_currentLayer && m_currentLayer < fromIndex) {
-        ++m_currentLayer;
-    }
     update();
     return true;
 }
 
 int PaintOpenGLWidget::addFrame()
 {
-    const int row = m_scene.xsheet.frameCount;
-    m_scene.xsheet.ensureFrameCount(row + 1);
-
-    for (int columnIndex = 0; columnIndex < m_scene.xsheet.columns.size(); ++columnIndex) {
-        const int levelIndex = ensureLevelForColumn(columnIndex);
-        AnimeCell cell;
-        cell.levelIndex = levelIndex;
-        cell.frameId = nextFrameId();
-        m_scene.xsheet.setCell(row, columnIndex, cell);
-        m_scene.levels[levelIndex].frame(cell.frameId, true);
-    }
-
-    setCurrentFrame(row);
+    const int row = m_model.addFrame();
+    m_points.clear();
+    m_hasCurrentStroke = false;
+    m_hasLastEraserPos = false;
+    update();
     return row;
 }
 
 bool PaintOpenGLWidget::deleteFrame(int frameIndex)
 {
-    if (frameIndex < 0 || frameIndex >= m_scene.xsheet.frameCount ||
-        m_scene.xsheet.frameCount <= 1) {
+    if (!m_model.deleteFrame(frameIndex)) {
         return false;
     }
 
-    for (AnimeColumn &column : m_scene.xsheet.columns) {
-        column.removeCell(frameIndex);
-    }
-    --m_scene.xsheet.frameCount;
-    if (m_currentFrame >= m_scene.xsheet.frameCount) {
-        m_currentFrame = m_scene.xsheet.frameCount - 1;
-    } else if (m_currentFrame > frameIndex) {
-        --m_currentFrame;
-    }
     update();
     return true;
 }
 
 bool PaintOpenGLWidget::moveFrame(int fromIndex, int toIndex)
 {
-    if (fromIndex < 0 || fromIndex >= m_scene.xsheet.frameCount ||
-        toIndex < 0 || toIndex >= m_scene.xsheet.frameCount ||
-        fromIndex == toIndex) {
+    if (!m_model.moveFrame(fromIndex, toIndex)) {
         return false;
     }
 
-    for (AnimeColumn &column : m_scene.xsheet.columns) {
-        column.moveCell(fromIndex, toIndex);
-    }
-    if (m_currentFrame == fromIndex) {
-        m_currentFrame = toIndex;
-    } else if (fromIndex < m_currentFrame && m_currentFrame <= toIndex) {
-        --m_currentFrame;
-    } else if (toIndex <= m_currentFrame && m_currentFrame < fromIndex) {
-        ++m_currentFrame;
-    }
     update();
     return true;
+}
+
+AnimeSceneModel &PaintOpenGLWidget::model()
+{
+    return m_model;
+}
+
+const AnimeSceneModel &PaintOpenGLWidget::model() const
+{
+    return m_model;
 }
 
 void PaintOpenGLWidget::paintGL()
@@ -630,13 +264,14 @@ void PaintOpenGLWidget::paintGL()
     painter.setRenderHint(QPainter::Antialiasing);
     painter.fillRect(rect(), Qt::white);
 
-    for (const AnimeColumn &column : m_scene.xsheet.columns) {
+    const AnimeScene &scene = m_model.scene();
+    for (const AnimeColumn &column : scene.xsheet.columns) {
         if (!column.visible) {
             continue;
         }
 
-        const AnimeCell cell = column.cellAt(m_currentFrame);
-        const VectorImageModel *image = imageForCell(cell);
+        const AnimeCell cell = column.cellAt(m_model.currentFrame());
+        const VectorImageModel *image = m_model.imageForCell(cell);
         if (!image) {
             continue;
         }
@@ -1276,115 +911,22 @@ bool PaintOpenGLWidget::appendPoint(const QPointF &point)
     return false;
 }
 
-void PaintOpenGLWidget::initializeScene(int layerCount, int frameCount)
-{
-    m_scene = AnimeScene();
-    m_scene.xsheet.ensureColumnCount(layerCount);
-    m_scene.xsheet.ensureFrameCount(frameCount);
-
-    for (int columnIndex = 0; columnIndex < m_scene.xsheet.columns.size(); ++columnIndex) {
-        AnimeLevel level;
-        level.name = QStringLiteral("Level %1").arg(columnIndex + 1);
-        const int levelIndex = m_scene.levels.size();
-        m_scene.levels.append(level);
-
-        for (int row = 0; row < frameCount; ++row) {
-            AnimeCell cell;
-            cell.levelIndex = levelIndex;
-            cell.frameId = row + 1;
-            m_scene.xsheet.setCell(row, columnIndex, cell);
-            m_scene.levels[levelIndex].frame(cell.frameId, true);
-        }
-    }
-
-    m_currentLayer = 0;
-    m_currentFrame = 0;
-}
-
 PaintOpenGLWidget::VectorImageModel *PaintOpenGLWidget::currentImage(bool create)
 {
-    AnimeColumn *column = currentColumn();
-    if (!column) {
-        return nullptr;
-    }
-
-    AnimeCell cell = m_scene.xsheet.cellAt(m_currentFrame, m_currentLayer);
-    if (cell.isEmpty()) {
-        if (!create) {
-            return nullptr;
-        }
-        const int levelIndex = ensureLevelForCurrentColumn();
-        cell.levelIndex = levelIndex;
-        cell.frameId = m_currentFrame + 1;
-        m_scene.xsheet.setCell(m_currentFrame, m_currentLayer, cell);
-    }
-
-    if (cell.levelIndex < 0 || cell.levelIndex >= m_scene.levels.size()) {
-        return nullptr;
-    }
-    return m_scene.levels[cell.levelIndex].frame(cell.frameId, create);
+    return m_model.currentImage(create);
 }
 
-const PaintOpenGLWidget::VectorImageModel *PaintOpenGLWidget::imageForCell(const AnimeCell &cell) const
+AnimeColumn *PaintOpenGLWidget::currentColumn()
 {
-    if (cell.isEmpty() || cell.levelIndex < 0 || cell.levelIndex >= m_scene.levels.size()) {
-        return nullptr;
-    }
-    return m_scene.levels[cell.levelIndex].frame(cell.frameId);
+    return m_model.currentColumn();
 }
 
-PaintOpenGLWidget::AnimeColumn *PaintOpenGLWidget::currentColumn()
+const AnimeColumn *PaintOpenGLWidget::currentColumn() const
 {
-    if (m_currentLayer < 0 || m_currentLayer >= m_scene.xsheet.columns.size()) {
-        return nullptr;
-    }
-    return &m_scene.xsheet.columns[m_currentLayer];
-}
-
-const PaintOpenGLWidget::AnimeColumn *PaintOpenGLWidget::currentColumn() const
-{
-    if (m_currentLayer < 0 || m_currentLayer >= m_scene.xsheet.columns.size()) {
-        return nullptr;
-    }
-    return &m_scene.xsheet.columns[m_currentLayer];
+    return m_model.currentColumn();
 }
 
 bool PaintOpenGLWidget::currentColumnEditable() const
 {
-    const AnimeColumn *column = currentColumn();
-    return column && !column->locked;
-}
-
-int PaintOpenGLWidget::ensureLevelForCurrentColumn()
-{
-    return ensureLevelForColumn(m_currentLayer);
-}
-
-int PaintOpenGLWidget::ensureLevelForColumn(int columnIndex)
-{
-    AnimeCell existingCell = m_scene.xsheet.cellAt(0, columnIndex);
-    if (!existingCell.isEmpty() &&
-        existingCell.levelIndex >= 0 &&
-        existingCell.levelIndex < m_scene.levels.size()) {
-        return existingCell.levelIndex;
-    }
-
-    AnimeLevel level;
-    level.name = QStringLiteral("Level %1").arg(m_scene.levels.size() + 1);
-    const int levelIndex = m_scene.levels.size();
-    m_scene.levels.append(level);
-    return levelIndex;
-}
-
-int PaintOpenGLWidget::nextFrameId() const
-{
-    int maxFrameId = 0;
-    for (const AnimeLevel &level : m_scene.levels) {
-        for (int frameId : level.frameIds()) {
-            if (frameId > maxFrameId) {
-                maxFrameId = frameId;
-            }
-        }
-    }
-    return maxFrameId + 1;
+    return m_model.currentColumnEditable();
 }
