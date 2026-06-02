@@ -1,0 +1,120 @@
+# AGENTS.md
+
+## Project context
+
+This is a Windows Qt + CMake + Ninja project.
+
+Project path:
+
+```text
+C:\Users\admin\Documents\AnimeAn
+```
+
+Qt CMake executable:
+
+```text
+C:\Qt\Tools\CMake_64\bin\cmake.exe
+```
+
+Build directory:
+
+```text
+build\Desktop_Qt_6_9_1_MinGW_64_bit-Debug
+```
+
+## Important terminal rules
+
+* This project runs on Windows.
+* Be careful to distinguish PowerShell, cmd.exe, and Git Bash syntax.
+* Do not paste shell prompt characters into commands.
+* Do not include leading prompt symbols such as `$`.
+* Do not include PowerShell prompt text such as `PS C:\...>`.
+* In PowerShell, `&` is the call operator and is valid.
+* In cmd.exe, do not use PowerShell-style `& 'path\to\exe'` syntax.
+
+## Correct build command
+
+Prefer this one-shot, non-interactive PowerShell command:
+
+```powershell
+powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "& 'C:\Qt\Tools\CMake_64\bin\cmake.exe' --build 'build\Desktop_Qt_6_9_1_MinGW_64_bit-Debug'; exit $LASTEXITCODE"
+```
+
+If running directly inside an already-open PowerShell terminal, use:
+
+```powershell
+& 'C:\Qt\Tools\CMake_64\bin\cmake.exe' --build 'build\Desktop_Qt_6_9_1_MinGW_64_bit-Debug'
+```
+
+If using cmd.exe, use:
+
+```cmd
+"C:\Qt\Tools\CMake_64\bin\cmake.exe" --build "build\Desktop_Qt_6_9_1_MinGW_64_bit-Debug"
+```
+
+## Build completion behavior
+
+The following output means the build finished successfully:
+
+```text
+ninja: no work to do.
+```
+
+If the build output contains:
+
+```text
+ninja: no work to do.
+```
+
+then treat the build as complete. Do not continue waiting for additional output.
+
+## Avoid infinite waiting
+
+Do not run a persistent interactive PowerShell session and wait forever for the shell process to exit.
+
+If a command returns to a PowerShell prompt like this:
+
+```text
+PS C:\Users\admin\Documents\AnimeAn>
+```
+
+then the command has finished.
+
+If needed, use an explicit completion marker:
+
+```powershell
+& 'C:\Qt\Tools\CMake_64\bin\cmake.exe' --build 'build\Desktop_Qt_6_9_1_MinGW_64_bit-Debug'; Write-Host '__BUILD_DONE__'; exit $LASTEXITCODE
+```
+
+If the output contains:
+
+```text
+__BUILD_DONE__
+```
+
+then the build command has completed.
+
+## Diagnosis rule
+
+Only diagnose a real build hang if a child process is still running, such as:
+
+* ninja.exe
+* mingw32-make.exe
+* g++.exe
+* ld.exe
+* windres.exe
+* windeployqt.exe
+* a project executable launched by a custom build step
+
+Do not assume the build is stuck merely because PowerShell itself is still open.
+
+## Summary for the agent
+
+For this project, the normal successful build result may be:
+
+```text
+ninja: no work to do.
+```
+
+This is not an error and not a hang. It means there is nothing to rebuild.
+Stop waiting and continue with the next task.

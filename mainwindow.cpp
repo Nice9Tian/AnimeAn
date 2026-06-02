@@ -3,7 +3,9 @@
 #include "paintopenglwidget.h"
 
 #include <QLabel>
+#include <QListWidget>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QSlider>
 
 #ifdef ANIMEAN_WITH_PYTHON
@@ -33,6 +35,24 @@ MainWindow::MainWindow(QWidget *parent)
     m_paintWidget->setGeometry(ui->graphicsView->geometry());
     delete ui->graphicsView;
     ui->graphicsView = m_paintWidget;
+
+    {
+        QSignalBlocker layerBlocker(ui->LayerList);
+        ui->LayerList->clear();
+        for (int i = 0; i < m_paintWidget->layerCount(); ++i) {
+            ui->LayerList->addItem(m_paintWidget->layerName(i));
+        }
+        ui->LayerList->setCurrentRow(0);
+    }
+
+    {
+        QSignalBlocker frameBlocker(ui->FrameList);
+        ui->FrameList->clear();
+        for (int i = 0; i < m_paintWidget->frameCount(); ++i) {
+            ui->FrameList->addItem(m_paintWidget->frameName(i));
+        }
+        ui->FrameList->setCurrentRow(0);
+    }
 
     connect(ui->blueButton, &QPushButton::clicked, this, [this]() {
         m_paintWidget->setPenColor(Qt::blue);
@@ -97,6 +117,18 @@ MainWindow::MainWindow(QWidget *parent)
     connect(ui->SmoothValue, &QSlider::valueChanged, this, [this](int value) {
         m_paintWidget->setSmoothValue(value);
         ui->SmoothValue_print->setText(QStringLiteral("Smooth: %1").arg(value));
+    });
+
+    connect(ui->LayerList, &QListWidget::currentRowChanged, this, [this](int row) {
+        if (row >= 0) {
+            m_paintWidget->setCurrentLayer(row);
+        }
+    });
+
+    connect(ui->FrameList, &QListWidget::currentRowChanged, this, [this](int row) {
+        if (row >= 0) {
+            m_paintWidget->setCurrentFrame(row);
+        }
     });
 }
 

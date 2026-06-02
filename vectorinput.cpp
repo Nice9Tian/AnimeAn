@@ -117,7 +117,7 @@ QVector<QPointF> densifySegment(const QPointF &from, const QPointF &to, qreal st
 }
 }
 
-const QVector<PaintOpenGLWidget::VectorStroke> &PaintOpenGLWidget::VectorImageModel::strokes() const
+const QVector<PaintOpenGLWidget::VectorStrokeNode> &PaintOpenGLWidget::VectorImageModel::strokeNodes() const
 {
     return m_strokes;
 }
@@ -129,6 +129,11 @@ int PaintOpenGLWidget::VectorImageModel::strokeCount() const
 
 const PaintOpenGLWidget::VectorStroke &PaintOpenGLWidget::VectorImageModel::strokeAt(int index) const
 {
+    return m_strokes[index].stroke;
+}
+
+const PaintOpenGLWidget::VectorStrokeNode &PaintOpenGLWidget::VectorImageModel::strokeNodeAt(int index) const
+{
     return m_strokes[index];
 }
 
@@ -139,11 +144,18 @@ QRectF PaintOpenGLWidget::VectorImageModel::bounds() const
 
 void PaintOpenGLWidget::VectorImageModel::addStroke(const VectorStroke &stroke)
 {
-    m_strokes.append(stroke);
+    VectorStrokeNode node;
+    node.stroke = stroke;
+    addStrokeNode(node);
+}
+
+void PaintOpenGLWidget::VectorImageModel::addStrokeNode(const VectorStrokeNode &node)
+{
+    m_strokes.append(node);
     if (m_bounds.isNull()) {
-        m_bounds = stroke.bounds;
+        m_bounds = node.stroke.bounds;
     } else {
-        m_bounds = m_bounds.united(stroke.bounds);
+        m_bounds = m_bounds.united(node.stroke.bounds);
     }
 }
 
@@ -166,7 +178,9 @@ void PaintOpenGLWidget::VectorImageModel::replaceStrokeWithPieces(int index, con
     m_strokes.removeAt(index);
     for (int i = pieces.size() - 1; i >= 0; --i) {
         if (pieces[i].points.size() >= 2 && pieces[i].totalLength > kEpsilon) {
-            m_strokes.insert(index, pieces[i]);
+            VectorStrokeNode node;
+            node.stroke = pieces[i];
+            m_strokes.insert(index, node);
         }
     }
     rebuildBounds();
@@ -181,12 +195,149 @@ void PaintOpenGLWidget::VectorImageModel::clear()
 void PaintOpenGLWidget::VectorImageModel::rebuildBounds()
 {
     m_bounds = QRectF();
-    for (const VectorStroke &stroke : m_strokes) {
+    for (const VectorStrokeNode &node : m_strokes) {
         if (m_bounds.isNull()) {
-            m_bounds = stroke.bounds;
+            m_bounds = node.stroke.bounds;
         } else {
-            m_bounds = m_bounds.united(stroke.bounds);
+            m_bounds = m_bounds.united(node.stroke.bounds);
         }
+    }
+}
+
+PaintOpenGLWidget::VectorImageModel *PaintOpenGLWidget::AnimeLevel::frame(int frameId, bool create)
+{
+    if (frameId <= 0) {
+        return nullptr;
+    }
+
+    auto it = m_frames.find(frameId);
+    if (it == m_frames.end()) {
+        if (!create) {
+            return nullptr;
+        }
+        it = m_frames.insert(frameId, VectorImageModel());
+    }
+    return &it.value();
+}
+
+const PaintOpenGLWidget::VectorImageModel *PaintOpenGLWidget::AnimeLevel::frame(int frameId) const
+{
+    if (frameId <= 0) {
+        return nullptr;
+    }
+
+    auto it = m_frames.constFind(frameId);
+    if (it == m_frames.constEnd()) {
+        return nullptr;
+    }
+    return &it.value();
+}
+
+QVector<int> PaintOpenGLWidget::AnimeLevel::frameIds() const
+{
+    return m_frames.keys().toVector();
+}
+
+PaintOpenGLWidget::AnimeCell PaintOpenGLWidget::AnimeColumn::cellAt(int row) const
+{
+    if (row < 0 || row < m_firstRow || row >= m_firstRow + m_cells.size()) {
+        return AnimeCell();
+    }
+    return m_cells[row - m_firstRow];
+}
+
+void PaintOpenGLWidget::AnimeColumn::setCell(int row, const AnimeCell &cell)
+{
+    if (row < 0) {
+        return;
+    }
+
+    if (m_cells.isEmpty()) {
+        if (!cell.isEmpty()) {
+            m_firstRow = row;
+            m_cells.append(cell);
+        }
+        return;
+    }
+
+    const int lastRow = m_firstRow + m_cells.size() - 1;
+    if (row < m_firstRow) {
+        if (cell.isEmpty()) {
+            return;
+        }
+        const int delta = m_firstRow - row;
+        m_cells.insert(0, delta - 1, AnimeCell());
+        m_cells.insert(0, cell);
+        m_firstRow = row;
+        return;
+    }
+
+    if (row > lastRow) {
+        if (cell.isEmpty()) {
+            return;
+        }
+        const int gap = row - lastRow - 1;
+        for (int i = 0; i < gap; ++i) {
+            m_cells.append(AnimeCell());
+        }
+        m_cells.append(cell);
+        return;
+    }
+
+    m_cells[row - m_firstRow] = cell;
+    while (!m_cells.isEmpty() && m_cells.last().isEmpty()) {
+        m_cells.removeLast();
+    }
+    while (!m_cells.isEmpty() && m_cells.first().isEmpty()) {
+        m_cells.removeFirst();
+        ++m_firstRow;
+    }
+    if (m_cells.isEmpty()) {
+        m_firstRow = 0;
+    }
+}
+
+int PaintOpenGLWidget::AnimeColumn::maxRow() const
+{
+    if (m_cells.isEmpty()) {
+        return -1;
+    }
+    return m_firstRow + m_cells.size() - 1;
+}
+
+PaintOpenGLWidget::AnimeCell PaintOpenGLWidget::AnimeXsheet::cellAt(int row, int column) const
+{
+    if (row < 0 || column < 0 || column >= columns.size()) {
+        return AnimeCell();
+    }
+    return columns[column].cellAt(row);
+}
+
+void PaintOpenGLWidget::AnimeXsheet::setCell(int row, int column, const AnimeCell &cell)
+{
+    if (row < 0 || column < 0) {
+        return;
+    }
+    ensureColumnCount(column + 1);
+    columns[column].setCell(row, cell);
+    if (!cell.isEmpty() && row >= frameCount) {
+        frameCount = row + 1;
+    }
+}
+
+void PaintOpenGLWidget::AnimeXsheet::ensureColumnCount(int count)
+{
+    while (columns.size() < count) {
+        AnimeColumn column;
+        column.name = QStringLiteral("Layer %1").arg(columns.size() + 1);
+        columns.append(column);
+    }
+}
+
+void PaintOpenGLWidget::AnimeXsheet::ensureFrameCount(int count)
+{
+    if (count > frameCount) {
+        frameCount = count;
     }
 }
 
@@ -195,6 +346,7 @@ PaintOpenGLWidget::PaintOpenGLWidget(QWidget *parent)
 {
     setAutoFillBackground(false);
     setMouseTracking(true);
+    initializeScene(2, 2);
 }
 
 void PaintOpenGLWidget::setPenColor(const QColor &color)
@@ -223,16 +375,83 @@ void PaintOpenGLWidget::setSmoothValue(int value)
     m_smoothValue = value;
 }
 
+void PaintOpenGLWidget::setCurrentLayer(int layerIndex)
+{
+    if (layerIndex < 0) {
+        return;
+    }
+    m_scene.xsheet.ensureColumnCount(layerIndex + 1);
+    m_currentLayer = layerIndex;
+    m_points.clear();
+    m_hasCurrentStroke = false;
+    m_hasLastEraserPos = false;
+    update();
+}
+
+void PaintOpenGLWidget::setCurrentFrame(int frameIndex)
+{
+    if (frameIndex < 0) {
+        return;
+    }
+    m_scene.xsheet.ensureFrameCount(frameIndex + 1);
+    m_currentFrame = frameIndex;
+    m_points.clear();
+    m_hasCurrentStroke = false;
+    m_hasLastEraserPos = false;
+    update();
+}
+
+int PaintOpenGLWidget::layerCount() const
+{
+    return m_scene.xsheet.columns.size();
+}
+
+int PaintOpenGLWidget::frameCount() const
+{
+    return m_scene.xsheet.frameCount;
+}
+
+QString PaintOpenGLWidget::layerName(int layerIndex) const
+{
+    if (layerIndex < 0 || layerIndex >= m_scene.xsheet.columns.size()) {
+        return QString();
+    }
+    return m_scene.xsheet.columns[layerIndex].name;
+}
+
+QString PaintOpenGLWidget::frameName(int frameIndex) const
+{
+    if (frameIndex < 0) {
+        return QString();
+    }
+    return QString::number(frameIndex + 1);
+}
+
 void PaintOpenGLWidget::paintGL()
 {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
     painter.fillRect(rect(), Qt::white);
 
-    for (const VectorStroke &stroke : m_image.strokes()) {
-        painter.setPen(QPen(stroke.color, stroke.width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        painter.drawPath(stroke.path);
+    for (const AnimeColumn &column : m_scene.xsheet.columns) {
+        if (!column.visible) {
+            continue;
+        }
+
+        const AnimeCell cell = column.cellAt(m_currentFrame);
+        const VectorImageModel *image = imageForCell(cell);
+        if (!image) {
+            continue;
+        }
+
+        painter.setOpacity(column.opacity);
+        for (const VectorStrokeNode &node : image->strokeNodes()) {
+            const VectorStroke &stroke = node.stroke;
+            painter.setPen(QPen(stroke.color, stroke.width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            painter.drawPath(stroke.path);
+        }
     }
+    painter.setOpacity(1.0);
 
     if (m_hasCurrentStroke) {
         painter.setPen(QPen(m_currentStroke.color, m_currentStroke.width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
@@ -265,6 +484,11 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
             eraseAt(pos);
         }
         update();
+        event->accept();
+        return;
+    }
+
+    if (!currentColumnEditable()) {
         event->accept();
         return;
     }
@@ -432,7 +656,9 @@ void PaintOpenGLWidget::finishCurrentStroke()
 {
     updateCurrentStroke();
     if (!m_currentStroke.points.isEmpty()) {
-        m_image.addStroke(m_currentStroke);
+        if (VectorImageModel *image = currentImage(true)) {
+            image->addStroke(m_currentStroke);
+        }
     }
     m_hasCurrentStroke = false;
     m_points.clear();
@@ -441,15 +667,20 @@ void PaintOpenGLWidget::finishCurrentStroke()
 
 bool PaintOpenGLWidget::eraseAt(const QPointF &pos)
 {
+    VectorImageModel *image = currentImage(false);
+    if (!image || !currentColumnEditable()) {
+        return false;
+    }
+
     const qreal imageRadius = m_eraserRadius + m_penWidth;
     const QRectF eraserBounds(pos.x() - imageRadius, pos.y() - imageRadius,
                               imageRadius * 2.0, imageRadius * 2.0);
-    if (!m_image.bounds().intersects(eraserBounds)) {
+    if (!image->bounds().intersects(eraserBounds)) {
         return false;
     }
 
     bool changed = false;
-    for (int i = m_image.strokeCount() - 1; i >= 0; --i) {
+    for (int i = image->strokeCount() - 1; i >= 0; --i) {
         changed = eraseStrokeAt(i, pos) || changed;
     }
     return changed;
@@ -457,18 +688,23 @@ bool PaintOpenGLWidget::eraseAt(const QPointF &pos)
 
 bool PaintOpenGLWidget::eraseBetween(const QPointF &from, const QPointF &to)
 {
+    VectorImageModel *image = currentImage(false);
+    if (!image || !currentColumnEditable()) {
+        return false;
+    }
+
     const qreal imageRadius = m_eraserRadius + m_penWidth;
     const qreal left = realMin(from.x(), to.x()) - imageRadius;
     const qreal top = realMin(from.y(), to.y()) - imageRadius;
     const qreal right = realMax(from.x(), to.x()) + imageRadius;
     const qreal bottom = realMax(from.y(), to.y()) + imageRadius;
     const QRectF eraserBounds(QPointF(left, top), QPointF(right, bottom));
-    if (!m_image.bounds().intersects(eraserBounds)) {
+    if (!image->bounds().intersects(eraserBounds)) {
         return false;
     }
 
     bool changed = false;
-    for (int i = m_image.strokeCount() - 1; i >= 0; --i) {
+    for (int i = image->strokeCount() - 1; i >= 0; --i) {
         changed = eraseStrokeBetween(i, from, to) || changed;
     }
     return changed;
@@ -476,21 +712,26 @@ bool PaintOpenGLWidget::eraseBetween(const QPointF &from, const QPointF &to)
 
 bool PaintOpenGLWidget::deleteLineAt(const QPointF &pos)
 {
+    VectorImageModel *image = currentImage(false);
+    if (!image || !currentColumnEditable()) {
+        return false;
+    }
+
     const qreal imageRadius = m_eraserRadius + m_penWidth;
     const QRectF hitBounds(pos.x() - imageRadius, pos.y() - imageRadius,
                            imageRadius * 2.0, imageRadius * 2.0);
-    if (!m_image.bounds().intersects(hitBounds)) {
+    if (!image->bounds().intersects(hitBounds)) {
         return false;
     }
 
     bool changed = false;
-    for (int i = m_image.strokeCount() - 1; i >= 0; --i) {
-        const VectorStroke &stroke = m_image.strokeAt(i);
+    for (int i = image->strokeCount() - 1; i >= 0; --i) {
+        const VectorStroke &stroke = image->strokeAt(i);
         if (!stroke.bounds.intersects(hitBounds)) {
             continue;
         }
         if (strokeHitsCircle(stroke, pos, m_eraserRadius)) {
-            m_image.removeStrokeAt(i);
+            image->removeStrokeAt(i);
             changed = true;
         }
     }
@@ -499,24 +740,29 @@ bool PaintOpenGLWidget::deleteLineAt(const QPointF &pos)
 
 bool PaintOpenGLWidget::deleteLineBetween(const QPointF &from, const QPointF &to)
 {
+    VectorImageModel *image = currentImage(false);
+    if (!image || !currentColumnEditable()) {
+        return false;
+    }
+
     const qreal imageRadius = m_eraserRadius + m_penWidth;
     const qreal left = realMin(from.x(), to.x()) - imageRadius;
     const qreal top = realMin(from.y(), to.y()) - imageRadius;
     const qreal right = realMax(from.x(), to.x()) + imageRadius;
     const qreal bottom = realMax(from.y(), to.y()) + imageRadius;
     const QRectF hitBounds(QPointF(left, top), QPointF(right, bottom));
-    if (!m_image.bounds().intersects(hitBounds)) {
+    if (!image->bounds().intersects(hitBounds)) {
         return false;
     }
 
     bool changed = false;
-    for (int i = m_image.strokeCount() - 1; i >= 0; --i) {
-        const VectorStroke &stroke = m_image.strokeAt(i);
+    for (int i = image->strokeCount() - 1; i >= 0; --i) {
+        const VectorStroke &stroke = image->strokeAt(i);
         if (!stroke.bounds.intersects(hitBounds)) {
             continue;
         }
         if (strokeHitsCapsule(stroke, from, to, m_eraserRadius)) {
-            m_image.removeStrokeAt(i);
+            image->removeStrokeAt(i);
             changed = true;
         }
     }
@@ -561,11 +807,12 @@ bool PaintOpenGLWidget::strokeHitsCapsule(const VectorStroke &stroke, const QPoi
 
 bool PaintOpenGLWidget::eraseStrokeAt(int strokeIndex, const QPointF &pos)
 {
-    if (strokeIndex < 0 || strokeIndex >= m_image.strokeCount()) {
+    VectorImageModel *image = currentImage(false);
+    if (!image || strokeIndex < 0 || strokeIndex >= image->strokeCount()) {
         return false;
     }
 
-    const VectorStroke stroke = m_image.strokeAt(strokeIndex);
+    const VectorStroke stroke = image->strokeAt(strokeIndex);
     const qreal effectiveRadius = m_eraserRadius + stroke.width * 0.5;
     const QRectF eraserBounds(pos.x() - effectiveRadius, pos.y() - effectiveRadius,
                               effectiveRadius * 2.0, effectiveRadius * 2.0);
@@ -583,17 +830,18 @@ bool PaintOpenGLWidget::eraseStrokeAt(int strokeIndex, const QPointF &pos)
     for (const Range &range : keepRanges) {
         pieces.append(subStroke(stroke, range.first, range.second));
     }
-    m_image.replaceStrokeWithPieces(strokeIndex, pieces);
+    image->replaceStrokeWithPieces(strokeIndex, pieces);
     return true;
 }
 
 bool PaintOpenGLWidget::eraseStrokeBetween(int strokeIndex, const QPointF &from, const QPointF &to)
 {
-    if (strokeIndex < 0 || strokeIndex >= m_image.strokeCount()) {
+    VectorImageModel *image = currentImage(false);
+    if (!image || strokeIndex < 0 || strokeIndex >= image->strokeCount()) {
         return false;
     }
 
-    const VectorStroke stroke = m_image.strokeAt(strokeIndex);
+    const VectorStroke stroke = image->strokeAt(strokeIndex);
     const qreal effectiveRadius = m_eraserRadius + stroke.width * 0.5;
     const qreal left = realMin(from.x(), to.x()) - effectiveRadius;
     const qreal top = realMin(from.y(), to.y()) - effectiveRadius;
@@ -614,7 +862,7 @@ bool PaintOpenGLWidget::eraseStrokeBetween(int strokeIndex, const QPointF &from,
     for (const Range &range : keepRanges) {
         pieces.append(subStroke(stroke, range.first, range.second));
     }
-    m_image.replaceStrokeWithPieces(strokeIndex, pieces);
+    image->replaceStrokeWithPieces(strokeIndex, pieces);
     return true;
 }
 
@@ -829,4 +1077,99 @@ bool PaintOpenGLWidget::appendPoint(const QPointF &point)
     }
 
     return false;
+}
+
+void PaintOpenGLWidget::initializeScene(int layerCount, int frameCount)
+{
+    m_scene = AnimeScene();
+    m_scene.xsheet.ensureColumnCount(layerCount);
+    m_scene.xsheet.ensureFrameCount(frameCount);
+
+    for (int columnIndex = 0; columnIndex < m_scene.xsheet.columns.size(); ++columnIndex) {
+        AnimeLevel level;
+        level.name = QStringLiteral("Level %1").arg(columnIndex + 1);
+        const int levelIndex = m_scene.levels.size();
+        m_scene.levels.append(level);
+
+        for (int row = 0; row < frameCount; ++row) {
+            AnimeCell cell;
+            cell.levelIndex = levelIndex;
+            cell.frameId = row + 1;
+            m_scene.xsheet.setCell(row, columnIndex, cell);
+            m_scene.levels[levelIndex].frame(cell.frameId, true);
+        }
+    }
+
+    m_currentLayer = 0;
+    m_currentFrame = 0;
+}
+
+PaintOpenGLWidget::VectorImageModel *PaintOpenGLWidget::currentImage(bool create)
+{
+    AnimeColumn *column = currentColumn();
+    if (!column) {
+        return nullptr;
+    }
+
+    AnimeCell cell = m_scene.xsheet.cellAt(m_currentFrame, m_currentLayer);
+    if (cell.isEmpty()) {
+        if (!create) {
+            return nullptr;
+        }
+        const int levelIndex = ensureLevelForCurrentColumn();
+        cell.levelIndex = levelIndex;
+        cell.frameId = m_currentFrame + 1;
+        m_scene.xsheet.setCell(m_currentFrame, m_currentLayer, cell);
+    }
+
+    if (cell.levelIndex < 0 || cell.levelIndex >= m_scene.levels.size()) {
+        return nullptr;
+    }
+    return m_scene.levels[cell.levelIndex].frame(cell.frameId, create);
+}
+
+const PaintOpenGLWidget::VectorImageModel *PaintOpenGLWidget::imageForCell(const AnimeCell &cell) const
+{
+    if (cell.isEmpty() || cell.levelIndex < 0 || cell.levelIndex >= m_scene.levels.size()) {
+        return nullptr;
+    }
+    return m_scene.levels[cell.levelIndex].frame(cell.frameId);
+}
+
+PaintOpenGLWidget::AnimeColumn *PaintOpenGLWidget::currentColumn()
+{
+    if (m_currentLayer < 0 || m_currentLayer >= m_scene.xsheet.columns.size()) {
+        return nullptr;
+    }
+    return &m_scene.xsheet.columns[m_currentLayer];
+}
+
+const PaintOpenGLWidget::AnimeColumn *PaintOpenGLWidget::currentColumn() const
+{
+    if (m_currentLayer < 0 || m_currentLayer >= m_scene.xsheet.columns.size()) {
+        return nullptr;
+    }
+    return &m_scene.xsheet.columns[m_currentLayer];
+}
+
+bool PaintOpenGLWidget::currentColumnEditable() const
+{
+    const AnimeColumn *column = currentColumn();
+    return column && !column->locked;
+}
+
+int PaintOpenGLWidget::ensureLevelForCurrentColumn()
+{
+    AnimeCell existingCell = m_scene.xsheet.cellAt(0, m_currentLayer);
+    if (!existingCell.isEmpty() &&
+        existingCell.levelIndex >= 0 &&
+        existingCell.levelIndex < m_scene.levels.size()) {
+        return existingCell.levelIndex;
+    }
+
+    AnimeLevel level;
+    level.name = QStringLiteral("Level %1").arg(m_scene.levels.size() + 1);
+    const int levelIndex = m_scene.levels.size();
+    m_scene.levels.append(level);
+    return levelIndex;
 }
