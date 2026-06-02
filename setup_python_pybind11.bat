@@ -1,0 +1,175 @@
+@echo off
+setlocal enabledelayedexpansion
+chcp 65001 >nul
+
+REM ============================================================
+REM setup_python_pybind11.bat
+REM Put this file in your Qt/CMake project root, then run it.
+REM It installs/sets up:
+REM   - local Python:   tools\python312
+REM   - local pybind11: external\pybind11
+REM   - CMake helper:   cmake\local_python_pybind11.cmake
+REM ============================================================
+
+cd /d "%~dp0"
+set "ROOT=%cd%"
+set "PY_DIR=%ROOT%\tools\python312"
+set "PY_EXE=%PY_DIR%\python.exe"
+set "PYBIND_DIR=%ROOT%\external\pybind11"
+set "CMAKE_DIR=%ROOT%\cmake"
+set "CMAKE_SNIPPET=%CMAKE_DIR%\local_python_pybind11.cmake"
+
+echo.
+echo [INFO] Project root:
+echo        %ROOT%
+echo.
+
+REM Warn if project path has spaces. winget override is more fragile with spaces.
+echo "%ROOT%" | findstr /C:" " >nul
+if %errorlevel%==0 (
+    echo [WARN] Your project path contains spaces.
+    echo        If Python installation fails, move the project to a path without spaces and run again.
+    echo.
+)
+
+REM ------------------------------------------------------------
+REM 1. Install local Python 3.12 into tools\python312
+REM ------------------------------------------------------------
+if exist "%PY_EXE%" (
+    echo [OK] Local Python already exists:
+    echo      %PY_EXE%
+) else (
+    echo [INFO] Local Python not found. Installing Python 3.12 via winget...
+    echo [INFO] TargetDir: %PY_DIR%
+    echo.
+
+    where winget >nul 2>nul
+    if errorlevel 1 (
+        echo [ERROR] winget was not found.
+        echo         Please install "App Installer" from Microsoft Store, or install Python manually to:
+        echo         %PY_DIR%
+        echo.
+        pause
+        exit /b 1
+    )
+
+    winget install --id Python.Python.3.12 -e --scope user --silent --accept-source-agreements --accept-package-agreements --override "/quiet InstallAllUsers=0 PrependPath=0 Include_pip=1 Include_dev=1 Include_lib=1 Include_test=0 TargetDir=%PY_DIR%"
+
+    echo.
+    if not exist "%PY_EXE%" (
+        echo [ERROR] Python installation seems to have failed.
+        echo         Expected file was not found:
+        echo         %PY_EXE%
+        echo.
+        echo         You can manually install Python 3.12 Windows installer to this folder:
+        echo         %PY_DIR%
+        echo         Make sure Include\Python.h and libs\python312.lib exist.
+        echo.
+        pause
+        exit /b 1
+    )
+)
+
+echo.
+echo [INFO] Checking Python files...
+"%PY_EXE%" --version
+if not exist "%PY_DIR%\Include\Python.h" (
+    echo [ERROR] Missing: %PY_DIR%\Include\Python.h
+    echo         Python development headers were not installed.
+    pause
+    exit /b 1
+)
+if not exist "%PY_DIR%\libs" (
+    echo [ERROR] Missing: %PY_DIR%\libs
+    echo         Python libraries were not installed.
+    pause
+    exit /b 1
+)
+echo [OK] Python.h found:
+echo      %PY_DIR%\Include\Python.h
+echo [OK] Python libs folder found:
+echo      %PY_DIR%\libs
+
+REM ------------------------------------------------------------
+REM 2. Install / download pybind11 into external\pybind11
+REM ------------------------------------------------------------
+echo.
+if exist "%PYBIND_DIR%\CMakeLists.txt" (
+    echo [OK] pybind11 already exists:
+    echo      %PYBIND_DIR%
+) else (
+    echo [INFO] pybind11 not found. Downloading to external\pybind11...
+    if not exist "%ROOT%\external" mkdir "%ROOT%\external"
+
+    where git >nul 2>nul
+    if not errorlevel 1 (
+        echo [INFO] Using git clone...
+        git clone --depth 1 https://github.com/pybind/pybind11.git "%PYBIND_DIR%"
+    ) else (
+        echo [INFO] Git was not found. Using PowerShell zip download...
+        powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+            "$ErrorActionPreference='Stop';" ^
+            "$zip=Join-Path $env:TEMP 'pybind11-master.zip';" ^
+            "$out=Join-Path $env:TEMP 'pybind11_extract';" ^
+            "if(Test-Path $zip){Remove-Item $zip -Force};" ^
+            "if(Test-Path $out){Remove-Item $out -Recurse -Force};" ^
+            "Invoke-WebRequest -Uri 'https://github.com/pybind/pybind11/archive/refs/heads/master.zip' -OutFile $zip;" ^
+            "Expand-Archive -Path $zip -DestinationPath $out -Force;" ^
+            "if(Test-Path '%PYBIND_DIR%'){Remove-Item '%PYBIND_DIR%' -Recurse -Force};" ^
+            "Move-Item (Join-Path $out 'pybind11-master') '%PYBIND_DIR%';"
+    )
+
+    if not exist "%PYBIND_DIR%\CMakeLists.txt" (
+        echo [ERROR] pybind11 download failed.
+        echo         Please manually download pybind11 to:
+        echo         %PYBIND_DIR%
+        pause
+        exit /b 1
+    )
+)
+
+REM ------------------------------------------------------------
+REM 3. Create CMake helper file
+REM ------------------------------------------------------------
+echo.
+echo [INFO] Creating CMake helper file...
+if not exist "%CMAKE_DIR%" mkdir "%CMAKE_DIR%"
+
+(
+echo # Generated by setup_python_pybind11.bat
+echo # Include this file before creating/linking your executable target.
+echo.
+echo set^(PYBIND11_FINDPYTHON ON^)
+echo set^(Python_ROOT_DIR "${CMAKE_SOURCE_DIR}/tools/python312"^)
+echo set^(Python_EXECUTABLE "${CMAKE_SOURCE_DIR}/tools/python312/python.exe"^)
+echo.
+echo find_package^(Python 3.8 REQUIRED COMPONENTS Interpreter Development.Embed^)
+echo add_subdirectory^("${CMAKE_SOURCE_DIR}/external/pybind11" "${CMAKE_BINARY_DIR}/pybind11"^)
+) > "%CMAKE_SNIPPET%"
+
+echo [OK] Created:
+echo      %CMAKE_SNIPPET%
+
+REM ------------------------------------------------------------
+REM 4. Print CMake instructions
+REM ------------------------------------------------------------
+echo.
+echo ============================================================
+echo Done.
+echo.
+echo Add this line to your main CMakeLists.txt, before target_link_libraries:
+echo.
+echo     include^("${CMAKE_SOURCE_DIR}/cmake/local_python_pybind11.cmake"^)
+echo.
+echo Then link your Qt executable target like this:
+echo.
+echo     target_link_libraries^(AnimeAn PRIVATE Qt6::Widgets pybind11::embed^)
+echo.
+echo If your target is not named AnimeAn, replace AnimeAn with your real target name.
+echo.
+echo IMPORTANT:
+echo   After changing this, delete your build folder or clear CMake configuration in Qt Creator.
+echo ============================================================
+echo.
+pause
+endlocal

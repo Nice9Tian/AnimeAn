@@ -13,6 +13,12 @@ option(ANIMEAN_WITH_PYTHON "Enable pybind11 support for embedding Python in Anim
 option(ANIMEAN_BUILD_PYTHON_MODULE "Build the optional AnimeAn Python extension module." OFF)
 
 if(ANIMEAN_WITH_PYTHON OR ANIMEAN_BUILD_PYTHON_MODULE)
+    set(ANIMEAN_PYTHON_HOME "${CMAKE_CURRENT_SOURCE_DIR}/tools/python312" CACHE PATH "Python runtime used by AnimeAn.")
+    if(EXISTS "${ANIMEAN_PYTHON_HOME}")
+        set(Python_ROOT_DIR "${ANIMEAN_PYTHON_HOME}")
+        set(Python_EXECUTABLE "${ANIMEAN_PYTHON_HOME}/python.exe")
+    endif()
+
     set(PYBIND11_FINDPYTHON ON)
     set(PYBIND11_TEST OFF CACHE BOOL "Build pybind11 tests" FORCE)
     add_subdirectory(external/pybind11)
@@ -57,7 +63,21 @@ target_link_libraries(AnimeAn PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERS
 
 if(ANIMEAN_WITH_PYTHON)
     target_link_libraries(AnimeAn PRIVATE pybind11::embed)
-    target_compile_definitions(AnimeAn PRIVATE ANIMEAN_WITH_PYTHON)
+    target_compile_definitions(AnimeAn PRIVATE
+        ANIMEAN_WITH_PYTHON
+        ANIMEAN_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+        ANIMEAN_PYTHON_HOME="${ANIMEAN_PYTHON_HOME}"
+    )
+
+    foreach(ANIMEAN_PYTHON_DLL python312.dll python3.dll vcruntime140.dll vcruntime140_1.dll)
+        if(EXISTS "${ANIMEAN_PYTHON_HOME}/${ANIMEAN_PYTHON_DLL}")
+            add_custom_command(TARGET AnimeAn POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${ANIMEAN_PYTHON_HOME}/${ANIMEAN_PYTHON_DLL}"
+                    "$<TARGET_FILE_DIR:AnimeAn>"
+            )
+        endif()
+    endforeach()
 endif()
 
 target_include_directories(AnimeAn PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
