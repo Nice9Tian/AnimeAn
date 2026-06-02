@@ -1,0 +1,9 @@
+C:/Users/admin/Documents/AnimeAn/build/Desktop_Qt_6_9_1_MinGW_64_bit-Release/CMakeFiles/AnimeAn.dir
+C:/Users/admin/Documents/AnimeAn/build/Desktop_Qt_6_9_1_MinGW_64_bit-Release/CMakeFiles/edit_cache.dir
+C:/Users/admin/Documents/AnimeAn/build/Desktop_Qt_6_9_1_MinGW_64_bit-Release/CMakeFiles/rebuild_cache.dir
+C:/Users/admin/Documents/AnimeAn/build/Desktop_Qt_6_9_1_MinGW_64_bit-Release/CMakeFiles/list_install_components.dir
+C:/Users/admin/Documents/AnimeAn/build/Desktop_Qt_6_9_1_MinGW_64_bit-Release/CMakeFiles/install.dir
+C:/Users/admin/Documents/AnimeAn/build/Desktop_Qt_6_9_1_MinGW_64_bit-Release/CMakeFiles/install/local.dir
+C:/Users/admin/Documents/AnimeAn/build/Desktop_Qt_6_9_1_MinGW_64_bit-Release/CMakeFiles/install/strip.dir
+C:/Users/admin/Documents/AnimeAn/build/Desktop_Qt_6_9_1_MinGW_64_bit-Release/CMakeFiles/AnimeAn_autogen_timestamp_deps.dir
+C:/Users/admin/Documents/AnimeAn/build/Desktop_Qt_6_9_1_MinGW_64_bit-Release/CMakeFiles/AnimeAn_autogen.dir

@@ -1,0 +1,79 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"hasInstallRule" : true,
+					"jsonFile" : "directory-.-Debug-fe6b38731e562987fbfe.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.16"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2
+					]
+				}
+			],
+			"name" : "Debug",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "AnimeAn",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "AnimeAn::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-AnimeAn-Debug-738e192493212e106bf6.json",
+					"name" : "AnimeAn",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "AnimeAn_autogen::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-AnimeAn_autogen-Debug-6ef9029a7691966b928d.json",
+					"name" : "AnimeAn_autogen",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "AnimeAn_autogen_timestamp_deps::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-AnimeAn_autogen_timestamp_deps-Debug-83e8192ca03c17646cf6.json",
+					"name" : "AnimeAn_autogen_timestamp_deps",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "C:/Users/admin/Documents/AnimeAn/build/Desktop_Qt_6_9_1_MinGW_64_bit-Debug",
+		"source" : "C:/Users/admin/Documents/AnimeAn"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 7
+	}
+}
