@@ -1,8 +1,0 @@
-# ninja log v6
-3	423	8021211271059424	AnimeAn_autogen/timestamp	9d6ed85f63dcb082
-3	423	8021211271059424	AnimeAn_autogen/mocs_compilation.cpp	9d6ed85f63dcb082
-429	1709	8021211271394506	CMakeFiles/AnimeAn.dir/vectorinput.cpp.obj	44967b45f6b46561
-3	423	8021211271059424	C:/Users/admin/Documents/AnimeAn/build/Desktop_Qt_6_9_1_MinGW_64_bit-Release/AnimeAn_autogen/timestamp	9d6ed85f63dcb082
-3	423	8021211271059424	C:/Users/admin/Documents/AnimeAn/build/Desktop_Qt_6_9_1_MinGW_64_bit-Release/AnimeAn_autogen/mocs_compilation.cpp	9d6ed85f63dcb082
-427	1355	8021211271374477	CMakeFiles/AnimeAn.dir/main.cpp.obj	b2f06af2aa44b084
-426	1458	8021211271374477	CMakeFiles/AnimeAn.dir/AnimeAn_autogen/mocs_compilation.cpp.obj	a3bc36e0a5a1fba7
