@@ -2,18 +2,12 @@
 
 ## Project context
 
-This is a Windows Qt + CMake + Ninja project.
+AnimeAn is a Windows Qt + CMake + Ninja project.
 
 Project path:
 
 ```text
 C:\Users\admin\Documents\AnimeAn
-```
-
-Qt CMake executable:
-
-```text
-C:\Qt\Tools\CMake_64\bin\cmake.exe
 ```
 
 Build directory:
@@ -22,99 +16,93 @@ Build directory:
 build\Desktop_Qt_6_9_1_MinGW_64_bit-Debug
 ```
 
-## Important terminal rules
+Useful tools:
 
-* This project runs on Windows.
-* Be careful to distinguish PowerShell, cmd.exe, and Git Bash syntax.
-* Do not paste shell prompt characters into commands.
-* Do not include leading prompt symbols such as `$`.
-* Do not include PowerShell prompt text such as `PS C:\...>`.
-* In PowerShell, `&` is the call operator and is valid.
-* In cmd.exe, do not use PowerShell-style `& 'path\to\exe'` syntax.
-
-## Correct build command
-
-Prefer this one-shot, non-interactive PowerShell command:
-
-```powershell
-powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "& 'C:\Qt\Tools\CMake_64\bin\cmake.exe' --build 'build\Desktop_Qt_6_9_1_MinGW_64_bit-Debug'; exit $LASTEXITCODE"
+```text
+C:\Qt\Tools\Ninja\ninja.exe
+C:\Qt\Tools\CMake_64\bin\cmake.exe
 ```
 
-If running directly inside an already-open PowerShell terminal, use:
+## Do not wait forever
+
+Never leave a build command running without a timeout.
+
+Before a real build, run a dry-run:
 
 ```powershell
-& 'C:\Qt\Tools\CMake_64\bin\cmake.exe' --build 'build\Desktop_Qt_6_9_1_MinGW_64_bit-Debug'
+& 'C:\Qt\Tools\Ninja\ninja.exe' -C 'build\Desktop_Qt_6_9_1_MinGW_64_bit-Debug' -n -d explain
 ```
 
-If using cmd.exe, use:
+If the dry-run says:
+
+```text
+ninja: no work to do.
+```
+
+the build is already complete. Do not run another build just to wait for output.
+
+For an actual build, prefer Ninja directly and use a short timeout in Codex:
+
+```powershell
+& 'C:\Qt\Tools\Ninja\ninja.exe' -C 'build\Desktop_Qt_6_9_1_MinGW_64_bit-Debug' -v
+```
+
+If the command does not finish within about 15 seconds in Codex, stop and diagnose. Do not keep waiting.
+
+## Known Codex shell issue
+
+In the Codex Windows shell, the environment may contain both `PATH` and `Path`.
+This can make PowerShell environment enumeration and `Start-Process` fail with a duplicate-key error, and it may interfere with process monitoring.
+
+When a build appears stuck in Codex, check whether Ninja has actually started child tools.
+
+```powershell
+Get-Process | Where-Object { $_.ProcessName -in @('ninja','cmake','g++','gcc','moc','uic','cmd') } | Select-Object Id,ProcessName,CPU,StartTime | Format-Table -AutoSize
+```
+
+If only `cmd.exe` or `ninja.exe` is present and there is no `g++`, `moc`, `uic`, or `cmake_autogen` activity, treat it as an execution-environment hang rather than an application-code hang.
+
+## Check whether work completed
+
+Use `.ninja_log` to see whether the build is making progress:
+
+```powershell
+Get-Content -Path build\Desktop_Qt_6_9_1_MinGW_64_bit-Debug\.ninja_log -Tail 20
+```
+
+If `.ninja_log` records recent object builds or `AnimeAn.exe`, the build completed or progressed.
+
+The following output is a successful result:
+
+```text
+ninja: no work to do.
+```
+
+It means there is nothing left to rebuild.
+
+## Terminal syntax
+
+This project runs on Windows. Be careful to distinguish PowerShell, cmd.exe, and Git Bash syntax.
+
+PowerShell direct Ninja command:
+
+```powershell
+& 'C:\Qt\Tools\Ninja\ninja.exe' -C 'build\Desktop_Qt_6_9_1_MinGW_64_bit-Debug' -v
+```
+
+cmd.exe direct Ninja command:
 
 ```cmd
-"C:\Qt\Tools\CMake_64\bin\cmake.exe" --build "build\Desktop_Qt_6_9_1_MinGW_64_bit-Debug"
+"C:\Qt\Tools\Ninja\ninja.exe" -C "build\Desktop_Qt_6_9_1_MinGW_64_bit-Debug" -v
 ```
 
-## Build completion behavior
+Do not paste prompt characters into commands. Do not include leading `$` or `PS C:\...>`.
 
-The following output means the build finished successfully:
+## Agent workflow
 
-```text
-ninja: no work to do.
-```
-
-If the build output contains:
-
-```text
-ninja: no work to do.
-```
-
-then treat the build as complete. Do not continue waiting for additional output.
-
-## Avoid infinite waiting
-
-Do not run a persistent interactive PowerShell session and wait forever for the shell process to exit.
-
-If a command returns to a PowerShell prompt like this:
-
-```text
-PS C:\Users\admin\Documents\AnimeAn>
-```
-
-then the command has finished.
-
-If needed, use an explicit completion marker:
-
-```powershell
-& 'C:\Qt\Tools\CMake_64\bin\cmake.exe' --build 'build\Desktop_Qt_6_9_1_MinGW_64_bit-Debug'; Write-Host '__BUILD_DONE__'; exit $LASTEXITCODE
-```
-
-If the output contains:
-
-```text
-__BUILD_DONE__
-```
-
-then the build command has completed.
-
-## Diagnosis rule
-
-Only diagnose a real build hang if a child process is still running, such as:
-
-* ninja.exe
-* mingw32-make.exe
-* g++.exe
-* ld.exe
-* windres.exe
-* windeployqt.exe
-* a project executable launched by a custom build step
-
-Do not assume the build is stuck merely because PowerShell itself is still open.
-
-## Summary for the agent
-
-For this project, the normal successful build result may be:
-
-```text
-ninja: no work to do.
-```
-
-This is not an error and not a hang. It means there is nothing to rebuild.
-Stop waiting and continue with the next task.
+1. Inspect changes with `git status --short`.
+2. Use `rg` for source search.
+3. Run Ninja dry-run before an actual build.
+4. Run actual Ninja only with a short timeout.
+5. If it hangs, inspect child processes and `.ninja_log`.
+6. If the issue is only Codex process management, report that clearly instead of continuing to wait.

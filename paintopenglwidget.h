@@ -30,6 +30,12 @@ public:
     int frameCount() const;
     QString layerName(int layerIndex) const;
     QString frameName(int frameIndex) const;
+    int addLayer();
+    bool deleteLayer(int layerIndex);
+    bool moveLayer(int fromIndex, int toIndex);
+    int addFrame();
+    bool deleteFrame(int frameIndex);
+    bool moveFrame(int fromIndex, int toIndex);
 
 protected:
     void paintGL() override;
@@ -116,9 +122,15 @@ public:
 
         AnimeCell cellAt(int row) const;
         void setCell(int row, const AnimeCell &cell);
+        void insertCell(int row);
+        void removeCell(int row);
+        void moveCell(int fromRow, int toRow);
         int maxRow() const;
 
     private:
+        QVector<AnimeCell> denseCells(int rowCount) const;
+        void setDenseCells(const QVector<AnimeCell> &cells);
+
         QVector<AnimeCell> m_cells;
         int m_firstRow = 0;
     };
@@ -168,6 +180,8 @@ private:
     const AnimeColumn *currentColumn() const;
     bool currentColumnEditable() const;
     int ensureLevelForCurrentColumn();
+    int ensureLevelForColumn(int columnIndex);
+    int nextFrameId() const;
 
     Tool m_tool = Tool::Pen;
     QColor m_penColor = Qt::black;

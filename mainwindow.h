@@ -20,8 +20,12 @@ public:
     ~MainWindow();
 
 private:
+    void refreshLayerList(int selectedRow);
+    void refreshFrameList(int selectedRow);
+
     Ui::MainWindow *ui;
     PaintOpenGLWidget *m_paintWidget = nullptr;
+    bool m_refreshingLists = false;
 };
 
 #endif // MAINWINDOW_H

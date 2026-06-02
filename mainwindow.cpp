@@ -2,6 +2,8 @@
 #include "./ui_mainwindow.h"
 #include "paintopenglwidget.h"
 
+#include <QAbstractItemModel>
+#include <QAbstractItemView>
 #include <QLabel>
 #include <QListWidget>
 #include <QPushButton>
@@ -24,6 +26,17 @@
 namespace py = pybind11;
 #endif
 
+namespace {
+int movedRowTarget(int sourceRow, int destinationChild)
+{
+    int target = destinationChild;
+    if (sourceRow < destinationChild) {
+        --target;
+    }
+    return target;
+}
+}
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
@@ -36,23 +49,18 @@ MainWindow::MainWindow(QWidget *parent)
     delete ui->graphicsView;
     ui->graphicsView = m_paintWidget;
 
-    {
-        QSignalBlocker layerBlocker(ui->LayerList);
-        ui->LayerList->clear();
-        for (int i = 0; i < m_paintWidget->layerCount(); ++i) {
-            ui->LayerList->addItem(m_paintWidget->layerName(i));
-        }
-        ui->LayerList->setCurrentRow(0);
-    }
+    ui->LayerList->setDragDropMode(QAbstractItemView::InternalMove);
+    ui->LayerList->setDefaultDropAction(Qt::MoveAction);
+    ui->LayerList->setDragDropOverwriteMode(false);
+    ui->LayerList->setSelectionMode(QAbstractItemView::SingleSelection);
 
-    {
-        QSignalBlocker frameBlocker(ui->FrameList);
-        ui->FrameList->clear();
-        for (int i = 0; i < m_paintWidget->frameCount(); ++i) {
-            ui->FrameList->addItem(m_paintWidget->frameName(i));
-        }
-        ui->FrameList->setCurrentRow(0);
-    }
+    ui->FrameList->setDragDropMode(QAbstractItemView::InternalMove);
+    ui->FrameList->setDefaultDropAction(Qt::MoveAction);
+    ui->FrameList->setDragDropOverwriteMode(false);
+    ui->FrameList->setSelectionMode(QAbstractItemView::SingleSelection);
+
+    refreshLayerList(0);
+    refreshFrameList(0);
 
     connect(ui->blueButton, &QPushButton::clicked, this, [this]() {
         m_paintWidget->setPenColor(Qt::blue);
@@ -120,19 +128,109 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     connect(ui->LayerList, &QListWidget::currentRowChanged, this, [this](int row) {
-        if (row >= 0) {
+        if (!m_refreshingLists && row >= 0) {
             m_paintWidget->setCurrentLayer(row);
         }
     });
 
     connect(ui->FrameList, &QListWidget::currentRowChanged, this, [this](int row) {
-        if (row >= 0) {
+        if (!m_refreshingLists && row >= 0) {
             m_paintWidget->setCurrentFrame(row);
         }
+    });
+
+    connect(ui->AddLayerButton, &QPushButton::clicked, this, [this]() {
+        refreshLayerList(m_paintWidget->addLayer());
+    });
+
+    connect(ui->DeleteLayerButton, &QPushButton::clicked, this, [this]() {
+        const int row = ui->LayerList->currentRow();
+        if (m_paintWidget->deleteLayer(row)) {
+            refreshLayerList(row < m_paintWidget->layerCount() ? row : m_paintWidget->layerCount() - 1);
+        }
+    });
+
+    connect(ui->AddFrameButton, &QPushButton::clicked, this, [this]() {
+        refreshFrameList(m_paintWidget->addFrame());
+    });
+
+    connect(ui->DeleteFrameButton, &QPushButton::clicked, this, [this]() {
+        const int row = ui->FrameList->currentRow();
+        if (m_paintWidget->deleteFrame(row)) {
+            refreshFrameList(row < m_paintWidget->frameCount() ? row : m_paintWidget->frameCount() - 1);
+        }
+    });
+
+    connect(ui->LayerList->model(), &QAbstractItemModel::rowsMoved,
+            this, [this](const QModelIndex &, int sourceStart, int sourceEnd,
+                         const QModelIndex &, int destinationChild) {
+        if (m_refreshingLists || sourceStart != sourceEnd) {
+            return;
+        }
+        const int target = movedRowTarget(sourceStart, destinationChild);
+        if (!m_paintWidget->moveLayer(sourceStart, target)) {
+            refreshLayerList(ui->LayerList->currentRow());
+            return;
+        }
+        refreshLayerList(target);
+    });
+
+    connect(ui->FrameList->model(), &QAbstractItemModel::rowsMoved,
+            this, [this](const QModelIndex &, int sourceStart, int sourceEnd,
+                         const QModelIndex &, int destinationChild) {
+        if (m_refreshingLists || sourceStart != sourceEnd) {
+            return;
+        }
+        const int target = movedRowTarget(sourceStart, destinationChild);
+        if (!m_paintWidget->moveFrame(sourceStart, target)) {
+            refreshFrameList(ui->FrameList->currentRow());
+            return;
+        }
+        refreshFrameList(target);
     });
 }
 
 MainWindow::~MainWindow()
 {
     delete ui;
+}
+
+void MainWindow::refreshLayerList(int selectedRow)
+{
+    m_refreshingLists = true;
+    const QSignalBlocker blocker(ui->LayerList);
+    ui->LayerList->clear();
+    for (int i = 0; i < m_paintWidget->layerCount(); ++i) {
+        ui->LayerList->addItem(m_paintWidget->layerName(i));
+    }
+    if (ui->LayerList->count() > 0) {
+        if (selectedRow < 0) {
+            selectedRow = 0;
+        } else if (selectedRow >= ui->LayerList->count()) {
+            selectedRow = ui->LayerList->count() - 1;
+        }
+        ui->LayerList->setCurrentRow(selectedRow);
+        m_paintWidget->setCurrentLayer(selectedRow);
+    }
+    m_refreshingLists = false;
+}
+
+void MainWindow::refreshFrameList(int selectedRow)
+{
+    m_refreshingLists = true;
+    const QSignalBlocker blocker(ui->FrameList);
+    ui->FrameList->clear();
+    for (int i = 0; i < m_paintWidget->frameCount(); ++i) {
+        ui->FrameList->addItem(m_paintWidget->frameName(i));
+    }
+    if (ui->FrameList->count() > 0) {
+        if (selectedRow < 0) {
+            selectedRow = 0;
+        } else if (selectedRow >= ui->FrameList->count()) {
+            selectedRow = ui->FrameList->count() - 1;
+        }
+        ui->FrameList->setCurrentRow(selectedRow);
+        m_paintWidget->setCurrentFrame(selectedRow);
+    }
+    m_refreshingLists = false;
 }
