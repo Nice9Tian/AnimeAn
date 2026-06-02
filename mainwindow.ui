@@ -127,6 +127,19 @@
      <set>Qt::AlignmentFlag::AlignCenter</set>
     </property>
    </widget>
+   <widget class="QLabel" name="label">
+    <property name="geometry">
+     <rect>
+      <x>30</x>
+      <y>460</y>
+      <width>381</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>PybindTest</string>
+    </property>
+   </widget>
   </widget>
   <widget class="QMenuBar" name="menubar">
    <property name="geometry">
