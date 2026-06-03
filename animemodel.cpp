@@ -7,6 +7,24 @@ int maxInt(int a, int b)
 {
     return a > b ? a : b;
 }
+
+QString nextNumberedColumnName(const QVector<AnimeColumn> &columns, const QString &baseName)
+{
+    const QString prefix = baseName + QLatin1Char(' ');
+    int nextNumber = 1;
+    for (const AnimeColumn &column : columns) {
+        if (!column.name.startsWith(prefix)) {
+            continue;
+        }
+
+        bool ok = false;
+        const int number = column.name.mid(prefix.size()).toInt(&ok);
+        if (ok && number >= nextNumber) {
+            nextNumber = number + 1;
+        }
+    }
+    return QStringLiteral("%1 %2").arg(baseName).arg(nextNumber);
+}
 }
 
 const QVector<AnimeVectorStrokeNode> &AnimeVectorImageModel::strokeNodes() const
@@ -428,7 +446,7 @@ void AnimeXsheet::ensureColumnCount(int count)
 {
     while (columns.size() < count) {
         AnimeColumn column;
-        column.name = QStringLiteral("Layer %1").arg(columns.size() + 1);
+        column.name = nextNumberedColumnName(columns, QStringLiteral("Layer"));
         columns.append(column);
     }
 }
@@ -611,7 +629,7 @@ bool AnimeSceneModel::isFillLayer(int layerIndex) const
 int AnimeSceneModel::addLayer()
 {
     AnimeColumn column;
-    column.name = QStringLiteral("Layer %1").arg(m_scene.xsheet.columns.size() + 1);
+    column.name = nextNumberedColumnName(m_scene.xsheet.columns, QStringLiteral("Layer"));
     const int columnIndex = m_scene.xsheet.columns.size();
     m_scene.xsheet.columns.append(column);
 
@@ -634,15 +652,8 @@ int AnimeSceneModel::addLayer()
 
 int AnimeSceneModel::addFillLayer()
 {
-    int fillLayerCount = 0;
-    for (const AnimeColumn &existingColumn : m_scene.xsheet.columns) {
-        if (existingColumn.type == AnimeColumnType::Fill) {
-            ++fillLayerCount;
-        }
-    }
-
     AnimeColumn column;
-    column.name = QStringLiteral("FillLayer %1").arg(fillLayerCount + 1);
+    column.name = nextNumberedColumnName(m_scene.xsheet.columns, QStringLiteral("FillLayer"));
     column.type = AnimeColumnType::Fill;
     const int columnIndex = m_scene.xsheet.columns.size();
     m_scene.xsheet.columns.append(column);
@@ -855,7 +866,7 @@ int AnimeSceneModel::addRasterLayer(const QString &name, int frameIndex, const Q
 
     AnimeColumn column;
     column.name = name.isEmpty()
-                      ? QStringLiteral("Raster %1").arg(m_scene.xsheet.columns.size() + 1)
+                      ? nextNumberedColumnName(m_scene.xsheet.columns, QStringLiteral("Raster"))
                       : name;
     column.type = AnimeColumnType::Raster;
     const int columnIndex = m_scene.xsheet.columns.size();
