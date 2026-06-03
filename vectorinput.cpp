@@ -2,14 +2,34 @@
 
 #include <QLineF>
 #include <QImage>
+#include <QMap>
 #include <QPainter>
+#include <QPainterPathStroker>
 #include <QQueue>
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace {
 constexpr qreal kEpsilon = 0.0001;
+constexpr qreal kVectorRegionOverpaintWidth = 2.0;
+constexpr qreal kGraphEpsilon = 0.001;
+
+struct GraphVertex {
+    QPointF point;
+    QVector<int> neighbors;
+};
+
+struct DirectedEdgeKey {
+    int from = -1;
+    int to = -1;
+};
+
+struct GraphFace {
+    QPainterPath path;
+    qreal signedArea = 0.0;
+};
 
 qreal distanceSquared(const QPointF &a, const QPointF &b)
 {
@@ -98,6 +118,209 @@ QVector<QPointF> densifySegment(const QPointF &from, const QPointF &to, qreal st
     }
     return points;
 }
+
+qreal polygonSignedArea(const QVector<QPointF> &points)
+{
+    if (points.size() < 3) {
+        return 0.0;
+    }
+
+    qreal area = 0.0;
+    for (int i = 0; i < points.size(); ++i) {
+        const QPointF &a = points[i];
+        const QPointF &b = points[(i + 1) % points.size()];
+        area += a.x() * b.y() - b.x() * a.y();
+    }
+    return area * 0.5;
+}
+
+QString vertexKey(const QPointF &point)
+{
+    const qint64 x = qRound64(point.x() / kGraphEpsilon);
+    const qint64 y = qRound64(point.y() / kGraphEpsilon);
+    return QString::number(x) + QLatin1Char(':') + QString::number(y);
+}
+
+bool segmentIntersectionParameters(const QLineF &a, const QLineF &b, qreal &ta, qreal &tb)
+{
+    const QPointF r = a.p2() - a.p1();
+    const QPointF s = b.p2() - b.p1();
+    const qreal denom = r.x() * s.y() - r.y() * s.x();
+    if (std::abs(denom) <= kEpsilon) {
+        return false;
+    }
+
+    const QPointF delta = b.p1() - a.p1();
+    ta = (delta.x() * s.y() - delta.y() * s.x()) / denom;
+    tb = (delta.x() * r.y() - delta.y() * r.x()) / denom;
+    return ta >= -kEpsilon && ta <= 1.0 + kEpsilon &&
+           tb >= -kEpsilon && tb <= 1.0 + kEpsilon;
+}
+
+void appendUniqueParameter(QVector<qreal> &values, qreal value)
+{
+    value = clamp01(value);
+    for (qreal existing : values) {
+        if (std::abs(existing - value) <= kGraphEpsilon) {
+            return;
+        }
+    }
+    values.append(value);
+}
+
+void appendUniqueNeighbor(QVector<int> &neighbors, int neighbor)
+{
+    if (!neighbors.contains(neighbor)) {
+        neighbors.append(neighbor);
+    }
+}
+
+QVector<QLineF> segmentsFromPath(const QPainterPath &path)
+{
+    QVector<QLineF> segments;
+    const QList<QPolygonF> subpaths = path.toSubpathPolygons();
+    for (const QPolygonF &polyline : subpaths) {
+        for (int i = 1; i < polyline.size(); ++i) {
+            const QPointF a = polyline[i - 1];
+            const QPointF b = polyline[i];
+            if (QLineF(a, b).length() > kGraphEpsilon) {
+                segments.append(QLineF(a, b));
+            }
+        }
+    }
+    return segments;
+}
+
+QVector<GraphFace> computeVectorRegionFaces(const QVector<QLineF> &segments)
+{
+    QVector<GraphFace> faces;
+    if (segments.isEmpty()) {
+        return faces;
+    }
+
+    QVector<QVector<qreal>> splitParameters;
+    splitParameters.resize(segments.size());
+    for (int i = 0; i < segments.size(); ++i) {
+        splitParameters[i].append(0.0);
+        splitParameters[i].append(1.0);
+    }
+
+    for (int i = 0; i < segments.size(); ++i) {
+        for (int j = i + 1; j < segments.size(); ++j) {
+            qreal ti = 0.0;
+            qreal tj = 0.0;
+            if (!segmentIntersectionParameters(segments[i], segments[j], ti, tj)) {
+                continue;
+            }
+            appendUniqueParameter(splitParameters[i], ti);
+            appendUniqueParameter(splitParameters[j], tj);
+        }
+    }
+
+    QVector<GraphVertex> vertices;
+    QMap<QString, int> vertexByKey;
+    auto vertexIndex = [&](const QPointF &point) {
+        const QString key = vertexKey(point);
+        const auto it = vertexByKey.constFind(key);
+        if (it != vertexByKey.constEnd()) {
+            const int index = it.value();
+            vertices[index].point = (vertices[index].point + point) * 0.5;
+            return index;
+        }
+
+        GraphVertex vertex;
+        vertex.point = point;
+        const int index = vertices.size();
+        vertices.append(vertex);
+        vertexByKey.insert(key, index);
+        return index;
+    };
+
+    for (int i = 0; i < segments.size(); ++i) {
+        QVector<qreal> params = splitParameters[i];
+        std::sort(params.begin(), params.end());
+        for (int j = 1; j < params.size(); ++j) {
+            if (params[j] - params[j - 1] <= kGraphEpsilon) {
+                continue;
+            }
+            const QPointF delta = segments[i].p2() - segments[i].p1();
+            const QPointF p0 = segments[i].p1() + delta * params[j - 1];
+            const QPointF p1 = segments[i].p1() + delta * params[j];
+            const int v0 = vertexIndex(p0);
+            const int v1 = vertexIndex(p1);
+            if (v0 == v1) {
+                continue;
+            }
+            appendUniqueNeighbor(vertices[v0].neighbors, v1);
+            appendUniqueNeighbor(vertices[v1].neighbors, v0);
+        }
+    }
+
+    for (GraphVertex &vertex : vertices) {
+        std::sort(vertex.neighbors.begin(), vertex.neighbors.end(), [&](int lhs, int rhs) {
+            const QPointF dl = vertices[lhs].point - vertex.point;
+            const QPointF dr = vertices[rhs].point - vertex.point;
+            return std::atan2(dl.y(), dl.x()) < std::atan2(dr.y(), dr.x());
+        });
+    }
+
+    QMap<QString, bool> visited;
+    auto edgeKey = [](int from, int to) {
+        return QString::number(from) + QLatin1Char('>') + QString::number(to);
+    };
+
+    for (int from = 0; from < vertices.size(); ++from) {
+        for (int to : vertices[from].neighbors) {
+            const QString firstKey = edgeKey(from, to);
+            if (visited.value(firstKey, false)) {
+                continue;
+            }
+
+            QVector<QPointF> facePoints;
+            int currentFrom = from;
+            int currentTo = to;
+            bool closed = false;
+            for (int guard = 0; guard < 10000; ++guard) {
+                visited.insert(edgeKey(currentFrom, currentTo), true);
+                facePoints.append(vertices[currentFrom].point);
+
+                const QVector<int> &nextNeighbors = vertices[currentTo].neighbors;
+                const int reverseIndex = nextNeighbors.indexOf(currentFrom);
+                if (reverseIndex < 0 || nextNeighbors.isEmpty()) {
+                    break;
+                }
+
+                const int nextIndex = (reverseIndex - 1 + nextNeighbors.size()) % nextNeighbors.size();
+                const int nextTo = nextNeighbors[nextIndex];
+                currentFrom = currentTo;
+                currentTo = nextTo;
+                if (currentFrom == from && currentTo == to) {
+                    closed = true;
+                    break;
+                }
+            }
+
+            if (!closed || facePoints.size() < 3) {
+                continue;
+            }
+
+            const qreal area = polygonSignedArea(facePoints);
+            if (area <= kGraphEpsilon) {
+                continue;
+            }
+
+            QPainterPath facePath;
+            facePath.moveTo(facePoints.first());
+            for (int i = 1; i < facePoints.size(); ++i) {
+                facePath.lineTo(facePoints[i]);
+            }
+            facePath.closeSubpath();
+            faces.append(GraphFace{facePath.simplified(), area});
+        }
+    }
+
+    return faces;
+}
 }
 
 PaintOpenGLWidget::PaintOpenGLWidget(QWidget *parent)
@@ -176,6 +399,25 @@ QString PaintOpenGLWidget::frameName(int frameIndex) const
     return m_model.frameName(frameIndex);
 }
 
+int PaintOpenGLWidget::importRasterLayer(const QImage &image, const QString &layerName)
+{
+    if (image.isNull()) {
+        return -1;
+    }
+
+    const QPointF canvasCenter(width() * 0.5, height() * 0.5);
+    const QPointF rasterCenter(image.width() * 0.5, image.height() * 0.5);
+    const QPointF topLeft = canvasCenter - rasterCenter;
+    const int columnIndex = m_model.addRasterLayer(layerName, m_model.currentFrame(), image, topLeft);
+    if (columnIndex >= 0) {
+        m_points.clear();
+        m_hasCurrentStroke = false;
+        m_hasLastEraserPos = false;
+        update();
+    }
+    return columnIndex;
+}
+
 int PaintOpenGLWidget::addLayer()
 {
     const int columnIndex = m_model.addLayer();
@@ -192,6 +434,8 @@ bool PaintOpenGLWidget::deleteLayer(int layerIndex)
         return false;
     }
 
+    m_model.remapFillSourceLayersAfterDelete(layerIndex);
+    removeInvalidFillRegions();
     update();
     return true;
 }
@@ -202,6 +446,8 @@ bool PaintOpenGLWidget::moveLayer(int fromIndex, int toIndex)
         return false;
     }
 
+    m_model.remapFillSourceLayersAfterMove(fromIndex, toIndex);
+    removeInvalidFillRegions();
     update();
     return true;
 }
@@ -253,36 +499,39 @@ void PaintOpenGLWidget::paintGL()
     painter.fillRect(rect(), Qt::white);
 
     const AnimeScene &scene = m_model.scene();
-    for (const AnimeColumn &column : scene.xsheet.columns) {
+    for (int columnIndex = scene.xsheet.columns.size() - 1; columnIndex >= 0; --columnIndex) {
+        const AnimeColumn &column = scene.xsheet.columns[columnIndex];
         if (!column.visible) {
             continue;
         }
 
         const AnimeCell cell = column.cellAt(m_model.currentFrame());
         const VectorImageModel *image = m_model.imageForCell(cell);
-        if (!image) {
-            continue;
+        painter.setOpacity(column.opacity);
+        if (image) {
+            if (image->hasRaster()) {
+                const AnimeRasterImage &raster = image->raster();
+                painter.drawImage(raster.topLeft, raster.image);
+            }
+            painter.setPen(Qt::NoPen);
+            for (const AnimeVectorFillRegion &fill : image->fillRegions()) {
+                painter.setBrush(fill.color);
+                painter.drawPath(fill.path);
+            }
+            painter.setBrush(Qt::NoBrush);
+            for (const VectorStrokeNode &node : image->strokeNodes()) {
+                const VectorStroke &stroke = node.stroke;
+                painter.setPen(QPen(stroke.color, stroke.width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                painter.drawPath(stroke.path);
+            }
         }
 
-        painter.setOpacity(column.opacity);
-        painter.setPen(Qt::NoPen);
-        for (const AnimeVectorFillRegion &fill : image->fillRegions()) {
-            painter.setBrush(fill.color);
-            painter.drawPath(fill.path);
-        }
-        painter.setBrush(Qt::NoBrush);
-        for (const VectorStrokeNode &node : image->strokeNodes()) {
-            const VectorStroke &stroke = node.stroke;
-            painter.setPen(QPen(stroke.color, stroke.width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-            painter.drawPath(stroke.path);
+        if (columnIndex == m_model.currentLayer() && m_hasCurrentStroke) {
+            painter.setPen(QPen(m_currentStroke.color, m_currentStroke.width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            painter.drawPath(m_currentStroke.path);
         }
     }
     painter.setOpacity(1.0);
-
-    if (m_hasCurrentStroke) {
-        painter.setPen(QPen(m_currentStroke.color, m_currentStroke.width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        painter.drawPath(m_currentStroke.path);
-    }
 
     if ((m_tool == Tool::Eraser || m_tool == Tool::DeleteLine) && m_hasHoverPos) {
         painter.setPen(QPen(QColor(220, 0, 180), 1.5, Qt::DashLine));
@@ -491,6 +740,7 @@ void PaintOpenGLWidget::finishCurrentStroke()
     if (!m_currentStroke.points.isEmpty()) {
         if (VectorImageModel *image = currentImage(true)) {
             image->addStroke(m_currentStroke);
+            removeInvalidFillRegions();
         }
     }
     m_hasCurrentStroke = false;
@@ -516,6 +766,9 @@ bool PaintOpenGLWidget::eraseAt(const QPointF &pos)
     for (int i = image->strokeCount() - 1; i >= 0; --i) {
         changed = eraseStrokeAt(i, pos) || changed;
     }
+    if (changed) {
+        removeInvalidFillRegions();
+    }
     return changed;
 }
 
@@ -539,6 +792,9 @@ bool PaintOpenGLWidget::eraseBetween(const QPointF &from, const QPointF &to)
     bool changed = false;
     for (int i = image->strokeCount() - 1; i >= 0; --i) {
         changed = eraseStrokeBetween(i, from, to) || changed;
+    }
+    if (changed) {
+        removeInvalidFillRegions();
     }
     return changed;
 }
@@ -567,6 +823,9 @@ bool PaintOpenGLWidget::deleteLineAt(const QPointF &pos)
             image->removeStrokeAt(i);
             changed = true;
         }
+    }
+    if (changed) {
+        removeInvalidFillRegions();
     }
     return changed;
 }
@@ -599,35 +858,114 @@ bool PaintOpenGLWidget::deleteLineBetween(const QPointF &from, const QPointF &to
             changed = true;
         }
     }
+    if (changed) {
+        removeInvalidFillRegions();
+    }
     return changed;
 }
 
 bool PaintOpenGLWidget::fillAt(const QPointF &pos)
 {
-    if (!currentColumnEditable()) {
+    if (!currentLayerAcceptsFill()) {
         return false;
     }
     if (!rect().contains(pos.toPoint())) {
         return false;
     }
 
-    QImage boundary(size(), QImage::Format_Grayscale8);
-    boundary.fill(0);
+    const int originalLayer = m_model.currentLayer();
+    const bool originalLayerIsFill = m_model.isFillLayer(originalLayer);
+    FillScope boundaryScope = m_fillScope;
+    int sourceLayerIndex = originalLayer;
+    bool allLayers = boundaryScope == FillScope::AllLayers;
+    if (originalLayerIsFill && boundaryScope == FillScope::CurrentLayer) {
+        boundaryScope = FillScope::AllLayers;
+        allLayers = true;
+    }
+    if (allLayers) {
+        sourceLayerIndex = -1;
+    }
 
-    QPainter boundaryPainter(&boundary);
-    boundaryPainter.setRenderHint(QPainter::Antialiasing, false);
-    boundaryPainter.setPen(QPen(QColor(255, 255, 255), 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    boundaryPainter.setBrush(Qt::NoBrush);
+    const QPainterPath fillPath = vectorRegionPathAt(pos, boundaryScope, originalLayer);
+    if (fillPath.isEmpty()) {
+        return false;
+    }
+
+    int fillLayerIndex = originalLayer;
+    bool createdFillLayer = false;
+    if (!originalLayerIsFill) {
+        fillLayerIndex = m_model.addFillLayer();
+        createdFillLayer = fillLayerIndex >= 0;
+    }
+
+    VectorImageModel *image = m_model.imageAt(m_model.currentFrame(), fillLayerIndex, true);
+    if (!image) {
+        return false;
+    }
+
+    bool updatedExistingRegion = false;
+    for (int i = image->fillCount() - 1; i >= 0; --i) {
+        const AnimeVectorFillRegion &existing = image->fillRegions()[i];
+        const bool sameReferMode = existing.basedOnAllLayers == allLayers;
+        const bool sameSourceLayer = allLayers || existing.sourceLayerIndex == sourceLayerIndex;
+        if (!sameReferMode || !sameSourceLayer || !existing.path.contains(pos)) {
+            continue;
+        }
+
+        if (!updatedExistingRegion) {
+            AnimeVectorFillRegion updated = existing;
+            updated.seedPoint = pos;
+            updated.path = fillPath;
+            updated.bounds = fillPath.boundingRect();
+            updated.color = m_penColor;
+            image->setFillRegionAt(i, updated);
+            updatedExistingRegion = true;
+        } else {
+            image->removeFillRegionAt(i);
+        }
+    }
+
+    if (updatedExistingRegion) {
+        return true;
+    }
+
+    AnimeVectorFillRegion fill;
+    fill.id = image->fillCount() + 1;
+    fill.seedPoint = pos;
+    fill.path = fillPath;
+    fill.bounds = fillPath.boundingRect();
+    fill.color = m_penColor;
+    fill.sourceLayerIndex = sourceLayerIndex;
+    fill.basedOnAllLayers = allLayers;
+    image->addFillRegion(fill);
+    if (createdFillLayer) {
+        emit layerListChanged(fillLayerIndex);
+    }
+    return true;
+}
+
+bool PaintOpenGLWidget::currentLayerAcceptsFill() const
+{
+    const AnimeColumn *column = currentColumn();
+    return column && !column->locked;
+}
+
+QVector<QLineF> PaintOpenGLWidget::fillGraphSegments(FillScope scope, int layerIndex) const
+{
+    QVector<QLineF> segments;
 
     const AnimeScene &scene = m_model.scene();
     const int frame = m_model.currentFrame();
-    const bool allLayers = m_fillScope == FillScope::AllLayers;
+    const bool allLayers = scope == FillScope::AllLayers;
     for (int columnIndex = 0; columnIndex < scene.xsheet.columns.size(); ++columnIndex) {
-        if (!allLayers && columnIndex != m_model.currentLayer()) {
+        if (!allLayers && columnIndex != layerIndex) {
             continue;
         }
 
         const AnimeColumn &column = scene.xsheet.columns[columnIndex];
+        if (column.type == AnimeColumnType::Fill) {
+            continue;
+        }
         if (!column.visible) {
             continue;
         }
@@ -640,35 +978,71 @@ bool PaintOpenGLWidget::fillAt(const QPointF &pos)
 
         for (const VectorStrokeNode &node : image->strokeNodes()) {
             const VectorStroke &stroke = node.stroke;
-            boundaryPainter.setPen(QPen(QColor(255, 255, 255),
-                                        std::max<qreal>(1.0, stroke.width + 1.0),
-                                        Qt::SolidLine,
-                                        Qt::RoundCap,
-                                        Qt::RoundJoin));
-            boundaryPainter.drawPath(stroke.path);
+            segments += segmentsFromPath(stroke.path);
         }
     }
-    boundaryPainter.end();
+    return segments;
+}
 
-    const QPainterPath fillPath = fillPathFromMask(pos.toPoint(), boundary);
-    if (fillPath.isEmpty()) {
-        return false;
+QPainterPath PaintOpenGLWidget::vectorRegionPathAt(const QPointF &seed, FillScope scope, int layerIndex) const
+{
+    return vectorRegionPathAt(seed, fillGraphSegments(scope, layerIndex));
+}
+
+QPainterPath PaintOpenGLWidget::vectorRegionPathAt(const QPointF &seed, const QVector<QLineF> &segments) const
+{
+    if (!rect().contains(seed.toPoint())) {
+        return QPainterPath();
     }
 
-    VectorImageModel *image = currentImage(true);
-    if (!image) {
-        return false;
+    const QVector<GraphFace> faces = computeVectorRegionFaces(segments);
+    const GraphFace *bestFace = nullptr;
+    qreal bestArea = std::numeric_limits<qreal>::max();
+    for (const GraphFace &face : faces) {
+        const qreal area = std::abs(face.signedArea);
+        if (area <= kGraphEpsilon ||
+            area >= bestArea ||
+            !face.path.contains(seed)) {
+            continue;
+        }
+        bestFace = &face;
+        bestArea = area;
     }
 
-    AnimeVectorFillRegion fill;
-    fill.id = image->fillCount() + 1;
-    fill.path = fillPath;
-    fill.bounds = fillPath.boundingRect();
-    fill.color = m_penColor;
-    fill.sourceLayerIndex = m_model.currentLayer();
-    fill.basedOnAllLayers = allLayers;
-    image->addFillRegion(fill);
-    return true;
+    if (!bestFace) {
+        return QPainterPath();
+    }
+
+    QPainterPath canvas;
+    canvas.addRect(rect());
+
+    QPainterPathStroker overpaintStroker;
+    overpaintStroker.setWidth(kVectorRegionOverpaintWidth);
+    overpaintStroker.setCapStyle(Qt::RoundCap);
+    overpaintStroker.setJoinStyle(Qt::RoundJoin);
+    return bestFace->path.united(overpaintStroker.createStroke(bestFace->path)).intersected(canvas).simplified();
+}
+
+void PaintOpenGLWidget::removeInvalidFillRegions()
+{
+    AnimeScene &scene = m_model.scene();
+
+    for (AnimeLevel &level : scene.levels) {
+        for (int frameId : level.frameIds()) {
+            VectorImageModel *image = level.frame(frameId, false);
+            if (!image || image->fillCount() == 0) {
+                continue;
+            }
+
+            for (int fillIndex = image->fillCount() - 1; fillIndex >= 0; --fillIndex) {
+                const AnimeVectorFillRegion fill = image->fillRegions()[fillIndex];
+                if (!fill.basedOnAllLayers &&
+                    (fill.sourceLayerIndex < 0 || fill.sourceLayerIndex >= scene.xsheet.columns.size())) {
+                    image->removeFillRegionAt(fillIndex);
+                }
+            }
+        }
+    }
 }
 
 QPainterPath PaintOpenGLWidget::fillPathFromMask(const QPoint &seed, const QImage &boundary) const

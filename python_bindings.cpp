@@ -252,6 +252,7 @@ py::dict fillRegionToDict(const AnimeVectorFillRegion &fill)
 {
     py::dict data;
     data["id"] = fill.id;
+    data["seed"] = pointToDict(fill.seedPoint);
     data["color"] = colorToDict(fill.color);
     data["bounds"] = rectToDict(fill.bounds);
     data["source_layer_index"] = fill.sourceLayerIndex;

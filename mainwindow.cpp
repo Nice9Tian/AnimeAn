@@ -7,8 +7,11 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QFileDialog>
+#include <QImageReader>
 #include <QLabel>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSlider>
@@ -196,6 +199,10 @@ MainWindow::MainWindow(QWidget *parent)
         }
     });
 
+    connect(m_paintWidget, &PaintOpenGLWidget::layerListChanged, this, [this](int selectedLayer) {
+        refreshLayerList(selectedLayer);
+    });
+
     connect(ui->FrameList, &QListWidget::currentRowChanged, this, [this](int row) {
         if (!m_refreshingLists && row >= 0) {
             m_paintWidget->setCurrentFrame(row);
@@ -251,11 +258,52 @@ MainWindow::MainWindow(QWidget *parent)
         }
         refreshFrameList(target);
     });
+
+    connect(ui->actionimport_Raster, &QAction::triggered, this, &MainWindow::importRaster);
 }
 
 MainWindow::~MainWindow()
 {
     delete ui;
+}
+
+void MainWindow::importRaster()
+{
+    const QString fileName = QFileDialog::getOpenFileName(
+        this,
+        QStringLiteral("Import Raster"),
+        QString(),
+        QStringLiteral("Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff);;All Files (*)"));
+    if (fileName.isEmpty()) {
+        return;
+    }
+
+    QImageReader reader(fileName);
+    reader.setAutoTransform(true);
+    QImage image = reader.read();
+    if (image.isNull()) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Import Raster"),
+                             QStringLiteral("Failed to load image:\n%1").arg(reader.errorString()));
+        return;
+    }
+
+    image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    const QFileInfo fileInfo(fileName);
+    const int layerIndex = m_paintWidget->importRasterLayer(image, fileInfo.completeBaseName());
+    if (layerIndex < 0) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Import Raster"),
+                             QStringLiteral("Failed to import raster layer."));
+        return;
+    }
+
+    refreshLayerList(layerIndex);
+    refreshFrameList(m_paintWidget->model().currentFrame());
+    ui->label->setText(QStringLiteral("Imported raster: %1 (%2 x %3)")
+                           .arg(fileInfo.fileName())
+                           .arg(image.width())
+                           .arg(image.height()));
 }
 
 void MainWindow::refreshLayerList(int selectedRow)

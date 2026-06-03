@@ -29,6 +29,16 @@ int AnimeVectorImageModel::fillCount() const
     return m_fills.size();
 }
 
+bool AnimeVectorImageModel::hasRaster() const
+{
+    return !m_raster.isEmpty();
+}
+
+const AnimeRasterImage &AnimeVectorImageModel::raster() const
+{
+    return m_raster;
+}
+
 const AnimeVectorStroke &AnimeVectorImageModel::strokeAt(int index) const
 {
     return m_strokes[index].stroke;
@@ -42,6 +52,19 @@ const AnimeVectorStrokeNode &AnimeVectorImageModel::strokeNodeAt(int index) cons
 QRectF AnimeVectorImageModel::bounds() const
 {
     return m_bounds;
+}
+
+void AnimeVectorImageModel::setRasterImage(const QImage &image, const QPointF &topLeft)
+{
+    m_raster.image = image;
+    m_raster.topLeft = topLeft;
+    rebuildBounds();
+}
+
+void AnimeVectorImageModel::clearRasterImage()
+{
+    m_raster = AnimeRasterImage();
+    rebuildBounds();
 }
 
 void AnimeVectorImageModel::addStroke(const AnimeVectorStroke &stroke)
@@ -69,6 +92,78 @@ void AnimeVectorImageModel::addFillRegion(const AnimeVectorFillRegion &fill)
     } else {
         m_bounds = m_bounds.united(fill.bounds);
     }
+}
+
+void AnimeVectorImageModel::remapFillSourceLayersAfterDelete(int deletedLayerIndex)
+{
+    for (AnimeVectorFillRegion &fill : m_fills) {
+        if (fill.sourceLayerIndex == deletedLayerIndex) {
+            fill.sourceLayerIndex = -1;
+        } else if (fill.sourceLayerIndex > deletedLayerIndex) {
+            --fill.sourceLayerIndex;
+        }
+    }
+}
+
+void AnimeVectorImageModel::remapFillSourceLayersAfterMove(int fromIndex, int toIndex)
+{
+    for (AnimeVectorFillRegion &fill : m_fills) {
+        if (fill.sourceLayerIndex == fromIndex) {
+            fill.sourceLayerIndex = toIndex;
+        } else if (fromIndex < toIndex &&
+                   fill.sourceLayerIndex > fromIndex &&
+                   fill.sourceLayerIndex <= toIndex) {
+            --fill.sourceLayerIndex;
+        } else if (toIndex < fromIndex &&
+                   fill.sourceLayerIndex >= toIndex &&
+                   fill.sourceLayerIndex < fromIndex) {
+            ++fill.sourceLayerIndex;
+        }
+    }
+}
+
+bool AnimeVectorImageModel::setFillRegionAt(int index, const AnimeVectorFillRegion &fill)
+{
+    if (index < 0 || index >= m_fills.size()) {
+        return false;
+    }
+
+    m_fills[index] = fill;
+    rebuildBounds();
+    return true;
+}
+
+bool AnimeVectorImageModel::setFillRegionPath(int index, const QPainterPath &path)
+{
+    if (index < 0 || index >= m_fills.size()) {
+        return false;
+    }
+
+    m_fills[index].path = path;
+    m_fills[index].bounds = path.boundingRect();
+    rebuildBounds();
+    return true;
+}
+
+bool AnimeVectorImageModel::setFillRegionColor(int index, const QColor &color)
+{
+    if (index < 0 || index >= m_fills.size()) {
+        return false;
+    }
+
+    m_fills[index].color = color;
+    return true;
+}
+
+bool AnimeVectorImageModel::removeFillRegionAt(int index)
+{
+    if (index < 0 || index >= m_fills.size()) {
+        return false;
+    }
+
+    m_fills.removeAt(index);
+    rebuildBounds();
+    return true;
 }
 
 void AnimeVectorImageModel::removeStrokeAt(int index)
@@ -102,12 +197,16 @@ void AnimeVectorImageModel::clear()
 {
     m_strokes.clear();
     m_fills.clear();
+    m_raster = AnimeRasterImage();
     m_bounds = QRectF();
 }
 
 void AnimeVectorImageModel::rebuildBounds()
 {
     m_bounds = QRectF();
+    if (!m_raster.isEmpty()) {
+        m_bounds = m_raster.bounds();
+    }
     for (const AnimeVectorFillRegion &fill : m_fills) {
         if (m_bounds.isNull()) {
             m_bounds = fill.bounds;
@@ -496,6 +595,19 @@ void AnimeSceneModel::setLayerOpacity(int layerIndex, qreal opacity)
     m_scene.xsheet.columns[layerIndex].opacity = opacity;
 }
 
+AnimeColumnType AnimeSceneModel::layerType(int layerIndex) const
+{
+    if (layerIndex < 0 || layerIndex >= m_scene.xsheet.columns.size()) {
+        return AnimeColumnType::Vector;
+    }
+    return m_scene.xsheet.columns[layerIndex].type;
+}
+
+bool AnimeSceneModel::isFillLayer(int layerIndex) const
+{
+    return layerType(layerIndex) == AnimeColumnType::Fill;
+}
+
 int AnimeSceneModel::addLayer()
 {
     AnimeColumn column;
@@ -505,6 +617,38 @@ int AnimeSceneModel::addLayer()
 
     AnimeLevel level;
     level.name = QStringLiteral("Level %1").arg(m_scene.levels.size() + 1);
+    const int levelIndex = m_scene.levels.size();
+    m_scene.levels.append(level);
+
+    for (int row = 0; row < m_scene.xsheet.frameCount; ++row) {
+        AnimeCell cell;
+        cell.levelIndex = levelIndex;
+        cell.frameId = nextFrameId();
+        m_scene.xsheet.setCell(row, columnIndex, cell);
+        m_scene.levels[levelIndex].frame(cell.frameId, true);
+    }
+
+    setCurrentLayer(columnIndex);
+    return columnIndex;
+}
+
+int AnimeSceneModel::addFillLayer()
+{
+    int fillLayerCount = 0;
+    for (const AnimeColumn &existingColumn : m_scene.xsheet.columns) {
+        if (existingColumn.type == AnimeColumnType::Fill) {
+            ++fillLayerCount;
+        }
+    }
+
+    AnimeColumn column;
+    column.name = QStringLiteral("FillLayer %1").arg(fillLayerCount + 1);
+    column.type = AnimeColumnType::Fill;
+    const int columnIndex = m_scene.xsheet.columns.size();
+    m_scene.xsheet.columns.append(column);
+
+    AnimeLevel level;
+    level.name = column.name;
     const int levelIndex = m_scene.levels.size();
     m_scene.levels.append(level);
 
@@ -688,6 +832,75 @@ const AnimeVectorImageModel *AnimeSceneModel::imageForCell(const AnimeCell &cell
     return m_scene.levels[cell.levelIndex].frame(cell.frameId);
 }
 
+bool AnimeSceneModel::setRasterImageAt(int row, int layerIndex, const QImage &image, const QPointF &topLeft)
+{
+    if (image.isNull()) {
+        return false;
+    }
+
+    AnimeVectorImageModel *cellImage = imageAt(row, layerIndex, true);
+    if (!cellImage) {
+        return false;
+    }
+
+    cellImage->setRasterImage(image, topLeft);
+    return true;
+}
+
+int AnimeSceneModel::addRasterLayer(const QString &name, int frameIndex, const QImage &image, const QPointF &topLeft)
+{
+    if (image.isNull()) {
+        return -1;
+    }
+
+    AnimeColumn column;
+    column.name = name.isEmpty()
+                      ? QStringLiteral("Raster %1").arg(m_scene.xsheet.columns.size() + 1)
+                      : name;
+    column.type = AnimeColumnType::Raster;
+    const int columnIndex = m_scene.xsheet.columns.size();
+    m_scene.xsheet.columns.append(column);
+
+    AnimeLevel level;
+    level.name = column.name;
+    const int levelIndex = m_scene.levels.size();
+    m_scene.levels.append(level);
+
+    m_scene.xsheet.ensureFrameCount(frameIndex + 1);
+
+    AnimeCell cell;
+    cell.levelIndex = levelIndex;
+    cell.frameId = nextFrameId();
+    m_scene.xsheet.setCell(frameIndex, columnIndex, cell);
+    m_scene.levels[levelIndex].frame(cell.frameId, true)->setRasterImage(image, topLeft);
+
+    setCurrentLayer(columnIndex);
+    setCurrentFrame(frameIndex);
+    return columnIndex;
+}
+
+void AnimeSceneModel::remapFillSourceLayersAfterDelete(int deletedLayerIndex)
+{
+    for (AnimeLevel &level : m_scene.levels) {
+        for (int frameId : level.frameIds()) {
+            if (AnimeVectorImageModel *image = level.frame(frameId, false)) {
+                image->remapFillSourceLayersAfterDelete(deletedLayerIndex);
+            }
+        }
+    }
+}
+
+void AnimeSceneModel::remapFillSourceLayersAfterMove(int fromIndex, int toIndex)
+{
+    for (AnimeLevel &level : m_scene.levels) {
+        for (int frameId : level.frameIds()) {
+            if (AnimeVectorImageModel *image = level.frame(frameId, false)) {
+                image->remapFillSourceLayersAfterMove(fromIndex, toIndex);
+            }
+        }
+    }
+}
+
 AnimeColumn *AnimeSceneModel::currentColumn()
 {
     if (m_currentLayer < 0 || m_currentLayer >= m_scene.xsheet.columns.size()) {
@@ -707,7 +920,7 @@ const AnimeColumn *AnimeSceneModel::currentColumn() const
 bool AnimeSceneModel::currentColumnEditable() const
 {
     const AnimeColumn *column = currentColumn();
-    return column && !column->locked;
+    return column && !column->locked && column->type == AnimeColumnType::Vector;
 }
 
 int AnimeSceneModel::ensureLevelForCurrentColumn()

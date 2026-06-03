@@ -2,6 +2,7 @@
 #define ANIMEMODEL_H
 
 #include <QColor>
+#include <QImage>
 #include <QMap>
 #include <QPainterPath>
 #include <QPointF>
@@ -37,11 +38,20 @@ struct AnimeVectorStrokeNode {
 
 struct AnimeVectorFillRegion {
     int id = 0;
+    QPointF seedPoint;
     QPainterPath path;
     QRectF bounds;
     QColor color;
     int sourceLayerIndex = -1;
     bool basedOnAllLayers = false;
+};
+
+struct AnimeRasterImage {
+    QImage image;
+    QPointF topLeft;
+
+    bool isEmpty() const { return image.isNull(); }
+    QRectF bounds() const { return QRectF(topLeft, image.size()); }
 };
 
 class AnimeVectorImageModel {
@@ -50,12 +60,22 @@ public:
     const QVector<AnimeVectorFillRegion> &fillRegions() const;
     int strokeCount() const;
     int fillCount() const;
+    bool hasRaster() const;
+    const AnimeRasterImage &raster() const;
     const AnimeVectorStroke &strokeAt(int index) const;
     const AnimeVectorStrokeNode &strokeNodeAt(int index) const;
     QRectF bounds() const;
+    void setRasterImage(const QImage &image, const QPointF &topLeft = QPointF());
+    void clearRasterImage();
     void addStroke(const AnimeVectorStroke &stroke);
     void addStrokeNode(const AnimeVectorStrokeNode &node);
     void addFillRegion(const AnimeVectorFillRegion &fill);
+    void remapFillSourceLayersAfterDelete(int deletedLayerIndex);
+    void remapFillSourceLayersAfterMove(int fromIndex, int toIndex);
+    bool setFillRegionAt(int index, const AnimeVectorFillRegion &fill);
+    bool setFillRegionPath(int index, const QPainterPath &path);
+    bool setFillRegionColor(int index, const QColor &color);
+    bool removeFillRegionAt(int index);
     void removeStrokeAt(int index);
     void replaceStrokeWithPieces(int index, const QVector<AnimeVectorStroke> &pieces);
     void clear();
@@ -65,6 +85,7 @@ private:
 
     QVector<AnimeVectorStrokeNode> m_strokes;
     QVector<AnimeVectorFillRegion> m_fills;
+    AnimeRasterImage m_raster;
     QRectF m_bounds;
 };
 
@@ -73,6 +94,12 @@ struct AnimeCell {
     int frameId = 0;
 
     bool isEmpty() const { return levelIndex < 0 || frameId <= 0; }
+};
+
+enum class AnimeColumnType {
+    Vector,
+    Raster,
+    Fill
 };
 
 class AnimeLevel {
@@ -90,6 +117,7 @@ private:
 class AnimeColumn {
 public:
     QString name;
+    AnimeColumnType type = AnimeColumnType::Vector;
     bool visible = true;
     bool locked = false;
     qreal opacity = 1.0;
@@ -151,8 +179,11 @@ public:
     void setLayerLocked(int layerIndex, bool locked);
     qreal layerOpacity(int layerIndex) const;
     void setLayerOpacity(int layerIndex, qreal opacity);
+    AnimeColumnType layerType(int layerIndex) const;
+    bool isFillLayer(int layerIndex) const;
 
     int addLayer();
+    int addFillLayer();
     bool deleteLayer(int layerIndex);
     bool moveLayer(int fromIndex, int toIndex);
     int addFrame();
@@ -167,6 +198,10 @@ public:
     const AnimeVectorImageModel *imageAt(int row, int layerIndex) const;
     AnimeVectorImageModel *currentImage(bool create);
     const AnimeVectorImageModel *imageForCell(const AnimeCell &cell) const;
+    bool setRasterImageAt(int row, int layerIndex, const QImage &image, const QPointF &topLeft);
+    int addRasterLayer(const QString &name, int frameIndex, const QImage &image, const QPointF &topLeft);
+    void remapFillSourceLayersAfterDelete(int deletedLayerIndex);
+    void remapFillSourceLayersAfterMove(int fromIndex, int toIndex);
     AnimeColumn *currentColumn();
     const AnimeColumn *currentColumn() const;
     bool currentColumnEditable() const;

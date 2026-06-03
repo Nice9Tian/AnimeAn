@@ -20,6 +20,7 @@ public:
     ~MainWindow();
 
 private:
+    void importRaster();
     void refreshLayerList(int selectedRow);
     void refreshFrameList(int selectedRow);
 

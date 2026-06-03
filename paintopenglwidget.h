@@ -4,6 +4,7 @@
 #include "animemodel.h"
 
 #include <QColor>
+#include <QLineF>
 #include <QMouseEvent>
 #include <QOpenGLWidget>
 #include <QPainterPath>
@@ -11,6 +12,8 @@
 
 class PaintOpenGLWidget : public QOpenGLWidget
 {
+    Q_OBJECT
+
 public:
     enum class Tool {
         Pen,
@@ -36,6 +39,7 @@ public:
     int frameCount() const;
     QString layerName(int layerIndex) const;
     QString frameName(int frameIndex) const;
+    int importRasterLayer(const QImage &image, const QString &layerName);
     int addLayer();
     bool deleteLayer(int layerIndex);
     bool moveLayer(int fromIndex, int toIndex);
@@ -44,6 +48,9 @@ public:
     bool moveFrame(int fromIndex, int toIndex);
     AnimeSceneModel &model();
     const AnimeSceneModel &model() const;
+
+signals:
+    void layerListChanged(int selectedLayer);
 
 protected:
     void paintGL() override;
@@ -73,6 +80,11 @@ private:
     bool deleteLineAt(const QPointF &pos);
     bool deleteLineBetween(const QPointF &from, const QPointF &to);
     bool fillAt(const QPointF &pos);
+    bool currentLayerAcceptsFill() const;
+    QVector<QLineF> fillGraphSegments(FillScope scope, int layerIndex) const;
+    QPainterPath vectorRegionPathAt(const QPointF &seed, const QVector<QLineF> &segments) const;
+    QPainterPath vectorRegionPathAt(const QPointF &seed, FillScope scope, int layerIndex) const;
+    void removeInvalidFillRegions();
     QPainterPath fillPathFromMask(const QPoint &seed, const QImage &boundary) const;
     bool strokeHitsCircle(const VectorStroke &stroke, const QPointF &center, qreal radius) const;
     bool strokeHitsCapsule(const VectorStroke &stroke, const QPointF &from, const QPointF &to, qreal radius) const;
