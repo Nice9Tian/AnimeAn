@@ -46,11 +46,7 @@ MainWindow::MainWindow(QWidget *parent)
 {
     ui->setupUi(this);
 
-    m_paintWidget = new PaintOpenGLWidget(ui->centralwidget);
-    m_paintWidget->setObjectName(ui->graphicsView->objectName());
-    m_paintWidget->setGeometry(ui->graphicsView->geometry());
-    delete ui->graphicsView;
-    ui->graphicsView = m_paintWidget;
+    m_paintWidget = ui->graphicsView;
 
     ui->LayerList->setDragDropMode(QAbstractItemView::InternalMove);
     ui->LayerList->setDefaultDropAction(Qt::MoveAction);

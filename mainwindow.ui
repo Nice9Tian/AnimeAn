@@ -14,7 +14,7 @@
    <string>MainWindow</string>
   </property>
   <widget class="QWidget" name="centralwidget">
-   <widget class="QOpenGLWidget" name="graphicsView">
+   <widget class="PaintOpenGLWidget" name="graphicsView">
     <property name="geometry">
      <rect>
       <x>20</x>
@@ -294,7 +294,14 @@
    </property>
   </widget>
   <widget class="QStatusBar" name="statusbar"/>
- </widget>
+  </widget>
+ <customwidgets>
+  <customwidget>
+   <class>PaintOpenGLWidget</class>
+   <extends>QOpenGLWidget</extends>
+   <header>paintopenglwidget.h</header>
+  </customwidget>
+ </customwidgets>
  <resources/>
  <connections/>
 </ui>
