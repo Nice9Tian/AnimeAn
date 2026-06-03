@@ -111,9 +111,9 @@ int sampleCountForCurve(const QPointF &p0,
                         const QPointF &p1,
                         const QPointF &p2,
                         const QPointF &p3,
-                        double ployStep)
+                        double polyStep)
 {
-    const double step = std::max(0.1, ployStep);
+    const double step = std::max(0.1, polyStep);
     const double controlNetLength = QLineF(p0, p1).length() +
                                     QLineF(p1, p2).length() +
                                     QLineF(p2, p3).length();
@@ -161,7 +161,7 @@ py::list pathCommandsToList(const QPainterPath &path)
     return commands;
 }
 
-py::list pathToPolylines(const QPainterPath &path, double ployStep)
+py::list pathToPolylines(const QPainterPath &path, double polyStep)
 {
     py::list polylines;
     QVector<QPointF> currentPolyline;
@@ -196,7 +196,7 @@ py::list pathToPolylines(const QPainterPath &path, double ployStep)
             if (currentPolyline.isEmpty()) {
                 currentPolyline.append(current);
             }
-            const int count = sampleCountForCurve(current, control1, control2, end, ployStep);
+            const int count = sampleCountForCurve(current, control1, control2, end, polyStep);
             for (int sample = 1; sample <= count; ++sample) {
                 const qreal t = static_cast<qreal>(sample) / count;
                 currentPolyline.append(cubicPointAt(current, control1, control2, end, t));
@@ -210,7 +210,7 @@ py::list pathToPolylines(const QPainterPath &path, double ployStep)
     return polylines;
 }
 
-py::dict strokeNodeToDict(const AnimeVectorStrokeNode &node, bool toPloy, double ployStep)
+py::dict strokeNodeToDict(const AnimeVectorStrokeNode &node, bool toPoly, double polyStep)
 {
     const AnimeVectorStroke &stroke = node.stroke;
     py::dict data;
@@ -236,10 +236,10 @@ py::dict strokeNodeToDict(const AnimeVectorStrokeNode &node, bool toPloy, double
     data["is_new_for_fill"] = node.isNewForFill;
     data["selected"] = node.selected;
 
-    if (toPloy) {
+    if (toPoly) {
         data["geometry_type"] = "polyline";
-        data["ploy_step"] = ployStep;
-        data["polylines"] = pathToPolylines(stroke.path, ployStep);
+        data["poly_step"] = polyStep;
+        data["polylines"] = pathToPolylines(stroke.path, polyStep);
     } else {
         data["geometry_type"] = "path";
         data["commands"] = pathCommandsToList(stroke.path);
@@ -248,7 +248,7 @@ py::dict strokeNodeToDict(const AnimeVectorStrokeNode &node, bool toPloy, double
     return data;
 }
 
-py::dict imageToDict(const AnimeVectorImageModel *image, bool toPloy, double ployStep)
+py::dict imageToDict(const AnimeVectorImageModel *image, bool toPoly, double polyStep)
 {
     py::dict data;
     data["empty"] = image == nullptr;
@@ -258,14 +258,14 @@ py::dict imageToDict(const AnimeVectorImageModel *image, bool toPloy, double plo
     py::list strokes;
     if (image) {
         for (const AnimeVectorStrokeNode &node : image->strokeNodes()) {
-            strokes.append(strokeNodeToDict(node, toPloy, ployStep));
+            strokes.append(strokeNodeToDict(node, toPoly, polyStep));
         }
     }
     data["strokes"] = strokes;
     return data;
 }
 
-py::dict cellToDict(const AnimeSceneModel &model, int layerIndex, int frameIndex, bool toPloy, double ployStep)
+py::dict cellToDict(const AnimeSceneModel &model, int layerIndex, int frameIndex, bool toPoly, double polyStep)
 {
     const AnimeCell cell = model.cellAt(frameIndex, layerIndex);
     py::dict data;
@@ -276,7 +276,7 @@ py::dict cellToDict(const AnimeSceneModel &model, int layerIndex, int frameIndex
     data["empty"] = cell.isEmpty();
 
     const AnimeVectorImageModel *image = model.imageForCell(cell);
-    data["image"] = imageToDict(image, toPloy, ployStep);
+    data["image"] = imageToDict(image, toPoly, polyStep);
     return data;
 }
 }
@@ -298,11 +298,11 @@ void bindAnimeanPythonModule(py::module_ &m)
             return rectToTuple(image.bounds());
         })
         .def("to_dict",
-             [](const AnimeVectorImageModel &image, bool toPloy, double ployStep) {
-                 return imageToDict(&image, toPloy, ployStep);
+             [](const AnimeVectorImageModel &image, bool toPoly, double polyStep) {
+                 return imageToDict(&image, toPoly, polyStep);
              },
-             py::arg("to_ploy") = false,
-             py::arg("ploy_step") = 4.0)
+             py::arg("to_poly") = false,
+             py::arg("poly_step") = 4.0)
         .def("add_polyline",
              [](AnimeVectorImageModel &image,
                 const std::vector<std::pair<double, double>> &points,
@@ -374,21 +374,21 @@ void bindAnimeanPythonModule(py::module_ &m)
             }
         })
         .def("cell_to_dict",
-             [](const AnimeSceneModel &model, int layerIndex, int frameIndex, bool toPloy, double ployStep) {
-                 return cellToDict(model, layerIndex, frameIndex, toPloy, ployStep);
+             [](const AnimeSceneModel &model, int layerIndex, int frameIndex, bool toPoly, double polyStep) {
+                 return cellToDict(model, layerIndex, frameIndex, toPoly, polyStep);
              },
              py::arg("layer_index"),
              py::arg("frame_index"),
-             py::arg("to_ploy") = false,
-             py::arg("ploy_step") = 4.0)
+             py::arg("to_poly") = false,
+             py::arg("poly_step") = 4.0)
         .def("cell_strokes",
-             [](const AnimeSceneModel &model, int layerIndex, int frameIndex, bool toPloy, double ployStep) {
-                 return cellToDict(model, layerIndex, frameIndex, toPloy, ployStep)["image"];
+             [](const AnimeSceneModel &model, int layerIndex, int frameIndex, bool toPoly, double polyStep) {
+                 return cellToDict(model, layerIndex, frameIndex, toPoly, polyStep)["image"];
              },
              py::arg("layer_index"),
              py::arg("frame_index"),
-             py::arg("to_ploy") = false,
-             py::arg("ploy_step") = 4.0)
+             py::arg("to_poly") = false,
+             py::arg("poly_step") = 4.0)
         .def("add_polyline",
              [](AnimeSceneModel &model,
                 int row,
