@@ -35,15 +35,27 @@ struct AnimeVectorStrokeNode {
     bool selected = false;
 };
 
+struct AnimeVectorFillRegion {
+    int id = 0;
+    QPainterPath path;
+    QRectF bounds;
+    QColor color;
+    int sourceLayerIndex = -1;
+    bool basedOnAllLayers = false;
+};
+
 class AnimeVectorImageModel {
 public:
     const QVector<AnimeVectorStrokeNode> &strokeNodes() const;
+    const QVector<AnimeVectorFillRegion> &fillRegions() const;
     int strokeCount() const;
+    int fillCount() const;
     const AnimeVectorStroke &strokeAt(int index) const;
     const AnimeVectorStrokeNode &strokeNodeAt(int index) const;
     QRectF bounds() const;
     void addStroke(const AnimeVectorStroke &stroke);
     void addStrokeNode(const AnimeVectorStrokeNode &node);
+    void addFillRegion(const AnimeVectorFillRegion &fill);
     void removeStrokeAt(int index);
     void replaceStrokeWithPieces(int index, const QVector<AnimeVectorStroke> &pieces);
     void clear();
@@ -52,6 +64,7 @@ private:
     void rebuildBounds();
 
     QVector<AnimeVectorStrokeNode> m_strokes;
+    QVector<AnimeVectorFillRegion> m_fills;
     QRectF m_bounds;
 };
 

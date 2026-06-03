@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>996</width>
-    <height>600</height>
+    <width>1027</width>
+    <height>775</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -92,8 +92,8 @@
    <widget class="QSlider" name="SmoothValue">
     <property name="geometry">
      <rect>
-      <x>580</x>
-      <y>470</y>
+      <x>30</x>
+      <y>570</y>
       <width>121</width>
       <height>22</height>
      </rect>
@@ -114,8 +114,8 @@
    <widget class="QLabel" name="SmoothValue_print">
     <property name="geometry">
      <rect>
-      <x>580</x>
-      <y>500</y>
+      <x>30</x>
+      <y>600</y>
       <width>121</width>
       <height>31</height>
      </rect>
@@ -282,19 +282,61 @@
      <string>Cell Dict</string>
     </property>
    </widget>
+   <widget class="QPushButton" name="Fill">
+    <property name="geometry">
+     <rect>
+      <x>580</x>
+      <y>460</y>
+      <width>121</width>
+      <height>71</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Fill</string>
+    </property>
+   </widget>
+   <widget class="QListWidget" name="FillOptArea">
+    <property name="geometry">
+     <rect>
+      <x>580</x>
+      <y>540</y>
+      <width>121</width>
+      <height>71</height>
+     </rect>
+    </property>
+    <property name="dragEnabled">
+     <bool>true</bool>
+    </property>
+    <property name="dragDropMode">
+     <enum>QAbstractItemView::DragDropMode::InternalMove</enum>
+    </property>
+    <property name="defaultDropAction">
+     <enum>Qt::DropAction::MoveAction</enum>
+    </property>
+    <item>
+     <property name="text">
+      <string>Current</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>ALL</string>
+     </property>
+    </item>
+   </widget>
   </widget>
   <widget class="QMenuBar" name="menubar">
    <property name="geometry">
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>996</width>
+     <width>1027</width>
      <height>22</height>
     </rect>
    </property>
   </widget>
   <widget class="QStatusBar" name="statusbar"/>
-  </widget>
+ </widget>
  <customwidgets>
   <customwidget>
    <class>PaintOpenGLWidget</class>

@@ -66,6 +66,7 @@ MainWindow::MainWindow(QWidget *parent)
         ui->Pen->setChecked(true);
         ui->Eraser->setChecked(false);
         ui->LineErazer->setChecked(false);
+        ui->Fill->setChecked(false);
     });
 
     connect(ui->greenButton, &QPushButton::clicked, this, [this]() {
@@ -73,12 +74,16 @@ MainWindow::MainWindow(QWidget *parent)
         ui->Pen->setChecked(true);
         ui->Eraser->setChecked(false);
         ui->LineErazer->setChecked(false);
+        ui->Fill->setChecked(false);
     });
 
     ui->Pen->setCheckable(true);
     ui->Eraser->setCheckable(true);
     ui->LineErazer->setCheckable(true);
+    ui->Fill->setCheckable(true);
     ui->Pen->setChecked(true);
+    ui->FillOptArea->setSelectionMode(QAbstractItemView::SingleSelection);
+    ui->FillOptArea->setCurrentRow(0);
     ui->SmoothValue->setRange(0, 100);
     ui->SmoothValue->setValue(50);
     ui->SmoothValue_print->setText(QStringLiteral("Smooth: 50"));
@@ -108,6 +113,7 @@ MainWindow::MainWindow(QWidget *parent)
         ui->Pen->setChecked(true);
         ui->Eraser->setChecked(false);
         ui->LineErazer->setChecked(false);
+        ui->Fill->setChecked(false);
     });
 
     connect(ui->Eraser, &QPushButton::clicked, this, [this]() {
@@ -115,6 +121,7 @@ MainWindow::MainWindow(QWidget *parent)
         ui->Pen->setChecked(false);
         ui->Eraser->setChecked(true);
         ui->LineErazer->setChecked(false);
+        ui->Fill->setChecked(false);
     });
 
     connect(ui->LineErazer, &QPushButton::clicked, this, [this]() {
@@ -122,6 +129,21 @@ MainWindow::MainWindow(QWidget *parent)
         ui->Pen->setChecked(false);
         ui->Eraser->setChecked(false);
         ui->LineErazer->setChecked(true);
+        ui->Fill->setChecked(false);
+    });
+
+    connect(ui->Fill, &QPushButton::clicked, this, [this]() {
+        m_paintWidget->setTool(PaintOpenGLWidget::Tool::Fill);
+        ui->Pen->setChecked(false);
+        ui->Eraser->setChecked(false);
+        ui->LineErazer->setChecked(false);
+        ui->Fill->setChecked(true);
+    });
+
+    connect(ui->FillOptArea, &QListWidget::currentRowChanged, this, [this](int row) {
+        m_paintWidget->setFillScope(row == 1
+                                        ? PaintOpenGLWidget::FillScope::AllLayers
+                                        : PaintOpenGLWidget::FillScope::CurrentLayer);
     });
 
     connect(ui->SmoothValue, &QSlider::valueChanged, this, [this](int value) {

@@ -15,13 +15,20 @@ public:
     enum class Tool {
         Pen,
         Eraser,
-        DeleteLine
+        DeleteLine,
+        Fill
+    };
+
+    enum class FillScope {
+        CurrentLayer,
+        AllLayers
     };
 
     explicit PaintOpenGLWidget(QWidget *parent = nullptr);
 
     void setPenColor(const QColor &color);
     void setTool(Tool tool);
+    void setFillScope(FillScope scope);
     void setSmoothValue(int value);
     void setCurrentLayer(int layerIndex);
     void setCurrentFrame(int frameIndex);
@@ -65,6 +72,8 @@ private:
     bool eraseBetween(const QPointF &from, const QPointF &to);
     bool deleteLineAt(const QPointF &pos);
     bool deleteLineBetween(const QPointF &from, const QPointF &to);
+    bool fillAt(const QPointF &pos);
+    QPainterPath fillPathFromMask(const QPoint &seed, const QImage &boundary) const;
     bool strokeHitsCircle(const VectorStroke &stroke, const QPointF &center, qreal radius) const;
     bool strokeHitsCapsule(const VectorStroke &stroke, const QPointF &from, const QPointF &to, qreal radius) const;
     bool eraseStrokeAt(int strokeIndex, const QPointF &pos);
@@ -82,6 +91,7 @@ private:
     bool currentColumnEditable() const;
 
     Tool m_tool = Tool::Pen;
+    FillScope m_fillScope = FillScope::CurrentLayer;
     QColor m_penColor = Qt::black;
     QVector<QPointF> m_points;
     AnimeSceneModel m_model;

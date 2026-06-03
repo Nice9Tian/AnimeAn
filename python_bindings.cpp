@@ -248,20 +248,38 @@ py::dict strokeNodeToDict(const AnimeVectorStrokeNode &node, bool toPoly, double
     return data;
 }
 
+py::dict fillRegionToDict(const AnimeVectorFillRegion &fill)
+{
+    py::dict data;
+    data["id"] = fill.id;
+    data["color"] = colorToDict(fill.color);
+    data["bounds"] = rectToDict(fill.bounds);
+    data["source_layer_index"] = fill.sourceLayerIndex;
+    data["based_on_all_layers"] = fill.basedOnAllLayers;
+    data["commands"] = pathCommandsToList(fill.path);
+    return data;
+}
+
 py::dict imageToDict(const AnimeVectorImageModel *image, bool toPoly, double polyStep)
 {
     py::dict data;
     data["empty"] = image == nullptr;
     data["stroke_count"] = image ? image->strokeCount() : 0;
+    data["fill_count"] = image ? image->fillCount() : 0;
     data["bounds"] = image ? rectToDict(image->bounds()) : py::dict();
 
     py::list strokes;
+    py::list fills;
     if (image) {
         for (const AnimeVectorStrokeNode &node : image->strokeNodes()) {
             strokes.append(strokeNodeToDict(node, toPoly, polyStep));
         }
+        for (const AnimeVectorFillRegion &fill : image->fillRegions()) {
+            fills.append(fillRegionToDict(fill));
+        }
     }
     data["strokes"] = strokes;
+    data["fills"] = fills;
     return data;
 }
 

@@ -1,7 +1,9 @@
 #include "paintopenglwidget.h"
 
 #include <QLineF>
+#include <QImage>
 #include <QPainter>
+#include <QQueue>
 
 #include <algorithm>
 #include <cmath>
@@ -118,6 +120,11 @@ void PaintOpenGLWidget::setTool(Tool tool)
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
     update();
+}
+
+void PaintOpenGLWidget::setFillScope(FillScope scope)
+{
+    m_fillScope = scope;
 }
 
 void PaintOpenGLWidget::setSmoothValue(int value)
@@ -258,6 +265,12 @@ void PaintOpenGLWidget::paintGL()
         }
 
         painter.setOpacity(column.opacity);
+        painter.setPen(Qt::NoPen);
+        for (const AnimeVectorFillRegion &fill : image->fillRegions()) {
+            painter.setBrush(fill.color);
+            painter.drawPath(fill.path);
+        }
+        painter.setBrush(Qt::NoBrush);
         for (const VectorStrokeNode &node : image->strokeNodes()) {
             const VectorStroke &stroke = node.stroke;
             painter.setPen(QPen(stroke.color, stroke.width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
@@ -288,6 +301,13 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
     const QPointF pos = event->position();
     m_hoverPos = pos;
     m_hasHoverPos = true;
+    if (m_tool == Tool::Fill) {
+        fillAt(pos);
+        update();
+        event->accept();
+        return;
+    }
+
     if (m_tool == Tool::Eraser || m_tool == Tool::DeleteLine) {
         m_hasLastEraserPos = true;
         m_lastEraserPos = pos;
@@ -580,6 +600,142 @@ bool PaintOpenGLWidget::deleteLineBetween(const QPointF &from, const QPointF &to
         }
     }
     return changed;
+}
+
+bool PaintOpenGLWidget::fillAt(const QPointF &pos)
+{
+    if (!currentColumnEditable()) {
+        return false;
+    }
+    if (!rect().contains(pos.toPoint())) {
+        return false;
+    }
+
+    QImage boundary(size(), QImage::Format_Grayscale8);
+    boundary.fill(0);
+
+    QPainter boundaryPainter(&boundary);
+    boundaryPainter.setRenderHint(QPainter::Antialiasing, false);
+    boundaryPainter.setPen(QPen(QColor(255, 255, 255), 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    boundaryPainter.setBrush(Qt::NoBrush);
+
+    const AnimeScene &scene = m_model.scene();
+    const int frame = m_model.currentFrame();
+    const bool allLayers = m_fillScope == FillScope::AllLayers;
+    for (int columnIndex = 0; columnIndex < scene.xsheet.columns.size(); ++columnIndex) {
+        if (!allLayers && columnIndex != m_model.currentLayer()) {
+            continue;
+        }
+
+        const AnimeColumn &column = scene.xsheet.columns[columnIndex];
+        if (!column.visible) {
+            continue;
+        }
+
+        const AnimeCell cell = column.cellAt(frame);
+        const VectorImageModel *image = m_model.imageForCell(cell);
+        if (!image) {
+            continue;
+        }
+
+        for (const VectorStrokeNode &node : image->strokeNodes()) {
+            const VectorStroke &stroke = node.stroke;
+            boundaryPainter.setPen(QPen(QColor(255, 255, 255),
+                                        std::max<qreal>(1.0, stroke.width + 1.0),
+                                        Qt::SolidLine,
+                                        Qt::RoundCap,
+                                        Qt::RoundJoin));
+            boundaryPainter.drawPath(stroke.path);
+        }
+    }
+    boundaryPainter.end();
+
+    const QPainterPath fillPath = fillPathFromMask(pos.toPoint(), boundary);
+    if (fillPath.isEmpty()) {
+        return false;
+    }
+
+    VectorImageModel *image = currentImage(true);
+    if (!image) {
+        return false;
+    }
+
+    AnimeVectorFillRegion fill;
+    fill.id = image->fillCount() + 1;
+    fill.path = fillPath;
+    fill.bounds = fillPath.boundingRect();
+    fill.color = m_penColor;
+    fill.sourceLayerIndex = m_model.currentLayer();
+    fill.basedOnAllLayers = allLayers;
+    image->addFillRegion(fill);
+    return true;
+}
+
+QPainterPath PaintOpenGLWidget::fillPathFromMask(const QPoint &seed, const QImage &boundary) const
+{
+    QPainterPath path;
+    if (boundary.isNull() || !boundary.rect().contains(seed)) {
+        return path;
+    }
+    if (qGray(boundary.pixel(seed.x(), seed.y())) > 0) {
+        return path;
+    }
+
+    QImage visited(boundary.size(), QImage::Format_Grayscale8);
+    visited.fill(0);
+
+    QQueue<QPoint> queue;
+    queue.enqueue(seed);
+    visited.setPixel(seed.x(), seed.y(), 255);
+
+    bool touchesCanvasEdge = false;
+    while (!queue.isEmpty()) {
+        const QPoint p = queue.dequeue();
+        if (p.x() == 0 || p.y() == 0 || p.x() == boundary.width() - 1 || p.y() == boundary.height() - 1) {
+            touchesCanvasEdge = true;
+        }
+
+        const QPoint neighbors[4] = {
+            QPoint(p.x() + 1, p.y()),
+            QPoint(p.x() - 1, p.y()),
+            QPoint(p.x(), p.y() + 1),
+            QPoint(p.x(), p.y() - 1)
+        };
+
+        for (const QPoint &next : neighbors) {
+            if (!boundary.rect().contains(next)) {
+                continue;
+            }
+            if (qGray(visited.pixel(next.x(), next.y())) > 0 ||
+                qGray(boundary.pixel(next.x(), next.y())) > 0) {
+                continue;
+            }
+            visited.setPixel(next.x(), next.y(), 255);
+            queue.enqueue(next);
+        }
+    }
+
+    if (touchesCanvasEdge) {
+        return QPainterPath();
+    }
+
+    for (int y = 0; y < visited.height(); ++y) {
+        int runStart = -1;
+        for (int x = 0; x < visited.width(); ++x) {
+            const bool filled = qGray(visited.pixel(x, y)) > 0;
+            if (filled && runStart < 0) {
+                runStart = x;
+            } else if (!filled && runStart >= 0) {
+                path.addRect(QRectF(runStart, y, x - runStart, 1));
+                runStart = -1;
+            }
+        }
+        if (runStart >= 0) {
+            path.addRect(QRectF(runStart, y, visited.width() - runStart, 1));
+        }
+    }
+
+    return path.simplified();
 }
 
 bool PaintOpenGLWidget::strokeHitsCircle(const VectorStroke &stroke, const QPointF &center, qreal radius) const

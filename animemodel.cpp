@@ -14,9 +14,19 @@ const QVector<AnimeVectorStrokeNode> &AnimeVectorImageModel::strokeNodes() const
     return m_strokes;
 }
 
+const QVector<AnimeVectorFillRegion> &AnimeVectorImageModel::fillRegions() const
+{
+    return m_fills;
+}
+
 int AnimeVectorImageModel::strokeCount() const
 {
     return m_strokes.size();
+}
+
+int AnimeVectorImageModel::fillCount() const
+{
+    return m_fills.size();
 }
 
 const AnimeVectorStroke &AnimeVectorImageModel::strokeAt(int index) const
@@ -51,6 +61,16 @@ void AnimeVectorImageModel::addStrokeNode(const AnimeVectorStrokeNode &node)
     }
 }
 
+void AnimeVectorImageModel::addFillRegion(const AnimeVectorFillRegion &fill)
+{
+    m_fills.append(fill);
+    if (m_bounds.isNull()) {
+        m_bounds = fill.bounds;
+    } else {
+        m_bounds = m_bounds.united(fill.bounds);
+    }
+}
+
 void AnimeVectorImageModel::removeStrokeAt(int index)
 {
     if (index < 0 || index >= m_strokes.size()) {
@@ -81,12 +101,20 @@ void AnimeVectorImageModel::replaceStrokeWithPieces(int index, const QVector<Ani
 void AnimeVectorImageModel::clear()
 {
     m_strokes.clear();
+    m_fills.clear();
     m_bounds = QRectF();
 }
 
 void AnimeVectorImageModel::rebuildBounds()
 {
     m_bounds = QRectF();
+    for (const AnimeVectorFillRegion &fill : m_fills) {
+        if (m_bounds.isNull()) {
+            m_bounds = fill.bounds;
+        } else {
+            m_bounds = m_bounds.united(fill.bounds);
+        }
+    }
     for (const AnimeVectorStrokeNode &node : m_strokes) {
         if (m_bounds.isNull()) {
             m_bounds = node.stroke.bounds;
