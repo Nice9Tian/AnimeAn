@@ -336,6 +336,26 @@ void PaintOpenGLWidget::setPenColor(const QColor &color)
     m_tool = Tool::Pen;
 }
 
+void PaintOpenGLWidget::setDrawingColor(const QColor &color)
+{
+    m_penColor = color;
+}
+
+void PaintOpenGLWidget::setPenWidth(qreal width)
+{
+    if (width < 1.0) {
+        width = 1.0;
+    } else if (width > 50.0) {
+        width = 50.0;
+    }
+
+    m_penWidth = width;
+    if (m_hasCurrentStroke) {
+        updateCurrentStroke();
+    }
+    update();
+}
+
 void PaintOpenGLWidget::setTool(Tool tool)
 {
     m_tool = tool;
@@ -389,6 +409,11 @@ int PaintOpenGLWidget::frameCount() const
     return m_model.frameCount();
 }
 
+int PaintOpenGLWidget::assetCount() const
+{
+    return m_model.assetCount();
+}
+
 QString PaintOpenGLWidget::layerName(int layerIndex) const
 {
     return m_model.layerName(layerIndex);
@@ -397,6 +422,11 @@ QString PaintOpenGLWidget::layerName(int layerIndex) const
 QString PaintOpenGLWidget::frameName(int frameIndex) const
 {
     return m_model.frameName(frameIndex);
+}
+
+QString PaintOpenGLWidget::assetName(int assetIndex) const
+{
+    return m_model.assetName(assetIndex);
 }
 
 int PaintOpenGLWidget::importRasterLayer(const QImage &image, const QString &layerName)
@@ -487,6 +517,48 @@ AnimeSceneModel &PaintOpenGLWidget::model()
     return m_model;
 }
 
+int PaintOpenGLWidget::addAsset(AnimeColumnType type, const QString &name)
+{
+    const int assetIndex = m_model.addAsset(type, name);
+    if (assetIndex >= 0) {
+        emit assetListChanged(assetIndex);
+    }
+    return assetIndex;
+}
+
+void PaintOpenGLWidget::setCurrentAsset(int assetIndex)
+{
+    m_model.setCurrentAsset(assetIndex);
+    m_points.clear();
+    m_hasCurrentStroke = false;
+    m_hasLastEraserPos = false;
+    update();
+}
+
+bool PaintOpenGLWidget::assignAssetToLayer(int layerIndex, int assetIndex)
+{
+    const bool assigned = m_model.assignAssetToLayer(m_model.currentFrame(), layerIndex, assetIndex);
+    if (assigned) {
+        m_points.clear();
+        m_hasCurrentStroke = false;
+        m_hasLastEraserPos = false;
+        update();
+    }
+    return assigned;
+}
+
+int PaintOpenGLWidget::addLayerForAsset(int assetIndex)
+{
+    const int layerIndex = m_model.addLayerForAsset(m_model.currentFrame(), assetIndex);
+    if (layerIndex >= 0) {
+        m_points.clear();
+        m_hasCurrentStroke = false;
+        m_hasLastEraserPos = false;
+        update();
+    }
+    return layerIndex;
+}
+
 const AnimeSceneModel &PaintOpenGLWidget::model() const
 {
     return m_model;
@@ -570,9 +642,19 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
         return;
     }
 
-    if (!currentColumnEditable()) {
+    if (m_model.currentLayer() >= 0 && !currentColumnEditable()) {
         event->accept();
         return;
+    }
+
+    const int assetCountBefore = m_model.assetCount();
+    if (!currentImage(true, AnimeColumnType::Vector)) {
+        event->accept();
+        return;
+    }
+    if (m_model.assetCount() != assetCountBefore) {
+        emit assetListChanged(m_model.currentAsset());
+        emit layerListChanged(m_model.currentLayer());
     }
 
     m_points.clear();
@@ -738,9 +820,14 @@ void PaintOpenGLWidget::finishCurrentStroke()
 {
     updateCurrentStroke();
     if (!m_currentStroke.points.isEmpty()) {
-        if (VectorImageModel *image = currentImage(true)) {
+        const int assetCountBefore = m_model.assetCount();
+        if (VectorImageModel *image = currentImage(true, AnimeColumnType::Vector)) {
             image->addStroke(m_currentStroke);
             removeInvalidFillRegions();
+            if (m_model.assetCount() != assetCountBefore) {
+                emit assetListChanged(m_model.currentAsset());
+                emit layerListChanged(m_model.currentLayer());
+            }
         }
     }
     m_hasCurrentStroke = false;
@@ -751,7 +838,7 @@ void PaintOpenGLWidget::finishCurrentStroke()
 bool PaintOpenGLWidget::eraseAt(const QPointF &pos)
 {
     VectorImageModel *image = currentImage(false);
-    if (!image || !currentColumnEditable()) {
+    if (!image || (m_model.currentLayer() >= 0 && !currentColumnEditable())) {
         return false;
     }
 
@@ -775,7 +862,7 @@ bool PaintOpenGLWidget::eraseAt(const QPointF &pos)
 bool PaintOpenGLWidget::eraseBetween(const QPointF &from, const QPointF &to)
 {
     VectorImageModel *image = currentImage(false);
-    if (!image || !currentColumnEditable()) {
+    if (!image || (m_model.currentLayer() >= 0 && !currentColumnEditable())) {
         return false;
     }
 
@@ -802,7 +889,7 @@ bool PaintOpenGLWidget::eraseBetween(const QPointF &from, const QPointF &to)
 bool PaintOpenGLWidget::deleteLineAt(const QPointF &pos)
 {
     VectorImageModel *image = currentImage(false);
-    if (!image || !currentColumnEditable()) {
+    if (!image || (m_model.currentLayer() >= 0 && !currentColumnEditable())) {
         return false;
     }
 
@@ -833,7 +920,7 @@ bool PaintOpenGLWidget::deleteLineAt(const QPointF &pos)
 bool PaintOpenGLWidget::deleteLineBetween(const QPointF &from, const QPointF &to)
 {
     VectorImageModel *image = currentImage(false);
-    if (!image || !currentColumnEditable()) {
+    if (!image || (m_model.currentLayer() >= 0 && !currentColumnEditable())) {
         return false;
     }
 
@@ -874,7 +961,7 @@ bool PaintOpenGLWidget::fillAt(const QPointF &pos)
     }
 
     const int originalLayer = m_model.currentLayer();
-    const bool originalLayerIsFill = m_model.isFillLayer(originalLayer);
+    const bool originalLayerIsFill = originalLayer >= 0 && m_model.isFillLayer(originalLayer);
     FillScope boundaryScope = m_fillScope;
     int sourceLayerIndex = originalLayer;
     bool allLayers = boundaryScope == FillScope::AllLayers;
@@ -891,14 +978,8 @@ bool PaintOpenGLWidget::fillAt(const QPointF &pos)
         return false;
     }
 
-    int fillLayerIndex = originalLayer;
-    bool createdFillLayer = false;
-    if (!originalLayerIsFill) {
-        fillLayerIndex = m_model.addFillLayer();
-        createdFillLayer = fillLayerIndex >= 0;
-    }
-
-    VectorImageModel *image = m_model.imageAt(m_model.currentFrame(), fillLayerIndex, true);
+    const int assetCountBefore = m_model.assetCount();
+    VectorImageModel *image = currentImage(true, AnimeColumnType::Fill);
     if (!image) {
         return false;
     }
@@ -938,14 +1019,21 @@ bool PaintOpenGLWidget::fillAt(const QPointF &pos)
     fill.sourceLayerIndex = sourceLayerIndex;
     fill.basedOnAllLayers = allLayers;
     image->addFillRegion(fill);
-    if (createdFillLayer) {
-        emit layerListChanged(fillLayerIndex);
+    if (m_model.assetCount() != assetCountBefore) {
+        emit assetListChanged(m_model.currentAsset());
+        emit layerListChanged(m_model.currentLayer());
     }
     return true;
 }
 
 bool PaintOpenGLWidget::currentLayerAcceptsFill() const
 {
+    if (m_model.currentFrame() < 0) {
+        return false;
+    }
+    if (m_model.currentLayer() < 0) {
+        return true;
+    }
     const AnimeColumn *column = currentColumn();
     return column && !column->locked;
 }
@@ -958,7 +1046,7 @@ QVector<QLineF> PaintOpenGLWidget::fillGraphSegments(FillScope scope, int layerI
     const int frame = m_model.currentFrame();
     const bool allLayers = scope == FillScope::AllLayers;
     for (int columnIndex = 0; columnIndex < scene.xsheet.columns.size(); ++columnIndex) {
-        if (!allLayers && columnIndex != layerIndex) {
+        if (!allLayers && layerIndex >= 0 && columnIndex != layerIndex) {
             continue;
         }
 
@@ -1422,9 +1510,9 @@ bool PaintOpenGLWidget::appendPoint(const QPointF &point)
     return false;
 }
 
-PaintOpenGLWidget::VectorImageModel *PaintOpenGLWidget::currentImage(bool create)
+PaintOpenGLWidget::VectorImageModel *PaintOpenGLWidget::currentImage(bool create, AnimeColumnType assetType)
 {
-    return m_model.currentImage(create);
+    return m_model.currentImage(create, assetType);
 }
 
 AnimeColumn *PaintOpenGLWidget::currentColumn()

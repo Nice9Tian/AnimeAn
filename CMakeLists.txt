@@ -29,13 +29,28 @@ find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets OpenGLWidgets)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets OpenGLWidgets)
 
 set(PROJECT_SOURCES
+        assetpanel.cpp
+        assetpanel.h
+        assetpanel.ui
         animemodel.cpp
         animemodel.h
+        framepanel.cpp
+        framepanel.h
+        framepanel.ui
+        layerpanel.cpp
+        layerpanel.h
+        layerpanel.ui
         main.cpp
         mainwindow.cpp
         mainwindow.h
         mainwindow.ui
         paintopenglwidget.h
+        tooloptpanel.cpp
+        tooloptpanel.h
+        tooloptpanel.ui
+        toolspanel.cpp
+        toolspanel.h
+        toolspanel.ui
         vectorinput.cpp
 )
 

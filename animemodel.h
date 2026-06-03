@@ -105,9 +105,9 @@ enum class AnimeColumnType {
 class AnimeLevel {
 public:
     QString name;
+    AnimeColumnType type = AnimeColumnType::Vector;
     AnimeVectorImageModel *frame(int frameId, bool create);
     const AnimeVectorImageModel *frame(int frameId) const;
-    void removeFrame(int frameId);
     QVector<int> frameIds() const;
 
 private:
@@ -164,14 +164,19 @@ public:
     void initializeScene(int layerCount, int frameCount);
     void setCurrentLayer(int layerIndex);
     void setCurrentFrame(int frameIndex);
+    void setCurrentAsset(int assetIndex);
     int currentLayer() const;
     int currentFrame() const;
+    int currentAsset() const;
 
     int layerCount() const;
     int frameCount() const;
+    int assetCount() const;
     QString layerName(int layerIndex) const;
     void setLayerName(int layerIndex, const QString &name);
     QString frameName(int frameIndex) const;
+    QString assetName(int assetIndex) const;
+    AnimeColumnType assetType(int assetIndex) const;
 
     bool layerVisible(int layerIndex) const;
     void setLayerVisible(int layerIndex, bool visible);
@@ -184,6 +189,7 @@ public:
 
     int addLayer();
     int addFillLayer();
+    int addAsset(AnimeColumnType type = AnimeColumnType::Vector, const QString &name = QString());
     bool deleteLayer(int layerIndex);
     bool moveLayer(int fromIndex, int toIndex);
     int addFrame();
@@ -194,9 +200,14 @@ public:
     void setCell(int row, int layerIndex, const AnimeCell &cell);
     void clearCell(int row, int layerIndex);
 
-    AnimeVectorImageModel *imageAt(int row, int layerIndex, bool create);
+    AnimeVectorImageModel *imageAt(int row, int layerIndex, bool create, AnimeColumnType assetType = AnimeColumnType::Vector);
     const AnimeVectorImageModel *imageAt(int row, int layerIndex) const;
-    AnimeVectorImageModel *currentImage(bool create);
+    AnimeVectorImageModel *assetImage(int assetIndex, bool create);
+    const AnimeVectorImageModel *assetImage(int assetIndex) const;
+    int assetIndexAt(int row, int layerIndex) const;
+    bool assignAssetToLayer(int row, int layerIndex, int assetIndex);
+    int addLayerForAsset(int row, int assetIndex);
+    AnimeVectorImageModel *currentImage(bool create, AnimeColumnType assetType = AnimeColumnType::Vector);
     const AnimeVectorImageModel *imageForCell(const AnimeCell &cell) const;
     bool setRasterImageAt(int row, int layerIndex, const QImage &image, const QPointF &topLeft);
     int addRasterLayer(const QString &name, int frameIndex, const QImage &image, const QPointF &topLeft);
@@ -207,15 +218,10 @@ public:
     bool currentColumnEditable() const;
 
 private:
-    int ensureLevelForCurrentColumn();
-    int ensureLevelForColumn(int columnIndex);
-    bool cellIsReferenced(const AnimeCell &cell) const;
-    void pruneUnusedLevels();
-    int nextFrameId() const;
-
     AnimeScene m_scene;
     int m_currentLayer = 0;
     int m_currentFrame = 0;
+    int m_currentAsset = -1;
 };
 
 #endif // ANIMEMODEL_H

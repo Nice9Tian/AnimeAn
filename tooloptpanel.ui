@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ToolOptPanel</class>
+ <widget class="QWidget" name="ToolOptPanel">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>220</width>
+    <height>320</height>
+   </rect>
+  </property>
+  <widget class="QLabel" name="colorLabel">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>10</y>
+     <width>200</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Color</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="blackButton">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>40</y>
+     <width>60</width>
+     <height>28</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Black</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="blueButton">
+   <property name="geometry">
+    <rect>
+     <x>80</x>
+     <y>40</y>
+     <width>60</width>
+     <height>28</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Blue</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="greenButton">
+   <property name="geometry">
+    <rect>
+     <x>150</x>
+     <y>40</y>
+     <width>60</width>
+     <height>28</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Green</string>
+   </property>
+  </widget>
+  <widget class="QLabel" name="fillScopeLabel">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>80</y>
+     <width>200</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Fill Scope</string>
+   </property>
+  </widget>
+  <widget class="QListWidget" name="fillScopeList">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>110</y>
+     <width>200</width>
+     <height>58</height>
+    </rect>
+   </property>
+   <item>
+    <property name="text">
+     <string>ALL</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>Current</string>
+    </property>
+   </item>
+  </widget>
+  <widget class="QLabel" name="eraserModeLabel">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>180</y>
+     <width>200</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Eraser Mode</string>
+   </property>
+  </widget>
+  <widget class="QListWidget" name="eraserModeList">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>210</y>
+     <width>200</width>
+     <height>58</height>
+    </rect>
+   </property>
+   <item>
+    <property name="text">
+     <string>LineMode</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>AreaMode</string>
+    </property>
+   </item>
+  </widget>
+  <widget class="QLabel" name="smoothLabel">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>280</y>
+     <width>200</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="alignment">
+    <set>Qt::AlignmentFlag::AlignCenter</set>
+   </property>
+   <property name="text">
+    <string>Smooth: 50</string>
+   </property>
+  </widget>
+  <widget class="QSlider" name="smoothSlider">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>310</y>
+     <width>200</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="orientation">
+    <enum>Qt::Orientation::Horizontal</enum>
+   </property>
+  </widget>
+  <widget class="QLabel" name="widthLabel">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>340</y>
+     <width>200</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="alignment">
+    <set>Qt::AlignmentFlag::AlignCenter</set>
+   </property>
+   <property name="text">
+    <string>wide: 5</string>
+   </property>
+  </widget>
+  <widget class="QSlider" name="widthSlider">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>370</y>
+     <width>200</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="orientation">
+    <enum>Qt::Orientation::Horizontal</enum>
+   </property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

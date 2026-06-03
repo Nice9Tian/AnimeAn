@@ -1,7 +1,5 @@
 #include "animemodel.h"
 
-#include <algorithm>
-
 namespace {
 int maxInt(int a, int b)
 {
@@ -24,6 +22,19 @@ QString nextNumberedColumnName(const QVector<AnimeColumn> &columns, const QStrin
         }
     }
     return QStringLiteral("%1 %2").arg(baseName).arg(nextNumber);
+}
+
+QString assetTypeName(AnimeColumnType type)
+{
+    switch (type) {
+    case AnimeColumnType::Raster:
+        return QStringLiteral("Raster");
+    case AnimeColumnType::Fill:
+        return QStringLiteral("Fill");
+    case AnimeColumnType::Vector:
+    default:
+        return QStringLiteral("Vector");
+    }
 }
 }
 
@@ -270,11 +281,6 @@ const AnimeVectorImageModel *AnimeLevel::frame(int frameId) const
     return &it.value();
 }
 
-void AnimeLevel::removeFrame(int frameId)
-{
-    m_frames.remove(frameId);
-}
-
 QVector<int> AnimeLevel::frameIds() const
 {
     return m_frames.keys().toVector();
@@ -476,44 +482,45 @@ AnimeScene &AnimeSceneModel::scene()
 void AnimeSceneModel::initializeScene(int layerCount, int frameCount)
 {
     m_scene = AnimeScene();
-    m_scene.xsheet.ensureColumnCount(layerCount);
     m_scene.xsheet.ensureFrameCount(frameCount);
 
-    for (int columnIndex = 0; columnIndex < m_scene.xsheet.columns.size(); ++columnIndex) {
-        AnimeLevel level;
-        level.name = QStringLiteral("Level %1").arg(columnIndex + 1);
-        const int levelIndex = m_scene.levels.size();
-        m_scene.levels.append(level);
-
-        for (int row = 0; row < frameCount; ++row) {
-            AnimeCell cell;
-            cell.levelIndex = levelIndex;
-            cell.frameId = row + 1;
-            m_scene.xsheet.setCell(row, columnIndex, cell);
-            m_scene.levels[levelIndex].frame(cell.frameId, true);
-        }
-    }
-
-    m_currentLayer = 0;
+    m_currentLayer = -1;
     m_currentFrame = 0;
+    m_currentAsset = -1;
 }
 
 void AnimeSceneModel::setCurrentLayer(int layerIndex)
 {
     if (layerIndex < 0) {
+        m_currentLayer = -1;
+        m_currentAsset = -1;
         return;
     }
     m_scene.xsheet.ensureColumnCount(layerIndex + 1);
     m_currentLayer = layerIndex;
+    m_currentAsset = assetIndexAt(m_currentFrame, m_currentLayer);
 }
 
 void AnimeSceneModel::setCurrentFrame(int frameIndex)
 {
     if (frameIndex < 0) {
+        m_currentFrame = -1;
+        m_currentLayer = -1;
+        m_currentAsset = -1;
         return;
     }
     m_scene.xsheet.ensureFrameCount(frameIndex + 1);
     m_currentFrame = frameIndex;
+    m_currentAsset = assetIndexAt(m_currentFrame, m_currentLayer);
+}
+
+void AnimeSceneModel::setCurrentAsset(int assetIndex)
+{
+    if (assetIndex < 0 || assetIndex >= m_scene.levels.size()) {
+        m_currentAsset = -1;
+        return;
+    }
+    m_currentAsset = assetIndex;
 }
 
 int AnimeSceneModel::currentLayer() const
@@ -526,6 +533,11 @@ int AnimeSceneModel::currentFrame() const
     return m_currentFrame;
 }
 
+int AnimeSceneModel::currentAsset() const
+{
+    return m_currentAsset;
+}
+
 int AnimeSceneModel::layerCount() const
 {
     return m_scene.xsheet.columns.size();
@@ -536,12 +548,21 @@ int AnimeSceneModel::frameCount() const
     return m_scene.xsheet.frameCount;
 }
 
+int AnimeSceneModel::assetCount() const
+{
+    return m_scene.levels.size();
+}
+
 QString AnimeSceneModel::layerName(int layerIndex) const
 {
     if (layerIndex < 0 || layerIndex >= m_scene.xsheet.columns.size()) {
         return QString();
     }
-    return m_scene.xsheet.columns[layerIndex].name;
+    const int assetIndex = assetIndexAt(m_currentFrame, layerIndex);
+    if (assetIndex >= 0) {
+        return assetName(assetIndex);
+    }
+    return QStringLiteral("(empty)");
 }
 
 void AnimeSceneModel::setLayerName(int layerIndex, const QString &name)
@@ -558,6 +579,22 @@ QString AnimeSceneModel::frameName(int frameIndex) const
         return QString();
     }
     return QString::number(frameIndex + 1);
+}
+
+QString AnimeSceneModel::assetName(int assetIndex) const
+{
+    if (assetIndex < 0 || assetIndex >= m_scene.levels.size()) {
+        return QString();
+    }
+    return m_scene.levels[assetIndex].name;
+}
+
+AnimeColumnType AnimeSceneModel::assetType(int assetIndex) const
+{
+    if (assetIndex < 0 || assetIndex >= m_scene.levels.size()) {
+        return AnimeColumnType::Vector;
+    }
+    return m_scene.levels[assetIndex].type;
 }
 
 bool AnimeSceneModel::layerVisible(int layerIndex) const
@@ -629,22 +666,9 @@ bool AnimeSceneModel::isFillLayer(int layerIndex) const
 int AnimeSceneModel::addLayer()
 {
     AnimeColumn column;
-    column.name = nextNumberedColumnName(m_scene.xsheet.columns, QStringLiteral("Layer"));
+    column.name = QStringLiteral("(empty)");
     const int columnIndex = m_scene.xsheet.columns.size();
     m_scene.xsheet.columns.append(column);
-
-    AnimeLevel level;
-    level.name = QStringLiteral("Level %1").arg(m_scene.levels.size() + 1);
-    const int levelIndex = m_scene.levels.size();
-    m_scene.levels.append(level);
-
-    for (int row = 0; row < m_scene.xsheet.frameCount; ++row) {
-        AnimeCell cell;
-        cell.levelIndex = levelIndex;
-        cell.frameId = nextFrameId();
-        m_scene.xsheet.setCell(row, columnIndex, cell);
-        m_scene.levels[levelIndex].frame(cell.frameId, true);
-    }
 
     setCurrentLayer(columnIndex);
     return columnIndex;
@@ -653,42 +677,44 @@ int AnimeSceneModel::addLayer()
 int AnimeSceneModel::addFillLayer()
 {
     AnimeColumn column;
-    column.name = nextNumberedColumnName(m_scene.xsheet.columns, QStringLiteral("FillLayer"));
+    column.name = QStringLiteral("(empty)");
     column.type = AnimeColumnType::Fill;
     const int columnIndex = m_scene.xsheet.columns.size();
     m_scene.xsheet.columns.append(column);
-
-    AnimeLevel level;
-    level.name = column.name;
-    const int levelIndex = m_scene.levels.size();
-    m_scene.levels.append(level);
-
-    for (int row = 0; row < m_scene.xsheet.frameCount; ++row) {
-        AnimeCell cell;
-        cell.levelIndex = levelIndex;
-        cell.frameId = nextFrameId();
-        m_scene.xsheet.setCell(row, columnIndex, cell);
-        m_scene.levels[levelIndex].frame(cell.frameId, true);
-    }
 
     setCurrentLayer(columnIndex);
     return columnIndex;
 }
 
+int AnimeSceneModel::addAsset(AnimeColumnType type, const QString &name)
+{
+    AnimeLevel level;
+    level.type = type;
+    level.name = name.isEmpty()
+                     ? QStringLiteral("%1 %2").arg(assetTypeName(type)).arg(m_scene.levels.size() + 1)
+                     : name;
+    const int levelIndex = m_scene.levels.size();
+    m_scene.levels.append(level);
+    m_scene.levels[levelIndex].frame(1, true);
+    setCurrentAsset(levelIndex);
+    return levelIndex;
+}
+
 bool AnimeSceneModel::deleteLayer(int layerIndex)
 {
-    if (layerIndex < 0 || layerIndex >= m_scene.xsheet.columns.size() ||
-        m_scene.xsheet.columns.size() <= 1) {
+    if (layerIndex < 0 || layerIndex >= m_scene.xsheet.columns.size()) {
         return false;
     }
 
     m_scene.xsheet.columns.removeAt(layerIndex);
-    pruneUnusedLevels();
-    if (m_currentLayer >= m_scene.xsheet.columns.size()) {
+    if (m_scene.xsheet.columns.isEmpty()) {
+        m_currentLayer = -1;
+    } else if (m_currentLayer >= m_scene.xsheet.columns.size()) {
         m_currentLayer = m_scene.xsheet.columns.size() - 1;
     } else if (m_currentLayer > layerIndex) {
         --m_currentLayer;
     }
+    m_currentAsset = assetIndexAt(m_currentFrame, m_currentLayer);
     return true;
 }
 
@@ -709,6 +735,7 @@ bool AnimeSceneModel::moveLayer(int fromIndex, int toIndex)
     } else if (toIndex <= m_currentLayer && m_currentLayer < fromIndex) {
         ++m_currentLayer;
     }
+    m_currentAsset = assetIndexAt(m_currentFrame, m_currentLayer);
     return true;
 }
 
@@ -716,15 +743,6 @@ int AnimeSceneModel::addFrame()
 {
     const int row = m_scene.xsheet.frameCount;
     m_scene.xsheet.ensureFrameCount(row + 1);
-
-    for (int columnIndex = 0; columnIndex < m_scene.xsheet.columns.size(); ++columnIndex) {
-        const int levelIndex = ensureLevelForColumn(columnIndex);
-        AnimeCell cell;
-        cell.levelIndex = levelIndex;
-        cell.frameId = nextFrameId();
-        m_scene.xsheet.setCell(row, columnIndex, cell);
-        m_scene.levels[levelIndex].frame(cell.frameId, true);
-    }
 
     setCurrentFrame(row);
     return row;
@@ -746,6 +764,7 @@ bool AnimeSceneModel::deleteFrame(int frameIndex)
     } else if (m_currentFrame > frameIndex) {
         --m_currentFrame;
     }
+    m_currentAsset = assetIndexAt(m_currentFrame, m_currentLayer);
     return true;
 }
 
@@ -767,6 +786,7 @@ bool AnimeSceneModel::moveFrame(int fromIndex, int toIndex)
     } else if (toIndex <= m_currentFrame && m_currentFrame < fromIndex) {
         ++m_currentFrame;
     }
+    m_currentAsset = assetIndexAt(m_currentFrame, m_currentLayer);
     return true;
 }
 
@@ -788,18 +808,10 @@ void AnimeSceneModel::setCell(int row, int layerIndex, const AnimeCell &cell)
 
 void AnimeSceneModel::clearCell(int row, int layerIndex)
 {
-    const AnimeCell oldCell = m_scene.xsheet.cellAt(row, layerIndex);
     m_scene.xsheet.setCell(row, layerIndex, AnimeCell());
-    if (!oldCell.isEmpty() &&
-        oldCell.levelIndex >= 0 &&
-        oldCell.levelIndex < m_scene.levels.size() &&
-        !cellIsReferenced(oldCell)) {
-        m_scene.levels[oldCell.levelIndex].removeFrame(oldCell.frameId);
-        pruneUnusedLevels();
-    }
 }
 
-AnimeVectorImageModel *AnimeSceneModel::imageAt(int row, int layerIndex, bool create)
+AnimeVectorImageModel *AnimeSceneModel::imageAt(int row, int layerIndex, bool create, AnimeColumnType assetType)
 {
     if (row < 0 || layerIndex < 0) {
         return nullptr;
@@ -812,10 +824,12 @@ AnimeVectorImageModel *AnimeSceneModel::imageAt(int row, int layerIndex, bool cr
         if (!create) {
             return nullptr;
         }
-        const int levelIndex = ensureLevelForColumn(layerIndex);
+        const int levelIndex = addAsset(assetType);
         cell.levelIndex = levelIndex;
-        cell.frameId = nextFrameId();
+        cell.frameId = 1;
         m_scene.xsheet.setCell(row, layerIndex, cell);
+        m_scene.xsheet.columns[layerIndex].name = assetName(levelIndex);
+        m_scene.xsheet.columns[layerIndex].type = assetType;
     }
 
     if (cell.levelIndex < 0 || cell.levelIndex >= m_scene.levels.size()) {
@@ -830,9 +844,86 @@ const AnimeVectorImageModel *AnimeSceneModel::imageAt(int row, int layerIndex) c
     return imageForCell(cell);
 }
 
-AnimeVectorImageModel *AnimeSceneModel::currentImage(bool create)
+int AnimeSceneModel::assetIndexAt(int row, int layerIndex) const
 {
-    return imageAt(m_currentFrame, m_currentLayer, create);
+    const AnimeCell cell = m_scene.xsheet.cellAt(row, layerIndex);
+    if (cell.isEmpty()) {
+        return -1;
+    }
+    return cell.levelIndex;
+}
+
+AnimeVectorImageModel *AnimeSceneModel::assetImage(int assetIndex, bool create)
+{
+    if (assetIndex < 0 || assetIndex >= m_scene.levels.size()) {
+        return nullptr;
+    }
+    return m_scene.levels[assetIndex].frame(1, create);
+}
+
+const AnimeVectorImageModel *AnimeSceneModel::assetImage(int assetIndex) const
+{
+    if (assetIndex < 0 || assetIndex >= m_scene.levels.size()) {
+        return nullptr;
+    }
+    return m_scene.levels[assetIndex].frame(1);
+}
+
+bool AnimeSceneModel::assignAssetToLayer(int row, int layerIndex, int assetIndex)
+{
+    if (row < 0 || layerIndex < 0 || assetIndex < 0 || assetIndex >= m_scene.levels.size()) {
+        return false;
+    }
+    m_scene.xsheet.ensureColumnCount(layerIndex + 1);
+    m_scene.xsheet.ensureFrameCount(row + 1);
+
+    AnimeCell cell;
+    cell.levelIndex = assetIndex;
+    cell.frameId = 1;
+    m_scene.xsheet.setCell(row, layerIndex, cell);
+    m_scene.xsheet.columns[layerIndex].name = assetName(assetIndex);
+    m_scene.xsheet.columns[layerIndex].type = assetType(assetIndex);
+    m_scene.levels[assetIndex].frame(1, true);
+    setCurrentLayer(layerIndex);
+    setCurrentFrame(row);
+    setCurrentAsset(assetIndex);
+    return true;
+}
+
+int AnimeSceneModel::addLayerForAsset(int row, int assetIndex)
+{
+    if (row < 0 || assetIndex < 0 || assetIndex >= m_scene.levels.size()) {
+        return -1;
+    }
+
+    AnimeColumn column;
+    column.name = assetName(assetIndex);
+    column.type = assetType(assetIndex);
+    const int layerIndex = m_scene.xsheet.columns.size();
+    m_scene.xsheet.columns.append(column);
+    if (!assignAssetToLayer(row, layerIndex, assetIndex)) {
+        return -1;
+    }
+    return layerIndex;
+}
+
+AnimeVectorImageModel *AnimeSceneModel::currentImage(bool create, AnimeColumnType assetType)
+{
+    if (m_currentFrame < 0) {
+        return nullptr;
+    }
+
+    if (m_currentLayer < 0 && !create) {
+        return nullptr;
+    }
+
+    if (m_currentLayer < 0) {
+        addLayer();
+    }
+
+    AnimeVectorImageModel *image = imageAt(m_currentFrame, m_currentLayer, create, assetType);
+    m_currentAsset = assetIndexAt(m_currentFrame, m_currentLayer);
+    return image;
 }
 
 const AnimeVectorImageModel *AnimeSceneModel::imageForCell(const AnimeCell &cell) const
@@ -849,7 +940,7 @@ bool AnimeSceneModel::setRasterImageAt(int row, int layerIndex, const QImage &im
         return false;
     }
 
-    AnimeVectorImageModel *cellImage = imageAt(row, layerIndex, true);
+    AnimeVectorImageModel *cellImage = imageAt(row, layerIndex, true, AnimeColumnType::Raster);
     if (!cellImage) {
         return false;
     }
@@ -860,20 +951,22 @@ bool AnimeSceneModel::setRasterImageAt(int row, int layerIndex, const QImage &im
 
 int AnimeSceneModel::addRasterLayer(const QString &name, int frameIndex, const QImage &image, const QPointF &topLeft)
 {
-    if (image.isNull()) {
+    if (frameIndex < 0 || image.isNull()) {
         return -1;
     }
 
+    const QString assetName = name.isEmpty()
+                                  ? QStringLiteral("Raster %1").arg(m_scene.levels.size() + 1)
+                                  : QStringLiteral("Raster %1").arg(name);
     AnimeColumn column;
-    column.name = name.isEmpty()
-                      ? nextNumberedColumnName(m_scene.xsheet.columns, QStringLiteral("Raster"))
-                      : name;
+    column.name = assetName;
     column.type = AnimeColumnType::Raster;
     const int columnIndex = m_scene.xsheet.columns.size();
     m_scene.xsheet.columns.append(column);
 
     AnimeLevel level;
-    level.name = column.name;
+    level.name = assetName;
+    level.type = AnimeColumnType::Raster;
     const int levelIndex = m_scene.levels.size();
     m_scene.levels.append(level);
 
@@ -881,12 +974,13 @@ int AnimeSceneModel::addRasterLayer(const QString &name, int frameIndex, const Q
 
     AnimeCell cell;
     cell.levelIndex = levelIndex;
-    cell.frameId = nextFrameId();
+    cell.frameId = 1;
     m_scene.xsheet.setCell(frameIndex, columnIndex, cell);
     m_scene.levels[levelIndex].frame(cell.frameId, true)->setRasterImage(image, topLeft);
 
     setCurrentLayer(columnIndex);
     setCurrentFrame(frameIndex);
+    setCurrentAsset(levelIndex);
     return columnIndex;
 }
 
@@ -932,96 +1026,4 @@ bool AnimeSceneModel::currentColumnEditable() const
 {
     const AnimeColumn *column = currentColumn();
     return column && !column->locked && column->type == AnimeColumnType::Vector;
-}
-
-int AnimeSceneModel::ensureLevelForCurrentColumn()
-{
-    return ensureLevelForColumn(m_currentLayer);
-}
-
-int AnimeSceneModel::ensureLevelForColumn(int columnIndex)
-{
-    AnimeCell existingCell = m_scene.xsheet.cellAt(0, columnIndex);
-    if (!existingCell.isEmpty() &&
-        existingCell.levelIndex >= 0 &&
-        existingCell.levelIndex < m_scene.levels.size()) {
-        return existingCell.levelIndex;
-    }
-
-    AnimeLevel level;
-    level.name = QStringLiteral("Level %1").arg(m_scene.levels.size() + 1);
-    const int levelIndex = m_scene.levels.size();
-    m_scene.levels.append(level);
-    return levelIndex;
-}
-
-bool AnimeSceneModel::cellIsReferenced(const AnimeCell &cell) const
-{
-    if (cell.isEmpty()) {
-        return false;
-    }
-
-    for (const AnimeColumn &column : m_scene.xsheet.columns) {
-        for (int row = 0; row < m_scene.xsheet.frameCount; ++row) {
-            const AnimeCell other = column.cellAt(row);
-            if (other.levelIndex == cell.levelIndex && other.frameId == cell.frameId) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-void AnimeSceneModel::pruneUnusedLevels()
-{
-    QVector<bool> used;
-    used.resize(m_scene.levels.size());
-    for (const AnimeColumn &column : m_scene.xsheet.columns) {
-        for (int row = 0; row < m_scene.xsheet.frameCount; ++row) {
-            const AnimeCell cell = column.cellAt(row);
-            if (!cell.isEmpty() && cell.levelIndex >= 0 && cell.levelIndex < used.size()) {
-                used[cell.levelIndex] = true;
-            }
-        }
-    }
-
-    QVector<int> remap;
-    remap.resize(m_scene.levels.size());
-    QVector<AnimeLevel> levels;
-    for (int i = 0; i < m_scene.levels.size(); ++i) {
-        if (used[i]) {
-            remap[i] = levels.size();
-            levels.append(m_scene.levels[i]);
-        } else {
-            remap[i] = -1;
-        }
-    }
-
-    for (AnimeColumn &column : m_scene.xsheet.columns) {
-        for (int row = 0; row < m_scene.xsheet.frameCount; ++row) {
-            AnimeCell cell = column.cellAt(row);
-            if (!cell.isEmpty() && cell.levelIndex >= 0 && cell.levelIndex < remap.size()) {
-                cell.levelIndex = remap[cell.levelIndex];
-                column.setCell(row, cell);
-            }
-        }
-    }
-
-    m_scene.levels = levels;
-}
-
-int AnimeSceneModel::nextFrameId() const
-{
-    int maxFrameId = 0;
-    
-    for (const AnimeLevel &level : m_scene.levels) {
-        const auto& frameIds = level.frameIds(); 
-        
-        const auto maxFrameIdIt = std::max_element(frameIds.cbegin(), frameIds.cend());
-        if (maxFrameIdIt != frameIds.cend()) {
-            maxFrameId = std::max(maxFrameId, *maxFrameIdIt);
-        }
-    }
-    
-    return maxFrameId + 1;
 }

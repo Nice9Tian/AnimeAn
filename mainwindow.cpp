@@ -1,20 +1,28 @@
 #include "mainwindow.h"
 #include "./ui_mainwindow.h"
+#include "assetpanel.h"
+#include "framepanel.h"
+#include "layerpanel.h"
 #include "paintopenglwidget.h"
+#include "tooloptpanel.h"
+#include "toolspanel.h"
 
 #include <QAbstractItemModel>
 #include <QAbstractItemView>
+#include <QApplication>
 #include <QCoreApplication>
+#include <QDockWidget>
+#include <QDropEvent>
 #include <QDir>
+#include <QEvent>
 #include <QFileInfo>
 #include <QFileDialog>
 #include <QImageReader>
-#include <QLabel>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QPushButton>
 #include <QSignalBlocker>
-#include <QSlider>
 
 #ifdef ANIMEAN_WITH_PYTHON
 #ifdef slots
@@ -48,49 +56,39 @@ MainWindow::MainWindow(QWidget *parent)
     , ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
+    setDockOptions(QMainWindow::AnimatedDocks
+                   | QMainWindow::AllowNestedDocks
+                   | QMainWindow::AllowTabbedDocks);
+    setCorner(Qt::BottomLeftCorner, Qt::BottomDockWidgetArea);
+    setCorner(Qt::BottomRightCorner, Qt::BottomDockWidgetArea);
 
     m_paintWidget = ui->graphicsView;
+    createListDocks();
 
-    ui->LayerList->setDragDropMode(QAbstractItemView::InternalMove);
-    ui->LayerList->setDefaultDropAction(Qt::MoveAction);
-    ui->LayerList->setDragDropOverwriteMode(false);
-    ui->LayerList->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_layerPanel->layerList()->setDragDropMode(QAbstractItemView::DragDrop);
+    m_layerPanel->layerList()->setDefaultDropAction(Qt::MoveAction);
+    m_layerPanel->layerList()->setDragDropOverwriteMode(false);
+    m_layerPanel->layerList()->setDragEnabled(true);
+    m_layerPanel->layerList()->setSelectionMode(QAbstractItemView::SingleSelection);
 
-    ui->FrameList->setDragDropMode(QAbstractItemView::InternalMove);
-    ui->FrameList->setDefaultDropAction(Qt::MoveAction);
-    ui->FrameList->setDragDropOverwriteMode(false);
-    ui->FrameList->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_framePanel->frameList()->setDragDropMode(QAbstractItemView::InternalMove);
+    m_framePanel->frameList()->setDefaultDropAction(Qt::MoveAction);
+    m_framePanel->frameList()->setDragDropOverwriteMode(false);
+    m_framePanel->frameList()->setSelectionMode(QAbstractItemView::SingleSelection);
 
-    refreshLayerList(0);
-    refreshFrameList(0);
+    m_assetPanel->assetList()->setDragDropMode(QAbstractItemView::DragOnly);
+    m_assetPanel->assetList()->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_layerPanel->layerList()->viewport()->setAcceptDrops(true);
+    m_layerPanel->layerList()->viewport()->installEventFilter(this);
+    m_framePanel->frameList()->viewport()->installEventFilter(this);
+    m_assetPanel->assetList()->viewport()->installEventFilter(this);
 
-    connect(ui->blueButton, &QPushButton::clicked, this, [this]() {
-        m_paintWidget->setPenColor(Qt::blue);
-        ui->Pen->setChecked(true);
-        ui->Eraser->setChecked(false);
-        ui->LineErazer->setChecked(false);
-        ui->Fill->setChecked(false);
-    });
+    updateAttention(AttentionChange::FrameChange,
+                    m_paintWidget->model().currentFrame(),
+                    m_paintWidget->model().currentLayer(),
+                    m_paintWidget->model().currentAsset());
 
-    connect(ui->greenButton, &QPushButton::clicked, this, [this]() {
-        m_paintWidget->setPenColor(Qt::green);
-        ui->Pen->setChecked(true);
-        ui->Eraser->setChecked(false);
-        ui->LineErazer->setChecked(false);
-        ui->Fill->setChecked(false);
-    });
-
-    ui->Pen->setCheckable(true);
-    ui->Eraser->setCheckable(true);
-    ui->LineErazer->setCheckable(true);
-    ui->Fill->setCheckable(true);
-    ui->Pen->setChecked(true);
-    ui->FillOptArea->setSelectionMode(QAbstractItemView::SingleSelection);
-    ui->FillOptArea->setCurrentRow(0);
-    ui->SmoothValue->setRange(0, 100);
-    ui->SmoothValue->setValue(50);
-    ui->SmoothValue_print->setText(QStringLiteral("Smooth: 50"));
-    m_paintWidget->setSmoothValue(ui->SmoothValue->value());
+    createToolDocks();
 
 #ifdef ANIMEAN_WITH_PYTHON
     try {
@@ -110,49 +108,6 @@ MainWindow::MainWindow(QWidget *parent)
 #else
     ui->label->setText(QStringLiteral("Python disabled"));
 #endif
-
-    connect(ui->Pen, &QPushButton::clicked, this, [this]() {
-        m_paintWidget->setTool(PaintOpenGLWidget::Tool::Pen);
-        ui->Pen->setChecked(true);
-        ui->Eraser->setChecked(false);
-        ui->LineErazer->setChecked(false);
-        ui->Fill->setChecked(false);
-    });
-
-    connect(ui->Eraser, &QPushButton::clicked, this, [this]() {
-        m_paintWidget->setTool(PaintOpenGLWidget::Tool::Eraser);
-        ui->Pen->setChecked(false);
-        ui->Eraser->setChecked(true);
-        ui->LineErazer->setChecked(false);
-        ui->Fill->setChecked(false);
-    });
-
-    connect(ui->LineErazer, &QPushButton::clicked, this, [this]() {
-        m_paintWidget->setTool(PaintOpenGLWidget::Tool::DeleteLine);
-        ui->Pen->setChecked(false);
-        ui->Eraser->setChecked(false);
-        ui->LineErazer->setChecked(true);
-        ui->Fill->setChecked(false);
-    });
-
-    connect(ui->Fill, &QPushButton::clicked, this, [this]() {
-        m_paintWidget->setTool(PaintOpenGLWidget::Tool::Fill);
-        ui->Pen->setChecked(false);
-        ui->Eraser->setChecked(false);
-        ui->LineErazer->setChecked(false);
-        ui->Fill->setChecked(true);
-    });
-
-    connect(ui->FillOptArea, &QListWidget::currentRowChanged, this, [this](int row) {
-        m_paintWidget->setFillScope(row == 1
-                                        ? PaintOpenGLWidget::FillScope::AllLayers
-                                        : PaintOpenGLWidget::FillScope::CurrentLayer);
-    });
-
-    connect(ui->SmoothValue, &QSlider::valueChanged, this, [this](int value) {
-        m_paintWidget->setSmoothValue(value);
-        ui->SmoothValue_print->setText(QStringLiteral("Smooth: %1").arg(value));
-    });
 
     connect(ui->PythonAxisButton, &QPushButton::clicked, this, [this]() {
 #ifdef ANIMEAN_WITH_PYTHON
@@ -193,59 +148,116 @@ MainWindow::MainWindow(QWidget *parent)
 #endif
     });
 
-    connect(ui->LayerList, &QListWidget::currentRowChanged, this, [this](int row) {
+    connect(m_layerPanel->layerList(), &QListWidget::currentRowChanged, this, [this](int row) {
         if (!m_refreshingLists && row >= 0) {
-            m_paintWidget->setCurrentLayer(row);
+            QListWidgetItem *item = m_layerPanel->layerList()->item(row);
+            const int layerIndex = item ? item->data(Qt::UserRole).toInt() : -1;
+            requestAttentionUpdate(AttentionChange::LayerChange, m_attention.frame, layerIndex, m_attention.asset);
         }
     });
 
     connect(m_paintWidget, &PaintOpenGLWidget::layerListChanged, this, [this](int selectedLayer) {
-        refreshLayerList(selectedLayer);
+        updateAttention(AttentionChange::LayerChange,
+                        m_paintWidget->model().currentFrame(),
+                        selectedLayer,
+                        m_paintWidget->model().currentAsset());
     });
 
-    connect(ui->FrameList, &QListWidget::currentRowChanged, this, [this](int row) {
+    connect(m_paintWidget, &PaintOpenGLWidget::assetListChanged, this, [this](int selectedAsset) {
+        updateAttention(AttentionChange::AssetChange, m_attention.frame, m_attention.layer, selectedAsset);
+    });
+
+    connect(m_framePanel->frameList(), &QListWidget::currentRowChanged, this, [this](int row) {
         if (!m_refreshingLists && row >= 0) {
-            m_paintWidget->setCurrentFrame(row);
+            requestAttentionUpdate(AttentionChange::FrameChange, row, m_attention.layer, m_attention.asset);
         }
     });
 
-    connect(ui->AddLayerButton, &QPushButton::clicked, this, [this]() {
-        refreshLayerList(m_paintWidget->addLayer());
+    connect(m_layerPanel->addButton(), &QPushButton::clicked, this, [this]() {
+        const int layerIndex = m_paintWidget->addLayer();
+        updateAttention(AttentionChange::LayerChange, m_attention.frame, layerIndex, m_attention.asset);
     });
 
-    connect(ui->DeleteLayerButton, &QPushButton::clicked, this, [this]() {
-        const int row = ui->LayerList->currentRow();
-        if (m_paintWidget->deleteLayer(row)) {
-            refreshLayerList(row < m_paintWidget->layerCount() ? row : m_paintWidget->layerCount() - 1);
+    connect(m_layerPanel->deleteButton(), &QPushButton::clicked, this, [this]() {
+        QListWidgetItem *item = m_layerPanel->layerList()->currentItem();
+        const int layerIndex = item ? item->data(Qt::UserRole).toInt() : -1;
+        if (m_paintWidget->deleteLayer(layerIndex)) {
+            const int nextLayer = layerIndex < m_paintWidget->layerCount() ? layerIndex : m_paintWidget->layerCount() - 1;
+            updateAttention(AttentionChange::LayerChange, m_attention.frame, nextLayer, m_attention.asset);
         }
     });
 
-    connect(ui->AddFrameButton, &QPushButton::clicked, this, [this]() {
-        refreshFrameList(m_paintWidget->addFrame());
+    connect(m_layerPanel->unselectButton(), &QPushButton::clicked, this, [this]() {
+        updateAttention(AttentionChange::LayerChange, m_attention.frame, -1, -1);
     });
 
-    connect(ui->DeleteFrameButton, &QPushButton::clicked, this, [this]() {
-        const int row = ui->FrameList->currentRow();
+    connect(m_framePanel->addButton(), &QPushButton::clicked, this, [this]() {
+        const int frameIndex = m_paintWidget->addFrame();
+        updateAttention(AttentionChange::FrameChange, frameIndex, m_attention.layer, m_attention.asset);
+    });
+
+    connect(m_framePanel->deleteButton(), &QPushButton::clicked, this, [this]() {
+        const int row = m_framePanel->frameList()->currentRow();
         if (m_paintWidget->deleteFrame(row)) {
-            refreshFrameList(row < m_paintWidget->frameCount() ? row : m_paintWidget->frameCount() - 1);
+            const int nextFrame = row < m_paintWidget->frameCount() ? row : m_paintWidget->frameCount() - 1;
+            updateAttention(AttentionChange::FrameChange, nextFrame, m_attention.layer, m_attention.asset);
         }
     });
 
-    connect(ui->LayerList->model(), &QAbstractItemModel::rowsMoved,
+    connect(m_assetPanel->addButton(), &QPushButton::clicked, this, [this]() {
+        const int assetIndex = m_paintWidget->addAsset();
+        updateAttention(AttentionChange::AssetChange, m_attention.frame, m_attention.layer, assetIndex);
+    });
+
+    connect(m_assetPanel->unselectButton(), &QPushButton::clicked, this, [this]() {
+        updateAttention(AttentionChange::AssetChange, m_attention.frame, -1, -1);
+    });
+
+    connect(m_assetPanel->assetList(), &QListWidget::currentRowChanged, this, [this](int row) {
+        if (!m_refreshingLists) {
+            requestAttentionUpdate(AttentionChange::AssetChange, m_attention.frame, m_attention.layer, row);
+        }
+    });
+
+    connect(m_layerPanel->layerList()->model(), &QAbstractItemModel::rowsMoved,
             this, [this](const QModelIndex &, int sourceStart, int sourceEnd,
                          const QModelIndex &, int destinationChild) {
         if (m_refreshingLists || sourceStart != sourceEnd) {
             return;
         }
-        const int target = movedRowTarget(sourceStart, destinationChild);
-        if (!m_paintWidget->moveLayer(sourceStart, target)) {
-            refreshLayerList(ui->LayerList->currentRow());
+        const int targetRow = movedRowTarget(sourceStart, destinationChild);
+        QListWidgetItem *movedItem = m_layerPanel->layerList()->item(targetRow);
+        if (!movedItem) {
+            updateAttention(AttentionChange::LayerChange,
+                            m_paintWidget->model().currentFrame(),
+                            m_paintWidget->model().currentLayer(),
+                            m_paintWidget->model().currentAsset());
             return;
         }
-        refreshLayerList(target);
+
+        const int fromIndex = movedItem->data(Qt::UserRole).toInt();
+        int toIndex = fromIndex;
+        if (targetRow <= 0) {
+            toIndex = 0;
+        } else {
+            QListWidgetItem *previousItem = m_layerPanel->layerList()->item(targetRow - 1);
+            toIndex = previousItem ? previousItem->data(Qt::UserRole).toInt() + 1 : fromIndex;
+        }
+        if (fromIndex < toIndex) {
+            --toIndex;
+        }
+
+        if (!m_paintWidget->moveLayer(fromIndex, toIndex)) {
+            updateAttention(AttentionChange::LayerChange,
+                            m_paintWidget->model().currentFrame(),
+                            m_paintWidget->model().currentLayer(),
+                            m_paintWidget->model().currentAsset());
+            return;
+        }
+        updateAttention(AttentionChange::LayerChange, m_attention.frame, toIndex, m_attention.asset);
     });
 
-    connect(ui->FrameList->model(), &QAbstractItemModel::rowsMoved,
+    connect(m_framePanel->frameList()->model(), &QAbstractItemModel::rowsMoved,
             this, [this](const QModelIndex &, int sourceStart, int sourceEnd,
                          const QModelIndex &, int destinationChild) {
         if (m_refreshingLists || sourceStart != sourceEnd) {
@@ -253,10 +265,13 @@ MainWindow::MainWindow(QWidget *parent)
         }
         const int target = movedRowTarget(sourceStart, destinationChild);
         if (!m_paintWidget->moveFrame(sourceStart, target)) {
-            refreshFrameList(ui->FrameList->currentRow());
+            updateAttention(AttentionChange::FrameChange,
+                            m_paintWidget->model().currentFrame(),
+                            m_paintWidget->model().currentLayer(),
+                            m_paintWidget->model().currentAsset());
             return;
         }
-        refreshFrameList(target);
+        updateAttention(AttentionChange::FrameChange, target, m_attention.layer, m_attention.asset);
     });
 
     connect(ui->actionimport_Raster, &QAction::triggered, this, &MainWindow::importRaster);
@@ -265,6 +280,154 @@ MainWindow::MainWindow(QWidget *parent)
 MainWindow::~MainWindow()
 {
     delete ui;
+}
+
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    const bool watchedListViewport = watched == m_layerPanel->layerList()->viewport()
+                                     || watched == m_framePanel->frameList()->viewport()
+                                     || watched == m_assetPanel->assetList()->viewport();
+    if (watchedListViewport) {
+        if (event->type() == QEvent::MouseButtonPress) {
+            QMouseEvent *mouseEvent = static_cast<QMouseEvent *>(event);
+            if (mouseEvent->button() == Qt::LeftButton) {
+                m_listMousePressed = true;
+                m_listDragActive = false;
+                m_hasPendingAttention = false;
+                m_listPressPos = mouseEvent->pos();
+            }
+        } else if (event->type() == QEvent::MouseMove && m_listMousePressed) {
+            QMouseEvent *mouseEvent = static_cast<QMouseEvent *>(event);
+            if ((mouseEvent->pos() - m_listPressPos).manhattanLength() >= QApplication::startDragDistance()) {
+                m_listDragActive = true;
+            }
+        } else if (event->type() == QEvent::MouseButtonRelease) {
+            QMouseEvent *mouseEvent = static_cast<QMouseEvent *>(event);
+            if (mouseEvent->button() == Qt::LeftButton && m_listMousePressed) {
+                const bool shouldCommit = m_hasPendingAttention && !m_listDragActive;
+                const AttentionChange change = m_pendingAttentionChange;
+                const SelectionAttention attention = m_pendingAttention;
+                m_listMousePressed = false;
+                m_listDragActive = false;
+                m_hasPendingAttention = false;
+                if (shouldCommit) {
+                    updateAttention(change, attention.frame, attention.layer, attention.asset);
+                }
+            }
+        }
+    }
+
+    if (watched == m_layerPanel->layerList()->viewport() &&
+        (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove || event->type() == QEvent::Drop)) {
+        QDropEvent *dropEvent = static_cast<QDropEvent *>(event);
+        m_listDragActive = true;
+        if (dropEvent->source() == m_layerPanel->layerList()) {
+            return QMainWindow::eventFilter(watched, event);
+        }
+
+        if (dropEvent->source() != m_assetPanel->assetList()) {
+            if (event->type() == QEvent::Drop) {
+                m_hasPendingAttention = false;
+                m_listMousePressed = false;
+                m_listDragActive = false;
+            }
+            dropEvent->ignore();
+            return true;
+        }
+
+        const int assetIndex = m_assetPanel->assetList()->currentRow();
+        if (assetIndex < 0) {
+            if (event->type() == QEvent::Drop) {
+                m_hasPendingAttention = false;
+                m_listMousePressed = false;
+                m_listDragActive = false;
+            }
+            dropEvent->ignore();
+            return true;
+        }
+
+        dropEvent->acceptProposedAction();
+        if (event->type() == QEvent::Drop) {
+            m_hasPendingAttention = false;
+            const int layerIndex = m_paintWidget->addLayerForAsset(assetIndex);
+            if (layerIndex >= 0) {
+                updateAttention(AttentionChange::LayerChange, m_attention.frame, layerIndex, assetIndex);
+            }
+            m_listMousePressed = false;
+            m_listDragActive = false;
+        }
+        return true;
+    }
+
+    return QMainWindow::eventFilter(watched, event);
+}
+
+void MainWindow::createToolDocks()
+{
+    ToolsPanel *toolsPanel = new ToolsPanel(this);
+    ToolOptPanel *toolOptPanel = new ToolOptPanel(this);
+
+    m_toolsDock = new QDockWidget(QStringLiteral("Pen"), this);
+    m_toolsDock->setWidget(toolsPanel);
+    addDockWidget(Qt::LeftDockWidgetArea, m_toolsDock);
+
+    m_toolOptDock = new QDockWidget(QStringLiteral("ToolOpt"), this);
+    m_toolOptDock->setWidget(toolOptPanel);
+    addDockWidget(Qt::RightDockWidgetArea, m_toolOptDock);
+    splitDockWidget(m_toolOptDock, m_layerDock, Qt::Vertical);
+    splitDockWidget(m_layerDock, m_assetDock, Qt::Vertical);
+
+    auto selectTool = [this, toolsPanel, toolOptPanel](PaintOpenGLWidget::Tool tool) {
+        m_paintWidget->setTool(tool);
+        toolsPanel->setTool(tool);
+        toolOptPanel->setTool(tool);
+    };
+
+    connect(toolsPanel, &ToolsPanel::toolSelected, this, selectTool);
+
+    connect(toolOptPanel, &ToolOptPanel::colorSelected, this, [this, toolOptPanel, selectTool](const QColor &color) {
+        if (toolOptPanel->tool() == PaintOpenGLWidget::Tool::Fill) {
+            m_paintWidget->setDrawingColor(color);
+            selectTool(PaintOpenGLWidget::Tool::Fill);
+            return;
+        }
+
+        m_paintWidget->setPenColor(color);
+        selectTool(PaintOpenGLWidget::Tool::Pen);
+    });
+
+    connect(toolOptPanel, &ToolOptPanel::fillScopeSelected, this, [this](PaintOpenGLWidget::FillScope scope) {
+        m_paintWidget->setFillScope(scope);
+    });
+
+    connect(toolOptPanel, &ToolOptPanel::eraserModeSelected, this, selectTool);
+
+    connect(toolOptPanel, &ToolOptPanel::smoothValueChanged, this, [this](int value) {
+        m_paintWidget->setSmoothValue(value);
+    });
+
+    connect(toolOptPanel, &ToolOptPanel::penWidthChanged, this, [this](int value) {
+        m_paintWidget->setPenWidth(value);
+    });
+}
+
+void MainWindow::createListDocks()
+{
+    m_layerPanel = new LayerPanel(this);
+    m_framePanel = new FramePanel(this);
+    m_assetPanel = new AssetPanel(this);
+
+    m_layerDock = new QDockWidget(QStringLiteral("Layer"), this);
+    m_layerDock->setWidget(m_layerPanel);
+    addDockWidget(Qt::RightDockWidgetArea, m_layerDock);
+
+    m_frameDock = new QDockWidget(QStringLiteral("Frame"), this);
+    m_frameDock->setWidget(m_framePanel);
+    addDockWidget(Qt::BottomDockWidgetArea, m_frameDock);
+
+    m_assetDock = new QDockWidget(QStringLiteral("Asset"), this);
+    m_assetDock->setWidget(m_assetPanel);
+    addDockWidget(Qt::RightDockWidgetArea, m_assetDock);
 }
 
 void MainWindow::importRaster()
@@ -298,30 +461,158 @@ void MainWindow::importRaster()
         return;
     }
 
-    refreshLayerList(layerIndex);
-    refreshFrameList(m_paintWidget->model().currentFrame());
+    updateAttention(AttentionChange::LayerChange,
+                    m_paintWidget->model().currentFrame(),
+                    layerIndex,
+                    m_paintWidget->model().currentAsset());
     ui->label->setText(QStringLiteral("Imported raster: %1 (%2 x %3)")
                            .arg(fileInfo.fileName())
                            .arg(image.width())
                            .arg(image.height()));
 }
 
+void MainWindow::requestAttentionUpdate(AttentionChange change, int frame, int layer, int asset)
+{
+    if (!m_listMousePressed) {
+        updateAttention(change, frame, layer, asset);
+        return;
+    }
+
+    m_pendingAttentionChange = change;
+    m_pendingAttention.frame = frame;
+    m_pendingAttention.layer = layer;
+    m_pendingAttention.asset = asset;
+    m_hasPendingAttention = true;
+}
+
+void MainWindow::updateAttention(AttentionChange change, int frame, int layer, int asset)
+{
+    const SelectionAttention previous = m_attention;
+    m_attention.frame = frame;
+    m_attention.layer = layer;
+    m_attention.asset = asset;
+    AttentionUpdate update = constrainAttention(change);
+    update.frame = update.frame || previous.frame != m_attention.frame;
+    update.layer = update.layer || previous.layer != m_attention.layer;
+    update.asset = update.asset || previous.asset != m_attention.asset;
+
+    m_paintWidget->setCurrentFrame(m_attention.frame);
+    m_paintWidget->setCurrentLayer(m_attention.layer);
+    m_paintWidget->setCurrentAsset(m_attention.asset);
+
+    if (update.frame) {
+        refreshFrameList(m_attention.frame);
+    }
+    if (update.layer) {
+        refreshLayerList(m_attention.layer);
+    }
+    if (update.asset) {
+        refreshAssetList(m_attention.asset);
+    }
+}
+
+MainWindow::AttentionUpdate MainWindow::constrainAttention(AttentionChange change)
+{
+    AttentionUpdate update;
+    update.frame = change == AttentionChange::FrameChange;
+    update.layer = true;
+    update.asset = true;
+
+    if (m_paintWidget->frameCount() <= 0) {
+        m_attention.frame = -1;
+    } else if (m_attention.frame < 0) {
+        m_attention.frame = change == AttentionChange::AssetChange ? -1 : 0;
+    } else if (m_attention.frame >= m_paintWidget->frameCount()) {
+        m_attention.frame = m_paintWidget->frameCount() - 1;
+    }
+
+    if (m_attention.asset < 0 || m_attention.asset >= m_paintWidget->assetCount()) {
+        m_attention.asset = -1;
+    }
+    if (m_attention.layer < 0 || m_attention.layer >= m_paintWidget->layerCount()) {
+        m_attention.layer = -1;
+    }
+
+    const int layerAsset = m_paintWidget->model().assetIndexAt(m_attention.frame, m_attention.layer);
+
+    if (change == AttentionChange::FrameChange) {
+        m_attention.layer = topLayerForFrame(m_attention.frame);
+        m_attention.asset = m_attention.layer >= 0
+                                ? m_paintWidget->model().assetIndexAt(m_attention.frame, m_attention.layer)
+                                : -1;
+        return update;
+    }
+
+    if (change == AttentionChange::AssetChange) {
+        m_attention.layer = m_attention.asset >= 0
+                                ? firstLayerForAsset(m_attention.frame, m_attention.asset)
+                                : -1;
+        if (m_attention.asset >= 0 && m_attention.layer < 0) {
+            m_attention.frame = -1;
+        }
+        return update;
+    }
+
+    if (change == AttentionChange::LayerChange) {
+        if (layerAsset >= 0) {
+            m_attention.asset = layerAsset;
+        } else {
+            m_attention.layer = -1;
+            m_attention.asset = -1;
+        }
+    }
+    return update;
+}
+
+int MainWindow::topLayerForFrame(int frame) const
+{
+    for (int i = 0; i < m_paintWidget->layerCount(); ++i) {
+        if (m_paintWidget->model().assetIndexAt(frame, i) >= 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int MainWindow::firstLayerForAsset(int frame, int asset) const
+{
+    if (asset < 0) {
+        return -1;
+    }
+    for (int i = 0; i < m_paintWidget->layerCount(); ++i) {
+        if (m_paintWidget->model().assetIndexAt(frame, i) == asset) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 void MainWindow::refreshLayerList(int selectedRow)
 {
     m_refreshingLists = true;
-    const QSignalBlocker blocker(ui->LayerList);
-    ui->LayerList->clear();
+    const QSignalBlocker blocker(m_layerPanel->layerList());
+    m_layerPanel->layerList()->clear();
+    int selectedListRow = -1;
     for (int i = 0; i < m_paintWidget->layerCount(); ++i) {
-        ui->LayerList->addItem(m_paintWidget->layerName(i));
-    }
-    if (ui->LayerList->count() > 0) {
-        if (selectedRow < 0) {
-            selectedRow = 0;
-        } else if (selectedRow >= ui->LayerList->count()) {
-            selectedRow = ui->LayerList->count() - 1;
+        if (m_paintWidget->model().assetIndexAt(m_paintWidget->model().currentFrame(), i) < 0) {
+            continue;
         }
-        ui->LayerList->setCurrentRow(selectedRow);
-        m_paintWidget->setCurrentLayer(selectedRow);
+        QListWidgetItem *item = new QListWidgetItem(m_paintWidget->layerName(i));
+        item->setData(Qt::UserRole, i);
+        m_layerPanel->layerList()->addItem(item);
+        if (i == selectedRow) {
+            selectedListRow = m_layerPanel->layerList()->count() - 1;
+        }
+    }
+    if (m_layerPanel->layerList()->count() > 0) {
+        if (selectedListRow >= 0) {
+            m_layerPanel->layerList()->setCurrentRow(selectedListRow);
+        } else {
+            m_layerPanel->layerList()->clearSelection();
+            m_layerPanel->layerList()->setCurrentRow(-1);
+        }
+    } else {
+        m_layerPanel->layerList()->setCurrentRow(-1);
     }
     m_refreshingLists = false;
 }
@@ -329,19 +620,41 @@ void MainWindow::refreshLayerList(int selectedRow)
 void MainWindow::refreshFrameList(int selectedRow)
 {
     m_refreshingLists = true;
-    const QSignalBlocker blocker(ui->FrameList);
-    ui->FrameList->clear();
+    const QSignalBlocker blocker(m_framePanel->frameList());
+    m_framePanel->frameList()->clear();
     for (int i = 0; i < m_paintWidget->frameCount(); ++i) {
-        ui->FrameList->addItem(m_paintWidget->frameName(i));
+        m_framePanel->frameList()->addItem(m_paintWidget->frameName(i));
     }
-    if (ui->FrameList->count() > 0) {
+    if (m_framePanel->frameList()->count() > 0) {
         if (selectedRow < 0) {
-            selectedRow = 0;
-        } else if (selectedRow >= ui->FrameList->count()) {
-            selectedRow = ui->FrameList->count() - 1;
+            m_framePanel->frameList()->clearSelection();
+            m_framePanel->frameList()->setCurrentRow(-1);
+            m_refreshingLists = false;
+            return;
+        } else if (selectedRow >= m_framePanel->frameList()->count()) {
+            selectedRow = m_framePanel->frameList()->count() - 1;
         }
-        ui->FrameList->setCurrentRow(selectedRow);
-        m_paintWidget->setCurrentFrame(selectedRow);
+        m_framePanel->frameList()->setCurrentRow(selectedRow);
+    }
+    m_refreshingLists = false;
+}
+
+void MainWindow::refreshAssetList(int selectedRow)
+{
+    m_refreshingLists = true;
+    const QSignalBlocker blocker(m_assetPanel->assetList());
+    m_assetPanel->assetList()->clear();
+    for (int i = 0; i < m_paintWidget->assetCount(); ++i) {
+        m_assetPanel->assetList()->addItem(m_paintWidget->assetName(i));
+    }
+    if (selectedRow >= 0 && m_assetPanel->assetList()->count() > 0) {
+        if (selectedRow >= m_assetPanel->assetList()->count()) {
+            selectedRow = m_assetPanel->assetList()->count() - 1;
+        }
+        m_assetPanel->assetList()->setCurrentRow(selectedRow);
+    } else {
+        m_assetPanel->assetList()->clearSelection();
+        m_assetPanel->assetList()->setCurrentRow(-1);
     }
     m_refreshingLists = false;
 }

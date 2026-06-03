@@ -373,13 +373,17 @@ void bindAnimeanPythonModule(py::module_ &m)
         .def("set_cell", &AnimeSceneModel::setCell)
         .def("clear_cell", &AnimeSceneModel::clearCell)
         .def("image_at",
-             py::overload_cast<int, int, bool>(&AnimeSceneModel::imageAt),
+             [](AnimeSceneModel &model, int row, int layerIndex, bool create) {
+                 return model.imageAt(row, layerIndex, create, AnimeColumnType::Vector);
+             },
              py::arg("row"),
              py::arg("layer_index"),
              py::arg("create") = false,
              py::return_value_policy::reference_internal)
         .def("current_image",
-             &AnimeSceneModel::currentImage,
+             [](AnimeSceneModel &model, bool create) {
+                 return model.currentImage(create, AnimeColumnType::Vector);
+             },
              py::arg("create") = false,
              py::return_value_policy::reference_internal)
         .def("stroke_count", [](const AnimeSceneModel &model, int row, int layerIndex) {

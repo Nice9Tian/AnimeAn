@@ -30,6 +30,8 @@ public:
     explicit PaintOpenGLWidget(QWidget *parent = nullptr);
 
     void setPenColor(const QColor &color);
+    void setDrawingColor(const QColor &color);
+    void setPenWidth(qreal width);
     void setTool(Tool tool);
     void setFillScope(FillScope scope);
     void setSmoothValue(int value);
@@ -37,8 +39,10 @@ public:
     void setCurrentFrame(int frameIndex);
     int layerCount() const;
     int frameCount() const;
+    int assetCount() const;
     QString layerName(int layerIndex) const;
     QString frameName(int frameIndex) const;
+    QString assetName(int assetIndex) const;
     int importRasterLayer(const QImage &image, const QString &layerName);
     int addLayer();
     bool deleteLayer(int layerIndex);
@@ -46,11 +50,16 @@ public:
     int addFrame();
     bool deleteFrame(int frameIndex);
     bool moveFrame(int fromIndex, int toIndex);
+    int addAsset(AnimeColumnType type = AnimeColumnType::Vector, const QString &name = QString());
+    void setCurrentAsset(int assetIndex);
+    bool assignAssetToLayer(int layerIndex, int assetIndex);
+    int addLayerForAsset(int assetIndex);
     AnimeSceneModel &model();
     const AnimeSceneModel &model() const;
 
 signals:
     void layerListChanged(int selectedLayer);
+    void assetListChanged(int selectedAsset);
 
 protected:
     void paintGL() override;
@@ -97,7 +106,7 @@ private:
     VectorStroke subStroke(const VectorStroke &stroke, qreal fromW, qreal toW) const;
     QPointF pointAtLength(const VectorStroke &stroke, qreal length) const;
     bool appendPoint(const QPointF &point);
-    VectorImageModel *currentImage(bool create);
+    VectorImageModel *currentImage(bool create, AnimeColumnType assetType = AnimeColumnType::Vector);
     AnimeColumn *currentColumn();
     const AnimeColumn *currentColumn() const;
     bool currentColumnEditable() const;
