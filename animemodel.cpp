@@ -665,25 +665,22 @@ bool AnimeSceneModel::isFillLayer(int layerIndex) const
 
 int AnimeSceneModel::addLayer()
 {
-    AnimeColumn column;
-    column.name = QStringLiteral("(empty)");
-    const int columnIndex = m_scene.xsheet.columns.size();
-    m_scene.xsheet.columns.append(column);
+    if (m_currentFrame < 0) {
+        m_currentFrame = 0;
+    }
 
-    setCurrentLayer(columnIndex);
-    return columnIndex;
+    const int assetIndex = addAsset(AnimeColumnType::Vector);
+    return addLayerForAsset(m_currentFrame, assetIndex);
 }
 
 int AnimeSceneModel::addFillLayer()
 {
-    AnimeColumn column;
-    column.name = QStringLiteral("(empty)");
-    column.type = AnimeColumnType::Fill;
-    const int columnIndex = m_scene.xsheet.columns.size();
-    m_scene.xsheet.columns.append(column);
+    if (m_currentFrame < 0) {
+        m_currentFrame = 0;
+    }
 
-    setCurrentLayer(columnIndex);
-    return columnIndex;
+    const int assetIndex = addAsset(AnimeColumnType::Fill);
+    return addLayerForAsset(m_currentFrame, assetIndex);
 }
 
 int AnimeSceneModel::addAsset(AnimeColumnType type, const QString &name)
@@ -910,7 +907,10 @@ int AnimeSceneModel::addLayerForAsset(int row, int assetIndex)
 AnimeVectorImageModel *AnimeSceneModel::currentImage(bool create, AnimeColumnType assetType)
 {
     if (m_currentFrame < 0) {
-        return nullptr;
+        if (!create) {
+            return nullptr;
+        }
+        m_currentFrame = 0;
     }
 
     if (m_currentLayer < 0 && !create) {
@@ -918,7 +918,8 @@ AnimeVectorImageModel *AnimeSceneModel::currentImage(bool create, AnimeColumnTyp
     }
 
     if (m_currentLayer < 0) {
-        addLayer();
+        const int assetIndex = addAsset(assetType);
+        addLayerForAsset(m_currentFrame, assetIndex);
     }
 
     AnimeVectorImageModel *image = imageAt(m_currentFrame, m_currentLayer, create, assetType);

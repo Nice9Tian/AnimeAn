@@ -979,6 +979,15 @@ bool PaintOpenGLWidget::fillAt(const QPointF &pos)
     }
 
     const int assetCountBefore = m_model.assetCount();
+    int targetLayer = originalLayer;
+    if (!originalLayerIsFill) {
+        targetLayer = m_model.addFillLayer();
+    }
+    if (targetLayer < 0) {
+        return false;
+    }
+    m_model.setCurrentLayer(targetLayer);
+
     VectorImageModel *image = currentImage(true, AnimeColumnType::Fill);
     if (!image) {
         return false;
