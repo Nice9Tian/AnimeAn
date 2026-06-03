@@ -4,6 +4,9 @@
 
 #include <QAbstractItemModel>
 #include <QAbstractItemView>
+#include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
 #include <QLabel>
 #include <QListWidget>
 #include <QPushButton>
@@ -88,7 +91,10 @@ MainWindow::MainWindow(QWidget *parent)
 #ifdef ANIMEAN_WITH_PYTHON
     try {
         py::list pythonPath = py::module_::import("sys").attr("path");
-        pythonPath.insert(0, ANIMEAN_SOURCE_DIR);
+        pythonPath.insert(0, QCoreApplication::applicationDirPath().toStdString());
+        if (QFileInfo::exists(QDir(QStringLiteral(ANIMEAN_SOURCE_DIR)).filePath(QStringLiteral("hello_world.py")))) {
+            pythonPath.insert(0, ANIMEAN_SOURCE_DIR);
+        }
 
         const std::string helloText = py::module_::import("hello_world")
                                           .attr("hello_world")()
@@ -141,6 +147,25 @@ MainWindow::MainWindow(QWidget *parent)
             ui->label->setText(QString::fromStdString(result));
         } catch (const py::error_already_set &error) {
             ui->label->setText(QStringLiteral("Python axis error: %1").arg(QString::fromUtf8(error.what())));
+        }
+#else
+        ui->label->setText(QStringLiteral("Python disabled"));
+#endif
+    });
+
+    connect(ui->CellDictButton, &QPushButton::clicked, this, [this]() {
+#ifdef ANIMEAN_WITH_PYTHON
+        try {
+            py::module_::import("animean_python");
+            const py::object model = py::cast(&m_paintWidget->model(), py::return_value_policy::reference);
+            const py::object cellDict = model.attr("cell_to_dict")(
+                m_paintWidget->model().currentLayer(),
+                m_paintWidget->model().currentFrame(),
+                false,
+                4.0);
+            ui->label->setText(QString::fromStdString(py::str(cellDict).cast<std::string>()));
+        } catch (const py::error_already_set &error) {
+            ui->label->setText(QStringLiteral("Python cell dict error: %1").arg(QString::fromUtf8(error.what())));
         }
 #else
         ui->label->setText(QStringLiteral("Python disabled"));

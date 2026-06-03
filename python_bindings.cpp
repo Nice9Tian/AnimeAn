@@ -5,7 +5,9 @@
 #include "animemodel.h"
 
 #include <QLineF>
+#include <QPainterPath>
 
+#include <cmath>
 #include <utility>
 #include <vector>
 
@@ -54,6 +56,229 @@ py::tuple rectToTuple(const QRectF &rect)
 {
     return py::make_tuple(rect.x(), rect.y(), rect.width(), rect.height());
 }
+
+py::dict pointToDict(const QPointF &point)
+{
+    py::dict data;
+    data["x"] = point.x();
+    data["y"] = point.y();
+    return data;
+}
+
+py::list pointsToList(const QVector<QPointF> &points)
+{
+    py::list data;
+    for (const QPointF &point : points) {
+        data.append(pointToDict(point));
+    }
+    return data;
+}
+
+py::dict rectToDict(const QRectF &rect)
+{
+    py::dict data;
+    data["x"] = rect.x();
+    data["y"] = rect.y();
+    data["width"] = rect.width();
+    data["height"] = rect.height();
+    return data;
+}
+
+py::dict colorToDict(const QColor &color)
+{
+    py::dict data;
+    data["r"] = color.red();
+    data["g"] = color.green();
+    data["b"] = color.blue();
+    data["a"] = color.alpha();
+    return data;
+}
+
+QPointF cubicPointAt(const QPointF &p0,
+                     const QPointF &p1,
+                     const QPointF &p2,
+                     const QPointF &p3,
+                     qreal t)
+{
+    const qreal invT = 1.0 - t;
+    return p0 * (invT * invT * invT) +
+           p1 * (3.0 * invT * invT * t) +
+           p2 * (3.0 * invT * t * t) +
+           p3 * (t * t * t);
+}
+
+int sampleCountForCurve(const QPointF &p0,
+                        const QPointF &p1,
+                        const QPointF &p2,
+                        const QPointF &p3,
+                        double ployStep)
+{
+    const double step = std::max(0.1, ployStep);
+    const double controlNetLength = QLineF(p0, p1).length() +
+                                    QLineF(p1, p2).length() +
+                                    QLineF(p2, p3).length();
+    return std::max(1, static_cast<int>(std::ceil(controlNetLength / step)));
+}
+
+py::list pathCommandsToList(const QPainterPath &path)
+{
+    py::list commands;
+    QPointF current;
+    for (int i = 0; i < path.elementCount(); ++i) {
+        const QPainterPath::Element element = path.elementAt(i);
+        const QPointF point(element.x, element.y);
+        if (element.isMoveTo()) {
+            py::dict command;
+            command["type"] = "move";
+            command["to"] = pointToDict(point);
+            commands.append(command);
+            current = point;
+        } else if (element.isLineTo()) {
+            py::dict command;
+            command["type"] = "line";
+            command["from"] = pointToDict(current);
+            command["to"] = pointToDict(point);
+            commands.append(command);
+            current = point;
+        } else if (element.type == QPainterPath::CurveToElement && i + 2 < path.elementCount()) {
+            const QPainterPath::Element controlElement = path.elementAt(i + 1);
+            const QPainterPath::Element endElement = path.elementAt(i + 2);
+            const QPointF control1(element.x, element.y);
+            const QPointF control2(controlElement.x, controlElement.y);
+            const QPointF end(endElement.x, endElement.y);
+
+            py::dict command;
+            command["type"] = "cubic";
+            command["from"] = pointToDict(current);
+            command["control1"] = pointToDict(control1);
+            command["control2"] = pointToDict(control2);
+            command["to"] = pointToDict(end);
+            commands.append(command);
+            current = end;
+            i += 2;
+        }
+    }
+    return commands;
+}
+
+py::list pathToPolylines(const QPainterPath &path, double ployStep)
+{
+    py::list polylines;
+    QVector<QPointF> currentPolyline;
+    QPointF current;
+
+    auto flushPolyline = [&]() {
+        if (!currentPolyline.isEmpty()) {
+            polylines.append(pointsToList(currentPolyline));
+            currentPolyline.clear();
+        }
+    };
+
+    for (int i = 0; i < path.elementCount(); ++i) {
+        const QPainterPath::Element element = path.elementAt(i);
+        const QPointF point(element.x, element.y);
+        if (element.isMoveTo()) {
+            flushPolyline();
+            currentPolyline.append(point);
+            current = point;
+        } else if (element.isLineTo()) {
+            if (currentPolyline.isEmpty()) {
+                currentPolyline.append(current);
+            }
+            currentPolyline.append(point);
+            current = point;
+        } else if (element.type == QPainterPath::CurveToElement && i + 2 < path.elementCount()) {
+            const QPainterPath::Element controlElement = path.elementAt(i + 1);
+            const QPainterPath::Element endElement = path.elementAt(i + 2);
+            const QPointF control1(element.x, element.y);
+            const QPointF control2(controlElement.x, controlElement.y);
+            const QPointF end(endElement.x, endElement.y);
+            if (currentPolyline.isEmpty()) {
+                currentPolyline.append(current);
+            }
+            const int count = sampleCountForCurve(current, control1, control2, end, ployStep);
+            for (int sample = 1; sample <= count; ++sample) {
+                const qreal t = static_cast<qreal>(sample) / count;
+                currentPolyline.append(cubicPointAt(current, control1, control2, end, t));
+            }
+            current = end;
+            i += 2;
+        }
+    }
+
+    flushPolyline();
+    return polylines;
+}
+
+py::dict strokeNodeToDict(const AnimeVectorStrokeNode &node, bool toPloy, double ployStep)
+{
+    const AnimeVectorStroke &stroke = node.stroke;
+    py::dict data;
+    data["id"] = stroke.id;
+    data["width"] = stroke.width;
+    data["color"] = colorToDict(stroke.color);
+    data["bounds"] = rectToDict(stroke.bounds);
+    data["raw_points"] = pointsToList(stroke.points);
+    data["total_length"] = stroke.totalLength;
+
+    py::list lengths;
+    for (qreal length : stroke.lengths) {
+        lengths.append(length);
+    }
+    data["lengths"] = lengths;
+
+    py::list groupIds;
+    for (int id : node.groupId.ids) {
+        groupIds.append(id);
+    }
+    data["group_id"] = groupIds;
+    data["is_point"] = node.isPoint;
+    data["is_new_for_fill"] = node.isNewForFill;
+    data["selected"] = node.selected;
+
+    if (toPloy) {
+        data["geometry_type"] = "polyline";
+        data["ploy_step"] = ployStep;
+        data["polylines"] = pathToPolylines(stroke.path, ployStep);
+    } else {
+        data["geometry_type"] = "path";
+        data["commands"] = pathCommandsToList(stroke.path);
+    }
+
+    return data;
+}
+
+py::dict imageToDict(const AnimeVectorImageModel *image, bool toPloy, double ployStep)
+{
+    py::dict data;
+    data["empty"] = image == nullptr;
+    data["stroke_count"] = image ? image->strokeCount() : 0;
+    data["bounds"] = image ? rectToDict(image->bounds()) : py::dict();
+
+    py::list strokes;
+    if (image) {
+        for (const AnimeVectorStrokeNode &node : image->strokeNodes()) {
+            strokes.append(strokeNodeToDict(node, toPloy, ployStep));
+        }
+    }
+    data["strokes"] = strokes;
+    return data;
+}
+
+py::dict cellToDict(const AnimeSceneModel &model, int layerIndex, int frameIndex, bool toPloy, double ployStep)
+{
+    const AnimeCell cell = model.cellAt(frameIndex, layerIndex);
+    py::dict data;
+    data["layer_index"] = layerIndex;
+    data["frame_index"] = frameIndex;
+    data["level_index"] = cell.levelIndex;
+    data["frame_id"] = cell.frameId;
+    data["empty"] = cell.isEmpty();
+
+    const AnimeVectorImageModel *image = model.imageForCell(cell);
+    data["image"] = imageToDict(image, toPloy, ployStep);
+    return data;
+}
 }
 
 void bindAnimeanPythonModule(py::module_ &m)
@@ -72,6 +297,12 @@ void bindAnimeanPythonModule(py::module_ &m)
         .def("bounds", [](const AnimeVectorImageModel &image) {
             return rectToTuple(image.bounds());
         })
+        .def("to_dict",
+             [](const AnimeVectorImageModel &image, bool toPloy, double ployStep) {
+                 return imageToDict(&image, toPloy, ployStep);
+             },
+             py::arg("to_ploy") = false,
+             py::arg("ploy_step") = 4.0)
         .def("add_polyline",
              [](AnimeVectorImageModel &image,
                 const std::vector<std::pair<double, double>> &points,
@@ -142,6 +373,22 @@ void bindAnimeanPythonModule(py::module_ &m)
                 image->clear();
             }
         })
+        .def("cell_to_dict",
+             [](const AnimeSceneModel &model, int layerIndex, int frameIndex, bool toPloy, double ployStep) {
+                 return cellToDict(model, layerIndex, frameIndex, toPloy, ployStep);
+             },
+             py::arg("layer_index"),
+             py::arg("frame_index"),
+             py::arg("to_ploy") = false,
+             py::arg("ploy_step") = 4.0)
+        .def("cell_strokes",
+             [](const AnimeSceneModel &model, int layerIndex, int frameIndex, bool toPloy, double ployStep) {
+                 return cellToDict(model, layerIndex, frameIndex, toPloy, ployStep)["image"];
+             },
+             py::arg("layer_index"),
+             py::arg("frame_index"),
+             py::arg("to_ploy") = false,
+             py::arg("ploy_step") = 4.0)
         .def("add_polyline",
              [](AnimeSceneModel &model,
                 int row,

@@ -14,6 +14,7 @@ option(ANIMEAN_BUILD_PYTHON_MODULE "Build the optional AnimeAn Python extension 
 
 if(ANIMEAN_WITH_PYTHON OR ANIMEAN_BUILD_PYTHON_MODULE)
     set(ANIMEAN_PYTHON_HOME "${CMAKE_CURRENT_SOURCE_DIR}/tools/python312" CACHE PATH "Python runtime used by AnimeAn.")
+    set(ANIMEAN_PYTHON_DIR_NAME "python312" CACHE STRING "Python runtime directory name used in deployed AnimeAn packages.")
     if(EXISTS "${ANIMEAN_PYTHON_HOME}")
         set(Python_ROOT_DIR "${ANIMEAN_PYTHON_HOME}")
         set(Python_EXECUTABLE "${ANIMEAN_PYTHON_HOME}/python.exe")
@@ -70,6 +71,7 @@ if(ANIMEAN_WITH_PYTHON)
         ANIMEAN_WITH_PYTHON
         ANIMEAN_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
         ANIMEAN_PYTHON_HOME="${ANIMEAN_PYTHON_HOME}"
+        ANIMEAN_PYTHON_DIR_NAME="${ANIMEAN_PYTHON_DIR_NAME}"
     )
 
     foreach(ANIMEAN_PYTHON_DLL python312.dll python3.dll vcruntime140.dll vcruntime140_1.dll)
@@ -81,9 +83,59 @@ if(ANIMEAN_WITH_PYTHON)
             )
         endif()
     endforeach()
+
+    add_custom_command(TARGET AnimeAn POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/hello_world.py"
+            "$<TARGET_FILE_DIR:AnimeAn>"
+    )
 endif()
 
 target_include_directories(AnimeAn PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+if(WIN32 AND QT_VERSION_MAJOR EQUAL 6)
+    find_program(WINDEPLOYQT_EXECUTABLE windeployqt HINTS "${Qt6_DIR}/../../../bin")
+    if(WINDEPLOYQT_EXECUTABLE)
+        set(ANIMEAN_DEPLOY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dist/AnimeAn")
+        set(ANIMEAN_EXE_NAME "AnimeAn${CMAKE_EXECUTABLE_SUFFIX}")
+        set(ANIMEAN_BUILT_EXE "${CMAKE_CURRENT_BINARY_DIR}/${ANIMEAN_EXE_NAME}")
+        set(ANIMEAN_DEPLOYED_EXE "${ANIMEAN_DEPLOY_DIR}/${ANIMEAN_EXE_NAME}")
+        set(ANIMEAN_DEPLOY_PYTHON_DLL_COMMANDS)
+        if(ANIMEAN_WITH_PYTHON)
+            foreach(ANIMEAN_PYTHON_DLL python312.dll python3.dll vcruntime140.dll vcruntime140_1.dll)
+                if(EXISTS "${ANIMEAN_PYTHON_HOME}/${ANIMEAN_PYTHON_DLL}")
+                    list(APPEND ANIMEAN_DEPLOY_PYTHON_DLL_COMMANDS
+                        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                            "${ANIMEAN_PYTHON_HOME}/${ANIMEAN_PYTHON_DLL}"
+                            "${ANIMEAN_DEPLOY_DIR}"
+                    )
+                endif()
+            endforeach()
+        endif()
+
+        add_custom_target(deploy_AnimeAn
+            COMMAND ${CMAKE_COMMAND} -E remove_directory "${ANIMEAN_DEPLOY_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${ANIMEAN_DEPLOY_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ANIMEAN_BUILT_EXE}"
+                "${ANIMEAN_DEPLOY_DIR}"
+            ${ANIMEAN_DEPLOY_PYTHON_DLL_COMMANDS}
+            COMMAND "${WINDEPLOYQT_EXECUTABLE}"
+                --dir "${ANIMEAN_DEPLOY_DIR}"
+                "${ANIMEAN_DEPLOYED_EXE}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/hello_world.py"
+                "${ANIMEAN_DEPLOY_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${ANIMEAN_PYTHON_HOME}"
+                "${ANIMEAN_DEPLOY_DIR}/${ANIMEAN_PYTHON_DIR_NAME}"
+            DEPENDS AnimeAn
+            COMMENT "Deploying AnimeAn to ${ANIMEAN_DEPLOY_DIR}"
+        )
+    else()
+        message(WARNING "windeployqt was not found; deploy_AnimeAn will not be available.")
+    endif()
+endif()
 
 if(ANIMEAN_BUILD_PYTHON_MODULE)
     set(ANIMEAN_PYTHON_BINDINGS "${CMAKE_CURRENT_SOURCE_DIR}/python_bindings.cpp" CACHE FILEPATH "Source file for the AnimeAn Python extension module.")

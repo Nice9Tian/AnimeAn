@@ -3,3 +3,4 @@
 CMakeLists.txt.user
 *.pyc
 /Layerorframe_refer
+/dist

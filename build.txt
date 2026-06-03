@@ -1,0 +1,1 @@
+C:\Qt\Tools\CMake_64\bin\cmake.exe --build C:\Users\admin\Documents\AnimeAn\build\Desktop_Qt_6_9_1_MinGW_64_bit-Release --target deploy_AnimeAn
