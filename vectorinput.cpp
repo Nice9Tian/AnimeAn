@@ -3,6 +3,7 @@
 #include <QLineF>
 #include <QPainter>
 
+#include <algorithm>
 #include <cmath>
 
 namespace {
@@ -24,26 +25,6 @@ qreal clamp01(qreal value)
         return 1;
     }
     return value;
-}
-
-int intMin(int a, int b)
-{
-    return a < b ? a : b;
-}
-
-int intMax(int a, int b)
-{
-    return a > b ? a : b;
-}
-
-qreal realMax(qreal a, qreal b)
-{
-    return a > b ? a : b;
-}
-
-qreal realMin(qreal a, qreal b)
-{
-    return a < b ? a : b;
 }
 
 qreal distancePointToSegmentSquared(const QPointF &point, const QPointF &a, const QPointF &b)
@@ -69,14 +50,14 @@ qreal crossProduct(const QPointF &a, const QPointF &b, const QPointF &c)
 
 bool segmentsIntersect(const QPointF &a0, const QPointF &a1, const QPointF &b0, const QPointF &b1)
 {
-    const qreal aLeft = realMin(a0.x(), a1.x());
-    const qreal aRight = realMax(a0.x(), a1.x());
-    const qreal aTop = realMin(a0.y(), a1.y());
-    const qreal aBottom = realMax(a0.y(), a1.y());
-    const qreal bLeft = realMin(b0.x(), b1.x());
-    const qreal bRight = realMax(b0.x(), b1.x());
-    const qreal bTop = realMin(b0.y(), b1.y());
-    const qreal bBottom = realMax(b0.y(), b1.y());
+    const qreal aLeft = std::min(a0.x(), a1.x());
+    const qreal aRight = std::max(a0.x(), a1.x());
+    const qreal aTop = std::min(a0.y(), a1.y());
+    const qreal aBottom = std::max(a0.y(), a1.y());
+    const qreal bLeft = std::min(b0.x(), b1.x());
+    const qreal bRight = std::max(b0.x(), b1.x());
+    const qreal bTop = std::min(b0.y(), b1.y());
+    const qreal bBottom = std::max(b0.y(), b1.y());
     if (aRight < bLeft || bRight < aLeft || aBottom < bTop || bBottom < aTop) {
         return false;
     }
@@ -99,15 +80,15 @@ qreal segmentSegmentDistanceSquared(const QPointF &a0, const QPointF &a1, const 
     const qreal d1 = distancePointToSegmentSquared(a1, b0, b1);
     const qreal d2 = distancePointToSegmentSquared(b0, a0, a1);
     const qreal d3 = distancePointToSegmentSquared(b1, a0, a1);
-    return realMin(realMin(d0, d1), realMin(d2, d3));
+    return std::min(std::min(d0, d1), std::min(d2, d3));
 }
 
 QVector<QPointF> densifySegment(const QPointF &from, const QPointF &to, qreal step)
 {
     QVector<QPointF> points;
     const qreal length = QLineF(from, to).length();
-    const int rawCount = intMax(1, static_cast<int>(std::ceil(length / realMax(step, qreal(1)))));
-    const int count = intMin(rawCount, 64);
+    const int rawCount = std::max(1, static_cast<int>(std::ceil(length / std::max(step, qreal(1)))));
+    const int count = std::min(rawCount, 64);
     points.reserve(count);
     for (int i = 1; i <= count; ++i) {
         const qreal t = static_cast<qreal>(i) / count;
@@ -526,10 +507,10 @@ bool PaintOpenGLWidget::eraseBetween(const QPointF &from, const QPointF &to)
     }
 
     const qreal imageRadius = m_eraserRadius + m_penWidth;
-    const qreal left = realMin(from.x(), to.x()) - imageRadius;
-    const qreal top = realMin(from.y(), to.y()) - imageRadius;
-    const qreal right = realMax(from.x(), to.x()) + imageRadius;
-    const qreal bottom = realMax(from.y(), to.y()) + imageRadius;
+    const qreal left = std::min(from.x(), to.x()) - imageRadius;
+    const qreal top = std::min(from.y(), to.y()) - imageRadius;
+    const qreal right = std::max(from.x(), to.x()) + imageRadius;
+    const qreal bottom = std::max(from.y(), to.y()) + imageRadius;
     const QRectF eraserBounds(QPointF(left, top), QPointF(right, bottom));
     if (!image->bounds().intersects(eraserBounds)) {
         return false;
@@ -578,10 +559,10 @@ bool PaintOpenGLWidget::deleteLineBetween(const QPointF &from, const QPointF &to
     }
 
     const qreal imageRadius = m_eraserRadius + m_penWidth;
-    const qreal left = realMin(from.x(), to.x()) - imageRadius;
-    const qreal top = realMin(from.y(), to.y()) - imageRadius;
-    const qreal right = realMax(from.x(), to.x()) + imageRadius;
-    const qreal bottom = realMax(from.y(), to.y()) + imageRadius;
+    const qreal left = std::min(from.x(), to.x()) - imageRadius;
+    const qreal top = std::min(from.y(), to.y()) - imageRadius;
+    const qreal right = std::max(from.x(), to.x()) + imageRadius;
+    const qreal bottom = std::max(from.y(), to.y()) + imageRadius;
     const QRectF hitBounds(QPointF(left, top), QPointF(right, bottom));
     if (!image->bounds().intersects(hitBounds)) {
         return false;
@@ -675,10 +656,10 @@ bool PaintOpenGLWidget::eraseStrokeBetween(int strokeIndex, const QPointF &from,
 
     const VectorStroke stroke = image->strokeAt(strokeIndex);
     const qreal effectiveRadius = m_eraserRadius + stroke.width * 0.5;
-    const qreal left = realMin(from.x(), to.x()) - effectiveRadius;
-    const qreal top = realMin(from.y(), to.y()) - effectiveRadius;
-    const qreal right = realMax(from.x(), to.x()) + effectiveRadius;
-    const qreal bottom = realMax(from.y(), to.y()) + effectiveRadius;
+    const qreal left = std::min(from.x(), to.x()) - effectiveRadius;
+    const qreal top = std::min(from.y(), to.y()) - effectiveRadius;
+    const qreal right = std::max(from.x(), to.x()) + effectiveRadius;
+    const qreal bottom = std::max(from.y(), to.y()) + effectiveRadius;
     const QRectF eraserBounds(QPointF(left, top), QPointF(right, bottom));
     if (!stroke.bounds.intersects(eraserBounds)) {
         return false;
@@ -725,7 +706,7 @@ QVector<PaintOpenGLWidget::Range> PaintOpenGLWidget::keepRangesForCircle(const V
             continue;
         }
 
-        const QVector<QPointF> samples = densifySegment(a, b, realMax(qreal(1), effectiveRadius * 0.25));
+        const QVector<QPointF> samples = densifySegment(a, b, std::max(qreal(1), effectiveRadius * 0.25));
         const qreal segmentLength = stroke.lengths[i] - stroke.lengths[i - 1];
         for (int sampleIndex = 0; sampleIndex < samples.size(); ++sampleIndex) {
             const qreal t = static_cast<qreal>(sampleIndex + 1) / samples.size();
@@ -779,7 +760,7 @@ QVector<PaintOpenGLWidget::Range> PaintOpenGLWidget::keepRangesForCapsule(const 
             continue;
         }
 
-        const QVector<QPointF> samples = densifySegment(a, b, realMax(qreal(1), effectiveRadius * 0.25));
+        const QVector<QPointF> samples = densifySegment(a, b, std::max(qreal(1), effectiveRadius * 0.25));
         const qreal segmentLength = stroke.lengths[i] - stroke.lengths[i - 1];
         for (int sampleIndex = 0; sampleIndex < samples.size(); ++sampleIndex) {
             const qreal t = static_cast<qreal>(sampleIndex + 1) / samples.size();
