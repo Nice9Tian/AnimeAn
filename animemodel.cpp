@@ -1,5 +1,7 @@
 #include "animemodel.h"
 
+#include <algorithm>
+
 namespace {
 int maxInt(int a, int b)
 {
@@ -121,6 +123,11 @@ const AnimeVectorImageModel *AnimeLevel::frame(int frameId) const
         return nullptr;
     }
     return &it.value();
+}
+
+void AnimeLevel::removeFrame(int frameId)
+{
+    m_frames.remove(frameId);
 }
 
 QVector<int> AnimeLevel::frameIds() const
@@ -493,6 +500,7 @@ bool AnimeSceneModel::deleteLayer(int layerIndex)
     }
 
     m_scene.xsheet.columns.removeAt(layerIndex);
+    pruneUnusedLevels();
     if (m_currentLayer >= m_scene.xsheet.columns.size()) {
         m_currentLayer = m_scene.xsheet.columns.size() - 1;
     } else if (m_currentLayer > layerIndex) {
@@ -597,7 +605,15 @@ void AnimeSceneModel::setCell(int row, int layerIndex, const AnimeCell &cell)
 
 void AnimeSceneModel::clearCell(int row, int layerIndex)
 {
+    const AnimeCell oldCell = m_scene.xsheet.cellAt(row, layerIndex);
     m_scene.xsheet.setCell(row, layerIndex, AnimeCell());
+    if (!oldCell.isEmpty() &&
+        oldCell.levelIndex >= 0 &&
+        oldCell.levelIndex < m_scene.levels.size() &&
+        !cellIsReferenced(oldCell)) {
+        m_scene.levels[oldCell.levelIndex].removeFrame(oldCell.frameId);
+        pruneUnusedLevels();
+    }
 }
 
 AnimeVectorImageModel *AnimeSceneModel::imageAt(int row, int layerIndex, bool create)
@@ -615,7 +631,7 @@ AnimeVectorImageModel *AnimeSceneModel::imageAt(int row, int layerIndex, bool cr
         }
         const int levelIndex = ensureLevelForColumn(layerIndex);
         cell.levelIndex = levelIndex;
-        cell.frameId = row + 1;
+        cell.frameId = nextFrameId();
         m_scene.xsheet.setCell(row, layerIndex, cell);
     }
 
@@ -687,15 +703,73 @@ int AnimeSceneModel::ensureLevelForColumn(int columnIndex)
     return levelIndex;
 }
 
-int AnimeSceneModel::nextFrameId() const
+bool AnimeSceneModel::cellIsReferenced(const AnimeCell &cell) const
 {
-    int maxFrameId = 0;
-    for (const AnimeLevel &level : m_scene.levels) {
-        for (int frameId : level.frameIds()) {
-            if (frameId > maxFrameId) {
-                maxFrameId = frameId;
+    if (cell.isEmpty()) {
+        return false;
+    }
+
+    for (const AnimeColumn &column : m_scene.xsheet.columns) {
+        for (int row = 0; row < m_scene.xsheet.frameCount; ++row) {
+            const AnimeCell other = column.cellAt(row);
+            if (other.levelIndex == cell.levelIndex && other.frameId == cell.frameId) {
+                return true;
             }
         }
     }
+    return false;
+}
+
+void AnimeSceneModel::pruneUnusedLevels()
+{
+    QVector<bool> used;
+    used.resize(m_scene.levels.size());
+    for (const AnimeColumn &column : m_scene.xsheet.columns) {
+        for (int row = 0; row < m_scene.xsheet.frameCount; ++row) {
+            const AnimeCell cell = column.cellAt(row);
+            if (!cell.isEmpty() && cell.levelIndex >= 0 && cell.levelIndex < used.size()) {
+                used[cell.levelIndex] = true;
+            }
+        }
+    }
+
+    QVector<int> remap;
+    remap.resize(m_scene.levels.size());
+    QVector<AnimeLevel> levels;
+    for (int i = 0; i < m_scene.levels.size(); ++i) {
+        if (used[i]) {
+            remap[i] = levels.size();
+            levels.append(m_scene.levels[i]);
+        } else {
+            remap[i] = -1;
+        }
+    }
+
+    for (AnimeColumn &column : m_scene.xsheet.columns) {
+        for (int row = 0; row < m_scene.xsheet.frameCount; ++row) {
+            AnimeCell cell = column.cellAt(row);
+            if (!cell.isEmpty() && cell.levelIndex >= 0 && cell.levelIndex < remap.size()) {
+                cell.levelIndex = remap[cell.levelIndex];
+                column.setCell(row, cell);
+            }
+        }
+    }
+
+    m_scene.levels = levels;
+}
+
+int AnimeSceneModel::nextFrameId() const
+{
+    int maxFrameId = 0;
+    
+    for (const AnimeLevel &level : m_scene.levels) {
+        const auto& frameIds = level.frameIds(); 
+        
+        const auto maxFrameIdIt = std::max_element(frameIds.cbegin(), frameIds.cend());
+        if (maxFrameIdIt != frameIds.cend()) {
+            maxFrameId = std::max(maxFrameId, *maxFrameIdIt);
+        }
+    }
+    
     return maxFrameId + 1;
 }

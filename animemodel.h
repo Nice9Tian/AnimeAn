@@ -67,6 +67,7 @@ public:
     QString name;
     AnimeVectorImageModel *frame(int frameId, bool create);
     const AnimeVectorImageModel *frame(int frameId) const;
+    void removeFrame(int frameId);
     QVector<int> frameIds() const;
 
 private:
@@ -160,6 +161,8 @@ public:
 private:
     int ensureLevelForCurrentColumn();
     int ensureLevelForColumn(int columnIndex);
+    bool cellIsReferenced(const AnimeCell &cell) const;
+    void pruneUnusedLevels();
     int nextFrameId() const;
 
     AnimeScene m_scene;
