@@ -352,7 +352,7 @@ void bindAnimeanPythonModule(py::module_ &m)
             return model.layerName(layerIndex).toStdString();
         })
         .def("set_layer_name", [](AnimeSceneModel &model, int layerIndex, const std::string &name) {
-            model.setLayerName(layerIndex, QString::fromStdString(name));
+            model.setLayerName(layerIndex, QString::fromUtf8(name.c_str()));
         })
         .def("frame_name", [](const AnimeSceneModel &model, int frameIndex) {
             return model.frameName(frameIndex).toStdString();

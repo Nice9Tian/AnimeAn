@@ -24,6 +24,8 @@
 #include <QPushButton>
 #include <QSignalBlocker>
 
+#include <string>
+
 #ifdef ANIMEAN_WITH_PYTHON
 #ifdef slots
 #undef slots
@@ -34,8 +36,6 @@
 #define slots Q_SLOTS
 #undef ANIMEAN_RESTORE_QT_SLOTS
 #endif
-
-#include <string>
 
 namespace py = pybind11;
 #endif
@@ -49,6 +49,11 @@ int movedRowTarget(int sourceRow, int destinationChild)
     }
     return target;
 }
+
+QString utf8String(const std::string &text)
+{
+    return QString::fromUtf8(text.c_str());
+}
 }
 
 MainWindow::MainWindow(QWidget *parent)
@@ -56,6 +61,25 @@ MainWindow::MainWindow(QWidget *parent)
     , ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
+    setupDocks();
+    setupListDragDrop();
+
+    updateAttention(AttentionChange::FrameChange,
+                    m_paintWidget->model().currentFrame(),
+                    m_paintWidget->model().currentLayer(),
+                    m_paintWidget->model().currentAsset());
+
+    setupPython();
+    setupConnections();
+}
+
+MainWindow::~MainWindow()
+{
+    delete ui;
+}
+
+void MainWindow::setupDocks()
+{
     setDockOptions(QMainWindow::AnimatedDocks
                    | QMainWindow::AllowNestedDocks
                    | QMainWindow::AllowTabbedDocks);
@@ -64,7 +88,11 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_paintWidget = ui->graphicsView;
     createListDocks();
+    createToolDocks();
+}
 
+void MainWindow::setupListDragDrop()
+{
     m_layerPanel->layerList()->setDragDropMode(QAbstractItemView::DragDrop);
     m_layerPanel->layerList()->setDefaultDropAction(Qt::MoveAction);
     m_layerPanel->layerList()->setDragDropOverwriteMode(false);
@@ -82,14 +110,10 @@ MainWindow::MainWindow(QWidget *parent)
     m_layerPanel->layerList()->viewport()->installEventFilter(this);
     m_framePanel->frameList()->viewport()->installEventFilter(this);
     m_assetPanel->assetList()->viewport()->installEventFilter(this);
+}
 
-    updateAttention(AttentionChange::FrameChange,
-                    m_paintWidget->model().currentFrame(),
-                    m_paintWidget->model().currentLayer(),
-                    m_paintWidget->model().currentAsset());
-
-    createToolDocks();
-
+void MainWindow::setupPython()
+{
 #ifdef ANIMEAN_WITH_PYTHON
     try {
         py::list pythonPath = py::module_::import("sys").attr("path");
@@ -101,14 +125,17 @@ MainWindow::MainWindow(QWidget *parent)
         const std::string helloText = py::module_::import("hello_world")
                                           .attr("hello_world")()
                                           .cast<std::string>();
-        ui->label->setText(QString::fromStdString(helloText));
+        ui->label->setText(utf8String(helloText));
     } catch (const py::error_already_set &error) {
         ui->label->setText(QStringLiteral("Python error: %1").arg(QString::fromUtf8(error.what())));
     }
 #else
     ui->label->setText(QStringLiteral("Python disabled"));
 #endif
+}
 
+void MainWindow::setupConnections()
+{
     connect(ui->PythonAxisButton, &QPushButton::clicked, this, [this]() {
 #ifdef ANIMEAN_WITH_PYTHON
         try {
@@ -120,7 +147,7 @@ MainWindow::MainWindow(QWidget *parent)
                                                m_paintWidget->height())
                                            .cast<std::string>();
             m_paintWidget->update();
-            ui->label->setText(QString::fromStdString(result));
+            ui->label->setText(utf8String(result));
         } catch (const py::error_already_set &error) {
             ui->label->setText(QStringLiteral("Python axis error: %1").arg(QString::fromUtf8(error.what())));
         }
@@ -139,7 +166,7 @@ MainWindow::MainWindow(QWidget *parent)
                 m_paintWidget->model().currentFrame(),
                 false,
                 4.0);
-            ui->label->setText(QString::fromStdString(py::str(cellDict).cast<std::string>()));
+            ui->label->setText(utf8String(py::str(cellDict).cast<std::string>()));
         } catch (const py::error_already_set &error) {
             ui->label->setText(QStringLiteral("Python cell dict error: %1").arg(QString::fromUtf8(error.what())));
         }
@@ -275,11 +302,6 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     connect(ui->actionimport_Raster, &QAction::triggered, this, &MainWindow::importRaster);
-}
-
-MainWindow::~MainWindow()
-{
-    delete ui;
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)

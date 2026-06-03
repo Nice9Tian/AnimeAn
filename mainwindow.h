@@ -46,6 +46,10 @@ private:
         bool asset = false;
     };
 
+    void setupDocks();
+    void setupListDragDrop();
+    void setupPython();
+    void setupConnections();
     void createToolDocks();
     void createListDocks();
     void importRaster();
