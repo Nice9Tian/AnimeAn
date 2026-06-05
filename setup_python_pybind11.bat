@@ -8,16 +8,17 @@ REM Put this file in your Qt/CMake project root, then run it.
 REM It installs/sets up:
 REM   - local Python:   tools\python312
 REM   - local pybind11: external\pybind11
-REM   - CMake helper:   cmake\local_python_pybind11.cmake
 REM ============================================================
 
 cd /d "%~dp0"
 set "ROOT=%cd%"
 set "PY_DIR=%ROOT%\tools\python312"
 set "PY_EXE=%PY_DIR%\python.exe"
+set "PY_VERSION=3.12.10"
+set "PY_INSTALLER=%TEMP%\python-%PY_VERSION%-amd64.exe"
+set "PY_INSTALLER_URL=https://www.python.org/ftp/python/%PY_VERSION%/python-%PY_VERSION%-amd64.exe"
+set "FOUND_PY_DIR="
 set "PYBIND_DIR=%ROOT%\external\pybind11"
-set "CMAKE_DIR=%ROOT%\cmake"
-set "CMAKE_SNIPPET=%CMAKE_DIR%\local_python_pybind11.cmake"
 
 echo.
 echo [INFO] Project root:
@@ -39,21 +40,60 @@ if exist "%PY_EXE%" (
     echo [OK] Local Python already exists:
     echo      %PY_EXE%
 ) else (
-    echo [INFO] Local Python not found. Installing Python 3.12 via winget...
+    echo [INFO] Local Python not found. Installing Python %PY_VERSION% into this project...
     echo [INFO] TargetDir: %PY_DIR%
     echo.
 
-    where winget >nul 2>nul
-    if errorlevel 1 (
-        echo [ERROR] winget was not found.
-        echo         Please install "App Installer" from Microsoft Store, or install Python manually to:
-        echo         %PY_DIR%
-        echo.
-        pause
-        exit /b 1
+    if not exist "%ROOT%\tools" mkdir "%ROOT%\tools"
+
+    echo [INFO] Checking for an existing Python 3.12 that can be copied...
+    for /f "usebackq delims=" %%P in (`py -3.12 -c "import os, sys; print(os.path.dirname(sys.executable))" 2^>nul`) do set "FOUND_PY_DIR=%%P"
+    if defined FOUND_PY_DIR (
+        if exist "!FOUND_PY_DIR!\python.exe" if exist "!FOUND_PY_DIR!\Include\Python.h" if exist "!FOUND_PY_DIR!\libs\python312.lib" (
+            echo [INFO] Found existing Python:
+            echo        !FOUND_PY_DIR!
+            echo [INFO] Copying it to:
+            echo        %PY_DIR%
+            robocopy "!FOUND_PY_DIR!" "%PY_DIR%" /E /NFL /NDL /NJH /NJS /NP >nul
+            if !errorlevel! LEQ 7 (
+                echo [OK] Existing Python copied.
+            ) else (
+                echo [WARN] Copying existing Python failed. Continuing with installer fallback...
+            )
+        )
     )
 
-    winget install --id Python.Python.3.12 -e --scope user --silent --accept-source-agreements --accept-package-agreements --override "/quiet InstallAllUsers=0 PrependPath=0 Include_pip=1 Include_dev=1 Include_lib=1 Include_test=0 TargetDir=%PY_DIR%"
+    REM winget may skip installation when Python 3.12 already exists elsewhere.
+    REM Only use winget / installer if no copyable Python 3.12 was found.
+    if not exist "%PY_EXE%" (
+        where winget >nul 2>nul
+        if not errorlevel 1 (
+            echo [INFO] Trying winget first...
+            winget install --id Python.Python.3.12 -e --scope user --silent --accept-source-agreements --accept-package-agreements --override "/quiet InstallAllUsers=0 PrependPath=0 Include_pip=1 Include_dev=1 Include_lib=1 Include_test=0 TargetDir=%PY_DIR%"
+            echo.
+        )
+    )
+
+    if not exist "%PY_EXE%" (
+        echo [INFO] winget did not create the local Python folder.
+        echo [INFO] Downloading official Python installer...
+        powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+            "$ErrorActionPreference='Stop';" ^
+            "Invoke-WebRequest -Uri '%PY_INSTALLER_URL%' -OutFile '%PY_INSTALLER%';"
+
+        if errorlevel 1 (
+            echo [ERROR] Python installer download failed.
+            echo         URL: %PY_INSTALLER_URL%
+            echo         Please download it manually and install it to:
+            echo         %PY_DIR%
+            echo.
+            pause
+            exit /b 1
+        )
+
+        echo [INFO] Running Python installer with explicit TargetDir...
+        "%PY_INSTALLER%" /quiet InstallAllUsers=0 PrependPath=0 Include_pip=1 Include_dev=1 Include_lib=1 Include_test=0 TargetDir="%PY_DIR%"
+    )
 
     echo.
     if not exist "%PY_EXE%" (
@@ -101,12 +141,21 @@ if exist "%PYBIND_DIR%\CMakeLists.txt" (
     echo [INFO] pybind11 not found. Downloading to external\pybind11...
     if not exist "%ROOT%\external" mkdir "%ROOT%\external"
 
+    if not exist "%PYBIND_DIR%\CMakeLists.txt" (
     where git >nul 2>nul
-    if not errorlevel 1 (
-        echo [INFO] Using git clone...
-        git clone --depth 1 https://github.com/pybind/pybind11.git "%PYBIND_DIR%"
-    ) else (
-        echo [INFO] Git was not found. Using PowerShell zip download...
+        if not errorlevel 1 (
+            echo [INFO] Using git clone...
+            git clone --depth 1 https://github.com/pybind/pybind11.git "%PYBIND_DIR%"
+            if errorlevel 1 (
+                echo [WARN] git clone failed. Trying PowerShell zip download...
+                if exist "%PYBIND_DIR%" rmdir /s /q "%PYBIND_DIR%"
+            )
+        ) else (
+            echo [INFO] Git was not found. Using PowerShell zip download...
+        )
+    )
+
+    if not exist "%PYBIND_DIR%\CMakeLists.txt" (
         powershell -NoProfile -ExecutionPolicy Bypass -Command ^
             "$ErrorActionPreference='Stop';" ^
             "$zip=Join-Path $env:TEMP 'pybind11-master.zip';" ^
@@ -129,46 +178,20 @@ if exist "%PYBIND_DIR%\CMakeLists.txt" (
 )
 
 REM ------------------------------------------------------------
-REM 3. Create CMake helper file
-REM ------------------------------------------------------------
-echo.
-echo [INFO] Creating CMake helper file...
-if not exist "%CMAKE_DIR%" mkdir "%CMAKE_DIR%"
-
-(
-echo # Generated by setup_python_pybind11.bat
-echo # Include this file before creating/linking your executable target.
-echo.
-echo set^(PYBIND11_FINDPYTHON ON^)
-echo set^(Python_ROOT_DIR "${CMAKE_SOURCE_DIR}/tools/python312"^)
-echo set^(Python_EXECUTABLE "${CMAKE_SOURCE_DIR}/tools/python312/python.exe"^)
-echo.
-echo find_package^(Python 3.8 REQUIRED COMPONENTS Interpreter Development.Embed^)
-echo add_subdirectory^("${CMAKE_SOURCE_DIR}/external/pybind11" "${CMAKE_BINARY_DIR}/pybind11"^)
-) > "%CMAKE_SNIPPET%"
-
-echo [OK] Created:
-echo      %CMAKE_SNIPPET%
-
-REM ------------------------------------------------------------
-REM 4. Print CMake instructions
+REM 3. Print CMake instructions
 REM ------------------------------------------------------------
 echo.
 echo ============================================================
 echo Done.
 echo.
-echo Add this line to your main CMakeLists.txt, before target_link_libraries:
+echo Python and pybind11 are ready in project-relative folders:
 echo.
-echo     include^("${CMAKE_SOURCE_DIR}/cmake/local_python_pybind11.cmake"^)
-echo.
-echo Then link your Qt executable target like this:
-echo.
-echo     target_link_libraries^(AnimeAn PRIVATE Qt6::Widgets pybind11::embed^)
-echo.
-echo If your target is not named AnimeAn, replace AnimeAn with your real target name.
+echo     tools\python312
+echo     external\pybind11
 echo.
 echo IMPORTANT:
-echo   After changing this, delete your build folder or clear CMake configuration in Qt Creator.
+echo   The main CMakeLists.txt points directly to these folders.
+echo   After changing dependencies, delete your build folder or clear CMake configuration in Qt Creator.
 echo ============================================================
 echo.
 pause
