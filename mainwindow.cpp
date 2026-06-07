@@ -3,7 +3,7 @@
 #include "assetpanel.h"
 #include "framepanel.h"
 #include "layerpanel.h"
-#include "paintopenglwidget.h"
+#include "openglwidget.h"
 #include "tooloptpanel.h"
 #include "toolspanel.h"
 

@@ -1,7 +1,7 @@
 #ifndef TOOLOPTPANEL_H
 #define TOOLOPTPANEL_H
 
-#include "paintopenglwidget.h"
+#include "openglwidget.h"
 
 #include <QColor>
 #include <QWidget>

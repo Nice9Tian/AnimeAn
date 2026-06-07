@@ -44,14 +44,16 @@ set(PROJECT_SOURCES
         mainwindow.cpp
         mainwindow.h
         mainwindow.ui
-        paintopenglwidget.h
+        openglwidget.cpp
+        openglwidget.h
         tooloptpanel.cpp
         tooloptpanel.h
         tooloptpanel.ui
         toolspanel.cpp
         toolspanel.h
         toolspanel.ui
-        vectorinput.cpp
+        vectorlogic.cpp
+        vectorlogic.h
 )
 
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)

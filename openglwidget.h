@@ -1,7 +1,8 @@
-#ifndef PAINTOPENGLWIDGET_H
-#define PAINTOPENGLWIDGET_H
+#ifndef OPENGLWIDGET_H
+#define OPENGLWIDGET_H
 
 #include "animemodel.h"
+#include "vectorlogic.h"
 
 #include <QColor>
 #include <QLineF>
@@ -73,15 +74,7 @@ public:
     using VectorStrokeNode = AnimeVectorStrokeNode;
     using VectorImageModel = AnimeVectorImageModel;
 
-    struct Range {
-        qreal first = 0.0;
-        qreal second = 1.0;
-    };
-
 private:
-    QPainterPath makeVectorPath(const QVector<QPointF> &points) const;
-    QPainterPath makePolylinePath(const QVector<QPointF> &points) const;
-    QVector<QPointF> filteredPoints(const QVector<QPointF> &points) const;
     void updateCurrentStroke();
     void finishCurrentStroke();
     bool eraseAt(const QPointF &pos);
@@ -91,20 +84,11 @@ private:
     bool fillAt(const QPointF &pos);
     bool currentLayerAcceptsFill() const;
     QVector<QLineF> fillGraphSegments(FillScope scope, int layerIndex) const;
-    QPainterPath vectorRegionPathAt(const QPointF &seed, const QVector<QLineF> &segments) const;
     QPainterPath vectorRegionPathAt(const QPointF &seed, FillScope scope, int layerIndex) const;
     void removeInvalidFillRegions();
-    QPainterPath fillPathFromMask(const QPoint &seed, const QImage &boundary) const;
-    bool strokeHitsCircle(const VectorStroke &stroke, const QPointF &center, qreal radius) const;
-    bool strokeHitsCapsule(const VectorStroke &stroke, const QPointF &from, const QPointF &to, qreal radius) const;
     bool eraseStrokeAt(int strokeIndex, const QPointF &pos);
     bool eraseStrokeBetween(int strokeIndex, const QPointF &from, const QPointF &to);
-    QVector<Range> keepRangesForCircle(const VectorStroke &stroke, const QPointF &center, qreal radius) const;
-    QVector<Range> keepRangesForCapsule(const VectorStroke &stroke, const QPointF &from, const QPointF &to, qreal radius) const;
-    QVector<Range> complementRanges(const QVector<Range> &eraseRanges) const;
     VectorStroke makeStroke(const QVector<QPointF> &points, const QColor &color, qreal width, int id = 0, bool filterInput = true, bool smoothPath = true) const;
-    VectorStroke subStroke(const VectorStroke &stroke, qreal fromW, qreal toW) const;
-    QPointF pointAtLength(const VectorStroke &stroke, qreal length) const;
     bool appendPoint(const QPointF &point);
     VectorImageModel *currentImage(bool create, AnimeColumnType assetType = AnimeColumnType::Vector);
     AnimeColumn *currentColumn();
@@ -128,4 +112,4 @@ private:
     int m_smoothValue = 50;
 };
 
-#endif // PAINTOPENGLWIDGET_H
+#endif // OPENGLWIDGET_H

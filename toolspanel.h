@@ -1,7 +1,7 @@
 #ifndef TOOLSPANEL_H
 #define TOOLSPANEL_H
 
-#include "paintopenglwidget.h"
+#include "openglwidget.h"
 
 #include <QWidget>
 
