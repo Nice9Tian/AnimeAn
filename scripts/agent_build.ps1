@@ -61,6 +61,13 @@ try {
 
     $cmake = "C:\Qt\Tools\CMake_64\bin\cmake.exe"
     $buildDir = "C:\Users\admin\Documents\AnimeAn\build\Desktop_Qt_6_9_1_MinGW_64_bit-Release"
+    $sourceDir = "C:\Users\admin\Documents\AnimeAn"
+    $qtPrefixPath = "C:\Qt\6.9.1\mingw_64"
+    $mingwBin = "C:\Qt\Tools\mingw1310_64\bin"
+    $generator = "MinGW Makefiles"
+    $makeProgram = Join-Path -Path $mingwBin -ChildPath "mingw32-make.exe"
+    $cCompiler = Join-Path -Path $mingwBin -ChildPath "gcc.exe"
+    $cxxCompiler = Join-Path -Path $mingwBin -ChildPath "g++.exe"
     Write-StepPassed "set_paths"
 
     if (-not (Test-Path -LiteralPath $cmake -PathType Leaf)) { throw "cmake not found: $cmake" }
@@ -69,14 +76,84 @@ try {
     if (-not (Test-Path -LiteralPath $buildDir -PathType Container)) { throw "build dir not found: $buildDir" }
     Write-StepPassed "check_build_dir"
 
-    $arguments = "--build `"$buildDir`" --target deploy_AnimeAn --verbose"
+    if (-not (Test-Path -LiteralPath $makeProgram -PathType Leaf)) { throw "mingw32-make not found: $makeProgram" }
+    if (-not (Test-Path -LiteralPath $cCompiler -PathType Leaf)) { throw "gcc not found: $cCompiler" }
+    if (-not (Test-Path -LiteralPath $cxxCompiler -PathType Leaf)) { throw "g++ not found: $cxxCompiler" }
+    if (-not (Test-Path -LiteralPath $qtPrefixPath -PathType Container)) { throw "Qt prefix path not found: $qtPrefixPath" }
+    Write-StepPassed "check_toolchain_paths"
+
+    $env:Path = "$mingwBin;$env:Path"
+    Write-StepPassed "set_mingw_path"
+
+    # --- Step 1: clean the existing release directory ---
+    $releaseSubDir = Join-Path -Path $buildDir -ChildPath "release"
+    if (Test-Path -LiteralPath $releaseSubDir) {
+        Write-AgentLog "Cleaning existing release directory..."
+        Remove-Item -LiteralPath $releaseSubDir -Recurse -Force
+        Write-StepPassed "clean_release_dir"
+    }
+    
+    # Recreate an empty release directory.
+    New-Item -ItemType Directory -Path $releaseSubDir -Force | Out-Null
+    Write-StepPassed "recreate_release_dir"
+    # -------------------------------------------
+
+    $cachePath = Join-Path -Path $buildDir -ChildPath "CMakeCache.txt"
+    $cmakeFilesPath = Join-Path -Path $buildDir -ChildPath "CMakeFiles"
+    if (Test-Path -LiteralPath $cachePath -PathType Leaf) {
+        $cacheText = [System.IO.File]::ReadAllText($cachePath)
+        if ($cacheText -match "CMAKE_GENERATOR:INTERNAL=NMake Makefiles") {
+            Write-AgentLog "Cleaning stale NMake CMake cache..."
+            Remove-Item -LiteralPath $cachePath -Force
+            if (Test-Path -LiteralPath $cmakeFilesPath -PathType Container) {
+                Remove-Item -LiteralPath $cmakeFilesPath -Recurse -Force
+            }
+            Write-StepPassed "clean_stale_cmake_cache"
+        }
+    }
+
+    # --- Step 2: generate the CMake configuration cache (CMakeCache.txt) ---
+    # Use an absolute source path so the script works from any working directory.
+    $configArguments = "-S `"$sourceDir`" -B `"$buildDir`" -G `"$generator`" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=`"$qtPrefixPath`" -DCMAKE_MAKE_PROGRAM=`"$makeProgram`" -DCMAKE_C_COMPILER=`"$cCompiler`" -DCMAKE_CXX_COMPILER=`"$cxxCompiler`""
+    Write-AgentLog "CONFIG_COMMAND=$cmake $configArguments"
+    
+    $configPsi = New-Object System.Diagnostics.ProcessStartInfo
+    $configPsi.FileName = $cmake
+    $configPsi.Arguments = $configArguments
+    $configPsi.WorkingDirectory = $sourceDir
+    $configPsi.UseShellExecute = $false
+    $configPsi.RedirectStandardOutput = $true
+    $configPsi.RedirectStandardError = $true
+    $configPsi.CreateNoWindow = $true
+
+    $configProcess = New-Object System.Diagnostics.Process
+    $configProcess.StartInfo = $configPsi
+    
+    if (-not $configProcess.Start()) { throw "failed to start cmake for configuration" }
+    
+    $configOutput = $configProcess.StandardOutput.ReadToEnd()
+    $configError = $configProcess.StandardError.ReadToEnd()
+    $configProcess.WaitForExit()
+
+    # Guard against null output before trimming.
+    if ($null -ne $configOutput -and $configOutput.Trim() -ne "") { Write-AgentLog $configOutput }
+    if ($null -ne $configError -and $configError.Trim() -ne "") { Write-AgentLog $configError }
+
+    if ($configProcess.ExitCode -ne 0) {
+        throw "CMake configuration failed. EXIT_CODE=$($configProcess.ExitCode)"
+    }
+    Write-StepPassed "cmake_configure"
+    # ----------------------------------------------------
+
+    # --- Step 3: run the build ---
+    $arguments = "--build `"$buildDir`" --target deploy_AnimeAn --clean-first --verbose"
     Write-AgentLog "COMMAND=$cmake $arguments"
     Write-StepPassed "prepare_command"
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $cmake
     $psi.Arguments = $arguments
-    $psi.WorkingDirectory = (Get-Location).Path
+    $psi.WorkingDirectory = $sourceDir
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true

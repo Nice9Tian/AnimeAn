@@ -1,6 +1,6 @@
 {
   "agent_instructions": {
-    "purpose": "Verify if the release target builds and exits successfully.",
+    "purpose": "Verify if the deploy target builds and exits successfully.",
     "execution": {
       "shell": "powershell",
       "command": "PowerShell -ExecutionPolicy Bypass -File \"C:\\Users\\admin\\Documents\\AnimeAn\\scripts\\agent_build.ps1\""
