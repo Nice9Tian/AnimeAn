@@ -839,11 +839,11 @@ void MainWindow::createToolDocks()
     ToolsPanel *toolsPanel = new ToolsPanel(this);
     ToolOptPanel *toolOptPanel = new ToolOptPanel(this);
 
-    m_toolsDock = new QDockWidget(QStringLiteral("Pen"), this);
+    m_toolsDock = new QDockWidget(QStringLiteral("Tools"), this);
     m_toolsDock->setWidget(toolsPanel);
     addDockWidget(Qt::LeftDockWidgetArea, m_toolsDock);
 
-    m_toolOptDock = new QDockWidget(QStringLiteral("ToolOpt"), this);
+    m_toolOptDock = new QDockWidget(QStringLiteral("Tool Options"), this);
     m_toolOptDock->setWidget(toolOptPanel);
     addDockWidget(Qt::RightDockWidgetArea, m_toolOptDock);
     splitDockWidget(m_toolOptDock, m_layerDock, Qt::Vertical);
@@ -889,15 +889,15 @@ void MainWindow::createListDocks()
     m_framePanel = new FramePanel(this);
     m_assetPanel = new AssetPanel(this);
 
-    m_layerDock = new QDockWidget(QStringLiteral("Layer"), this);
+    m_layerDock = new QDockWidget(QStringLiteral("Layers"), this);
     m_layerDock->setWidget(m_layerPanel);
     addDockWidget(Qt::RightDockWidgetArea, m_layerDock);
 
-    m_frameDock = new QDockWidget(QStringLiteral("Frame"), this);
+    m_frameDock = new QDockWidget(QStringLiteral("Frames"), this);
     m_frameDock->setWidget(m_framePanel);
     addDockWidget(Qt::BottomDockWidgetArea, m_frameDock);
 
-    m_assetDock = new QDockWidget(QStringLiteral("Asset"), this);
+    m_assetDock = new QDockWidget(QStringLiteral("Assets"), this);
     m_assetDock->setWidget(m_assetPanel);
     addDockWidget(Qt::RightDockWidgetArea, m_assetDock);
 }
@@ -906,7 +906,7 @@ void MainWindow::openProject()
 {
     const QString fileName = QFileDialog::getOpenFileName(
         this,
-        QStringLiteral("打开工程"),
+        QStringLiteral("Open Project"),
         m_currentFilePath.isEmpty() ? QString() : QFileInfo(m_currentFilePath).absolutePath(),
         projectFilter());
     if (fileName.isEmpty()) {
@@ -933,7 +933,7 @@ bool MainWindow::saveProjectAs()
 
     QString fileName = QFileDialog::getSaveFileName(
         this,
-        QStringLiteral("另存为"),
+        QStringLiteral("Save Project As"),
         selectedFile,
         projectFilter());
     if (fileName.isEmpty()) {
@@ -950,8 +950,8 @@ bool MainWindow::saveProjectTo(const QString &fileName)
     QSaveFile file(fileName);
     if (!file.open(QIODevice::WriteOnly)) {
         QMessageBox::warning(this,
-                             QStringLiteral("保存工程"),
-                             QStringLiteral("无法写入文件:\n%1").arg(file.errorString()));
+                             QStringLiteral("Save Project"),
+                             QStringLiteral("Failed to write file:\n%1").arg(file.errorString()));
         return false;
     }
 
@@ -959,14 +959,14 @@ bool MainWindow::saveProjectTo(const QString &fileName)
     file.write(document.toJson(QJsonDocument::Indented));
     if (!file.commit()) {
         QMessageBox::warning(this,
-                             QStringLiteral("保存工程"),
-                             QStringLiteral("无法保存文件:\n%1").arg(file.errorString()));
+                             QStringLiteral("Save Project"),
+                             QStringLiteral("Failed to save file:\n%1").arg(file.errorString()));
         return false;
     }
 
     m_currentFilePath = fileName;
     updateWindowTitle();
-    ui->label->setText(QStringLiteral("已保存: %1").arg(QFileInfo(fileName).fileName()));
+    ui->label->setText(QStringLiteral("Saved: %1").arg(QFileInfo(fileName).fileName()));
     return true;
 }
 
@@ -975,8 +975,8 @@ bool MainWindow::loadProjectFrom(const QString &fileName)
     QFile file(fileName);
     if (!file.open(QIODevice::ReadOnly)) {
         QMessageBox::warning(this,
-                             QStringLiteral("打开工程"),
-                             QStringLiteral("无法读取文件:\n%1").arg(file.errorString()));
+                             QStringLiteral("Open Project"),
+                             QStringLiteral("Failed to read file:\n%1").arg(file.errorString()));
         return false;
     }
 
@@ -984,8 +984,8 @@ bool MainWindow::loadProjectFrom(const QString &fileName)
     const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
     if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
         QMessageBox::warning(this,
-                             QStringLiteral("打开工程"),
-                             QStringLiteral("工程文件格式错误:\n%1").arg(parseError.errorString()));
+                             QStringLiteral("Open Project"),
+                             QStringLiteral("Project file format error:\n%1").arg(parseError.errorString()));
         return false;
     }
 
@@ -993,8 +993,8 @@ bool MainWindow::loadProjectFrom(const QString &fileName)
     QString error;
     if (!modelFromJson(document.object(), &loadedModel, &error)) {
         QMessageBox::warning(this,
-                             QStringLiteral("打开工程"),
-                             error.isEmpty() ? QStringLiteral("工程文件格式不受支持。") : error);
+                             QStringLiteral("Open Project"),
+                             error.isEmpty() ? QStringLiteral("Unsupported project file.") : error);
         return false;
     }
 
@@ -1006,7 +1006,7 @@ bool MainWindow::loadProjectFrom(const QString &fileName)
                     m_paintWidget->model().currentLayer(),
                     m_paintWidget->model().currentAsset());
     m_paintWidget->update();
-    ui->label->setText(QStringLiteral("已打开: %1").arg(QFileInfo(fileName).fileName()));
+    ui->label->setText(QStringLiteral("Opened: %1").arg(QFileInfo(fileName).fileName()));
     return true;
 }
 

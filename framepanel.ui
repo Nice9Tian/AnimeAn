@@ -29,14 +29,14 @@
      <item>
       <widget class="QPushButton" name="AddFrameButton">
        <property name="text">
-        <string>New Frame</string>
+        <string>Add Frame</string>
        </property>
       </widget>
      </item>
      <item>
       <widget class="QPushButton" name="DeleteFrameButton">
        <property name="text">
-        <string>Delete Frame</string>
+        <string>Remove Frame</string>
        </property>
       </widget>
      </item>

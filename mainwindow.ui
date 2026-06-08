@@ -100,7 +100,7 @@
     <widget class="QStatusBar" name="statusbar" />
     <action name="actionOpen">
       <property name="text">
-        <string>打开...</string>
+        <string>Open...</string>
       </property>
       <property name="shortcut">
         <string>Ctrl+O</string>
@@ -108,7 +108,7 @@
     </action>
     <action name="actionSave">
       <property name="text">
-        <string>保存</string>
+        <string>Save</string>
       </property>
       <property name="shortcut">
         <string>Ctrl+S</string>
@@ -116,7 +116,7 @@
     </action>
     <action name="actionSaveAs">
       <property name="text">
-        <string>另存为...</string>
+        <string>Save As...</string>
       </property>
       <property name="shortcut">
         <string>Ctrl+Shift+S</string>

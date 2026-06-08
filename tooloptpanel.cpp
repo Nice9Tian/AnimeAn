@@ -44,7 +44,7 @@ ToolOptPanel::ToolOptPanel(QWidget *parent)
     ui->smoothLabel->setText(QStringLiteral("Smooth: 50"));
     ui->widthSlider->setRange(1, 50);
     ui->widthSlider->setValue(5);
-    ui->widthLabel->setText(QStringLiteral("wide: 5"));
+    ui->widthLabel->setText(QStringLiteral("Width: 5"));
 
     setColorButtonStyle();
     updateVisibleControls();
@@ -79,7 +79,7 @@ ToolOptPanel::ToolOptPanel(QWidget *parent)
     });
 
     connect(ui->widthSlider, &QSlider::valueChanged, this, [this](int value) {
-        ui->widthLabel->setText(QStringLiteral("wide: %1").arg(value));
+        ui->widthLabel->setText(QStringLiteral("Width: %1").arg(value));
         emit penWidthChanged(value);
     });
 }

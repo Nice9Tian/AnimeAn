@@ -29,14 +29,14 @@
      <item>
       <widget class="QPushButton" name="AddLayerButton">
        <property name="text">
-        <string>New Layer</string>
+        <string>Add Layer</string>
        </property>
       </widget>
      </item>
      <item>
       <widget class="QPushButton" name="DeleteLayerButton">
        <property name="text">
-        <string>Delete Layer</string>
+        <string>Remove Layer</string>
        </property>
       </widget>
      </item>
@@ -45,7 +45,7 @@
    <item>
     <widget class="QPushButton" name="UnselectLayerButton">
      <property name="text">
-      <string>Unselect Layer</string>
+      <string>Clear Selection</string>
      </property>
     </widget>
    </item>
