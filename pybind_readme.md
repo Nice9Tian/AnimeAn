@@ -146,6 +146,41 @@ Path command format:
 - `vector_region_path_at(seed, segments, canvas_rect, to_poly=False, poly_step=4.0) -> path`
 - `fill_path_from_mask(seed, boundary, to_poly=False, poly_step=4.0) -> path`
 
+### Vector region fill helpers
+
+`compute_vector_region_faces` computes every closed vector face that can be formed
+from the input line segments. It does not need a seed point and does not choose a
+single region. Each returned item is a path dict with an extra `signed_area`
+field:
+
+```python
+faces = animean_python.vectorlogic.compute_vector_region_faces(segments)
+for face in faces:
+    print(face["bounds"], face["signed_area"])
+```
+
+Use this when you want to auto-detect closed regions, for example after the user
+draws a closed circle or polygon. If multiple faces are returned, choose one in
+Python using your own rule, such as largest area, smallest area, closest bounds
+to the new stroke, or a before/after comparison of newly created faces.
+
+`vector_region_path_at` uses the same face computation internally, then returns
+only the closed face that contains `seed`. If no face contains the seed, it
+returns an empty path dict.
+
+```python
+path = animean_python.vectorlogic.vector_region_path_at(
+    seed=(120, 80),
+    segments=segments,
+    canvas_rect={"x": 0, "y": 0, "width": 800, "height": 600},
+)
+```
+
+`fill_path_from_mask` is a raster-mask flood fill helper. It does not inspect
+stroke objects or return the strokes that formed the boundary. The caller must
+provide a grayscale boundary mask where `0` means fillable empty space and any
+non-zero value means boundary/blocked pixel.
+
 `fill_path_from_mask` accepts either:
 
 ```python

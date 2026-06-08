@@ -54,7 +54,7 @@ try {
     Write-StepPassed "write_header"
 
     $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
-    $qtEnvLocationPath = Join-Path -Path $scriptDir -ChildPath "qt_env_loaction.ps1"
+    $qtEnvLocationPath = Join-Path -Path $scriptDir -ChildPath "qt_env_location.ps1"
     if (-not (Test-Path -LiteralPath $qtEnvLocationPath -PathType Leaf)) { throw "Qt env location file not found: $qtEnvLocationPath" }
     . $qtEnvLocationPath
     Write-StepPassed "load_qt_env_location"
