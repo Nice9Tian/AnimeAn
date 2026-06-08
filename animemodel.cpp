@@ -24,6 +24,16 @@ QString nextNumberedColumnName(const QVector<AnimeColumn> &columns, const QStrin
     return QStringLiteral("%1 %2").arg(baseName).arg(nextNumber);
 }
 
+bool columnNameExists(const QVector<AnimeColumn> &columns, const QString &name, int excludeIndex)
+{
+    for (int i = 0; i < columns.size(); ++i) {
+        if (i != excludeIndex && columns[i].name == name) {
+            return true;
+        }
+    }
+    return false;
+}
+
 QString assetTypeName(AnimeColumnType type)
 {
     switch (type) {
@@ -482,9 +492,10 @@ AnimeScene &AnimeSceneModel::scene()
 void AnimeSceneModel::initializeScene(int layerCount, int frameCount)
 {
     m_scene = AnimeScene();
+    m_scene.xsheet.ensureColumnCount(layerCount);
     m_scene.xsheet.ensureFrameCount(frameCount);
 
-    m_currentLayer = -1;
+    m_currentLayer = m_scene.xsheet.columns.isEmpty() ? -1 : 0;
     m_currentFrame = 0;
     m_currentAsset = -1;
 }
@@ -558,11 +569,7 @@ QString AnimeSceneModel::layerName(int layerIndex) const
     if (layerIndex < 0 || layerIndex >= m_scene.xsheet.columns.size()) {
         return QString();
     }
-    const int assetIndex = assetIndexAt(m_currentFrame, layerIndex);
-    if (assetIndex >= 0) {
-        return assetName(assetIndex);
-    }
-    return QStringLiteral("(empty)");
+    return m_scene.xsheet.columns[layerIndex].name;
 }
 
 void AnimeSceneModel::setLayerName(int layerIndex, const QString &name)
@@ -570,7 +577,40 @@ void AnimeSceneModel::setLayerName(int layerIndex, const QString &name)
     if (layerIndex < 0 || layerIndex >= m_scene.xsheet.columns.size()) {
         return;
     }
-    m_scene.xsheet.columns[layerIndex].name = name;
+    const int assetIndex = assetIndexAt(m_currentFrame, layerIndex);
+    const QString uniqueName = uniqueLayerName(name, layerIndex, assetIndex);
+    m_scene.xsheet.columns[layerIndex].name = uniqueName;
+    if (assetIndex >= 0 && assetIndex < m_scene.levels.size()) {
+        m_scene.levels[assetIndex].name = uniqueName;
+    }
+}
+
+QString AnimeSceneModel::uniqueLayerName(const QString &baseName, int excludeLayerIndex, int excludeAssetIndex) const
+{
+    QString candidate = baseName.trimmed();
+    if (candidate.isEmpty()) {
+        candidate = QStringLiteral("Layer");
+    }
+
+    QString uniqueName = candidate;
+    int number = 1;
+    auto exists = [&](const QString &name) {
+        if (columnNameExists(m_scene.xsheet.columns, name, excludeLayerIndex)) {
+            return true;
+        }
+        for (int i = 0; i < m_scene.levels.size(); ++i) {
+            if (i != excludeAssetIndex && m_scene.levels[i].name == name) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    while (exists(uniqueName)) {
+        uniqueName = QStringLiteral("%1%2").arg(candidate).arg(number);
+        ++number;
+    }
+    return uniqueName;
 }
 
 QString AnimeSceneModel::frameName(int frameIndex) const
@@ -687,9 +727,10 @@ int AnimeSceneModel::addAsset(AnimeColumnType type, const QString &name)
 {
     AnimeLevel level;
     level.type = type;
-    level.name = name.isEmpty()
-                     ? QStringLiteral("%1 %2").arg(assetTypeName(type)).arg(m_scene.levels.size() + 1)
-                     : name;
+    const QString baseName = name.isEmpty()
+                                 ? QStringLiteral("%1 %2").arg(assetTypeName(type)).arg(m_scene.levels.size() + 1)
+                                 : name;
+    level.name = uniqueLayerName(baseName);
     const int levelIndex = m_scene.levels.size();
     m_scene.levels.append(level);
     m_scene.levels[levelIndex].frame(1, true);
@@ -956,9 +997,9 @@ int AnimeSceneModel::addRasterLayer(const QString &name, int frameIndex, const Q
         return -1;
     }
 
-    const QString assetName = name.isEmpty()
-                                  ? QStringLiteral("Raster %1").arg(m_scene.levels.size() + 1)
-                                  : QStringLiteral("Raster %1").arg(name);
+    const QString assetName = uniqueLayerName(name.isEmpty()
+                                                  ? QStringLiteral("Raster %1").arg(m_scene.levels.size() + 1)
+                                                  : QStringLiteral("Raster %1").arg(name));
     AnimeColumn column;
     column.name = assetName;
     column.type = AnimeColumnType::Raster;

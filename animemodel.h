@@ -174,6 +174,7 @@ public:
     int assetCount() const;
     QString layerName(int layerIndex) const;
     void setLayerName(int layerIndex, const QString &name);
+    QString uniqueLayerName(const QString &baseName, int excludeLayerIndex = -1, int excludeAssetIndex = -1) const;
     QString frameName(int frameIndex) const;
     QString assetName(int assetIndex) const;
     AnimeColumnType assetType(int assetIndex) const;

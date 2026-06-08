@@ -3,6 +3,7 @@
 
 #include <QMainWindow>
 #include <QPoint>
+#include <QString>
 
 class AssetPanel;
 class QDockWidget;
@@ -52,7 +53,13 @@ private:
     void setupConnections();
     void createToolDocks();
     void createListDocks();
+    void openProject();
+    bool saveProject();
+    bool saveProjectAs();
+    bool saveProjectTo(const QString &fileName);
+    bool loadProjectFrom(const QString &fileName);
     void importRaster();
+    void updateWindowTitle();
     void requestAttentionUpdate(AttentionChange change, int frame, int layer, int asset);
     void updateAttention(AttentionChange change, int frame, int layer, int asset);
     AttentionUpdate constrainAttention(AttentionChange change);
@@ -72,6 +79,7 @@ private:
     QDockWidget *m_assetDock = nullptr;
     QDockWidget *m_toolsDock = nullptr;
     QDockWidget *m_toolOptDock = nullptr;
+    QString m_currentFilePath;
     SelectionAttention m_attention;
     SelectionAttention m_pendingAttention;
     AttentionChange m_pendingAttentionChange = AttentionChange::FrameChange;

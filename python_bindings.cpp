@@ -3,11 +3,17 @@
 #include <pybind11/stl.h>
 
 #include "animemodel.h"
+#include "vectorlogic.h"
 
+#include <QImage>
 #include <QLineF>
 #include <QPainterPath>
+#include <QPoint>
+#include <QRect>
 
 #include <cmath>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -57,6 +63,103 @@ py::tuple rectToTuple(const QRectF &rect)
     return py::make_tuple(rect.x(), rect.y(), rect.width(), rect.height());
 }
 
+qreal objectToQreal(const py::handle &value, const char *name)
+{
+    try {
+        return value.cast<qreal>();
+    } catch (const py::cast_error &) {
+        throw py::type_error(std::string(name) + " must be a number.");
+    }
+}
+
+bool hasKey(const py::dict &dict, const char *key)
+{
+    return dict.contains(py::str(key));
+}
+
+QPointF objectToPointF(const py::handle &value, const char *name = "point")
+{
+    if (py::isinstance<py::dict>(value)) {
+        py::dict dict = py::reinterpret_borrow<py::dict>(value);
+        if (hasKey(dict, "x") && hasKey(dict, "y")) {
+            return QPointF(objectToQreal(dict["x"], "point.x"), objectToQreal(dict["y"], "point.y"));
+        }
+    }
+
+    if (py::isinstance<py::sequence>(value) && !py::isinstance<py::str>(value)) {
+        py::sequence seq = py::reinterpret_borrow<py::sequence>(value);
+        if (seq.size() >= 2) {
+            return QPointF(objectToQreal(seq[0], "point[0]"), objectToQreal(seq[1], "point[1]"));
+        }
+    }
+
+    throw py::type_error(std::string(name) + " must be {'x': x, 'y': y} or (x, y).");
+}
+
+QPoint objectToPoint(const py::handle &value, const char *name = "point")
+{
+    const QPointF point = objectToPointF(value, name);
+    return QPoint(qRound(point.x()), qRound(point.y()));
+}
+
+QRectF objectToRectF(const py::handle &value, const char *name = "rect")
+{
+    if (py::isinstance<py::dict>(value)) {
+        py::dict dict = py::reinterpret_borrow<py::dict>(value);
+        if (hasKey(dict, "x") && hasKey(dict, "y") && hasKey(dict, "width") && hasKey(dict, "height")) {
+            return QRectF(objectToQreal(dict["x"], "rect.x"),
+                          objectToQreal(dict["y"], "rect.y"),
+                          objectToQreal(dict["width"], "rect.width"),
+                          objectToQreal(dict["height"], "rect.height"));
+        }
+        if (hasKey(dict, "left") && hasKey(dict, "top") && hasKey(dict, "right") && hasKey(dict, "bottom")) {
+            const qreal left = objectToQreal(dict["left"], "rect.left");
+            const qreal top = objectToQreal(dict["top"], "rect.top");
+            const qreal right = objectToQreal(dict["right"], "rect.right");
+            const qreal bottom = objectToQreal(dict["bottom"], "rect.bottom");
+            return QRectF(QPointF(left, top), QPointF(right, bottom)).normalized();
+        }
+    }
+
+    if (py::isinstance<py::sequence>(value) && !py::isinstance<py::str>(value)) {
+        py::sequence seq = py::reinterpret_borrow<py::sequence>(value);
+        if (seq.size() >= 4) {
+            return QRectF(objectToQreal(seq[0], "rect[0]"),
+                          objectToQreal(seq[1], "rect[1]"),
+                          objectToQreal(seq[2], "rect[2]"),
+                          objectToQreal(seq[3], "rect[3]"));
+        }
+    }
+
+    throw py::type_error(std::string(name) + " must be {'x','y','width','height'} or (x, y, width, height).");
+}
+
+QRect objectToRect(const py::handle &value, const char *name = "rect")
+{
+    return objectToRectF(value, name).toAlignedRect();
+}
+
+QColor objectToColor(const py::handle &value, const char *name = "color")
+{
+    if (py::isinstance<py::dict>(value)) {
+        py::dict dict = py::reinterpret_borrow<py::dict>(value);
+        if (hasKey(dict, "r") && hasKey(dict, "g") && hasKey(dict, "b")) {
+            const int alpha = hasKey(dict, "a") ? dict["a"].cast<int>() : 255;
+            return QColor(dict["r"].cast<int>(), dict["g"].cast<int>(), dict["b"].cast<int>(), alpha);
+        }
+    }
+
+    if (py::isinstance<py::sequence>(value) && !py::isinstance<py::str>(value)) {
+        py::sequence seq = py::reinterpret_borrow<py::sequence>(value);
+        if (seq.size() == 3 || seq.size() >= 4) {
+            const int alpha = seq.size() >= 4 ? seq[3].cast<int>() : 255;
+            return QColor(seq[0].cast<int>(), seq[1].cast<int>(), seq[2].cast<int>(), alpha);
+        }
+    }
+
+    throw py::type_error(std::string(name) + " must be {'r','g','b','a'} or (r, g, b[, a]).");
+}
+
 py::dict pointToDict(const QPointF &point)
 {
     py::dict data;
@@ -91,6 +194,123 @@ py::dict colorToDict(const QColor &color)
     data["g"] = color.green();
     data["b"] = color.blue();
     data["a"] = color.alpha();
+    return data;
+}
+
+py::dict lineToDict(const QLineF &line)
+{
+    py::dict data;
+    data["from"] = pointToDict(line.p1());
+    data["to"] = pointToDict(line.p2());
+    data["length"] = line.length();
+    return data;
+}
+
+QVector<QPointF> objectToPoints(const py::handle &value, const char *name = "points")
+{
+    if (!py::isinstance<py::sequence>(value) || py::isinstance<py::str>(value)) {
+        throw py::type_error(std::string(name) + " must be a sequence of points.");
+    }
+
+    QVector<QPointF> points;
+    py::sequence seq = py::reinterpret_borrow<py::sequence>(value);
+    points.reserve(static_cast<int>(seq.size()));
+    for (py::handle item : seq) {
+        points.append(objectToPointF(item, "point"));
+    }
+    return points;
+}
+
+QLineF objectToLine(const py::handle &value, const char *name = "line")
+{
+    if (py::isinstance<py::dict>(value)) {
+        py::dict dict = py::reinterpret_borrow<py::dict>(value);
+        if (hasKey(dict, "from") && hasKey(dict, "to")) {
+            return QLineF(objectToPointF(dict["from"], "line.from"), objectToPointF(dict["to"], "line.to"));
+        }
+        if (hasKey(dict, "p1") && hasKey(dict, "p2")) {
+            return QLineF(objectToPointF(dict["p1"], "line.p1"), objectToPointF(dict["p2"], "line.p2"));
+        }
+    }
+
+    if (py::isinstance<py::sequence>(value) && !py::isinstance<py::str>(value)) {
+        py::sequence seq = py::reinterpret_borrow<py::sequence>(value);
+        if (seq.size() == 2) {
+            return QLineF(objectToPointF(seq[0], "line[0]"), objectToPointF(seq[1], "line[1]"));
+        }
+        if (seq.size() >= 4) {
+            return QLineF(objectToQreal(seq[0], "line[0]"),
+                          objectToQreal(seq[1], "line[1]"),
+                          objectToQreal(seq[2], "line[2]"),
+                          objectToQreal(seq[3], "line[3]"));
+        }
+    }
+
+    throw py::type_error(std::string(name) + " must be {'from': p0, 'to': p1}, (p0, p1), or (x1, y1, x2, y2).");
+}
+
+QVector<QLineF> objectToLines(const py::handle &value, const char *name = "lines")
+{
+    if (!py::isinstance<py::sequence>(value) || py::isinstance<py::str>(value)) {
+        throw py::type_error(std::string(name) + " must be a sequence of lines.");
+    }
+
+    QVector<QLineF> lines;
+    py::sequence seq = py::reinterpret_borrow<py::sequence>(value);
+    lines.reserve(static_cast<int>(seq.size()));
+    for (py::handle item : seq) {
+        lines.append(objectToLine(item, "line"));
+    }
+    return lines;
+}
+
+AnimeVectorRange objectToRange(const py::handle &value, const char *name = "range")
+{
+    if (py::isinstance<py::dict>(value)) {
+        py::dict dict = py::reinterpret_borrow<py::dict>(value);
+        if (hasKey(dict, "first") && hasKey(dict, "second")) {
+            return AnimeVectorRange{objectToQreal(dict["first"], "range.first"),
+                                    objectToQreal(dict["second"], "range.second")};
+        }
+    }
+    if (py::isinstance<py::sequence>(value) && !py::isinstance<py::str>(value)) {
+        py::sequence seq = py::reinterpret_borrow<py::sequence>(value);
+        if (seq.size() >= 2) {
+            return AnimeVectorRange{objectToQreal(seq[0], "range[0]"), objectToQreal(seq[1], "range[1]")};
+        }
+    }
+    throw py::type_error(std::string(name) + " must be {'first': a, 'second': b} or (a, b).");
+}
+
+QVector<AnimeVectorRange> objectToRanges(const py::handle &value, const char *name = "ranges")
+{
+    if (!py::isinstance<py::sequence>(value) || py::isinstance<py::str>(value)) {
+        throw py::type_error(std::string(name) + " must be a sequence of ranges.");
+    }
+
+    QVector<AnimeVectorRange> ranges;
+    py::sequence seq = py::reinterpret_borrow<py::sequence>(value);
+    ranges.reserve(static_cast<int>(seq.size()));
+    for (py::handle item : seq) {
+        ranges.append(objectToRange(item));
+    }
+    return ranges;
+}
+
+py::dict rangeToDict(const AnimeVectorRange &range)
+{
+    py::dict data;
+    data["first"] = range.first;
+    data["second"] = range.second;
+    return data;
+}
+
+py::list rangesToList(const QVector<AnimeVectorRange> &ranges)
+{
+    py::list data;
+    for (const AnimeVectorRange &range : ranges) {
+        data.append(rangeToDict(range));
+    }
     return data;
 }
 
@@ -210,9 +430,105 @@ py::list pathToPolylines(const QPainterPath &path, double polyStep)
     return polylines;
 }
 
-py::dict strokeNodeToDict(const AnimeVectorStrokeNode &node, bool toPoly, double polyStep)
+QPainterPath objectToPath(const py::handle &value, const char *name = "path")
 {
-    const AnimeVectorStroke &stroke = node.stroke;
+    QPainterPath path;
+    if (!py::isinstance<py::sequence>(value) || py::isinstance<py::str>(value)) {
+        throw py::type_error(std::string(name) + " must be path commands or a point sequence.");
+    }
+
+    py::sequence seq = py::reinterpret_borrow<py::sequence>(value);
+    bool pathStarted = false;
+    QPointF current;
+    for (py::handle item : seq) {
+        if (!py::isinstance<py::dict>(item)) {
+            const QPointF point = objectToPointF(item, "path point");
+            if (!pathStarted) {
+                path.moveTo(point);
+                pathStarted = true;
+            } else {
+                path.lineTo(point);
+            }
+            current = point;
+            continue;
+        }
+
+        py::dict command = py::reinterpret_borrow<py::dict>(item);
+        const std::string type = hasKey(command, "type") ? command["type"].cast<std::string>() : "line";
+        if (type == "move") {
+            const QPointF point = objectToPointF(command["to"], "move.to");
+            path.moveTo(point);
+            current = point;
+            pathStarted = true;
+        } else if (type == "line") {
+            const QPointF point = objectToPointF(command["to"], "line.to");
+            if (!pathStarted) {
+                if (hasKey(command, "from")) {
+                    path.moveTo(objectToPointF(command["from"], "line.from"));
+                } else {
+                    path.moveTo(current);
+                }
+                pathStarted = true;
+            }
+            path.lineTo(point);
+            current = point;
+        } else if (type == "quad") {
+            const QPointF control = objectToPointF(command["control"], "quad.control");
+            const QPointF point = objectToPointF(command["to"], "quad.to");
+            if (!pathStarted) {
+                if (hasKey(command, "from")) {
+                    path.moveTo(objectToPointF(command["from"], "quad.from"));
+                } else {
+                    path.moveTo(current);
+                }
+                pathStarted = true;
+            }
+            path.quadTo(control, point);
+            current = point;
+        } else if (type == "cubic") {
+            const QPointF control1 = objectToPointF(command["control1"], "cubic.control1");
+            const QPointF control2 = objectToPointF(command["control2"], "cubic.control2");
+            const QPointF point = objectToPointF(command["to"], "cubic.to");
+            if (!pathStarted) {
+                if (hasKey(command, "from")) {
+                    path.moveTo(objectToPointF(command["from"], "cubic.from"));
+                } else {
+                    path.moveTo(current);
+                }
+                pathStarted = true;
+            }
+            path.cubicTo(control1, control2, point);
+            current = point;
+        } else if (type == "rect") {
+            path.addRect(objectToRectF(command["rect"], "rect.rect"));
+            pathStarted = true;
+        } else if (type == "close") {
+            path.closeSubpath();
+        } else {
+            throw py::type_error("Unknown path command type: " + type);
+        }
+    }
+
+    return path;
+}
+
+py::dict pathToDictValue(const QPainterPath &path, bool toPoly = false, double polyStep = 4.0)
+{
+    py::dict data;
+    data["bounds"] = rectToDict(path.boundingRect());
+    data["commands"] = pathCommandsToList(path);
+    if (toPoly) {
+        data["geometry_type"] = "polyline";
+        data["poly_step"] = polyStep;
+        data["polylines"] = pathToPolylines(path, polyStep);
+    } else {
+        data["geometry_type"] = "path";
+    }
+    return data;
+}
+
+py::dict strokeToDict(const AnimeVectorStroke &stroke, bool toPoly, double polyStep)
+{
     py::dict data;
     data["id"] = stroke.id;
     data["width"] = stroke.width;
@@ -220,12 +536,26 @@ py::dict strokeNodeToDict(const AnimeVectorStrokeNode &node, bool toPoly, double
     data["bounds"] = rectToDict(stroke.bounds);
     data["raw_points"] = pointsToList(stroke.points);
     data["total_length"] = stroke.totalLength;
-
     py::list lengths;
     for (qreal length : stroke.lengths) {
         lengths.append(length);
     }
     data["lengths"] = lengths;
+    if (toPoly) {
+        data["geometry_type"] = "polyline";
+        data["poly_step"] = polyStep;
+        data["polylines"] = pathToPolylines(stroke.path, polyStep);
+    } else {
+        data["geometry_type"] = "path";
+        data["commands"] = pathCommandsToList(stroke.path);
+    }
+    return data;
+}
+
+py::dict strokeNodeToDict(const AnimeVectorStrokeNode &node, bool toPoly, double polyStep)
+{
+    const AnimeVectorStroke &stroke = node.stroke;
+    py::dict data = strokeToDict(stroke, toPoly, polyStep);
 
     py::list groupIds;
     for (int id : node.groupId.ids) {
@@ -248,6 +578,45 @@ py::dict strokeNodeToDict(const AnimeVectorStrokeNode &node, bool toPoly, double
     return data;
 }
 
+QImage objectToMaskImage(const py::handle &value, const char *name = "boundary")
+{
+    if (py::isinstance<py::dict>(value)) {
+        py::dict dict = py::reinterpret_borrow<py::dict>(value);
+        if (hasKey(dict, "width") && hasKey(dict, "height") && hasKey(dict, "pixels")) {
+            const int width = dict["width"].cast<int>();
+            const int height = dict["height"].cast<int>();
+            QImage image(width, height, QImage::Format_Grayscale8);
+            image.fill(0);
+            py::sequence pixels = dict["pixels"].cast<py::sequence>();
+            for (int y = 0; y < height && y < pixels.size(); ++y) {
+                py::sequence row = pixels[y].cast<py::sequence>();
+                for (int x = 0; x < width && x < row.size(); ++x) {
+                    image.setPixelColor(x, y, QColor(row[x].cast<int>(), row[x].cast<int>(), row[x].cast<int>()));
+                }
+            }
+            return image;
+        }
+    }
+
+    if (py::isinstance<py::sequence>(value) && !py::isinstance<py::str>(value)) {
+        py::sequence rows = py::reinterpret_borrow<py::sequence>(value);
+        const int height = static_cast<int>(rows.size());
+        const int width = height > 0 ? static_cast<int>(rows[0].cast<py::sequence>().size()) : 0;
+        QImage image(width, height, QImage::Format_Grayscale8);
+        image.fill(0);
+        for (int y = 0; y < height; ++y) {
+            py::sequence row = rows[y].cast<py::sequence>();
+            for (int x = 0; x < width && x < row.size(); ++x) {
+                const int gray = row[x].cast<int>();
+                image.setPixelColor(x, y, QColor(gray, gray, gray));
+            }
+        }
+        return image;
+    }
+
+    throw py::type_error(std::string(name) + " must be a 2D grayscale list or {'width','height','pixels'}.");
+}
+
 py::dict fillRegionToDict(const AnimeVectorFillRegion &fill)
 {
     py::dict data;
@@ -259,6 +628,19 @@ py::dict fillRegionToDict(const AnimeVectorFillRegion &fill)
     data["based_on_all_layers"] = fill.basedOnAllLayers;
     data["commands"] = pathCommandsToList(fill.path);
     return data;
+}
+
+const char *columnTypeToString(AnimeColumnType type)
+{
+    switch (type) {
+    case AnimeColumnType::Raster:
+        return "raster";
+    case AnimeColumnType::Fill:
+        return "fill";
+    case AnimeColumnType::Vector:
+    default:
+        return "vector";
+    }
 }
 
 py::dict imageToDict(const AnimeVectorImageModel *image, bool toPoly, double polyStep)
@@ -298,11 +680,94 @@ py::dict cellToDict(const AnimeSceneModel &model, int layerIndex, int frameIndex
     data["image"] = imageToDict(image, toPoly, polyStep);
     return data;
 }
+
+py::dict cellStructureToDict(const AnimeSceneModel &model, int layerIndex, int frameIndex)
+{
+    const AnimeCell cell = model.cellAt(frameIndex, layerIndex);
+    const AnimeVectorImageModel *image = model.imageForCell(cell);
+
+    py::dict data;
+    data["layer_index"] = layerIndex;
+    data["frame_index"] = frameIndex;
+    data["level_index"] = cell.levelIndex;
+    data["frame_id"] = cell.frameId;
+    data["empty"] = cell.isEmpty();
+    data["asset_name"] = cell.isEmpty() ? "" : model.assetName(cell.levelIndex).toStdString();
+    data["asset_type"] = cell.isEmpty() ? "" : columnTypeToString(model.assetType(cell.levelIndex));
+    data["stroke_count"] = image ? image->strokeCount() : 0;
+    data["fill_count"] = image ? image->fillCount() : 0;
+    data["bounds"] = image ? rectToDict(image->bounds()) : py::dict();
+    return data;
+}
+
+py::dict structureToDict(const AnimeSceneModel &model)
+{
+    py::dict data;
+    data["current_frame"] = model.currentFrame();
+    data["current_layer"] = model.currentLayer();
+    data["current_asset"] = model.currentAsset();
+    data["frame_count"] = model.frameCount();
+    data["layer_count"] = model.layerCount();
+    data["asset_count"] = model.assetCount();
+
+    py::list frames;
+    for (int frameIndex = 0; frameIndex < model.frameCount(); ++frameIndex) {
+        py::dict frame;
+        frame["index"] = frameIndex;
+        frame["num"] = frameIndex + 1;
+        frame["name"] = model.frameName(frameIndex).toStdString();
+        frames.append(frame);
+    }
+    data["frames"] = frames;
+
+    py::list layers;
+    const AnimeScene &scene = model.scene();
+    for (int layerIndex = 0; layerIndex < model.layerCount(); ++layerIndex) {
+        py::dict layer;
+        layer["index"] = layerIndex;
+        layer["num"] = layerIndex + 1;
+        layer["column_name"] = scene.xsheet.columns[layerIndex].name.toStdString();
+        layer["name"] = model.layerName(layerIndex).toStdString();
+        layer["visible"] = model.layerVisible(layerIndex);
+        layer["locked"] = model.layerLocked(layerIndex);
+        layer["opacity"] = model.layerOpacity(layerIndex);
+        layer["type"] = columnTypeToString(model.layerType(layerIndex));
+
+        py::list cells;
+        for (int frameIndex = 0; frameIndex < model.frameCount(); ++frameIndex) {
+            cells.append(cellStructureToDict(model, layerIndex, frameIndex));
+        }
+        layer["cells"] = cells;
+        layers.append(layer);
+    }
+    data["layers"] = layers;
+
+    py::list assets;
+    for (int assetIndex = 0; assetIndex < model.assetCount(); ++assetIndex) {
+        py::dict asset;
+        asset["index"] = assetIndex;
+        asset["num"] = assetIndex + 1;
+        asset["name"] = model.assetName(assetIndex).toStdString();
+        asset["type"] = columnTypeToString(model.assetType(assetIndex));
+        assets.append(asset);
+    }
+    data["assets"] = assets;
+    return data;
+}
 }
 
 void bindAnimeanPythonModule(py::module_ &m)
 {
     m.doc() = "Python bindings for AnimeAn scene, layer, frame, and vector image models.";
+
+    py::class_<AnimeVectorRange>(m, "VectorRange")
+        .def(py::init<>())
+        .def(py::init<qreal, qreal>())
+        .def_readwrite("first", &AnimeVectorRange::first)
+        .def_readwrite("second", &AnimeVectorRange::second)
+        .def("to_dict", [](const AnimeVectorRange &range) {
+            return rangeToDict(range);
+        });
 
     py::class_<AnimeCell>(m, "Cell")
         .def(py::init<>())
@@ -310,8 +775,21 @@ void bindAnimeanPythonModule(py::module_ &m)
         .def_readwrite("frame_id", &AnimeCell::frameId)
         .def("is_empty", &AnimeCell::isEmpty);
 
+    py::class_<AnimeVectorStroke>(m, "VectorStroke")
+        .def(py::init<>())
+        .def_readwrite("id", &AnimeVectorStroke::id)
+        .def_readwrite("width", &AnimeVectorStroke::width)
+        .def_readwrite("total_length", &AnimeVectorStroke::totalLength)
+        .def("to_dict",
+             [](const AnimeVectorStroke &stroke, bool toPoly, double polyStep) {
+                 return strokeToDict(stroke, toPoly, polyStep);
+             },
+             py::arg("to_poly") = false,
+             py::arg("poly_step") = 4.0);
+
     py::class_<AnimeVectorImageModel>(m, "VectorImage")
         .def("stroke_count", &AnimeVectorImageModel::strokeCount)
+        .def("fill_count", &AnimeVectorImageModel::fillCount)
         .def("clear", &AnimeVectorImageModel::clear)
         .def("bounds", [](const AnimeVectorImageModel &image) {
             return rectToTuple(image.bounds());
@@ -337,7 +815,10 @@ void bindAnimeanPythonModule(py::module_ &m)
              py::arg("g") = 0,
              py::arg("b") = 0,
              py::arg("a") = 255,
-             py::arg("width") = 3.0);
+             py::arg("width") = 3.0)
+        .def("add_stroke_object", [](AnimeVectorImageModel &image, const AnimeVectorStroke &stroke) {
+            image.addStroke(stroke);
+        });
 
     py::class_<AnimeSceneModel>(m, "SceneModel")
         .def(py::init<>())
@@ -348,6 +829,9 @@ void bindAnimeanPythonModule(py::module_ &m)
         .def("current_frame", &AnimeSceneModel::currentFrame)
         .def("layer_count", &AnimeSceneModel::layerCount)
         .def("frame_count", &AnimeSceneModel::frameCount)
+        .def("get_structure", [](const AnimeSceneModel &model) {
+            return structureToDict(model);
+        })
         .def("layer_name", [](const AnimeSceneModel &model, int layerIndex) {
             return model.layerName(layerIndex).toStdString();
         })
@@ -434,7 +918,278 @@ void bindAnimeanPythonModule(py::module_ &m)
              py::arg("g") = 0,
              py::arg("b") = 0,
              py::arg("a") = 255,
-             py::arg("width") = 3.0);
+             py::arg("width") = 3.0)
+        .def("add_stroke_object",
+             [](AnimeSceneModel &model, int row, int layerIndex, const AnimeVectorStroke &stroke) {
+                 AnimeVectorImageModel *image = model.imageAt(row, layerIndex, true);
+                 if (image) {
+                     image->addStroke(stroke);
+                 }
+             },
+             py::arg("row"),
+             py::arg("layer_index"),
+             py::arg("stroke"));
+
+    py::module_ modelPybind = m.def_submodule("model_pybind", "Fast Python-to-Qt value conversion helpers.");
+    modelPybind.def("qreal", [](py::object value) {
+        return objectToQreal(value, "value");
+    });
+    modelPybind.def("point", [](py::object value) {
+        return pointToDict(objectToPointF(value));
+    });
+    modelPybind.def("point_i", [](py::object value) {
+        const QPoint point = objectToPoint(value);
+        py::dict data;
+        data["x"] = point.x();
+        data["y"] = point.y();
+        return data;
+    });
+    modelPybind.def("rect", [](py::object value) {
+        return rectToDict(objectToRectF(value));
+    });
+    modelPybind.def("rect_i", [](py::object value) {
+        const QRect rect = objectToRect(value);
+        py::dict data;
+        data["x"] = rect.x();
+        data["y"] = rect.y();
+        data["width"] = rect.width();
+        data["height"] = rect.height();
+        return data;
+    });
+    modelPybind.def("color", [](py::object value) {
+        return colorToDict(objectToColor(value));
+    });
+    modelPybind.def("line", [](py::object value) {
+        return lineToDict(objectToLine(value));
+    });
+    modelPybind.def("points", [](py::object value) {
+        return pointsToList(objectToPoints(value));
+    });
+    modelPybind.def("lines", [](py::object value) {
+        py::list data;
+        for (const QLineF &line : objectToLines(value)) {
+            data.append(lineToDict(line));
+        }
+        return data;
+    });
+    modelPybind.def("range", [](py::object value) {
+        return rangeToDict(objectToRange(value));
+    });
+    modelPybind.def("ranges", [](py::object value) {
+        return rangesToList(objectToRanges(value));
+    });
+    modelPybind.def("path",
+                    [](py::object value, bool toPoly, double polyStep) {
+                        return pathToDictValue(objectToPath(value), toPoly, polyStep);
+                    },
+                    py::arg("value"),
+                    py::arg("to_poly") = false,
+                    py::arg("poly_step") = 4.0);
+
+    py::module_ vectorLogic = m.def_submodule("vectorlogic", "Bindings for AnimeVectorLogic geometry helpers.");
+    vectorLogic.def("epsilon", &AnimeVectorLogic::epsilon);
+    vectorLogic.def("filtered_points", [](py::object points) {
+        return pointsToList(AnimeVectorLogic::filteredPoints(objectToPoints(points)));
+    });
+    vectorLogic.def("make_smoothed_path",
+                    [](py::object points, int smoothValue, bool toPoly, double polyStep) {
+                        return pathToDictValue(AnimeVectorLogic::makeSmoothedPath(objectToPoints(points), smoothValue),
+                                               toPoly,
+                                               polyStep);
+                    },
+                    py::arg("points"),
+                    py::arg("smooth_value") = 50,
+                    py::arg("to_poly") = false,
+                    py::arg("poly_step") = 4.0);
+    vectorLogic.def("make_polyline_path",
+                    [](py::object points, bool toPoly, double polyStep) {
+                        return pathToDictValue(AnimeVectorLogic::makePolylinePath(objectToPoints(points)), toPoly, polyStep);
+                    },
+                    py::arg("points"),
+                    py::arg("to_poly") = false,
+                    py::arg("poly_step") = 4.0);
+    vectorLogic.def("make_stroke",
+                    [](py::object points,
+                       py::object color,
+                       qreal width,
+                       int id,
+                       bool filterInput,
+                       bool smoothPath,
+                       int smoothValue,
+                       bool toPoly,
+                       double polyStep) {
+                        const AnimeVectorStroke stroke = AnimeVectorLogic::makeStroke(objectToPoints(points),
+                                                                                      objectToColor(color),
+                                                                                      width,
+                                                                                      id,
+                                                                                      filterInput,
+                                                                                      smoothPath,
+                                                                                      smoothValue);
+                        return strokeToDict(stroke, toPoly, polyStep);
+                    },
+                    py::arg("points"),
+                    py::arg("color") = py::make_tuple(0, 0, 0, 255),
+                    py::arg("width") = 3.0,
+                    py::arg("id") = 0,
+                    py::arg("filter_input") = true,
+                    py::arg("smooth_path") = true,
+                    py::arg("smooth_value") = 50,
+                    py::arg("to_poly") = false,
+                    py::arg("poly_step") = 4.0);
+    vectorLogic.def("make_stroke_object",
+                    [](py::object points,
+                       py::object color,
+                       qreal width,
+                       int id,
+                       bool filterInput,
+                       bool smoothPath,
+                       int smoothValue) {
+                        return AnimeVectorLogic::makeStroke(objectToPoints(points),
+                                                            objectToColor(color),
+                                                            width,
+                                                            id,
+                                                            filterInput,
+                                                            smoothPath,
+                                                            smoothValue);
+                    },
+                    py::arg("points"),
+                    py::arg("color") = py::make_tuple(0, 0, 0, 255),
+                    py::arg("width") = 3.0,
+                    py::arg("id") = 0,
+                    py::arg("filter_input") = true,
+                    py::arg("smooth_path") = true,
+                    py::arg("smooth_value") = 50);
+    vectorLogic.def("stroke_hits_circle",
+                    [](const AnimeVectorStroke &stroke, py::object center, qreal radius) {
+                        return AnimeVectorLogic::strokeHitsCircle(stroke, objectToPointF(center, "center"), radius);
+                    },
+                    py::arg("stroke"),
+                    py::arg("center"),
+                    py::arg("radius"));
+    vectorLogic.def("stroke_hits_circle",
+                    [](py::object points, py::object center, qreal radius, qreal width) {
+                        const AnimeVectorStroke stroke = AnimeVectorLogic::makeStroke(objectToPoints(points),
+                                                                                      QColor(0, 0, 0, 255),
+                                                                                      width,
+                                                                                      0,
+                                                                                      false,
+                                                                                      false);
+                        return AnimeVectorLogic::strokeHitsCircle(stroke, objectToPointF(center, "center"), radius);
+                    },
+                    py::arg("points"),
+                    py::arg("center"),
+                    py::arg("radius"),
+                    py::arg("width") = 3.0);
+    vectorLogic.def("stroke_hits_capsule",
+                    [](const AnimeVectorStroke &stroke, py::object fromPoint, py::object toPoint, qreal radius) {
+                        return AnimeVectorLogic::strokeHitsCapsule(stroke,
+                                                                    objectToPointF(fromPoint, "from"),
+                                                                    objectToPointF(toPoint, "to"),
+                                                                    radius);
+                    },
+                    py::arg("stroke"),
+                    py::arg("from_point"),
+                    py::arg("to_point"),
+                    py::arg("radius"));
+    vectorLogic.def("stroke_hits_capsule",
+                    [](py::object points, py::object fromPoint, py::object toPoint, qreal radius, qreal width) {
+                        const AnimeVectorStroke stroke = AnimeVectorLogic::makeStroke(objectToPoints(points),
+                                                                                      QColor(0, 0, 0, 255),
+                                                                                      width,
+                                                                                      0,
+                                                                                      false,
+                                                                                      false);
+                        return AnimeVectorLogic::strokeHitsCapsule(stroke,
+                                                                    objectToPointF(fromPoint, "from"),
+                                                                    objectToPointF(toPoint, "to"),
+                                                                    radius);
+                    },
+                    py::arg("points"),
+                    py::arg("from_point"),
+                    py::arg("to_point"),
+                    py::arg("radius"),
+                    py::arg("width") = 3.0);
+    vectorLogic.def("keep_ranges_for_circle",
+                    [](const AnimeVectorStroke &stroke, py::object center, qreal radius) {
+                        return rangesToList(AnimeVectorLogic::keepRangesForCircle(stroke, objectToPointF(center, "center"), radius));
+                    },
+                    py::arg("stroke"),
+                    py::arg("center"),
+                    py::arg("radius"));
+    vectorLogic.def("keep_ranges_for_capsule",
+                    [](const AnimeVectorStroke &stroke, py::object fromPoint, py::object toPoint, qreal radius) {
+                        return rangesToList(AnimeVectorLogic::keepRangesForCapsule(stroke,
+                                                                                   objectToPointF(fromPoint, "from"),
+                                                                                   objectToPointF(toPoint, "to"),
+                                                                                   radius));
+                    },
+                    py::arg("stroke"),
+                    py::arg("from_point"),
+                    py::arg("to_point"),
+                    py::arg("radius"));
+    vectorLogic.def("complement_ranges", [](py::object ranges) {
+        return rangesToList(AnimeVectorLogic::complementRanges(objectToRanges(ranges)));
+    });
+    vectorLogic.def("sub_stroke",
+                    [](const AnimeVectorStroke &stroke, qreal fromW, qreal toW, int smoothValue, bool toPoly, double polyStep) {
+                        return strokeToDict(AnimeVectorLogic::subStroke(stroke, fromW, toW, smoothValue), toPoly, polyStep);
+                    },
+                    py::arg("stroke"),
+                    py::arg("from_w"),
+                    py::arg("to_w"),
+                    py::arg("smooth_value") = 50,
+                    py::arg("to_poly") = false,
+                    py::arg("poly_step") = 4.0);
+    vectorLogic.def("point_at_length",
+                    [](const AnimeVectorStroke &stroke, qreal length) {
+                        return pointToDict(AnimeVectorLogic::pointAtLength(stroke, length));
+                    },
+                    py::arg("stroke"),
+                    py::arg("length"));
+    vectorLogic.def("segments_from_path", [](py::object pathLike) {
+        py::list data;
+        for (const QLineF &line : AnimeVectorLogic::segmentsFromPath(objectToPath(pathLike))) {
+            data.append(lineToDict(line));
+        }
+        return data;
+    });
+    vectorLogic.def("compute_vector_region_faces",
+                    [](py::object lines, bool toPoly, double polyStep) {
+                        py::list data;
+                        for (const AnimeVectorRegionFace &face : AnimeVectorLogic::computeVectorRegionFaces(objectToLines(lines))) {
+                            py::dict item = pathToDictValue(face.path, toPoly, polyStep);
+                            item["signed_area"] = face.signedArea;
+                            data.append(item);
+                        }
+                        return data;
+                    },
+                    py::arg("segments"),
+                    py::arg("to_poly") = false,
+                    py::arg("poly_step") = 4.0);
+    vectorLogic.def("vector_region_path_at",
+                    [](py::object seed, py::object lines, py::object canvasRect, bool toPoly, double polyStep) {
+                        return pathToDictValue(AnimeVectorLogic::vectorRegionPathAt(objectToPointF(seed, "seed"),
+                                                                                    objectToLines(lines),
+                                                                                    objectToRect(canvasRect, "canvas_rect")),
+                                               toPoly,
+                                               polyStep);
+                    },
+                    py::arg("seed"),
+                    py::arg("segments"),
+                    py::arg("canvas_rect"),
+                    py::arg("to_poly") = false,
+                    py::arg("poly_step") = 4.0);
+    vectorLogic.def("fill_path_from_mask",
+                    [](py::object seed, py::object boundary, bool toPoly, double polyStep) {
+                        return pathToDictValue(AnimeVectorLogic::fillPathFromMask(objectToPoint(seed, "seed"),
+                                                                                  objectToMaskImage(boundary)),
+                                               toPoly,
+                                               polyStep);
+                    },
+                    py::arg("seed"),
+                    py::arg("boundary"),
+                    py::arg("to_poly") = false,
+                    py::arg("poly_step") = 4.0);
 }
 
 #ifdef ANIMEAN_BUILDING_PYTHON_MODULE

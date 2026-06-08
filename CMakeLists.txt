@@ -101,11 +101,13 @@ if(ANIMEAN_WITH_PYTHON)
         endif()
     endforeach()
 
-    add_custom_command(TARGET AnimeAn POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/hello_world.py"
-            "$<TARGET_FILE_DIR:AnimeAn>"
-    )
+    foreach(ANIMEAN_PYTHON_SCRIPT hello_world.py animemodel.py)
+        add_custom_command(TARGET AnimeAn POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/${ANIMEAN_PYTHON_SCRIPT}"
+                "$<TARGET_FILE_DIR:AnimeAn>"
+        )
+    endforeach()
 endif()
 
 target_include_directories(AnimeAn PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -143,6 +145,9 @@ if(WIN32 AND QT_VERSION_MAJOR EQUAL 6)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${CMAKE_CURRENT_SOURCE_DIR}/hello_world.py"
                 "${ANIMEAN_DEPLOY_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/animemodel.py"
+                "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${ANIMEAN_PYTHON_HOME}"
                 "${ANIMEAN_DEPLOY_DIR}/${ANIMEAN_PYTHON_DIR_NAME}"
@@ -161,7 +166,7 @@ if(ANIMEAN_BUILD_PYTHON_MODULE)
         message(FATAL_ERROR "ANIMEAN_BUILD_PYTHON_MODULE is ON, but ANIMEAN_PYTHON_BINDINGS does not exist: ${ANIMEAN_PYTHON_BINDINGS}")
     endif()
 
-    pybind11_add_module(animean_python MODULE "${ANIMEAN_PYTHON_BINDINGS}" animemodel.cpp animemodel.h)
+    pybind11_add_module(animean_python MODULE "${ANIMEAN_PYTHON_BINDINGS}" animemodel.cpp animemodel.h vectorlogic.cpp vectorlogic.h)
     target_include_directories(animean_python PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_compile_definitions(animean_python PRIVATE ANIMEAN_BUILDING_PYTHON_MODULE)
     target_link_libraries(animean_python PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::OpenGLWidgets)

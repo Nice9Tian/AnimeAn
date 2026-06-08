@@ -83,6 +83,9 @@
         <property name="title">
           <string>File</string>
         </property>
+        <addaction name="actionOpen" />
+        <addaction name="actionSave" />
+        <addaction name="actionSaveAs" />
         <addaction name="separator" />
         <addaction name="actionimport_Raster" />
       </widget>
@@ -95,6 +98,30 @@
       <addaction name="menuEdit" />
     </widget>
     <widget class="QStatusBar" name="statusbar" />
+    <action name="actionOpen">
+      <property name="text">
+        <string>打开...</string>
+      </property>
+      <property name="shortcut">
+        <string>Ctrl+O</string>
+      </property>
+    </action>
+    <action name="actionSave">
+      <property name="text">
+        <string>保存</string>
+      </property>
+      <property name="shortcut">
+        <string>Ctrl+S</string>
+      </property>
+    </action>
+    <action name="actionSaveAs">
+      <property name="text">
+        <string>另存为...</string>
+      </property>
+      <property name="shortcut">
+        <string>Ctrl+Shift+S</string>
+      </property>
+    </action>
     <action name="actionimport_Raster">
       <property name="text">
         <string>import Raster</string>
