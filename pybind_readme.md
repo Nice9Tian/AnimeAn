@@ -6,10 +6,10 @@ This document describes how Python code talks to the AnimeAn C++ data model and
 ## Module Layout
 
 - `animean_python`
-  - C++ extension / embedded module produced from `python_bindings.cpp`.
+  - C++ extension / embedded module produced from `pythonbind/python_bindings.cpp`.
   - Owns the low-level bindings for `SceneModel`, `VectorImage`, `VectorStroke`,
     `Cell`, `VectorRange`, `model_pybind`, and `vectorlogic`.
-- `animemodel.py`
+- `pythonbind/animemodel.py`
   - Python convenience layer.
   - Provides `AnimeModel`, `annimemodel`, `animemodel`, and `model_pybind`.
 - `animean_python.model_pybind`
@@ -55,7 +55,7 @@ This document describes how Python code talks to the AnimeAn C++ data model and
 
 ## Python Wrapper Class
 
-`animemodel.py` defines:
+`pythonbind/animemodel.py` defines:
 
 ```python
 from animemodel import AnimeModel

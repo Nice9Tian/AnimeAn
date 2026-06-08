@@ -13,7 +13,8 @@ option(ANIMEAN_WITH_PYTHON "Enable pybind11 support for embedding Python in Anim
 option(ANIMEAN_BUILD_PYTHON_MODULE "Build the optional AnimeAn Python extension module." OFF)
 
 set(ANIMEAN_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}" CACHE PATH "AnimeAn project root directory.")
-set(ANIMEAN_PYFILE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/pyfile" CACHE PATH "Directory containing runtime Python files.")
+set(ANIMEAN_PYFILE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/pyfile" CACHE PATH "Directory containing hello-world Python scripts.")
+set(ANIMEAN_PYTHONBIND_DIR "${CMAKE_CURRENT_SOURCE_DIR}/pythonbind" CACHE PATH "Directory containing Python bindings and helper modules.")
 
 if(ANIMEAN_WITH_PYTHON OR ANIMEAN_BUILD_PYTHON_MODULE)
     set(ANIMEAN_PYTHON_HOME "${CMAKE_CURRENT_SOURCE_DIR}/tools/python312" CACHE PATH "Python runtime used by AnimeAn.")
@@ -83,18 +84,19 @@ endif()
 target_include_directories(AnimeAn PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/algorithm
-    ${CMAKE_CURRENT_SOURCE_DIR}/pyfile
+    ${CMAKE_CURRENT_SOURCE_DIR}/pythonbind
 )
 
 target_link_libraries(AnimeAn PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::OpenGLWidgets)
 
 if(ANIMEAN_WITH_PYTHON)
-    target_sources(AnimeAn PRIVATE pyfile/python_bindings.cpp)
+    target_sources(AnimeAn PRIVATE pythonbind/python_bindings.cpp)
     target_link_libraries(AnimeAn PRIVATE pybind11::embed)
     target_compile_definitions(AnimeAn PRIVATE
         ANIMEAN_WITH_PYTHON
         ANIMEAN_SOURCE_DIR="${ANIMEAN_SOURCE_DIR}"
         ANIMEAN_PYFILE_DIR="${ANIMEAN_PYFILE_DIR}"
+        ANIMEAN_PYTHONBIND_DIR="${ANIMEAN_PYTHONBIND_DIR}"
         ANIMEAN_PYTHON_HOME="${ANIMEAN_PYTHON_HOME}"
         ANIMEAN_PYTHON_DIR_NAME="${ANIMEAN_PYTHON_DIR_NAME}"
     )
@@ -109,13 +111,14 @@ if(ANIMEAN_WITH_PYTHON)
         endif()
     endforeach()
 
-    foreach(ANIMEAN_PYTHON_SCRIPT hello_world.py animemodel.py)
-        add_custom_command(TARGET AnimeAn POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${ANIMEAN_PYFILE_DIR}/${ANIMEAN_PYTHON_SCRIPT}"
-                "$<TARGET_FILE_DIR:AnimeAn>"
-        )
-    endforeach()
+    add_custom_command(TARGET AnimeAn POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ANIMEAN_PYFILE_DIR}/hello_world.py"
+            "$<TARGET_FILE_DIR:AnimeAn>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ANIMEAN_PYTHONBIND_DIR}/animemodel.py"
+            "$<TARGET_FILE_DIR:AnimeAn>"
+    )
 endif()
 
 if(WIN32 AND QT_VERSION_MAJOR EQUAL 6)
@@ -152,7 +155,7 @@ if(WIN32 AND QT_VERSION_MAJOR EQUAL 6)
                 "${ANIMEAN_PYFILE_DIR}/hello_world.py"
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${ANIMEAN_PYFILE_DIR}/animemodel.py"
+                "${ANIMEAN_PYTHONBIND_DIR}/animemodel.py"
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${ANIMEAN_PYTHON_HOME}"
@@ -166,14 +169,19 @@ if(WIN32 AND QT_VERSION_MAJOR EQUAL 6)
 endif()
 
 if(ANIMEAN_BUILD_PYTHON_MODULE)
-    set(ANIMEAN_PYTHON_BINDINGS "${CMAKE_CURRENT_SOURCE_DIR}/pyfile/python_bindings.cpp" CACHE FILEPATH "Source file for the AnimeAn Python extension module.")
+    set(ANIMEAN_DEFAULT_PYTHON_BINDINGS "${ANIMEAN_PYTHONBIND_DIR}/python_bindings.cpp")
+    if(NOT DEFINED ANIMEAN_PYTHON_BINDINGS OR ANIMEAN_PYTHON_BINDINGS STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}/pyfile/python_bindings.cpp")
+        set(ANIMEAN_PYTHON_BINDINGS "${ANIMEAN_DEFAULT_PYTHON_BINDINGS}" CACHE FILEPATH "Source file for the AnimeAn Python extension module." FORCE)
+    else()
+        set(ANIMEAN_PYTHON_BINDINGS "${ANIMEAN_PYTHON_BINDINGS}" CACHE FILEPATH "Source file for the AnimeAn Python extension module.")
+    endif()
 
     if(NOT EXISTS "${ANIMEAN_PYTHON_BINDINGS}")
         message(FATAL_ERROR "ANIMEAN_BUILD_PYTHON_MODULE is ON, but ANIMEAN_PYTHON_BINDINGS does not exist: ${ANIMEAN_PYTHON_BINDINGS}")
     endif()
 
     pybind11_add_module(animean_python MODULE "${ANIMEAN_PYTHON_BINDINGS}" algorithm/animemodel.cpp algorithm/animemodel.h algorithm/vectorlogic.cpp algorithm/vectorlogic.h)
-    target_include_directories(animean_python PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/algorithm ${CMAKE_CURRENT_SOURCE_DIR}/pyfile)
+    target_include_directories(animean_python PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/algorithm ${CMAKE_CURRENT_SOURCE_DIR}/pythonbind)
     target_compile_definitions(animean_python PRIVATE ANIMEAN_BUILDING_PYTHON_MODULE)
     target_link_libraries(animean_python PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::OpenGLWidgets)
 endif()

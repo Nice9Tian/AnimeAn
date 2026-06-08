@@ -15,8 +15,8 @@ AnimeAn 是一个基于 Qt 的桌面应用，提供动画/矢量相关的编辑�
 - `mainwindow.*`：主窗口
 - `animemodel.*`：核心数据模型
 - `vectorlogic.*`：矢量与路径处理逻辑
-- `python_bindings.cpp`：Python 绑定
-- `animemodel.py`：Python 侧封装
+- `pythonbind/python_bindings.cpp`：Python 绑定
+- `pythonbind/animemodel.py`：Python 侧封装
 - `scripts/agent_build.ps1`：构建与部署验证脚本
 
 ## 构建
