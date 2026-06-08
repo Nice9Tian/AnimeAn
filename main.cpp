@@ -1,13 +1,12 @@
 #include "mainwindow.h"
 
 #include <QApplication>
-
-#ifdef ANIMEAN_WITH_PYTHON
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
 #include <QStringList>
 
+#ifdef ANIMEAN_WITH_PYTHON
 #ifdef slots
 #undef slots
 #define ANIMEAN_RESTORE_QT_SLOTS
@@ -17,11 +16,28 @@
 #define slots Q_SLOTS
 #undef ANIMEAN_RESTORE_QT_SLOTS
 #endif
+
+#include <string>
+
+namespace py = pybind11;
+
+static QString pythonStartupText()
+{
+    try {
+        py::module_::import("animean_python");
+        const std::string helloText = py::module_::import("hello_world")
+                                          .attr("hello_world")()
+                                          .cast<std::string>();
+        return QString::fromUtf8(helloText.c_str());
+    } catch (const py::error_already_set &error) {
+        return QStringLiteral("Python error: %1").arg(QString::fromUtf8(error.what()));
+    }
+}
 #endif
 
 int main(int argc, char *argv[])
 {
-    QApplication a(argc, argv);
+    QApplication app(argc, argv);
 
 #ifdef ANIMEAN_WITH_PYTHON
     const QString appDir = QCoreApplication::applicationDirPath();
@@ -47,10 +63,15 @@ int main(int argc, char *argv[])
     qputenv("PYTHONHOME", QDir::toNativeSeparators(pythonHome).toLocal8Bit());
     qputenv("PYTHONPATH", QDir::toNativeSeparators(pythonPath.join(QLatin1Char(';'))).toLocal8Bit());
 
-    pybind11::scoped_interpreter pythonGuard;
+    py::scoped_interpreter guard;
 #endif
 
-    MainWindow w;
-    w.show();
-    return a.exec();
+    MainWindow window;
+#ifdef ANIMEAN_WITH_PYTHON
+    window.setStatusText(pythonStartupText());
+#else
+    window.setStatusText(QStringLiteral("Python disabled"));
+#endif
+    window.show();
+    return app.exec();
 }

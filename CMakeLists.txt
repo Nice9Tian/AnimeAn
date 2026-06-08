@@ -40,6 +40,10 @@ set(PROJECT_SOURCES
     mainwindow.cpp
     mainwindow.h
     mainwindow.ui
+    projectio.cpp
+    projectio.h
+    selectionattention.cpp
+    selectionattention.h
     openglwidget.cpp
     openglwidget.h
     childrenpanel/assetpanel.cpp

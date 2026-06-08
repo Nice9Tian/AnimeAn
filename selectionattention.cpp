@@ -1,0 +1,81 @@
+#include "selectionattention.h"
+
+AttentionUpdate constrainAttention(const AnimeSceneModel &model, SelectionAttention *attention, AttentionChange change)
+{
+    AttentionUpdate update;
+    if (!attention) {
+        return update;
+    }
+
+    update.frame = change == AttentionChange::FrameChange;
+    update.layer = true;
+    update.asset = true;
+
+    if (model.frameCount() <= 0) {
+        attention->frame = -1;
+    } else if (attention->frame < 0) {
+        attention->frame = change == AttentionChange::AssetChange ? -1 : 0;
+    } else if (attention->frame >= model.frameCount()) {
+        attention->frame = model.frameCount() - 1;
+    }
+
+    if (attention->asset < 0 || attention->asset >= model.assetCount()) {
+        attention->asset = -1;
+    }
+    if (attention->layer < 0 || attention->layer >= model.layerCount()) {
+        attention->layer = -1;
+    }
+
+    const int layerAsset = model.assetIndexAt(attention->frame, attention->layer);
+
+    if (change == AttentionChange::FrameChange) {
+        attention->layer = topLayerForFrame(model, attention->frame);
+        attention->asset = attention->layer >= 0
+                                ? model.assetIndexAt(attention->frame, attention->layer)
+                                : -1;
+        return update;
+    }
+
+    if (change == AttentionChange::AssetChange) {
+        attention->layer = attention->asset >= 0
+                                ? firstLayerForAsset(model, attention->frame, attention->asset)
+                                : -1;
+        if (attention->asset >= 0 && attention->layer < 0) {
+            attention->frame = -1;
+        }
+        return update;
+    }
+
+    if (change == AttentionChange::LayerChange) {
+        if (layerAsset >= 0) {
+            attention->asset = layerAsset;
+        } else {
+            attention->layer = -1;
+            attention->asset = -1;
+        }
+    }
+    return update;
+}
+
+int topLayerForFrame(const AnimeSceneModel &model, int frame)
+{
+    for (int i = 0; i < model.layerCount(); ++i) {
+        if (model.assetIndexAt(frame, i) >= 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int firstLayerForAsset(const AnimeSceneModel &model, int frame, int asset)
+{
+    if (asset < 0) {
+        return -1;
+    }
+    for (int i = 0; i < model.layerCount(); ++i) {
+        if (model.assetIndexAt(frame, i) == asset) {
+            return i;
+        }
+    }
+    return -1;
+}

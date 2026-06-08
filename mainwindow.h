@@ -5,6 +5,8 @@
 #include <QPoint>
 #include <QString>
 
+#include "selectionattention.h"
+
 class AssetPanel;
 class QDockWidget;
 class FramePanel;
@@ -24,32 +26,14 @@ class MainWindow : public QMainWindow
 public:
     MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
+    void setStatusText(const QString &text);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
-    enum class AttentionChange {
-        FrameChange,
-        LayerChange,
-        AssetChange
-    };
-
-    struct SelectionAttention {
-        int frame = 0;
-        int layer = -1;
-        int asset = -1;
-    };
-
-    struct AttentionUpdate {
-        bool frame = false;
-        bool layer = false;
-        bool asset = false;
-    };
-
     void setupDocks();
     void setupListDragDrop();
-    void setupPython();
     void setupConnections();
     void createToolDocks();
     void createListDocks();
@@ -62,9 +46,6 @@ private:
     void updateWindowTitle();
     void requestAttentionUpdate(AttentionChange change, int frame, int layer, int asset);
     void updateAttention(AttentionChange change, int frame, int layer, int asset);
-    AttentionUpdate constrainAttention(AttentionChange change);
-    int topLayerForFrame(int frame) const;
-    int firstLayerForAsset(int frame, int asset) const;
     void refreshLayerList(int selectedRow);
     void refreshFrameList(int selectedRow);
     void refreshAssetList(int selectedRow);
