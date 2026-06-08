@@ -32,31 +32,31 @@ find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets OpenGLWidgets)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets OpenGLWidgets)
 
 set(PROJECT_SOURCES
-    assetpanel.cpp
-    assetpanel.h
-    assetpanel.ui
     algorithm/animemodel.cpp
     algorithm/animemodel.h
     algorithm/vectorlogic.cpp
     algorithm/vectorlogic.h
-    framepanel.cpp
-    framepanel.h
-    framepanel.ui
-    layerpanel.cpp
-    layerpanel.h
-    layerpanel.ui
     main.cpp
     mainwindow.cpp
     mainwindow.h
     mainwindow.ui
     openglwidget.cpp
     openglwidget.h
-    tooloptpanel.cpp
-    tooloptpanel.h
-    tooloptpanel.ui
-    toolspanel.cpp
-    toolspanel.h
-    toolspanel.ui
+    childrenpanel/assetpanel.cpp
+    childrenpanel/assetpanel.h
+    childrenpanel/assetpanel.ui
+    childrenpanel/framepanel.cpp
+    childrenpanel/framepanel.h
+    childrenpanel/framepanel.ui
+    childrenpanel/layerpanel.cpp
+    childrenpanel/layerpanel.h
+    childrenpanel/layerpanel.ui
+    childrenpanel/tooloptpanel.cpp
+    childrenpanel/tooloptpanel.h
+    childrenpanel/tooloptpanel.ui
+    childrenpanel/toolspanel.cpp
+    childrenpanel/toolspanel.h
+    childrenpanel/toolspanel.ui
 )
 
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)

@@ -1,11 +1,11 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
-#include "assetpanel.h"
-#include "framepanel.h"
-#include "layerpanel.h"
+#include "childrenpanel/assetpanel.h"
+#include "childrenpanel/framepanel.h"
+#include "childrenpanel/layerpanel.h"
 #include "openglwidget.h"
-#include "tooloptpanel.h"
-#include "toolspanel.h"
+#include "childrenpanel/tooloptpanel.h"
+#include "childrenpanel/toolspanel.h"
 
 #include <QAbstractItemModel>
 #include <QAbstractItemView>
