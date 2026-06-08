@@ -83,32 +83,31 @@ Important members:
 
 All helpers return normalized Python dict/list values after C++ conversion.
 
-- `qreal(value) -> float`
-  - Accepts `int` or `float`.
-- `point(value) -> {"x": float, "y": float}`
-  - Accepts `(x, y)` or `{"x": x, "y": y}`.
-- `point_i(value) -> {"x": int, "y": int}`
-  - Same as `point`, rounded to `QPoint`.
-- `rect(value) -> {"x": float, "y": float, "width": float, "height": float}`
-  - Accepts `(x, y, width, height)`, `{"x","y","width","height"}`, or
-    `{"left","top","right","bottom"}`.
-- `rect_i(value) -> {"x": int, "y": int, "width": int, "height": int}`
-  - Same as `rect`, converted to `QRect`.
-- `color(value) -> {"r": int, "g": int, "b": int, "a": int}`
-  - Accepts `(r, g, b)`, `(r, g, b, a)`, or `{"r","g","b","a"}`.
-- `line(value) -> {"from": point, "to": point, "length": float}`
-  - Accepts `(p0, p1)`, `(x1, y1, x2, y2)`, `{"from": p0, "to": p1}`, or
-    `{"p1": p0, "p2": p1}`.
-- `points(values) -> list[point]`
-  - Accepts a sequence of point-like values.
-- `lines(values) -> list[line]`
-  - Accepts a sequence of line-like values.
-- `range(value) -> {"first": float, "second": float}`
-  - Accepts `(first, second)` or `{"first": first, "second": second}`.
-- `ranges(values) -> list[range]`
-  - Accepts a sequence of range-like values.
-- `path(value, to_poly=False, poly_step=4.0) -> dict`
-  - Accepts a point list or command list.
+```python
+def qreal(value: int | float) -> float: ...
+def point(value: PointLike) -> PointDict: ...
+def point_i(value: PointLike) -> PointIntDict: ...
+def rect(value: RectLike) -> RectDict: ...
+def rect_i(value: RectLike) -> RectIntDict: ...
+def color(value: ColorLike) -> ColorDict: ...
+def line(value: LineLike) -> LineDict: ...
+def points(values: list[PointLike]) -> list[PointDict]: ...
+def lines(values: list[LineLike]) -> list[LineDict]: ...
+def range(value: RangeLike) -> RangeDict: ...
+def ranges(values: list[RangeLike]) -> list[RangeDict]: ...
+def path(value: PathLike, to_poly: bool = False, poly_step: float = 4.0) -> PathDict: ...
+```
+
+Accepted value forms:
+
+- `PointLike`: `(x, y)` or `{"x": x, "y": y}`.
+- `RectLike`: `(x, y, width, height)`, `{"x","y","width","height"}`, or
+  `{"left","top","right","bottom"}`.
+- `ColorLike`: `(r, g, b)`, `(r, g, b, a)`, or `{"r","g","b","a"}`.
+- `LineLike`: `(p0, p1)`, `(x1, y1, x2, y2)`, `{"from": p0, "to": p1}`, or
+  `{"p1": p0, "p2": p1}`.
+- `RangeLike`: `(first, second)` or `{"first": first, "second": second}`.
+- `PathLike`: a point list or command list.
 
 Path command format:
 
@@ -126,25 +125,114 @@ Path command format:
 
 `animean_python.vectorlogic` binds the C++ `AnimeVectorLogic` namespace.
 
-- `epsilon() -> float`
-- `filtered_points(points) -> list[point]`
-- `make_smoothed_path(points, smooth_value=50, to_poly=False, poly_step=4.0) -> dict`
-- `make_polyline_path(points, to_poly=False, poly_step=4.0) -> dict`
-- `make_stroke(points, color=(0,0,0,255), width=3.0, id=0, filter_input=True, smooth_path=True, smooth_value=50, to_poly=False, poly_step=4.0) -> dict`
-- `make_stroke_object(points, color=(0,0,0,255), width=3.0, id=0, filter_input=True, smooth_path=True, smooth_value=50) -> VectorStroke`
-- `stroke_hits_circle(stroke, center, radius) -> bool`
-- `stroke_hits_circle(points, center, radius, width=3.0) -> bool`
-- `stroke_hits_capsule(stroke, from_point, to_point, radius) -> bool`
-- `stroke_hits_capsule(points, from_point, to_point, radius, width=3.0) -> bool`
-- `keep_ranges_for_circle(stroke, center, radius) -> list[range]`
-- `keep_ranges_for_capsule(stroke, from_point, to_point, radius) -> list[range]`
-- `complement_ranges(ranges) -> list[range]`
-- `sub_stroke(stroke, from_w, to_w, smooth_value=50, to_poly=False, poly_step=4.0) -> dict`
-- `point_at_length(stroke, length) -> point`
-- `segments_from_path(path_like) -> list[line]`
-- `compute_vector_region_faces(segments, to_poly=False, poly_step=4.0) -> list[path]`
-- `vector_region_path_at(seed, segments, canvas_rect, to_poly=False, poly_step=4.0) -> path`
-- `fill_path_from_mask(seed, boundary, to_poly=False, poly_step=4.0) -> path`
+```python
+def epsilon() -> float: ...
+def filtered_points(points: list[PointLike]) -> list[PointDict]: ...
+def make_smoothed_path(
+    points: list[PointLike],
+    smooth_value: int = 50,
+    to_poly: bool = False,
+    poly_step: float = 4.0,
+) -> PathDict: ...
+def make_polyline_path(
+    points: list[PointLike],
+    to_poly: bool = False,
+    poly_step: float = 4.0,
+) -> PathDict: ...
+def make_stroke(
+    points: list[PointLike],
+    color: ColorLike = (0, 0, 0, 255),
+    width: float = 3.0,
+    id: int = 0,
+    filter_input: bool = True,
+    smooth_path: bool = True,
+    smooth_value: int = 50,
+    to_poly: bool = False,
+    poly_step: float = 4.0,
+) -> StrokeDict: ...
+def make_stroke_object(
+    points: list[PointLike],
+    color: ColorLike = (0, 0, 0, 255),
+    width: float = 3.0,
+    id: int = 0,
+    filter_input: bool = True,
+    smooth_path: bool = True,
+    smooth_value: int = 50,
+) -> VectorStroke: ...
+def stroke_hits_circle(stroke: VectorStroke, center: PointLike, radius: float) -> bool: ...
+def stroke_hits_circle(
+    points: list[PointLike],
+    center: PointLike,
+    radius: float,
+    width: float = 3.0,
+) -> bool: ...
+def stroke_hits_capsule(
+    stroke: VectorStroke,
+    from_point: PointLike,
+    to_point: PointLike,
+    radius: float,
+) -> bool: ...
+def stroke_hits_capsule(
+    points: list[PointLike],
+    from_point: PointLike,
+    to_point: PointLike,
+    radius: float,
+    width: float = 3.0,
+) -> bool: ...
+def keep_ranges_for_circle(stroke: VectorStroke, center: PointLike, radius: float) -> list[RangeDict]: ...
+def keep_ranges_for_capsule(
+    stroke: VectorStroke,
+    from_point: PointLike,
+    to_point: PointLike,
+    radius: float,
+) -> list[RangeDict]: ...
+def complement_ranges(ranges: list[RangeLike]) -> list[RangeDict]: ...
+def sub_stroke(
+    stroke: VectorStroke,
+    from_w: float,
+    to_w: float,
+    smooth_value: int = 50,
+    to_poly: bool = False,
+    poly_step: float = 4.0,
+) -> StrokeDict: ...
+def point_at_length(stroke: VectorStroke, length: float) -> PointDict: ...
+def segments_from_path(path_like: PathLike) -> list[LineDict]: ...
+def compute_vector_region_faces(
+    segments: list[LineLike],
+    to_poly: bool = False,
+    poly_step: float = 4.0,
+) -> list[PathDict]: ...
+def vector_region_path_at(
+    seed: PointLike,
+    segments: list[LineLike],
+    canvas_rect: RectLike,
+    to_poly: bool = False,
+    poly_step: float = 4.0,
+) -> PathDict: ...
+def fill_path_from_mask(
+    seed: PointLike,
+    boundary: MaskLike,
+    to_poly: bool = False,
+    poly_step: float = 4.0,
+) -> PathDict: ...
+```
+
+### Path-to-polyline output
+
+Functions that return paths often accept `to_poly` and `poly_step`.
+
+- `to_poly=False` returns path commands such as `move`, `line`, `quad`, `cubic`,
+  and `close`.
+- `to_poly=True` adds sampled `polylines` to the returned dict. This is useful
+  when Python code wants point lists instead of Qt-style path commands.
+- `poly_step` controls the approximate sampling distance, in canvas units, used
+  when converting curves to polylines. Smaller values produce more points and a
+  closer approximation; larger values produce fewer points and a rougher
+  approximation.
+
+For example, `poly_step=1.0` samples curves densely, while `poly_step=12.0`
+samples them sparsely. This does not change the C++ path or fill region itself;
+it only changes the density of the `polylines` data returned to Python.
 
 ### Vector region fill helpers
 
@@ -241,6 +329,3 @@ Stroke dict:
 
 - Build commands are intentionally not part of this document.
 - The conversion helpers raise `TypeError` when Python input cannot be converted.
-- `to_poly=True` is useful when Python code needs sampled geometry instead of
-  path commands.
-- `poly_step` controls curve sampling distance for path-to-polyline output.
