@@ -1,5 +1,5 @@
 #include "toolspanel.h"
-#include "./ui_toolspanel.h"
+#include "ui_toolspanel.h"
 
 #include <QPushButton>
 #include <QSignalBlocker>

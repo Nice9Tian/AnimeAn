@@ -1,5 +1,5 @@
 #include "mainwindow.h"
-#include "./ui_mainwindow.h"
+#include "ui_mainwindow.h"
 #include "assetpanel.h"
 #include "framepanel.h"
 #include "layerpanel.h"
@@ -564,8 +564,8 @@ void MainWindow::setupPython()
     try {
         py::list pythonPath = py::module_::import("sys").attr("path");
         pythonPath.insert(0, QCoreApplication::applicationDirPath().toStdString());
-        if (QFileInfo::exists(QDir(QStringLiteral(ANIMEAN_SOURCE_DIR)).filePath(QStringLiteral("hello_world.py")))) {
-            pythonPath.insert(0, ANIMEAN_SOURCE_DIR);
+        if (QFileInfo::exists(QDir(QStringLiteral(ANIMEAN_PYFILE_DIR)).filePath(QStringLiteral("hello_world.py")))) {
+            pythonPath.insert(0, ANIMEAN_PYFILE_DIR);
         }
 
         const std::string helloText = py::module_::import("hello_world")

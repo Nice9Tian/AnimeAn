@@ -1,7 +1,7 @@
 #ifndef VECTORLOGIC_H
 #define VECTORLOGIC_H
 
-#include "animemodel.h"
+#include "algorithm/animemodel.h"
 
 #include <QImage>
 #include <QLineF>

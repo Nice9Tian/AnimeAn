@@ -32,8 +32,8 @@ int main(int argc, char *argv[])
 
     QStringList pythonPath;
     pythonPath << appDir;
-    if (QFileInfo::exists(QDir(QStringLiteral(ANIMEAN_SOURCE_DIR)).filePath(QStringLiteral("hello_world.py")))) {
-        pythonPath << QStringLiteral(ANIMEAN_SOURCE_DIR);
+    if (QFileInfo::exists(QDir(QStringLiteral(ANIMEAN_PYFILE_DIR)).filePath(QStringLiteral("hello_world.py")))) {
+        pythonPath << QStringLiteral(ANIMEAN_PYFILE_DIR);
     }
 
     QStringList dllPath;

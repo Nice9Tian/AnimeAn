@@ -1,5 +1,5 @@
 #include "framepanel.h"
-#include "./ui_framepanel.h"
+#include "ui_framepanel.h"
 
 FramePanel::FramePanel(QWidget *parent)
     : QWidget(parent)

@@ -1,5 +1,5 @@
 #include "assetpanel.h"
-#include "./ui_assetpanel.h"
+#include "ui_assetpanel.h"
 
 AssetPanel::AssetPanel(QWidget *parent)
     : QWidget(parent)

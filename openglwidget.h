@@ -1,8 +1,8 @@
 #ifndef OPENGLWIDGET_H
 #define OPENGLWIDGET_H
 
-#include "animemodel.h"
-#include "vectorlogic.h"
+#include "algorithm/animemodel.h"
+#include "algorithm/vectorlogic.h"
 
 #include <QColor>
 #include <QLineF>

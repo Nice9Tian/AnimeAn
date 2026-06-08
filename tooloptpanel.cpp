@@ -1,5 +1,5 @@
 #include "tooloptpanel.h"
-#include "./ui_tooloptpanel.h"
+#include "ui_tooloptpanel.h"
 
 #include <QAbstractItemView>
 #include <QHBoxLayout>

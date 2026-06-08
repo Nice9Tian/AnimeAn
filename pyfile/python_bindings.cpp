@@ -2,8 +2,8 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
-#include "animemodel.h"
-#include "vectorlogic.h"
+#include "algorithm/animemodel.h"
+#include "algorithm/vectorlogic.h"
 
 #include <QImage>
 #include <QLineF>

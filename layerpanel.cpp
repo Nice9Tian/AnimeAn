@@ -1,5 +1,5 @@
 #include "layerpanel.h"
-#include "./ui_layerpanel.h"
+#include "ui_layerpanel.h"
 
 LayerPanel::LayerPanel(QWidget *parent)
     : QWidget(parent)
