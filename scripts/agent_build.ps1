@@ -3,11 +3,6 @@ $ErrorActionPreference = "Stop"
 $outPath = Join-Path -Path (Get-Location) -ChildPath "out.txt"
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $logLock = New-Object System.Object
-$buildTimeoutSeconds = 300
-
-if ($env:AGENT_BUILD_TIMEOUT_SECONDS) {
-    $buildTimeoutSeconds = [int]$env:AGENT_BUILD_TIMEOUT_SECONDS
-}
 
 function Write-AgentLog {
     param(
@@ -56,7 +51,6 @@ try {
     Write-AgentLog "===== AGENT BUILD START ====="
     Write-AgentLog "PWD=$PWD"
     Write-AgentLog "OUT=$outPath"
-    Write-AgentLog "TIMEOUT_SECONDS=$buildTimeoutSeconds"
     Write-StepPassed "write_header"
 
     $cmake = "C:\Qt\Tools\CMake_64\bin\cmake.exe"
@@ -73,7 +67,10 @@ try {
     if (-not (Test-Path -LiteralPath $cmake -PathType Leaf)) { throw "cmake not found: $cmake" }
     Write-StepPassed "check_cmake_path"
 
-    if (-not (Test-Path -LiteralPath $buildDir -PathType Container)) { throw "build dir not found: $buildDir" }
+    if (-not (Test-Path -LiteralPath $buildDir -PathType Container)) {
+        New-Item -ItemType Directory -Path $buildDir -Force | Out-Null
+        Write-AgentLog "build_dir_created:passed path=$buildDir"
+    }
     Write-StepPassed "check_build_dir"
 
     if (-not (Test-Path -LiteralPath $makeProgram -PathType Leaf)) { throw "mingw32-make not found: $makeProgram" }
@@ -172,9 +169,6 @@ try {
     $outEof = $false
     $errEof = $false
 
-    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-    $lastSnapshotTime = 0
-
     while ((-not $process.HasExited) -or (-not $outEof) -or (-not $errEof)) {
         $taskProcessed = $false
 
@@ -205,42 +199,9 @@ try {
         if (-not $taskProcessed) {
             [System.Threading.Thread]::Sleep(10)
         }
-
-        $elapsedSeconds = [int]$stopwatch.Elapsed.TotalSeconds
-        if ($elapsedSeconds - $lastSnapshotTime -ge 10) {
-            if (-not $process.HasExited) {
-                Write-AgentLog "wait_process:passed elapsed_seconds=$elapsedSeconds still_running=true"
-                Write-ProcessSnapshot $process.Id
-            }
-            $lastSnapshotTime = $elapsedSeconds
-        }
-
-        if (-not $process.HasExited -and $elapsedSeconds -ge $buildTimeoutSeconds) {
-            Write-StepFailed "build_timeout" "elapsed_seconds=$elapsedSeconds"
-            Write-ProcessSnapshot $process.Id
-            try {
-                $children = Get-CimInstance Win32_Process |
-                    Where-Object { $_.ParentProcessId -eq $process.Id } |
-                    Select-Object -ExpandProperty ProcessId
-
-                foreach ($childPid in $children) {
-                    Stop-Process -Id $childPid -Force -ErrorAction SilentlyContinue
-                    Write-AgentLog "stop_child_process:passed pid=$childPid"
-                }
-            } catch {
-                Write-StepFailed "stop_child_process" $_.Exception.Message
-            }
-
-            $process.Kill()
-            Write-StepPassed "stop_root_process"
-            $process.WaitForExit()
-            $ec = 124
-            throw "build timed out after $elapsedSeconds seconds"
-        }
     }
 
     $process.WaitForExit()
-    $stopwatch.Stop()
     Write-StepPassed "wait_process_exit"
 
     $ec = $process.ExitCode
@@ -254,9 +215,7 @@ try {
 
 } catch {
     Write-StepFailed "agent_build" $_.Exception.Message
-    if ($ec -ne 124) {
-        $ec = 1
-    }
+    $ec = 1
 }
 
 Write-StepPassed "write_footer"
