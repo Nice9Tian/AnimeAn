@@ -53,11 +53,14 @@ try {
     Write-AgentLog "OUT=$outPath"
     Write-StepPassed "write_header"
 
-    $cmake = "C:\Qt\Tools\CMake_64\bin\cmake.exe"
-    $buildDir = "C:\Users\admin\Documents\AnimeAn\build\Desktop_Qt_6_9_1_MinGW_64_bit-Release"
-    $sourceDir = "C:\Users\admin\Documents\AnimeAn"
-    $qtPrefixPath = "C:\Qt\6.9.1\mingw_64"
-    $mingwBin = "C:\Qt\Tools\mingw1310_64\bin"
+    $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+    $qtEnvLocationPath = Join-Path -Path $scriptDir -ChildPath "qt_env_loaction.ps1"
+    if (-not (Test-Path -LiteralPath $qtEnvLocationPath -PathType Leaf)) { throw "Qt env location file not found: $qtEnvLocationPath" }
+    . $qtEnvLocationPath
+    Write-StepPassed "load_qt_env_location"
+
+    $sourceDir = (Get-Location).Path
+    $buildDir = Join-Path -Path $sourceDir -ChildPath "build\Desktop_Qt_6_9_1_MinGW_64_bit-Release"
     $generator = "MinGW Makefiles"
     $makeProgram = Join-Path -Path $mingwBin -ChildPath "mingw32-make.exe"
     $cCompiler = Join-Path -Path $mingwBin -ChildPath "gcc.exe"
