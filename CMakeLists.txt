@@ -15,7 +15,7 @@ option(ANIMEAN_BUILD_PYTHON_MODULE "Build the optional AnimeAn Python extension 
 set(ANIMEAN_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}" CACHE PATH "AnimeAn project root directory.")
 set(ANIMEAN_PYFILE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/pyfile" CACHE PATH "Directory containing hello-world Python scripts.")
 set(ANIMEAN_PYTHONBIND_DIR "${CMAKE_CURRENT_SOURCE_DIR}/pythonbind" CACHE PATH "Directory containing Python bindings and helper modules.")
-set(ANIMEAN_OPENTOONZ_TOOLS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/opentonnz_tools" CACHE PATH "Directory containing OpenToonz import helper modules.")
+set(ANIMEAN_OPENTOONZ_TOOLS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/opentoonz_tools" CACHE PATH "Directory containing OpenToonz import helper modules.")
 
 if(ANIMEAN_WITH_PYTHON OR ANIMEAN_BUILD_PYTHON_MODULE)
     set(ANIMEAN_PYTHON_HOME "${CMAKE_CURRENT_SOURCE_DIR}/tools/python312" CACHE PATH "Python runtime used by AnimeAn.")
