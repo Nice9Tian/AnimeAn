@@ -1,6 +1,7 @@
 {
   "agent_instructions": {
     "purpose": "Verify if the deploy target builds and exits successfully.",
+    "build_policy": "Builds are slow. Do not run a build unless it is necessary, such as after substantial code changes or when explicitly requested.",
     "execution": {
       "shell": "powershell",
       "command": "PowerShell -ExecutionPolicy Bypass -File \".\\scripts\\agent_build.ps1\"",
