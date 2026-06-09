@@ -22,6 +22,7 @@
 #include <QFileInfo>
 #include <QFileDialog>
 #include <QImageReader>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QListWidget>
 #include <QMessageBox>
@@ -58,6 +59,109 @@ int movedRowTarget(int sourceRow, int destinationChild)
 QString utf8String(const std::string &text)
 {
     return QString::fromUtf8(text.c_str());
+}
+
+QString toolControlName(PaintOpenGLWidget::Tool tool)
+{
+    switch (tool) {
+    case PaintOpenGLWidget::Tool::Pen:
+        return QStringLiteral("pen");
+    case PaintOpenGLWidget::Tool::Eraser:
+        return QStringLiteral("eraser");
+    case PaintOpenGLWidget::Tool::DeleteLine:
+        return QStringLiteral("delete_line");
+    case PaintOpenGLWidget::Tool::Fill:
+        return QStringLiteral("fill");
+    }
+    return QStringLiteral("pen");
+}
+
+QJsonArray fallbackToolControls(PaintOpenGLWidget::Tool tool, int smoothValue, int penWidth, PaintOpenGLWidget::FillScope fillScope)
+{
+    const QString fillScopeValue = fillScope == PaintOpenGLWidget::FillScope::AllLayers
+                                       ? QStringLiteral("all")
+                                       : QStringLiteral("current");
+    const QString eraserModeValue = tool == PaintOpenGLWidget::Tool::DeleteLine
+                                        ? QStringLiteral("line")
+                                        : QStringLiteral("area");
+    const QByteArray json = QStringLiteral(R"([
+        {
+            "name": "color",
+            "type": "button_row",
+            "title": "Color",
+            "hook": "color",
+            "options": [
+                {"title": "Black", "value": "black", "state": {"color": "black"}},
+                {"title": "Blue", "value": "blue", "state": {"color": "blue"}},
+                {"title": "Green", "value": "green", "state": {"color": "green"}}
+            ]
+        },
+        {
+            "name": "smooth",
+            "type": "slider",
+            "title": "Smooth",
+            "hook": "smooth",
+            "min": 0,
+            "max": 100,
+            "value": %1
+        },
+        {
+            "name": "pen_width",
+            "type": "slider",
+            "title": "Width",
+            "hook": "pen_width",
+            "min": 1,
+            "max": 50,
+            "value": %2
+        }
+    ])").arg(smoothValue).arg(penWidth).toUtf8();
+    const QByteArray fillJson = QStringLiteral(R"([
+        {
+            "name": "color",
+            "type": "button_row",
+            "title": "Color",
+            "hook": "color",
+            "options": [
+                {"title": "Black", "value": "black", "state": {"color": "black"}},
+                {"title": "Blue", "value": "blue", "state": {"color": "blue"}},
+                {"title": "Green", "value": "green", "state": {"color": "green"}}
+            ]
+        },
+        {
+            "name": "fill_scope",
+            "type": "list",
+            "title": "Fill Scope",
+            "hook": "fill_scope",
+            "value": "%1",
+            "height": 62,
+            "options": [
+                {"title": "ALL", "value": "all"},
+                {"title": "Current", "value": "current"}
+            ]
+        }
+    ])").arg(fillScopeValue).toUtf8();
+    const QByteArray eraserJson = QStringLiteral(R"([
+        {
+            "name": "eraser_mode",
+            "type": "list",
+            "title": "Eraser Mode",
+            "hook": "eraser_mode",
+            "value": "%1",
+            "height": 62,
+            "options": [
+                {"title": "LineMode", "value": "line"},
+                {"title": "AreaMode", "value": "area"}
+            ]
+        }
+    ])").arg(eraserModeValue).toUtf8();
+
+    if (tool == PaintOpenGLWidget::Tool::Fill) {
+        return QJsonDocument::fromJson(fillJson).array();
+    }
+    if (tool == PaintOpenGLWidget::Tool::Eraser || tool == PaintOpenGLWidget::Tool::DeleteLine) {
+        return QJsonDocument::fromJson(eraserJson).array();
+    }
+    return QJsonDocument::fromJson(json).array();
 }
 }
 
@@ -385,36 +489,82 @@ void MainWindow::createToolDocks()
     splitDockWidget(m_toolOptDock, m_layerDock, Qt::Vertical);
     splitDockWidget(m_layerDock, m_assetDock, Qt::Vertical);
 
-    auto selectTool = [this, toolsPanel, toolOptPanel](PaintOpenGLWidget::Tool tool) {
+    auto loadToolOptions = [this, toolOptPanel](PaintOpenGLWidget::Tool tool) {
+        QJsonArray controls;
+#ifdef ANIMEAN_WITH_PYTHON
+        try {
+            py::dict state;
+            state["smooth"] = m_toolSmoothValue;
+            state["pen_width"] = m_toolPenWidth;
+            state["fill_scope"] = m_toolFillAllLayers ? "all" : "current";
+            const std::string json = py::module_::import("toolcontrol")
+                                         .attr("options_for_tool_json")(toolControlName(tool).toStdString(), state)
+                                         .cast<std::string>();
+            QJsonParseError parseError;
+            const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json), &parseError);
+            if (parseError.error == QJsonParseError::NoError && document.isArray()) {
+                controls = document.array();
+            } else {
+                ui->label->setText(QStringLiteral("toolcontrol JSON error: %1").arg(parseError.errorString()));
+            }
+        } catch (const py::error_already_set &error) {
+            ui->label->setText(QStringLiteral("toolcontrol.py error: %1").arg(QString::fromUtf8(error.what())));
+        }
+#endif
+        if (controls.isEmpty()) {
+            controls = fallbackToolControls(tool,
+                                            m_toolSmoothValue,
+                                            m_toolPenWidth,
+                                            m_toolFillAllLayers ? PaintOpenGLWidget::FillScope::AllLayers
+                                                                : PaintOpenGLWidget::FillScope::CurrentLayer);
+        }
+        toolOptPanel->configureControls(controls);
+    };
+
+    auto applyTool = [this, toolsPanel, toolOptPanel, loadToolOptions](PaintOpenGLWidget::Tool tool, bool reloadOptions) {
         m_paintWidget->setTool(tool);
         toolsPanel->setTool(tool);
         toolOptPanel->setTool(tool);
+        if (reloadOptions) {
+            loadToolOptions(tool);
+        }
     };
+
+    auto selectTool = [applyTool](PaintOpenGLWidget::Tool tool) {
+        applyTool(tool, true);
+    };
+
+    loadToolOptions(PaintOpenGLWidget::Tool::Pen);
 
     connect(toolsPanel, &ToolsPanel::toolSelected, this, selectTool);
 
-    connect(toolOptPanel, &ToolOptPanel::colorSelected, this, [this, toolOptPanel, selectTool](const QColor &color) {
+    connect(toolOptPanel, &ToolOptPanel::colorSelected, this, [this, toolOptPanel, applyTool](const QColor &color) {
         if (toolOptPanel->tool() == PaintOpenGLWidget::Tool::Fill) {
             m_paintWidget->setDrawingColor(color);
-            selectTool(PaintOpenGLWidget::Tool::Fill);
+            applyTool(PaintOpenGLWidget::Tool::Fill, false);
             return;
         }
 
         m_paintWidget->setPenColor(color);
-        selectTool(PaintOpenGLWidget::Tool::Pen);
+        applyTool(PaintOpenGLWidget::Tool::Pen, false);
     });
 
     connect(toolOptPanel, &ToolOptPanel::fillScopeSelected, this, [this](PaintOpenGLWidget::FillScope scope) {
+        m_toolFillAllLayers = scope == PaintOpenGLWidget::FillScope::AllLayers;
         m_paintWidget->setFillScope(scope);
     });
 
-    connect(toolOptPanel, &ToolOptPanel::eraserModeSelected, this, selectTool);
+    connect(toolOptPanel, &ToolOptPanel::eraserModeSelected, this, [applyTool](PaintOpenGLWidget::Tool tool) {
+        applyTool(tool, false);
+    });
 
     connect(toolOptPanel, &ToolOptPanel::smoothValueChanged, this, [this](int value) {
+        m_toolSmoothValue = value;
         m_paintWidget->setSmoothValue(value);
     });
 
     connect(toolOptPanel, &ToolOptPanel::penWidthChanged, this, [this](int value) {
+        m_toolPenWidth = value;
         m_paintWidget->setPenWidth(value);
     });
 }

@@ -65,6 +65,9 @@ private:
     SelectionAttention m_pendingAttention;
     AttentionChange m_pendingAttentionChange = AttentionChange::FrameChange;
     QPoint m_listPressPos;
+    int m_toolSmoothValue = 50;
+    int m_toolPenWidth = 5;
+    bool m_toolFillAllLayers = false;
     bool m_refreshingLists = false;
     bool m_listMousePressed = false;
     bool m_listDragActive = false;
