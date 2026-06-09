@@ -15,6 +15,32 @@ _SCENES: dict[str, "AnimeModel"] = {}
 _SCENES_BY_INT: dict[int, "AnimeModel"] = {}
 
 
+class LazyList:
+    def __init__(self, loader: Any) -> None:
+        self._loader = loader
+
+    def _items(self) -> list[Any]:
+        return list(self._loader())
+
+    def __getitem__(self, index: Any) -> Any:
+        return self._items()[index]
+
+    def __iter__(self):
+        return iter(self._items())
+
+    def __len__(self) -> int:
+        return len(self._items())
+
+    def __bool__(self) -> bool:
+        return bool(self._items())
+
+    def __repr__(self) -> str:
+        return repr(self._items())
+
+    def to_list(self) -> list[Any]:
+        return self._items()
+
+
 def _contains(value: Any, needle: str | None) -> bool:
     if needle is None:
         return True
@@ -115,7 +141,26 @@ class AnimeModel:
     def get_structure(self) -> dict[str, Any]:
         return self.scene.get_structure()
 
-    def frame(self, *, id: int | None = None, index: int | None = None) -> "FrameHandle | list[FrameHandle]":
+    @property
+    def frame(self) -> LazyList:
+        return LazyList(lambda: self.get_frame())
+
+    @property
+    def layer(self) -> LazyList:
+        return LazyList(lambda: self.get_layer())
+
+    @property
+    def asset(self) -> LazyList:
+        return LazyList(lambda: self.get_asset())
+
+    def get_frame(
+        self,
+        *,
+        id: int | None = None,
+        index: int | None = None,
+        name: str | None = None,
+        Name: str | None = None,
+    ) -> "FrameHandle | list[FrameHandle]":
         structure = self.get_structure()
         if index is not None:
             if index < 0 or index >= structure["frame_count"]:
@@ -126,17 +171,34 @@ class AnimeModel:
             if frame_index < 0 or frame_index >= structure["frame_count"]:
                 raise IndexError(f"Frame id {id} was not found.")
             return FrameHandle(self, frame_index)
-        return [FrameHandle(self, frame_index) for frame_index in range(structure["frame_count"])]
+        frame_name = name if name is not None else Name
+        return [
+            FrameHandle(self, frame["index"])
+            for frame in structure["frames"]
+            if _contains(frame.get("name", ""), frame_name)
+        ]
 
-    def layer(
+    def get_layer(
         self,
         *,
         id: int | None = None,
+        name: str | None = None,
         Name: str | None = None,
         asset_name: str | None = None,
         frame_id: int | None = None,
     ) -> list["LayerMatch"]:
-        return _filter_layers(self, id, Name, asset_name, frame_id)
+        layer_name = name if name is not None else Name
+        return _filter_layers(self, id, layer_name, asset_name, frame_id)
+
+    def get_asset(
+        self,
+        *,
+        id: int | None = None,
+        name: str | None = None,
+        Name: str | None = None,
+        index: int | None = None,
+    ) -> AssetRef | list[AssetRef]:
+        return _scene_ref_from_model(self).get_asset(id=id, name=name, Name=Name, index=index)
 
     @property
     def current_frame(self) -> int:
@@ -219,6 +281,24 @@ class AnimeModel:
         layer_index = self.current_layer if layer is None else layer
         self.scene.clear_image(row, layer_index)
         return self
+
+    def remove_frame(self, frame: int) -> bool:
+        return bool(self.scene.delete_frame(frame))
+
+    def remove_layer(self, layer: int) -> bool:
+        removed = bool(self.scene.delete_layer(layer))
+        if removed and hasattr(self.scene, "remap_fill_source_layers_after_delete"):
+            self.scene.remap_fill_source_layers_after_delete(layer)
+        return removed
+
+    def remove_stroke(self, frame: int, layer: int, stroke: int) -> bool:
+        return bool(self.scene.remove_stroke(frame, layer, stroke))
+
+    def remove_fill_area(self, frame: int, layer: int, fill_area: int) -> bool:
+        return bool(self.scene.remove_fill_area(frame, layer, fill_area))
+
+    def clear_raster(self, frame: int, layer: int) -> bool:
+        return bool(self.scene.clear_raster(frame, layer))
 
 
 class DataObject:
@@ -327,17 +407,58 @@ class StrokeRef(DataObject):
             return []
         return _asset_names_at_locations(self.model, self.location())
 
+    def remove(self) -> bool:
+        if self.model is None or self.frame_index is None or self.layer_index is None or self.stroke_index is None:
+            return False
+        return self.model.remove_stroke(self.frame_index, self.layer_index, self.stroke_index)
+
 
 class FillAreaRef(DataObject):
+    def __init__(
+        self,
+        data: dict[str, Any],
+        model: AnimeModel | None = None,
+        frame_index: int | None = None,
+        layer_index: int | None = None,
+        fill_index: int | None = None,
+    ) -> None:
+        super().__init__(data)
+        self.model = model
+        self.frame_index = frame_index
+        self.layer_index = layer_index
+        self.fill_index = fill_index if fill_index is not None else data.get("index")
+
     @property
     def index(self) -> int | None:
         return self._data.get("index")
 
+    def remove(self) -> bool:
+        if self.model is None or self.frame_index is None or self.layer_index is None or self.fill_index is None:
+            return False
+        return self.model.remove_fill_area(self.frame_index, self.layer_index, self.fill_index)
+
 
 class RasterRef(DataObject):
+    def __init__(
+        self,
+        data: dict[str, Any],
+        model: AnimeModel | None = None,
+        frame_index: int | None = None,
+        layer_index: int | None = None,
+    ) -> None:
+        super().__init__(data)
+        self.model = model
+        self.frame_index = frame_index
+        self.layer_index = layer_index
+
     @property
     def empty(self) -> bool:
         return bool(self._data.get("empty", True))
+
+    def remove(self) -> bool:
+        if self.model is None or self.frame_index is None or self.layer_index is None:
+            return False
+        return self.model.clear_raster(self.frame_index, self.layer_index)
 
 
 def _unique_values(values: Iterable[Any]) -> list[Any]:
@@ -428,6 +549,14 @@ class AssetRef(DataObject):
         return self.asset_index
 
     @property
+    def id(self) -> int:
+        return self.asset_index
+
+    @property
+    def name(self) -> str:
+        return self.model.scene.asset_name(self.asset_index)
+
+    @property
     def num(self) -> int | None:
         return self._data.get("num")
 
@@ -435,6 +564,9 @@ class AssetRef(DataObject):
         self.model.scene.set_asset_name(self.asset_index, name)
         self._data["name"] = self.model.scene.asset_name(self.asset_index)
         return self
+
+    def remove(self) -> bool:
+        raise NotImplementedError("Asset removal is not exposed by the current scene model.")
 
     def location(self) -> list[LocationPath]:
         return _locations_for_asset(self.model, self.asset_index)
@@ -467,7 +599,20 @@ class CellRef(DataObject):
         self.frame_index = frame_index
         self.layer_index = layer_index
 
-    def stroke(self, num: int | None = None, *, index: int | None = None, to_poly: bool = False) -> StrokeRef | list[StrokeRef]:
+    @property
+    def stroke(self) -> LazyList:
+        return LazyList(lambda: self.get_stroke())
+
+    def get_stroke(
+        self,
+        id: int | None = None,
+        *,
+        index: int | None = None,
+        num: int | None = None,
+        name: str | None = None,
+        Name: str | None = None,
+        to_poly: bool = False,
+    ) -> StrokeRef | list[StrokeRef]:
         strokes = self.model.strokes(self.frame_index, self.layer_index, to_poly=to_poly)
         wrapped = [
             StrokeRef({"index": i, "num": i + 1, **stroke}, self.model, self.frame_index, self.layer_index, i)
@@ -477,14 +622,29 @@ class CellRef(DataObject):
             return wrapped[index]
         if num is not None:
             return wrapped[num - 1]
-        return wrapped
+        stroke_name = name if name is not None else Name
+        matches = [
+            stroke for stroke in wrapped
+            if (id is None or stroke.get("id") == id)
+            and _contains(stroke.get("name", ""), stroke_name)
+        ]
+        if id is not None:
+            if not matches:
+                raise IndexError(f"Stroke id {id} was not found.")
+            return matches[0]
+        if stroke_name is not None and len(matches) == 1:
+            return matches[0]
+        return matches
 
     def strokes(self, *, to_poly: bool = False) -> list[StrokeRef]:
-        return self.stroke(to_poly=to_poly)  # type: ignore[return-value]
+        return self.get_stroke(to_poly=to_poly)  # type: ignore[return-value]
 
     def fillarea(self, num: int | None = None, *, index: int | None = None, to_poly: bool = False) -> FillAreaRef | list[FillAreaRef]:
         fills = self.model.cell(self.frame_index, self.layer_index, to_poly=to_poly)["image"]["fills"]
-        wrapped = [FillAreaRef({"index": i, "num": i + 1, **fill}) for i, fill in enumerate(fills)]
+        wrapped = [
+            FillAreaRef({"index": i, "num": i + 1, **fill}, self.model, self.frame_index, self.layer_index, i)
+            for i, fill in enumerate(fills)
+        ]
         if index is not None:
             return wrapped[index]
         if num is not None:
@@ -495,7 +655,10 @@ class CellRef(DataObject):
         return self.fillarea(num, index=index, to_poly=to_poly)
 
     def raster(self) -> RasterRef:
-        return RasterRef(self.model.cell(self.frame_index, self.layer_index)["image"]["raster"])
+        return RasterRef(self.model.cell(self.frame_index, self.layer_index)["image"]["raster"],
+                         self.model,
+                         self.frame_index,
+                         self.layer_index)
 
     def add_polyline(
         self,
@@ -532,6 +695,9 @@ class CellRef(DataObject):
         self._data = self.model.cell(self.frame_index, self.layer_index)
         return self
 
+    def remove(self) -> "CellRef":
+        return self.clear()
+
 
 class LayerRef(DataObject):
     def __init__(self, data: dict[str, Any], model: AnimeModel, frame_index: int, layer_index: int) -> None:
@@ -545,6 +711,18 @@ class LayerRef(DataObject):
                        self.model,
                        self.frame_index,
                        self.layer_index)
+
+    @property
+    def id(self) -> int:
+        return self.layer_index
+
+    @property
+    def index(self) -> int:
+        return self.layer_index
+
+    @property
+    def name(self) -> str:
+        return self.model.scene.layer_name(self.layer_index)
 
     def setname(self, name: str) -> "LayerRef":
         self.model.scene.set_layer_name(self.layer_index, name)
@@ -577,11 +755,31 @@ class LayerRef(DataObject):
     def assetName(self) -> list[str]:
         return _asset_names_at_locations(self.model, self.location())
 
-    def stroke(self, num: int | None = None, *, index: int | None = None, to_poly: bool = False) -> StrokeRef | list[StrokeRef]:
-        return self.cell(to_poly=to_poly).stroke(num, index=index, to_poly=to_poly)
+    @property
+    def stroke(self) -> LazyList:
+        return LazyList(lambda: self.get_stroke())
+
+    def get_stroke(
+        self,
+        id: int | None = None,
+        *,
+        index: int | None = None,
+        num: int | None = None,
+        name: str | None = None,
+        Name: str | None = None,
+        to_poly: bool = False,
+    ) -> StrokeRef | list[StrokeRef]:
+        return self.cell(to_poly=to_poly).get_stroke(
+            id,
+            index=index,
+            num=num,
+            name=name,
+            Name=Name,
+            to_poly=to_poly,
+        )
 
     def strokes(self, *, to_poly: bool = False) -> list[StrokeRef]:
-        return self.cell(to_poly=to_poly).strokes(to_poly=to_poly)
+        return self.get_stroke(to_poly=to_poly)  # type: ignore[return-value]
 
     def fillarea(self, num: int | None = None, *, index: int | None = None, to_poly: bool = False) -> FillAreaRef | list[FillAreaRef]:
         return self.cell(to_poly=to_poly).fillarea(num, index=index, to_poly=to_poly)
@@ -591,6 +789,13 @@ class LayerRef(DataObject):
 
     def raster(self) -> RasterRef:
         return self.cell().raster()
+
+    def clear(self) -> "LayerRef":
+        self.cell().clear()
+        return self
+
+    def remove(self) -> bool:
+        return self.model.remove_layer(self.layer_index)
 
     def add_polyline(
         self,
@@ -628,23 +833,41 @@ class FrameRef(DataObject):
         self.model = model
         self.frame_index = frame_index
 
-    def layer(
+    @property
+    def id(self) -> int:
+        return self.frame_index
+
+    @property
+    def index(self) -> int:
+        return self.frame_index
+
+    @property
+    def name(self) -> str:
+        return self.model.scene.frame_name(self.frame_index)
+
+    @property
+    def layer(self) -> LazyList:
+        return LazyList(lambda: self.get_layer())
+
+    def get_layer(
         self,
         *,
         id: int | None = None,
+        name: str | None = None,
         Name: str | None = None,
         index: int | None = None,
         asset_name: str | None = None,
     ) -> LayerRef | list[LayerRef]:
         if index is not None:
             return self._layer_at_index(index)
-        matches = _filter_layers_at_index(self.model, id, Name, asset_name, self.frame_index)
+        layer_name = name if name is not None else Name
+        matches = _filter_layers_at_index(self.model, id, layer_name, asset_name, self.frame_index)
         if id is not None:
             if not matches:
                 raise IndexError(f"Layer id {id} was not found at frame {self.frame_index + 1}.")
             match = matches[0]
             return LayerRef(match.data or {}, self.model, self.frame_index, match.index)
-        if Name is not None and len(matches) == 1:
+        if layer_name is not None and len(matches) == 1:
             match = matches[0]
             return LayerRef(match.data or {}, self.model, self.frame_index, match.index)
         return [LayerRef(match.data or {}, self.model, self.frame_index, match.index) for match in matches]
@@ -655,6 +878,9 @@ class FrameRef(DataObject):
             if layer["index"] == index:
                 return LayerRef(layer, self.model, self.frame_index, index)
         raise IndexError(f"Layer index {index} was not found.")
+
+    def remove(self) -> bool:
+        return self.model.remove_frame(self.frame_index)
 
 
 class SceneRef(DataObject):
@@ -672,8 +898,20 @@ class SceneRef(DataObject):
     def sceneId(self) -> int:
         return self.raw_scene.scene_id()
 
+    @property
+    def id(self) -> int:
+        return self.sceneId
+
+    @property
+    def name(self) -> str:
+        return self.sceneName
+
     def location(self) -> LocationPath:
         return _location_path(self.model, None, None, None)
+
+    @property
+    def current(self) -> "CurrentRef":
+        return CurrentRef(self)
 
     @property
     def layerid(self) -> list[int]:
@@ -690,12 +928,33 @@ class SceneRef(DataObject):
         structure = self.model.get_structure()
         return [frame["index"] for frame in structure["frames"]]
 
-    def frame(self, *, id: int | None = None, index: int | None = None) -> FrameRef | list[FrameRef]:
+    @property
+    def frame(self) -> LazyList:
+        return LazyList(lambda: self.get_frame())
+
+    @property
+    def layer(self) -> LazyList:
+        return LazyList(lambda: self.get_layer())
+
+    @property
+    def asset(self) -> LazyList:
+        return LazyList(lambda: self.get_asset())
+
+    def get_frame(
+        self,
+        *,
+        id: int | None = None,
+        index: int | None = None,
+        name: str | None = None,
+        Name: str | None = None,
+    ) -> FrameRef | list[FrameRef]:
         structure = self.model.get_structure()
         if index is None and id is None:
+            frame_name = name if name is not None else Name
             return [
                 FrameRef(structure["frames"][frame_index], self.model, frame_index)
                 for frame_index in range(structure["frame_count"])
+                if _contains(structure["frames"][frame_index].get("name", ""), frame_name)
             ]
         frame_index = index if index is not None else id
         if frame_index < 0 or frame_index >= structure["frame_count"]:
@@ -703,7 +962,14 @@ class SceneRef(DataObject):
         frame_data = structure["frames"][frame_index]
         return FrameRef(frame_data, self.model, frame_index)
 
-    def asset(self, *, id: int | None = None, Name: str | None = None, index: int | None = None) -> AssetRef | list[AssetRef]:
+    def get_asset(
+        self,
+        *,
+        id: int | None = None,
+        name: str | None = None,
+        Name: str | None = None,
+        index: int | None = None,
+    ) -> AssetRef | list[AssetRef]:
         structure = self.model.get_structure()
         assets = structure["assets"]
         if index is not None:
@@ -711,12 +977,13 @@ class SceneRef(DataObject):
                 raise IndexError(f"Asset index {index} was not found.")
             return AssetRef(assets[index], self.model, index)
 
+        asset_name = name if name is not None else Name
         matches: list[AssetRef] = []
         for asset in assets:
             asset_index = asset["index"]
             if id is not None and asset_index != id:
                 continue
-            if not _contains(asset.get("name", ""), Name):
+            if not _contains(asset.get("name", ""), asset_name):
                 continue
             matches.append(AssetRef(asset, self.model, asset_index))
 
@@ -724,24 +991,30 @@ class SceneRef(DataObject):
             if not matches:
                 raise IndexError(f"Asset id {id} was not found.")
             return matches[0]
-        if Name is not None and len(matches) == 1:
+        if asset_name is not None and len(matches) == 1:
             return matches[0]
         return matches
 
-    def layer(
+    def get_layer(
         self,
         *,
         id: int | None = None,
+        name: str | None = None,
         Name: str | None = None,
         index: int | None = None,
         frame_index: int | None = None,
         frame_id: int | None = None,
     ) -> LayerRef | list[LayerRef]:
-        frame_ref = self.frame(id=frame_id, index=frame_index)
+        selected_frame = self.model.current_frame if frame_id is None and frame_index is None else None
+        frame_ref = self.get_frame(
+            id=frame_id,
+            index=selected_frame if selected_frame is not None else frame_index,
+        )
         if isinstance(frame_ref, list):
             raise ValueError("layer() needs frame_id or frame_index when frame() would return multiple frames.")
-        return frame_ref.layer(
+        return frame_ref.get_layer(
             id=id,
+            name=name,
             Name=Name,
             index=index,
         )
@@ -759,19 +1032,136 @@ class SceneRef(DataObject):
         self._data["sceneId"] = scene_id
         return self
 
+    def remove(self) -> bool:
+        _SCENES.pop(self.model.id(), None)
+        _SCENES.pop(self.model.scene_name(), None)
+        _SCENES_BY_INT.pop(self.model.scene_id(), None)
+        if hasattr(_cpp, "unregister_scene"):
+            _cpp.unregister_scene(self.raw_scene)
+        return True
+
 
 class CurrentSceneRef(SceneRef):
+    pass
+
+
+class CurrentRef:
+    def __init__(self, scene_ref: SceneRef | None = None) -> None:
+        self._scene_ref = scene_ref
+
+    def _current_ref(self) -> SceneRef | None:
+        if self._scene_ref is not None:
+            return self._scene_ref
+        current_info = _cpp.get_current()
+        if current_info is None:
+            return None
+        return CurrentSceneRef(dict(current_info))
+
+    @property
+    def scene(self) -> SceneRef | None:
+        return self._current_ref()
+
+    @property
+    def raw_scene(self) -> Any | None:
+        scene_ref = self._current_ref()
+        return scene_ref.raw_scene if scene_ref is not None else None
+
+    @property
+    def model(self) -> AnimeModel | None:
+        scene_ref = self._current_ref()
+        return scene_ref.model if scene_ref is not None else None
+
+    def _frame_id(self) -> int | None:
+        scene_ref = self._current_ref()
+        if scene_ref is None:
+            return None
+        if isinstance(scene_ref, CurrentSceneRef):
+            return scene_ref._data.get("frame")
+        frame_index = scene_ref.model.current_frame
+        return frame_index if frame_index >= 0 else None
+
+    def _layer_id(self) -> int | None:
+        scene_ref = self._current_ref()
+        if scene_ref is None:
+            return None
+        if isinstance(scene_ref, CurrentSceneRef):
+            return scene_ref._data.get("layer")
+        layer_index = scene_ref.model.current_layer
+        return layer_index if layer_index >= 0 else None
+
+    def _asset_id(self) -> int | None:
+        scene_ref = self._current_ref()
+        if scene_ref is None:
+            return None
+        if isinstance(scene_ref, CurrentSceneRef):
+            asset_index = scene_ref._data.get("asset")
+        else:
+            asset_index = scene_ref.model.scene.current_asset()
+            asset_index = asset_index if asset_index >= 0 else None
+        if asset_index is not None:
+            return asset_index
+        return _asset_index_at(scene_ref.model, self._frame_id(), self._layer_id())
+
     @property
     def current_frame(self) -> int | None:
-        return self._data.get("frame")
+        return self._frame_id()
 
     @property
     def current_layer(self) -> int | None:
-        return self._data.get("layer")
+        return self._layer_id()
 
     @property
     def current_asset(self) -> int | None:
-        return self._data.get("asset")
+        return self._asset_id()
+
+    @property
+    def frame(self) -> FrameRef | None:
+        scene_ref = self._current_ref()
+        frame_index = self._frame_id()
+        if scene_ref is None or frame_index is None:
+            return None
+        return scene_ref.get_frame(index=frame_index)
+
+    @property
+    def layer(self) -> LayerRef | None:
+        scene_ref = self._current_ref()
+        frame_index = self._frame_id()
+        layer_index = self._layer_id()
+        if scene_ref is None or frame_index is None or layer_index is None:
+            return None
+        return scene_ref.get_layer(index=layer_index, frame_index=frame_index)
+
+    @property
+    def asset(self) -> AssetRef | None:
+        scene_ref = self._current_ref()
+        asset_index = self._asset_id()
+        if scene_ref is None or asset_index is None:
+            return None
+        return scene_ref.get_asset(id=asset_index)
+
+    @property
+    def location(self) -> LocationPath | None:
+        model = self.model
+        if model is None:
+            return None
+        return _location_path(model, self._frame_id(), self._layer_id(), self._asset_id())
+
+    def __bool__(self) -> bool:
+        return self._current_ref() is not None
+
+    def __repr__(self) -> str:
+        scene_ref = self._current_ref()
+        if scene_ref is None:
+            return "CurrentRef(None)"
+        return (
+            "CurrentRef("
+            f"sceneName={scene_ref.sceneName!r}, "
+            f"sceneId={scene_ref.sceneId!r}, "
+            f"frame={self._frame_id()!r}, "
+            f"layer={self._layer_id()!r}, "
+            f"asset={self._asset_id()!r}, "
+            f"location={self.location!r})"
+        )
 
 
 @dataclass(frozen=True)
@@ -799,27 +1189,39 @@ class LayerMatch:
         cell.add_polyline(points, color=color, width=width)
         return cell
 
+    def remove(self) -> bool:
+        return self.model.remove_layer(self.index)
+
 
 @dataclass(frozen=True)
 class FrameHandle:
     model: AnimeModel
     frame_index: int
 
-    def layer(
+    @property
+    def layer(self) -> LazyList:
+        return LazyList(lambda: self.get_layer())
+
+    def get_layer(
         self,
         *,
         id: int | None = None,
+        name: str | None = None,
         Name: str | None = None,
         asset_name: str | None = None,
         frame_id: int | None = None,
     ) -> "CellHandle | list[LayerMatch]":
         selected_frame = self.frame_index if frame_id is None else frame_id
-        matches = _filter_layers_at_index(self.model, id, Name, asset_name, selected_frame)
+        layer_name = name if name is not None else Name
+        matches = _filter_layers_at_index(self.model, id, layer_name, asset_name, selected_frame)
         if id is not None:
             if not matches:
                 raise IndexError(f"Layer id {id} was not found at frame {selected_frame + 1}.")
             return matches[0].cell()
         return matches
+
+    def remove(self) -> bool:
+        return self.model.remove_frame(self.frame_index)
 
 
 @dataclass(frozen=True)
@@ -860,6 +1262,9 @@ class CellHandle:
     def clear(self) -> "CellHandle":
         self.model.clear_image(self.frame_index, self.layer_index)
         return self
+
+    def remove(self) -> "CellHandle":
+        return self.clear()
 
     def to_dict(self, *, to_poly: bool = False) -> dict[str, Any]:
         return self.model.cell(self.frame_index, self.layer_index, to_poly=to_poly)
@@ -943,8 +1348,8 @@ def _scene_ref_from_model(model: AnimeModel) -> SceneRef:
     return SceneRef(_scene_info_from_model(model))
 
 
-def _scene_info_matches(data: dict[str, Any], Name: str | None, scene_id: int | None) -> bool:
-    if Name is not None and not _contains(data.get("sceneName", ""), Name):
+def _scene_info_matches(data: dict[str, Any], name: str | None, scene_id: int | None) -> bool:
+    if name is not None and not _contains(data.get("sceneName", ""), name):
         return False
     if scene_id is not None and data.get("sceneId") != scene_id:
         return False
@@ -961,22 +1366,25 @@ def _all_scene_refs() -> list[SceneRef]:
     return refs
 
 
-def scene(*, id: int | None = None, Name: str | None = None) -> SceneRef | list[SceneRef]:
+def get_scene(*, id: int | None = None, name: str | None = None, Name: str | None = None) -> SceneRef | list[SceneRef]:
+    scene_name = name if name is not None else Name
     matches: list[SceneRef] = []
     for info in _cpp.get_scene():
         data = dict(info)
-        if _scene_info_matches(data, Name, id):
+        if _scene_info_matches(data, scene_name, id):
             matches.append(SceneRef(data))
 
     for model in _SCENES_BY_INT.values():
         data = _scene_info_from_model(model)
-        if _scene_info_matches(data, Name, id) and data["sceneId"] not in {match.sceneId for match in matches}:
+        if _scene_info_matches(data, scene_name, id) and data["sceneId"] not in {match.sceneId for match in matches}:
             matches.append(SceneRef(data))
 
     if id is not None:
         if matches:
             return matches[0]
-        raise KeyError(f"Scene was not found: id={id!r}, Name={Name!r}")
+        raise KeyError(f"Scene was not found: id={id!r}, name={scene_name!r}")
+    if scene_name is not None and len(matches) == 1:
+        return matches[0]
 
     return matches
 
@@ -985,19 +1393,12 @@ def scenes() -> dict[str, AnimeModel]:
     return dict(_SCENES)
 
 
-def get_scene() -> list[SceneRef]:
-    """Return UI scenes as Python object wrappers."""
-    return _all_scene_refs()
+def get_current() -> CurrentRef | None:
+    return current if current else None
 
 
-def get_current() -> CurrentSceneRef | None:
-    """Return the current UI scene object, including current_frame/current_layer."""
-    current = _cpp.get_current()
-    if current is None:
-        return None
-    return CurrentSceneRef(dict(current))
-
-
+scene = LazyList(lambda: get_scene())
+current = CurrentRef()
 annimemodel = AnimeModel
 animemodel = AnimeModel
 model_pybind = ModelPybind()

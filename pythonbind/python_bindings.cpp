@@ -989,6 +989,10 @@ void bindAnimeanPythonModule(py::module_ &m)
         return current;
     });
 
+    m.def("unregister_scene", [](AnimeSceneModel &model) {
+        unregisterAnimeanUiScene(&model);
+    });
+
     py::class_<AnimeVectorRange>(m, "VectorRange")
         .def(py::init<>())
         .def(py::init<qreal, qreal>())
@@ -1026,6 +1030,9 @@ void bindAnimeanPythonModule(py::module_ &m)
         .def("stroke_count", &AnimeVectorImageModel::strokeCount)
         .def("fill_count", &AnimeVectorImageModel::fillCount)
         .def("clear", &AnimeVectorImageModel::clear)
+        .def("remove_stroke", &AnimeVectorImageModel::removeStrokeAt)
+        .def("remove_fill_area", &AnimeVectorImageModel::removeFillRegionAt)
+        .def("clear_raster", &AnimeVectorImageModel::clearRasterImage)
         .def("bounds", [](const AnimeVectorImageModel &image) {
             return rectToTuple(image.bounds());
         })
@@ -1114,6 +1121,7 @@ void bindAnimeanPythonModule(py::module_ &m)
              py::arg("type") = "vector",
              py::arg("name") = "")
         .def("delete_layer", &AnimeSceneModel::deleteLayer)
+        .def("remap_fill_source_layers_after_delete", &AnimeSceneModel::remapFillSourceLayersAfterDelete)
         .def("move_layer", &AnimeSceneModel::moveLayer)
         .def("add_frame", &AnimeSceneModel::addFrame)
         .def("delete_frame", &AnimeSceneModel::deleteFrame)
@@ -1153,6 +1161,29 @@ void bindAnimeanPythonModule(py::module_ &m)
             if (image) {
                 image->clear();
             }
+        })
+        .def("remove_stroke", [](AnimeSceneModel &model, int row, int layerIndex, int strokeIndex) {
+            AnimeVectorImageModel *image = model.imageAt(row, layerIndex, false);
+            if (!image || strokeIndex < 0 || strokeIndex >= image->strokeCount()) {
+                return false;
+            }
+            image->removeStrokeAt(strokeIndex);
+            return true;
+        })
+        .def("remove_fill_area", [](AnimeSceneModel &model, int row, int layerIndex, int fillIndex) {
+            AnimeVectorImageModel *image = model.imageAt(row, layerIndex, false);
+            if (!image) {
+                return false;
+            }
+            return image->removeFillRegionAt(fillIndex);
+        })
+        .def("clear_raster", [](AnimeSceneModel &model, int row, int layerIndex) {
+            AnimeVectorImageModel *image = model.imageAt(row, layerIndex, false);
+            if (!image) {
+                return false;
+            }
+            image->clearRasterImage();
+            return true;
         })
         .def("cell_to_dict",
              [](const AnimeSceneModel &model, int layerIndex, int frameIndex, bool toPoly, double polyStep) {

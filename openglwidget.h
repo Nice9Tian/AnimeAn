@@ -9,6 +9,7 @@
 #include <QMouseEvent>
 #include <QOpenGLWidget>
 #include <QPainterPath>
+#include <QString>
 #include <QVector>
 
 class PaintOpenGLWidget : public QOpenGLWidget
@@ -62,6 +63,7 @@ public:
 signals:
     void layerListChanged(int selectedLayer);
     void assetListChanged(int selectedAsset);
+    void pythonDebugMessage(const QString &message);
 
 protected:
     void paintGL() override;

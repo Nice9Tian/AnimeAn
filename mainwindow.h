@@ -38,6 +38,7 @@ private:
     void setupListDragDrop();
     void setupConnections();
     void setupPythonDebugDock();
+    void appendPythonDebugMessage(const QString &message);
     void syncEmbeddedPythonState();
     void createToolDocks();
     void createListDocks();

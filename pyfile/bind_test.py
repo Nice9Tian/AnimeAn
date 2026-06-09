@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 
 import animean_python
+from animemodel import current
 
 
 def _check(name: str, condition: bool) -> None:
@@ -17,10 +18,9 @@ def main() -> str:
     scenes = animean_python.get_scene()
     _check("animean_python.get_scene() returned at least one UI scene", len(scenes) >= 1)
 
-    current = animean_python.get_current()
-    _check("animean_python.get_current() is available", current is not None)
+    _check("animemodel.current is available", bool(current))
 
-    scene = current["scene"]
+    scene = current.raw_scene
     print(f"Scene name={scene.scene_name()}, id={scene.scene_id()}")
 
     structure = scene.get_structure()
@@ -28,7 +28,11 @@ def main() -> str:
         frame = scene.add_frame()
         print(f"Created frame={frame + 1}")
     else:
-        frame = int(current["frame"])
+        frame_ref = current.frame
+        if frame_ref is None:
+            frame = 0
+        else:
+            frame = frame_ref.id
         if frame < 0 or frame >= structure["frame_count"]:
             frame = 0
         scene.set_current_frame(frame)
@@ -37,7 +41,11 @@ def main() -> str:
         layer = scene.add_layer()
         print(f"Created layer={layer + 1}")
     else:
-        layer = int(current["layer"])
+        layer_ref = current.layer
+        if layer_ref is None:
+            layer = 0
+        else:
+            layer = layer_ref.id
         if layer < 0 or layer >= structure["layer_count"]:
             layer = 0
         scene.set_current_layer(layer)

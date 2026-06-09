@@ -23,7 +23,7 @@
 namespace py = pybind11;
 
 namespace {
-void notifyPythonLineFinished(const AnimeCell &cell, int row, int layer, int strokeIndex)
+QString notifyPythonLineFinished(const AnimeCell &cell, int row, int layer, int strokeIndex)
 {
     try {
         py::gil_scoped_acquire acquire;
@@ -32,9 +32,42 @@ void notifyPythonLineFinished(const AnimeCell &cell, int row, int layer, int str
         cellInfo["layer"] = layer;
         cellInfo["asset"] = cell.assetIndex;
         cellInfo["frame_id"] = cell.frameId;
-        py::module_::import("linefinish").attr("linefinish")(cellInfo, strokeIndex);
+        py::object io = py::module_::import("io");
+        py::object contextlib = py::module_::import("contextlib");
+        py::object stdoutBuffer = io.attr("StringIO")();
+        py::object stderrBuffer = io.attr("StringIO")();
+        py::object stdoutRedirect = contextlib.attr("redirect_stdout")(stdoutBuffer);
+        py::object stderrRedirect = contextlib.attr("redirect_stderr")(stderrBuffer);
+
+        stdoutRedirect.attr("__enter__")();
+        stderrRedirect.attr("__enter__")();
+        QString errorText;
+        try {
+            py::module_::import("linefinish").attr("linefinish")(cellInfo, strokeIndex);
+        } catch (const py::error_already_set &error) {
+            errorText = QString::fromUtf8(error.what());
+        }
+        stderrRedirect.attr("__exit__")(py::none(), py::none(), py::none());
+        stdoutRedirect.attr("__exit__")(py::none(), py::none(), py::none());
+
+        QString output = QString::fromUtf8(stdoutBuffer.attr("getvalue")().cast<std::string>().c_str());
+        const QString stderrOutput = QString::fromUtf8(stderrBuffer.attr("getvalue")().cast<std::string>().c_str());
+        if (!stderrOutput.isEmpty()) {
+            output += stderrOutput;
+        }
+        if (!errorText.isEmpty()) {
+            output += errorText;
+        }
+        if (output.trimmed().isEmpty()) {
+            output = QStringLiteral("(no output)");
+        }
+        return QStringLiteral("[python feedback] linefinish row=%1 layer=%2 stroke=%3\n%4")
+            .arg(row)
+            .arg(layer)
+            .arg(strokeIndex)
+            .arg(output.trimmed());
     } catch (const py::error_already_set &error) {
-        qWarning() << "Python linefinish hook error:" << error.what();
+        return QStringLiteral("[python feedback] linefinish setup error: %1").arg(QString::fromUtf8(error.what()));
     }
 }
 }
@@ -480,7 +513,7 @@ void PaintOpenGLWidget::finishCurrentStroke()
 #ifdef ANIMEAN_WITH_PYTHON
             const int row = m_model.currentFrame();
             const int layer = m_model.currentLayer();
-            notifyPythonLineFinished(m_model.cellAt(row, layer), row, layer, strokeIndex);
+            emit pythonDebugMessage(notifyPythonLineFinished(m_model.cellAt(row, layer), row, layer, strokeIndex));
 #endif
             removeInvalidFillRegions();
             if (m_model.assetCount() != assetCountBefore) {

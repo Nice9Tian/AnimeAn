@@ -187,7 +187,8 @@ MainWindow::MainWindow(QWidget *parent)
 #ifdef ANIMEAN_WITH_PYTHON
     registerAnimeanUiScene(&m_paintWidget->model());
     syncEmbeddedPythonState();
-    runPythonDebugCommand(QStringLiteral("bind_test.py"));
+    appendPythonDebugMessage(QStringLiteral(
+        "[python register] animean_python, animemodel, model, current, model_pybind, vectorlogic, canvas_width, canvas_height"));
 #endif
 }
 
@@ -286,6 +287,17 @@ void MainWindow::runPythonDebugCommand(const QString &command)
 
     m_pythonDebugOutput->appendPlainText(QStringLiteral("> %1").arg(trimmed));
     m_pythonDebugOutput->appendPlainText(runEmbeddedPythonCommand(trimmed).trimmed());
+    m_pythonDebugOutput->appendPlainText(QString());
+    m_pythonDebugOutput->verticalScrollBar()->setValue(m_pythonDebugOutput->verticalScrollBar()->maximum());
+}
+
+void MainWindow::appendPythonDebugMessage(const QString &message)
+{
+    if (!m_pythonDebugOutput || message.trimmed().isEmpty()) {
+        return;
+    }
+
+    m_pythonDebugOutput->appendPlainText(message.trimmed());
     m_pythonDebugOutput->appendPlainText(QString());
     m_pythonDebugOutput->verticalScrollBar()->setValue(m_pythonDebugOutput->verticalScrollBar()->maximum());
 }
@@ -390,6 +402,10 @@ QString MainWindow::runEmbeddedPythonCommand(const QString &command)
         if (output.trimmed().isEmpty()) {
             output = QStringLiteral("(no output)");
         }
+        updateAttention(AttentionChange::AssetChange,
+                        m_paintWidget->model().currentFrame(),
+                        m_paintWidget->model().currentLayer(),
+                        m_paintWidget->model().currentAsset());
         m_paintWidget->update();
         return output;
     } catch (const py::error_already_set &error) {
@@ -412,25 +428,13 @@ void MainWindow::syncEmbeddedPythonState()
         globals["animean_python"] = animeanPython;
         globals["animemodel"] = animeModel;
         globals["model"] = py::cast(&m_paintWidget->model(), py::return_value_policy::reference);
-        globals["current"] = animeModel.attr("get_current")();
-        if (m_paintWidget->model().currentFrame() >= 0) {
-            globals["current_frame"] = m_paintWidget->model().currentFrame();
-        } else {
-            globals["current_frame"] = py::none();
-        }
-        if (m_paintWidget->model().currentLayer() >= 0) {
-            globals["current_layer"] = m_paintWidget->model().currentLayer();
-        } else {
-            globals["current_layer"] = py::none();
-        }
-        if (m_paintWidget->model().currentAsset() >= 0) {
-            globals["current_asset"] = m_paintWidget->model().currentAsset();
-        } else {
-            globals["current_asset"] = py::none();
-        }
+        globals["current"] = animeModel.attr("current");
+        globals["model_pybind"] = animeanPython.attr("model_pybind");
+        globals["vectorlogic"] = animeanPython.attr("vectorlogic");
         globals["canvas_width"] = m_paintWidget->width();
         globals["canvas_height"] = m_paintWidget->height();
     } catch (const py::error_already_set &error) {
+        appendPythonDebugMessage(QStringLiteral("[python register] error: %1").arg(QString::fromUtf8(error.what())));
         setStatusText(QStringLiteral("Python state sync error: %1").arg(QString::fromUtf8(error.what())));
     }
 #endif
@@ -460,6 +464,9 @@ void MainWindow::setupConnections()
     connect(m_paintWidget, &PaintOpenGLWidget::assetListChanged, this, [this](int selectedAsset) {
         updateAttention(AttentionChange::AssetChange, m_attention.frame, m_attention.layer, selectedAsset);
     });
+
+    connect(m_paintWidget, &PaintOpenGLWidget::pythonDebugMessage,
+            this, &MainWindow::appendPythonDebugMessage);
 
     connect(m_framePanel->frameList(), &QListWidget::currentRowChanged, this, [this](int row) {
         if (!m_refreshingLists && row >= 0) {

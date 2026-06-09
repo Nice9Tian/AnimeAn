@@ -87,8 +87,10 @@ model.set_scene_id(scene_id)
 model.initialize(layer_count=2, frame_count=2)
 model.set_current(frame=None, layer=None)
 model.get_structure()
-model.frame(id=None, index=None)
-model.layer(id=None, Name=None, asset_name=None, frame_id=None)
+model.frame
+model.get_frame(id=None, index=None, name=None, Name=None)
+model.layer
+model.get_layer(id=None, name=None, Name=None, asset_name=None, frame_id=None)
 model.cell_image(frame=None, layer=None, create=True)
 model.image(frame=None, layer=None, create=True)
 model.asset_image(asset_index, frame_id=1, create=False)
@@ -104,7 +106,8 @@ model.clear_image(frame=None, layer=None)
 ```python
 register_scene(model_or_scene)
 create_scene(layer_count=2, frame_count=2)
-scene(id=None, Name=None)
+scene
+get_scene(id=None, name=None, Name=None)
 scenes()
 get_scene()
 get_current()
@@ -159,14 +162,14 @@ if current is not None:
 链式访问示例：
 
 ```python
-from animemodel import scene
+from animemodel import scene, get_scene
 
-main = scene(id=1001)
-matches = scene(Name="main")
-all_scenes = scene()
+main = get_scene(id=1001)
+matches = get_scene(name="main")
+all_scenes = scene
 main.setname("Shot 010")
 
-first_stroke = main.frame(id=0).layer(id=0).stroke(1)
+first_stroke = main.get_frame(id=0).get_layer(id=0).get_stroke(num=1)
 stroke_num = first_stroke.num
 stroke_locations = first_stroke.location()
 stroke_layers = first_stroke.layerid
@@ -174,18 +177,19 @@ stroke_layer_names = first_stroke.layerName
 stroke_frames = first_stroke.frame
 bezier_lines = first_stroke.line_list(ploy=True)
 poly_lines = first_stroke.line_list(ploy=False, simplify=1.5)
-all_strokes = main.frame(id=0).layer(Name="Line").strokes()
-cell = main.frame(id=0).layer(id=0).cell(to_poly=True)
-fill = main.frame(id=0).layer(id=0).fillarea(1)
-all_fills = main.frame(id=0).layer(id=0).fillarea()
-raster = main.frame(id=0).layer(id=0).raster()
-all_frames = main.frame()
-all_layers = main.frame(id=0).layer()
-main.frame(id=0).layer(id=0).setname("Line")
+all_strokes = main.get_frame(id=0).get_layer(name="Line").stroke
+cell = main.get_frame(id=0).get_layer(id=0).cell(to_poly=True)
+fill = main.get_frame(id=0).get_layer(id=0).fillarea(1)
+all_fills = main.get_frame(id=0).get_layer(id=0).fillarea()
+raster = main.get_frame(id=0).get_layer(id=0).raster()
+all_frames = main.frame
+all_layers = main.get_frame(id=0).layer
+top_layer = main.get_frame(id=0).layer[-1]
+main.get_frame(id=0).get_layer(id=0).setname("Line")
 main.asset(id=0).setname("Character Line")
 main_location = main.location()
 asset_locations = main.asset(id=0).location()
-layer_locations = main.frame(id=0).layer(id=0).location()
+layer_locations = main.get_frame(id=0).get_layer(id=0).location()
 ```
 
 `scene(id=1001)` 返回一个精确 scene。`scene(Name="main")` 返回所有名字匹配的 scene。
@@ -194,7 +198,7 @@ layer_locations = main.frame(id=0).layer(id=0).location()
 `frame(id=0)`、`layer(id=0)` 和 `asset(id=0)` 使用 0 基 id。`stroke(1)` 和 `fillarea(1)` 仍然使用用户可见序号；如果要用 0 基索引，可以写：
 
 ```python
-stroke = scene(id=1001).frame(index=0).layer(index=0).stroke(index=0)
+stroke = get_scene(id=1001).get_frame(index=0).get_layer(index=0).get_stroke(index=0)
 ```
 
 `layer(id=0, Name="Line")` 会同时按 0 基图层 id 和用户界面里的图层名选择 layer。
@@ -213,9 +217,9 @@ stroke = scene(id=1001).frame(index=0).layer(index=0).stroke(index=0)
 句柄式操作：
 
 ```python
-model.frame(id=0).layer(id=0).add_polyline([(0, 0), (100, 100)])
+model.get_frame(id=0).get_layer(id=0).add_polyline([(0, 0), (100, 100)])
 
-layer = model.layer(Name="Line")[0]
+layer = model.get_layer(name="Line")[0]
 cell = layer.cell(frame_id=0)
 cell.add_stroke([(0, 0), (50, 40)], smooth=True)
 cell.clear()
@@ -556,7 +560,7 @@ print(stroke.total_length)
 查找指定图层并写入第一帧：
 
 ```python
-for layer in model.layer(Name="Line", frame_id=0):
+for layer in model.get_layer(name="Line", frame_id=0):
     layer.cell().add_polyline([(10, 10), (80, 80)], color=(255, 0, 0, 255))
 ```
 

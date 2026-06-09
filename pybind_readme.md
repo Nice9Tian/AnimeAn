@@ -97,8 +97,10 @@ model.set_scene_id(scene_id: int) -> AnimeModel
 model.initialize(layer_count: int = 2, frame_count: int = 2) -> AnimeModel
 model.set_current(frame: int | None = None, layer: int | None = None) -> AnimeModel
 model.get_structure() -> dict
-model.frame(id=None, index=None) -> FrameHandle | list[FrameHandle]
-model.layer(id=None, Name=None, asset_name=None, frame_id=None) -> list[LayerMatch]
+model.frame -> list[FrameHandle]
+model.get_frame(id=None, index=None, name=None, Name=None) -> FrameHandle | list[FrameHandle]
+model.layer -> list[LayerMatch]
+model.get_layer(id=None, name=None, Name=None, asset_name=None, frame_id=None) -> list[LayerMatch]
 model.cell_image(frame=None, layer=None, create=True) -> VectorImage
 model.image(frame=None, layer=None, create=True) -> VectorImage
 model.asset_image(asset_index: int, frame_id: int = 1, create=False) -> VectorImage
@@ -114,10 +116,10 @@ Scene registry helpers:
 ```python
 register_scene(model_or_scene) -> AnimeModel
 create_scene(layer_count: int = 2, frame_count: int = 2) -> AnimeModel
-scene(id=None, Name=None) -> SceneRef | list[SceneRef]
+scene -> list[SceneRef]
+get_scene(id=None, name=None, Name=None) -> SceneRef | list[SceneRef]
 scenes() -> dict[str, AnimeModel]
-get_scene() -> list[SceneRef]
-get_current() -> CurrentSceneRef | None
+get_current() -> CurrentRef | None
 ```
 
 `get_scene()` returns Python object wrappers for scenes registered by the
@@ -164,14 +166,14 @@ has no selected frame or layer, that position in the returned list is `None`.
 Scene lookup and chained access:
 
 ```python
-from animemodel import scene
+from animemodel import scene, get_scene
 
-main = scene(id=1001)
-matches = scene(Name="main")
-all_scenes = scene()
+main = get_scene(id=1001)
+matches = get_scene(name="main")
+all_scenes = scene
 main.setname("Shot 010")
 
-first_stroke = main.frame(id=0).layer(id=0).stroke(1)
+first_stroke = main.get_frame(id=0).get_layer(id=0).get_stroke(num=1)
 stroke_num = first_stroke.num
 stroke_locations = first_stroke.location()
 stroke_layers = first_stroke.layerid
@@ -179,34 +181,35 @@ stroke_layer_names = first_stroke.layerName
 stroke_frames = first_stroke.frame
 bezier_lines = first_stroke.line_list(ploy=True)
 poly_lines = first_stroke.line_list(ploy=False, simplify=1.5)
-all_strokes = main.frame(id=0).layer(Name="Line").strokes()
-cell = main.frame(id=0).layer(id=0).cell(to_poly=True)
-fill = main.frame(id=0).layer(id=0).fillarea(1)
-all_fills = main.frame(id=0).layer(id=0).fillarea()
-raster = main.frame(id=0).layer(id=0).raster()
-all_frames = main.frame()
-all_layers = main.frame(id=0).layer()
-main.frame(id=0).layer(id=0).setname("Line")
+all_strokes = main.get_frame(id=0).get_layer(name="Line").stroke
+cell = main.get_frame(id=0).get_layer(id=0).cell(to_poly=True)
+fill = main.get_frame(id=0).get_layer(id=0).fillarea(1)
+all_fills = main.get_frame(id=0).get_layer(id=0).fillarea()
+raster = main.get_frame(id=0).get_layer(id=0).raster()
+all_frames = main.frame
+all_layers = main.get_frame(id=0).layer
+top_layer = main.get_frame(id=0).layer[-1]
+main.get_frame(id=0).get_layer(id=0).setname("Line")
 main.asset(id=0).setname("Character Line")
 main_location = main.location()
 asset_locations = main.asset(id=0).location()
-layer_locations = main.frame(id=0).layer(id=0).location()
+layer_locations = main.get_frame(id=0).get_layer(id=0).location()
 ```
 
-`scene(id=1001)` returns one exact scene. `scene(Name="main")` returns every
-scene whose UI name matches. `scene()` returns all scenes.
+`get_scene(id=1001)` returns one exact scene. `get_scene(name="main")` returns
+every scene whose UI name matches. `scene` lazily returns all scenes.
 
-`frame(id=0)`, `layer(id=0)`, and `asset(id=0)` use 0-based ids. `stroke(1)` and
-`fillarea(1)` still use the user-visible ordinal argument; use `index=0` for a
-raw 0-based stroke or fill index:
+`get_frame(id=0)`, `get_layer(id=0)`, and `asset(id=0)` use 0-based ids.
+`get_stroke(num=1)` and `fillarea(1)` use the user-visible ordinal argument;
+use `index=0` for a raw 0-based stroke or fill index:
 
 ```python
-stroke = scene(id=1001).frame(index=0).layer(index=0).stroke(index=0)
+stroke = get_scene(id=1001).get_frame(index=0).get_layer(index=0).get_stroke(index=0)
 ```
 
-`frame()` returns all frames. `frame(id=0)` returns one frame.
-`layer(id=0, Name="Line")` selects by both 0-based layer id and UI layer
-name. `id` and `Name` may each be `None`; `layer()` returns all layers at the
+`frame` returns all frames. `get_frame(id=0)` returns one frame.
+`get_layer(id=0, name="Line")` selects by both 0-based layer id and UI layer
+name. `id` and `name` may each be `None`; `layer` returns all layers at the
 selected frame.
 `stroke.line_list(ploy=True)` returns Bezier/path commands.
 `stroke.line_list(ploy=False, simplify=1.5)` returns C++ sampled polylines after
@@ -224,7 +227,8 @@ use `None`. Convenience lists such as `.layerid`, `.layerName`, `.frame`,
 Handle helpers:
 
 ```python
-FrameHandle.layer(id=None, Name=None, asset_name=None, frame_id=None)
+FrameHandle.layer -> list[LayerMatch]
+FrameHandle.get_layer(id=None, name=None, Name=None, asset_name=None, frame_id=None)
 LayerMatch.cell(frame_id: int | None = None) -> CellHandle
 LayerMatch.add_polyline(points, frame_id=None, color=(0,0,0,255), width=3.0) -> CellHandle
 CellHandle.add_polyline(points, color=(0,0,0,255), width=3.0) -> CellHandle
