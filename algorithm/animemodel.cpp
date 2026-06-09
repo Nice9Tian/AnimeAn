@@ -158,6 +158,30 @@ void AnimeVectorImageModel::addFillRegion(const AnimeVectorFillRegion &fill)
     }
 }
 
+void AnimeVectorImageModel::translate(const QPointF &delta)
+{
+    if (delta.isNull()) {
+        return;
+    }
+
+    if (!m_raster.isEmpty()) {
+        m_raster.topLeft += delta;
+    }
+    for (AnimeVectorFillRegion &fill : m_fills) {
+        fill.seedPoint += delta;
+        fill.path.translate(delta);
+        fill.bounds.translate(delta);
+    }
+    for (AnimeVectorStrokeNode &node : m_strokes) {
+        for (QPointF &point : node.stroke.points) {
+            point += delta;
+        }
+        node.stroke.path.translate(delta);
+        node.stroke.bounds.translate(delta);
+    }
+    rebuildBounds();
+}
+
 void AnimeVectorImageModel::remapFillSourceLayersAfterDelete(int deletedLayerIndex)
 {
     for (AnimeVectorFillRegion &fill : m_fills) {

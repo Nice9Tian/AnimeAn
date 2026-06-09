@@ -112,6 +112,7 @@ void PaintOpenGLWidget::setTool(Tool tool)
     m_points.clear();
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
+    m_hasLastMovePos = false;
     update();
 }
 
@@ -142,6 +143,7 @@ void PaintOpenGLWidget::setCurrentLayer(int layerIndex)
     m_points.clear();
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
+    m_hasLastMovePos = false;
     update();
 }
 
@@ -151,6 +153,7 @@ void PaintOpenGLWidget::setCurrentFrame(int frameIndex)
     m_points.clear();
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
+    m_hasLastMovePos = false;
     update();
 }
 
@@ -201,6 +204,75 @@ int PaintOpenGLWidget::importRasterLayer(const QImage &image, const QString &lay
         update();
     }
     return columnIndex;
+}
+
+int PaintOpenGLWidget::importVectorLineLayer(const QVector<ImportedVectorFrame> &frames, const QString &layerName)
+{
+    if (frames.isEmpty()) {
+        return -1;
+    }
+
+    const int assetIndex = m_model.addAsset(AnimeColumnType::Vector, layerName);
+    if (assetIndex < 0) {
+        return -1;
+    }
+
+    int firstRow = -1;
+    for (const ImportedVectorFrame &frame : frames) {
+        if (frame.strokes.isEmpty()) {
+            continue;
+        }
+        const int row = std::max(0, frame.row);
+        const int frameId = row + 1;
+        m_model.scene().xsheet.ensureFrameCount(row + 1);
+        AnimeVectorImageModel *image = m_model.assetImage(assetIndex, frameId, true);
+        if (!image) {
+            continue;
+        }
+        for (const ImportedVectorStroke &importedStroke : frame.strokes) {
+            if (importedStroke.points.size() < 2) {
+                continue;
+            }
+            const qreal width = std::max(qreal(1.0), importedStroke.width);
+            image->addStroke(makeStroke(importedStroke.points,
+                                        importedStroke.color,
+                                        width,
+                                        image->strokeCount() + 1,
+                                        false,
+                                        false));
+        }
+        if (firstRow < 0) {
+            firstRow = row;
+        }
+    }
+
+    if (firstRow < 0) {
+        return -1;
+    }
+
+    const int layerIndex = m_model.addLayerForAsset(firstRow, assetIndex);
+    if (layerIndex < 0) {
+        return -1;
+    }
+
+    AnimeColumn &column = m_model.scene().xsheet.columns[layerIndex];
+    for (const ImportedVectorFrame &frame : frames) {
+        if (frame.strokes.isEmpty()) {
+            continue;
+        }
+        AnimeCell cell;
+        cell.assetIndex = assetIndex;
+        cell.frameId = std::max(0, frame.row) + 1;
+        column.setCell(std::max(0, frame.row), cell);
+    }
+
+    m_points.clear();
+    m_hasCurrentStroke = false;
+    m_hasLastEraserPos = false;
+    emit assetListChanged(assetIndex);
+    emit layerListChanged(layerIndex);
+    update();
+    return layerIndex;
 }
 
 int PaintOpenGLWidget::addLayer()
@@ -384,6 +456,13 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
         return;
     }
 
+    if (m_tool == Tool::Move) {
+        m_lastMovePos = pos;
+        m_hasLastMovePos = true;
+        event->accept();
+        return;
+    }
+
     if (m_tool == Tool::Eraser || m_tool == Tool::DeleteLine) {
         m_hasLastEraserPos = true;
         m_lastEraserPos = pos;
@@ -449,6 +528,19 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
         return;
     }
 
+    if (m_tool == Tool::Move) {
+        if (!m_hasLastMovePos) {
+            m_lastMovePos = m_hoverPos;
+            m_hasLastMovePos = true;
+        }
+        if (moveCurrentLayerBy(m_hoverPos - m_lastMovePos)) {
+            update();
+        }
+        m_lastMovePos = m_hoverPos;
+        event->accept();
+        return;
+    }
+
     if (!m_hasCurrentStroke) {
         QOpenGLWidget::mouseMoveEvent(event);
         return;
@@ -478,6 +570,18 @@ void PaintOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
         }
         update();
         m_hasLastEraserPos = false;
+        event->accept();
+        return;
+    }
+
+    if (m_tool == Tool::Move) {
+        if (m_hasLastMovePos) {
+            const QPointF pos = event->position();
+            moveCurrentLayerBy(pos - m_lastMovePos);
+            m_lastMovePos = pos;
+            update();
+        }
+        m_hasLastMovePos = false;
         event->accept();
         return;
     }
@@ -724,6 +828,21 @@ bool PaintOpenGLWidget::fillAt(const QPointF &pos)
         emit assetListChanged(m_model.currentAsset());
         emit layerListChanged(m_model.currentLayer());
     }
+    return true;
+}
+
+bool PaintOpenGLWidget::moveCurrentLayerBy(const QPointF &delta)
+{
+    if (delta.isNull() || (m_model.currentLayer() >= 0 && !currentColumnEditable())) {
+        return false;
+    }
+
+    VectorImageModel *image = currentImage(false);
+    if (!image) {
+        return false;
+    }
+
+    image->translate(delta);
     return true;
 }
 

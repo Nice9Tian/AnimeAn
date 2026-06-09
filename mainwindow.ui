@@ -43,6 +43,7 @@
         <addaction name="actionSaveAs" />
         <addaction name="separator" />
         <addaction name="actionimport_Raster" />
+        <addaction name="actionImport_OpenToonz_Lines" />
       </widget>
       <widget class="QMenu" name="menuEdit">
         <property name="title">
@@ -79,7 +80,12 @@
     </action>
     <action name="actionimport_Raster">
       <property name="text">
-        <string>import Raster</string>
+        <string>Import Raster...</string>
+      </property>
+    </action>
+    <action name="actionImport_OpenToonz_Lines">
+      <property name="text">
+        <string>Import OpenToonz Lines...</string>
       </property>
     </action>
   </widget>

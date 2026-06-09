@@ -70,6 +70,7 @@ public:
     void addStroke(const AnimeVectorStroke &stroke);
     void addStrokeNode(const AnimeVectorStrokeNode &node);
     void addFillRegion(const AnimeVectorFillRegion &fill);
+    void translate(const QPointF &delta);
     void remapFillSourceLayersAfterDelete(int deletedLayerIndex);
     void remapFillSourceLayersAfterMove(int fromIndex, int toIndex);
     bool setFillRegionAt(int index, const AnimeVectorFillRegion &fill);

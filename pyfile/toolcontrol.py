@@ -80,6 +80,9 @@ def options_for_tool(tool, state=None):
             },
         ]
 
+    if tool == "move":
+        return []
+
     return [
         _color_control(),
         _slider("smooth", "Smooth", "smooth", 0, 100, int(state.get("smooth", 50))),

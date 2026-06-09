@@ -40,6 +40,7 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <cmath>
 #include <string>
 
 #ifdef ANIMEAN_WITH_PYTHON
@@ -77,6 +78,8 @@ QString toolControlName(PaintOpenGLWidget::Tool tool)
         return QStringLiteral("delete_line");
     case PaintOpenGLWidget::Tool::Fill:
         return QStringLiteral("fill");
+    case PaintOpenGLWidget::Tool::Move:
+        return QStringLiteral("move");
     }
     return QStringLiteral("pen");
 }
@@ -163,11 +166,151 @@ QJsonArray fallbackToolControls(PaintOpenGLWidget::Tool tool, int smoothValue, i
     if (tool == PaintOpenGLWidget::Tool::Fill) {
         return QJsonDocument::fromJson(fillJson).array();
     }
+    if (tool == PaintOpenGLWidget::Tool::Move) {
+        return QJsonArray();
+    }
     if (tool == PaintOpenGLWidget::Tool::Eraser || tool == PaintOpenGLWidget::Tool::DeleteLine) {
         return QJsonDocument::fromJson(eraserJson).array();
     }
     return QJsonDocument::fromJson(json).array();
 }
+
+int frameNameToRow(const QString &frameName)
+{
+    QString digits;
+    for (const QChar ch : frameName) {
+        if (!ch.isDigit()) {
+            break;
+        }
+        digits.append(ch);
+    }
+
+    bool ok = false;
+    const int frameNumber = digits.toInt(&ok);
+    return ok && frameNumber > 0 ? frameNumber - 1 : 0;
+}
+
+#ifdef ANIMEAN_WITH_PYTHON
+qreal dictNumber(const py::dict &data, const char *key, qreal fallback = 0.0)
+{
+    if (!data.contains(py::str(key))) {
+        return fallback;
+    }
+    try {
+        return data[py::str(key)].cast<qreal>();
+    } catch (const py::cast_error &) {
+        return fallback;
+    }
+}
+
+QPointF pointFromDict(const py::dict &data)
+{
+    return QPointF(dictNumber(data, "x"), dictNumber(data, "y"));
+}
+
+qreal thicknessFromDict(const py::dict &data)
+{
+    return dictNumber(data, "thick", 3.0);
+}
+
+void appendQuadraticSamples(QVector<QPointF> *points,
+                            const QPointF &p0,
+                            const QPointF &p1,
+                            const QPointF &p2,
+                            int sampleCount)
+{
+    if (points->isEmpty()) {
+        points->append(p0);
+    }
+
+    sampleCount = std::max(2, sampleCount);
+    for (int i = 1; i <= sampleCount; ++i) {
+        const qreal t = static_cast<qreal>(i) / sampleCount;
+        const qreal omt = 1.0 - t;
+        points->append((omt * omt) * p0 + (2.0 * omt * t) * p1 + (t * t) * p2);
+    }
+}
+
+QVector<PaintOpenGLWidget::ImportedVectorFrame> importedFramesFromOpenToonzLevel(const py::dict &levelData)
+{
+    QVector<PaintOpenGLWidget::ImportedVectorFrame> importedFrames;
+    if (!levelData.contains(py::str("frames"))) {
+        return importedFrames;
+    }
+
+    py::iterable frames = levelData[py::str("frames")];
+    for (py::handle frameHandle : frames) {
+        if (!py::isinstance<py::dict>(frameHandle)) {
+            continue;
+        }
+        py::dict frameDict = py::reinterpret_borrow<py::dict>(frameHandle);
+        PaintOpenGLWidget::ImportedVectorFrame importedFrame;
+        QString frameName = QStringLiteral("1");
+        if (frameDict.contains(py::str("frame"))) {
+            const std::string frameNameText = frameDict[py::str("frame")].cast<std::string>();
+            frameName = QString::fromUtf8(frameNameText.c_str());
+        }
+        importedFrame.row = frameNameToRow(frameName);
+
+        if (!frameDict.contains(py::str("strokes"))) {
+            continue;
+        }
+        py::iterable strokes = frameDict[py::str("strokes")];
+        for (py::handle strokeHandle : strokes) {
+            if (!py::isinstance<py::dict>(strokeHandle)) {
+                continue;
+            }
+            py::dict strokeDict = py::reinterpret_borrow<py::dict>(strokeHandle);
+            if (!strokeDict.contains(py::str("quadratics"))) {
+                continue;
+            }
+
+            PaintOpenGLWidget::ImportedVectorStroke importedStroke;
+            qreal thicknessTotal = 0.0;
+            int thicknessCount = 0;
+            py::iterable quadratics = strokeDict[py::str("quadratics")];
+            for (py::handle quadraticHandle : quadratics) {
+                if (!py::isinstance<py::dict>(quadraticHandle)) {
+                    continue;
+                }
+                py::dict quadratic = py::reinterpret_borrow<py::dict>(quadraticHandle);
+                if (!quadratic.contains(py::str("p0")) ||
+                    !quadratic.contains(py::str("p1")) ||
+                    !quadratic.contains(py::str("p2"))) {
+                    continue;
+                }
+
+                py::dict p0Dict = py::reinterpret_borrow<py::dict>(quadratic[py::str("p0")]);
+                py::dict p1Dict = py::reinterpret_borrow<py::dict>(quadratic[py::str("p1")]);
+                py::dict p2Dict = py::reinterpret_borrow<py::dict>(quadratic[py::str("p2")]);
+                const QPointF p0 = pointFromDict(p0Dict);
+                const QPointF p1 = pointFromDict(p1Dict);
+                const QPointF p2 = pointFromDict(p2Dict);
+                const qreal approxLength = QLineF(p0, p1).length() + QLineF(p1, p2).length();
+                appendQuadraticSamples(&importedStroke.points,
+                                       p0,
+                                       p1,
+                                       p2,
+                                       std::max(4, static_cast<int>(std::ceil(approxLength / 6.0))));
+                thicknessTotal += thicknessFromDict(p0Dict) + thicknessFromDict(p1Dict) + thicknessFromDict(p2Dict);
+                thicknessCount += 3;
+            }
+
+            if (importedStroke.points.size() >= 2) {
+                importedStroke.width = thicknessCount > 0
+                                           ? std::max(qreal(1.0), thicknessTotal / thicknessCount)
+                                           : std::max(qreal(1.0), dictNumber(strokeDict, "max_thickness", 3.0) * 0.2);
+                importedFrame.strokes.append(importedStroke);
+            }
+        }
+
+        if (!importedFrame.strokes.isEmpty()) {
+            importedFrames.append(importedFrame);
+        }
+    }
+    return importedFrames;
+}
+#endif
 }
 
 MainWindow::MainWindow(QWidget *parent)
@@ -576,6 +719,7 @@ void MainWindow::setupConnections()
     });
 
     connect(ui->actionimport_Raster, &QAction::triggered, this, &MainWindow::importRaster);
+    connect(ui->actionImport_OpenToonz_Lines, &QAction::triggered, this, &MainWindow::importOpenToonzLines);
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
@@ -919,6 +1063,60 @@ void MainWindow::importRaster()
                       .arg(fileInfo.fileName())
                       .arg(image.width())
                       .arg(image.height()));
+}
+
+void MainWindow::importOpenToonzLines()
+{
+#ifndef ANIMEAN_WITH_PYTHON
+    QMessageBox::warning(this,
+                         QStringLiteral("Import OpenToonz Lines"),
+                         QStringLiteral("Python support is disabled, so OpenToonz line import is unavailable."));
+    return;
+#else
+    const QString fileName = QFileDialog::getOpenFileName(
+        this,
+        QStringLiteral("Import OpenToonz Lines"),
+        QString(),
+        QStringLiteral("OpenToonz Vector Levels (*.pli);;All Files (*)"));
+    if (fileName.isEmpty()) {
+        return;
+    }
+
+    try {
+        py::gil_scoped_acquire acquire;
+        py::module_ toonzTool = py::module_::import("toonz_to_dict");
+        py::object level = toonzTool.attr("read_vector_level")(QDir::toNativeSeparators(fileName).toStdString());
+        py::dict levelData = level.attr("to_dict")().cast<py::dict>();
+        const QVector<PaintOpenGLWidget::ImportedVectorFrame> frames = importedFramesFromOpenToonzLevel(levelData);
+        if (frames.isEmpty()) {
+            QMessageBox::warning(this,
+                                 QStringLiteral("Import OpenToonz Lines"),
+                                 QStringLiteral("No strokes were found in this .pli file."));
+            return;
+        }
+
+        const QFileInfo fileInfo(fileName);
+        const int layerIndex = m_paintWidget->importVectorLineLayer(frames, fileInfo.completeBaseName());
+        if (layerIndex < 0) {
+            QMessageBox::warning(this,
+                                 QStringLiteral("Import OpenToonz Lines"),
+                                 QStringLiteral("Failed to import OpenToonz line layer."));
+            return;
+        }
+
+        updateAttention(AttentionChange::LayerChange,
+                        m_paintWidget->model().currentFrame(),
+                        layerIndex,
+                        m_paintWidget->model().currentAsset());
+        setStatusText(QStringLiteral("Imported OpenToonz lines: %1 (%2 frame(s))")
+                          .arg(fileInfo.fileName())
+                          .arg(frames.size()));
+    } catch (const py::error_already_set &error) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Import OpenToonz Lines"),
+                             QStringLiteral("OpenToonz import failed:\n%1").arg(QString::fromUtf8(error.what())));
+    }
+#endif
 }
 
 void MainWindow::updateWindowTitle()

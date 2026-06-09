@@ -15,6 +15,7 @@ option(ANIMEAN_BUILD_PYTHON_MODULE "Build the optional AnimeAn Python extension 
 set(ANIMEAN_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}" CACHE PATH "AnimeAn project root directory.")
 set(ANIMEAN_PYFILE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/pyfile" CACHE PATH "Directory containing hello-world Python scripts.")
 set(ANIMEAN_PYTHONBIND_DIR "${CMAKE_CURRENT_SOURCE_DIR}/pythonbind" CACHE PATH "Directory containing Python bindings and helper modules.")
+set(ANIMEAN_OPENTOONZ_TOOLS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/opentonnz_tools" CACHE PATH "Directory containing OpenToonz import helper modules.")
 
 if(ANIMEAN_WITH_PYTHON OR ANIMEAN_BUILD_PYTHON_MODULE)
     set(ANIMEAN_PYTHON_HOME "${CMAKE_CURRENT_SOURCE_DIR}/tools/python312" CACHE PATH "Python runtime used by AnimeAn.")
@@ -97,6 +98,7 @@ if(ANIMEAN_WITH_PYTHON)
         ANIMEAN_SOURCE_DIR="${ANIMEAN_SOURCE_DIR}"
         ANIMEAN_PYFILE_DIR="${ANIMEAN_PYFILE_DIR}"
         ANIMEAN_PYTHONBIND_DIR="${ANIMEAN_PYTHONBIND_DIR}"
+        ANIMEAN_OPENTOONZ_TOOLS_DIR="${ANIMEAN_OPENTOONZ_TOOLS_DIR}"
         ANIMEAN_PYTHON_HOME="${ANIMEAN_PYTHON_HOME}"
         ANIMEAN_PYTHON_DIR_NAME="${ANIMEAN_PYTHON_DIR_NAME}"
     )
@@ -126,6 +128,9 @@ if(ANIMEAN_WITH_PYTHON)
             "$<TARGET_FILE_DIR:AnimeAn>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${ANIMEAN_PYTHONBIND_DIR}/animemodel.py"
+            "$<TARGET_FILE_DIR:AnimeAn>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ANIMEAN_OPENTOONZ_TOOLS_DIR}/toonz_to_dict.py"
             "$<TARGET_FILE_DIR:AnimeAn>"
     )
 endif()
@@ -174,6 +179,9 @@ if(WIN32 AND QT_VERSION_MAJOR EQUAL 6)
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ANIMEAN_PYTHONBIND_DIR}/animemodel.py"
+                "${ANIMEAN_DEPLOY_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ANIMEAN_OPENTOONZ_TOOLS_DIR}/toonz_to_dict.py"
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${ANIMEAN_PYTHON_HOME}"

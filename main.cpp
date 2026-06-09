@@ -54,6 +54,9 @@ int main(int argc, char *argv[])
     if (QFileInfo::exists(QDir(QStringLiteral(ANIMEAN_PYTHONBIND_DIR)).filePath(QStringLiteral("animemodel.py")))) {
         pythonPath << QStringLiteral(ANIMEAN_PYTHONBIND_DIR);
     }
+    if (QFileInfo::exists(QDir(QStringLiteral(ANIMEAN_OPENTOONZ_TOOLS_DIR)).filePath(QStringLiteral("toonz_to_dict.py")))) {
+        pythonPath << QStringLiteral(ANIMEAN_OPENTOONZ_TOOLS_DIR);
+    }
 
     QStringList dllPath;
     dllPath << pythonHome << QDir(pythonHome).filePath(QStringLiteral("DLLs"));

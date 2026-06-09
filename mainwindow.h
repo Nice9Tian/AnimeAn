@@ -51,6 +51,7 @@ private:
     bool saveProjectTo(const QString &fileName);
     bool loadProjectFrom(const QString &fileName);
     void importRaster();
+    void importOpenToonzLines();
     void updateWindowTitle();
     void requestAttentionUpdate(AttentionChange change, int frame, int layer, int asset);
     void updateAttention(AttentionChange change, int frame, int layer, int asset);
