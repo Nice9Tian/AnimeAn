@@ -3,8 +3,42 @@
 #include <QLineF>
 #include <QImage>
 #include <QPainter>
+#include <QDebug>
+
+#ifdef ANIMEAN_WITH_PYTHON
+#ifdef slots
+#undef slots
+#define ANIMEAN_RESTORE_QT_SLOTS
+#endif
+#include <pybind11/embed.h>
+#ifdef ANIMEAN_RESTORE_QT_SLOTS
+#define slots Q_SLOTS
+#undef ANIMEAN_RESTORE_QT_SLOTS
+#endif
+#endif
 
 #include <algorithm>
+
+#ifdef ANIMEAN_WITH_PYTHON
+namespace py = pybind11;
+
+namespace {
+void notifyPythonLineFinished(const AnimeCell &cell, int row, int layer, int strokeIndex)
+{
+    try {
+        py::gil_scoped_acquire acquire;
+        py::dict cellInfo;
+        cellInfo["row"] = row;
+        cellInfo["layer"] = layer;
+        cellInfo["asset"] = cell.assetIndex;
+        cellInfo["frame_id"] = cell.frameId;
+        py::module_::import("linefinish").attr("linefinish")(cellInfo, strokeIndex);
+    } catch (const py::error_already_set &error) {
+        qWarning() << "Python linefinish hook error:" << error.what();
+    }
+}
+}
+#endif
 
 PaintOpenGLWidget::PaintOpenGLWidget(QWidget *parent)
     : QOpenGLWidget(parent)
@@ -46,6 +80,11 @@ void PaintOpenGLWidget::setTool(Tool tool)
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
     update();
+}
+
+PaintOpenGLWidget::Tool PaintOpenGLWidget::tool() const
+{
+    return m_tool;
 }
 
 void PaintOpenGLWidget::setFillScope(FillScope scope)
@@ -436,7 +475,13 @@ void PaintOpenGLWidget::finishCurrentStroke()
     if (!m_currentStroke.points.isEmpty()) {
         const int assetCountBefore = m_model.assetCount();
         if (VectorImageModel *image = currentImage(true, AnimeColumnType::Vector)) {
+            const int strokeIndex = image->strokeCount();
             image->addStroke(m_currentStroke);
+#ifdef ANIMEAN_WITH_PYTHON
+            const int row = m_model.currentFrame();
+            const int layer = m_model.currentLayer();
+            notifyPythonLineFinished(m_model.cellAt(row, layer), row, layer, strokeIndex);
+#endif
             removeInvalidFillRegions();
             if (m_model.assetCount() != assetCountBefore) {
                 emit assetListChanged(m_model.currentAsset());
@@ -704,9 +749,9 @@ void PaintOpenGLWidget::removeInvalidFillRegions()
 {
     AnimeScene &scene = m_model.scene();
 
-    for (AnimeLevel &level : scene.levels) {
-        for (int frameId : level.frameIds()) {
-            VectorImageModel *image = level.frame(frameId, false);
+    for (AnimeAsset &asset : scene.assets) {
+        for (int frameId : asset.frameIds()) {
+            VectorImageModel *image = asset.frame(frameId, false);
             if (!image || image->fillCount() == 0) {
                 continue;
             }

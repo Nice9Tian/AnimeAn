@@ -34,6 +34,7 @@ public:
     void setDrawingColor(const QColor &color);
     void setPenWidth(qreal width);
     void setTool(Tool tool);
+    Tool tool() const;
     void setFillScope(FillScope scope);
     void setSmoothValue(int value);
     void setCurrentLayer(int layerIndex);

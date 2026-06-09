@@ -643,6 +643,17 @@ const char *columnTypeToString(AnimeColumnType type)
     }
 }
 
+AnimeColumnType columnTypeFromString(const QString &type)
+{
+    if (type == QStringLiteral("raster")) {
+        return AnimeColumnType::Raster;
+    }
+    if (type == QStringLiteral("fill")) {
+        return AnimeColumnType::Fill;
+    }
+    return AnimeColumnType::Vector;
+}
+
 py::dict imageToDict(const AnimeVectorImageModel *image, bool toPoly, double polyStep)
 {
     py::dict data;
@@ -672,7 +683,7 @@ py::dict cellToDict(const AnimeSceneModel &model, int layerIndex, int frameIndex
     py::dict data;
     data["layer_index"] = layerIndex;
     data["frame_index"] = frameIndex;
-    data["level_index"] = cell.levelIndex;
+    data["asset_index"] = cell.assetIndex;
     data["frame_id"] = cell.frameId;
     data["empty"] = cell.isEmpty();
 
@@ -689,11 +700,11 @@ py::dict cellStructureToDict(const AnimeSceneModel &model, int layerIndex, int f
     py::dict data;
     data["layer_index"] = layerIndex;
     data["frame_index"] = frameIndex;
-    data["level_index"] = cell.levelIndex;
+    data["asset_index"] = cell.assetIndex;
     data["frame_id"] = cell.frameId;
     data["empty"] = cell.isEmpty();
-    data["asset_name"] = cell.isEmpty() ? "" : model.assetName(cell.levelIndex).toStdString();
-    data["asset_type"] = cell.isEmpty() ? "" : columnTypeToString(model.assetType(cell.levelIndex));
+    data["asset_name"] = cell.isEmpty() ? "" : model.assetName(cell.assetIndex).toStdString();
+    data["asset_type"] = cell.isEmpty() ? "" : columnTypeToString(model.assetType(cell.assetIndex));
     data["stroke_count"] = image ? image->strokeCount() : 0;
     data["fill_count"] = image ? image->fillCount() : 0;
     data["bounds"] = image ? rectToDict(image->bounds()) : py::dict();
@@ -703,6 +714,7 @@ py::dict cellStructureToDict(const AnimeSceneModel &model, int layerIndex, int f
 py::dict structureToDict(const AnimeSceneModel &model)
 {
     py::dict data;
+    data["scene_id"] = model.id().toStdString();
     data["current_frame"] = model.currentFrame();
     data["current_layer"] = model.currentLayer();
     data["current_asset"] = model.currentAsset();
@@ -771,7 +783,7 @@ void bindAnimeanPythonModule(py::module_ &m)
 
     py::class_<AnimeCell>(m, "Cell")
         .def(py::init<>())
-        .def_readwrite("level_index", &AnimeCell::levelIndex)
+        .def_readwrite("asset_index", &AnimeCell::assetIndex)
         .def_readwrite("frame_id", &AnimeCell::frameId)
         .def("is_empty", &AnimeCell::isEmpty);
 
@@ -822,13 +834,22 @@ void bindAnimeanPythonModule(py::module_ &m)
 
     py::class_<AnimeSceneModel>(m, "SceneModel")
         .def(py::init<>())
+        .def("id", [](const AnimeSceneModel &model) {
+            return model.id().toStdString();
+        })
+        .def("set_id", [](AnimeSceneModel &model, const std::string &id) {
+            model.setId(QString::fromUtf8(id.c_str()));
+        })
         .def("initialize_scene", &AnimeSceneModel::initializeScene, py::arg("layer_count"), py::arg("frame_count"))
         .def("set_current_layer", &AnimeSceneModel::setCurrentLayer)
         .def("set_current_frame", &AnimeSceneModel::setCurrentFrame)
+        .def("set_current_asset", &AnimeSceneModel::setCurrentAsset)
         .def("current_layer", &AnimeSceneModel::currentLayer)
         .def("current_frame", &AnimeSceneModel::currentFrame)
+        .def("current_asset", &AnimeSceneModel::currentAsset)
         .def("layer_count", &AnimeSceneModel::layerCount)
         .def("frame_count", &AnimeSceneModel::frameCount)
+        .def("asset_count", &AnimeSceneModel::assetCount)
         .def("get_structure", [](const AnimeSceneModel &model) {
             return structureToDict(model);
         })
@@ -841,6 +862,9 @@ void bindAnimeanPythonModule(py::module_ &m)
         .def("frame_name", [](const AnimeSceneModel &model, int frameIndex) {
             return model.frameName(frameIndex).toStdString();
         })
+        .def("asset_name", [](const AnimeSceneModel &model, int assetIndex) {
+            return model.assetName(assetIndex).toStdString();
+        })
         .def("layer_visible", &AnimeSceneModel::layerVisible)
         .def("set_layer_visible", &AnimeSceneModel::setLayerVisible)
         .def("layer_locked", &AnimeSceneModel::layerLocked)
@@ -848,6 +872,13 @@ void bindAnimeanPythonModule(py::module_ &m)
         .def("layer_opacity", &AnimeSceneModel::layerOpacity)
         .def("set_layer_opacity", &AnimeSceneModel::setLayerOpacity)
         .def("add_layer", &AnimeSceneModel::addLayer)
+        .def("add_asset",
+             [](AnimeSceneModel &model, const std::string &type, const std::string &name) {
+                 return model.addAsset(columnTypeFromString(QString::fromUtf8(type.c_str())),
+                                       QString::fromUtf8(name.c_str()));
+             },
+             py::arg("type") = "vector",
+             py::arg("name") = "")
         .def("delete_layer", &AnimeSceneModel::deleteLayer)
         .def("move_layer", &AnimeSceneModel::moveLayer)
         .def("add_frame", &AnimeSceneModel::addFrame)
@@ -870,6 +901,15 @@ void bindAnimeanPythonModule(py::module_ &m)
              },
              py::arg("create") = false,
              py::return_value_policy::reference_internal)
+        .def("asset_image",
+             [](AnimeSceneModel &model, int assetIndex, int frameId, bool create) {
+                 return model.assetImage(assetIndex, frameId, create);
+             },
+             py::arg("asset_index"),
+             py::arg("frame_id") = 1,
+             py::arg("create") = false,
+             py::return_value_policy::reference_internal)
+        .def("cell_asset_index", &AnimeSceneModel::assetIndexAt, py::arg("row"), py::arg("layer_index"))
         .def("stroke_count", [](const AnimeSceneModel &model, int row, int layerIndex) {
             const AnimeVectorImageModel *image = model.imageAt(row, layerIndex);
             return image ? image->strokeCount() : 0;

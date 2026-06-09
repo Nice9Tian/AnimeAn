@@ -300,6 +300,7 @@ QJsonObject modelToJson(const AnimeSceneModel &model)
     QJsonObject root;
     root[QStringLiteral("format")] = QStringLiteral("AnimeAn Project");
     root[QStringLiteral("version")] = 1;
+    root[QStringLiteral("sceneId")] = model.id();
     root[QStringLiteral("currentFrame")] = model.currentFrame();
     root[QStringLiteral("currentLayer")] = model.currentLayer();
     root[QStringLiteral("currentAsset")] = model.currentAsset();
@@ -326,7 +327,7 @@ QJsonObject modelToJson(const AnimeSceneModel &model)
             }
             QJsonObject cellObject;
             cellObject[QStringLiteral("row")] = row;
-            cellObject[QStringLiteral("levelIndex")] = cell.levelIndex;
+            cellObject[QStringLiteral("assetIndex")] = cell.assetIndex;
             cellObject[QStringLiteral("frameId")] = cell.frameId;
             cells.append(cellObject);
         }
@@ -336,15 +337,15 @@ QJsonObject modelToJson(const AnimeSceneModel &model)
     xsheet[QStringLiteral("columns")] = columns;
     root[QStringLiteral("xsheet")] = xsheet;
 
-    QJsonArray levels;
-    for (const AnimeLevel &level : scene.levels) {
-        QJsonObject levelObject;
-        levelObject[QStringLiteral("name")] = level.name;
-        levelObject[QStringLiteral("type")] = columnTypeName(level.type);
+    QJsonArray assets;
+    for (const AnimeAsset &asset : scene.assets) {
+        QJsonObject assetObject;
+        assetObject[QStringLiteral("name")] = asset.name;
+        assetObject[QStringLiteral("type")] = columnTypeName(asset.type);
 
         QJsonArray frames;
-        for (int frameId : level.frameIds()) {
-            const AnimeVectorImageModel *image = level.frame(frameId);
+        for (int frameId : asset.frameIds()) {
+            const AnimeVectorImageModel *image = asset.frame(frameId);
             if (!image) {
                 continue;
             }
@@ -353,10 +354,10 @@ QJsonObject modelToJson(const AnimeSceneModel &model)
             frameObject[QStringLiteral("image")] = imageToJson(*image);
             frames.append(frameObject);
         }
-        levelObject[QStringLiteral("frames")] = frames;
-        levels.append(levelObject);
+        assetObject[QStringLiteral("frames")] = frames;
+        assets.append(assetObject);
     }
-    root[QStringLiteral("levels")] = levels;
+    root[QStringLiteral("assets")] = assets;
     return root;
 }
 
@@ -372,28 +373,29 @@ bool modelFromJson(const QJsonObject &root, AnimeSceneModel *model, QString *err
     AnimeSceneModel loaded;
     AnimeScene &scene = loaded.scene();
     scene = AnimeScene();
+    scene.setId(root.value(QStringLiteral("sceneId")).toString());
 
     const QJsonObject xsheet = root.value(QStringLiteral("xsheet")).toObject();
     scene.xsheet.frameCount = qMax(1, xsheet.value(QStringLiteral("frameCount")).toInt(1));
 
-    const QJsonArray levels = root.value(QStringLiteral("levels")).toArray();
-    scene.levels.reserve(levels.size());
-    for (const QJsonValue &levelValue : levels) {
-        const QJsonObject levelObject = levelValue.toObject();
-        AnimeLevel level;
-        level.name = levelObject.value(QStringLiteral("name")).toString();
-        level.type = columnTypeFromName(levelObject.value(QStringLiteral("type")).toString());
+    const QJsonArray assets = root.value(QStringLiteral("assets")).toArray();
+    scene.assets.reserve(assets.size());
+    for (const QJsonValue &assetValue : assets) {
+        const QJsonObject assetObject = assetValue.toObject();
+        AnimeAsset asset;
+        asset.name = assetObject.value(QStringLiteral("name")).toString();
+        asset.type = columnTypeFromName(assetObject.value(QStringLiteral("type")).toString());
 
-        const QJsonArray frames = levelObject.value(QStringLiteral("frames")).toArray();
+        const QJsonArray frames = assetObject.value(QStringLiteral("frames")).toArray();
         for (const QJsonValue &frameValue : frames) {
             const QJsonObject frameObject = frameValue.toObject();
             const int frameId = frameObject.value(QStringLiteral("frameId")).toInt();
             if (frameId <= 0) {
                 continue;
             }
-            loadImageFromJson(level.frame(frameId, true), frameObject.value(QStringLiteral("image")));
+            loadImageFromJson(asset.frame(frameId, true), frameObject.value(QStringLiteral("image")));
         }
-        scene.levels.append(level);
+        scene.assets.append(asset);
     }
 
     const QJsonArray columns = xsheet.value(QStringLiteral("columns")).toArray();
@@ -411,9 +413,9 @@ bool modelFromJson(const QJsonObject &root, AnimeSceneModel *model, QString *err
         for (const QJsonValue &cellValue : cells) {
             const QJsonObject cellObject = cellValue.toObject();
             AnimeCell cell;
-            cell.levelIndex = cellObject.value(QStringLiteral("levelIndex")).toInt(-1);
+            cell.assetIndex = cellObject.value(QStringLiteral("assetIndex")).toInt(-1);
             cell.frameId = cellObject.value(QStringLiteral("frameId")).toInt(0);
-            if (cell.levelIndex >= 0 && cell.levelIndex < scene.levels.size() && cell.frameId > 0) {
+            if (cell.assetIndex >= 0 && cell.assetIndex < scene.assets.size() && cell.frameId > 0) {
                 column.setCell(cellObject.value(QStringLiteral("row")).toInt(), cell);
             }
         }

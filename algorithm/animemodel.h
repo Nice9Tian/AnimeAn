@@ -90,10 +90,10 @@ private:
 };
 
 struct AnimeCell {
-    int levelIndex = -1;
+    int assetIndex = -1;
     int frameId = 0;
 
-    bool isEmpty() const { return levelIndex < 0 || frameId <= 0; }
+    bool isEmpty() const { return assetIndex < 0 || frameId <= 0; }
 };
 
 enum class AnimeColumnType {
@@ -102,7 +102,7 @@ enum class AnimeColumnType {
     Fill
 };
 
-class AnimeLevel {
+class AnimeAsset {
 public:
     QString name;
     AnimeColumnType type = AnimeColumnType::Vector;
@@ -150,8 +150,16 @@ public:
 
 class AnimeScene {
 public:
-    QVector<AnimeLevel> levels;
+    AnimeScene();
+
+    QString id() const;
+    void setId(const QString &id);
+
+    QVector<AnimeAsset> assets;
     AnimeXsheet xsheet;
+
+private:
+    QString m_id;
 };
 
 class AnimeSceneModel {
@@ -160,6 +168,8 @@ public:
 
     const AnimeScene &scene() const;
     AnimeScene &scene();
+    QString id() const;
+    void setId(const QString &id);
 
     void initializeScene(int layerCount, int frameCount);
     void setCurrentLayer(int layerIndex);
@@ -204,7 +214,9 @@ public:
     AnimeVectorImageModel *imageAt(int row, int layerIndex, bool create, AnimeColumnType assetType = AnimeColumnType::Vector);
     const AnimeVectorImageModel *imageAt(int row, int layerIndex) const;
     AnimeVectorImageModel *assetImage(int assetIndex, bool create);
+    AnimeVectorImageModel *assetImage(int assetIndex, int frameId, bool create);
     const AnimeVectorImageModel *assetImage(int assetIndex) const;
+    const AnimeVectorImageModel *assetImage(int assetIndex, int frameId) const;
     int assetIndexAt(int row, int layerIndex) const;
     bool assignAssetToLayer(int row, int layerIndex, int assetIndex);
     int addLayerForAsset(int row, int assetIndex);

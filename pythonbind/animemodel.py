@@ -10,6 +10,8 @@ PointLike = Sequence[float] | dict[str, float]
 ColorLike = Sequence[int] | dict[str, int]
 RectLike = Sequence[float] | dict[str, float]
 
+_SCENES: dict[str, "AnimeModel"] = {}
+
 
 def _contains(value: Any, needle: str | None) -> bool:
     if needle is None:
@@ -65,13 +67,21 @@ class AnimeModel:
         self.scene = scene if scene is not None else _cpp.SceneModel()
         self.model_pybind = ModelPybind()
         self.vectorlogic = _cpp.vectorlogic
+        register_scene(self)
 
     @classmethod
     def from_scene(cls, scene: _cpp.SceneModel) -> "AnimeModel":
         return cls(scene)
 
+    def id(self) -> str:
+        return self.scene.id()
+
     def initialize(self, layer_count: int = 2, frame_count: int = 2) -> "AnimeModel":
+        old_id = self.id()
         self.scene.initialize_scene(layer_count, frame_count)
+        if old_id != self.id():
+            _SCENES.pop(old_id, None)
+        register_scene(self)
         return self
 
     def set_current(self, *, frame: int | None = None, layer: int | None = None) -> "AnimeModel":
@@ -104,10 +114,16 @@ class AnimeModel:
     def current_layer(self) -> int:
         return self.scene.current_layer()
 
-    def image(self, frame: int | None = None, layer: int | None = None, *, create: bool = True) -> _cpp.VectorImage:
+    def cell_image(self, frame: int | None = None, layer: int | None = None, *, create: bool = True) -> _cpp.VectorImage:
         row = self.current_frame if frame is None else frame
         layer_index = self.current_layer if layer is None else layer
         return self.scene.image_at(row, layer_index, create)
+
+    def image(self, frame: int | None = None, layer: int | None = None, *, create: bool = True) -> _cpp.VectorImage:
+        return self.cell_image(frame, layer, create=create)
+
+    def asset_image(self, asset_index: int, frame_id: int = 1, *, create: bool = False) -> _cpp.VectorImage:
+        return self.scene.asset_image(asset_index, frame_id, create)
 
     def add_polyline(
         self,
@@ -262,6 +278,10 @@ class CellHandle:
     def to_dict(self, *, to_poly: bool = False) -> dict[str, Any]:
         return self.model.cell(self.frame_index, self.layer_index, to_poly=to_poly)
 
+    @property
+    def asset_index(self) -> int:
+        return self.to_dict()["asset_index"]
+
 
 def _filter_layers(
     model: AnimeModel,
@@ -309,6 +329,30 @@ def _filter_layers_at_index(
 
         matches.append(LayerMatch(model, layer["index"], frame_index, layer))
     return matches
+
+
+def register_scene(model: AnimeModel | _cpp.SceneModel) -> AnimeModel:
+    wrapped = model if isinstance(model, AnimeModel) else AnimeModel.from_scene(model)
+    _SCENES[wrapped.id()] = wrapped
+    return wrapped
+
+
+def create_scene(layer_count: int = 2, frame_count: int = 2) -> AnimeModel:
+    model = AnimeModel()
+    old_id = model.id()
+    model.initialize(layer_count, frame_count)
+    if old_id != model.id():
+        _SCENES.pop(old_id, None)
+    _SCENES[model.id()] = model
+    return model
+
+
+def scene(scene_id: str) -> AnimeModel:
+    return _SCENES[scene_id]
+
+
+def scenes() -> dict[str, AnimeModel]:
+    return dict(_SCENES)
 
 
 annimemodel = AnimeModel

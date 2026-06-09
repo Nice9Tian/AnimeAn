@@ -538,8 +538,8 @@ void MainWindow::createToolDocks()
 
     connect(toolsPanel, &ToolsPanel::toolSelected, this, selectTool);
 
-    connect(toolOptPanel, &ToolOptPanel::colorSelected, this, [this, toolOptPanel, applyTool](const QColor &color) {
-        if (toolOptPanel->tool() == PaintOpenGLWidget::Tool::Fill) {
+    connect(toolOptPanel, &ToolOptPanel::colorSelected, this, [this, applyTool](const QColor &color) {
+        if (m_paintWidget->tool() == PaintOpenGLWidget::Tool::Fill) {
             m_paintWidget->setDrawingColor(color);
             applyTool(PaintOpenGLWidget::Tool::Fill, false);
             return;

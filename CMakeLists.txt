@@ -119,6 +119,9 @@ if(ANIMEAN_WITH_PYTHON)
             "${ANIMEAN_PYFILE_DIR}/toolcontrol.py"
             "$<TARGET_FILE_DIR:AnimeAn>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ANIMEAN_PYFILE_DIR}/linefinish.py"
+            "$<TARGET_FILE_DIR:AnimeAn>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${ANIMEAN_PYTHONBIND_DIR}/animemodel.py"
             "$<TARGET_FILE_DIR:AnimeAn>"
     )
@@ -159,6 +162,9 @@ if(WIN32 AND QT_VERSION_MAJOR EQUAL 6)
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ANIMEAN_PYFILE_DIR}/toolcontrol.py"
+                "${ANIMEAN_DEPLOY_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ANIMEAN_PYFILE_DIR}/linefinish.py"
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ANIMEAN_PYTHONBIND_DIR}/animemodel.py"
