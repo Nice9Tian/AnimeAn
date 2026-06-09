@@ -10,6 +10,119 @@
     <height>320</height>
    </rect>
   </property>
+  <widget class="QPushButton" name="standardButton">
+   <property name="visible">
+    <bool>true</bool>
+   </property>
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>10</y>
+     <width>88</width>
+     <height>28</height>
+    </rect>
+   </property>
+   <property name="cursor">
+    <cursorShape>PointingHandCursor</cursorShape>
+   </property>
+   <property name="styleSheet">
+    <string notr="true">QPushButton {
+    border: 1px solid #8a8a8a;
+    border-radius: 3px;
+    padding: 4px 8px;
+}
+QPushButton:hover {
+    border-color: #3d8ec9;
+}
+QPushButton:pressed {
+    padding-top: 5px;
+    padding-left: 9px;
+}
+QPushButton:focus {
+    border: 1px solid #0067c0;
+}</string>
+   </property>
+   <property name="text">
+    <string>Button</string>
+   </property>
+  </widget>
+  <widget class="QSlider" name="standardSlider">
+   <property name="visible">
+    <bool>true</bool>
+   </property>
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>50</y>
+     <width>200</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="cursor">
+    <cursorShape>PointingHandCursor</cursorShape>
+   </property>
+   <property name="styleSheet">
+    <string notr="true">QSlider::groove:horizontal {
+    height: 6px;
+    border-radius: 3px;
+    background: #d8d8d8;
+}
+QSlider::sub-page:horizontal {
+    border-radius: 3px;
+    background: #3d8ec9;
+}
+QSlider::handle:horizontal {
+    width: 14px;
+    height: 14px;
+    margin: -5px 0;
+    border: 1px solid #777777;
+    border-radius: 7px;
+    background: #ffffff;
+}
+QSlider::handle:horizontal:hover {
+    border-color: #0067c0;
+}
+QSlider::handle:horizontal:pressed {
+    background: #e7f3ff;
+}</string>
+   </property>
+   <property name="orientation">
+    <enum>Qt::Orientation::Horizontal</enum>
+   </property>
+  </widget>
+  <widget class="QListWidget" name="standardList">
+   <property name="visible">
+    <bool>true</bool>
+   </property>
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>80</y>
+     <width>200</width>
+     <height>62</height>
+    </rect>
+   </property>
+   <property name="styleSheet">
+    <string notr="true">QListWidget {
+    border: 1px solid #b8b8b8;
+    border-radius: 3px;
+    background: #ffffff;
+    padding: 2px;
+}
+QListWidget::item {
+    min-height: 22px;
+    padding: 3px 6px;
+    border-radius: 2px;
+}
+QListWidget::item:hover {
+    background: #e7f3ff;
+}
+QListWidget::item:selected {
+    color: #ffffff;
+    background: #3d8ec9;
+}</string>
+   </property>
+  </widget>
  </widget>
  <resources/>
  <connections/>

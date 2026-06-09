@@ -42,6 +42,29 @@ QColor colorFromState(const QJsonObject &state)
     const int a = intValue(state, QStringLiteral("a"), 255);
     return QColor(r, g, b, a);
 }
+
+QString colorButtonStyle(const QString &standardStyle, const QColor &color)
+{
+    const QString textColor = color.lightness() < 128 ? QStringLiteral("white") : QStringLiteral("black");
+    const QColor hoverColor = color.lightness() < 128 ? color.lighter(135) : color.darker(108);
+    const QColor pressedColor = color.lightness() < 128 ? color.lighter(165) : color.darker(125);
+
+    return standardStyle + QStringLiteral(
+               "QPushButton {"
+               " background-color: %1;"
+               " color: %2;"
+               "}"
+               "QPushButton:hover {"
+               " background-color: %3;"
+               "}"
+               "QPushButton:pressed {"
+               " background-color: %4;"
+               "}")
+        .arg(color.name(QColor::HexRgb),
+             textColor,
+             hoverColor.name(QColor::HexRgb),
+             pressedColor.name(QColor::HexRgb));
+}
 }
 
 ToolOptPanel::ToolOptPanel(QWidget *parent)
@@ -49,6 +72,9 @@ ToolOptPanel::ToolOptPanel(QWidget *parent)
     , ui(new Ui::ToolOptPanel)
 {
     ui->setupUi(this);
+    ui->standardButton->hide();
+    ui->standardSlider->hide();
+    ui->standardList->hide();
 
     m_layout = new QVBoxLayout(this);
     m_layout->setContentsMargins(8, 8, 8, 8);
@@ -159,13 +185,14 @@ QWidget *ToolOptPanel::createButtonRow(const QJsonObject &control)
 
         const QJsonObject option = optionValue.toObject();
         QPushButton *button = new QPushButton(textValue(option, QStringLiteral("title")), row);
+        button->setCursor(ui->standardButton->cursor());
+        button->setMinimumSize(ui->standardButton->minimumSize());
+        button->setStyleSheet(ui->standardButton->styleSheet());
         const QString value = textValue(option, QStringLiteral("value"));
         const QJsonObject state = option.value(QStringLiteral("state")).toObject();
         const QColor color = colorFromState(state);
         if (color.isValid()) {
-            const QString textColor = color.lightness() < 128 ? QStringLiteral("white") : QStringLiteral("black");
-            button->setStyleSheet(QStringLiteral("QPushButton { background-color: %1; color: %2; }")
-                                      .arg(color.name(QColor::HexRgb), textColor));
+            button->setStyleSheet(colorButtonStyle(ui->standardButton->styleSheet(), color));
         }
         connect(button, &QPushButton::clicked, this, [this, hook, name, value]() {
             emitOptionChanged(hook, name, value);
@@ -192,6 +219,9 @@ QWidget *ToolOptPanel::createListControl(const QJsonObject &control)
 
     QListWidget *list = new QListWidget(container);
     list->setObjectName(name);
+    list->setStyleSheet(ui->standardList->styleSheet());
+    list->setFont(ui->standardList->font());
+    list->setFrameShape(ui->standardList->frameShape());
     list->setSelectionMode(QAbstractItemView::SingleSelection);
     list->setMaximumHeight(intValue(control, QStringLiteral("height"), 62));
     const QString current = textValue(control, QStringLiteral("value"));
@@ -243,6 +273,11 @@ QWidget *ToolOptPanel::createSliderControl(const QJsonObject &control)
 
     QSlider *slider = new QSlider(Qt::Horizontal, container);
     slider->setObjectName(name);
+    slider->setCursor(ui->standardSlider->cursor());
+    slider->setStyleSheet(ui->standardSlider->styleSheet());
+    slider->setSingleStep(ui->standardSlider->singleStep());
+    slider->setPageStep(ui->standardSlider->pageStep());
+    slider->setTracking(ui->standardSlider->hasTracking());
     slider->setRange(intValue(control, QStringLiteral("min"), 0), intValue(control, QStringLiteral("max"), 100));
     slider->setValue(value);
 
