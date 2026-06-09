@@ -261,6 +261,31 @@ AnimeVectorStroke AnimeVectorLogic::makeStroke(const QVector<QPointF> &points,
     return stroke;
 }
 
+AnimeVectorStroke AnimeVectorLogic::makeStrokeFromPath(const QPainterPath &path,
+                                                       const QVector<QPointF> &points,
+                                                       const QColor &color,
+                                                       qreal width,
+                                                       int id)
+{
+    AnimeVectorStroke stroke;
+    stroke.id = id;
+    stroke.points = points;
+    stroke.lengths.clear();
+    stroke.lengths.reserve(stroke.points.size());
+    stroke.totalLength = 0.0;
+    for (int i = 0; i < stroke.points.size(); ++i) {
+        if (i > 0) {
+            stroke.totalLength += QLineF(stroke.points[i - 1], stroke.points[i]).length();
+        }
+        stroke.lengths.append(stroke.totalLength);
+    }
+    stroke.path = path;
+    stroke.bounds = stroke.path.boundingRect().adjusted(-width, -width, width, width);
+    stroke.color = color;
+    stroke.width = width;
+    return stroke;
+}
+
 bool AnimeVectorLogic::strokeHitsCircle(const AnimeVectorStroke &stroke, const QPointF &center, qreal radius)
 {
     if (stroke.points.isEmpty()) {

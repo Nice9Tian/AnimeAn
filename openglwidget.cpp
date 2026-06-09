@@ -230,16 +230,15 @@ int PaintOpenGLWidget::importVectorLineLayer(const QVector<ImportedVectorFrame> 
             continue;
         }
         for (const ImportedVectorStroke &importedStroke : frame.strokes) {
-            if (importedStroke.points.size() < 2) {
+            if (importedStroke.path.isEmpty() || importedStroke.points.size() < 2) {
                 continue;
             }
             const qreal width = std::max(qreal(1.0), importedStroke.width);
-            image->addStroke(makeStroke(importedStroke.points,
-                                        importedStroke.color,
-                                        width,
-                                        image->strokeCount() + 1,
-                                        false,
-                                        false));
+            image->addStroke(AnimeVectorLogic::makeStrokeFromPath(importedStroke.path,
+                                                                  importedStroke.points,
+                                                                  importedStroke.color,
+                                                                  width,
+                                                                  image->strokeCount() + 1));
         }
         if (firstRow < 0) {
             firstRow = row;

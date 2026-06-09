@@ -34,6 +34,11 @@ AnimeVectorStroke makeStroke(const QVector<QPointF> &points,
                              bool filterInput = true,
                              bool smoothPath = true,
                              int smoothValue = 50);
+AnimeVectorStroke makeStrokeFromPath(const QPainterPath &path,
+                                     const QVector<QPointF> &points,
+                                     const QColor &color,
+                                     qreal width,
+                                     int id = 0);
 
 bool strokeHitsCircle(const AnimeVectorStroke &stroke, const QPointF &center, qreal radius);
 bool strokeHitsCapsule(const AnimeVectorStroke &stroke, const QPointF &from, const QPointF &to, qreal radius);

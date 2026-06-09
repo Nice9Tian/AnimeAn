@@ -32,6 +32,7 @@ public:
 
     struct ImportedVectorStroke {
         QVector<QPointF> points;
+        QPainterPath path;
         QColor color = Qt::black;
         qreal width = 3.0;
     };

@@ -31,6 +31,9 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QSizeF>
+#include <QRectF>
+#include <QTransform>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSaveFile>
@@ -213,11 +216,11 @@ qreal thicknessFromDict(const py::dict &data)
     return dictNumber(data, "thick", 3.0);
 }
 
-void appendQuadraticSamples(QVector<QPointF> *points,
-                            const QPointF &p0,
-                            const QPointF &p1,
-                            const QPointF &p2,
-                            int sampleCount)
+void appendQuadraticMetricPoints(QVector<QPointF> *points,
+                                 const QPointF &p0,
+                                 const QPointF &p1,
+                                 const QPointF &p2,
+                                 int sampleCount)
 {
     if (points->isEmpty()) {
         points->append(p0);
@@ -266,6 +269,7 @@ QVector<PaintOpenGLWidget::ImportedVectorFrame> importedFramesFromOpenToonzLevel
             }
 
             PaintOpenGLWidget::ImportedVectorStroke importedStroke;
+            bool hasPathStart = false;
             qreal thicknessTotal = 0.0;
             int thicknessCount = 0;
             py::iterable quadratics = strokeDict[py::str("quadratics")];
@@ -286,12 +290,20 @@ QVector<PaintOpenGLWidget::ImportedVectorFrame> importedFramesFromOpenToonzLevel
                 const QPointF p0 = pointFromDict(p0Dict);
                 const QPointF p1 = pointFromDict(p1Dict);
                 const QPointF p2 = pointFromDict(p2Dict);
+                if (!hasPathStart) {
+                    importedStroke.path.moveTo(p0);
+                    hasPathStart = true;
+                } else if (!qFuzzyCompare(importedStroke.path.currentPosition().x(), p0.x()) ||
+                           !qFuzzyCompare(importedStroke.path.currentPosition().y(), p0.y())) {
+                    importedStroke.path.lineTo(p0);
+                }
+                importedStroke.path.quadTo(p1, p2);
                 const qreal approxLength = QLineF(p0, p1).length() + QLineF(p1, p2).length();
-                appendQuadraticSamples(&importedStroke.points,
-                                       p0,
-                                       p1,
-                                       p2,
-                                       std::max(4, static_cast<int>(std::ceil(approxLength / 6.0))));
+                appendQuadraticMetricPoints(&importedStroke.points,
+                                            p0,
+                                            p1,
+                                            p2,
+                                            std::max(4, static_cast<int>(std::ceil(approxLength / 6.0))));
                 thicknessTotal += thicknessFromDict(p0Dict) + thicknessFromDict(p1Dict) + thicknessFromDict(p2Dict);
                 thicknessCount += 3;
             }
@@ -309,6 +321,60 @@ QVector<PaintOpenGLWidget::ImportedVectorFrame> importedFramesFromOpenToonzLevel
         }
     }
     return importedFrames;
+}
+
+QRectF importedVectorFramesBounds(const QVector<PaintOpenGLWidget::ImportedVectorFrame> &frames)
+{
+    QRectF bounds;
+    bool hasBounds = false;
+    for (const PaintOpenGLWidget::ImportedVectorFrame &frame : frames) {
+        for (const PaintOpenGLWidget::ImportedVectorStroke &stroke : frame.strokes) {
+            const QRectF strokeBounds = stroke.path.isEmpty()
+                                            ? QRectF()
+                                            : stroke.path.boundingRect();
+            if (!strokeBounds.isValid()) {
+                continue;
+            }
+            if (!hasBounds) {
+                bounds = strokeBounds;
+                hasBounds = true;
+            } else {
+                bounds = bounds.united(strokeBounds);
+            }
+        }
+    }
+    return bounds;
+}
+
+void scaleImportedVectorFramesToCanvas(QVector<PaintOpenGLWidget::ImportedVectorFrame> *frames, const QSizeF &targetSize)
+{
+    if (!frames || targetSize.width() <= 0.0 || targetSize.height() <= 0.0) {
+        return;
+    }
+
+    const QRectF sourceBounds = importedVectorFramesBounds(*frames);
+    if (!sourceBounds.isValid() || sourceBounds.width() <= 0.0 || sourceBounds.height() <= 0.0) {
+        return;
+    }
+
+    const qreal scaleX = targetSize.width() / sourceBounds.width();
+    const qreal scaleY = targetSize.height() / sourceBounds.height();
+    const qreal scale = std::min(scaleX, scaleY);
+    const QPointF sourceCenter = sourceBounds.center();
+    const QPointF targetCenter(targetSize.width() * 0.5, targetSize.height() * 0.5);
+
+    for (PaintOpenGLWidget::ImportedVectorFrame &frame : *frames) {
+        for (PaintOpenGLWidget::ImportedVectorStroke &stroke : frame.strokes) {
+            for (QPointF &point : stroke.points) {
+                point = targetCenter + (point - sourceCenter) * scale;
+            }
+            const qreal dx = targetCenter.x() - sourceCenter.x() * scale;
+            const qreal dy = targetCenter.y() - sourceCenter.y() * scale;
+            const QTransform transform(scale, 0.0, 0.0, scale, dx, dy);
+            stroke.path = transform.map(stroke.path);
+            stroke.width = std::max(qreal(1.0), stroke.width * scale);
+        }
+    }
 }
 #endif
 }
@@ -1087,12 +1153,40 @@ void MainWindow::importOpenToonzLines()
         py::module_ toonzTool = py::module_::import("toonz_to_dict");
         py::object level = toonzTool.attr("read_vector_level")(QDir::toNativeSeparators(fileName).toStdString());
         py::dict levelData = level.attr("to_dict")().cast<py::dict>();
-        const QVector<PaintOpenGLWidget::ImportedVectorFrame> frames = importedFramesFromOpenToonzLevel(levelData);
+        QVector<PaintOpenGLWidget::ImportedVectorFrame> frames = importedFramesFromOpenToonzLevel(levelData);
         if (frames.isEmpty()) {
             QMessageBox::warning(this,
                                  QStringLiteral("Import OpenToonz Lines"),
                                  QStringLiteral("No strokes were found in this .pli file."));
             return;
+        }
+
+        const QRectF sourceBounds = importedVectorFramesBounds(frames);
+        const QSizeF canvasSize(m_paintWidget->width(), m_paintWidget->height());
+        const QRectF canvasBounds(QPointF(0.0, 0.0), canvasSize);
+        const bool needsScale = sourceBounds.isValid()
+                                && sourceBounds.width() > 0.0
+                                && sourceBounds.height() > 0.0
+                                && (!canvasBounds.contains(sourceBounds)
+                                    || !qFuzzyCompare(sourceBounds.width(), canvasSize.width())
+                                    || !qFuzzyCompare(sourceBounds.height(), canvasSize.height()));
+        if (needsScale) {
+            const QMessageBox::StandardButton button = QMessageBox::question(
+                this,
+                QStringLiteral("Import OpenToonz Lines"),
+                QStringLiteral("The imported drawing bounds are (%1, %2) %3 x %4, but the current canvas is %5 x %6.\n"
+                               "Fit it to the current canvas?")
+                    .arg(qRound(sourceBounds.x()))
+                    .arg(qRound(sourceBounds.y()))
+                    .arg(qRound(sourceBounds.width()))
+                    .arg(qRound(sourceBounds.height()))
+                    .arg(m_paintWidget->width())
+                    .arg(m_paintWidget->height()),
+                QMessageBox::Yes | QMessageBox::No,
+                QMessageBox::Yes);
+            if (button == QMessageBox::Yes) {
+                scaleImportedVectorFramesToCanvas(&frames, canvasSize);
+            }
         }
 
         const QFileInfo fileInfo(fileName);
