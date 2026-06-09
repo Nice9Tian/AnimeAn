@@ -1,8 +1,31 @@
 #include "animemodel.h"
 
-#include <QUuid>
-
 namespace {
+int &nextSceneIntIdValue()
+{
+    static int nextId = 1;
+    return nextId;
+}
+
+int nextSceneIntId()
+{
+    int &nextId = nextSceneIntIdValue();
+    return nextId++;
+}
+
+void reserveSceneIntId(int id)
+{
+    int &nextId = nextSceneIntIdValue();
+    if (id >= nextId) {
+        nextId = id + 1;
+    }
+}
+
+QString defaultSceneName(int id)
+{
+    return QStringLiteral("Scene %1").arg(id);
+}
+
 int maxInt(int a, int b)
 {
     return a > b ? a : b;
@@ -477,18 +500,45 @@ void AnimeXsheet::ensureFrameCount(int count)
 }
 
 AnimeScene::AnimeScene()
-    : m_id(QUuid::createUuid().toString(QUuid::WithoutBraces))
+    : m_intId(nextSceneIntId())
 {
+    m_textId = defaultSceneName(m_intId);
 }
 
 QString AnimeScene::id() const
 {
-    return m_id;
+    return textId();
 }
 
 void AnimeScene::setId(const QString &id)
 {
-    m_id = id.isEmpty() ? QUuid::createUuid().toString(QUuid::WithoutBraces) : id;
+    setTextId(id);
+}
+
+QString AnimeScene::textId() const
+{
+    return m_textId;
+}
+
+void AnimeScene::setTextId(const QString &id)
+{
+    const QString name = id.trimmed();
+    m_textId = name.isEmpty() ? defaultSceneName(m_intId) : name;
+}
+
+int AnimeScene::intId() const
+{
+    return m_intId;
+}
+
+void AnimeScene::setIntId(int id)
+{
+    if (id <= 0) {
+        m_intId = nextSceneIntId();
+        return;
+    }
+    m_intId = id;
+    reserveSceneIntId(id);
 }
 
 AnimeSceneModel::AnimeSceneModel()
@@ -508,12 +558,32 @@ AnimeScene &AnimeSceneModel::scene()
 
 QString AnimeSceneModel::id() const
 {
-    return m_scene.id();
+    return textId();
 }
 
 void AnimeSceneModel::setId(const QString &id)
 {
-    m_scene.setId(id);
+    setTextId(id);
+}
+
+QString AnimeSceneModel::textId() const
+{
+    return m_scene.textId();
+}
+
+void AnimeSceneModel::setTextId(const QString &id)
+{
+    m_scene.setTextId(id);
+}
+
+int AnimeSceneModel::intId() const
+{
+    return m_scene.intId();
+}
+
+void AnimeSceneModel::setIntId(int id)
+{
+    m_scene.setIntId(id);
 }
 
 void AnimeSceneModel::initializeScene(int layerCount, int frameCount)
@@ -654,6 +724,23 @@ QString AnimeSceneModel::assetName(int assetIndex) const
         return QString();
     }
     return m_scene.assets[assetIndex].name;
+}
+
+void AnimeSceneModel::setAssetName(int assetIndex, const QString &name)
+{
+    if (assetIndex < 0 || assetIndex >= m_scene.assets.size()) {
+        return;
+    }
+    const QString uniqueName = uniqueLayerName(name, -1, assetIndex);
+    m_scene.assets[assetIndex].name = uniqueName;
+    for (int layerIndex = 0; layerIndex < m_scene.xsheet.columns.size(); ++layerIndex) {
+        for (int row = 0; row < frameCount(); ++row) {
+            if (assetIndexAt(row, layerIndex) == assetIndex) {
+                m_scene.xsheet.columns[layerIndex].name = uniqueName;
+                break;
+            }
+        }
+    }
 }
 
 AnimeColumnType AnimeSceneModel::assetType(int assetIndex) const

@@ -90,7 +90,7 @@ target_include_directories(AnimeAn PRIVATE
 target_link_libraries(AnimeAn PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::OpenGLWidgets)
 
 if(ANIMEAN_WITH_PYTHON)
-    target_sources(AnimeAn PRIVATE pythonbind/python_bindings.cpp)
+    target_sources(AnimeAn PRIVATE pythonbind/python_bindings.cpp pythonbind/python_bindings.h)
     target_link_libraries(AnimeAn PRIVATE pybind11::embed)
     target_compile_definitions(AnimeAn PRIVATE
         ANIMEAN_WITH_PYTHON
@@ -120,6 +120,9 @@ if(ANIMEAN_WITH_PYTHON)
             "$<TARGET_FILE_DIR:AnimeAn>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${ANIMEAN_PYFILE_DIR}/linefinish.py"
+            "$<TARGET_FILE_DIR:AnimeAn>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ANIMEAN_PYFILE_DIR}/bind_test.py"
             "$<TARGET_FILE_DIR:AnimeAn>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${ANIMEAN_PYTHONBIND_DIR}/animemodel.py"
@@ -165,6 +168,9 @@ if(WIN32 AND QT_VERSION_MAJOR EQUAL 6)
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ANIMEAN_PYFILE_DIR}/linefinish.py"
+                "${ANIMEAN_DEPLOY_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ANIMEAN_PYFILE_DIR}/bind_test.py"
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ANIMEAN_PYTHONBIND_DIR}/animemodel.py"

@@ -8,6 +8,7 @@
 #include "selectionattention.h"
 #include "childrenpanel/tooloptpanel.h"
 #include "childrenpanel/toolspanel.h"
+#include "pythonbind/python_bindings.h"
 
 #include <QAbstractItemModel>
 #include <QAbstractItemView>
@@ -21,15 +22,23 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFileDialog>
+#include <QHBoxLayout>
 #include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSaveFile>
+#include <QScrollBar>
 #include <QSignalBlocker>
+#include <QStatusBar>
+#include <QVBoxLayout>
+#include <QWidget>
 
 #include <string>
 
@@ -39,6 +48,7 @@
 #define ANIMEAN_RESTORE_QT_SLOTS
 #endif
 #include <pybind11/embed.h>
+#include <pybind11/eval.h>
 #ifdef ANIMEAN_RESTORE_QT_SLOTS
 #define slots Q_SLOTS
 #undef ANIMEAN_RESTORE_QT_SLOTS
@@ -54,11 +64,6 @@ int movedRowTarget(int sourceRow, int destinationChild)
         --target;
     }
     return target;
-}
-
-QString utf8String(const std::string &text)
-{
-    return QString::fromUtf8(text.c_str());
 }
 
 QString toolControlName(PaintOpenGLWidget::Tool tool)
@@ -179,10 +184,18 @@ MainWindow::MainWindow(QWidget *parent)
                     m_paintWidget->model().currentAsset());
     setupConnections();
     updateWindowTitle();
+#ifdef ANIMEAN_WITH_PYTHON
+    registerAnimeanUiScene(&m_paintWidget->model());
+    syncEmbeddedPythonState();
+    runPythonDebugCommand(QStringLiteral("bind_test.py"));
+#endif
 }
 
 MainWindow::~MainWindow()
 {
+#ifdef ANIMEAN_WITH_PYTHON
+    unregisterAnimeanUiScene(&m_paintWidget->model());
+#endif
     delete ui;
 }
 
@@ -197,6 +210,7 @@ void MainWindow::setupDocks()
     m_paintWidget = ui->graphicsView;
     createListDocks();
     createToolDocks();
+    setupPythonDebugDock();
 }
 
 void MainWindow::setupListDragDrop()
@@ -220,50 +234,213 @@ void MainWindow::setupListDragDrop()
     m_assetPanel->assetList()->viewport()->installEventFilter(this);
 }
 
+void MainWindow::setupPythonDebugDock()
+{
+    m_pythonDebugDock = new QDockWidget(QStringLiteral("Python Debug"), this);
+    m_pythonDebugDock->setObjectName(QStringLiteral("PythonDebugDock"));
+
+    QWidget *panel = new QWidget(m_pythonDebugDock);
+    QVBoxLayout *layout = new QVBoxLayout(panel);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(6);
+
+    m_pythonDebugOutput = new QPlainTextEdit(panel);
+    m_pythonDebugOutput->setObjectName(QStringLiteral("PythonDebugOutput"));
+    m_pythonDebugOutput->setPlaceholderText(QStringLiteral("Python debug output"));
+    m_pythonDebugOutput->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+
+    QHBoxLayout *commandLayout = new QHBoxLayout;
+    QLabel *commandLabel = new QLabel(QStringLiteral("Command"), panel);
+    m_pythonDebugCommand = new QLineEdit(panel);
+    m_pythonDebugCommand->setObjectName(QStringLiteral("PythonDebugCommand"));
+    m_pythonDebugCommand->setText(QStringLiteral("bind_test.py"));
+    QPushButton *runButton = new QPushButton(QStringLiteral("Run"), panel);
+
+    commandLayout->addWidget(commandLabel);
+    commandLayout->addWidget(m_pythonDebugCommand, 1);
+    commandLayout->addWidget(runButton);
+    layout->addWidget(m_pythonDebugOutput, 1);
+    layout->addLayout(commandLayout);
+
+    m_pythonDebugDock->setWidget(panel);
+    addDockWidget(Qt::BottomDockWidgetArea, m_pythonDebugDock);
+
+    connect(runButton, &QPushButton::clicked, this, [this]() {
+        runPythonDebugCommand(m_pythonDebugCommand->text());
+    });
+    connect(m_pythonDebugCommand, &QLineEdit::returnPressed, this, [this]() {
+        runPythonDebugCommand(m_pythonDebugCommand->text());
+    });
+}
+
+void MainWindow::runPythonDebugCommand(const QString &command)
+{
+    if (!m_pythonDebugOutput) {
+        return;
+    }
+
+    const QString trimmed = command.trimmed();
+    if (trimmed.isEmpty()) {
+        return;
+    }
+
+    m_pythonDebugOutput->appendPlainText(QStringLiteral("> %1").arg(trimmed));
+    m_pythonDebugOutput->appendPlainText(runEmbeddedPythonCommand(trimmed).trimmed());
+    m_pythonDebugOutput->appendPlainText(QString());
+    m_pythonDebugOutput->verticalScrollBar()->setValue(m_pythonDebugOutput->verticalScrollBar()->maximum());
+}
+
+QString MainWindow::resolvePythonScriptPath(const QString &scriptName) const
+{
+    const QFileInfo directInfo(scriptName);
+    if (directInfo.exists()) {
+        return directInfo.absoluteFilePath();
+    }
+
+    const QString appPath = QCoreApplication::applicationDirPath();
+    const QStringList candidates = {
+        QDir(appPath).filePath(scriptName),
+#ifdef ANIMEAN_WITH_PYTHON
+        QDir(QStringLiteral(ANIMEAN_PYFILE_DIR)).filePath(scriptName),
+        QDir(QStringLiteral(ANIMEAN_SOURCE_DIR)).filePath(scriptName),
+#endif
+    };
+
+    for (const QString &candidate : candidates) {
+        if (QFileInfo::exists(candidate)) {
+            return QFileInfo(candidate).absoluteFilePath();
+        }
+    }
+
+    return QString();
+}
+
+QString MainWindow::runEmbeddedPythonCommand(const QString &command)
+{
+#ifdef ANIMEAN_WITH_PYTHON
+    try {
+        py::gil_scoped_acquire acquire;
+        py::dict globals = py::module_::import("__main__").attr("__dict__");
+        syncEmbeddedPythonState();
+
+        const QString runPrefix = QStringLiteral("run ");
+        QString scriptName;
+        if (command.endsWith(QStringLiteral(".py"), Qt::CaseInsensitive)) {
+            scriptName = command;
+        } else if (command.startsWith(runPrefix, Qt::CaseInsensitive)) {
+            scriptName = command.mid(runPrefix.size()).trimmed();
+        }
+
+        const bool runScript = !scriptName.isEmpty();
+        const QString scriptPath = runScript ? resolvePythonScriptPath(scriptName) : QString();
+        if (runScript && scriptPath.isEmpty()) {
+            return QStringLiteral("Python script not found: %1").arg(scriptName);
+        }
+
+        py::object io = py::module_::import("io");
+        py::object contextlib = py::module_::import("contextlib");
+        py::object stdoutBuffer = io.attr("StringIO")();
+        py::object stderrBuffer = io.attr("StringIO")();
+        py::object stdoutRedirect = contextlib.attr("redirect_stdout")(stdoutBuffer);
+        py::object stderrRedirect = contextlib.attr("redirect_stderr")(stderrBuffer);
+
+        QString errorText;
+        stdoutRedirect.attr("__enter__")();
+        stderrRedirect.attr("__enter__")();
+        try {
+            if (runScript) {
+                globals["__file__"] = scriptPath.toStdString();
+                const QString normalizedPath = QDir::toNativeSeparators(scriptPath);
+                const QString scriptLiteral = QString::fromStdString(
+                    py::repr(py::str(normalizedPath.toStdString())).cast<std::string>());
+                const QString code = QStringLiteral(
+                    "with open(%1, 'r', encoding='utf-8') as __animean_file:\n"
+                    "    __animean_code = __animean_file.read()\n"
+                    "exec(compile(__animean_code, %1, 'exec'), globals())\n")
+                                         .arg(scriptLiteral);
+                py::exec(code.toStdString(), globals);
+            } else {
+                const char *runner =
+                    "import ast\n"
+                    "try:\n"
+                    "    __animean_expr = ast.parse(__animean_command, mode='eval')\n"
+                    "except SyntaxError:\n"
+                    "    exec(__animean_command, globals())\n"
+                    "else:\n"
+                    "    __animean_value = eval(compile(__animean_expr, '<AnimeAn debug>', 'eval'), globals())\n"
+                    "    if __animean_value is not None:\n"
+                    "        print(repr(__animean_value))\n";
+                globals["__animean_command"] = command.toStdString();
+                py::exec(runner, globals);
+            }
+        } catch (const py::error_already_set &error) {
+            errorText = QString::fromUtf8(error.what());
+        }
+        stderrRedirect.attr("__exit__")(py::none(), py::none(), py::none());
+        stdoutRedirect.attr("__exit__")(py::none(), py::none(), py::none());
+
+        QString output = QString::fromUtf8(stdoutBuffer.attr("getvalue")().cast<std::string>().c_str());
+        const QString stderrOutput = QString::fromUtf8(stderrBuffer.attr("getvalue")().cast<std::string>().c_str());
+        if (!stderrOutput.isEmpty()) {
+            output += stderrOutput;
+        }
+        if (!errorText.isEmpty()) {
+            output += errorText;
+        }
+        if (output.trimmed().isEmpty()) {
+            output = QStringLiteral("(no output)");
+        }
+        m_paintWidget->update();
+        return output;
+    } catch (const py::error_already_set &error) {
+        return QStringLiteral("Python debug error: %1").arg(QString::fromUtf8(error.what()));
+    }
+#else
+    Q_UNUSED(command);
+    return QStringLiteral("Python disabled");
+#endif
+}
+
+void MainWindow::syncEmbeddedPythonState()
+{
+#ifdef ANIMEAN_WITH_PYTHON
+    try {
+        py::gil_scoped_acquire acquire;
+        py::dict globals = py::module_::import("__main__").attr("__dict__");
+        py::object animeanPython = py::module_::import("animean_python");
+        py::object animeModel = py::module_::import("animemodel");
+        globals["animean_python"] = animeanPython;
+        globals["animemodel"] = animeModel;
+        globals["model"] = py::cast(&m_paintWidget->model(), py::return_value_policy::reference);
+        globals["current"] = animeModel.attr("get_current")();
+        if (m_paintWidget->model().currentFrame() >= 0) {
+            globals["current_frame"] = m_paintWidget->model().currentFrame();
+        } else {
+            globals["current_frame"] = py::none();
+        }
+        if (m_paintWidget->model().currentLayer() >= 0) {
+            globals["current_layer"] = m_paintWidget->model().currentLayer();
+        } else {
+            globals["current_layer"] = py::none();
+        }
+        if (m_paintWidget->model().currentAsset() >= 0) {
+            globals["current_asset"] = m_paintWidget->model().currentAsset();
+        } else {
+            globals["current_asset"] = py::none();
+        }
+        globals["canvas_width"] = m_paintWidget->width();
+        globals["canvas_height"] = m_paintWidget->height();
+    } catch (const py::error_already_set &error) {
+        setStatusText(QStringLiteral("Python state sync error: %1").arg(QString::fromUtf8(error.what())));
+    }
+#endif
+}
+
 void MainWindow::setupConnections()
 {
     connect(ui->actionOpen, &QAction::triggered, this, &MainWindow::openProject);
     connect(ui->actionSave, &QAction::triggered, this, &MainWindow::saveProject);
     connect(ui->actionSaveAs, &QAction::triggered, this, &MainWindow::saveProjectAs);
-
-    connect(ui->PythonAxisButton, &QPushButton::clicked, this, [this]() {
-#ifdef ANIMEAN_WITH_PYTHON
-        try {
-            py::module_::import("animean_python");
-            const std::string result = py::module_::import("hello_world")
-                                           .attr("draw_axis_test")(
-                                               py::cast(&m_paintWidget->model(), py::return_value_policy::reference),
-                                               m_paintWidget->width(),
-                                               m_paintWidget->height())
-                                           .cast<std::string>();
-            m_paintWidget->update();
-            ui->label->setText(utf8String(result));
-        } catch (const py::error_already_set &error) {
-            ui->label->setText(QStringLiteral("Python axis error: %1").arg(QString::fromUtf8(error.what())));
-        }
-#else
-        ui->label->setText(QStringLiteral("Python disabled"));
-#endif
-    });
-
-    connect(ui->CellDictButton, &QPushButton::clicked, this, [this]() {
-#ifdef ANIMEAN_WITH_PYTHON
-        try {
-            py::module_::import("animean_python");
-            const py::object model = py::cast(&m_paintWidget->model(), py::return_value_policy::reference);
-            const py::object cellDict = model.attr("cell_to_dict")(
-                m_paintWidget->model().currentLayer(),
-                m_paintWidget->model().currentFrame(),
-                false,
-                4.0);
-            ui->label->setText(utf8String(py::str(cellDict).cast<std::string>()));
-        } catch (const py::error_already_set &error) {
-            ui->label->setText(QStringLiteral("Python cell dict error: %1").arg(QString::fromUtf8(error.what())));
-        }
-#else
-        ui->label->setText(QStringLiteral("Python disabled"));
-#endif
-    });
 
     connect(m_layerPanel->layerList(), &QListWidget::currentRowChanged, this, [this](int row) {
         if (!m_refreshingLists && row >= 0) {
@@ -505,10 +682,10 @@ void MainWindow::createToolDocks()
             if (parseError.error == QJsonParseError::NoError && document.isArray()) {
                 controls = document.array();
             } else {
-                ui->label->setText(QStringLiteral("toolcontrol JSON error: %1").arg(parseError.errorString()));
+                setStatusText(QStringLiteral("toolcontrol JSON error: %1").arg(parseError.errorString()));
             }
         } catch (const py::error_already_set &error) {
-            ui->label->setText(QStringLiteral("toolcontrol.py error: %1").arg(QString::fromUtf8(error.what())));
+            setStatusText(QStringLiteral("toolcontrol.py error: %1").arg(QString::fromUtf8(error.what())));
         }
 #endif
         if (controls.isEmpty()) {
@@ -652,7 +829,7 @@ bool MainWindow::saveProjectTo(const QString &fileName)
 
     m_currentFilePath = fileName;
     updateWindowTitle();
-    ui->label->setText(QStringLiteral("Saved: %1").arg(QFileInfo(fileName).fileName()));
+    setStatusText(QStringLiteral("Saved: %1").arg(QFileInfo(fileName).fileName()));
     return true;
 }
 
@@ -692,7 +869,7 @@ bool MainWindow::loadProjectFrom(const QString &fileName)
                     m_paintWidget->model().currentLayer(),
                     m_paintWidget->model().currentAsset());
     m_paintWidget->update();
-    ui->label->setText(QStringLiteral("Opened: %1").arg(QFileInfo(fileName).fileName()));
+    setStatusText(QStringLiteral("Opened: %1").arg(QFileInfo(fileName).fileName()));
     return true;
 }
 
@@ -731,10 +908,10 @@ void MainWindow::importRaster()
                     m_paintWidget->model().currentFrame(),
                     layerIndex,
                     m_paintWidget->model().currentAsset());
-    ui->label->setText(QStringLiteral("Imported raster: %1 (%2 x %3)")
-                           .arg(fileInfo.fileName())
-                           .arg(image.width())
-                           .arg(image.height()));
+    setStatusText(QStringLiteral("Imported raster: %1 (%2 x %3)")
+                      .arg(fileInfo.fileName())
+                      .arg(image.width())
+                      .arg(image.height()));
 }
 
 void MainWindow::updateWindowTitle()
@@ -747,7 +924,7 @@ void MainWindow::updateWindowTitle()
 
 void MainWindow::setStatusText(const QString &text)
 {
-    ui->label->setText(text);
+    statusBar()->showMessage(text);
 }
 
 void MainWindow::requestAttentionUpdate(AttentionChange change, int frame, int layer, int asset)
@@ -788,6 +965,7 @@ void MainWindow::updateAttention(AttentionChange change, int frame, int layer, i
     if (update.asset) {
         refreshAssetList(m_attention.asset);
     }
+    syncEmbeddedPythonState();
 }
 
 void MainWindow::refreshLayerList(int selectedRow)

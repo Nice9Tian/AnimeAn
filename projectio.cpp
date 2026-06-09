@@ -2,6 +2,7 @@
 
 #include <QBuffer>
 #include <QJsonArray>
+#include <QRegularExpression>
 
 namespace {
 QString columnTypeName(AnimeColumnType type)
@@ -26,6 +27,13 @@ AnimeColumnType columnTypeFromName(const QString &name)
         return AnimeColumnType::Fill;
     }
     return AnimeColumnType::Vector;
+}
+
+bool isUuidText(const QString &text)
+{
+    static const QRegularExpression uuidPattern(
+        QStringLiteral("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"));
+    return uuidPattern.match(text.trimmed()).hasMatch();
 }
 
 QJsonObject pointToJson(const QPointF &point)
@@ -300,7 +308,8 @@ QJsonObject modelToJson(const AnimeSceneModel &model)
     QJsonObject root;
     root[QStringLiteral("format")] = QStringLiteral("AnimeAn Project");
     root[QStringLiteral("version")] = 1;
-    root[QStringLiteral("sceneId")] = model.id();
+    root[QStringLiteral("sceneName")] = model.textId();
+    root[QStringLiteral("sceneId")] = model.intId();
     root[QStringLiteral("currentFrame")] = model.currentFrame();
     root[QStringLiteral("currentLayer")] = model.currentLayer();
     root[QStringLiteral("currentAsset")] = model.currentAsset();
@@ -373,7 +382,16 @@ bool modelFromJson(const QJsonObject &root, AnimeSceneModel *model, QString *err
     AnimeSceneModel loaded;
     AnimeScene &scene = loaded.scene();
     scene = AnimeScene();
-    scene.setId(root.value(QStringLiteral("sceneId")).toString());
+    const QJsonValue sceneNameValue = root.value(QStringLiteral("sceneName"));
+    const QJsonValue sceneIdValue = root.value(QStringLiteral("sceneId"));
+    if (sceneIdValue.isDouble()) {
+        scene.setIntId(sceneIdValue.toInt());
+    }
+    QString sceneName = sceneNameValue.toString(sceneIdValue.isString() ? sceneIdValue.toString() : QString());
+    if (isUuidText(sceneName)) {
+        sceneName.clear();
+    }
+    scene.setTextId(sceneName);
 
     const QJsonObject xsheet = root.value(QStringLiteral("xsheet")).toObject();
     scene.xsheet.frameCount = qMax(1, xsheet.value(QStringLiteral("frameCount")).toInt(1));

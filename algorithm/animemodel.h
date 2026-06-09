@@ -154,12 +154,17 @@ public:
 
     QString id() const;
     void setId(const QString &id);
+    QString textId() const;
+    void setTextId(const QString &id);
+    int intId() const;
+    void setIntId(int id);
 
     QVector<AnimeAsset> assets;
     AnimeXsheet xsheet;
 
 private:
-    QString m_id;
+    QString m_textId;
+    int m_intId = 0;
 };
 
 class AnimeSceneModel {
@@ -170,6 +175,10 @@ public:
     AnimeScene &scene();
     QString id() const;
     void setId(const QString &id);
+    QString textId() const;
+    void setTextId(const QString &id);
+    int intId() const;
+    void setIntId(int id);
 
     void initializeScene(int layerCount, int frameCount);
     void setCurrentLayer(int layerIndex);
@@ -187,6 +196,7 @@ public:
     QString uniqueLayerName(const QString &baseName, int excludeLayerIndex = -1, int excludeAssetIndex = -1) const;
     QString frameName(int frameIndex) const;
     QString assetName(int assetIndex) const;
+    void setAssetName(int assetIndex, const QString &name);
     AnimeColumnType assetType(int assetIndex) const;
 
     bool layerVisible(int layerIndex) const;

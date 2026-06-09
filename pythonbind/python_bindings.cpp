@@ -12,6 +12,7 @@
 #include <QRect>
 
 #include <cmath>
+#include <algorithm>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -20,6 +21,9 @@
 namespace py = pybind11;
 
 namespace {
+std::vector<AnimeSceneModel *> g_uiScenes;
+AnimeSceneModel *g_currentUiScene = nullptr;
+
 AnimeVectorStroke makePolylineStroke(const std::vector<std::pair<double, double>> &points,
                                      int r,
                                      int g,
@@ -430,6 +434,133 @@ py::list pathToPolylines(const QPainterPath &path, double polyStep)
     return polylines;
 }
 
+qreal perpendicularDistance(const QPointF &point, const QPointF &lineStart, const QPointF &lineEnd)
+{
+    const qreal length = QLineF(lineStart, lineEnd).length();
+    if (length <= 0.0) {
+        return QLineF(point, lineStart).length();
+    }
+    const qreal numerator = std::abs((lineEnd.y() - lineStart.y()) * point.x() -
+                                     (lineEnd.x() - lineStart.x()) * point.y() +
+                                     lineEnd.x() * lineStart.y() -
+                                     lineEnd.y() * lineStart.x());
+    return numerator / length;
+}
+
+void simplifyRdpRange(const QVector<QPointF> &points,
+                      int first,
+                      int last,
+                      qreal epsilon,
+                      QVector<bool> &keep)
+{
+    if (last <= first + 1) {
+        return;
+    }
+
+    qreal maxDistance = 0.0;
+    int splitIndex = -1;
+    for (int i = first + 1; i < last; ++i) {
+        const qreal distance = perpendicularDistance(points[i], points[first], points[last]);
+        if (distance > maxDistance) {
+            maxDistance = distance;
+            splitIndex = i;
+        }
+    }
+
+    if (splitIndex >= 0 && maxDistance > epsilon) {
+        keep[splitIndex] = true;
+        simplifyRdpRange(points, first, splitIndex, epsilon, keep);
+        simplifyRdpRange(points, splitIndex, last, epsilon, keep);
+    }
+}
+
+QVector<QPointF> simplifyRdp(const QVector<QPointF> &points, qreal epsilon)
+{
+    if (epsilon <= 0.0 || points.size() <= 2) {
+        return points;
+    }
+
+    QVector<bool> keep(points.size(), false);
+    keep[0] = true;
+    keep[points.size() - 1] = true;
+    simplifyRdpRange(points, 0, points.size() - 1, epsilon, keep);
+
+    QVector<QPointF> simplified;
+    simplified.reserve(points.size());
+    for (int i = 0; i < points.size(); ++i) {
+        if (keep[i]) {
+            simplified.append(points[i]);
+        }
+    }
+    return simplified;
+}
+
+QVector<QVector<QPointF>> samplePathToPolylines(const QPainterPath &path, double polyStep, double simplify)
+{
+    QVector<QVector<QPointF>> polylines;
+    QVector<QPointF> currentPolyline;
+    QPointF current;
+
+    auto flushPolyline = [&]() {
+        if (!currentPolyline.isEmpty()) {
+            polylines.append(simplifyRdp(currentPolyline, simplify));
+            currentPolyline.clear();
+        }
+    };
+
+    for (int i = 0; i < path.elementCount(); ++i) {
+        const QPainterPath::Element element = path.elementAt(i);
+        const QPointF point(element.x, element.y);
+        if (element.isMoveTo()) {
+            flushPolyline();
+            currentPolyline.append(point);
+            current = point;
+        } else if (element.isLineTo()) {
+            if (currentPolyline.isEmpty()) {
+                currentPolyline.append(current);
+            }
+            currentPolyline.append(point);
+            current = point;
+        } else if (element.type == QPainterPath::CurveToElement && i + 2 < path.elementCount()) {
+            const QPainterPath::Element controlElement = path.elementAt(i + 1);
+            const QPainterPath::Element endElement = path.elementAt(i + 2);
+            const QPointF control1(element.x, element.y);
+            const QPointF control2(controlElement.x, controlElement.y);
+            const QPointF end(endElement.x, endElement.y);
+            if (currentPolyline.isEmpty()) {
+                currentPolyline.append(current);
+            }
+            const int count = sampleCountForCurve(current, control1, control2, end, polyStep);
+            for (int sample = 1; sample <= count; ++sample) {
+                const qreal t = static_cast<qreal>(sample) / count;
+                currentPolyline.append(cubicPointAt(current, control1, control2, end, t));
+            }
+            current = end;
+            i += 2;
+        }
+    }
+
+    flushPolyline();
+    return polylines;
+}
+
+py::list polylineVectorToList(const QVector<QVector<QPointF>> &polylines)
+{
+    py::list data;
+    for (const QVector<QPointF> &polyline : polylines) {
+        data.append(pointsToList(polyline));
+    }
+    return data;
+}
+
+py::object strokeLineList(const AnimeVectorStroke &stroke, bool ploy, double simplify, double polyStep = 4.0)
+{
+    if (ploy) {
+        return pathCommandsToList(stroke.path);
+    }
+    return polylineVectorToList(samplePathToPolylines(stroke.path, polyStep, simplify));
+}
+
 QPainterPath objectToPath(const py::handle &value, const char *name = "path")
 {
     QPainterPath path;
@@ -630,6 +761,22 @@ py::dict fillRegionToDict(const AnimeVectorFillRegion &fill)
     return data;
 }
 
+py::dict rasterToDict(const AnimeVectorImageModel *image)
+{
+    py::dict data;
+    data["empty"] = image == nullptr || !image->hasRaster();
+    if (!image || !image->hasRaster()) {
+        return data;
+    }
+
+    const AnimeRasterImage &raster = image->raster();
+    data["bounds"] = rectToDict(raster.bounds());
+    data["top_left"] = pointToDict(raster.topLeft);
+    data["width"] = raster.image.width();
+    data["height"] = raster.image.height();
+    return data;
+}
+
 const char *columnTypeToString(AnimeColumnType type)
 {
     switch (type) {
@@ -660,7 +807,9 @@ py::dict imageToDict(const AnimeVectorImageModel *image, bool toPoly, double pol
     data["empty"] = image == nullptr;
     data["stroke_count"] = image ? image->strokeCount() : 0;
     data["fill_count"] = image ? image->fillCount() : 0;
+    data["has_raster"] = image ? image->hasRaster() : false;
     data["bounds"] = image ? rectToDict(image->bounds()) : py::dict();
+    data["raster"] = rasterToDict(image);
 
     py::list strokes;
     py::list fills;
@@ -714,7 +863,9 @@ py::dict cellStructureToDict(const AnimeSceneModel &model, int layerIndex, int f
 py::dict structureToDict(const AnimeSceneModel &model)
 {
     py::dict data;
-    data["scene_id"] = model.id().toStdString();
+    data["sceneName"] = model.textId().toStdString();
+    data["sceneId"] = model.intId();
+    data["scene_id"] = model.textId().toStdString();
     data["current_frame"] = model.currentFrame();
     data["current_layer"] = model.currentLayer();
     data["current_asset"] = model.currentAsset();
@@ -768,9 +919,75 @@ py::dict structureToDict(const AnimeSceneModel &model)
 }
 }
 
+py::dict sceneInfoToDict(AnimeSceneModel *model)
+{
+    py::dict data;
+    if (!model) {
+        return data;
+    }
+    data["scene"] = py::cast(model, py::return_value_policy::reference);
+    data["sceneName"] = model->textId().toStdString();
+    data["sceneId"] = model->intId();
+    return data;
+}
+
+void registerAnimeanUiScene(AnimeSceneModel *model)
+{
+    if (!model) {
+        return;
+    }
+
+    if (std::find(g_uiScenes.begin(), g_uiScenes.end(), model) == g_uiScenes.end()) {
+        g_uiScenes.push_back(model);
+    }
+    g_currentUiScene = model;
+}
+
+void unregisterAnimeanUiScene(AnimeSceneModel *model)
+{
+    g_uiScenes.erase(std::remove(g_uiScenes.begin(), g_uiScenes.end(), model), g_uiScenes.end());
+    if (g_currentUiScene == model) {
+        g_currentUiScene = g_uiScenes.empty() ? nullptr : g_uiScenes.back();
+    }
+}
+
 void bindAnimeanPythonModule(py::module_ &m)
 {
     m.doc() = "Python bindings for AnimeAn scene, layer, frame, and vector image models.";
+
+    m.def("get_scene", []() {
+        py::list scenes;
+        for (AnimeSceneModel *model : g_uiScenes) {
+            if (model) {
+                scenes.append(sceneInfoToDict(model));
+            }
+        }
+        return scenes;
+    });
+
+    m.def("get_current", []() -> py::object {
+        if (!g_currentUiScene) {
+            return py::none();
+        }
+
+        py::dict current = sceneInfoToDict(g_currentUiScene);
+        if (g_currentUiScene->currentFrame() >= 0) {
+            current["frame"] = g_currentUiScene->currentFrame();
+        } else {
+            current["frame"] = py::none();
+        }
+        if (g_currentUiScene->currentLayer() >= 0) {
+            current["layer"] = g_currentUiScene->currentLayer();
+        } else {
+            current["layer"] = py::none();
+        }
+        if (g_currentUiScene->currentAsset() >= 0) {
+            current["asset"] = g_currentUiScene->currentAsset();
+        } else {
+            current["asset"] = py::none();
+        }
+        return current;
+    });
 
     py::class_<AnimeVectorRange>(m, "VectorRange")
         .def(py::init<>())
@@ -797,7 +1014,13 @@ void bindAnimeanPythonModule(py::module_ &m)
                  return strokeToDict(stroke, toPoly, polyStep);
              },
              py::arg("to_poly") = false,
-             py::arg("poly_step") = 4.0);
+             py::arg("poly_step") = 4.0)
+        .def("line_list",
+             [](const AnimeVectorStroke &stroke, bool ploy, double simplify) {
+                 return strokeLineList(stroke, ploy, simplify);
+             },
+             py::arg("ploy") = false,
+             py::arg("simplify") = 0.0);
 
     py::class_<AnimeVectorImageModel>(m, "VectorImage")
         .def("stroke_count", &AnimeVectorImageModel::strokeCount)
@@ -840,6 +1063,14 @@ void bindAnimeanPythonModule(py::module_ &m)
         .def("set_id", [](AnimeSceneModel &model, const std::string &id) {
             model.setId(QString::fromUtf8(id.c_str()));
         })
+        .def("scene_name", [](const AnimeSceneModel &model) {
+            return model.textId().toStdString();
+        })
+        .def("set_scene_name", [](AnimeSceneModel &model, const std::string &name) {
+            model.setTextId(QString::fromUtf8(name.c_str()));
+        })
+        .def("scene_id", &AnimeSceneModel::intId)
+        .def("set_scene_id", &AnimeSceneModel::setIntId)
         .def("initialize_scene", &AnimeSceneModel::initializeScene, py::arg("layer_count"), py::arg("frame_count"))
         .def("set_current_layer", &AnimeSceneModel::setCurrentLayer)
         .def("set_current_frame", &AnimeSceneModel::setCurrentFrame)
@@ -864,6 +1095,9 @@ void bindAnimeanPythonModule(py::module_ &m)
         })
         .def("asset_name", [](const AnimeSceneModel &model, int assetIndex) {
             return model.assetName(assetIndex).toStdString();
+        })
+        .def("set_asset_name", [](AnimeSceneModel &model, int assetIndex, const std::string &name) {
+            model.setAssetName(assetIndex, QString::fromUtf8(name.c_str()));
         })
         .def("layer_visible", &AnimeSceneModel::layerVisible)
         .def("set_layer_visible", &AnimeSceneModel::setLayerVisible)
@@ -936,6 +1170,22 @@ void bindAnimeanPythonModule(py::module_ &m)
              py::arg("frame_index"),
              py::arg("to_poly") = false,
              py::arg("poly_step") = 4.0)
+        .def("stroke_line_list",
+             [](const AnimeSceneModel &model, int row, int layerIndex, int strokeIndex, bool ploy, double simplify) {
+                 const AnimeVectorImageModel *image = model.imageAt(row, layerIndex);
+                 if (!image) {
+                     throw py::index_error("No image exists for the requested frame/layer.");
+                 }
+                 if (strokeIndex < 0 || strokeIndex >= image->strokeCount()) {
+                     throw py::index_error("Stroke index is out of range.");
+                 }
+                 return strokeLineList(image->strokeNodeAt(strokeIndex).stroke, ploy, simplify);
+             },
+             py::arg("row"),
+             py::arg("layer_index"),
+             py::arg("stroke_index"),
+             py::arg("ploy") = false,
+             py::arg("simplify") = 0.0)
         .def("add_polyline",
              [](AnimeSceneModel &model,
                 int row,
