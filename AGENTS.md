@@ -14,7 +14,7 @@ Builds are slow. Do not run a build unless it is necessary, such as after substa
 - Command:
 
 ```powershell
-PowerShell -ExecutionPolicy Bypass -File ".\scripts\agent_build.ps1"
+PowerShell -ExecutionPolicy Bypass -File ".\build_scripts\agent_build.ps1"
 ```
 
 - Requires outside sandbox: yes
