@@ -131,13 +131,6 @@ class AnimeModel:
         register_scene(self)
         return self
 
-    def set_current(self, *, frame: int | None = None, layer: int | None = None) -> "AnimeModel":
-        if frame is not None:
-            self.scene.set_current_frame(frame)
-        if layer is not None:
-            self.scene.set_current_layer(layer)
-        return self
-
     def get_structure(self) -> dict[str, Any]:
         return self.scene.get_structure()
 
@@ -1397,8 +1390,51 @@ def get_current() -> CurrentRef | None:
     return current if current else None
 
 
+class _UiRefreshTarget:
+    def __init__(self, refresh_function: Any) -> None:
+        self._refresh_function = refresh_function
+
+    def refresh(self) -> None:
+        self._refresh_function()
+
+
+class Ui:
+    """Facade for operations that affect the live AnimeAn user interface."""
+
+    def __init__(self) -> None:
+        self.main = _UiRefreshTarget(_cpp.ui.main.refresh)
+        self.children = _UiRefreshTarget(_cpp.ui.children.refresh)
+        self.frame = _UiRefreshTarget(_cpp.ui.frame.refresh)
+        self.layer = _UiRefreshTarget(_cpp.ui.layer.refresh)
+        self.asset = _UiRefreshTarget(_cpp.ui.asset.refresh)
+        self.widget = _UiRefreshTarget(_cpp.ui.widget.refresh)
+
+    def refresh(self) -> None:
+        _cpp.ui.refresh()
+
+    def freeze(self) -> None:
+        _cpp.ui.freeze()
+
+    def unfreeze(self) -> None:
+        _cpp.ui.unfreeze()
+
+    def set_current(
+        self,
+        *,
+        frame: int | None = None,
+        layer: int | None = None,
+        asset: int | None = None,
+    ) -> None:
+        _cpp.ui.set_current(frame=frame, layer=layer, asset=asset)
+
+    @property
+    def current(self) -> CurrentRef | None:
+        return get_current()
+
+
 scene = LazyList(lambda: get_scene())
 current = CurrentRef()
+ui = Ui()
 annimemodel = AnimeModel
 animemodel = AnimeModel
 model_pybind = ModelPybind()

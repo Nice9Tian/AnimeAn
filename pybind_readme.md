@@ -23,6 +23,12 @@ This document describes how Python code talks to the AnimeAn C++ data model and
   - Runtime UI helpers available when Python is embedded in the AnimeAn app.
   - Standalone extension-module usage has no UI registry, so these return an
     empty scene list and `None`.
+- `animemodel.ui`
+  - High-level UI facade for embedded AnimeAn scripts.
+  - Provides `ui.refresh()`, `ui.main.refresh()`, `ui.children.refresh()`,
+    `ui.frame.refresh()`, `ui.layer.refresh()`, `ui.asset.refresh()`,
+    `ui.widget.refresh()`, `ui.freeze()`, `ui.unfreeze()`, and
+    `ui.set_current(...)`.
 
 ## Interaction Flow
 
@@ -62,14 +68,52 @@ This document describes how Python code talks to the AnimeAn C++ data model and
 `pythonbind/animemodel.py` defines:
 
 ```python
-from animemodel import AnimeModel
+from animemodel import AnimeModel, ui
 
 model = AnimeModel()
 model.initialize(layer_count=2, frame_count=24)
-model.set_current(frame=0, layer=0)
+ui.set_current(frame=0, layer=0)
 model.add_polyline([(0, 0), (100, 80)], color=(0, 0, 0, 255), width=3.0)
 cell_data = model.cell(to_poly=True)
 ```
+
+## UI Facade
+
+When running inside AnimeAn, import `ui` from `animemodel` or use the `ui`
+object injected into the Python Debug dock:
+
+```python
+from animemodel import ui
+
+ui.main.refresh()      # refresh child panels and drawing widget
+ui.children.refresh()  # refresh frame/layer/asset panels
+ui.frame.refresh()
+ui.layer.refresh()
+ui.asset.refresh()
+ui.widget.refresh()
+ui.refresh()           # same as ui.main.refresh()
+
+ui.set_current(frame=0, layer=0, asset=None)
+```
+
+Operations that intentionally change the live UI selection should go through
+`ui.set_current(...)`. Model-only scripts can still call `SceneModel`
+`set_current_frame()` / `set_current_layer()` directly, then call the relevant
+`ui.*.refresh()` method when they need the visible interface to catch up.
+
+Use `ui.freeze()` around long synchronous Python work to lock the AnimeAn
+interface and show a busy status before the calculation starts:
+
+```python
+ui.freeze()
+try:
+    run_long_algorithm()
+finally:
+    ui.unfreeze()
+```
+
+This does not make Python execution asynchronous; it prevents user interaction
+while the main UI thread is busy.
 
 Aliases:
 
@@ -95,7 +139,6 @@ model.set_scene_name(name: str) -> AnimeModel
 model.scene_id() -> int
 model.set_scene_id(scene_id: int) -> AnimeModel
 model.initialize(layer_count: int = 2, frame_count: int = 2) -> AnimeModel
-model.set_current(frame: int | None = None, layer: int | None = None) -> AnimeModel
 model.get_structure() -> dict
 model.frame -> list[FrameHandle]
 model.get_frame(id=None, index=None, name=None, Name=None) -> FrameHandle | list[FrameHandle]

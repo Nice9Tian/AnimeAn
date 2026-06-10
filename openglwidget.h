@@ -47,6 +47,8 @@ public:
     void setPenColor(const QColor &color);
     void setDrawingColor(const QColor &color);
     void setPenWidth(qreal width);
+    void setStrokeProperty(const QString &property);
+    void sendPythonExtraToolMessage(const QString &name, const QString &property);
     void setTool(Tool tool);
     Tool tool() const;
     void setFillScope(FillScope scope);
@@ -94,6 +96,7 @@ public:
 private:
     void updateCurrentStroke();
     void finishCurrentStroke();
+    void pythonHookSendMessage(const QString &event, const QPointF &pos = QPointF(), const QPointF &delta = QPointF(), bool changed = true, int strokeIndex = -1);
     bool eraseAt(const QPointF &pos);
     bool eraseBetween(const QPointF &from, const QPointF &to);
     bool deleteLineAt(const QPointF &pos);
@@ -127,6 +130,10 @@ private:
     QPointF m_lastMovePos;
     bool m_hasLastMovePos = false;
     qreal m_penWidth = 5.0;
+    QString m_strokeProperty;
+    QString m_activePythonTool;
+    bool m_eraseGestureChanged = false;
+    bool m_moveGestureChanged = false;
     qreal m_eraserRadius = 12.0;
     qreal m_minPointDistance = 2.0;
     int m_smoothValue = 50;

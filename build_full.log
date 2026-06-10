@@ -1,0 +1,40 @@
+build_queue:entered waited=0s name=Global\AnimeAnAgentBuildMutex_b6dfda717ed5b7d03d291b04d71d30f5270504e89ce4f3930805e25361041db7
+===== AGENT BUILD START =====
+PWD=C:\Users\admin\Documents\AnimeAn
+OUT=C:\Users\admin\Documents\AnimeAn\out.txt
+FULL_LOG=C:\Users\admin\Documents\AnimeAn\build_full.log
+write_header:passed
+load_qt_env_location:passed
+set_paths:passed
+check_cmake_path:passed
+check_build_dir:passed
+check_toolchain_paths:passed
+set_mingw_path:passed
+clean_release_dir:running
+clean_release_dir:passed
+recreate_release_dir:passed
+cmake_configure:running
+CONFIG_COMMAND=C:\Qt\Tools\CMake_64\bin\cmake.exe -S "C:\Users\admin\Documents\AnimeAn" -B "C:\Users\admin\Documents\AnimeAn\build\Desktop_Qt_6_9_1_MinGW_64_bit-Release" -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="C:\Qt\6.9.1\mingw_64" -DCMAKE_MAKE_PROGRAM="C:\Qt\Tools\mingw1310_64\bin\mingw32-make.exe" -DCMAKE_C_COMPILER="C:\Qt\Tools\mingw1310_64\bin\gcc.exe" -DCMAKE_CXX_COMPILER="C:\Qt\Tools\mingw1310_64\bin\g++.exe"
+-- pybind11 v3.1.0 
+-- pybind11::lto disabled (problems with undefined symbols for MinGW for now)
+-- pybind11::thin_lto disabled (problems with undefined symbols for MinGW for now)
+-- Could NOT find WrapVulkanHeaders (missing: Vulkan_INCLUDE_DIR) 
+-- Could NOT find WrapVulkanHeaders (missing: Vulkan_INCLUDE_DIR) 
+-- Configuring done (0.3s)
+-- Generating done (0.2s)
+-- Build files have been written to: C:/Users/admin/Documents/AnimeAn/build/Desktop_Qt_6_9_1_MinGW_64_bit-Release
+
+cmake_configure:passed
+deploy_AnimeAn:running
+COMMAND=C:\Qt\Tools\CMake_64\bin\cmake.exe --build "C:\Users\admin\Documents\AnimeAn\build\Desktop_Qt_6_9_1_MinGW_64_bit-Release" --target deploy_AnimeAn --clean-first
+prepare_command:passed
+start_process:passed
+PROCESS_ID=6388
+begin_read_output:passed
+[  0%] Built target AnimeAn_autogen_timestamp_deps
+[  5%] Automatic MOC and UIC for target AnimeAn
+[  5%] Built target AnimeAn_autogen
+[ 11%] Building CXX object CMakeFiles/AnimeAn.dir/AnimeAn_autogen/mocs_compilation.cpp.obj
+[ 16%] Building CXX object CMakeFiles/AnimeAn.dir/algorithm/animemodel.cpp.obj
+[ 22%] Building CXX object CMakeFiles/AnimeAn.dir/algorithm/vectorlogic.cpp.obj
+[ 27%] Building CXX object CMakeFiles/AnimeAn.dir/main.cpp.obj

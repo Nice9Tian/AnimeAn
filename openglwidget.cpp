@@ -23,15 +23,53 @@
 namespace py = pybind11;
 
 namespace {
-QString notifyPythonLineFinished(const AnimeCell &cell, int row, int layer, int strokeIndex)
+QString toolName(PaintOpenGLWidget::Tool tool)
+{
+    switch (tool) {
+    case PaintOpenGLWidget::Tool::Pen:
+        return QStringLiteral("pen");
+    case PaintOpenGLWidget::Tool::Eraser:
+        return QStringLiteral("eraser");
+    case PaintOpenGLWidget::Tool::DeleteLine:
+        return QStringLiteral("delete_line");
+    case PaintOpenGLWidget::Tool::Fill:
+        return QStringLiteral("fill");
+    case PaintOpenGLWidget::Tool::Move:
+        return QStringLiteral("move");
+    }
+    return QStringLiteral("pen");
+}
+
+py::dict pointToPythonDict(const QPointF &point)
+{
+    py::dict pointInfo;
+    pointInfo["x"] = point.x();
+    pointInfo["y"] = point.y();
+    return pointInfo;
+}
+
+py::dict strokeToPythonDict(const AnimeVectorStroke &stroke, int strokeIndex = -1)
+{
+    py::dict strokeInfo;
+    strokeInfo["id"] = stroke.id;
+    strokeInfo["property"] = stroke.property.toStdString();
+    strokeInfo["width"] = stroke.width;
+    strokeInfo["point_count"] = stroke.points.size();
+    strokeInfo["total_length"] = stroke.totalLength;
+    if (strokeIndex >= 0) {
+        strokeInfo["index"] = strokeIndex;
+    }
+    return strokeInfo;
+}
+
+QString pythonHookSendMessage(const py::dict &message)
 {
     try {
         py::gil_scoped_acquire acquire;
-        py::dict cellInfo;
-        cellInfo["row"] = row;
-        cellInfo["layer"] = layer;
-        cellInfo["asset"] = cell.assetIndex;
-        cellInfo["frame_id"] = cell.frameId;
+        py::object hooks = py::module_::import("python_hooks");
+        if (!hooks.attr("has_hooks")(message).cast<bool>()) {
+            return QString();
+        }
         py::object io = py::module_::import("io");
         py::object contextlib = py::module_::import("contextlib");
         py::object stdoutBuffer = io.attr("StringIO")();
@@ -43,7 +81,7 @@ QString notifyPythonLineFinished(const AnimeCell &cell, int row, int layer, int 
         stderrRedirect.attr("__enter__")();
         QString errorText;
         try {
-            py::module_::import("linefinish").attr("linefinish")(cellInfo, strokeIndex);
+            hooks.attr("dispatch")(message);
         } catch (const py::error_already_set &error) {
             errorText = QString::fromUtf8(error.what());
         }
@@ -61,13 +99,11 @@ QString notifyPythonLineFinished(const AnimeCell &cell, int row, int layer, int 
         if (output.trimmed().isEmpty()) {
             output = QStringLiteral("(no output)");
         }
-        return QStringLiteral("[python feedback] linefinish row=%1 layer=%2 stroke=%3\n%4")
-            .arg(row)
-            .arg(layer)
-            .arg(strokeIndex)
-            .arg(output.trimmed());
+        const QString event = QString::fromUtf8(py::str(message["event"]).cast<std::string>().c_str());
+        const QString tool = QString::fromUtf8(py::str(message["tool"]).cast<std::string>().c_str());
+        return QStringLiteral("[python feedback] %1 tool=%2\n%3").arg(event, tool, output.trimmed());
     } catch (const py::error_already_set &error) {
-        return QStringLiteral("[python feedback] linefinish setup error: %1").arg(QString::fromUtf8(error.what()));
+        return QStringLiteral("[python feedback] hook setup error: %1").arg(QString::fromUtf8(error.what()));
     }
 }
 }
@@ -104,6 +140,26 @@ void PaintOpenGLWidget::setPenWidth(qreal width)
         updateCurrentStroke();
     }
     update();
+}
+
+void PaintOpenGLWidget::setStrokeProperty(const QString &property)
+{
+    m_strokeProperty = property;
+    m_activePythonTool = property.isEmpty() ? QString() : QStringLiteral("extra");
+    if (m_hasCurrentStroke) {
+        m_currentStroke.property = property;
+    }
+}
+
+void PaintOpenGLWidget::sendPythonExtraToolMessage(const QString &name, const QString &property)
+{
+    const QString previousTool = m_activePythonTool;
+    const QString previousProperty = m_strokeProperty;
+    m_activePythonTool = name.isEmpty() ? QStringLiteral("extra") : name;
+    m_strokeProperty = property;
+    pythonHookSendMessage(QStringLiteral("extra"));
+    m_activePythonTool = previousTool;
+    m_strokeProperty = previousProperty;
 }
 
 void PaintOpenGLWidget::setTool(Tool tool)
@@ -449,7 +505,9 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
     m_hoverPos = pos;
     m_hasHoverPos = true;
     if (m_tool == Tool::Fill) {
-        fillAt(pos);
+        if (fillAt(pos)) {
+            pythonHookSendMessage(QStringLiteral("fillfinish"), pos);
+        }
         update();
         event->accept();
         return;
@@ -466,9 +524,9 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
         m_hasLastEraserPos = true;
         m_lastEraserPos = pos;
         if (m_tool == Tool::DeleteLine) {
-            deleteLineAt(pos);
+            m_eraseGestureChanged = deleteLineAt(pos);
         } else {
-            eraseAt(pos);
+            m_eraseGestureChanged = eraseAt(pos);
         }
         update();
         event->accept();
@@ -516,9 +574,9 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
         }
 
         if (m_tool == Tool::DeleteLine) {
-            deleteLineBetween(m_lastEraserPos, m_hoverPos);
+            m_eraseGestureChanged = deleteLineBetween(m_lastEraserPos, m_hoverPos) || m_eraseGestureChanged;
         } else {
-            eraseBetween(m_lastEraserPos, m_hoverPos);
+            m_eraseGestureChanged = eraseBetween(m_lastEraserPos, m_hoverPos) || m_eraseGestureChanged;
         }
 
         m_lastEraserPos = m_hoverPos;
@@ -533,6 +591,7 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
             m_hasLastMovePos = true;
         }
         if (moveCurrentLayerBy(m_hoverPos - m_lastMovePos)) {
+            m_moveGestureChanged = true;
             update();
         }
         m_lastMovePos = m_hoverPos;
@@ -563,12 +622,15 @@ void PaintOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
         m_hoverPos = event->position();
         m_hasHoverPos = true;
         if (m_tool == Tool::DeleteLine) {
-            deleteLineAt(m_hoverPos);
+            m_eraseGestureChanged = deleteLineAt(m_hoverPos) || m_eraseGestureChanged;
+            pythonHookSendMessage(QStringLiteral("deletefinish"), m_hoverPos, QPointF(), m_eraseGestureChanged);
         } else {
-            eraseAt(m_hoverPos);
+            m_eraseGestureChanged = eraseAt(m_hoverPos) || m_eraseGestureChanged;
+            pythonHookSendMessage(QStringLiteral("erasefinish"), m_hoverPos, QPointF(), m_eraseGestureChanged);
         }
         update();
         m_hasLastEraserPos = false;
+        m_eraseGestureChanged = false;
         event->accept();
         return;
     }
@@ -576,11 +638,14 @@ void PaintOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
     if (m_tool == Tool::Move) {
         if (m_hasLastMovePos) {
             const QPointF pos = event->position();
-            moveCurrentLayerBy(pos - m_lastMovePos);
+            const QPointF delta = pos - m_lastMovePos;
+            m_moveGestureChanged = moveCurrentLayerBy(delta) || m_moveGestureChanged;
             m_lastMovePos = pos;
             update();
+            pythonHookSendMessage(QStringLiteral("movefinish"), pos, delta, m_moveGestureChanged);
         }
         m_hasLastMovePos = false;
+        m_moveGestureChanged = false;
         event->accept();
         return;
     }
@@ -602,6 +667,8 @@ void PaintOpenGLWidget::updateCurrentStroke()
     }
 
     m_currentStroke = makeStroke(m_points, m_currentStroke.color, m_currentStroke.width);
+    m_currentStroke.property = m_strokeProperty;
+    pythonHookSendMessage(QStringLiteral("update"));
     update();
 }
 
@@ -612,12 +679,9 @@ void PaintOpenGLWidget::finishCurrentStroke()
         const int assetCountBefore = m_model.assetCount();
         if (VectorImageModel *image = currentImage(true, AnimeColumnType::Vector)) {
             const int strokeIndex = image->strokeCount();
+            m_currentStroke.property = m_strokeProperty;
             image->addStroke(m_currentStroke);
-#ifdef ANIMEAN_WITH_PYTHON
-            const int row = m_model.currentFrame();
-            const int layer = m_model.currentLayer();
-            emit pythonDebugMessage(notifyPythonLineFinished(m_model.cellAt(row, layer), row, layer, strokeIndex));
-#endif
+            pythonHookSendMessage(QStringLiteral("linefinish"), QPointF(), QPointF(), true, strokeIndex);
             removeInvalidFillRegions();
             if (m_model.assetCount() != assetCountBefore) {
                 emit assetListChanged(m_model.currentAsset());
@@ -628,6 +692,50 @@ void PaintOpenGLWidget::finishCurrentStroke()
     m_hasCurrentStroke = false;
     m_points.clear();
     update();
+}
+
+void PaintOpenGLWidget::pythonHookSendMessage(const QString &event, const QPointF &pos, const QPointF &delta, bool changed, int strokeIndex)
+{
+#ifdef ANIMEAN_WITH_PYTHON
+    if (!changed) {
+        return;
+    }
+
+    const int row = m_model.currentFrame();
+    const int layer = m_model.currentLayer();
+    const AnimeCell cell = m_model.cellAt(row, layer);
+    py::gil_scoped_acquire acquire;
+    py::dict cellInfo;
+    cellInfo["row"] = row;
+    cellInfo["layer"] = layer;
+    cellInfo["asset"] = cell.assetIndex;
+    cellInfo["frame_id"] = cell.frameId;
+
+    py::dict message;
+    message["event"] = event.toStdString();
+    message["tool"] = (m_activePythonTool.isEmpty() ? toolName(m_tool) : m_activePythonTool).toStdString();
+    message["base_tool"] = toolName(m_tool).toStdString();
+    message["property"] = m_strokeProperty.toStdString();
+    message["cell"] = cellInfo;
+    if (m_hasCurrentStroke || event == QStringLiteral("linefinish")) {
+        message["stroke"] = strokeToPythonDict(m_currentStroke, strokeIndex);
+    } else {
+        message["stroke"] = py::dict();
+    }
+    message["position"] = pointToPythonDict(pos);
+    message["delta"] = pointToPythonDict(delta);
+
+    const QString output = ::pythonHookSendMessage(message);
+    if (!output.isEmpty()) {
+        emit pythonDebugMessage(output);
+    }
+#else
+    Q_UNUSED(event);
+    Q_UNUSED(pos);
+    Q_UNUSED(delta);
+    Q_UNUSED(changed);
+    Q_UNUSED(strokeIndex);
+#endif
 }
 
 bool PaintOpenGLWidget::eraseAt(const QPointF &pos)

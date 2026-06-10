@@ -3,6 +3,7 @@
 
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QtGlobal>
 #include <QVBoxLayout>
 
 ToolsPanel::ToolsPanel(QWidget *parent)
@@ -11,12 +12,12 @@ ToolsPanel::ToolsPanel(QWidget *parent)
 {
     ui->setupUi(this);
 
-    QVBoxLayout *layout = new QVBoxLayout(this);
-    layout->addWidget(ui->penButton);
-    layout->addWidget(ui->moveButton);
-    layout->addWidget(ui->eraserButton);
-    layout->addWidget(ui->fillButton);
-    layout->addStretch();
+    m_layout = new QVBoxLayout(this);
+    m_layout->addWidget(ui->penButton);
+    m_layout->addWidget(ui->moveButton);
+    m_layout->addWidget(ui->eraserButton);
+    m_layout->addWidget(ui->fillButton);
+    m_layout->addStretch();
 
     ui->penButton->setCheckable(true);
     ui->moveButton->setCheckable(true);
@@ -59,4 +60,47 @@ void ToolsPanel::setTool(PaintOpenGLWidget::Tool tool)
     ui->eraserButton->setChecked(tool == PaintOpenGLWidget::Tool::Eraser ||
                                  tool == PaintOpenGLWidget::Tool::DeleteLine);
     ui->fillButton->setChecked(tool == PaintOpenGLWidget::Tool::Fill);
+    for (QPushButton *button : m_extraButtons) {
+        if (button) {
+            button->setChecked(false);
+        }
+    }
+}
+
+void ToolsPanel::setExtraTools(const QVector<ExtraToolDefinition> &tools)
+{
+    for (QPushButton *button : m_extraButtons) {
+        if (button) {
+            button->deleteLater();
+        }
+    }
+    m_extraButtons.clear();
+    m_extraTools = tools;
+
+    const int insertIndex = m_layout ? qMax(0, m_layout->count() - 1) : 0;
+    for (int index = 0; index < m_extraTools.size(); ++index) {
+        const ExtraToolDefinition definition = m_extraTools.at(index);
+        QPushButton *button = new QPushButton(definition.title.isEmpty() ? definition.name : definition.title, this);
+        button->setCheckable(true);
+        button->setCursor(ui->penButton->cursor());
+        button->setMinimumSize(ui->penButton->minimumSize());
+        button->setStyleSheet(ui->penButton->styleSheet());
+        connect(button, &QPushButton::clicked, this, [this, index]() {
+            const QSignalBlocker penBlocker(ui->penButton);
+            const QSignalBlocker moveBlocker(ui->moveButton);
+            const QSignalBlocker eraserBlocker(ui->eraserButton);
+            const QSignalBlocker fillBlocker(ui->fillButton);
+            ui->penButton->setChecked(false);
+            ui->moveButton->setChecked(false);
+            ui->eraserButton->setChecked(false);
+            ui->fillButton->setChecked(false);
+            for (int buttonIndex = 0; buttonIndex < m_extraButtons.size(); ++buttonIndex) {
+                const QSignalBlocker blocker(m_extraButtons[buttonIndex]);
+                m_extraButtons[buttonIndex]->setChecked(buttonIndex == index);
+            }
+            emit extraToolSelected(m_extraTools.at(index));
+        });
+        m_extraButtons.append(button);
+        m_layout->insertWidget(insertIndex + index, button);
+    }
 }

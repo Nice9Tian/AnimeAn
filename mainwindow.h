@@ -40,6 +40,7 @@ private:
     void setupPythonDebugDock();
     void appendPythonDebugMessage(const QString &message);
     void syncEmbeddedPythonState();
+    void runPythonInitializationScript();
     void createToolDocks();
     void createListDocks();
     void runPythonDebugCommand(const QString &command);
@@ -58,6 +59,7 @@ private:
     void refreshLayerList(int selectedRow);
     void refreshFrameList(int selectedRow);
     void refreshAssetList(int selectedRow);
+    void setPythonUiFrozen(bool frozen);
 
     Ui::MainWindow *ui;
     PaintOpenGLWidget *m_paintWidget = nullptr;
@@ -84,6 +86,7 @@ private:
     bool m_listMousePressed = false;
     bool m_listDragActive = false;
     bool m_hasPendingAttention = false;
+    int m_pythonFreezeDepth = 0;
 };
 
 #endif // MAINWINDOW_H

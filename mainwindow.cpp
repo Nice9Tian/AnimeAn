@@ -19,6 +19,7 @@
 #include <QDropEvent>
 #include <QDir>
 #include <QEvent>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QFileDialog>
@@ -29,6 +30,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenuBar>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QSizeF>
@@ -191,6 +193,27 @@ int frameNameToRow(const QString &frameName)
     bool ok = false;
     const int frameNumber = digits.toInt(&ok);
     return ok && frameNumber > 0 ? frameNumber - 1 : 0;
+}
+
+QVector<ToolsPanel::ExtraToolDefinition> parseExtraTools(const QJsonArray &array)
+{
+    QVector<ToolsPanel::ExtraToolDefinition> tools;
+    for (const QJsonValue &value : array) {
+        if (!value.isObject()) {
+            continue;
+        }
+
+        const QJsonObject object = value.toObject();
+        ToolsPanel::ExtraToolDefinition tool;
+        tool.name = object.value(QStringLiteral("name")).toString();
+        tool.title = object.value(QStringLiteral("title")).toString(tool.name);
+        tool.property = object.value(QStringLiteral("property")).toString(tool.name);
+        tool.handler = object.value(QStringLiteral("handler")).toString();
+        if (!tool.name.isEmpty()) {
+            tools.append(tool);
+        }
+    }
+    return tools;
 }
 
 #ifdef ANIMEAN_WITH_PYTHON
@@ -395,15 +418,42 @@ MainWindow::MainWindow(QWidget *parent)
     updateWindowTitle();
 #ifdef ANIMEAN_WITH_PYTHON
     registerAnimeanUiScene(&m_paintWidget->model());
+    registerAnimeanUiRefreshCallback([this](bool frame, bool layer, bool asset, bool widget) {
+        m_attention.frame = m_paintWidget->model().currentFrame();
+        m_attention.layer = m_paintWidget->model().currentLayer();
+        m_attention.asset = m_paintWidget->model().currentAsset();
+        m_paintWidget->setCurrentFrame(m_attention.frame);
+        m_paintWidget->setCurrentLayer(m_attention.layer);
+        m_paintWidget->setCurrentAsset(m_attention.asset);
+        if (frame) {
+            refreshFrameList(m_attention.frame);
+        }
+        if (layer) {
+            refreshLayerList(m_attention.layer);
+        }
+        if (asset) {
+            refreshAssetList(m_attention.asset);
+        }
+        if (widget) {
+            m_paintWidget->update();
+        }
+        syncEmbeddedPythonState();
+    });
+    registerAnimeanUiFreezeCallback([this](bool frozen) {
+        setPythonUiFrozen(frozen);
+    });
     syncEmbeddedPythonState();
     appendPythonDebugMessage(QStringLiteral(
-        "[python register] animean_python, animemodel, model, current, model_pybind, vectorlogic, canvas_width, canvas_height"));
+        "[python register] animean_python, animemodel, ui, model, current, model_pybind, vectorlogic, canvas_width, canvas_height"));
+    runPythonInitializationScript();
 #endif
 }
 
 MainWindow::~MainWindow()
 {
 #ifdef ANIMEAN_WITH_PYTHON
+    clearAnimeanUiFreezeCallback();
+    clearAnimeanUiRefreshCallback();
     unregisterAnimeanUiScene(&m_paintWidget->model());
 #endif
     delete ui;
@@ -509,6 +559,14 @@ void MainWindow::appendPythonDebugMessage(const QString &message)
     m_pythonDebugOutput->appendPlainText(message.trimmed());
     m_pythonDebugOutput->appendPlainText(QString());
     m_pythonDebugOutput->verticalScrollBar()->setValue(m_pythonDebugOutput->verticalScrollBar()->maximum());
+}
+
+void MainWindow::runPythonInitializationScript()
+{
+#ifdef ANIMEAN_WITH_PYTHON
+    appendPythonDebugMessage(QStringLiteral("> initalize.py"));
+    appendPythonDebugMessage(runEmbeddedPythonCommand(QStringLiteral("initalize.py")).trimmed());
+#endif
 }
 
 QString MainWindow::resolvePythonScriptPath(const QString &scriptName) const
@@ -636,6 +694,7 @@ void MainWindow::syncEmbeddedPythonState()
         py::object animeModel = py::module_::import("animemodel");
         globals["animean_python"] = animeanPython;
         globals["animemodel"] = animeModel;
+        globals["ui"] = animeModel.attr("ui");
         globals["model"] = py::cast(&m_paintWidget->model(), py::return_value_policy::reference);
         globals["current"] = animeModel.attr("current");
         globals["model_pybind"] = animeanPython.attr("model_pybind");
@@ -883,6 +942,23 @@ void MainWindow::createToolDocks()
     splitDockWidget(m_toolOptDock, m_layerDock, Qt::Vertical);
     splitDockWidget(m_layerDock, m_assetDock, Qt::Vertical);
 
+#ifdef ANIMEAN_WITH_PYTHON
+    try {
+        const std::string json = py::module_::import("extra_tools")
+                                     .attr("tools_json")()
+                                     .cast<std::string>();
+        QJsonParseError parseError;
+        const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json), &parseError);
+        if (parseError.error == QJsonParseError::NoError && document.isArray()) {
+            toolsPanel->setExtraTools(parseExtraTools(document.array()));
+        } else {
+            setStatusText(QStringLiteral("extra_tools JSON error: %1").arg(parseError.errorString()));
+        }
+    } catch (const py::error_already_set &error) {
+        setStatusText(QStringLiteral("extra_tools.py error: %1").arg(QString::fromUtf8(error.what())));
+    }
+#endif
+
     auto loadToolOptions = [this, toolOptPanel](PaintOpenGLWidget::Tool tool) {
         QJsonArray controls;
 #ifdef ANIMEAN_WITH_PYTHON
@@ -917,6 +993,7 @@ void MainWindow::createToolDocks()
 
     auto applyTool = [this, toolsPanel, toolOptPanel, loadToolOptions](PaintOpenGLWidget::Tool tool, bool reloadOptions) {
         m_paintWidget->setTool(tool);
+        m_paintWidget->setStrokeProperty(QString());
         toolsPanel->setTool(tool);
         toolOptPanel->setTool(tool);
         if (reloadOptions) {
@@ -931,6 +1008,23 @@ void MainWindow::createToolDocks()
     loadToolOptions(PaintOpenGLWidget::Tool::Pen);
 
     connect(toolsPanel, &ToolsPanel::toolSelected, this, selectTool);
+    connect(toolsPanel, &ToolsPanel::extraToolSelected, this, [this, toolOptPanel](const ToolsPanel::ExtraToolDefinition &tool) {
+        m_paintWidget->setTool(PaintOpenGLWidget::Tool::Pen);
+        m_paintWidget->setStrokeProperty(tool.property);
+        m_paintWidget->sendPythonExtraToolMessage(tool.name, tool.property);
+        toolOptPanel->setTool(PaintOpenGLWidget::Tool::Pen);
+        toolOptPanel->configureControls(QJsonArray());
+#ifdef ANIMEAN_WITH_PYTHON
+        if (!tool.handler.isEmpty()) {
+            try {
+                py::module_::import("extra_tools")
+                    .attr("run_tool_handler")(tool.handler.toStdString(), tool.name.toStdString(), tool.property.toStdString());
+            } catch (const py::error_already_set &error) {
+                setStatusText(QStringLiteral("extra tool error: %1").arg(QString::fromUtf8(error.what())));
+            }
+        }
+#endif
+    });
 
     connect(toolOptPanel, &ToolOptPanel::colorSelected, this, [this, applyTool](const QColor &color) {
         if (m_paintWidget->tool() == PaintOpenGLWidget::Tool::Fill) {
@@ -940,6 +1034,7 @@ void MainWindow::createToolDocks()
         }
 
         m_paintWidget->setPenColor(color);
+        m_paintWidget->setStrokeProperty(QString());
         applyTool(PaintOpenGLWidget::Tool::Pen, false);
     });
 
@@ -1224,6 +1319,52 @@ void MainWindow::updateWindowTitle()
 void MainWindow::setStatusText(const QString &text)
 {
     statusBar()->showMessage(text);
+}
+
+void MainWindow::setPythonUiFrozen(bool frozen)
+{
+    if (frozen) {
+        if (m_pythonFreezeDepth++ > 0) {
+            return;
+        }
+    } else {
+        if (m_pythonFreezeDepth <= 0) {
+            return;
+        }
+        --m_pythonFreezeDepth;
+        if (m_pythonFreezeDepth > 0) {
+            return;
+        }
+    }
+
+    const bool enabled = !frozen;
+    menuBar()->setEnabled(enabled);
+    if (m_paintWidget) {
+        m_paintWidget->setEnabled(enabled);
+    }
+    const QList<QDockWidget *> docks = findChildren<QDockWidget *>();
+    for (QDockWidget *dock : docks) {
+        if (dock && dock != m_pythonDebugDock) {
+            dock->setEnabled(enabled);
+        }
+    }
+    if (m_pythonDebugDock) {
+        m_pythonDebugDock->setEnabled(true);
+    }
+    if (m_pythonDebugOutput) {
+        m_pythonDebugOutput->setEnabled(true);
+    }
+    if (m_pythonDebugCommand) {
+        m_pythonDebugCommand->setEnabled(true);
+    }
+
+    if (frozen) {
+        setStatusText(QStringLiteral("Python busy..."));
+    } else {
+        setStatusText(QStringLiteral("Python ready"));
+    }
+
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 }
 
 void MainWindow::requestAttentionUpdate(AttentionChange change, int frame, int layer, int asset)

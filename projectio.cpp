@@ -128,6 +128,7 @@ QJsonObject strokeToJson(const AnimeVectorStroke &stroke)
 {
     QJsonObject object;
     object[QStringLiteral("id")] = stroke.id;
+    object[QStringLiteral("property")] = stroke.property;
     QJsonArray points;
     for (const QPointF &point : stroke.points) {
         points.append(pointToJson(point));
@@ -154,6 +155,7 @@ AnimeVectorStroke strokeFromJson(const QJsonValue &value)
     const QJsonObject object = value.toObject();
     AnimeVectorStroke stroke;
     stroke.id = object.value(QStringLiteral("id")).toInt();
+    stroke.property = object.value(QStringLiteral("property")).toString();
     stroke.points = pointsFromJson(object.value(QStringLiteral("points")));
     const QJsonArray lengths = object.value(QStringLiteral("lengths")).toArray();
     stroke.lengths.reserve(lengths.size());

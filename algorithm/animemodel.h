@@ -12,6 +12,7 @@
 
 struct AnimeVectorStroke {
     int id = 0;
+    QString property;
     QVector<QPointF> points;
     QVector<qreal> lengths;
     qreal totalLength = 0.0;

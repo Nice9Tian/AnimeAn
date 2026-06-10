@@ -13,6 +13,7 @@
 
 #include <cmath>
 #include <algorithm>
+#include <functional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -23,6 +24,29 @@ namespace py = pybind11;
 namespace {
 std::vector<AnimeSceneModel *> g_uiScenes;
 AnimeSceneModel *g_currentUiScene = nullptr;
+std::function<void(bool frame, bool layer, bool asset, bool widget)> g_uiRefreshCallback;
+std::function<void(bool frozen)> g_uiFreezeCallback;
+
+void requestUiRefresh(bool frame = true, bool layer = true, bool asset = true, bool widget = true)
+{
+    if (g_uiRefreshCallback) {
+        g_uiRefreshCallback(frame, layer, asset, widget);
+    }
+}
+
+void requireCurrentUiScene()
+{
+    if (!g_currentUiScene) {
+        throw std::runtime_error("AnimeAn UI scene is not available.");
+    }
+}
+
+void requestUiFreeze(bool frozen)
+{
+    if (g_uiFreezeCallback) {
+        g_uiFreezeCallback(frozen);
+    }
+}
 
 AnimeVectorStroke makePolylineStroke(const std::vector<std::pair<double, double>> &points,
                                      int r,
@@ -662,6 +686,7 @@ py::dict strokeToDict(const AnimeVectorStroke &stroke, bool toPoly, double polyS
 {
     py::dict data;
     data["id"] = stroke.id;
+    data["property"] = stroke.property.toStdString();
     data["width"] = stroke.width;
     data["color"] = colorToDict(stroke.color);
     data["bounds"] = rectToDict(stroke.bounds);
@@ -951,6 +976,26 @@ void unregisterAnimeanUiScene(AnimeSceneModel *model)
     }
 }
 
+void registerAnimeanUiRefreshCallback(std::function<void(bool frame, bool layer, bool asset, bool widget)> callback)
+{
+    g_uiRefreshCallback = std::move(callback);
+}
+
+void clearAnimeanUiRefreshCallback()
+{
+    g_uiRefreshCallback = nullptr;
+}
+
+void registerAnimeanUiFreezeCallback(std::function<void(bool frozen)> callback)
+{
+    g_uiFreezeCallback = std::move(callback);
+}
+
+void clearAnimeanUiFreezeCallback()
+{
+    g_uiFreezeCallback = nullptr;
+}
+
 void bindAnimeanPythonModule(py::module_ &m)
 {
     m.doc() = "Python bindings for AnimeAn scene, layer, frame, and vector image models.";
@@ -993,6 +1038,67 @@ void bindAnimeanPythonModule(py::module_ &m)
         unregisterAnimeanUiScene(&model);
     });
 
+    py::module_ ui = m.def_submodule("ui", "Helpers for synchronizing the embedded AnimeAn user interface.");
+    ui.def("refresh", []() {
+        requestUiRefresh(true, true, true, true);
+    });
+    ui.def("freeze", []() {
+        requestUiFreeze(true);
+    });
+    ui.def("unfreeze", []() {
+        requestUiFreeze(false);
+    });
+    ui.def("set_current",
+           [](py::object frame, py::object layer, py::object asset) {
+               requireCurrentUiScene();
+               const bool updateFrame = !frame.is_none();
+               const bool updateLayer = !layer.is_none();
+               const bool updateAsset = !asset.is_none();
+               if (updateFrame) {
+                   g_currentUiScene->setCurrentFrame(frame.cast<int>());
+               }
+               if (updateLayer) {
+                   g_currentUiScene->setCurrentLayer(layer.cast<int>());
+               }
+               if (updateAsset) {
+                   g_currentUiScene->setCurrentAsset(asset.cast<int>());
+               }
+               requestUiRefresh(true, true, true, true);
+           },
+           py::arg("frame") = py::none(),
+           py::arg("layer") = py::none(),
+           py::arg("asset") = py::none());
+
+    py::module_ uiMain = ui.def_submodule("main", "Refresh all AnimeAn UI surfaces.");
+    uiMain.def("refresh", []() {
+        requestUiRefresh(true, true, true, true);
+    });
+
+    py::module_ uiChildren = ui.def_submodule("children", "Refresh child panels.");
+    uiChildren.def("refresh", []() {
+        requestUiRefresh(true, true, true, false);
+    });
+
+    py::module_ uiFrame = ui.def_submodule("frame", "Refresh the frame panel.");
+    uiFrame.def("refresh", []() {
+        requestUiRefresh(true, false, false, false);
+    });
+
+    py::module_ uiLayer = ui.def_submodule("layer", "Refresh the layer panel.");
+    uiLayer.def("refresh", []() {
+        requestUiRefresh(false, true, false, false);
+    });
+
+    py::module_ uiAsset = ui.def_submodule("asset", "Refresh the asset panel.");
+    uiAsset.def("refresh", []() {
+        requestUiRefresh(false, false, true, false);
+    });
+
+    py::module_ uiWidget = ui.def_submodule("widget", "Refresh the drawing widget.");
+    uiWidget.def("refresh", []() {
+        requestUiRefresh(false, false, false, true);
+    });
+
     py::class_<AnimeVectorRange>(m, "VectorRange")
         .def(py::init<>())
         .def(py::init<qreal, qreal>())
@@ -1011,6 +1117,13 @@ void bindAnimeanPythonModule(py::module_ &m)
     py::class_<AnimeVectorStroke>(m, "VectorStroke")
         .def(py::init<>())
         .def_readwrite("id", &AnimeVectorStroke::id)
+        .def_property("property",
+                      [](const AnimeVectorStroke &stroke) {
+                          return stroke.property.toStdString();
+                      },
+                      [](AnimeVectorStroke &stroke, const std::string &property) {
+                          stroke.property = QString::fromUtf8(property.c_str());
+                      })
         .def_readwrite("width", &AnimeVectorStroke::width)
         .def_readwrite("total_length", &AnimeVectorStroke::totalLength)
         .def("to_dict",

@@ -16,9 +16,11 @@
 ```python
 from animemodel import AnimeModel
 
+from animemodel import ui
+
 model = AnimeModel()
 model.initialize(layer_count=2, frame_count=24)
-model.set_current(frame=0, layer=0)
+ui.set_current(frame=0, layer=0)
 
 model.add_polyline(
     [(0, 0), (100, 80), (160, 20)],
@@ -85,7 +87,6 @@ model.set_scene_name(name)
 model.scene_id()
 model.set_scene_id(scene_id)
 model.initialize(layer_count=2, frame_count=2)
-model.set_current(frame=None, layer=None)
 model.get_structure()
 model.frame
 model.get_frame(id=None, index=None, name=None, Name=None)
