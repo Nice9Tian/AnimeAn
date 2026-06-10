@@ -10,6 +10,7 @@
 #include <QOpenGLWidget>
 #include <QPainterPath>
 #include <QString>
+#include <QVariant>
 #include <QVector>
 
 class PaintOpenGLWidget : public QOpenGLWidget
@@ -49,6 +50,7 @@ public:
     void setPenWidth(qreal width);
     void setStrokeProperty(const QString &property);
     void sendPythonExtraToolMessage(const QString &name, const QString &property);
+    void sendPythonToolOptionMessage(const QString &hook, const QString &name, const QString &type, const QVariant &value, int row, int startColumn, int endColumn);
     void setTool(Tool tool);
     Tool tool() const;
     void setFillScope(FillScope scope);

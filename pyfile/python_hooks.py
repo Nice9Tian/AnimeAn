@@ -11,6 +11,7 @@ _EVENT_FLAGS = {
     "fillfinish": "fillfinish",
     "movefinish": "movefinish",
     "extra": "extra",
+    "option": "option",
 }
 
 
@@ -45,6 +46,7 @@ def set_hook(
     fillfinish=False,
     movefinish=False,
     extra=False,
+    option=False,
     tool=None,
     property=None,
 ):
@@ -59,6 +61,7 @@ def set_hook(
             "fillfinish": fillfinish,
             "movefinish": movefinish,
             "extra": extra,
+            "option": option,
         }.items()
         if enabled
     }

@@ -1,0 +1,66 @@
+{
+  "row_spacing": 8,
+  "column_spacing": 6,
+  "controls": [
+    {
+      "name": "color",
+      "type": "button",
+      "title": "Black",
+      "hook": "color",
+      "value": "black",
+      "row": 0,
+      "column": 0,
+      "state": {
+        "color": "black"
+      }
+    },
+    {
+      "name": "color",
+      "type": "button",
+      "title": "Blue",
+      "hook": "color",
+      "value": "blue",
+      "row": 0,
+      "column": 1,
+      "state": {
+        "color": "blue"
+      }
+    },
+    {
+      "name": "color",
+      "type": "button",
+      "title": "Green",
+      "hook": "color",
+      "value": "green",
+      "row": 0,
+      "column": 2,
+      "state": {
+        "color": "green"
+      }
+    },
+    {
+      "name": "smooth",
+      "type": "slider",
+      "title": "Smooth",
+      "hook": "smooth",
+      "min": 0,
+      "max": 100,
+      "value": 50,
+      "row": 1,
+      "start_column": 0,
+      "end_column": 2
+    },
+    {
+      "name": "pen_width",
+      "type": "slider",
+      "title": "Width",
+      "hook": "pen_width",
+      "min": 1,
+      "max": 50,
+      "value": 5,
+      "row": 2,
+      "start_column": 0,
+      "end_column": 2
+    }
+  ]
+}

@@ -28,12 +28,13 @@ public:
 
     PaintOpenGLWidget::Tool tool() const;
     void setTool(PaintOpenGLWidget::Tool tool);
+    void configureLayout(const QJsonObject &layout);
     void configureControls(const QJsonArray &controls);
     void setFillScope(PaintOpenGLWidget::FillScope scope);
     void setSmoothValue(int value);
 
 signals:
-    void optionChanged(const QString &hook, const QString &name, const QVariant &value);
+    void optionChanged(const QString &hook, const QString &name, const QString &type, const QVariant &value, int row, int startColumn, int endColumn);
     void colorSelected(const QColor &color);
     void fillScopeSelected(PaintOpenGLWidget::FillScope scope);
     void eraserModeSelected(PaintOpenGLWidget::Tool tool);
@@ -41,10 +42,11 @@ signals:
     void penWidthChanged(int value);
 
 private:
-    QWidget *createButtonRow(const QJsonObject &control);
+    QWidget *createButtonControl(const QJsonObject &control);
     QWidget *createListControl(const QJsonObject &control);
     QWidget *createSliderControl(const QJsonObject &control);
-    void emitOptionChanged(const QString &hook, const QString &name, const QVariant &value);
+    void configureControls(const QJsonArray &controls, int rowSpacing, int columnSpacing);
+    void emitOptionChanged(const QString &hook, const QString &name, const QString &type, const QVariant &value, int row, int startColumn, int endColumn);
     void clearControls();
 
     Ui::ToolOptPanel *ui;

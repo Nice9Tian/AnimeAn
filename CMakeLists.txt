@@ -57,6 +57,8 @@ set(PROJECT_SOURCES
     childrenpanel/layerpanel.cpp
     childrenpanel/layerpanel.h
     childrenpanel/layerpanel.ui
+    childrenpanel/toolcontrolconfig.cpp
+    childrenpanel/toolcontrolconfig.h
     childrenpanel/tooloptpanel.cpp
     childrenpanel/tooloptpanel.h
     childrenpanel/tooloptpanel.ui
@@ -147,6 +149,9 @@ if(ANIMEAN_WITH_PYTHON)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${ANIMEAN_OPENTOONZ_TOOLS_DIR}/toonz_to_dict.py"
             "$<TARGET_FILE_DIR:AnimeAn>"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/childrenpanel/tool_controls"
+            "$<TARGET_FILE_DIR:AnimeAn>/childrenpanel/tool_controls"
     )
 endif()
 
@@ -213,6 +218,9 @@ if(WIN32 AND QT_VERSION_MAJOR EQUAL 6)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ANIMEAN_OPENTOONZ_TOOLS_DIR}/toonz_to_dict.py"
                 "${ANIMEAN_DEPLOY_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/childrenpanel/tool_controls"
+                "${ANIMEAN_DEPLOY_DIR}/childrenpanel/tool_controls"
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${ANIMEAN_PYTHON_HOME}"
                 "${ANIMEAN_DEPLOY_DIR}/${ANIMEAN_PYTHON_DIR_NAME}"

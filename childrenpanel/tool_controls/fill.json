@@ -1,0 +1,62 @@
+{
+  "row_spacing": 8,
+  "column_spacing": 6,
+  "controls": [
+    {
+      "name": "color",
+      "type": "button",
+      "title": "Black",
+      "hook": "color",
+      "value": "black",
+      "row": 0,
+      "column": 0,
+      "state": {
+        "color": "black"
+      }
+    },
+    {
+      "name": "color",
+      "type": "button",
+      "title": "Blue",
+      "hook": "color",
+      "value": "blue",
+      "row": 0,
+      "column": 1,
+      "state": {
+        "color": "blue"
+      }
+    },
+    {
+      "name": "color",
+      "type": "button",
+      "title": "Green",
+      "hook": "color",
+      "value": "green",
+      "row": 0,
+      "column": 2,
+      "state": {
+        "color": "green"
+      }
+    },
+    {
+      "name": "fill_scope",
+      "type": "list",
+      "title": "Fill Scope",
+      "hook": "fill_scope",
+      "value": "current",
+      "row": 1,
+      "start_column": 0,
+      "end_column": 2,
+      "options": [
+        {
+          "title": "ALL",
+          "value": "all"
+        },
+        {
+          "title": "Current",
+          "value": "current"
+        }
+      ]
+    }
+  ]
+}

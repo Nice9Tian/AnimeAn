@@ -1398,6 +1398,53 @@ class _UiRefreshTarget:
         self._refresh_function()
 
 
+class _UiOptionHookTarget:
+    def __init__(self, tool_name: str | None, name: str) -> None:
+        self._tool_name = tool_name
+        self._name = name
+
+    def hook(self, function: Any) -> Any:
+        import importlib
+        import python_hooks
+
+        if callable(function):
+            resolved = function
+        else:
+            module_name, separator, function_name = str(function).rpartition(".")
+            if not separator:
+                module_name = "__main__"
+                function_name = str(function)
+            resolved = getattr(importlib.import_module(module_name), function_name)
+            if not callable(resolved):
+                raise TypeError(f"ui option hook is not callable: {function}")
+
+        def option_hook(message: dict[str, Any]) -> Any:
+            if self._tool_name is not None and message.get("base_tool") != self._tool_name:
+                return None
+            option = message.get("option", {})
+            if option.get("name") != self._name:
+                return None
+            return resolved(option)
+
+        tool_prefix = self._tool_name or "any"
+        option_hook.__name__ = f"ui_{tool_prefix}_{self._name}_hook"
+        option_hook.__qualname__ = option_hook.__name__
+        return python_hooks.set_hook(option_hook, option=True)
+
+
+class _UiToolOptionHooks:
+    def __init__(self, tool_name: str) -> None:
+        self._tool_name = tool_name
+
+    def __getattr__(self, name: str) -> _UiOptionHookTarget:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return _UiOptionHookTarget(self._tool_name, name)
+
+    def __getitem__(self, name: str) -> _UiOptionHookTarget:
+        return _UiOptionHookTarget(self._tool_name, str(name))
+
+
 class Ui:
     """Facade for operations that affect the live AnimeAn user interface."""
 
@@ -1408,6 +1455,11 @@ class Ui:
         self.layer = _UiRefreshTarget(_cpp.ui.layer.refresh)
         self.asset = _UiRefreshTarget(_cpp.ui.asset.refresh)
         self.widget = _UiRefreshTarget(_cpp.ui.widget.refresh)
+        self.pen = _UiToolOptionHooks("pen")
+        self.fill = _UiToolOptionHooks("fill")
+        self.eraser = _UiToolOptionHooks("eraser")
+        self.delete_line = _UiToolOptionHooks("delete_line")
+        self.move = _UiToolOptionHooks("move")
 
     def refresh(self) -> None:
         _cpp.ui.refresh()

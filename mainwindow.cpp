@@ -7,6 +7,7 @@
 #include "projectio.h"
 #include "selectionattention.h"
 #include "childrenpanel/tooloptpanel.h"
+#include "childrenpanel/toolcontrolconfig.h"
 #include "childrenpanel/toolspanel.h"
 #include "pythonbind/python_bindings.h"
 
@@ -87,97 +88,6 @@ QString toolControlName(PaintOpenGLWidget::Tool tool)
         return QStringLiteral("move");
     }
     return QStringLiteral("pen");
-}
-
-QJsonArray fallbackToolControls(PaintOpenGLWidget::Tool tool, int smoothValue, int penWidth, PaintOpenGLWidget::FillScope fillScope)
-{
-    const QString fillScopeValue = fillScope == PaintOpenGLWidget::FillScope::AllLayers
-                                       ? QStringLiteral("all")
-                                       : QStringLiteral("current");
-    const QString eraserModeValue = tool == PaintOpenGLWidget::Tool::DeleteLine
-                                        ? QStringLiteral("line")
-                                        : QStringLiteral("area");
-    const QByteArray json = QStringLiteral(R"([
-        {
-            "name": "color",
-            "type": "button_row",
-            "title": "Color",
-            "hook": "color",
-            "options": [
-                {"title": "Black", "value": "black", "state": {"color": "black"}},
-                {"title": "Blue", "value": "blue", "state": {"color": "blue"}},
-                {"title": "Green", "value": "green", "state": {"color": "green"}}
-            ]
-        },
-        {
-            "name": "smooth",
-            "type": "slider",
-            "title": "Smooth",
-            "hook": "smooth",
-            "min": 0,
-            "max": 100,
-            "value": %1
-        },
-        {
-            "name": "pen_width",
-            "type": "slider",
-            "title": "Width",
-            "hook": "pen_width",
-            "min": 1,
-            "max": 50,
-            "value": %2
-        }
-    ])").arg(smoothValue).arg(penWidth).toUtf8();
-    const QByteArray fillJson = QStringLiteral(R"([
-        {
-            "name": "color",
-            "type": "button_row",
-            "title": "Color",
-            "hook": "color",
-            "options": [
-                {"title": "Black", "value": "black", "state": {"color": "black"}},
-                {"title": "Blue", "value": "blue", "state": {"color": "blue"}},
-                {"title": "Green", "value": "green", "state": {"color": "green"}}
-            ]
-        },
-        {
-            "name": "fill_scope",
-            "type": "list",
-            "title": "Fill Scope",
-            "hook": "fill_scope",
-            "value": "%1",
-            "height": 62,
-            "options": [
-                {"title": "ALL", "value": "all"},
-                {"title": "Current", "value": "current"}
-            ]
-        }
-    ])").arg(fillScopeValue).toUtf8();
-    const QByteArray eraserJson = QStringLiteral(R"([
-        {
-            "name": "eraser_mode",
-            "type": "list",
-            "title": "Eraser Mode",
-            "hook": "eraser_mode",
-            "value": "%1",
-            "height": 62,
-            "options": [
-                {"title": "LineMode", "value": "line"},
-                {"title": "AreaMode", "value": "area"}
-            ]
-        }
-    ])").arg(eraserModeValue).toUtf8();
-
-    if (tool == PaintOpenGLWidget::Tool::Fill) {
-        return QJsonDocument::fromJson(fillJson).array();
-    }
-    if (tool == PaintOpenGLWidget::Tool::Move) {
-        return QJsonArray();
-    }
-    if (tool == PaintOpenGLWidget::Tool::Eraser || tool == PaintOpenGLWidget::Tool::DeleteLine) {
-        return QJsonDocument::fromJson(eraserJson).array();
-    }
-    return QJsonDocument::fromJson(json).array();
 }
 
 int frameNameToRow(const QString &frameName)
@@ -960,7 +870,7 @@ void MainWindow::createToolDocks()
 #endif
 
     auto loadToolOptions = [this, toolOptPanel](PaintOpenGLWidget::Tool tool) {
-        QJsonArray controls;
+        QJsonObject layout;
 #ifdef ANIMEAN_WITH_PYTHON
         try {
             py::dict state;
@@ -972,8 +882,8 @@ void MainWindow::createToolDocks()
                                          .cast<std::string>();
             QJsonParseError parseError;
             const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json), &parseError);
-            if (parseError.error == QJsonParseError::NoError && document.isArray()) {
-                controls = document.array();
+            if (parseError.error == QJsonParseError::NoError && document.isObject()) {
+                layout = document.object();
             } else {
                 setStatusText(QStringLiteral("toolcontrol JSON error: %1").arg(parseError.errorString()));
             }
@@ -981,14 +891,15 @@ void MainWindow::createToolDocks()
             setStatusText(QStringLiteral("toolcontrol.py error: %1").arg(QString::fromUtf8(error.what())));
         }
 #endif
-        if (controls.isEmpty()) {
-            controls = fallbackToolControls(tool,
-                                            m_toolSmoothValue,
-                                            m_toolPenWidth,
-                                            m_toolFillAllLayers ? PaintOpenGLWidget::FillScope::AllLayers
-                                                                : PaintOpenGLWidget::FillScope::CurrentLayer);
+        if (layout.isEmpty()) {
+            layout = ToolControlConfig::loadBuiltInToolLayout(
+                tool,
+                m_toolSmoothValue,
+                m_toolPenWidth,
+                m_toolFillAllLayers ? PaintOpenGLWidget::FillScope::AllLayers
+                                    : PaintOpenGLWidget::FillScope::CurrentLayer);
         }
-        toolOptPanel->configureControls(controls);
+        toolOptPanel->configureLayout(layout);
     };
 
     auto applyTool = [this, toolsPanel, toolOptPanel, loadToolOptions](PaintOpenGLWidget::Tool tool, bool reloadOptions) {
@@ -1013,7 +924,7 @@ void MainWindow::createToolDocks()
         m_paintWidget->setStrokeProperty(tool.property);
         m_paintWidget->sendPythonExtraToolMessage(tool.name, tool.property);
         toolOptPanel->setTool(PaintOpenGLWidget::Tool::Pen);
-        toolOptPanel->configureControls(QJsonArray());
+        toolOptPanel->configureLayout(QJsonObject());
 #ifdef ANIMEAN_WITH_PYTHON
         if (!tool.handler.isEmpty()) {
             try {
@@ -1055,6 +966,10 @@ void MainWindow::createToolDocks()
     connect(toolOptPanel, &ToolOptPanel::penWidthChanged, this, [this](int value) {
         m_toolPenWidth = value;
         m_paintWidget->setPenWidth(value);
+    });
+
+    connect(toolOptPanel, &ToolOptPanel::optionChanged, this, [this](const QString &hook, const QString &name, const QString &type, const QVariant &value, int row, int startColumn, int endColumn) {
+        m_paintWidget->sendPythonToolOptionMessage(hook, name, type, value, row, startColumn, endColumn);
     });
 }
 

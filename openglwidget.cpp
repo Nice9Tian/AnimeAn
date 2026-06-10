@@ -48,6 +48,24 @@ py::dict pointToPythonDict(const QPointF &point)
     return pointInfo;
 }
 
+py::object variantToPythonObject(const QVariant &value)
+{
+    switch (value.userType()) {
+    case QMetaType::Bool:
+        return py::bool_(value.toBool());
+    case QMetaType::Int:
+    case QMetaType::UInt:
+    case QMetaType::LongLong:
+    case QMetaType::ULongLong:
+        return py::int_(value.toLongLong());
+    case QMetaType::Float:
+    case QMetaType::Double:
+        return py::float_(value.toDouble());
+    default:
+        return py::str(value.toString().toStdString());
+    }
+}
+
 py::dict strokeToPythonDict(const AnimeVectorStroke &stroke, int strokeIndex = -1)
 {
     py::dict strokeInfo;
@@ -160,6 +178,62 @@ void PaintOpenGLWidget::sendPythonExtraToolMessage(const QString &name, const QS
     pythonHookSendMessage(QStringLiteral("extra"));
     m_activePythonTool = previousTool;
     m_strokeProperty = previousProperty;
+}
+
+void PaintOpenGLWidget::sendPythonToolOptionMessage(const QString &hook, const QString &name, const QString &type, const QVariant &value, int row, int startColumn, int endColumn)
+{
+#ifdef ANIMEAN_WITH_PYTHON
+    const int frameRow = m_model.currentFrame();
+    const int layer = m_model.currentLayer();
+    const AnimeCell cell = m_model.cellAt(frameRow, layer);
+
+    py::gil_scoped_acquire acquire;
+    py::dict cellInfo;
+    cellInfo["row"] = frameRow;
+    cellInfo["layer"] = layer;
+    cellInfo["asset"] = cell.assetIndex;
+    cellInfo["frame_id"] = cell.frameId;
+
+    py::dict optionInfo;
+    optionInfo["name"] = name.toStdString();
+    optionInfo["type"] = type.toStdString();
+    optionInfo["value"] = variantToPythonObject(value);
+    optionInfo["hook"] = hook.toStdString();
+    optionInfo["row"] = row;
+    optionInfo["start_column"] = startColumn;
+    optionInfo["end_column"] = endColumn;
+
+    py::dict message;
+    message["event"] = "option";
+    message["tool"] = (m_activePythonTool.isEmpty() ? toolName(m_tool) : m_activePythonTool).toStdString();
+    message["base_tool"] = toolName(m_tool).toStdString();
+    message["property"] = m_strokeProperty.toStdString();
+    message["cell"] = cellInfo;
+    message["stroke"] = py::dict();
+    message["position"] = pointToPythonDict(QPointF());
+    message["delta"] = pointToPythonDict(QPointF());
+    message["option"] = optionInfo;
+    message["name"] = name.toStdString();
+    message["type"] = type.toStdString();
+    message["value"] = variantToPythonObject(value);
+    message["hook"] = hook.toStdString();
+    message["row"] = row;
+    message["start_column"] = startColumn;
+    message["end_column"] = endColumn;
+
+    const QString output = ::pythonHookSendMessage(message);
+    if (!output.isEmpty()) {
+        emit pythonDebugMessage(output);
+    }
+#else
+    Q_UNUSED(hook);
+    Q_UNUSED(name);
+    Q_UNUSED(type);
+    Q_UNUSED(value);
+    Q_UNUSED(row);
+    Q_UNUSED(startColumn);
+    Q_UNUSED(endColumn);
+#endif
 }
 
 void PaintOpenGLWidget::setTool(Tool tool)

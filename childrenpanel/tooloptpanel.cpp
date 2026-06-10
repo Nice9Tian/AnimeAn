@@ -2,7 +2,7 @@
 #include "ui_tooloptpanel.h"
 
 #include <QAbstractItemView>
-#include <QHBoxLayout>
+#include <QGridLayout>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLabel>
@@ -97,20 +97,53 @@ void ToolOptPanel::setTool(PaintOpenGLWidget::Tool tool)
     m_tool = tool;
 }
 
+void ToolOptPanel::configureLayout(const QJsonObject &layout)
+{
+    clearControls();
+    configureControls(layout.value(QStringLiteral("controls")).toArray(),
+                      intValue(layout, QStringLiteral("row_spacing"), 8),
+                      intValue(layout, QStringLiteral("column_spacing"), 6));
+}
+
 void ToolOptPanel::configureControls(const QJsonArray &controls)
 {
     clearControls();
+    configureControls(controls, 8, 6);
+}
 
+void ToolOptPanel::configureControls(const QJsonArray &controls, int rowSpacing, int columnSpacing)
+{
+    QWidget *gridContainer = new QWidget(this);
+    QGridLayout *gridLayout = new QGridLayout(gridContainer);
+    gridLayout->setContentsMargins(0, 0, 0, 0);
+    gridLayout->setHorizontalSpacing(columnSpacing);
+    gridLayout->setVerticalSpacing(rowSpacing);
+
+    QMap<int, int> nextColumnForRow;
+    bool hasWidgets = false;
     for (const QJsonValue &value : controls) {
         if (!value.isObject()) {
             continue;
         }
 
-        const QJsonObject control = value.toObject();
+        QJsonObject control = value.toObject();
         QWidget *widget = nullptr;
         const QString type = textValue(control, QStringLiteral("type"));
-        if (type == QStringLiteral("button_row")) {
-            widget = createButtonRow(control);
+
+        const int row = intValue(control, QStringLiteral("row"), 0);
+        const int startColumn = control.contains(QStringLiteral("start_column"))
+                                    ? intValue(control, QStringLiteral("start_column"), 0)
+                                    : (control.contains(QStringLiteral("column"))
+                                           ? intValue(control, QStringLiteral("column"), 0)
+                                           : nextColumnForRow.value(row, 0));
+        const int endColumn = intValue(control, QStringLiteral("end_column"), startColumn);
+        const int columnSpan = qMax(1, endColumn - startColumn + 1);
+        control.insert(QStringLiteral("row"), row);
+        control.insert(QStringLiteral("start_column"), startColumn);
+        control.insert(QStringLiteral("end_column"), startColumn + columnSpan - 1);
+
+        if (type == QStringLiteral("button")) {
+            widget = createButtonControl(control);
         } else if (type == QStringLiteral("list")) {
             widget = createListControl(control);
         } else if (type == QStringLiteral("slider")) {
@@ -125,7 +158,16 @@ void ToolOptPanel::configureControls(const QJsonArray &controls)
         if (!name.isEmpty()) {
             m_controls.insert(name, widget);
         }
-        m_layout->insertWidget(m_layout->count() - 1, widget);
+
+        nextColumnForRow[row] = qMax(nextColumnForRow.value(row, 0), startColumn + columnSpan);
+        gridLayout->addWidget(widget, row, startColumn, 1, columnSpan);
+        hasWidgets = true;
+    }
+
+    if (hasWidgets) {
+        m_layout->insertWidget(m_layout->count() - 1, gridContainer);
+    } else {
+        gridContainer->deleteLater();
     }
 }
 
@@ -155,53 +197,27 @@ void ToolOptPanel::setSmoothValue(int value)
     }
 }
 
-QWidget *ToolOptPanel::createButtonRow(const QJsonObject &control)
+QWidget *ToolOptPanel::createButtonControl(const QJsonObject &control)
 {
-    QWidget *container = new QWidget(this);
-    QVBoxLayout *outerLayout = new QVBoxLayout(container);
-    outerLayout->setContentsMargins(0, 0, 0, 0);
-    outerLayout->setSpacing(4);
-
-    const QString title = textValue(control, QStringLiteral("title"));
-    if (!title.isEmpty()) {
-        QLabel *label = new QLabel(title, container);
-        label->setObjectName(textValue(control, QStringLiteral("name")) + QStringLiteral("_label"));
-        outerLayout->addWidget(label);
-    }
-
-    QWidget *row = new QWidget(container);
-    QHBoxLayout *rowLayout = new QHBoxLayout(row);
-    rowLayout->setContentsMargins(0, 0, 0, 0);
-    rowLayout->setSpacing(6);
-    outerLayout->addWidget(row);
-
     const QString name = textValue(control, QStringLiteral("name"));
     const QString hook = textValue(control, QStringLiteral("hook"), name);
-    const QJsonArray options = control.value(QStringLiteral("options")).toArray();
-    for (const QJsonValue &optionValue : options) {
-        if (!optionValue.isObject()) {
-            continue;
-        }
-
-        const QJsonObject option = optionValue.toObject();
-        QPushButton *button = new QPushButton(textValue(option, QStringLiteral("title")), row);
-        button->setCursor(ui->standardButton->cursor());
-        button->setMinimumSize(ui->standardButton->minimumSize());
-        button->setStyleSheet(ui->standardButton->styleSheet());
-        const QString value = textValue(option, QStringLiteral("value"));
-        const QJsonObject state = option.value(QStringLiteral("state")).toObject();
-        const QColor color = colorFromState(state);
-        if (color.isValid()) {
-            button->setStyleSheet(colorButtonStyle(ui->standardButton->styleSheet(), color));
-        }
-        connect(button, &QPushButton::clicked, this, [this, hook, name, value]() {
-            emitOptionChanged(hook, name, value);
-        });
-        rowLayout->addWidget(button);
+    const int row = intValue(control, QStringLiteral("row"), 0);
+    const int startColumn = intValue(control, QStringLiteral("start_column"), 0);
+    const int endColumn = intValue(control, QStringLiteral("end_column"), startColumn);
+    QPushButton *button = new QPushButton(textValue(control, QStringLiteral("title")), this);
+    button->setCursor(ui->standardButton->cursor());
+    button->setMinimumSize(ui->standardButton->minimumSize());
+    button->setStyleSheet(ui->standardButton->styleSheet());
+    const QString value = textValue(control, QStringLiteral("value"));
+    const QJsonObject state = control.value(QStringLiteral("state")).toObject();
+    const QColor color = colorFromState(state);
+    if (color.isValid()) {
+        button->setStyleSheet(colorButtonStyle(ui->standardButton->styleSheet(), color));
     }
-    rowLayout->addStretch();
-
-    return container;
+    connect(button, &QPushButton::clicked, this, [this, hook, name, value, row, startColumn, endColumn]() {
+        emitOptionChanged(hook, name, QStringLiteral("button"), value, row, startColumn, endColumn);
+    });
+    return button;
 }
 
 QWidget *ToolOptPanel::createListControl(const QJsonObject &control)
@@ -212,6 +228,10 @@ QWidget *ToolOptPanel::createListControl(const QJsonObject &control)
     layout->setSpacing(4);
 
     const QString name = textValue(control, QStringLiteral("name"));
+    const QString type = textValue(control, QStringLiteral("type"), QStringLiteral("list"));
+    const int controlRow = intValue(control, QStringLiteral("row"), 0);
+    const int startColumn = intValue(control, QStringLiteral("start_column"), 0);
+    const int endColumn = intValue(control, QStringLiteral("end_column"), startColumn);
     const QString title = textValue(control, QStringLiteral("title"));
     QLabel *label = new QLabel(title, container);
     label->setObjectName(name + QStringLiteral("_label"));
@@ -223,10 +243,10 @@ QWidget *ToolOptPanel::createListControl(const QJsonObject &control)
     list->setFont(ui->standardList->font());
     list->setFrameShape(ui->standardList->frameShape());
     list->setSelectionMode(QAbstractItemView::SingleSelection);
-    list->setMaximumHeight(intValue(control, QStringLiteral("height"), 62));
     const QString current = textValue(control, QStringLiteral("value"));
 
     const QJsonArray options = control.value(QStringLiteral("options")).toArray();
+    list->setMaximumHeight(qMax(62, options.size() * 28 + 8));
     int selectedRow = 0;
     for (int row = 0; row < options.size(); ++row) {
         const QJsonValue optionValue = options.at(row);
@@ -245,10 +265,10 @@ QWidget *ToolOptPanel::createListControl(const QJsonObject &control)
     list->setCurrentRow(selectedRow);
 
     const QString hook = textValue(control, QStringLiteral("hook"), name);
-    connect(list, &QListWidget::currentRowChanged, this, [this, list, hook, name](int row) {
-        QListWidgetItem *item = list->item(row);
+    connect(list, &QListWidget::currentRowChanged, this, [this, list, hook, name, type, controlRow, startColumn, endColumn](int itemRow) {
+        QListWidgetItem *item = list->item(itemRow);
         if (item) {
-            emitOptionChanged(hook, name, item->data(Qt::UserRole));
+            emitOptionChanged(hook, name, type, item->data(Qt::UserRole), controlRow, startColumn, endColumn);
         }
     });
 
@@ -264,6 +284,10 @@ QWidget *ToolOptPanel::createSliderControl(const QJsonObject &control)
     layout->setSpacing(4);
 
     const QString name = textValue(control, QStringLiteral("name"));
+    const QString type = textValue(control, QStringLiteral("type"), QStringLiteral("slider"));
+    const int row = intValue(control, QStringLiteral("row"), 0);
+    const int startColumn = intValue(control, QStringLiteral("start_column"), 0);
+    const int endColumn = intValue(control, QStringLiteral("end_column"), startColumn);
     const QString title = textValue(control, QStringLiteral("title"), name);
     const int value = intValue(control, QStringLiteral("value"), 0);
     QLabel *label = new QLabel(QStringLiteral("%1: %2").arg(title).arg(value), container);
@@ -282,18 +306,18 @@ QWidget *ToolOptPanel::createSliderControl(const QJsonObject &control)
     slider->setValue(value);
 
     const QString hook = textValue(control, QStringLiteral("hook"), name);
-    connect(slider, &QSlider::valueChanged, this, [this, label, hook, name, title](int newValue) {
+    connect(slider, &QSlider::valueChanged, this, [this, label, hook, name, type, title, row, startColumn, endColumn](int newValue) {
         label->setText(QStringLiteral("%1: %2").arg(title).arg(newValue));
-        emitOptionChanged(hook, name, newValue);
+        emitOptionChanged(hook, name, type, newValue, row, startColumn, endColumn);
     });
 
     layout->addWidget(slider);
     return container;
 }
 
-void ToolOptPanel::emitOptionChanged(const QString &hook, const QString &name, const QVariant &value)
+void ToolOptPanel::emitOptionChanged(const QString &hook, const QString &name, const QString &type, const QVariant &value, int row, int startColumn, int endColumn)
 {
-    emit optionChanged(hook, name, value);
+    emit optionChanged(hook, name, type, value, row, startColumn, endColumn);
 
     if (hook == QStringLiteral("color")) {
         const QColor color(value.toString());

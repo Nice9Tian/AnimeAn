@@ -1,0 +1,26 @@
+{
+  "row_spacing": 8,
+  "column_spacing": 6,
+  "controls": [
+    {
+      "name": "eraser_mode",
+      "type": "list",
+      "title": "Eraser Mode",
+      "hook": "eraser_mode",
+      "value": "area",
+      "row": 0,
+      "start_column": 0,
+      "end_column": 2,
+      "options": [
+        {
+          "title": "LineMode",
+          "value": "line"
+        },
+        {
+          "title": "AreaMode",
+          "value": "area"
+        }
+      ]
+    }
+  ]
+}
