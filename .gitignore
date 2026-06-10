@@ -6,3 +6,4 @@ CMakeLists.txt.user
 /dist
 /refer_code
 out.txt
+build_full.log
