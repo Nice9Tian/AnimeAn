@@ -115,6 +115,118 @@ finally:
 This does not make Python execution asynchronous; it prevents user interaction
 while the main UI thread is busy.
 
+## ExtraTool and Hook Development
+
+ExtraTool support is currently implemented as a Python-assisted pen workflow.
+Selecting an extra tool keeps the drawing widget in the native Pen tool, sets a
+stroke `property`, and lets Python register hooks that receive drawing events.
+This is enough for post-processing vector algorithms, such as midline
+extraction, stroke replacement, cleanup, auto-connection, or region analysis
+after the user finishes a stroke.
+
+The built-in example is `pyfile/midline_tool.py`, registered from
+`pyfile/extra_tools.py`:
+
+```python
+def extra_tools():
+    return [
+        {
+            "name": "midline",
+            "title": "Midline",
+            "property": "midline",
+            "handler": "midline_tool.activate_midline_tool",
+        },
+    ]
+```
+
+The handler is called when the user selects the extra tool. A typical handler
+registers one or more hooks:
+
+```python
+import python_hooks
+from animemodel import get_current, ui
+
+
+def process_midline(cell, stroke, message):
+    if message.get("property") != "midline":
+        return
+
+    current = get_current()
+    if current is None or current.raw_scene is None:
+        return
+
+    scene = current.raw_scene
+    row = cell["row"]
+    layer = cell["layer"]
+    stroke_index = stroke.get("index")
+    if stroke_index is None:
+        return
+
+    stroke_data = scene.cell_to_dict(layer, row, True, 2.0)["image"]["strokes"][stroke_index]
+    points = stroke_data.get("polylines", [[]])[0]
+    if len(points) >= 2:
+        scene.add_polyline(row, layer, points, r=255, g=0, b=0, a=255, width=1.0)
+        ui.widget.refresh()
+
+
+def activate_midline_tool(name="midline", property_value="midline"):
+    python_hooks.set_hook(
+        process_midline,
+        linefinish=True,
+        tool="extra",
+        property=property_value,
+    )
+    print(f"{name} tool activated with property={property_value}")
+```
+
+Hook messages contain:
+
+```python
+{
+    "event": "update" | "linefinish" | "erasefinish" | "deletefinish" | "fillfinish" | "movefinish" | "extra" | "option",
+    "tool": "pen" | "move" | "eraser" | "delete_line" | "fill" | "extra" | extra_tool_name,
+    "base_tool": "pen" | "move" | "eraser" | "delete_line" | "fill",
+    "property": "...",
+    "cell": {"row": int, "layer": int, "asset": int, "frame_id": int},
+    "stroke": {"id": int, "property": str, "width": float, "point_count": int, "total_length": float, "index": int},
+    "position": {"x": float, "y": float},
+    "delta": {"x": float, "y": float},
+}
+```
+
+For `option` events, the message also contains an `option` dict and mirrors its
+fields at the top level:
+
+```python
+{
+    "option": {
+        "name": "...",
+        "type": "button" | "list" | "slider",
+        "value": object,
+        "hook": "...",
+        "row": int,
+        "start_column": int,
+        "end_column": int,
+    }
+}
+```
+
+Important current boundaries:
+
+- `extra_tools.tools_json()` is loaded when the main window creates the tool
+  panel. Add new extra tools there.
+- On tool selection, the widget sends an `extra` event before the handler in
+  `run_tool_handler()` registers new hooks. Hooks registered by that handler
+  should therefore target later events such as `linefinish` or `update`.
+- ExtraTool does not currently replace the native mouse event loop. Python does
+  not receive a full custom `press` / `drag` / `release` stream with cancelable
+  native behavior.
+- The `update` event fires while a pen stroke is being edited and can be useful
+  for debug feedback, but there is no Python drawing overlay API yet.
+- The strongest supported algorithm path today is: read current scene/cell,
+  process vector strokes through `vectorlogic` or Python code, write strokes or
+  remove strokes, then call `ui.widget.refresh()`.
+
 Aliases:
 
 - `AnimeModel`: preferred class name.
@@ -413,8 +525,12 @@ scene.asset_image(asset_index: int, frame_id: int = 1, create=False) -> VectorIm
 scene.cell_asset_index(row: int, layer_index: int) -> int
 scene.stroke_count(row: int, layer_index: int) -> int
 scene.clear_image(row: int, layer_index: int) -> None
+scene.remove_stroke(row: int, layer_index: int, stroke_index: int) -> bool
+scene.remove_fill_area(row: int, layer_index: int, fill_index: int) -> bool
+scene.clear_raster(row: int, layer_index: int) -> bool
 scene.cell_to_dict(layer_index: int, frame_index: int, to_poly=False, poly_step=4.0) -> dict
 scene.cell_strokes(layer_index: int, frame_index: int, to_poly=False, poly_step=4.0) -> dict
+scene.stroke_line_list(row: int, layer_index: int, stroke_index: int, ploy=False, simplify=0.0) -> list
 scene.add_polyline(row, layer_index, points, r=0, g=0, b=0, a=255, width=3.0) -> None
 scene.add_stroke_object(row: int, layer_index: int, stroke: VectorStroke) -> None
 ```
@@ -705,3 +821,10 @@ Structure dict:
 - The conversion helpers raise `TypeError` when Python input cannot be converted.
 - Asset/layer type strings are `vector`, `raster`, and `fill`; unrecognized
   values fall back to `vector` in the current binding.
+- The Python API is strongest for vector image and scene-structure work. Raster
+  image authoring and more fill-layer editing operations still live mostly in
+  C++ and are not fully exposed as Python editing APIs.
+- `VectorStroke` internals such as point arrays, color, and `QPainterPath` data
+  are mainly intended to be created through `vectorlogic.make_stroke_object()`
+  or `add_polyline()`. Direct mutation of complex stroke internals from Python
+  is not the primary supported path.

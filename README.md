@@ -1,87 +1,93 @@
 # AnimeAn
 
-AnimeAn 是一个基于 Qt 的桌面应用，提供动画和矢量相关的编辑界面，并集成了可选的 Python 支持，用于通过 `pybind11` 调用 C++ 数据模型和几何逻辑。
+AnimeAn is a Qt desktop application for animation and vector drawing
+experiments. It includes optional Python support through `pybind11`, so scripts
+can inspect and edit the C++ scene model and use vector geometry helpers.
 
-## 主要内容
+## Main Features
 
-- Qt Widgets + OpenGLWidgets 桌面界面
-- `AnimeModel` / `AnimeVectorLogic` 相关数据与矢量算法
-- 可选 Python 嵌入与 Python 扩展模块
-- Windows 下的部署目标 `deploy_AnimeAn`
+- Qt Widgets + OpenGLWidgets drawing interface.
+- `AnimeModel` scene/xsheet data model.
+- `AnimeVectorLogic` vector geometry algorithms.
+- Embedded Python and optional standalone Python extension module.
+- Python ExtraTool hooks for vector algorithm prototyping.
+- Windows deployment target: `deploy_AnimeAn`.
 
-## 目录说明
+## Project Layout
 
-- `main.cpp`：程序入口
-- `mainwindow.*`：主窗口逻辑
-- `algorithm/animemodel.*`：核心数据模型
-- `algorithm/vectorlogic.*`：矢量路径和几何算法
-- `pythonbind/python_bindings.cpp`：Python 底层绑定
-- `pythonbind/animemodel.py`：Python 侧高层封装
-- `scripts/agent_build.ps1`：Release 构建与部署验证脚本
+- `main.cpp`: application entry point.
+- `mainwindow.*`: main window and dock/panel orchestration.
+- `openglwidget.*`: drawing widget and tool event handling.
+- `algorithm/animemodel.*`: core scene, layer, frame, asset, cell, vector image model.
+- `algorithm/vectorlogic.*`: vector path and geometry algorithms.
+- `pythonbind/python_bindings.cpp`: low-level Python bindings.
+- `pythonbind/animemodel.py`: high-level Python wrapper.
+- `pyfile/`: embedded Python scripts, hooks, and ExtraTool definitions.
+- `build_scripts/agent_build.ps1`: release build and deploy verification script.
 
-## 构建
+## Build
 
-项目使用 CMake 构建。
+The project uses CMake.
 
 ### Windows / Qt
 
-1. 安装 Qt 6 或 Qt 5，推荐 Qt 6。
-2. 配置构建目录：
-
 ```powershell
 cmake -S . -B build
-```
-
-3. 构建目标：
-
-```powershell
 cmake --build build --config Release
 ```
 
-### Python 支持
+### Python Support
 
-默认开启嵌入式 Python 支持，项目会优先使用：
+Embedded Python support is enabled by default. The project first looks for the
+runtime in:
 
 - `tools/python312`
 
-如果需要构建 Python 扩展模块，可打开：
-
-- `ANIMEAN_BUILD_PYTHON_MODULE=ON`
-
-示例：
+To build the optional standalone Python extension module:
 
 ```powershell
 cmake -S . -B build -DANIMEAN_BUILD_PYTHON_MODULE=ON
 cmake --build build --config Release
 ```
 
-## 部署
+## Deploy Verification
 
-构建完成后，可执行生成的 `AnimeAn` 程序。
-
-在 Windows + Qt 6 环境下，也可以使用 CMake 的部署目标：
+For agent-side release verification, use:
 
 ```powershell
-cmake --build build --config Release --target deploy_AnimeAn
+PowerShell -ExecutionPolicy Bypass -File ".\build_scripts\agent_build.ps1"
 ```
 
-部署输出位于 `dist/AnimeAn`。
+The expected final log line is:
 
-## Python 入口
+```text
+===== AGENT BUILD DONE EXIT_CODE=0 =====
+```
 
-Python 绑定功能说明：
+## Python Entry Points
 
-- 英文设计与 API 说明：`pybind_readme.md`
-- 中文功能说明：`python_bind_chinese_readme.md`
+Python binding and ExtraTool documentation:
 
-最常见的使用方式：
+- English design and API reference: `pybind_readme.md`
+- Chinese summary and development notes: `python_bind_chinese_readme.md`
+- OpenToonz parser notes in English and Chinese: `opentoonz_tools/README.md`
+
+Minimal usage:
 
 ```python
 from animemodel import AnimeModel
 
 model = AnimeModel()
+model.initialize(layer_count=2, frame_count=24)
+model.add_polyline([(0, 0), (100, 80)])
 ```
 
-## 许可
+ExtraTool algorithm development currently works best as a post-processing vector
+workflow: select an ExtraTool, draw with the native Pen tool, receive hook events
+in Python, process the current stroke or cell, write vector results back, then
+refresh the widget.
 
-仓库内包含第三方依赖 `external/pybind11`。其许可与原项目一致，详见对应目录中的文档。
+## License
+
+This repository includes third-party dependency `external/pybind11`. Its license
+follows the upstream project; see the files in that directory for details.
