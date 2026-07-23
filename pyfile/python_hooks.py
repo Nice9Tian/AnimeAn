@@ -12,6 +12,7 @@ _EVENT_FLAGS = {
     "movefinish": "movefinish",
     "extra": "extra",
     "option": "option",
+    "overlayremove": "overlayremove",
 }
 
 
@@ -47,6 +48,7 @@ def set_hook(
     movefinish=False,
     extra=False,
     option=False,
+    overlayremove=False,
     tool=None,
     property=None,
 ):
@@ -62,6 +64,7 @@ def set_hook(
             "movefinish": movefinish,
             "extra": extra,
             "option": option,
+            "overlayremove": overlayremove,
         }.items()
         if enabled
     }

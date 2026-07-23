@@ -1,6 +1,7 @@
 import importlib
 import json
 
+import auto_mapping
 import hook_test
 
 
@@ -12,11 +13,36 @@ def extra_tools():
             "property": "midline",
             "handler": "midline_tool.activate_midline_tool",
         },
+        {
+            "name": "h_center_line",
+            "title": "H Center Line",
+            "property": auto_mapping.H_PROPERTY,
+            "handler": "auto_mapping.activate_center_line_tool",
+        },
+        {
+            "name": "v_center_line",
+            "title": "V Center Line",
+            "property": auto_mapping.V_PROPERTY,
+            "handler": "auto_mapping.activate_center_line_tool",
+        },
+        {
+            "name": "mapping_area",
+            "title": "Mapping Area",
+            "property": auto_mapping.MAPPING_AREA_PROPERTY,
+            "handler": "auto_mapping.activate_mapping_area_tool",
+        },
+        {
+            "name": "auto_mapping",
+            "title": "Auto Mapping",
+            "property": auto_mapping.AUTO_MAPPING_TOOL,
+            "handler": "auto_mapping.run_auto_mapping",
+        },
     ]
 
 
 def tools_json():
     hook_test.register_all_tool_hooks()
+    auto_mapping.register_hooks()
     return json.dumps(extra_tools(), ensure_ascii=False)
 
 

@@ -199,6 +199,7 @@ QJsonObject fillRegionToJson(const AnimeVectorFillRegion &fill)
 {
     QJsonObject object;
     object[QStringLiteral("id")] = fill.id;
+    object[QStringLiteral("property")] = fill.property;
     object[QStringLiteral("seedPoint")] = pointToJson(fill.seedPoint);
     object[QStringLiteral("path")] = pathToJson(fill.path);
     object[QStringLiteral("boundsX")] = fill.bounds.x();
@@ -216,6 +217,7 @@ AnimeVectorFillRegion fillRegionFromJson(const QJsonValue &value)
     const QJsonObject object = value.toObject();
     AnimeVectorFillRegion fill;
     fill.id = object.value(QStringLiteral("id")).toInt();
+    fill.property = object.value(QStringLiteral("property")).toString();
     fill.seedPoint = pointFromJson(object.value(QStringLiteral("seedPoint")));
     fill.path = pathFromJson(object.value(QStringLiteral("path")));
     fill.bounds = QRectF(object.value(QStringLiteral("boundsX")).toDouble(),

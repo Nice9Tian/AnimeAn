@@ -2,6 +2,8 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include "python_bindings.h"
+
 #include "algorithm/animemodel.h"
 #include "algorithm/vectorlogic.h"
 
@@ -26,6 +28,8 @@ std::vector<AnimeSceneModel *> g_uiScenes;
 AnimeSceneModel *g_currentUiScene = nullptr;
 std::function<void(bool frame, bool layer, bool asset, bool widget)> g_uiRefreshCallback;
 std::function<void(bool frozen)> g_uiFreezeCallback;
+std::function<void(const QString &view, const QVector<AnimeanOverlayItem> &items)> g_uiOverlayCallback;
+std::function<void(const QColor &color)> g_uiDrawColorCallback;
 
 void requestUiRefresh(bool frame = true, bool layer = true, bool asset = true, bool widget = true)
 {
@@ -777,6 +781,7 @@ py::dict fillRegionToDict(const AnimeVectorFillRegion &fill)
 {
     py::dict data;
     data["id"] = fill.id;
+    data["property"] = fill.property.toStdString();
     data["seed"] = pointToDict(fill.seedPoint);
     data["color"] = colorToDict(fill.color);
     data["bounds"] = rectToDict(fill.bounds);
@@ -996,6 +1001,26 @@ void clearAnimeanUiFreezeCallback()
     g_uiFreezeCallback = nullptr;
 }
 
+void registerAnimeanUiOverlayCallback(std::function<void(const QString &view, const QVector<AnimeanOverlayItem> &items)> callback)
+{
+    g_uiOverlayCallback = std::move(callback);
+}
+
+void clearAnimeanUiOverlayCallback()
+{
+    g_uiOverlayCallback = nullptr;
+}
+
+void registerAnimeanUiDrawColorCallback(std::function<void(const QColor &color)> callback)
+{
+    g_uiDrawColorCallback = std::move(callback);
+}
+
+void clearAnimeanUiDrawColorCallback()
+{
+    g_uiDrawColorCallback = nullptr;
+}
+
 void bindAnimeanPythonModule(py::module_ &m)
 {
     m.doc() = "Python bindings for AnimeAn scene, layer, frame, and vector image models.";
@@ -1041,6 +1066,48 @@ void bindAnimeanPythonModule(py::module_ &m)
     py::module_ ui = m.def_submodule("ui", "Helpers for synchronizing the embedded AnimeAn user interface.");
     ui.def("refresh", []() {
         requestUiRefresh(true, true, true, true);
+    });
+    ui.def("set_overlay",
+           [](const std::string &view, py::sequence items) {
+               if (!g_uiOverlayCallback) {
+                   return;
+               }
+               QVector<AnimeanOverlayItem> converted;
+               for (py::handle handle : items) {
+                   if (!py::isinstance<py::dict>(handle)) {
+                       throw py::type_error("overlay items must be dicts.");
+                   }
+                   py::dict data = py::reinterpret_borrow<py::dict>(handle);
+                   AnimeanOverlayItem item;
+                   if (hasKey(data, "id")) {
+                       item.id = QString::fromStdString(data["id"].cast<std::string>());
+                   }
+                   item.points = objectToPoints(data["points"], "overlay.points");
+                   if (hasKey(data, "closed")) {
+                       item.closed = data["closed"].cast<bool>();
+                   }
+                   if (hasKey(data, "color")) {
+                       item.strokeColor = objectToColor(data["color"], "overlay.color");
+                   }
+                   if (hasKey(data, "fill_color")) {
+                       item.fillColor = objectToColor(data["fill_color"], "overlay.fill_color");
+                   }
+                   if (hasKey(data, "width")) {
+                       item.width = data["width"].cast<double>();
+                   }
+                   if (hasKey(data, "removable")) {
+                       item.removable = data["removable"].cast<bool>();
+                   }
+                   converted.append(item);
+               }
+               g_uiOverlayCallback(QString::fromStdString(view), converted);
+           },
+           py::arg("view"),
+           py::arg("items"));
+    ui.def("set_draw_color", [](py::object color) {
+        if (g_uiDrawColorCallback) {
+            g_uiDrawColorCallback(objectToColor(color, "color"));
+        }
     });
     ui.def("freeze", []() {
         requestUiFreeze(true);
@@ -1145,6 +1212,12 @@ void bindAnimeanPythonModule(py::module_ &m)
         .def("clear", &AnimeVectorImageModel::clear)
         .def("remove_stroke", &AnimeVectorImageModel::removeStrokeAt)
         .def("remove_fill_area", &AnimeVectorImageModel::removeFillRegionAt)
+        .def("set_fill_color",
+             [](AnimeVectorImageModel &image, int index, py::object color) {
+                 return image.setFillRegionColor(index, objectToColor(color));
+             },
+             py::arg("index"),
+             py::arg("color"))
         .def("clear_raster", &AnimeVectorImageModel::clearRasterImage)
         .def("bounds", [](const AnimeVectorImageModel &image) {
             return rectToTuple(image.bounds());

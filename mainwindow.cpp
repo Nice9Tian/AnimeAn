@@ -1,8 +1,10 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
 #include "childrenpanel/assetpanel.h"
+#include "childrenpanel/childpaintwindow.h"
 #include "childrenpanel/framepanel.h"
 #include "childrenpanel/layerpanel.h"
+#include "clipreader.h"
 #include "openglwidget.h"
 #include "projectio.h"
 #include "selectionattention.h"
@@ -31,6 +33,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMouseEvent>
@@ -119,6 +122,7 @@ QVector<ToolsPanel::ExtraToolDefinition> parseExtraTools(const QJsonArray &array
         tool.title = object.value(QStringLiteral("title")).toString(tool.name);
         tool.property = object.value(QStringLiteral("property")).toString(tool.name);
         tool.handler = object.value(QStringLiteral("handler")).toString();
+        tool.baseTool = object.value(QStringLiteral("base_tool")).toString();
         if (!tool.name.isEmpty()) {
             tools.append(tool);
         }
@@ -255,6 +259,7 @@ QVector<PaintOpenGLWidget::ImportedVectorFrame> importedFramesFromOpenToonzLevel
     }
     return importedFrames;
 }
+#endif
 
 QRectF importedVectorFramesBounds(const QVector<PaintOpenGLWidget::ImportedVectorFrame> &frames)
 {
@@ -309,7 +314,6 @@ void scaleImportedVectorFramesToCanvas(QVector<PaintOpenGLWidget::ImportedVector
         }
     }
 }
-#endif
 }
 
 MainWindow::MainWindow(QWidget *parent)
@@ -320,41 +324,78 @@ MainWindow::MainWindow(QWidget *parent)
     setupDocks();
     setupListDragDrop();
 
-    updateAttention(AttentionChange::FrameChange,
-                    m_paintWidget->model().currentFrame(),
-                    m_paintWidget->model().currentLayer(),
-                    m_paintWidget->model().currentAsset());
+    for (PaintOpenGLWidget *view : m_paintViews) {
+        updateAttention(view,
+                        AttentionChange::FrameChange,
+                        view->model().currentFrame(),
+                        view->model().currentLayer(),
+                        view->model().currentAsset());
+    }
     setupConnections();
     updateWindowTitle();
 #ifdef ANIMEAN_WITH_PYTHON
+    registerAnimeanUiScene(&m_childPaintWidget->model());
     registerAnimeanUiScene(&m_paintWidget->model());
     registerAnimeanUiRefreshCallback([this](bool frame, bool layer, bool asset, bool widget) {
-        m_attention.frame = m_paintWidget->model().currentFrame();
-        m_attention.layer = m_paintWidget->model().currentLayer();
-        m_attention.asset = m_paintWidget->model().currentAsset();
-        m_paintWidget->setCurrentFrame(m_attention.frame);
-        m_paintWidget->setCurrentLayer(m_attention.layer);
-        m_paintWidget->setCurrentAsset(m_attention.asset);
+        PaintOpenGLWidget *view = activePaintWidget();
+        SelectionAttention &attention = attentionFor(view);
+        attention.frame = view->model().currentFrame();
+        attention.layer = view->model().currentLayer();
+        attention.asset = view->model().currentAsset();
+        view->setCurrentFrame(attention.frame);
+        view->setCurrentLayer(attention.layer);
+        view->setCurrentAsset(attention.asset);
         if (frame) {
-            refreshFrameList(m_attention.frame);
+            refreshFrameList(attentionFor(framePanelTarget()).frame);
         }
         if (layer) {
-            refreshLayerList(m_attention.layer);
+            refreshLayerList(attentionFor(layerPanelTarget()).layer);
         }
         if (asset) {
-            refreshAssetList(m_attention.asset);
+            refreshAssetList(attentionFor(assetPanelTarget()).asset);
         }
         if (widget) {
-            m_paintWidget->update();
+            for (PaintOpenGLWidget *paintView : m_paintViews) {
+                paintView->update();
+            }
         }
         syncEmbeddedPythonState();
     });
     registerAnimeanUiFreezeCallback([this](bool frozen) {
         setPythonUiFrozen(frozen);
     });
+    registerAnimeanUiOverlayCallback([this](const QString &view, const QVector<AnimeanOverlayItem> &items) {
+        PaintOpenGLWidget *target = m_paintWidget;
+        for (PaintOpenGLWidget *paintView : m_paintViews) {
+            if (paintView->viewName() == view) {
+                target = paintView;
+                break;
+            }
+        }
+        QVector<PaintOpenGLWidget::OverlayItem> converted;
+        converted.reserve(items.size());
+        for (const AnimeanOverlayItem &item : items) {
+            PaintOpenGLWidget::OverlayItem overlayItem;
+            overlayItem.id = item.id;
+            overlayItem.points = item.points;
+            overlayItem.closed = item.closed;
+            overlayItem.strokeColor = item.strokeColor;
+            overlayItem.fillColor = item.fillColor;
+            overlayItem.width = item.width;
+            overlayItem.removable = item.removable;
+            converted.append(overlayItem);
+        }
+        target->setOverlayItems(converted);
+    });
+    registerAnimeanUiDrawColorCallback([this](const QColor &color) {
+        for (PaintOpenGLWidget *paintView : m_paintViews) {
+            paintView->setDrawingColor(color);
+        }
+    });
     syncEmbeddedPythonState();
     appendPythonDebugMessage(QStringLiteral(
-        "[python register] animean_python, animemodel, ui, model, current, model_pybind, vectorlogic, canvas_width, canvas_height"));
+        "[python register] animean_python, animemodel, ui, model, current, model_pybind, vectorlogic, canvas_width, canvas_height, "
+        "main_model, child_model, active_view"));
     runPythonInitializationScript();
 #endif
 }
@@ -362,8 +403,11 @@ MainWindow::MainWindow(QWidget *parent)
 MainWindow::~MainWindow()
 {
 #ifdef ANIMEAN_WITH_PYTHON
+    clearAnimeanUiDrawColorCallback();
+    clearAnimeanUiOverlayCallback();
     clearAnimeanUiFreezeCallback();
     clearAnimeanUiRefreshCallback();
+    unregisterAnimeanUiScene(&m_childPaintWidget->model());
     unregisterAnimeanUiScene(&m_paintWidget->model());
 #endif
     delete ui;
@@ -378,9 +422,259 @@ void MainWindow::setupDocks()
     setCorner(Qt::BottomRightCorner, Qt::BottomDockWidgetArea);
 
     m_paintWidget = ui->graphicsView;
+    m_paintWidget->setViewName(QStringLiteral("main"));
+    m_paintWidget->model().setTextId(QStringLiteral("main_paint_view"));
+    m_paintWidget->model().setIntId(1);
+    createChildPaintDock();
+    m_activePaintWidget = m_paintWidget;
+    m_paintViews = {m_paintWidget, m_childPaintWidget};
     createListDocks();
     createToolDocks();
     setupPythonDebugDock();
+    createTextureFileMenu();
+}
+
+void MainWindow::createChildPaintDock()
+{
+    m_childPaintWindow = new ChildPaintWindow(this);
+    m_childPaintWidget = m_childPaintWindow->paintWidget();
+    m_childPaintWidget->model().setTextId(QStringLiteral("child_paint_view"));
+    m_childPaintWidget->model().setIntId(2);
+    addDockWidget(Qt::LeftDockWidgetArea, m_childPaintWindow);
+
+    QMenu *viewMenu = menuBar()->addMenu(QStringLiteral("View"));
+    viewMenu->addAction(m_childPaintWindow->toggleViewAction());
+}
+
+void MainWindow::createTextureFileMenu()
+{
+    QMenu *textureMenu = menuBar()->addMenu(QStringLiteral("Texture View File"));
+
+    QAction *importRasterAction = textureMenu->addAction(QStringLiteral("Import Raster into Texture View..."));
+    connect(importRasterAction, &QAction::triggered, this, [this]() {
+        showTextureView();
+        importRaster(m_childPaintWidget);
+    });
+
+    QAction *importToonzAction = textureMenu->addAction(QStringLiteral("Import OpenToonz Lines into Texture View..."));
+    connect(importToonzAction, &QAction::triggered, this, [this]() {
+        showTextureView();
+        importOpenToonzLines(m_childPaintWidget);
+    });
+
+    QAction *importClipAction = textureMenu->addAction(QStringLiteral("Import Clip Studio Paint into Texture View..."));
+    connect(importClipAction, &QAction::triggered, this, [this]() {
+        showTextureView();
+        importClipStudioPaint(m_childPaintWidget);
+    });
+
+    textureMenu->addSeparator();
+
+    QAction *openAction = textureMenu->addAction(QStringLiteral("Open Texture View..."));
+    connect(openAction, &QAction::triggered, this, &MainWindow::openTextureView);
+
+    QAction *saveAction = textureMenu->addAction(QStringLiteral("Save Texture View As..."));
+    connect(saveAction, &QAction::triggered, this, [this]() { saveTextureViewAs(); });
+
+    QAction *exportImageAction = textureMenu->addAction(QStringLiteral("Export Texture View Image..."));
+    connect(exportImageAction, &QAction::triggered, this, [this]() { exportTextureImage(); });
+}
+
+void MainWindow::showTextureView()
+{
+    if (!m_childPaintWindow) {
+        return;
+    }
+    m_childPaintWindow->show();
+    m_childPaintWindow->raise();
+    setActivePaintView(m_childPaintWidget);
+}
+
+void MainWindow::openTextureView()
+{
+    const QString fileName = QFileDialog::getOpenFileName(
+        this,
+        QStringLiteral("Open Texture View"),
+        QString(),
+        projectFilter());
+    if (fileName.isEmpty()) {
+        return;
+    }
+
+    QFile file(fileName);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Open Texture View"),
+                             QStringLiteral("Failed to read file:\n%1").arg(file.errorString()));
+        return;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Open Texture View"),
+                             QStringLiteral("Texture file format error:\n%1").arg(parseError.errorString()));
+        return;
+    }
+
+    AnimeSceneModel loadedModel;
+    QString error;
+    if (!modelFromJson(document.object(), &loadedModel, &error)) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Open Texture View"),
+                             error.isEmpty() ? QStringLiteral("Unsupported texture file.") : error);
+        return;
+    }
+
+    m_childPaintWidget->model() = loadedModel;
+    m_childPaintWidget->model().setTextId(QStringLiteral("child_paint_view"));
+    m_childPaintWidget->model().setIntId(2);
+    showTextureView();
+    updateAttention(m_childPaintWidget,
+                    AttentionChange::FrameChange,
+                    m_childPaintWidget->model().currentFrame(),
+                    m_childPaintWidget->model().currentLayer(),
+                    m_childPaintWidget->model().currentAsset());
+    m_childPaintWidget->update();
+    setStatusText(QStringLiteral("Opened texture view: %1").arg(QFileInfo(fileName).fileName()));
+}
+
+bool MainWindow::saveTextureViewAs()
+{
+    QString fileName = QFileDialog::getSaveFileName(
+        this,
+        QStringLiteral("Save Texture View As"),
+        QDir::home().filePath(QStringLiteral("texture.animean")),
+        projectFilter());
+    if (fileName.isEmpty()) {
+        return false;
+    }
+    if (QFileInfo(fileName).suffix().isEmpty()) {
+        fileName += QStringLiteral(".animean");
+    }
+    return writeModelToFile(m_childPaintWidget->model(), fileName, QStringLiteral("Save Texture View"));
+}
+
+bool MainWindow::writeModelToFile(const AnimeSceneModel &model, const QString &fileName, const QString &dialogTitle)
+{
+    QSaveFile file(fileName);
+    if (!file.open(QIODevice::WriteOnly)) {
+        QMessageBox::warning(this,
+                             dialogTitle,
+                             QStringLiteral("Failed to write file:\n%1").arg(file.errorString()));
+        return false;
+    }
+
+    const QJsonDocument document(modelToJson(model));
+    file.write(document.toJson(QJsonDocument::Indented));
+    if (!file.commit()) {
+        QMessageBox::warning(this,
+                             dialogTitle,
+                             QStringLiteral("Failed to save file:\n%1").arg(file.errorString()));
+        return false;
+    }
+
+    setStatusText(QStringLiteral("Saved texture view: %1").arg(QFileInfo(fileName).fileName()));
+    return true;
+}
+
+bool MainWindow::exportTextureImage()
+{
+    if (!m_childPaintWidget) {
+        return false;
+    }
+
+    showTextureView();
+    QCoreApplication::processEvents();
+    const QImage image = m_childPaintWidget->grabFramebuffer();
+    if (image.isNull()) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Export Texture View Image"),
+                             QStringLiteral("The texture view could not be captured. Make sure it is visible, then try again."));
+        return false;
+    }
+
+    QString fileName = QFileDialog::getSaveFileName(
+        this,
+        QStringLiteral("Export Texture View Image"),
+        QDir::home().filePath(QStringLiteral("texture.png")),
+        QStringLiteral("PNG Image (*.png);;All Files (*)"));
+    if (fileName.isEmpty()) {
+        return false;
+    }
+    if (QFileInfo(fileName).suffix().isEmpty()) {
+        fileName += QStringLiteral(".png");
+    }
+
+    if (!image.save(fileName, "PNG")) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Export Texture View Image"),
+                             QStringLiteral("Failed to write the image to:\n%1").arg(fileName));
+        return false;
+    }
+
+    setStatusText(QStringLiteral("Exported texture image: %1 (%2 x %3)")
+                      .arg(QFileInfo(fileName).fileName())
+                      .arg(image.width())
+                      .arg(image.height()));
+    return true;
+}
+
+PaintOpenGLWidget *MainWindow::activePaintWidget() const
+{
+    return m_activePaintWidget ? m_activePaintWidget : m_paintWidget;
+}
+
+PaintOpenGLWidget *MainWindow::framePanelTarget() const
+{
+    PaintOpenGLWidget *view = activePaintWidget();
+    if (view == m_childPaintWidget && m_childPaintWindow && !m_childPaintWindow->changableTimeline()) {
+        return m_paintWidget;
+    }
+    return view;
+}
+
+PaintOpenGLWidget *MainWindow::layerPanelTarget() const
+{
+    PaintOpenGLWidget *view = activePaintWidget();
+    if (view == m_childPaintWidget && m_childPaintWindow && !m_childPaintWindow->changableLayer()) {
+        return m_paintWidget;
+    }
+    return view;
+}
+
+PaintOpenGLWidget *MainWindow::assetPanelTarget() const
+{
+    return layerPanelTarget();
+}
+
+SelectionAttention &MainWindow::attentionFor(PaintOpenGLWidget *view)
+{
+    return m_attentionByView[view];
+}
+
+void MainWindow::setActivePaintView(PaintOpenGLWidget *view)
+{
+    if (!view || m_activePaintWidget == view) {
+        return;
+    }
+
+    m_activePaintWidget = view;
+    m_hasPendingAttention = false;
+#ifdef ANIMEAN_WITH_PYTHON
+    registerAnimeanUiScene(&view->model());
+#endif
+    refreshPanelTargets();
+    syncEmbeddedPythonState();
+    setStatusText(QStringLiteral("Active paint view: %1").arg(view->viewName()));
+}
+
+void MainWindow::refreshPanelTargets()
+{
+    refreshFrameList(attentionFor(framePanelTarget()).frame);
+    refreshLayerList(attentionFor(layerPanelTarget()).layer);
+    refreshAssetList(attentionFor(assetPanelTarget()).asset);
 }
 
 void MainWindow::setupListDragDrop()
@@ -579,11 +873,15 @@ QString MainWindow::runEmbeddedPythonCommand(const QString &command)
         if (output.trimmed().isEmpty()) {
             output = QStringLiteral("(no output)");
         }
-        updateAttention(AttentionChange::AssetChange,
-                        m_paintWidget->model().currentFrame(),
-                        m_paintWidget->model().currentLayer(),
-                        m_paintWidget->model().currentAsset());
-        m_paintWidget->update();
+        PaintOpenGLWidget *view = activePaintWidget();
+        updateAttention(view,
+                        AttentionChange::AssetChange,
+                        view->model().currentFrame(),
+                        view->model().currentLayer(),
+                        view->model().currentAsset());
+        for (PaintOpenGLWidget *paintView : m_paintViews) {
+            paintView->update();
+        }
         return output;
     } catch (const py::error_already_set &error) {
         return QStringLiteral("Python debug error: %1").arg(QString::fromUtf8(error.what()));
@@ -602,15 +900,23 @@ void MainWindow::syncEmbeddedPythonState()
         py::dict globals = py::module_::import("__main__").attr("__dict__");
         py::object animeanPython = py::module_::import("animean_python");
         py::object animeModel = py::module_::import("animemodel");
+        PaintOpenGLWidget *view = activePaintWidget();
         globals["animean_python"] = animeanPython;
         globals["animemodel"] = animeModel;
         globals["ui"] = animeModel.attr("ui");
-        globals["model"] = py::cast(&m_paintWidget->model(), py::return_value_policy::reference);
+        globals["model"] = py::cast(&view->model(), py::return_value_policy::reference);
+        globals["main_model"] = py::cast(&m_paintWidget->model(), py::return_value_policy::reference);
+        globals["child_model"] = py::cast(&m_childPaintWidget->model(), py::return_value_policy::reference);
+        globals["active_view"] = view->viewName().toStdString();
         globals["current"] = animeModel.attr("current");
         globals["model_pybind"] = animeanPython.attr("model_pybind");
         globals["vectorlogic"] = animeanPython.attr("vectorlogic");
-        globals["canvas_width"] = m_paintWidget->width();
-        globals["canvas_height"] = m_paintWidget->height();
+        globals["canvas_width"] = view->width();
+        globals["canvas_height"] = view->height();
+        globals["main_canvas_width"] = m_paintWidget->width();
+        globals["main_canvas_height"] = m_paintWidget->height();
+        globals["child_canvas_width"] = m_childPaintWidget->width();
+        globals["child_canvas_height"] = m_childPaintWidget->height();
     } catch (const py::error_already_set &error) {
         appendPythonDebugMessage(QStringLiteral("[python register] error: %1").arg(QString::fromUtf8(error.what())));
         setStatusText(QStringLiteral("Python state sync error: %1").arg(QString::fromUtf8(error.what())));
@@ -624,77 +930,113 @@ void MainWindow::setupConnections()
     connect(ui->actionSave, &QAction::triggered, this, &MainWindow::saveProject);
     connect(ui->actionSaveAs, &QAction::triggered, this, &MainWindow::saveProjectAs);
 
+    for (PaintOpenGLWidget *view : m_paintViews) {
+        connect(view, &PaintOpenGLWidget::focusGained, this, [this, view]() {
+            setActivePaintView(view);
+        });
+
+        connect(view, &PaintOpenGLWidget::layerListChanged, this, [this, view](int selectedLayer) {
+            updateAttention(view,
+                            AttentionChange::LayerChange,
+                            view->model().currentFrame(),
+                            selectedLayer,
+                            view->model().currentAsset());
+        });
+
+        connect(view, &PaintOpenGLWidget::assetListChanged, this, [this, view](int selectedAsset) {
+            updateAttention(view,
+                            AttentionChange::AssetChange,
+                            attentionFor(view).frame,
+                            attentionFor(view).layer,
+                            selectedAsset);
+        });
+
+        connect(view, &PaintOpenGLWidget::pythonDebugMessage,
+                this, &MainWindow::appendPythonDebugMessage);
+    }
+
+    connect(m_childPaintWindow, &ChildPaintWindow::changableTimelineToggled, this, [this](bool) {
+        refreshPanelTargets();
+    });
+    connect(m_childPaintWindow, &ChildPaintWindow::changableLayerToggled, this, [this](bool) {
+        refreshPanelTargets();
+    });
+
     connect(m_layerPanel->layerList(), &QListWidget::currentRowChanged, this, [this](int row) {
         if (!m_refreshingLists && row >= 0) {
             QListWidgetItem *item = m_layerPanel->layerList()->item(row);
             const int layerIndex = item ? item->data(Qt::UserRole).toInt() : -1;
-            requestAttentionUpdate(AttentionChange::LayerChange, m_attention.frame, layerIndex, m_attention.asset);
+            PaintOpenGLWidget *view = layerPanelTarget();
+            requestAttentionUpdate(view, AttentionChange::LayerChange,
+                                   attentionFor(view).frame, layerIndex, attentionFor(view).asset);
         }
     });
 
-    connect(m_paintWidget, &PaintOpenGLWidget::layerListChanged, this, [this](int selectedLayer) {
-        updateAttention(AttentionChange::LayerChange,
-                        m_paintWidget->model().currentFrame(),
-                        selectedLayer,
-                        m_paintWidget->model().currentAsset());
-    });
-
-    connect(m_paintWidget, &PaintOpenGLWidget::assetListChanged, this, [this](int selectedAsset) {
-        updateAttention(AttentionChange::AssetChange, m_attention.frame, m_attention.layer, selectedAsset);
-    });
-
-    connect(m_paintWidget, &PaintOpenGLWidget::pythonDebugMessage,
-            this, &MainWindow::appendPythonDebugMessage);
-
     connect(m_framePanel->frameList(), &QListWidget::currentRowChanged, this, [this](int row) {
         if (!m_refreshingLists && row >= 0) {
-            requestAttentionUpdate(AttentionChange::FrameChange, row, m_attention.layer, m_attention.asset);
+            PaintOpenGLWidget *view = framePanelTarget();
+            requestAttentionUpdate(view, AttentionChange::FrameChange,
+                                   row, attentionFor(view).layer, attentionFor(view).asset);
         }
     });
 
     connect(m_layerPanel->addButton(), &QPushButton::clicked, this, [this]() {
-        const int layerIndex = m_paintWidget->addLayer();
-        updateAttention(AttentionChange::LayerChange, m_attention.frame, layerIndex, m_attention.asset);
+        PaintOpenGLWidget *view = layerPanelTarget();
+        const int layerIndex = view->addLayer();
+        updateAttention(view, AttentionChange::LayerChange,
+                        attentionFor(view).frame, layerIndex, attentionFor(view).asset);
     });
 
     connect(m_layerPanel->deleteButton(), &QPushButton::clicked, this, [this]() {
         QListWidgetItem *item = m_layerPanel->layerList()->currentItem();
         const int layerIndex = item ? item->data(Qt::UserRole).toInt() : -1;
-        if (m_paintWidget->deleteLayer(layerIndex)) {
-            const int nextLayer = layerIndex < m_paintWidget->layerCount() ? layerIndex : m_paintWidget->layerCount() - 1;
-            updateAttention(AttentionChange::LayerChange, m_attention.frame, nextLayer, m_attention.asset);
+        PaintOpenGLWidget *view = layerPanelTarget();
+        if (view->deleteLayer(layerIndex)) {
+            const int nextLayer = layerIndex < view->layerCount() ? layerIndex : view->layerCount() - 1;
+            updateAttention(view, AttentionChange::LayerChange,
+                            attentionFor(view).frame, nextLayer, attentionFor(view).asset);
         }
     });
 
     connect(m_layerPanel->unselectButton(), &QPushButton::clicked, this, [this]() {
-        updateAttention(AttentionChange::LayerChange, m_attention.frame, -1, -1);
+        PaintOpenGLWidget *view = layerPanelTarget();
+        updateAttention(view, AttentionChange::LayerChange, attentionFor(view).frame, -1, -1);
     });
 
     connect(m_framePanel->addButton(), &QPushButton::clicked, this, [this]() {
-        const int frameIndex = m_paintWidget->addFrame();
-        updateAttention(AttentionChange::FrameChange, frameIndex, m_attention.layer, m_attention.asset);
+        PaintOpenGLWidget *view = framePanelTarget();
+        const int frameIndex = view->addFrame();
+        updateAttention(view, AttentionChange::FrameChange,
+                        frameIndex, attentionFor(view).layer, attentionFor(view).asset);
     });
 
     connect(m_framePanel->deleteButton(), &QPushButton::clicked, this, [this]() {
         const int row = m_framePanel->frameList()->currentRow();
-        if (m_paintWidget->deleteFrame(row)) {
-            const int nextFrame = row < m_paintWidget->frameCount() ? row : m_paintWidget->frameCount() - 1;
-            updateAttention(AttentionChange::FrameChange, nextFrame, m_attention.layer, m_attention.asset);
+        PaintOpenGLWidget *view = framePanelTarget();
+        if (view->deleteFrame(row)) {
+            const int nextFrame = row < view->frameCount() ? row : view->frameCount() - 1;
+            updateAttention(view, AttentionChange::FrameChange,
+                            nextFrame, attentionFor(view).layer, attentionFor(view).asset);
         }
     });
 
     connect(m_assetPanel->addButton(), &QPushButton::clicked, this, [this]() {
-        const int assetIndex = m_paintWidget->addAsset();
-        updateAttention(AttentionChange::AssetChange, m_attention.frame, m_attention.layer, assetIndex);
+        PaintOpenGLWidget *view = assetPanelTarget();
+        const int assetIndex = view->addAsset();
+        updateAttention(view, AttentionChange::AssetChange,
+                        attentionFor(view).frame, attentionFor(view).layer, assetIndex);
     });
 
     connect(m_assetPanel->unselectButton(), &QPushButton::clicked, this, [this]() {
-        updateAttention(AttentionChange::AssetChange, m_attention.frame, -1, -1);
+        PaintOpenGLWidget *view = assetPanelTarget();
+        updateAttention(view, AttentionChange::AssetChange, attentionFor(view).frame, -1, -1);
     });
 
     connect(m_assetPanel->assetList(), &QListWidget::currentRowChanged, this, [this](int row) {
         if (!m_refreshingLists) {
-            requestAttentionUpdate(AttentionChange::AssetChange, m_attention.frame, m_attention.layer, row);
+            PaintOpenGLWidget *view = assetPanelTarget();
+            requestAttentionUpdate(view, AttentionChange::AssetChange,
+                                   attentionFor(view).frame, attentionFor(view).layer, row);
         }
     });
 
@@ -704,13 +1046,15 @@ void MainWindow::setupConnections()
         if (m_refreshingLists || sourceStart != sourceEnd) {
             return;
         }
+        PaintOpenGLWidget *view = layerPanelTarget();
         const int targetRow = movedRowTarget(sourceStart, destinationChild);
         QListWidgetItem *movedItem = m_layerPanel->layerList()->item(targetRow);
         if (!movedItem) {
-            updateAttention(AttentionChange::LayerChange,
-                            m_paintWidget->model().currentFrame(),
-                            m_paintWidget->model().currentLayer(),
-                            m_paintWidget->model().currentAsset());
+            updateAttention(view,
+                            AttentionChange::LayerChange,
+                            view->model().currentFrame(),
+                            view->model().currentLayer(),
+                            view->model().currentAsset());
             return;
         }
 
@@ -726,14 +1070,16 @@ void MainWindow::setupConnections()
             --toIndex;
         }
 
-        if (!m_paintWidget->moveLayer(fromIndex, toIndex)) {
-            updateAttention(AttentionChange::LayerChange,
-                            m_paintWidget->model().currentFrame(),
-                            m_paintWidget->model().currentLayer(),
-                            m_paintWidget->model().currentAsset());
+        if (!view->moveLayer(fromIndex, toIndex)) {
+            updateAttention(view,
+                            AttentionChange::LayerChange,
+                            view->model().currentFrame(),
+                            view->model().currentLayer(),
+                            view->model().currentAsset());
             return;
         }
-        updateAttention(AttentionChange::LayerChange, m_attention.frame, toIndex, m_attention.asset);
+        updateAttention(view, AttentionChange::LayerChange,
+                        attentionFor(view).frame, toIndex, attentionFor(view).asset);
     });
 
     connect(m_framePanel->frameList()->model(), &QAbstractItemModel::rowsMoved,
@@ -742,19 +1088,32 @@ void MainWindow::setupConnections()
         if (m_refreshingLists || sourceStart != sourceEnd) {
             return;
         }
+        PaintOpenGLWidget *view = framePanelTarget();
         const int target = movedRowTarget(sourceStart, destinationChild);
-        if (!m_paintWidget->moveFrame(sourceStart, target)) {
-            updateAttention(AttentionChange::FrameChange,
-                            m_paintWidget->model().currentFrame(),
-                            m_paintWidget->model().currentLayer(),
-                            m_paintWidget->model().currentAsset());
+        if (!view->moveFrame(sourceStart, target)) {
+            updateAttention(view,
+                            AttentionChange::FrameChange,
+                            view->model().currentFrame(),
+                            view->model().currentLayer(),
+                            view->model().currentAsset());
             return;
         }
-        updateAttention(AttentionChange::FrameChange, target, m_attention.layer, m_attention.asset);
+        updateAttention(view, AttentionChange::FrameChange,
+                        target, attentionFor(view).layer, attentionFor(view).asset);
     });
 
-    connect(ui->actionimport_Raster, &QAction::triggered, this, &MainWindow::importRaster);
-    connect(ui->actionImport_OpenToonz_Lines, &QAction::triggered, this, &MainWindow::importOpenToonzLines);
+    connect(ui->actionimport_Raster, &QAction::triggered, this, [this]() {
+        setActivePaintView(m_paintWidget);
+        importRaster(m_paintWidget);
+    });
+    connect(ui->actionImport_OpenToonz_Lines, &QAction::triggered, this, [this]() {
+        setActivePaintView(m_paintWidget);
+        importOpenToonzLines(m_paintWidget);
+    });
+    connect(ui->actionImport_Clip_Studio_Paint, &QAction::triggered, this, [this]() {
+        setActivePaintView(m_paintWidget);
+        importClipStudioPaint(m_paintWidget);
+    });
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
@@ -779,14 +1138,15 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         } else if (event->type() == QEvent::MouseButtonRelease) {
             QMouseEvent *mouseEvent = static_cast<QMouseEvent *>(event);
             if (mouseEvent->button() == Qt::LeftButton && m_listMousePressed) {
-                const bool shouldCommit = m_hasPendingAttention && !m_listDragActive;
+                const bool shouldCommit = m_hasPendingAttention && !m_listDragActive && m_pendingAttentionView;
                 const AttentionChange change = m_pendingAttentionChange;
                 const SelectionAttention attention = m_pendingAttention;
+                PaintOpenGLWidget *view = m_pendingAttentionView;
                 m_listMousePressed = false;
                 m_listDragActive = false;
                 m_hasPendingAttention = false;
                 if (shouldCommit) {
-                    updateAttention(change, attention.frame, attention.layer, attention.asset);
+                    updateAttention(view, change, attention.frame, attention.layer, attention.asset);
                 }
             }
         }
@@ -824,9 +1184,11 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         dropEvent->acceptProposedAction();
         if (event->type() == QEvent::Drop) {
             m_hasPendingAttention = false;
-            const int layerIndex = m_paintWidget->addLayerForAsset(assetIndex);
+            PaintOpenGLWidget *view = layerPanelTarget();
+            const int layerIndex = view->addLayerForAsset(assetIndex);
             if (layerIndex >= 0) {
-                updateAttention(AttentionChange::LayerChange, m_attention.frame, layerIndex, assetIndex);
+                updateAttention(view, AttentionChange::LayerChange,
+                                attentionFor(view).frame, layerIndex, assetIndex);
             }
             m_listMousePressed = false;
             m_listDragActive = false;
@@ -903,8 +1265,10 @@ void MainWindow::createToolDocks()
     };
 
     auto applyTool = [this, toolsPanel, toolOptPanel, loadToolOptions](PaintOpenGLWidget::Tool tool, bool reloadOptions) {
-        m_paintWidget->setTool(tool);
-        m_paintWidget->setStrokeProperty(QString());
+        for (PaintOpenGLWidget *view : m_paintViews) {
+            view->setTool(tool);
+            view->setStrokeProperty(QString());
+        }
         toolsPanel->setTool(tool);
         toolOptPanel->setTool(tool);
         if (reloadOptions) {
@@ -920,10 +1284,15 @@ void MainWindow::createToolDocks()
 
     connect(toolsPanel, &ToolsPanel::toolSelected, this, selectTool);
     connect(toolsPanel, &ToolsPanel::extraToolSelected, this, [this, toolOptPanel](const ToolsPanel::ExtraToolDefinition &tool) {
-        m_paintWidget->setTool(PaintOpenGLWidget::Tool::Pen);
-        m_paintWidget->setStrokeProperty(tool.property);
-        m_paintWidget->sendPythonExtraToolMessage(tool.name, tool.property);
-        toolOptPanel->setTool(PaintOpenGLWidget::Tool::Pen);
+        const PaintOpenGLWidget::Tool baseTool = tool.baseTool == QStringLiteral("fill")
+                                                     ? PaintOpenGLWidget::Tool::Fill
+                                                     : PaintOpenGLWidget::Tool::Pen;
+        for (PaintOpenGLWidget *view : m_paintViews) {
+            view->setTool(baseTool);
+            view->setStrokeProperty(tool.property);
+        }
+        activePaintWidget()->sendPythonExtraToolMessage(tool.name, tool.property);
+        toolOptPanel->setTool(baseTool);
         toolOptPanel->configureLayout(QJsonObject());
 #ifdef ANIMEAN_WITH_PYTHON
         if (!tool.handler.isEmpty()) {
@@ -938,20 +1307,26 @@ void MainWindow::createToolDocks()
     });
 
     connect(toolOptPanel, &ToolOptPanel::colorSelected, this, [this, applyTool](const QColor &color) {
-        if (m_paintWidget->tool() == PaintOpenGLWidget::Tool::Fill) {
-            m_paintWidget->setDrawingColor(color);
+        if (activePaintWidget()->tool() == PaintOpenGLWidget::Tool::Fill) {
+            for (PaintOpenGLWidget *view : m_paintViews) {
+                view->setDrawingColor(color);
+            }
             applyTool(PaintOpenGLWidget::Tool::Fill, false);
             return;
         }
 
-        m_paintWidget->setPenColor(color);
-        m_paintWidget->setStrokeProperty(QString());
+        for (PaintOpenGLWidget *view : m_paintViews) {
+            view->setPenColor(color);
+            view->setStrokeProperty(QString());
+        }
         applyTool(PaintOpenGLWidget::Tool::Pen, false);
     });
 
     connect(toolOptPanel, &ToolOptPanel::fillScopeSelected, this, [this](PaintOpenGLWidget::FillScope scope) {
         m_toolFillAllLayers = scope == PaintOpenGLWidget::FillScope::AllLayers;
-        m_paintWidget->setFillScope(scope);
+        for (PaintOpenGLWidget *view : m_paintViews) {
+            view->setFillScope(scope);
+        }
     });
 
     connect(toolOptPanel, &ToolOptPanel::eraserModeSelected, this, [applyTool](PaintOpenGLWidget::Tool tool) {
@@ -960,16 +1335,20 @@ void MainWindow::createToolDocks()
 
     connect(toolOptPanel, &ToolOptPanel::smoothValueChanged, this, [this](int value) {
         m_toolSmoothValue = value;
-        m_paintWidget->setSmoothValue(value);
+        for (PaintOpenGLWidget *view : m_paintViews) {
+            view->setSmoothValue(value);
+        }
     });
 
     connect(toolOptPanel, &ToolOptPanel::penWidthChanged, this, [this](int value) {
         m_toolPenWidth = value;
-        m_paintWidget->setPenWidth(value);
+        for (PaintOpenGLWidget *view : m_paintViews) {
+            view->setPenWidth(value);
+        }
     });
 
     connect(toolOptPanel, &ToolOptPanel::optionChanged, this, [this](const QString &hook, const QString &name, const QString &type, const QVariant &value, int row, int startColumn, int endColumn) {
-        m_paintWidget->sendPythonToolOptionMessage(hook, name, type, value, row, startColumn, endColumn);
+        activePaintWidget()->sendPythonToolOptionMessage(hook, name, type, value, row, startColumn, endColumn);
     });
 }
 
@@ -1089,9 +1468,13 @@ bool MainWindow::loadProjectFrom(const QString &fileName)
     }
 
     m_paintWidget->model() = loadedModel;
+    if (m_paintWidget->model().textId().isEmpty()) {
+        m_paintWidget->model().setTextId(QStringLiteral("main_paint_view"));
+    }
     m_currentFilePath = fileName;
     updateWindowTitle();
-    updateAttention(AttentionChange::FrameChange,
+    updateAttention(m_paintWidget,
+                    AttentionChange::FrameChange,
                     m_paintWidget->model().currentFrame(),
                     m_paintWidget->model().currentLayer(),
                     m_paintWidget->model().currentAsset());
@@ -1100,11 +1483,15 @@ bool MainWindow::loadProjectFrom(const QString &fileName)
     return true;
 }
 
-void MainWindow::importRaster()
+void MainWindow::importRaster(PaintOpenGLWidget *view)
 {
+    if (!view) {
+        return;
+    }
+
     const QString fileName = QFileDialog::getOpenFileName(
         this,
-        QStringLiteral("Import Raster"),
+        QStringLiteral("Import Raster into %1 View").arg(view->viewName()),
         QString(),
         QStringLiteral("Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff);;All Files (*)"));
     if (fileName.isEmpty()) {
@@ -1123,7 +1510,7 @@ void MainWindow::importRaster()
 
     image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
     const QFileInfo fileInfo(fileName);
-    const int layerIndex = m_paintWidget->importRasterLayer(image, fileInfo.completeBaseName());
+    const int layerIndex = view->importRasterLayer(image, fileInfo.completeBaseName());
     if (layerIndex < 0) {
         QMessageBox::warning(this,
                              QStringLiteral("Import Raster"),
@@ -1131,27 +1518,34 @@ void MainWindow::importRaster()
         return;
     }
 
-    updateAttention(AttentionChange::LayerChange,
-                    m_paintWidget->model().currentFrame(),
+    updateAttention(view,
+                    AttentionChange::LayerChange,
+                    view->model().currentFrame(),
                     layerIndex,
-                    m_paintWidget->model().currentAsset());
-    setStatusText(QStringLiteral("Imported raster: %1 (%2 x %3)")
+                    view->model().currentAsset());
+    setStatusText(QStringLiteral("Imported raster into %1: %2 (%3 x %4)")
+                      .arg(view->viewName())
                       .arg(fileInfo.fileName())
                       .arg(image.width())
                       .arg(image.height()));
 }
 
-void MainWindow::importOpenToonzLines()
+void MainWindow::importOpenToonzLines(PaintOpenGLWidget *view)
 {
 #ifndef ANIMEAN_WITH_PYTHON
+    Q_UNUSED(view);
     QMessageBox::warning(this,
                          QStringLiteral("Import OpenToonz Lines"),
                          QStringLiteral("Python support is disabled, so OpenToonz line import is unavailable."));
     return;
 #else
+    if (!view) {
+        return;
+    }
+
     const QString fileName = QFileDialog::getOpenFileName(
         this,
-        QStringLiteral("Import OpenToonz Lines"),
+        QStringLiteral("Import OpenToonz Lines into %1 View").arg(view->viewName()),
         QString(),
         QStringLiteral("OpenToonz Vector Levels (*.pli);;All Files (*)"));
     if (fileName.isEmpty()) {
@@ -1172,7 +1566,7 @@ void MainWindow::importOpenToonzLines()
         }
 
         const QRectF sourceBounds = importedVectorFramesBounds(frames);
-        const QSizeF canvasSize(m_paintWidget->width(), m_paintWidget->height());
+        const QSizeF canvasSize(view->width(), view->height());
         const QRectF canvasBounds(QPointF(0.0, 0.0), canvasSize);
         const bool needsScale = sourceBounds.isValid()
                                 && sourceBounds.width() > 0.0
@@ -1190,8 +1584,8 @@ void MainWindow::importOpenToonzLines()
                     .arg(qRound(sourceBounds.y()))
                     .arg(qRound(sourceBounds.width()))
                     .arg(qRound(sourceBounds.height()))
-                    .arg(m_paintWidget->width())
-                    .arg(m_paintWidget->height()),
+                    .arg(view->width())
+                    .arg(view->height()),
                 QMessageBox::Yes | QMessageBox::No,
                 QMessageBox::Yes);
             if (button == QMessageBox::Yes) {
@@ -1200,7 +1594,7 @@ void MainWindow::importOpenToonzLines()
         }
 
         const QFileInfo fileInfo(fileName);
-        const int layerIndex = m_paintWidget->importVectorLineLayer(frames, fileInfo.completeBaseName());
+        const int layerIndex = view->importVectorLineLayer(frames, fileInfo.completeBaseName());
         if (layerIndex < 0) {
             QMessageBox::warning(this,
                                  QStringLiteral("Import OpenToonz Lines"),
@@ -1208,11 +1602,13 @@ void MainWindow::importOpenToonzLines()
             return;
         }
 
-        updateAttention(AttentionChange::LayerChange,
-                        m_paintWidget->model().currentFrame(),
+        updateAttention(view,
+                        AttentionChange::LayerChange,
+                        view->model().currentFrame(),
                         layerIndex,
-                        m_paintWidget->model().currentAsset());
-        setStatusText(QStringLiteral("Imported OpenToonz lines: %1 (%2 frame(s))")
+                        view->model().currentAsset());
+        setStatusText(QStringLiteral("Imported OpenToonz lines into %1: %2 (%3 frame(s))")
+                          .arg(view->viewName())
                           .arg(fileInfo.fileName())
                           .arg(frames.size()));
     } catch (const py::error_already_set &error) {
@@ -1221,6 +1617,108 @@ void MainWindow::importOpenToonzLines()
                              QStringLiteral("OpenToonz import failed:\n%1").arg(QString::fromUtf8(error.what())));
     }
 #endif
+}
+
+void MainWindow::importClipStudioPaint(PaintOpenGLWidget *view)
+{
+    if (!view) {
+        return;
+    }
+
+    const QString fileName = QFileDialog::getOpenFileName(
+        this,
+        QStringLiteral("Import Clip Studio Paint into %1 View").arg(view->viewName()),
+        QString(),
+        QStringLiteral("Clip Studio Paint (*.clip);;All Files (*)"));
+    if (fileName.isEmpty()) {
+        return;
+    }
+
+    const ClipReader::ClipDocument document = ClipReader::readClipFile(fileName);
+    if (!document.valid) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Import Clip Studio Paint"),
+                             document.error.isEmpty()
+                                 ? QStringLiteral("Unable to read this .clip file.")
+                                 : document.error);
+        return;
+    }
+
+    QVector<PaintOpenGLWidget::ImportedVectorFrame> frames;
+    PaintOpenGLWidget::ImportedVectorFrame frame;
+    frame.row = 0;
+    for (const ClipReader::ClipStroke &clipStroke : document.strokes) {
+        if (clipStroke.points.size() < 2) {
+            continue;
+        }
+        PaintOpenGLWidget::ImportedVectorStroke stroke;
+        stroke.points = clipStroke.points;
+        stroke.color = clipStroke.color;
+        stroke.width = std::max(qreal(1.0), clipStroke.width);
+        stroke.path.moveTo(clipStroke.points.first());
+        for (int i = 1; i < clipStroke.points.size(); ++i) {
+            stroke.path.lineTo(clipStroke.points[i]);
+        }
+        frame.strokes.append(stroke);
+    }
+    if (frame.strokes.isEmpty()) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Import Clip Studio Paint"),
+                             QStringLiteral("No usable vector strokes were found in this .clip file."));
+        return;
+    }
+    frames.append(frame);
+
+    const QRectF sourceBounds = importedVectorFramesBounds(frames);
+    const QSizeF canvasSize(view->width(), view->height());
+    const QRectF canvasBounds(QPointF(0.0, 0.0), canvasSize);
+    const bool needsScale = sourceBounds.isValid()
+                            && sourceBounds.width() > 0.0
+                            && sourceBounds.height() > 0.0
+                            && (!canvasBounds.contains(sourceBounds)
+                                || !qFuzzyCompare(sourceBounds.width(), canvasSize.width())
+                                || !qFuzzyCompare(sourceBounds.height(), canvasSize.height()));
+    if (needsScale) {
+        const QMessageBox::StandardButton button = QMessageBox::question(
+            this,
+            QStringLiteral("Import Clip Studio Paint"),
+            QStringLiteral("The imported drawing bounds are (%1, %2) %3 x %4, but the current canvas is %5 x %6.\n"
+                           "Fit it to the current canvas?")
+                .arg(qRound(sourceBounds.x()))
+                .arg(qRound(sourceBounds.y()))
+                .arg(qRound(sourceBounds.width()))
+                .arg(qRound(sourceBounds.height()))
+                .arg(view->width())
+                .arg(view->height()),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::Yes);
+        if (button == QMessageBox::Yes) {
+            scaleImportedVectorFramesToCanvas(&frames, canvasSize);
+        }
+    }
+
+    const QFileInfo fileInfo(fileName);
+    const int layerIndex = view->importVectorLineLayer(frames, fileInfo.completeBaseName());
+    if (layerIndex < 0) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Import Clip Studio Paint"),
+                             QStringLiteral("Failed to import the Clip Studio Paint vector layer."));
+        return;
+    }
+
+    int strokeCount = 0;
+    for (const PaintOpenGLWidget::ImportedVectorFrame &imported : frames) {
+        strokeCount += imported.strokes.size();
+    }
+    updateAttention(view,
+                    AttentionChange::LayerChange,
+                    view->model().currentFrame(),
+                    layerIndex,
+                    view->model().currentAsset());
+    setStatusText(QStringLiteral("Imported Clip Studio Paint into %1: %2 (%3 stroke(s))")
+                      .arg(view->viewName())
+                      .arg(fileInfo.fileName())
+                      .arg(strokeCount));
 }
 
 void MainWindow::updateWindowTitle()
@@ -1254,8 +1752,10 @@ void MainWindow::setPythonUiFrozen(bool frozen)
 
     const bool enabled = !frozen;
     menuBar()->setEnabled(enabled);
-    if (m_paintWidget) {
-        m_paintWidget->setEnabled(enabled);
+    for (PaintOpenGLWidget *view : m_paintViews) {
+        if (view) {
+            view->setEnabled(enabled);
+        }
     }
     const QList<QDockWidget *> docks = findChildren<QDockWidget *>();
     for (QDockWidget *dock : docks) {
@@ -1282,10 +1782,10 @@ void MainWindow::setPythonUiFrozen(bool frozen)
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 }
 
-void MainWindow::requestAttentionUpdate(AttentionChange change, int frame, int layer, int asset)
+void MainWindow::requestAttentionUpdate(PaintOpenGLWidget *view, AttentionChange change, int frame, int layer, int asset)
 {
     if (!m_listMousePressed) {
-        updateAttention(change, frame, layer, asset);
+        updateAttention(view, change, frame, layer, asset);
         return;
     }
 
@@ -1293,47 +1793,54 @@ void MainWindow::requestAttentionUpdate(AttentionChange change, int frame, int l
     m_pendingAttention.frame = frame;
     m_pendingAttention.layer = layer;
     m_pendingAttention.asset = asset;
+    m_pendingAttentionView = view;
     m_hasPendingAttention = true;
 }
 
-void MainWindow::updateAttention(AttentionChange change, int frame, int layer, int asset)
+void MainWindow::updateAttention(PaintOpenGLWidget *view, AttentionChange change, int frame, int layer, int asset)
 {
-    const SelectionAttention previous = m_attention;
-    m_attention.frame = frame;
-    m_attention.layer = layer;
-    m_attention.asset = asset;
-    AttentionUpdate update = constrainAttention(m_paintWidget->model(), &m_attention, change);
-    update.frame = update.frame || previous.frame != m_attention.frame;
-    update.layer = update.layer || previous.layer != m_attention.layer;
-    update.asset = update.asset || previous.asset != m_attention.asset;
-
-    m_paintWidget->setCurrentFrame(m_attention.frame);
-    m_paintWidget->setCurrentLayer(m_attention.layer);
-    m_paintWidget->setCurrentAsset(m_attention.asset);
-
-    if (update.frame) {
-        refreshFrameList(m_attention.frame);
+    if (!view) {
+        return;
     }
-    if (update.layer) {
-        refreshLayerList(m_attention.layer);
+
+    SelectionAttention &attention = attentionFor(view);
+    const SelectionAttention previous = attention;
+    attention.frame = frame;
+    attention.layer = layer;
+    attention.asset = asset;
+    AttentionUpdate update = constrainAttention(view->model(), &attention, change);
+    update.frame = update.frame || previous.frame != attention.frame;
+    update.layer = update.layer || previous.layer != attention.layer;
+    update.asset = update.asset || previous.asset != attention.asset;
+
+    view->setCurrentFrame(attention.frame);
+    view->setCurrentLayer(attention.layer);
+    view->setCurrentAsset(attention.asset);
+
+    if (update.frame && view == framePanelTarget()) {
+        refreshFrameList(attention.frame);
     }
-    if (update.asset) {
-        refreshAssetList(m_attention.asset);
+    if (update.layer && view == layerPanelTarget()) {
+        refreshLayerList(attention.layer);
+    }
+    if (update.asset && view == assetPanelTarget()) {
+        refreshAssetList(attention.asset);
     }
     syncEmbeddedPythonState();
 }
 
 void MainWindow::refreshLayerList(int selectedRow)
 {
+    PaintOpenGLWidget *view = layerPanelTarget();
     m_refreshingLists = true;
     const QSignalBlocker blocker(m_layerPanel->layerList());
     m_layerPanel->layerList()->clear();
     int selectedListRow = -1;
-    for (int i = 0; i < m_paintWidget->layerCount(); ++i) {
-        if (m_paintWidget->model().assetIndexAt(m_paintWidget->model().currentFrame(), i) < 0) {
+    for (int i = 0; i < view->layerCount(); ++i) {
+        if (view->model().assetIndexAt(view->model().currentFrame(), i) < 0) {
             continue;
         }
-        QListWidgetItem *item = new QListWidgetItem(m_paintWidget->layerName(i));
+        QListWidgetItem *item = new QListWidgetItem(view->layerName(i));
         item->setData(Qt::UserRole, i);
         m_layerPanel->layerList()->addItem(item);
         if (i == selectedRow) {
@@ -1355,11 +1862,12 @@ void MainWindow::refreshLayerList(int selectedRow)
 
 void MainWindow::refreshFrameList(int selectedRow)
 {
+    PaintOpenGLWidget *view = framePanelTarget();
     m_refreshingLists = true;
     const QSignalBlocker blocker(m_framePanel->frameList());
     m_framePanel->frameList()->clear();
-    for (int i = 0; i < m_paintWidget->frameCount(); ++i) {
-        m_framePanel->frameList()->addItem(m_paintWidget->frameName(i));
+    for (int i = 0; i < view->frameCount(); ++i) {
+        m_framePanel->frameList()->addItem(view->frameName(i));
     }
     if (m_framePanel->frameList()->count() > 0) {
         if (selectedRow < 0) {
@@ -1377,11 +1885,12 @@ void MainWindow::refreshFrameList(int selectedRow)
 
 void MainWindow::refreshAssetList(int selectedRow)
 {
+    PaintOpenGLWidget *view = assetPanelTarget();
     m_refreshingLists = true;
     const QSignalBlocker blocker(m_assetPanel->assetList());
     m_assetPanel->assetList()->clear();
-    for (int i = 0; i < m_paintWidget->assetCount(); ++i) {
-        m_assetPanel->assetList()->addItem(m_paintWidget->assetName(i));
+    for (int i = 0; i < view->assetCount(); ++i) {
+        m_assetPanel->assetList()->addItem(view->assetName(i));
     }
     if (selectedRow >= 0 && m_assetPanel->assetList()->count() > 0) {
         if (selectedRow >= m_assetPanel->assetList()->count()) {

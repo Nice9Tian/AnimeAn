@@ -1,13 +1,16 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
+#include <QHash>
 #include <QMainWindow>
 #include <QPoint>
 #include <QString>
+#include <QVector>
 
 #include "selectionattention.h"
 
 class AssetPanel;
+class ChildPaintWindow;
 class QDockWidget;
 class FramePanel;
 class LayerPanel;
@@ -43,6 +46,7 @@ private:
     void runPythonInitializationScript();
     void createToolDocks();
     void createListDocks();
+    void createChildPaintDock();
     void runPythonDebugCommand(const QString &command);
     QString runEmbeddedPythonCommand(const QString &command);
     QString resolvePythonScriptPath(const QString &scriptName) const;
@@ -51,11 +55,25 @@ private:
     bool saveProjectAs();
     bool saveProjectTo(const QString &fileName);
     bool loadProjectFrom(const QString &fileName);
-    void importRaster();
-    void importOpenToonzLines();
+    void importRaster(PaintOpenGLWidget *view);
+    void importOpenToonzLines(PaintOpenGLWidget *view);
+    void importClipStudioPaint(PaintOpenGLWidget *view);
+    void createTextureFileMenu();
+    void showTextureView();
+    void openTextureView();
+    bool saveTextureViewAs();
+    bool exportTextureImage();
+    bool writeModelToFile(const AnimeSceneModel &model, const QString &fileName, const QString &dialogTitle);
     void updateWindowTitle();
-    void requestAttentionUpdate(AttentionChange change, int frame, int layer, int asset);
-    void updateAttention(AttentionChange change, int frame, int layer, int asset);
+    PaintOpenGLWidget *activePaintWidget() const;
+    PaintOpenGLWidget *framePanelTarget() const;
+    PaintOpenGLWidget *layerPanelTarget() const;
+    PaintOpenGLWidget *assetPanelTarget() const;
+    SelectionAttention &attentionFor(PaintOpenGLWidget *view);
+    void setActivePaintView(PaintOpenGLWidget *view);
+    void refreshPanelTargets();
+    void requestAttentionUpdate(PaintOpenGLWidget *view, AttentionChange change, int frame, int layer, int asset);
+    void updateAttention(PaintOpenGLWidget *view, AttentionChange change, int frame, int layer, int asset);
     void refreshLayerList(int selectedRow);
     void refreshFrameList(int selectedRow);
     void refreshAssetList(int selectedRow);
@@ -63,6 +81,10 @@ private:
 
     Ui::MainWindow *ui;
     PaintOpenGLWidget *m_paintWidget = nullptr;
+    PaintOpenGLWidget *m_childPaintWidget = nullptr;
+    PaintOpenGLWidget *m_activePaintWidget = nullptr;
+    ChildPaintWindow *m_childPaintWindow = nullptr;
+    QVector<PaintOpenGLWidget *> m_paintViews;
     LayerPanel *m_layerPanel = nullptr;
     FramePanel *m_framePanel = nullptr;
     AssetPanel *m_assetPanel = nullptr;
@@ -75,9 +97,10 @@ private:
     QPlainTextEdit *m_pythonDebugOutput = nullptr;
     QLineEdit *m_pythonDebugCommand = nullptr;
     QString m_currentFilePath;
-    SelectionAttention m_attention;
+    QHash<PaintOpenGLWidget *, SelectionAttention> m_attentionByView;
     SelectionAttention m_pendingAttention;
     AttentionChange m_pendingAttentionChange = AttentionChange::FrameChange;
+    PaintOpenGLWidget *m_pendingAttentionView = nullptr;
     QPoint m_listPressPos;
     int m_toolSmoothValue = 50;
     int m_toolPenWidth = 5;

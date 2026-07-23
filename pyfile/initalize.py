@@ -13,6 +13,7 @@ PYTHON_FILE_MODULES = (
     "hook_test",
     "extra_tools",
     "midline_tool",
+    "auto_mapping",
     "linefinish",
     "hello_world",
     "toonz_to_dict",

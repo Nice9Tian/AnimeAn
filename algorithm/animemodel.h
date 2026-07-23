@@ -39,6 +39,7 @@ struct AnimeVectorStrokeNode {
 
 struct AnimeVectorFillRegion {
     int id = 0;
+    QString property;
     QPointF seedPoint;
     QPainterPath path;
     QRectF bounds;

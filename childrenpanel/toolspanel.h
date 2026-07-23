@@ -23,6 +23,7 @@ public:
         QString title;
         QString property;
         QString handler;
+        QString baseTool;
     };
 
     explicit ToolsPanel(QWidget *parent = nullptr);

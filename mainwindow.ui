@@ -44,6 +44,7 @@
         <addaction name="separator" />
         <addaction name="actionimport_Raster" />
         <addaction name="actionImport_OpenToonz_Lines" />
+        <addaction name="actionImport_Clip_Studio_Paint" />
       </widget>
       <widget class="QMenu" name="menuEdit">
         <property name="title">
@@ -86,6 +87,11 @@
     <action name="actionImport_OpenToonz_Lines">
       <property name="text">
         <string>Import OpenToonz Lines...</string>
+      </property>
+    </action>
+    <action name="actionImport_Clip_Studio_Paint">
+      <property name="text">
+        <string>Import Clip Studio Paint...</string>
       </property>
     </action>
   </widget>

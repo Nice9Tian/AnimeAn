@@ -38,6 +38,8 @@ set(PROJECT_SOURCES
     algorithm/animemodel.h
     algorithm/vectorlogic.cpp
     algorithm/vectorlogic.h
+    clipreader.cpp
+    clipreader.h
     main.cpp
     mainwindow.cpp
     mainwindow.h
@@ -51,6 +53,8 @@ set(PROJECT_SOURCES
     childrenpanel/assetpanel.cpp
     childrenpanel/assetpanel.h
     childrenpanel/assetpanel.ui
+    childrenpanel/childpaintwindow.cpp
+    childrenpanel/childpaintwindow.h
     childrenpanel/framepanel.cpp
     childrenpanel/framepanel.h
     childrenpanel/framepanel.ui
@@ -129,6 +133,9 @@ if(ANIMEAN_WITH_PYTHON)
             "${ANIMEAN_PYFILE_DIR}/midline_tool.py"
             "$<TARGET_FILE_DIR:AnimeAn>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ANIMEAN_PYFILE_DIR}/auto_mapping.py"
+            "$<TARGET_FILE_DIR:AnimeAn>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${ANIMEAN_PYFILE_DIR}/python_hooks.py"
             "$<TARGET_FILE_DIR:AnimeAn>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -196,6 +203,9 @@ if(WIN32 AND QT_VERSION_MAJOR EQUAL 6)
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ANIMEAN_PYFILE_DIR}/midline_tool.py"
+                "${ANIMEAN_DEPLOY_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ANIMEAN_PYFILE_DIR}/auto_mapping.py"
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ANIMEAN_PYFILE_DIR}/python_hooks.py"

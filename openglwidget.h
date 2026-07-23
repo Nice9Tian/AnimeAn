@@ -13,6 +13,8 @@
 #include <QVariant>
 #include <QVector>
 
+class QPainter;
+
 class PaintOpenGLWidget : public QOpenGLWidget
 {
     Q_OBJECT
@@ -43,8 +45,22 @@ public:
         QVector<ImportedVectorStroke> strokes;
     };
 
+    struct OverlayItem {
+        QString id;
+        QVector<QPointF> points;
+        bool closed = false;
+        QColor strokeColor = QColor(0, 0, 0, 255);
+        QColor fillColor = QColor(0, 0, 0, 0);
+        qreal width = 3.0;
+        bool removable = true;
+    };
+
     explicit PaintOpenGLWidget(QWidget *parent = nullptr);
 
+    void setOverlayItems(const QVector<OverlayItem> &items);
+
+    void setViewName(const QString &name);
+    QString viewName() const;
     void setPenColor(const QColor &color);
     void setDrawingColor(const QColor &color);
     void setPenWidth(qreal width);
@@ -82,12 +98,14 @@ signals:
     void layerListChanged(int selectedLayer);
     void assetListChanged(int selectedAsset);
     void pythonDebugMessage(const QString &message);
+    void focusGained();
 
 protected:
     void paintGL() override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    void focusInEvent(QFocusEvent *event) override;
 
 public:
     using VectorStroke = AnimeVectorStroke;
@@ -96,6 +114,16 @@ public:
     using VectorImageModel = AnimeVectorImageModel;
 
 private:
+    struct OverlayHandle {
+        QString id;
+        QColor badgeColor;
+        QRectF rect;
+    };
+
+    void paintOverlayItems(QPainter &painter);
+    QRectF overlayHandleRect(const QRectF &bounds) const;
+    bool removeOverlayItemAt(const QPointF &pos);
+    void sendOverlayRemoveMessage(const QString &overlayId);
     void updateCurrentStroke();
     void finishCurrentStroke();
     void pythonHookSendMessage(const QString &event, const QPointF &pos = QPointF(), const QPointF &delta = QPointF(), bool changed = true, int strokeIndex = -1);
@@ -120,6 +148,7 @@ private:
 
     Tool m_tool = Tool::Pen;
     FillScope m_fillScope = FillScope::CurrentLayer;
+    QString m_viewName = QStringLiteral("main");
     QColor m_penColor = Qt::black;
     QVector<QPointF> m_points;
     AnimeSceneModel m_model;
@@ -139,6 +168,8 @@ private:
     qreal m_eraserRadius = 12.0;
     qreal m_minPointDistance = 2.0;
     int m_smoothValue = 50;
+    QVector<OverlayItem> m_overlayItems;
+    QVector<OverlayHandle> m_overlayHandles;
 };
 
 #endif // OPENGLWIDGET_H

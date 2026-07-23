@@ -62,6 +62,23 @@ ui.widget.refresh()
 ui.set_current(frame=0, layer=0, asset=None)
 ```
 
+`animean_python.ui` 还提供两个通用显示服务（脚本工具用，具体语义由脚本决定）：
+
+```python
+# 在指定画板上层显示一组 overlay（折线或闭合多边形），完全替换之前的 overlay
+animean_python.ui.set_overlay("main", [
+    {"id": "my_item", "points": [(0, 0), (100, 100)],
+     "color": (255, 0, 0, 255), "width": 3.0, "removable": True},
+    {"id": "my_zone", "points": [(0, 0), (80, 0), (80, 80)], "closed": True,
+     "color": (0, 0, 255, 190), "fill_color": (0, 0, 255, 60)},
+])
+
+# 设置当前绘制颜色（不切换工具）
+animean_python.ui.set_draw_color((40, 110, 255, 255))
+```
+
+overlay 始终绘制在所有图层之上，不属于场景模型，也不会被保存。`removable=True` 的 overlay 会在其包围盒右上角显示 "x" 按钮，点击时 C++ 不做任何删除，只派发 `overlayremove` hook 事件（带 `overlay.id`），由脚本决定如何处理。
+
 脚本修改模型后，如果需要界面立刻更新，调用对应的 `ui.*.refresh()`。长时间同步计算可以用：
 
 ```python
@@ -151,7 +168,8 @@ def activate_midline_tool(name="midline", property_value="midline"):
 
 ```python
 {
-    "event": "update" | "linefinish" | "erasefinish" | "deletefinish" | "fillfinish" | "movefinish" | "extra" | "option",
+    "event": "update" | "linefinish" | "erasefinish" | "deletefinish" | "fillfinish" | "movefinish" | "extra" | "option" | "overlayremove",
+    "view": "main" | "child",
     "tool": "pen" | "move" | "eraser" | "delete_line" | "fill" | "extra",
     "base_tool": "pen" | "move" | "eraser" | "delete_line" | "fill",
     "property": "...",
@@ -161,6 +179,10 @@ def activate_midline_tool(name="midline", property_value="midline"):
     "delta": {"x": float, "y": float},
 }
 ```
+
+`view` 表示事件来自哪个画板：`main` 是主画板（main_paint_view），`child` 是子画板（child_paint_view）。
+
+`overlayremove` 事件在用户点击 overlay 的 "x" 按钮时派发，额外携带 `"overlay": {"id": "..."}`；模型不会被自动修改，由 hook 自行决定删除什么。
 
 `option` 事件还会携带：
 
@@ -177,6 +199,83 @@ def activate_midline_tool(name="midline", property_value="midline"):
     }
 }
 ```
+
+## 双画板（child_paint_view）
+
+主窗口现在有两个画板：
+
+- `main_paint_view`：中央主画板，项目保存/打开针对它。
+- `child_paint_view`：左侧可停靠/浮动的子画板窗口（View 菜单可开关），拥有独立的场景模型，可以在里面画画或导入内容（Import Raster / Import OpenToonz Lines 会导入到当前焦点画板）。
+
+焦点进入某个画板时，Layers/Frames/Assets 面板会切换到该画板的数据。子画板顶部有两个开关：
+
+- `Changable Timeline`（默认关）：关闭时，焦点进入子画板后 Frames 面板仍显示主画板的时间轴（子画板通常只需要单帧）。
+- `Changable Layer`（默认开）：关闭时，Layers/Assets 面板同样保持主画板不变。
+
+### 文件导入/导出的画板归属
+
+内容导入不再跟随焦点，而是按菜单显式区分目标画板：
+
+- **File 菜单** 的 `Import Raster` / `Import OpenToonz Lines` / `Import Clip Studio Paint` **始终导入到主画板**（main_paint_view），无论当前焦点在哪，触发时会自动激活主画板。（`.clip` 由内置的无依赖 Clip Studio 矢量读取器 `clipreader` 解析。）
+- **Texture View File 菜单**（新增顶层菜单，texture view = 子画板）用于操作子画板的文件：
+  - `Import Raster / OpenToonz Lines / Clip Studio Paint into Texture View...`：把这三种格式导入到**子画板**（会先显示并激活子画板窗口）。
+  - `Open Texture View...` / `Save Texture View As...`：把子画板场景作为 `.animean` 工程文件独立读写（与主工程互不影响，便于复用同一套纹理图案）。
+  - `Export Texture View Image...`：把子画板当前画面导出为 PNG（抓取画布帧缓冲；若此时 overlay 引导线可见会一并出现在图里）。
+
+内嵌 Python 全局变量（每次选择变化时同步）：
+
+```python
+model               # 当前焦点画板的 SceneModel
+main_model          # 主画板 SceneModel
+child_model         # 子画板 SceneModel
+active_view         # "main" 或 "child"
+canvas_width/height             # 当前焦点画板尺寸
+main_canvas_width/height        # 主画板尺寸
+child_canvas_width/height       # 子画板尺寸
+```
+
+`animean_python.get_scene()` 会返回两个场景，`sceneName` 分别是 `main_paint_view` 和 `child_paint_view`。
+
+## auto_mapping 工具（脚本实现：pyfile/auto_mapping.py）
+
+工具栏新增四个 ExtraTool：`H Center Line`、`V Center Line`、`Mapping Area`、`Auto Mapping`。
+
+使用流程：
+
+1. 在 child_paint_view 用 `H Center Line` / `V Center Line` 各画一条中心线。这两条线定义图案的 UV 坐标系。
+2. 用普通画笔在 child_paint_view 里画图案内容。
+3. 在 main_paint_view 里同样画一条 H 中心线和一条 V 中心线，位置/长度/方向随意（可以是曲线）。
+4. 可选：用 `Mapping Area` 圈定映射范围（见下）。
+5. 点击 `Auto Mapping`：child 里的图案笔画按 UV 分解（相对两条中心线交点，u=1 表示 H 线长度的一半），再沿 main 的两条中心线按弧长重建。main 的中心线是曲线时，图案会跟着弯曲。
+
+### Mapping Area（映射区域，油漆桶式取区）
+
+`Mapping Area` 在封闭形状内点一下，Python 用 `vectorlogic.vector_region_path_at`（与油漆桶同一套区域算法，以所有可见图层的描边为边界）探测出这块区域，显示为半透明浅蓝色。映射时按区域裁剪/筛选：
+
+- 区域画在 **main_paint_view**：映射输出被裁剪到区域内（笔画在边界处精确截断），相当于"把图案填进这个形状里"。
+- 区域画在 **child_paint_view**：只有区域内的图案内容参与映射（先裁剪源，再做 UV 变换）。
+- 两个画板可以同时各设一个区域；重新点击会替换旧区域。
+
+### mapping_asset：不进图层的引导数据
+
+H 中心线、V 中心线、Mapping Area 三者统称 **mapping asset**，由 `auto_mapping.py` 里的字典 `_MAPPING_ASSETS`（按画板分组）维护：
+
+- 画完的瞬间（linefinish hook）几何数据被取出存入字典，同时**从场景模型中删除** — 它们不会出现在 Layers/Assets 面板里，不占用图层，也不算图案内容。
+- 显示走通用 overlay 通道（`ui.set_overlay`）：**始终置于顶层**，颜色固定绑定 — 水平线蓝色、垂直线绿色、区域半透明浅蓝；选择工具时画笔颜色也会自动切到对应色。
+- 每个元素包围盒右上角有 **"x" 按钮**，点击派发 `overlayremove` 事件，脚本从字典删除并刷新 overlay，然后直接重画即可。
+- 水平线/垂直线/区域**每个画板各只有一个**（字典键唯一），重画/重点自然替换旧的。
+- mapping asset 是**会话级**数据：跨帧共用（一次设置可用于任何帧的映射），但不写入 `.animean` 项目文件。旧版本存放在图层里的中心线/区域会在下次运行 `Auto Mapping` 时自动迁移到字典。
+
+说明：
+
+- 映射生成的笔画带有 `property="auto_mapped"`，再次点击 `Auto Mapping` 会先删除上一次的映射结果再重新生成（可反复调整 main 中心线/区域后重跑）。
+- 线宽按两个方向缩放比例的几何平均缩放。
+- 目前映射矢量笔画；填充区域和栅格内容不参与映射。
+- 反馈信息输出在 Python Debug 面板。
+
+### 分工原则
+
+C++ 端只提供通用机制：场景模型、几何算法绑定（vectorlogic）、hook 事件派发、overlay 显示服务（`set_overlay` / `set_draw_color` / `overlayremove` 事件）、ExtraTool 的 `base_tool` 声明。具体工具的属性名、颜色、字典结构、区域探测、裁剪逻辑全部在 Python 端（`pyfile/auto_mapping.py`），修改工具行为不需要重新编译。
 
 ## AnimeModel 常用接口
 

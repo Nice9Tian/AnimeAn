@@ -5,6 +5,10 @@
 #include <QPainter>
 #include <QDebug>
 
+namespace {
+const qreal kOverlayHandleSize = 14.0;
+}
+
 #ifdef ANIMEAN_WITH_PYTHON
 #ifdef slots
 #undef slots
@@ -132,6 +136,23 @@ PaintOpenGLWidget::PaintOpenGLWidget(QWidget *parent)
 {
     setAutoFillBackground(false);
     setMouseTracking(true);
+    setFocusPolicy(Qt::ClickFocus);
+}
+
+void PaintOpenGLWidget::setViewName(const QString &name)
+{
+    m_viewName = name;
+}
+
+QString PaintOpenGLWidget::viewName() const
+{
+    return m_viewName;
+}
+
+void PaintOpenGLWidget::focusInEvent(QFocusEvent *event)
+{
+    QOpenGLWidget::focusInEvent(event);
+    emit focusGained();
 }
 
 void PaintOpenGLWidget::setPenColor(const QColor &color)
@@ -205,6 +226,7 @@ void PaintOpenGLWidget::sendPythonToolOptionMessage(const QString &hook, const Q
 
     py::dict message;
     message["event"] = "option";
+    message["view"] = m_viewName.toStdString();
     message["tool"] = (m_activePythonTool.isEmpty() ? toolName(m_tool) : m_activePythonTool).toStdString();
     message["base_tool"] = toolName(m_tool).toStdString();
     message["property"] = m_strokeProperty.toStdString();
@@ -520,6 +542,12 @@ const AnimeSceneModel &PaintOpenGLWidget::model() const
     return m_model;
 }
 
+void PaintOpenGLWidget::setOverlayItems(const QVector<OverlayItem> &items)
+{
+    m_overlayItems = items;
+    update();
+}
+
 void PaintOpenGLWidget::paintGL()
 {
     QPainter painter(this);
@@ -561,11 +589,130 @@ void PaintOpenGLWidget::paintGL()
     }
     painter.setOpacity(1.0);
 
+    paintOverlayItems(painter);
+
     if ((m_tool == Tool::Eraser || m_tool == Tool::DeleteLine) && m_hasHoverPos) {
         painter.setPen(QPen(QColor(220, 0, 180), 1.5, Qt::DashLine));
         painter.setBrush(Qt::NoBrush);
         painter.drawEllipse(m_hoverPos, m_eraserRadius, m_eraserRadius);
     }
+}
+
+void PaintOpenGLWidget::paintOverlayItems(QPainter &painter)
+{
+    m_overlayHandles.clear();
+
+    for (const OverlayItem &item : m_overlayItems) {
+        if (item.points.size() < 2) {
+            continue;
+        }
+
+        QPainterPath path(item.points.first());
+        for (int i = 1; i < item.points.size(); ++i) {
+            path.lineTo(item.points[i]);
+        }
+        if (item.closed) {
+            path.closeSubpath();
+            painter.setBrush(item.fillColor);
+        } else {
+            painter.setBrush(Qt::NoBrush);
+        }
+        painter.setPen(QPen(item.strokeColor, item.width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawPath(path);
+
+        if (item.removable) {
+            OverlayHandle handle;
+            handle.id = item.id;
+            handle.badgeColor = item.strokeColor;
+            handle.rect = overlayHandleRect(path.boundingRect());
+            m_overlayHandles.append(handle);
+        }
+    }
+
+    for (const OverlayHandle &handle : m_overlayHandles) {
+        QColor badge = handle.badgeColor;
+        badge.setAlpha(215);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(badge);
+        painter.drawRoundedRect(handle.rect, 3.0, 3.0);
+
+        const QRectF inner = handle.rect.adjusted(4.0, 4.0, -4.0, -4.0);
+        painter.setPen(QPen(Qt::white, 1.8, Qt::SolidLine, Qt::RoundCap));
+        painter.drawLine(inner.topLeft(), inner.bottomRight());
+        painter.drawLine(inner.topRight(), inner.bottomLeft());
+    }
+}
+
+QRectF PaintOpenGLWidget::overlayHandleRect(const QRectF &bounds) const
+{
+    QRectF handleRect(bounds.right() + 4.0,
+                      bounds.top() - kOverlayHandleSize - 4.0,
+                      kOverlayHandleSize,
+                      kOverlayHandleSize);
+    if (handleRect.right() > width() - 2.0) {
+        handleRect.moveRight(width() - 2.0);
+    }
+    if (handleRect.left() < 2.0) {
+        handleRect.moveLeft(2.0);
+    }
+    if (handleRect.top() < 2.0) {
+        handleRect.moveTop(2.0);
+    }
+    if (handleRect.bottom() > height() - 2.0) {
+        handleRect.moveBottom(height() - 2.0);
+    }
+    return handleRect;
+}
+
+bool PaintOpenGLWidget::removeOverlayItemAt(const QPointF &pos)
+{
+    for (int i = m_overlayHandles.size() - 1; i >= 0; --i) {
+        const OverlayHandle handle = m_overlayHandles[i];
+        if (!handle.rect.contains(pos)) {
+            continue;
+        }
+
+        sendOverlayRemoveMessage(handle.id);
+        return true;
+    }
+    return false;
+}
+
+void PaintOpenGLWidget::sendOverlayRemoveMessage(const QString &overlayId)
+{
+#ifdef ANIMEAN_WITH_PYTHON
+    const int row = m_model.currentFrame();
+    const int layer = m_model.currentLayer();
+    const AnimeCell cell = m_model.cellAt(row, layer);
+    py::gil_scoped_acquire acquire;
+    py::dict cellInfo;
+    cellInfo["row"] = row;
+    cellInfo["layer"] = layer;
+    cellInfo["asset"] = cell.assetIndex;
+    cellInfo["frame_id"] = cell.frameId;
+
+    py::dict overlayInfo;
+    overlayInfo["id"] = overlayId.toStdString();
+
+    py::dict message;
+    message["event"] = "overlayremove";
+    message["view"] = m_viewName.toStdString();
+    message["tool"] = (m_activePythonTool.isEmpty() ? toolName(m_tool) : m_activePythonTool).toStdString();
+    message["base_tool"] = toolName(m_tool).toStdString();
+    message["property"] = m_strokeProperty.toStdString();
+    message["cell"] = cellInfo;
+    message["stroke"] = py::dict();
+    message["position"] = pointToPythonDict(QPointF());
+    message["delta"] = pointToPythonDict(QPointF());
+    message["overlay"] = overlayInfo;
+
+    const QString output = ::pythonHookSendMessage(message);
+    if (!output.isEmpty()) {
+        emit pythonDebugMessage(output);
+    }
+#else
+    Q_UNUSED(overlayId);
+#endif
 }
 
 void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
@@ -578,6 +725,12 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
     const QPointF pos = event->position();
     m_hoverPos = pos;
     m_hasHoverPos = true;
+
+    if (removeOverlayItemAt(pos)) {
+        event->accept();
+        return;
+    }
+
     if (m_tool == Tool::Fill) {
         if (fillAt(pos)) {
             pythonHookSendMessage(QStringLiteral("fillfinish"), pos);
@@ -625,6 +778,7 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
     m_points.clear();
     appendPoint(pos);
     m_currentStroke = makeStroke(m_points, m_penColor, m_penWidth);
+    m_currentStroke.property = m_strokeProperty;
     m_hasCurrentStroke = true;
     update();
     event->accept();
@@ -787,6 +941,7 @@ void PaintOpenGLWidget::pythonHookSendMessage(const QString &event, const QPoint
 
     py::dict message;
     message["event"] = event.toStdString();
+    message["view"] = m_viewName.toStdString();
     message["tool"] = (m_activePythonTool.isEmpty() ? toolName(m_tool) : m_activePythonTool).toStdString();
     message["base_tool"] = toolName(m_tool).toStdString();
     message["property"] = m_strokeProperty.toStdString();
@@ -975,7 +1130,8 @@ bool PaintOpenGLWidget::fillAt(const QPointF &pos)
         const AnimeVectorFillRegion &existing = image->fillRegions()[i];
         const bool sameReferMode = existing.basedOnAllLayers == allLayers;
         const bool sameSourceLayer = allLayers || existing.sourceLayerIndex == sourceLayerIndex;
-        if (!sameReferMode || !sameSourceLayer || !existing.path.contains(pos)) {
+        const bool sameProperty = existing.property == m_strokeProperty;
+        if (!sameReferMode || !sameSourceLayer || !sameProperty || !existing.path.contains(pos)) {
             continue;
         }
 
@@ -998,6 +1154,7 @@ bool PaintOpenGLWidget::fillAt(const QPointF &pos)
 
     AnimeVectorFillRegion fill;
     fill.id = image->fillCount() + 1;
+    fill.property = m_strokeProperty;
     fill.seedPoint = pos;
     fill.path = fillPath;
     fill.bounds = fillPath.boundingRect();
