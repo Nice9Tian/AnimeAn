@@ -236,6 +236,11 @@ QPointF PaintOpenGLWidget::panOffset() const
 
 void PaintOpenGLWidget::setScrollPosition(int horizontal, int vertical)
 {
+    if (m_playbackActive) {
+        // Scrolling moves the view the cache was rendered for — same deal as
+        // the wheel: leave playback first (the handler runs before the pan).
+        emit playbackInterrupted();
+    }
     m_panOffset = QPointF(-horizontal, -vertical);
     clampPan();
     update();
@@ -287,6 +292,12 @@ void PaintOpenGLWidget::notifyViewTransformChanged()
 
 void PaintOpenGLWidget::wheelEvent(QWheelEvent *event)
 {
+    if (m_playbackActive) {
+        // The cache was rendered at the current transform, so zooming has to
+        // leave playback first (the handler runs before the zoom below).
+        emit playbackInterrupted();
+    }
+
     const qreal steps = event->angleDelta().y() / 120.0;
     if (qFuzzyIsNull(steps)) {
         QOpenGLWidget::wheelEvent(event);
@@ -314,12 +325,25 @@ void PaintOpenGLWidget::wheelEvent(QWheelEvent *event)
 void PaintOpenGLWidget::resizeEvent(QResizeEvent *event)
 {
     QOpenGLWidget::resizeEvent(event);
+    if (m_playbackActive) {
+        // The cache was rendered for the old viewport size and pan; resizing
+        // invalidates it, so leave playback rather than show a stale frame.
+        emit playbackInterrupted();
+    }
     clampPan();
     notifyViewTransformChanged();
 }
 
 void PaintOpenGLWidget::focusInEvent(QFocusEvent *event)
 {
+    // Qt hands focus to a click target BEFORE delivering the press. When that
+    // click also ends playback (focusGained -> activate view -> stop), the
+    // press must still be swallowed: by the time it arrives the playback flag
+    // is already cleared, and without this it would draw into the frame the
+    // user could not even see.
+    if (m_playbackActive && event->reason() == Qt::MouseFocusReason) {
+        m_swallowNextPress = true;
+    }
     QOpenGLWidget::focusInEvent(event);
     emit focusGained();
 }
@@ -796,29 +820,8 @@ void PaintOpenGLWidget::setOverlayItems(const QVector<OverlayItem> &items)
     update();
 }
 
-void PaintOpenGLWidget::paintGL()
+void PaintOpenGLWidget::paintSceneContent(QPainter &painter, int frameIndex, bool includeCurrentStroke)
 {
-    QPainter painter(this);
-    painter.setRenderHint(QPainter::Antialiasing);
-    if (m_unboundedCanvas) {
-        // Infinite reference board: the whole viewport is paper.
-        painter.fillRect(rect(), Qt::white);
-    } else {
-        painter.fillRect(rect(), QColor(72, 72, 72));
-    }
-
-    painter.save();
-    painter.translate(m_panOffset);
-    painter.scale(m_zoom, m_zoom);
-    if (m_unboundedCanvas) {
-        // Keep a faint outline of the nominal page as a size reference.
-        painter.setBrush(Qt::NoBrush);
-        painter.setPen(QPen(QColor(210, 210, 210), 1.0));
-        painter.drawRect(rect());
-    } else {
-        painter.fillRect(rect(), Qt::white);
-    }
-
     const AnimeScene &scene = m_model.scene();
     for (int columnIndex = scene.xsheet.columns.size() - 1; columnIndex >= 0; --columnIndex) {
         const AnimeColumn &column = scene.xsheet.columns[columnIndex];
@@ -826,7 +829,7 @@ void PaintOpenGLWidget::paintGL()
             continue;
         }
 
-        const AnimeCell cell = column.cellAt(m_model.currentFrame());
+        const AnimeCell cell = column.cellAt(frameIndex);
         const VectorImageModel *image = m_model.imageForCell(cell);
         painter.setOpacity(column.opacity);
         if (image) {
@@ -847,12 +850,124 @@ void PaintOpenGLWidget::paintGL()
             }
         }
 
-        if (columnIndex == m_model.currentLayer() && m_hasCurrentStroke) {
+        if (includeCurrentStroke && columnIndex == m_model.currentLayer() && m_hasCurrentStroke) {
             painter.setPen(QPen(m_currentStroke.color, m_currentStroke.width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
             painter.drawPath(m_currentStroke.path);
         }
     }
     painter.setOpacity(1.0);
+}
+
+bool PaintOpenGLWidget::buildPlaybackCache(int frameCount, QString *error)
+{
+    m_playbackFrames.clear();
+    m_playbackIndex = -1;
+    m_playbackActive = false;
+
+    if (frameCount <= 0 || width() <= 0 || height() <= 0) {
+        if (error) {
+            *error = QStringLiteral("nothing to prerender");
+        }
+        return false;
+    }
+
+    const qreal ratio = devicePixelRatioF();
+    const QSize pixelSize(std::max(1, int(std::lround(width() * ratio))),
+                          std::max(1, int(std::lround(height() * ratio))));
+    const qint64 bytesPerFrame = qint64(pixelSize.width()) * pixelSize.height() * 4;
+    const qint64 budget = 512LL * 1024 * 1024;
+    if (bytesPerFrame * frameCount > budget) {
+        if (error) {
+            *error = QStringLiteral("prerendering %1 frames at %2x%3 needs %4 MB (limit %5 MB)")
+                         .arg(frameCount)
+                         .arg(pixelSize.width())
+                         .arg(pixelSize.height())
+                         .arg(bytesPerFrame * frameCount / (1024 * 1024))
+                         .arg(budget / (1024 * 1024));
+        }
+        return false;
+    }
+
+    m_playbackFrames.reserve(frameCount);
+    for (int frame = 0; frame < frameCount; ++frame) {
+        QImage image(pixelSize, QImage::Format_ARGB32_Premultiplied);
+        image.setDevicePixelRatio(ratio);
+        image.fill(m_unboundedCanvas ? Qt::white : QColor(72, 72, 72));
+
+        QPainter painter(&image);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.translate(m_panOffset);
+        painter.scale(m_zoom, m_zoom);
+        if (!m_unboundedCanvas) {
+            painter.fillRect(rect(), Qt::white);
+        }
+        // Overlays and the in-progress stroke are editing aids, not content.
+        paintSceneContent(painter, frame, false);
+        painter.end();
+
+        m_playbackFrames.append(image);
+    }
+
+    m_playbackActive = true;
+    return true;
+}
+
+void PaintOpenGLWidget::showPlaybackFrame(int index)
+{
+    if (!m_playbackActive || index < 0 || index >= m_playbackFrames.size()) {
+        return;
+    }
+    m_playbackIndex = index;
+    update();
+}
+
+void PaintOpenGLWidget::endPlayback()
+{
+    m_playbackFrames.clear();
+    m_playbackIndex = -1;
+    m_playbackActive = false;
+    update();
+}
+
+bool PaintOpenGLWidget::playbackActive() const
+{
+    return m_playbackActive;
+}
+
+void PaintOpenGLWidget::paintGL()
+{
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+
+    if (m_playbackActive && m_playbackIndex >= 0 && m_playbackIndex < m_playbackFrames.size()) {
+        // Always clear first: the widget can be larger than the cached frame
+        // (a resize ends playback, but the repaint may arrive before that),
+        // and uncovered pixels of a recreated FBO are undefined.
+        painter.fillRect(rect(), m_unboundedCanvas ? Qt::white : QColor(72, 72, 72));
+        painter.drawImage(QPointF(0.0, 0.0), m_playbackFrames[m_playbackIndex]);
+        if (m_activeIndicator) {
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(QColor(0, 120, 255), 3.0));
+            painter.drawRect(QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5));
+        }
+        return;
+    }
+
+    if (m_unboundedCanvas) {
+        // Infinite reference board: the whole viewport is paper.
+        painter.fillRect(rect(), Qt::white);
+    } else {
+        painter.fillRect(rect(), QColor(72, 72, 72));
+    }
+
+    painter.save();
+    painter.translate(m_panOffset);
+    painter.scale(m_zoom, m_zoom);
+    if (!m_unboundedCanvas) {
+        painter.fillRect(rect(), Qt::white);
+    }
+
+    paintSceneContent(painter, m_model.currentFrame(), true);
 
     paintOverlayItems(painter);
 
@@ -997,6 +1112,17 @@ void PaintOpenGLWidget::sendOverlayRemoveMessage(const QString &overlayId)
 
 void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
 {
+    if (m_playbackActive || m_swallowNextPress) {
+        // While prerendered frames are on screen a click means "stop
+        // playing", not "draw into the frame you cannot currently see".
+        m_swallowNextPress = false;
+        if (m_playbackActive) {
+            emit playbackInterrupted();
+        }
+        event->accept();
+        return;
+    }
+
     if (event->button() == Qt::MiddleButton) {
         m_panning = true;
         m_lastPanPos = event->position();

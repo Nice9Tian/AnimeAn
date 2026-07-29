@@ -25,6 +25,27 @@
     </widget>
    </item>
    <item>
+    <layout class="QHBoxLayout" name="playbackLayout">
+     <item>
+      <widget class="QPushButton" name="PlayButton">
+       <property name="text">
+        <string>Play</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="PauseButton">
+       <property name="text">
+        <string>Pause</string>
+       </property>
+       <property name="enabled">
+        <bool>false</bool>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
     <layout class="QHBoxLayout" name="buttonLayout">
      <item>
       <widget class="QPushButton" name="AddFrameButton">

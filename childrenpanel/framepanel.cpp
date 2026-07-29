@@ -27,3 +27,13 @@ QPushButton *FramePanel::deleteButton() const
 {
     return ui->DeleteFrameButton;
 }
+
+QPushButton *FramePanel::playButton() const
+{
+    return ui->PlayButton;
+}
+
+QPushButton *FramePanel::pauseButton() const
+{
+    return ui->PauseButton;
+}

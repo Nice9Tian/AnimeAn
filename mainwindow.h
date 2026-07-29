@@ -19,6 +19,7 @@ class LayerPanel;
 class PaintOpenGLWidget;
 class QLineEdit;
 class QPlainTextEdit;
+class QTimer;
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -62,6 +63,9 @@ private:
     void importClipStudioPaint(PaintOpenGLWidget *view);
     void createMainPaintView();
     void showMainPaintView();
+    void startPlayback();
+    void stopPlayback();
+    void advancePlaybackFrame();
     void createTextureFileMenu();
     void createHistoryDock();
     void refreshHistoryList();
@@ -108,6 +112,10 @@ private:
     HistoryPanel *m_historyPanel = nullptr;
     QAction *m_undoAction = nullptr;
     QAction *m_redoAction = nullptr;
+    QTimer *m_playbackTimer = nullptr;
+    PaintOpenGLWidget *m_playbackView = nullptr;
+    int m_playbackIndex = 0;
+    int m_playbackFrameCount = 0;
     QPlainTextEdit *m_pythonDebugOutput = nullptr;
     QLineEdit *m_pythonDebugCommand = nullptr;
     QString m_currentFilePath;

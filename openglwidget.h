@@ -69,6 +69,13 @@ public:
     void setScrollPosition(int horizontal, int vertical);
     void setUnboundedCanvas(bool unbounded);
     bool unboundedCanvas() const;
+    // Timeline playback: every frame is rendered to pixels up front, then the
+    // cached images are blitted per tick so playback never pays the vector
+    // drawing cost. Vector rendering resumes when playback ends.
+    bool buildPlaybackCache(int frameCount, QString *error);
+    void showPlaybackFrame(int index);
+    void endPlayback();
+    bool playbackActive() const;
     void setPenColor(const QColor &color);
     void setDrawingColor(const QColor &color);
     void setPenWidth(qreal width);
@@ -120,6 +127,7 @@ signals:
     void historyChanged();
     void historyCommitted();
     void viewTransformChanged();
+    void playbackInterrupted();
 
 protected:
     void paintGL() override;
@@ -150,6 +158,7 @@ private:
         Vertical
     };
 
+    void paintSceneContent(QPainter &painter, int frameIndex, bool includeCurrentStroke);
     void paintOverlayItems(QPainter &painter);
     QRectF overlayHandleRect(const QRectF &bounds) const;
     bool removeOverlayItemAt(const QPointF &pos);
@@ -216,6 +225,10 @@ private:
     bool m_unboundedCanvas = false;
     QPointF m_lastPanPos;
     SceneHistory m_history;
+    QVector<QImage> m_playbackFrames;
+    int m_playbackIndex = -1;
+    bool m_playbackActive = false;
+    bool m_swallowNextPress = false;
     QVector<OverlayItem> m_overlayItems;
     QVector<OverlayHandle> m_overlayHandles;
 };

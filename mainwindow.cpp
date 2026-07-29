@@ -48,6 +48,7 @@
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QStatusBar>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -69,6 +70,9 @@ namespace py = pybind11;
 #endif
 
 namespace {
+// Timeline playback rate; the prerendered frames are blitted at this cadence.
+constexpr int kPlaybackFps = 12;
+
 int movedRowTarget(int sourceRow, int destinationChild)
 {
     int target = destinationChild;
@@ -513,6 +517,88 @@ void MainWindow::showMainPaintView()
     setActivePaintView(m_paintWidget);
 }
 
+void MainWindow::startPlayback()
+{
+    if (m_playbackTimer->isActive()) {
+        return;
+    }
+
+    PaintOpenGLWidget *view = framePanelTarget();
+    const int frameCount = view->frameCount();
+    if (frameCount < 2) {
+        setStatusText(QStringLiteral("Playback needs at least two frames."));
+        return;
+    }
+
+    // Prerender every frame to pixels first: playback then only blits images,
+    // so the frame rate does not depend on how heavy the vector art is.
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    setStatusText(QStringLiteral("Prerendering %1 frames...").arg(frameCount));
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+    QString error;
+    const bool prerendered = view->buildPlaybackCache(frameCount, &error);
+    QApplication::restoreOverrideCursor();
+    if (!prerendered) {
+        setStatusText(QStringLiteral("Playback unavailable: %1").arg(error));
+        return;
+    }
+
+    m_playbackView = view;
+    m_playbackFrameCount = frameCount;
+    m_playbackIndex = std::min(std::max(attentionFor(view).frame, 0), frameCount - 1);
+    view->showPlaybackFrame(m_playbackIndex);
+    m_framePanel->playButton()->setEnabled(false);
+    m_framePanel->pauseButton()->setEnabled(true);
+    m_playbackTimer->start();
+    setStatusText(QStringLiteral("Playing %1 frames of %2 at %3 fps (prerendered)")
+                      .arg(frameCount)
+                      .arg(view->viewName())
+                      .arg(1000 / m_playbackTimer->interval()));
+}
+
+void MainWindow::advancePlaybackFrame()
+{
+    if (!m_playbackView || m_playbackFrameCount <= 0) {
+        return;
+    }
+
+    m_playbackIndex = (m_playbackIndex + 1) % m_playbackFrameCount;
+    m_playbackView->showPlaybackFrame(m_playbackIndex);
+
+    // Move the timeline highlight only: the model stays untouched while the
+    // prerendered frames are on screen.
+    if (m_playbackView == framePanelTarget()) {
+        m_refreshingLists = true;
+        const QSignalBlocker blocker(m_framePanel->frameList());
+        m_framePanel->frameList()->setCurrentRow(m_playbackIndex);
+        m_refreshingLists = false;
+    }
+}
+
+void MainWindow::stopPlayback()
+{
+    if (!m_playbackView) {
+        return;
+    }
+
+    m_playbackTimer->stop();
+    PaintOpenGLWidget *view = m_playbackView;
+    const int pausedFrame = m_playbackIndex;
+    m_playbackView = nullptr;
+    m_playbackFrameCount = 0;
+    m_framePanel->playButton()->setEnabled(true);
+    m_framePanel->pauseButton()->setEnabled(false);
+
+    view->endPlayback();
+    // Land the editable state on the frame the user paused at, back in vector.
+    updateAttention(view,
+                    AttentionChange::FrameChange,
+                    pausedFrame,
+                    attentionFor(view).layer,
+                    attentionFor(view).asset);
+    setStatusText(QStringLiteral("Paused at frame %1 (vector view)").arg(pausedFrame + 1));
+}
+
 void MainWindow::createHistoryDock()
 {
     m_historyPanel = new HistoryPanel(this);
@@ -673,6 +759,8 @@ void MainWindow::applyHistoryRestore(PaintOpenGLWidget *view)
         return;
     }
 
+    stopPlayback();  // restored content invalidates the prerendered frames
+
     // Old snapshots may predate the identity assignment; the view's scene
     // identity is an invariant, never part of the undone state.
     if (view == m_childPaintWidget) {
@@ -763,6 +851,7 @@ void MainWindow::showTextureView()
 
 void MainWindow::openTextureView()
 {
+    stopPlayback();
     const QString fileName = QFileDialog::getOpenFileName(
         this,
         QStringLiteral("Open Texture View"),
@@ -940,6 +1029,7 @@ void MainWindow::setActivePaintView(PaintOpenGLWidget *view)
         return;
     }
 
+    stopPlayback();  // the cache belongs to the view that was playing
     m_activePaintWidget = view;
     m_hasPendingAttention = false;
     // Keep keyboard focus in lockstep with the active view: otherwise clicking
@@ -1241,6 +1331,9 @@ void MainWindow::setupConnections()
 
         connect(view, &PaintOpenGLWidget::pythonDebugMessage,
                 this, &MainWindow::appendPythonDebugMessage);
+
+        connect(view, &PaintOpenGLWidget::playbackInterrupted,
+                this, &MainWindow::stopPlayback);
     }
 
     connect(m_childPaintWindow, &ChildPaintWindow::changableTimelineToggled, this, [this](bool) {
@@ -1262,6 +1355,9 @@ void MainWindow::setupConnections()
 
     connect(m_framePanel->frameList(), &QListWidget::currentRowChanged, this, [this](int row) {
         if (!m_refreshingLists && row >= 0) {
+            // Picking a frame by hand means the user is done watching; without
+            // this the next tick would snap the highlight back.
+            stopPlayback();
             PaintOpenGLWidget *view = framePanelTarget();
             requestAttentionUpdate(view, AttentionChange::FrameChange,
                                    row, attentionFor(view).layer, attentionFor(view).asset);
@@ -1292,6 +1388,7 @@ void MainWindow::setupConnections()
     });
 
     connect(m_framePanel->addButton(), &QPushButton::clicked, this, [this]() {
+        stopPlayback();  // editing the timeline invalidates the prerender
         PaintOpenGLWidget *view = framePanelTarget();
         const int frameIndex = view->addFrame();
         updateAttention(view, AttentionChange::FrameChange,
@@ -1299,6 +1396,7 @@ void MainWindow::setupConnections()
     });
 
     connect(m_framePanel->deleteButton(), &QPushButton::clicked, this, [this]() {
+        stopPlayback();
         const int row = m_framePanel->frameList()->currentRow();
         PaintOpenGLWidget *view = framePanelTarget();
         if (view->deleteFrame(row)) {
@@ -1307,6 +1405,12 @@ void MainWindow::setupConnections()
                             nextFrame, attentionFor(view).layer, attentionFor(view).asset);
         }
     });
+
+    m_playbackTimer = new QTimer(this);
+    m_playbackTimer->setInterval(1000 / kPlaybackFps);
+    connect(m_playbackTimer, &QTimer::timeout, this, &MainWindow::advancePlaybackFrame);
+    connect(m_framePanel->playButton(), &QPushButton::clicked, this, &MainWindow::startPlayback);
+    connect(m_framePanel->pauseButton(), &QPushButton::clicked, this, &MainWindow::stopPlayback);
 
     connect(m_assetPanel->addButton(), &QPushButton::clicked, this, [this]() {
         PaintOpenGLWidget *view = assetPanelTarget();
@@ -1376,6 +1480,7 @@ void MainWindow::setupConnections()
         if (m_refreshingLists || sourceStart != sourceEnd) {
             return;
         }
+        stopPlayback();  // reordering frames invalidates the prerender
         PaintOpenGLWidget *view = framePanelTarget();
         const int target = movedRowTarget(sourceStart, destinationChild);
         if (!view->moveFrame(sourceStart, target)) {
@@ -1748,6 +1853,7 @@ bool MainWindow::saveProjectTo(const QString &fileName)
 
 bool MainWindow::loadProjectFrom(const QString &fileName)
 {
+    stopPlayback();
     QFile file(fileName);
     if (!file.open(QIODevice::ReadOnly)) {
         QMessageBox::warning(this,

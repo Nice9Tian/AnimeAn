@@ -21,6 +21,8 @@ public:
     QListWidget *frameList() const;
     QPushButton *addButton() const;
     QPushButton *deleteButton() const;
+    QPushButton *playButton() const;
+    QPushButton *pauseButton() const;
 
 private:
     Ui::FramePanel *ui;
