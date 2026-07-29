@@ -15,11 +15,14 @@
 //   - CHNKFoot  : footer
 //
 // The hand-drawn vector strokes live in one of the CHNKExta blocks as a
-// self-describing binary object list. This reader locates that block without
-// touching the SQLite database (so it needs no SQLite dependency): a vector
-// object block is the only external block whose header arithmetic
-// (header_size + point_count * record_size == payload_size) is internally
-// consistent, which the raster "BlockData" tiles never satisfy.
+// self-describing binary object list: each object is a SEQUENCE of strokes,
+// every stroke being a header (header_size at +0, per-point record_size at
+// +8, point_count at +16) followed by point_count records. This reader
+// locates that block without touching the SQLite database (so it needs no
+// SQLite dependency): a vector block is the only external block whose stroke
+// chain tiles the payload exactly (sum of header_size + point_count *
+// record_size == payload_size), which the raster "BlockData" tiles never
+// satisfy.
 //
 // Only the vector layer is decoded here; the raster background (plain paper)
 // is intentionally ignored.

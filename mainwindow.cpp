@@ -3,9 +3,11 @@
 #include "childrenpanel/assetpanel.h"
 #include "childrenpanel/childpaintwindow.h"
 #include "childrenpanel/framepanel.h"
+#include "childrenpanel/historypanel.h"
 #include "childrenpanel/layerpanel.h"
 #include "clipreader.h"
 #include "openglwidget.h"
+#include "paintviewcontainer.h"
 #include "projectio.h"
 #include "selectionattention.h"
 #include "childrenpanel/tooloptpanel.h"
@@ -89,6 +91,8 @@ QString toolControlName(PaintOpenGLWidget::Tool tool)
         return QStringLiteral("fill");
     case PaintOpenGLWidget::Tool::Move:
         return QStringLiteral("move");
+    case PaintOpenGLWidget::Tool::Arrow:
+        return QStringLiteral("arrow");
     }
     return QStringLiteral("pen");
 }
@@ -392,6 +396,34 @@ MainWindow::MainWindow(QWidget *parent)
             paintView->setDrawingColor(color);
         }
     });
+    registerAnimeanUiHistoryCallback([this](const QString &op, const QString &viewName, const QString &label) {
+        PaintOpenGLWidget *named = nullptr;
+        for (PaintOpenGLWidget *paintView : m_paintViews) {
+            if (paintView->viewName() == viewName) {
+                named = paintView;
+                break;
+            }
+        }
+        if (!viewName.isEmpty() && !named) {
+            // Unknown view name: doing nothing beats acting on a guess.
+            appendPythonDebugMessage(QStringLiteral("[history] unknown view '%1'").arg(viewName));
+            return;
+        }
+        if (op == QStringLiteral("commit")) {
+            PaintOpenGLWidget *view = named ? named : activePaintWidget();
+            view->commitHistory(label.isEmpty() ? QStringLiteral("Python") : label);
+        } else if (op == QStringLiteral("undo")) {
+            PaintOpenGLWidget *view = named ? named : undoTargetView();
+            if (view && view->undoHistory()) {
+                applyHistoryRestore(view);
+            }
+        } else if (op == QStringLiteral("redo")) {
+            PaintOpenGLWidget *view = named ? named : redoTargetView();
+            if (view && view->redoHistory()) {
+                applyHistoryRestore(view);
+            }
+        }
+    });
     syncEmbeddedPythonState();
     appendPythonDebugMessage(QStringLiteral(
         "[python register] animean_python, animemodel, ui, model, current, model_pybind, vectorlogic, canvas_width, canvas_height, "
@@ -403,6 +435,7 @@ MainWindow::MainWindow(QWidget *parent)
 MainWindow::~MainWindow()
 {
 #ifdef ANIMEAN_WITH_PYTHON
+    clearAnimeanUiHistoryCallback();
     clearAnimeanUiDrawColorCallback();
     clearAnimeanUiOverlayCallback();
     clearAnimeanUiFreezeCallback();
@@ -421,17 +454,256 @@ void MainWindow::setupDocks()
     setCorner(Qt::BottomLeftCorner, Qt::BottomDockWidgetArea);
     setCorner(Qt::BottomRightCorner, Qt::BottomDockWidgetArea);
 
-    m_paintWidget = ui->graphicsView;
-    m_paintWidget->setViewName(QStringLiteral("main"));
-    m_paintWidget->model().setTextId(QStringLiteral("main_paint_view"));
-    m_paintWidget->model().setIntId(1);
+    // Three-section workspace: child view over Tools on the left, panels on
+    // the right, the main view anchored as the central widget (only a central
+    // widget absorbs window growth correctly), and the timeline (left+middle)
+    // + python debug (right) along the bottom.
+    createMainPaintView();
     createChildPaintDock();
     m_activePaintWidget = m_paintWidget;
     m_paintViews = {m_paintWidget, m_childPaintWidget};
+    m_paintWidget->setActiveIndicator(true);
     createListDocks();
     createToolDocks();
     setupPythonDebugDock();
     createTextureFileMenu();
+    // Re-baseline both histories now that the views carry their fixed scene
+    // identities; the constructor-time baseline predates setTextId/setIntId
+    // and undoing into it would corrupt the main/child identity invariant.
+    m_paintWidget->resetHistory(QStringLiteral("Initial"));
+    m_childPaintWidget->resetHistory(QStringLiteral("Initial"));
+    createHistoryDock();
+
+    QMenu *viewMenu = menuBar()->addMenu(QStringLiteral("View"));
+    viewMenu->addAction(m_childPaintWindow->toggleViewAction());
+    viewMenu->addSeparator();
+    for (QDockWidget *dock : {m_toolsDock, m_toolOptDock, m_layerDock, m_assetDock,
+                              m_frameDock, m_historyDock, m_pythonDebugDock}) {
+        if (dock) {
+            viewMenu->addAction(dock->toggleViewAction());
+        }
+    }
+
+    // NOTE: deliberately NO horizontal resizeDocks on the bottom band —
+    // measured against Qt 6.9.1 it pins the band at its minimum height for
+    // good and stops the right column from recovering after a shrink. The
+    // only sizing nudge is vertical, inside the left column: the child view
+    // gets the larger share above the Tools dock.
+    resizeDocks({m_childPaintWindow}, {380}, Qt::Vertical);
+}
+
+void MainWindow::createMainPaintView()
+{
+    PaintViewContainer *container = new PaintViewContainer(this);
+    container->setMinimumSize(320, 240);
+    if (QWidget *central = takeCentralWidget()) {
+        central->deleteLater();
+    }
+    setCentralWidget(container);
+
+    m_paintWidget = container->paintWidget();
+    m_paintWidget->setViewName(QStringLiteral("main"));
+    m_paintWidget->model().setTextId(QStringLiteral("main_paint_view"));
+    m_paintWidget->model().setIntId(1);
+}
+
+void MainWindow::showMainPaintView()
+{
+    // The main view is the central widget: always visible, just activate it.
+    setActivePaintView(m_paintWidget);
+}
+
+void MainWindow::createHistoryDock()
+{
+    m_historyPanel = new HistoryPanel(this);
+    m_historyDock = new QDockWidget(QStringLiteral("History"), this);
+    m_historyDock->setObjectName(QStringLiteral("HistoryDock"));
+    m_historyDock->setWidget(m_historyPanel);
+    addDockWidget(Qt::RightDockWidgetArea, m_historyDock);
+
+    m_undoAction = new QAction(QStringLiteral("Undo"), this);
+    m_undoAction->setShortcut(QKeySequence::Undo);
+    connect(m_undoAction, &QAction::triggered, this, [this]() {
+        PaintOpenGLWidget *view = undoTargetView();
+        if (!view) {
+            return;
+        }
+        const QString undoneLabel = view->history().labelAt(view->history().currentIndex());
+        if (view->undoHistory()) {
+            applyHistoryRestore(view);
+            setStatusText(QStringLiteral("Undo in %1: %2").arg(view->viewName(), undoneLabel));
+        }
+    });
+    ui->menuEdit->addAction(m_undoAction);
+
+    m_redoAction = new QAction(QStringLiteral("Redo"), this);
+    m_redoAction->setShortcuts({QKeySequence::Redo, QKeySequence(QStringLiteral("Ctrl+Shift+Z"))});
+    connect(m_redoAction, &QAction::triggered, this, [this]() {
+        PaintOpenGLWidget *view = redoTargetView();
+        if (view && view->redoHistory()) {
+            applyHistoryRestore(view);
+            setStatusText(QStringLiteral("Redo in %1: %2")
+                              .arg(view->viewName(),
+                                   view->history().labelAt(view->history().currentIndex())));
+        }
+    });
+    ui->menuEdit->addAction(m_redoAction);
+
+    for (PaintOpenGLWidget *view : m_paintViews) {
+        connect(view, &PaintOpenGLWidget::historyChanged,
+                this, &MainWindow::scheduleHistoryRefresh);
+        // Global-inverse redo semantics: a new edit anywhere invalidates the
+        // redo future everywhere, so Ctrl+Y can never resurrect an operation
+        // whose chronological context is gone.
+        connect(view, &PaintOpenGLWidget::historyCommitted, this, [this, view]() {
+            for (PaintOpenGLWidget *other : m_paintViews) {
+                if (other != view) {
+                    other->dropRedoTail();
+                }
+            }
+        });
+    }
+
+    connect(m_historyPanel->historyList(), &QListWidget::currentRowChanged, this, [this](int row) {
+        if (m_refreshingHistory || row < 0) {
+            return;
+        }
+        PaintOpenGLWidget *view = activePaintWidget();
+        if (view->goToHistory(row)) {
+            applyHistoryRestore(view);
+        } else {
+            scheduleHistoryRefresh();
+        }
+    });
+
+    refreshHistoryList();
+}
+
+// Undo follows true chronology across both views: pick the view whose current
+// entry is the most recent commit anywhere.
+PaintOpenGLWidget *MainWindow::undoTargetView() const
+{
+    PaintOpenGLWidget *target = nullptr;
+    quint64 best = 0;
+    for (PaintOpenGLWidget *view : m_paintViews) {
+        const SceneHistory &history = view->history();
+        if (!history.canUndo()) {
+            continue;
+        }
+        if (!target || history.currentSeq() > best) {
+            target = view;
+            best = history.currentSeq();
+        }
+    }
+    return target;
+}
+
+// Redo is the mirror: re-apply the oldest not-yet-redone commit first.
+PaintOpenGLWidget *MainWindow::redoTargetView() const
+{
+    PaintOpenGLWidget *target = nullptr;
+    quint64 best = 0;
+    for (PaintOpenGLWidget *view : m_paintViews) {
+        const SceneHistory &history = view->history();
+        if (!history.canRedo()) {
+            continue;
+        }
+        if (!target || history.redoSeq() < best) {
+            target = view;
+            best = history.redoSeq();
+        }
+    }
+    return target;
+}
+
+void MainWindow::scheduleHistoryRefresh()
+{
+    // Rebuilding the list synchronously from inside its own signal handlers
+    // (or mid mouse-press) shifts the viewport under the click; coalesce and
+    // defer to the event loop instead.
+    if (m_historyRefreshQueued) {
+        return;
+    }
+    m_historyRefreshQueued = true;
+    QMetaObject::invokeMethod(this, [this]() {
+        m_historyRefreshQueued = false;
+        refreshHistoryList();
+    }, Qt::QueuedConnection);
+}
+
+void MainWindow::refreshHistoryList()
+{
+    if (!m_historyPanel) {
+        return;
+    }
+
+    PaintOpenGLWidget *view = activePaintWidget();
+    const SceneHistory &history = view->history();
+    QListWidget *list = m_historyPanel->historyList();
+
+    m_refreshingHistory = true;
+    const QSignalBlocker blocker(list);
+    list->clear();
+    for (int i = 0; i < history.count(); ++i) {
+        QListWidgetItem *item = new QListWidgetItem(
+            QStringLiteral("%1. %2").arg(i + 1).arg(history.labelAt(i)));
+        if (i > history.currentIndex()) {
+            item->setForeground(Qt::gray);
+        }
+        list->addItem(item);
+    }
+    list->setCurrentRow(history.currentIndex());
+    list->scrollToItem(list->currentItem());
+    m_refreshingHistory = false;
+
+    if (m_historyDock) {
+        m_historyDock->setWindowTitle(QStringLiteral("History - %1").arg(view->viewName()));
+    }
+    if (m_undoAction) {
+        m_undoAction->setEnabled(undoTargetView() != nullptr);
+    }
+    if (m_redoAction) {
+        m_redoAction->setEnabled(redoTargetView() != nullptr);
+    }
+}
+
+void MainWindow::applyHistoryRestore(PaintOpenGLWidget *view)
+{
+    if (!view) {
+        return;
+    }
+
+    // Old snapshots may predate the identity assignment; the view's scene
+    // identity is an invariant, never part of the undone state.
+    if (view == m_childPaintWidget) {
+        view->model().setTextId(QStringLiteral("child_paint_view"));
+        view->model().setIntId(2);
+    } else {
+        view->model().setTextId(QStringLiteral("main_paint_view"));
+        view->model().setIntId(1);
+    }
+
+    // Chronological undo/redo may land on the other — possibly hidden — view;
+    // surface and activate it so the user sees what just changed instead of
+    // an apparently dead Undo key.
+    if (view == m_childPaintWidget && m_childPaintWindow) {
+        m_childPaintWindow->show();
+        m_childPaintWindow->raise();
+    }
+    setActivePaintView(view);
+
+    // LayerChange keeps the snapshot's layer/asset selection (merely clamped);
+    // FrameChange would discard it and jump to the frame's top layer.
+    updateAttention(view,
+                    AttentionChange::LayerChange,
+                    view->model().currentFrame(),
+                    view->model().currentLayer(),
+                    view->model().currentAsset());
+    // updateAttention always rebuilds the layer/asset lists, but skips the
+    // frame list when the frame INDEX is unchanged — even though a restore may
+    // have changed the frame COUNT. Rebuild just that one unconditionally.
+    refreshFrameList(attentionFor(framePanelTarget()).frame);
+    view->update();
 }
 
 void MainWindow::createChildPaintDock()
@@ -440,10 +712,9 @@ void MainWindow::createChildPaintDock()
     m_childPaintWidget = m_childPaintWindow->paintWidget();
     m_childPaintWidget->model().setTextId(QStringLiteral("child_paint_view"));
     m_childPaintWidget->model().setIntId(2);
+    // Added to the left area BEFORE the Tools dock, so the left column reads
+    // child view on top, tools underneath.
     addDockWidget(Qt::LeftDockWidgetArea, m_childPaintWindow);
-
-    QMenu *viewMenu = menuBar()->addMenu(QStringLiteral("View"));
-    viewMenu->addAction(m_childPaintWindow->toggleViewAction());
 }
 
 void MainWindow::createTextureFileMenu()
@@ -530,6 +801,7 @@ void MainWindow::openTextureView()
     m_childPaintWidget->model() = loadedModel;
     m_childPaintWidget->model().setTextId(QStringLiteral("child_paint_view"));
     m_childPaintWidget->model().setIntId(2);
+    m_childPaintWidget->resetHistory(QStringLiteral("Open Texture View"));
     showTextureView();
     updateAttention(m_childPaintWidget,
                     AttentionChange::FrameChange,
@@ -581,13 +853,21 @@ bool MainWindow::writeModelToFile(const AnimeSceneModel &model, const QString &f
 
 bool MainWindow::exportTextureImage()
 {
-    if (!m_childPaintWidget) {
+    if (!m_childPaintWidget || !m_childPaintWindow) {
         return false;
     }
 
-    showTextureView();
+    // Make the texture view renderable for the framebuffer grab WITHOUT
+    // changing the active editing view: exporting is read-only, and a
+    // cancelled export must leave the active view untouched. The active-view
+    // border is UI chrome — hide it during the grab so it is not baked into
+    // the exported image.
+    m_childPaintWindow->show();
+    m_childPaintWindow->raise();
+    m_childPaintWidget->setActiveIndicator(false);
     QCoreApplication::processEvents();
     const QImage image = m_childPaintWidget->grabFramebuffer();
+    m_childPaintWidget->setActiveIndicator(activePaintWidget() == m_childPaintWidget);
     if (image.isNull()) {
         QMessageBox::warning(this,
                              QStringLiteral("Export Texture View Image"),
@@ -662,10 +942,18 @@ void MainWindow::setActivePaintView(PaintOpenGLWidget *view)
 
     m_activePaintWidget = view;
     m_hasPendingAttention = false;
+    // Keep keyboard focus in lockstep with the active view: otherwise clicking
+    // the still-focused other canvas produces no focusInEvent, the active view
+    // never follows, and panel/tool operations land in the wrong scene.
+    view->setFocus(Qt::OtherFocusReason);
+    for (PaintOpenGLWidget *paintView : m_paintViews) {
+        paintView->setActiveIndicator(paintView == view);
+    }
 #ifdef ANIMEAN_WITH_PYTHON
     registerAnimeanUiScene(&view->model());
 #endif
     refreshPanelTargets();
+    scheduleHistoryRefresh();
     syncEmbeddedPythonState();
     setStatusText(QStringLiteral("Active paint view: %1").arg(view->viewName()));
 }
@@ -1103,15 +1391,15 @@ void MainWindow::setupConnections()
     });
 
     connect(ui->actionimport_Raster, &QAction::triggered, this, [this]() {
-        setActivePaintView(m_paintWidget);
+        showMainPaintView();
         importRaster(m_paintWidget);
     });
     connect(ui->actionImport_OpenToonz_Lines, &QAction::triggered, this, [this]() {
-        setActivePaintView(m_paintWidget);
+        showMainPaintView();
         importOpenToonzLines(m_paintWidget);
     });
     connect(ui->actionImport_Clip_Studio_Paint, &QAction::triggered, this, [this]() {
-        setActivePaintView(m_paintWidget);
+        showMainPaintView();
         importClipStudioPaint(m_paintWidget);
     });
 }
@@ -1293,7 +1581,26 @@ void MainWindow::createToolDocks()
         }
         activePaintWidget()->sendPythonExtraToolMessage(tool.name, tool.property);
         toolOptPanel->setTool(baseTool);
-        toolOptPanel->configureLayout(QJsonObject());
+        QJsonObject extraLayout;
+#ifdef ANIMEAN_WITH_PYTHON
+        try {
+            py::dict state;
+            state["smooth"] = m_toolSmoothValue;
+            state["pen_width"] = m_toolPenWidth;
+            state["fill_scope"] = m_toolFillAllLayers ? "all" : "current";
+            const std::string json = py::module_::import("toolcontrol")
+                                         .attr("options_for_extra_tool_json")(tool.name.toStdString(), state)
+                                         .cast<std::string>();
+            QJsonParseError parseError;
+            const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json), &parseError);
+            if (parseError.error == QJsonParseError::NoError && document.isObject()) {
+                extraLayout = document.object();
+            }
+        } catch (const py::error_already_set &error) {
+            setStatusText(QStringLiteral("toolcontrol.py error: %1").arg(QString::fromUtf8(error.what())));
+        }
+#endif
+        toolOptPanel->configureLayout(extraLayout);
 #ifdef ANIMEAN_WITH_PYTHON
         if (!tool.handler.isEmpty()) {
             try {
@@ -1468,11 +1775,15 @@ bool MainWindow::loadProjectFrom(const QString &fileName)
     }
 
     m_paintWidget->model() = loadedModel;
-    if (m_paintWidget->model().textId().isEmpty()) {
-        m_paintWidget->model().setTextId(QStringLiteral("main_paint_view"));
-    }
+    // Force the main view's scene identity: a .animean saved from the texture
+    // view carries textId "child_paint_view"/intId 2, which would otherwise
+    // collide with the child scene once loaded into the main model.
+    m_paintWidget->model().setTextId(QStringLiteral("main_paint_view"));
+    m_paintWidget->model().setIntId(1);
+    m_paintWidget->resetHistory(QStringLiteral("Open Project"));
     m_currentFilePath = fileName;
     updateWindowTitle();
+    showMainPaintView();
     updateAttention(m_paintWidget,
                     AttentionChange::FrameChange,
                     m_paintWidget->model().currentFrame(),

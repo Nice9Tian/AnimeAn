@@ -37,6 +37,12 @@ def extra_tools():
             "property": auto_mapping.AUTO_MAPPING_TOOL,
             "handler": "auto_mapping.run_auto_mapping",
         },
+        {
+            "name": "auto_mapping_2",
+            "title": "Auto Mapping 2",
+            "property": auto_mapping.AUTO_MAPPING2_TOOL,
+            "handler": "auto_mapping.run_auto_mapping_2",
+        },
     ]
 
 

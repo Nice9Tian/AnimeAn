@@ -30,6 +30,7 @@ std::function<void(bool frame, bool layer, bool asset, bool widget)> g_uiRefresh
 std::function<void(bool frozen)> g_uiFreezeCallback;
 std::function<void(const QString &view, const QVector<AnimeanOverlayItem> &items)> g_uiOverlayCallback;
 std::function<void(const QColor &color)> g_uiDrawColorCallback;
+std::function<void(const QString &op, const QString &view, const QString &label)> g_uiHistoryCallback;
 
 void requestUiRefresh(bool frame = true, bool layer = true, bool asset = true, bool widget = true)
 {
@@ -1021,6 +1022,16 @@ void clearAnimeanUiDrawColorCallback()
     g_uiDrawColorCallback = nullptr;
 }
 
+void registerAnimeanUiHistoryCallback(std::function<void(const QString &op, const QString &view, const QString &label)> callback)
+{
+    g_uiHistoryCallback = std::move(callback);
+}
+
+void clearAnimeanUiHistoryCallback()
+{
+    g_uiHistoryCallback = nullptr;
+}
+
 void bindAnimeanPythonModule(py::module_ &m)
 {
     m.doc() = "Python bindings for AnimeAn scene, layer, frame, and vector image models.";
@@ -1109,6 +1120,30 @@ void bindAnimeanPythonModule(py::module_ &m)
             g_uiDrawColorCallback(objectToColor(color, "color"));
         }
     });
+    ui.def("history_commit",
+           [](const std::string &label, const std::string &view) {
+               if (g_uiHistoryCallback) {
+                   g_uiHistoryCallback(QStringLiteral("commit"),
+                                       QString::fromStdString(view),
+                                       QString::fromStdString(label));
+               }
+           },
+           py::arg("label"),
+           py::arg("view") = "");
+    ui.def("history_undo",
+           [](const std::string &view) {
+               if (g_uiHistoryCallback) {
+                   g_uiHistoryCallback(QStringLiteral("undo"), QString::fromStdString(view), QString());
+               }
+           },
+           py::arg("view") = "");
+    ui.def("history_redo",
+           [](const std::string &view) {
+               if (g_uiHistoryCallback) {
+                   g_uiHistoryCallback(QStringLiteral("redo"), QString::fromStdString(view), QString());
+               }
+           },
+           py::arg("view") = "");
     ui.def("freeze", []() {
         requestUiFreeze(true);
     });
@@ -1264,6 +1299,12 @@ void bindAnimeanPythonModule(py::module_ &m)
         })
         .def("scene_id", &AnimeSceneModel::intId)
         .def("set_scene_id", &AnimeSceneModel::setIntId)
+        .def("script_data", [](const AnimeSceneModel &model) {
+            return model.scriptData().toStdString();
+        })
+        .def("set_script_data", [](AnimeSceneModel &model, const std::string &data) {
+            model.setScriptData(QString::fromStdString(data));
+        })
         .def("initialize_scene", &AnimeSceneModel::initializeScene, py::arg("layer_count"), py::arg("frame_count"))
         .def("set_current_layer", &AnimeSceneModel::setCurrentLayer)
         .def("set_current_frame", &AnimeSceneModel::setCurrentFrame)

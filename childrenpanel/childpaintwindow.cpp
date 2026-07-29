@@ -1,5 +1,6 @@
 #include "childpaintwindow.h"
 #include "openglwidget.h"
+#include "paintviewcontainer.h"
 
 #include <QCheckBox>
 #include <QHBoxLayout>
@@ -30,12 +31,16 @@ ChildPaintWindow::ChildPaintWindow(QWidget *parent)
     optionLayout->addWidget(m_changableLayerCheck);
     optionLayout->addStretch(1);
 
-    m_paintWidget = new PaintOpenGLWidget(panel);
+    PaintViewContainer *container = new PaintViewContainer(panel);
+    m_paintWidget = container->paintWidget();
     m_paintWidget->setViewName(QStringLiteral("child"));
-    m_paintWidget->setMinimumSize(320, 240);
+    // The reference/texture board is an infinite canvas: the mapped pattern
+    // is scaled by the center lines anyway, so no page boundary applies.
+    m_paintWidget->setUnboundedCanvas(true);
+    container->setMinimumSize(320, 240);
 
     layout->addLayout(optionLayout);
-    layout->addWidget(m_paintWidget, 1);
+    layout->addWidget(container, 1);
     setWidget(panel);
 
     connect(m_changableTimelineCheck, &QCheckBox::toggled, this, &ChildPaintWindow::changableTimelineToggled);

@@ -317,6 +317,7 @@ QJsonObject modelToJson(const AnimeSceneModel &model)
     root[QStringLiteral("currentFrame")] = model.currentFrame();
     root[QStringLiteral("currentLayer")] = model.currentLayer();
     root[QStringLiteral("currentAsset")] = model.currentAsset();
+    root[QStringLiteral("scriptData")] = model.scriptData();
 
     const AnimeScene &scene = model.scene();
     QJsonObject xsheet;
@@ -396,6 +397,7 @@ bool modelFromJson(const QJsonObject &root, AnimeSceneModel *model, QString *err
         sceneName.clear();
     }
     scene.setTextId(sceneName);
+    scene.scriptData = root.value(QStringLiteral("scriptData")).toString();
 
     const QJsonObject xsheet = root.value(QStringLiteral("xsheet")).toObject();
     scene.xsheet.frameCount = qMax(1, xsheet.value(QStringLiteral("frameCount")).toInt(1));

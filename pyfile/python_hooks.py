@@ -13,6 +13,7 @@ _EVENT_FLAGS = {
     "extra": "extra",
     "option": "option",
     "overlayremove": "overlayremove",
+    "historyrestore": "historyrestore",
 }
 
 
@@ -49,6 +50,7 @@ def set_hook(
     extra=False,
     option=False,
     overlayremove=False,
+    historyrestore=False,
     tool=None,
     property=None,
 ):
@@ -65,6 +67,7 @@ def set_hook(
             "extra": extra,
             "option": option,
             "overlayremove": overlayremove,
+            "historyrestore": historyrestore,
         }.items()
         if enabled
     }

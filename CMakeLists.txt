@@ -36,6 +36,8 @@ find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets OpenGLWidgets)
 set(PROJECT_SOURCES
     algorithm/animemodel.cpp
     algorithm/animemodel.h
+    algorithm/scenehistory.cpp
+    algorithm/scenehistory.h
     algorithm/vectorlogic.cpp
     algorithm/vectorlogic.h
     clipreader.cpp
@@ -50,6 +52,8 @@ set(PROJECT_SOURCES
     selectionattention.h
     openglwidget.cpp
     openglwidget.h
+    paintviewcontainer.cpp
+    paintviewcontainer.h
     childrenpanel/assetpanel.cpp
     childrenpanel/assetpanel.h
     childrenpanel/assetpanel.ui
@@ -58,6 +62,8 @@ set(PROJECT_SOURCES
     childrenpanel/framepanel.cpp
     childrenpanel/framepanel.h
     childrenpanel/framepanel.ui
+    childrenpanel/historypanel.cpp
+    childrenpanel/historypanel.h
     childrenpanel/layerpanel.cpp
     childrenpanel/layerpanel.h
     childrenpanel/layerpanel.ui

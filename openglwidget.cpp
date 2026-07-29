@@ -22,6 +22,7 @@ const qreal kOverlayHandleSize = 14.0;
 #endif
 
 #include <algorithm>
+#include <cmath>
 
 #ifdef ANIMEAN_WITH_PYTHON
 namespace py = pybind11;
@@ -40,6 +41,8 @@ QString toolName(PaintOpenGLWidget::Tool tool)
         return QStringLiteral("fill");
     case PaintOpenGLWidget::Tool::Move:
         return QStringLiteral("move");
+    case PaintOpenGLWidget::Tool::Arrow:
+        return QStringLiteral("arrow");
     }
     return QStringLiteral("pen");
 }
@@ -137,6 +140,69 @@ PaintOpenGLWidget::PaintOpenGLWidget(QWidget *parent)
     setAutoFillBackground(false);
     setMouseTracking(true);
     setFocusPolicy(Qt::ClickFocus);
+    m_history.reset(QStringLiteral("Initial"), m_model);
+}
+
+SceneHistory &PaintOpenGLWidget::history()
+{
+    return m_history;
+}
+
+const SceneHistory &PaintOpenGLWidget::history() const
+{
+    return m_history;
+}
+
+void PaintOpenGLWidget::commitHistory(const QString &label)
+{
+    m_history.commit(label, m_model);
+    emit historyChanged();
+    emit historyCommitted();
+}
+
+void PaintOpenGLWidget::dropRedoTail()
+{
+    if (m_history.truncateRedo()) {
+        emit historyChanged();
+    }
+}
+
+void PaintOpenGLWidget::resetHistory(const QString &label)
+{
+    m_history.reset(label, m_model);
+    // Scene content was (re)established outside the history flow (startup,
+    // project open): let scripts re-sync any state they keep in scriptData.
+    pythonHookSendMessage(QStringLiteral("historyrestore"));
+    emit historyChanged();
+}
+
+bool PaintOpenGLWidget::undoHistory()
+{
+    return goToHistory(m_history.currentIndex() - 1);
+}
+
+bool PaintOpenGLWidget::redoHistory()
+{
+    return goToHistory(m_history.currentIndex() + 1);
+}
+
+bool PaintOpenGLWidget::goToHistory(int index)
+{
+    if (!m_history.goTo(index, &m_model)) {
+        return false;
+    }
+
+    m_points.clear();
+    m_hasCurrentStroke = false;
+    m_hasLastEraserPos = false;
+    m_hasLastMovePos = false;
+    m_eraseGestureChanged = false;
+    m_moveGestureChanged = false;
+    m_axisSnapState = AxisSnapState::Inactive;
+    pythonHookSendMessage(QStringLiteral("historyrestore"));
+    update();
+    emit historyChanged();
+    return true;
 }
 
 void PaintOpenGLWidget::setViewName(const QString &name)
@@ -147,6 +213,109 @@ void PaintOpenGLWidget::setViewName(const QString &name)
 QString PaintOpenGLWidget::viewName() const
 {
     return m_viewName;
+}
+
+void PaintOpenGLWidget::setActiveIndicator(bool active)
+{
+    if (m_activeIndicator == active) {
+        return;
+    }
+    m_activeIndicator = active;
+    update();
+}
+
+qreal PaintOpenGLWidget::zoom() const
+{
+    return m_zoom;
+}
+
+QPointF PaintOpenGLWidget::panOffset() const
+{
+    return m_panOffset;
+}
+
+void PaintOpenGLWidget::setScrollPosition(int horizontal, int vertical)
+{
+    m_panOffset = QPointF(-horizontal, -vertical);
+    clampPan();
+    update();
+}
+
+void PaintOpenGLWidget::setUnboundedCanvas(bool unbounded)
+{
+    if (m_unboundedCanvas == unbounded) {
+        return;
+    }
+    m_unboundedCanvas = unbounded;
+    clampPan();
+    update();
+    notifyViewTransformChanged();
+}
+
+bool PaintOpenGLWidget::unboundedCanvas() const
+{
+    return m_unboundedCanvas;
+}
+
+QPointF PaintOpenGLWidget::mapToDocument(const QPointF &screenPos) const
+{
+    return (screenPos - m_panOffset) / m_zoom;
+}
+
+void PaintOpenGLWidget::clampPan()
+{
+    if (m_unboundedCanvas) {
+        return;
+    }
+
+    const qreal docWidth = width() * m_zoom;
+    const qreal docHeight = height() * m_zoom;
+
+    const qreal minX = std::min<qreal>(0.0, width() - docWidth);
+    const qreal maxX = std::max<qreal>(0.0, width() - docWidth);
+    const qreal minY = std::min<qreal>(0.0, height() - docHeight);
+    const qreal maxY = std::max<qreal>(0.0, height() - docHeight);
+
+    m_panOffset.setX(std::min(maxX, std::max(minX, m_panOffset.x())));
+    m_panOffset.setY(std::min(maxY, std::max(minY, m_panOffset.y())));
+}
+
+void PaintOpenGLWidget::notifyViewTransformChanged()
+{
+    emit viewTransformChanged();
+}
+
+void PaintOpenGLWidget::wheelEvent(QWheelEvent *event)
+{
+    const qreal steps = event->angleDelta().y() / 120.0;
+    if (qFuzzyIsNull(steps)) {
+        QOpenGLWidget::wheelEvent(event);
+        return;
+    }
+
+    const qreal factor = std::pow(1.25, steps);
+    const qreal newZoom = std::min<qreal>(8.0, std::max<qreal>(0.1, m_zoom * factor));
+    if (qFuzzyCompare(newZoom, m_zoom)) {
+        event->accept();
+        return;
+    }
+
+    // Zoom around the cursor: keep the document point under it fixed.
+    const QPointF anchor = event->position();
+    const QPointF docAnchor = mapToDocument(anchor);
+    m_zoom = newZoom;
+    m_panOffset = anchor - docAnchor * m_zoom;
+    clampPan();
+    update();
+    notifyViewTransformChanged();
+    event->accept();
+}
+
+void PaintOpenGLWidget::resizeEvent(QResizeEvent *event)
+{
+    QOpenGLWidget::resizeEvent(event);
+    clampPan();
+    notifyViewTransformChanged();
 }
 
 void PaintOpenGLWidget::focusInEvent(QFocusEvent *event)
@@ -289,6 +458,70 @@ void PaintOpenGLWidget::setSmoothValue(int value)
     m_smoothValue = value;
 }
 
+void PaintOpenGLWidget::setAxisSnapThreshold(qreal threshold)
+{
+    m_axisSnapThreshold = std::max<qreal>(1.0, threshold);
+}
+
+qreal PaintOpenGLWidget::axisSnapThreshold() const
+{
+    return m_axisSnapThreshold;
+}
+
+void PaintOpenGLWidget::resetAxisSnap(Qt::KeyboardModifiers modifiers, const QPointF &anchor)
+{
+    m_axisSnapAnchor = anchor;
+    m_axisSnapAnchorIndex = m_points.isEmpty() ? 0 : int(m_points.size()) - 1;
+    m_axisSnapState = (modifiers & (Qt::AltModifier | Qt::ShiftModifier))
+                          ? AxisSnapState::Pending
+                          : AxisSnapState::Inactive;
+}
+
+QPointF PaintOpenGLWidget::applyAxisSnap(Qt::KeyboardModifiers modifiers, const QPointF &point, bool *retroChanged)
+{
+    if (retroChanged) {
+        *retroChanged = false;
+    }
+
+    if (!(modifiers & (Qt::AltModifier | Qt::ShiftModifier))) {
+        m_axisSnapState = AxisSnapState::Inactive;
+        return point;
+    }
+
+    if (m_axisSnapState == AxisSnapState::Inactive) {
+        // Alt engaged mid-stroke: constrain from the latest drawn point on.
+        resetAxisSnap(modifiers, m_points.isEmpty() ? point : m_points.last());
+    }
+
+    if (m_axisSnapState == AxisSnapState::Pending) {
+        const qreal dx = std::abs(point.x() - m_axisSnapAnchor.x());
+        const qreal dy = std::abs(point.y() - m_axisSnapAnchor.y());
+        if (std::max(dx, dy) < m_axisSnapThreshold) {
+            return point;
+        }
+        m_axisSnapState = dx >= dy ? AxisSnapState::Horizontal : AxisSnapState::Vertical;
+        // Flatten the jitter collected while the direction was still ambiguous.
+        for (int i = m_axisSnapAnchorIndex + 1; i < m_points.size(); ++i) {
+            if (m_axisSnapState == AxisSnapState::Horizontal) {
+                m_points[i].setY(m_axisSnapAnchor.y());
+            } else {
+                m_points[i].setX(m_axisSnapAnchor.x());
+            }
+            if (retroChanged) {
+                *retroChanged = true;
+            }
+        }
+    }
+
+    if (m_axisSnapState == AxisSnapState::Horizontal) {
+        return QPointF(point.x(), m_axisSnapAnchor.y());
+    }
+    if (m_axisSnapState == AxisSnapState::Vertical) {
+        return QPointF(m_axisSnapAnchor.x(), point.y());
+    }
+    return point;
+}
+
 void PaintOpenGLWidget::setCurrentLayer(int layerIndex)
 {
     m_model.setCurrentLayer(layerIndex);
@@ -353,6 +586,7 @@ int PaintOpenGLWidget::importRasterLayer(const QImage &image, const QString &lay
         m_points.clear();
         m_hasCurrentStroke = false;
         m_hasLastEraserPos = false;
+        commitHistory(QStringLiteral("Import Raster"));
         update();
     }
     return columnIndex;
@@ -420,6 +654,7 @@ int PaintOpenGLWidget::importVectorLineLayer(const QVector<ImportedVectorFrame> 
     m_points.clear();
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
+    commitHistory(QStringLiteral("Import Vector Lines"));
     emit assetListChanged(assetIndex);
     emit layerListChanged(layerIndex);
     update();
@@ -432,6 +667,9 @@ int PaintOpenGLWidget::addLayer()
     m_points.clear();
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
+    if (columnIndex >= 0) {
+        commitHistory(QStringLiteral("Add Layer"));
+    }
     update();
     return columnIndex;
 }
@@ -444,6 +682,7 @@ bool PaintOpenGLWidget::deleteLayer(int layerIndex)
 
     m_model.remapFillSourceLayersAfterDelete(layerIndex);
     removeInvalidFillRegions();
+    commitHistory(QStringLiteral("Delete Layer"));
     update();
     return true;
 }
@@ -456,6 +695,7 @@ bool PaintOpenGLWidget::moveLayer(int fromIndex, int toIndex)
 
     m_model.remapFillSourceLayersAfterMove(fromIndex, toIndex);
     removeInvalidFillRegions();
+    commitHistory(QStringLiteral("Move Layer"));
     update();
     return true;
 }
@@ -466,6 +706,9 @@ int PaintOpenGLWidget::addFrame()
     m_points.clear();
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
+    if (row >= 0) {
+        commitHistory(QStringLiteral("Add Frame"));
+    }
     update();
     return row;
 }
@@ -476,6 +719,7 @@ bool PaintOpenGLWidget::deleteFrame(int frameIndex)
         return false;
     }
 
+    commitHistory(QStringLiteral("Delete Frame"));
     update();
     return true;
 }
@@ -486,6 +730,7 @@ bool PaintOpenGLWidget::moveFrame(int fromIndex, int toIndex)
         return false;
     }
 
+    commitHistory(QStringLiteral("Move Frame"));
     update();
     return true;
 }
@@ -499,6 +744,7 @@ int PaintOpenGLWidget::addAsset(AnimeColumnType type, const QString &name)
 {
     const int assetIndex = m_model.addAsset(type, name);
     if (assetIndex >= 0) {
+        commitHistory(QStringLiteral("Add Asset"));
         emit assetListChanged(assetIndex);
     }
     return assetIndex;
@@ -520,6 +766,7 @@ bool PaintOpenGLWidget::assignAssetToLayer(int layerIndex, int assetIndex)
         m_points.clear();
         m_hasCurrentStroke = false;
         m_hasLastEraserPos = false;
+        commitHistory(QStringLiteral("Assign Asset"));
         update();
     }
     return assigned;
@@ -532,6 +779,7 @@ int PaintOpenGLWidget::addLayerForAsset(int assetIndex)
         m_points.clear();
         m_hasCurrentStroke = false;
         m_hasLastEraserPos = false;
+        commitHistory(QStringLiteral("Add Layer for Asset"));
         update();
     }
     return layerIndex;
@@ -552,7 +800,24 @@ void PaintOpenGLWidget::paintGL()
 {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
-    painter.fillRect(rect(), Qt::white);
+    if (m_unboundedCanvas) {
+        // Infinite reference board: the whole viewport is paper.
+        painter.fillRect(rect(), Qt::white);
+    } else {
+        painter.fillRect(rect(), QColor(72, 72, 72));
+    }
+
+    painter.save();
+    painter.translate(m_panOffset);
+    painter.scale(m_zoom, m_zoom);
+    if (m_unboundedCanvas) {
+        // Keep a faint outline of the nominal page as a size reference.
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(QColor(210, 210, 210), 1.0));
+        painter.drawRect(rect());
+    } else {
+        painter.fillRect(rect(), Qt::white);
+    }
 
     const AnimeScene &scene = m_model.scene();
     for (int columnIndex = scene.xsheet.columns.size() - 1; columnIndex >= 0; --columnIndex) {
@@ -595,6 +860,15 @@ void PaintOpenGLWidget::paintGL()
         painter.setPen(QPen(QColor(220, 0, 180), 1.5, Qt::DashLine));
         painter.setBrush(Qt::NoBrush);
         painter.drawEllipse(m_hoverPos, m_eraserRadius, m_eraserRadius);
+    }
+
+    painter.restore();
+
+    // The active-view indicator hugs the viewport, not the document.
+    if (m_activeIndicator) {
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(QColor(0, 120, 255), 3.0));
+        painter.drawRect(QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5));
     }
 }
 
@@ -649,17 +923,23 @@ QRectF PaintOpenGLWidget::overlayHandleRect(const QRectF &bounds) const
                       bounds.top() - kOverlayHandleSize - 4.0,
                       kOverlayHandleSize,
                       kOverlayHandleSize);
-    if (handleRect.right() > width() - 2.0) {
-        handleRect.moveRight(width() - 2.0);
+    // The rect is built, drawn and hit-tested in DOCUMENT coordinates, so it
+    // must be clamped against the visible viewport expressed in document
+    // space (at zoom 1 on a bounded view this equals the old widget-pixel
+    // clamp). Off-view items keep a reachable badge at the viewport edge.
+    const QPointF docTopLeft = mapToDocument(QPointF(0.0, 0.0));
+    const QPointF docBottomRight = mapToDocument(QPointF(width(), height()));
+    if (handleRect.right() > docBottomRight.x() - 2.0) {
+        handleRect.moveRight(docBottomRight.x() - 2.0);
     }
-    if (handleRect.left() < 2.0) {
-        handleRect.moveLeft(2.0);
+    if (handleRect.left() < docTopLeft.x() + 2.0) {
+        handleRect.moveLeft(docTopLeft.x() + 2.0);
     }
-    if (handleRect.top() < 2.0) {
-        handleRect.moveTop(2.0);
+    if (handleRect.top() < docTopLeft.y() + 2.0) {
+        handleRect.moveTop(docTopLeft.y() + 2.0);
     }
-    if (handleRect.bottom() > height() - 2.0) {
-        handleRect.moveBottom(height() - 2.0);
+    if (handleRect.bottom() > docBottomRight.y() - 2.0) {
+        handleRect.moveBottom(docBottomRight.y() - 2.0);
     }
     return handleRect;
 }
@@ -717,12 +997,19 @@ void PaintOpenGLWidget::sendOverlayRemoveMessage(const QString &overlayId)
 
 void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
 {
+    if (event->button() == Qt::MiddleButton) {
+        m_panning = true;
+        m_lastPanPos = event->position();
+        event->accept();
+        return;
+    }
+
     if (event->button() != Qt::LeftButton) {
         QOpenGLWidget::mousePressEvent(event);
         return;
     }
 
-    const QPointF pos = event->position();
+    const QPointF pos = mapToDocument(event->position());
     m_hoverPos = pos;
     m_hasHoverPos = true;
 
@@ -731,9 +1018,19 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
         return;
     }
 
+    // Arrow: pure focus/selection tool — clicking activates the view (via
+    // ClickFocus) and must not touch the model.
+    if (m_tool == Tool::Arrow) {
+        event->accept();
+        return;
+    }
+
     if (m_tool == Tool::Fill) {
         if (fillAt(pos)) {
-            pythonHookSendMessage(QStringLiteral("fillfinish"), pos);
+            const bool cancelHistory = pythonHookSendMessage(QStringLiteral("fillfinish"), pos);
+            if (!cancelHistory) {
+                commitHistory(QStringLiteral("Fill"));
+            }
         }
         update();
         event->accept();
@@ -777,6 +1074,7 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
 
     m_points.clear();
     appendPoint(pos);
+    resetAxisSnap(event->modifiers(), pos);
     m_currentStroke = makeStroke(m_points, m_penColor, m_penWidth);
     m_currentStroke.property = m_strokeProperty;
     m_hasCurrentStroke = true;
@@ -786,7 +1084,17 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
 
 void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
 {
-    m_hoverPos = event->position();
+    if (m_panning && (event->buttons() & Qt::MiddleButton)) {
+        m_panOffset += event->position() - m_lastPanPos;
+        m_lastPanPos = event->position();
+        clampPan();
+        update();
+        notifyViewTransformChanged();
+        event->accept();
+        return;
+    }
+
+    m_hoverPos = mapToDocument(event->position());
     m_hasHoverPos = true;
 
     if (!(event->buttons() & Qt::LeftButton)) {
@@ -832,7 +1140,9 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
         return;
     }
 
-    if (appendPoint(m_hoverPos)) {
+    bool axisRetroChanged = false;
+    const QPointF snappedPos = applyAxisSnap(event->modifiers(), m_hoverPos, &axisRetroChanged);
+    if (appendPoint(snappedPos) || axisRetroChanged) {
         updateCurrentStroke();
     }
 
@@ -841,20 +1151,31 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
 
 void PaintOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (event->button() == Qt::MiddleButton) {
+        m_panning = false;
+        event->accept();
+        return;
+    }
+
     if (event->button() != Qt::LeftButton) {
         QOpenGLWidget::mouseReleaseEvent(event);
         return;
     }
 
     if (m_tool == Tool::Eraser || m_tool == Tool::DeleteLine) {
-        m_hoverPos = event->position();
+        m_hoverPos = mapToDocument(event->position());
         m_hasHoverPos = true;
+        bool cancelHistory = false;
         if (m_tool == Tool::DeleteLine) {
             m_eraseGestureChanged = deleteLineAt(m_hoverPos) || m_eraseGestureChanged;
-            pythonHookSendMessage(QStringLiteral("deletefinish"), m_hoverPos, QPointF(), m_eraseGestureChanged);
+            cancelHistory = pythonHookSendMessage(QStringLiteral("deletefinish"), m_hoverPos, QPointF(), m_eraseGestureChanged);
         } else {
             m_eraseGestureChanged = eraseAt(m_hoverPos) || m_eraseGestureChanged;
-            pythonHookSendMessage(QStringLiteral("erasefinish"), m_hoverPos, QPointF(), m_eraseGestureChanged);
+            cancelHistory = pythonHookSendMessage(QStringLiteral("erasefinish"), m_hoverPos, QPointF(), m_eraseGestureChanged);
+        }
+        if (m_eraseGestureChanged && !cancelHistory) {
+            commitHistory(m_tool == Tool::DeleteLine ? QStringLiteral("Delete Line")
+                                                     : QStringLiteral("Erase"));
         }
         update();
         m_hasLastEraserPos = false;
@@ -864,13 +1185,17 @@ void PaintOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
     }
 
     if (m_tool == Tool::Move) {
+        bool cancelHistory = false;
         if (m_hasLastMovePos) {
-            const QPointF pos = event->position();
+            const QPointF pos = mapToDocument(event->position());
             const QPointF delta = pos - m_lastMovePos;
             m_moveGestureChanged = moveCurrentLayerBy(delta) || m_moveGestureChanged;
             m_lastMovePos = pos;
             update();
-            pythonHookSendMessage(QStringLiteral("movefinish"), pos, delta, m_moveGestureChanged);
+            cancelHistory = pythonHookSendMessage(QStringLiteral("movefinish"), pos, delta, m_moveGestureChanged);
+        }
+        if (m_moveGestureChanged && !cancelHistory) {
+            commitHistory(QStringLiteral("Move"));
         }
         m_hasLastMovePos = false;
         m_moveGestureChanged = false;
@@ -883,7 +1208,20 @@ void PaintOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
         return;
     }
 
-    appendPoint(event->position());
+    // The release point must follow the axis lock that governed the last move,
+    // NOT the live modifier state: releasing Alt just before the button (with
+    // no move in between) would otherwise append the raw cursor position and
+    // weld a perpendicular tail onto a line whose preview ended on-axis.
+    QPointF releasePoint = mapToDocument(event->position());
+    if (m_axisSnapState == AxisSnapState::Horizontal) {
+        releasePoint.setY(m_axisSnapAnchor.y());
+    } else if (m_axisSnapState == AxisSnapState::Vertical) {
+        releasePoint.setX(m_axisSnapAnchor.x());
+    } else {
+        releasePoint = applyAxisSnap(event->modifiers(), releasePoint, nullptr);
+    }
+    appendPoint(releasePoint);
+    m_axisSnapState = AxisSnapState::Inactive;
     finishCurrentStroke();
     event->accept();
 }
@@ -909,11 +1247,18 @@ void PaintOpenGLWidget::finishCurrentStroke()
             const int strokeIndex = image->strokeCount();
             m_currentStroke.property = m_strokeProperty;
             image->addStroke(m_currentStroke);
-            pythonHookSendMessage(QStringLiteral("linefinish"), QPointF(), QPointF(), true, strokeIndex);
+            const bool cancelHistory =
+                pythonHookSendMessage(QStringLiteral("linefinish"), QPointF(), QPointF(), true, strokeIndex);
             removeInvalidFillRegions();
             if (m_model.assetCount() != assetCountBefore) {
                 emit assetListChanged(m_model.currentAsset());
                 emit layerListChanged(m_model.currentLayer());
+            }
+            // Committed after the linefinish hooks so tool scripts that adjust
+            // the model (e.g. guide capture) fold into the same history entry;
+            // hooks that undid the stroke entirely veto the commit instead.
+            if (!cancelHistory) {
+                commitHistory(m_strokeProperty.isEmpty() ? QStringLiteral("Stroke") : m_strokeProperty);
             }
         }
     }
@@ -922,11 +1267,11 @@ void PaintOpenGLWidget::finishCurrentStroke()
     update();
 }
 
-void PaintOpenGLWidget::pythonHookSendMessage(const QString &event, const QPointF &pos, const QPointF &delta, bool changed, int strokeIndex)
+bool PaintOpenGLWidget::pythonHookSendMessage(const QString &event, const QPointF &pos, const QPointF &delta, bool changed, int strokeIndex)
 {
 #ifdef ANIMEAN_WITH_PYTHON
     if (!changed) {
-        return;
+        return false;
     }
 
     const int row = m_model.currentFrame();
@@ -958,12 +1303,24 @@ void PaintOpenGLWidget::pythonHookSendMessage(const QString &event, const QPoint
     if (!output.isEmpty()) {
         emit pythonDebugMessage(output);
     }
+
+    // Hooks may veto the caller's follow-up history commit (e.g. a tool click
+    // that turned out to be a no-op) by setting message["cancel_history"].
+    try {
+        if (message.contains(py::str("cancel_history"))) {
+            return message[py::str("cancel_history")].cast<bool>();
+        }
+    } catch (const py::error_already_set &) {
+    } catch (const py::cast_error &) {
+    }
+    return false;
 #else
     Q_UNUSED(event);
     Q_UNUSED(pos);
     Q_UNUSED(delta);
     Q_UNUSED(changed);
     Q_UNUSED(strokeIndex);
+    return false;
 #endif
 }
 

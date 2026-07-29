@@ -13,8 +13,11 @@ namespace {
 constexpr qint64 kMaxFileSize = 512LL * 1024 * 1024; // 512 MiB
 constexpr quint32 kMaxRecordSize = 1u << 16;         // 64 KiB per point record
 constexpr quint32 kMaxPointsPerObject = 5000000u;
-constexpr quint32 kMaxObjectsPerBlock = 100000u;
+constexpr quint32 kMaxStrokesPerBlock = 100000u;
 constexpr quint32 kMinHeaderBody = 28u;              // must cover the header ints we read
+// Coordinates far outside any plausible canvas are treated as corruption:
+// letting them through would overflow the import path's bounds arithmetic.
+constexpr double kMaxCoordinate = 1e12;
 
 // Bounds-checked big-endian scalar reads over a raw byte span. Every read
 // verifies the requested window lies fully inside [0, size) before touching
@@ -70,9 +73,12 @@ private:
 };
 
 // Attempts to decode [offset, offset+length) of the file as a Clip vector
-// object block (one or more self-describing point-list objects). Returns true
-// and fills strokes only if every object validates; a single inconsistency
-// makes this reject the block, so raster tiles are never misread as vectors.
+// object block. An object (u64 size + payload) holds a SEQUENCE of strokes,
+// each being a self-describing header (its size at +0, the per-point record
+// size at +8, the point count at +16) followed by pointCount records; single-
+// stroke files are simply the one-element case. Returns true and fills
+// strokes only if every stroke validates and the block is consumed exactly,
+// so raster "BlockData" tiles are never misread as vectors.
 bool decodeVectorBlock(const Cursor &cur, qint64 offset, qint64 length,
                        QVector<ClipReader::ClipStroke> *strokes)
 {
@@ -83,7 +89,7 @@ bool decodeVectorBlock(const Cursor &cur, qint64 offset, qint64 length,
     QVector<ClipReader::ClipStroke> decoded;
     qint64 pos = offset;
     const qint64 end = offset + length;
-    quint32 objectCount = 0;
+    quint32 strokeGuard = 0;
 
     while (pos + 8 <= end) {
         quint64 total = 0;
@@ -95,66 +101,66 @@ bool decodeVectorBlock(const Cursor &cur, qint64 offset, qint64 length,
             return false;
         }
 
-        const qint64 body = pos + 8;
-        quint32 headerBody = 0;
-        quint32 recordSize = 0;
-        quint32 pointCount = 0;
-        if (!cur.u32(body + 0, &headerBody) ||
-            !cur.u32(body + 8, &recordSize) ||
-            !cur.u32(body + 16, &pointCount)) {
-            return false;
-        }
+        const qint64 objectBody = pos + 8;
+        const qint64 objectEnd = objectBody + static_cast<qint64>(total);
 
-        if (headerBody < kMinHeaderBody || static_cast<quint64>(headerBody) >= total) {
-            return false;
-        }
-        if (recordSize <= 16 || recordSize > kMaxRecordSize) {
-            return false;
-        }
-
-        const quint64 pointBytes = total - headerBody;
-        if (pointBytes % recordSize != 0) {
-            return false;
-        }
-        const quint64 count = pointBytes / recordSize;
-        if (count == 0 || count > kMaxPointsPerObject) {
-            return false;
-        }
-        // The stored point count must agree with the size-derived count
-        // (allow a tiny slack for trailing padding records).
-        const quint64 diff = count > pointCount ? count - pointCount : pointCount - count;
-        if (diff > 2) {
-            return false;
-        }
-
-        const qint64 pointsStart = body + headerBody;
-        ClipReader::ClipStroke stroke;
-        stroke.points.reserve(static_cast<int>(qMin<quint64>(count, kMaxPointsPerObject)));
-        bool coordsValid = true;
-        for (quint64 i = 0; i < count; ++i) {
-            const qint64 rec = pointsStart + static_cast<qint64>(i * recordSize);
-            double x = 0.0;
-            double y = 0.0;
-            if (!cur.f64(rec + 0, &x) || !cur.f64(rec + 8, &y)) {
+        qint64 strokePos = objectBody;
+        while (strokePos + kMinHeaderBody <= objectEnd) {
+            quint32 headerBody = 0;
+            quint32 recordSize = 0;
+            quint32 pointCount = 0;
+            if (!cur.u32(strokePos + 0, &headerBody) ||
+                !cur.u32(strokePos + 8, &recordSize) ||
+                !cur.u32(strokePos + 16, &pointCount)) {
                 return false;
             }
-            if (!std::isfinite(x) || !std::isfinite(y)) {
-                coordsValid = false;
-                break;
+
+            if (headerBody < kMinHeaderBody ||
+                static_cast<quint64>(headerBody) > static_cast<quint64>(objectEnd - strokePos)) {
+                return false;
             }
-            stroke.points.append(QPointF(x, y));
-        }
-        if (!coordsValid) {
-            return false;
-        }
-        if (stroke.points.size() >= 2) {
-            decoded.append(stroke);
+            if (recordSize <= 16 || recordSize > kMaxRecordSize) {
+                return false;
+            }
+            if (pointCount == 0 || pointCount > kMaxPointsPerObject) {
+                return false;
+            }
+            const quint64 pointBytes = static_cast<quint64>(recordSize) * pointCount;
+            if (pointBytes > static_cast<quint64>(objectEnd - strokePos - headerBody)) {
+                return false;
+            }
+
+            const qint64 pointsStart = strokePos + headerBody;
+            ClipReader::ClipStroke stroke;
+            stroke.points.reserve(static_cast<qsizetype>(pointCount));
+            for (quint32 i = 0; i < pointCount; ++i) {
+                const qint64 rec = pointsStart + static_cast<qint64>(quint64(i) * recordSize);
+                double x = 0.0;
+                double y = 0.0;
+                if (!cur.f64(rec + 0, &x) || !cur.f64(rec + 8, &y)) {
+                    return false;
+                }
+                if (!std::isfinite(x) || !std::isfinite(y) ||
+                    std::abs(x) > kMaxCoordinate || std::abs(y) > kMaxCoordinate) {
+                    return false;
+                }
+                stroke.points.append(QPointF(x, y));
+            }
+            if (stroke.points.size() >= 2) {
+                decoded.append(stroke);
+            }
+
+            strokePos = pointsStart + static_cast<qint64>(pointBytes);
+            if (++strokeGuard > kMaxStrokesPerBlock) {
+                return false;
+            }
         }
 
-        pos = body + static_cast<qint64>(total);
-        if (++objectCount > kMaxObjectsPerBlock) {
+        // Every stroke in the object must line up exactly with its end.
+        if (strokePos != objectEnd) {
             return false;
         }
+        pos = objectEnd;
     }
 
     // The block must be consumed exactly, and must contain at least one usable

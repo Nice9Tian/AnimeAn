@@ -13,6 +13,12 @@ ToolsPanel::ToolsPanel(QWidget *parent)
     ui->setupUi(this);
 
     m_layout = new QVBoxLayout(this);
+    m_arrowButton = new QPushButton(QStringLiteral("Arrow"), this);
+    m_arrowButton->setCheckable(true);
+    m_arrowButton->setCursor(ui->penButton->cursor());
+    m_arrowButton->setMinimumSize(ui->penButton->minimumSize());
+    m_arrowButton->setStyleSheet(ui->penButton->styleSheet());
+    m_layout->addWidget(m_arrowButton);
     m_layout->addWidget(ui->penButton);
     m_layout->addWidget(ui->moveButton);
     m_layout->addWidget(ui->eraserButton);
@@ -24,6 +30,11 @@ ToolsPanel::ToolsPanel(QWidget *parent)
     ui->eraserButton->setCheckable(true);
     ui->fillButton->setCheckable(true);
     setTool(PaintOpenGLWidget::Tool::Pen);
+
+    connect(m_arrowButton, &QPushButton::clicked, this, [this]() {
+        setTool(PaintOpenGLWidget::Tool::Arrow);
+        emit toolSelected(PaintOpenGLWidget::Tool::Arrow);
+    });
 
     connect(ui->penButton, &QPushButton::clicked, this, [this]() {
         setTool(PaintOpenGLWidget::Tool::Pen);
@@ -50,11 +61,13 @@ ToolsPanel::~ToolsPanel()
 
 void ToolsPanel::setTool(PaintOpenGLWidget::Tool tool)
 {
+    const QSignalBlocker arrowBlocker(m_arrowButton);
     const QSignalBlocker penBlocker(ui->penButton);
     const QSignalBlocker moveBlocker(ui->moveButton);
     const QSignalBlocker eraserBlocker(ui->eraserButton);
     const QSignalBlocker fillBlocker(ui->fillButton);
 
+    m_arrowButton->setChecked(tool == PaintOpenGLWidget::Tool::Arrow);
     ui->penButton->setChecked(tool == PaintOpenGLWidget::Tool::Pen);
     ui->moveButton->setChecked(tool == PaintOpenGLWidget::Tool::Move);
     ui->eraserButton->setChecked(tool == PaintOpenGLWidget::Tool::Eraser ||
@@ -86,10 +99,12 @@ void ToolsPanel::setExtraTools(const QVector<ExtraToolDefinition> &tools)
         button->setMinimumSize(ui->penButton->minimumSize());
         button->setStyleSheet(ui->penButton->styleSheet());
         connect(button, &QPushButton::clicked, this, [this, index]() {
+            const QSignalBlocker arrowBlocker(m_arrowButton);
             const QSignalBlocker penBlocker(ui->penButton);
             const QSignalBlocker moveBlocker(ui->moveButton);
             const QSignalBlocker eraserBlocker(ui->eraserButton);
             const QSignalBlocker fillBlocker(ui->fillButton);
+            m_arrowButton->setChecked(false);
             ui->penButton->setChecked(false);
             ui->moveButton->setChecked(false);
             ui->eraserButton->setChecked(false);

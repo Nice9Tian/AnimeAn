@@ -11,6 +11,8 @@
 
 class AssetPanel;
 class ChildPaintWindow;
+class HistoryPanel;
+class QAction;
 class QDockWidget;
 class FramePanel;
 class LayerPanel;
@@ -58,7 +60,15 @@ private:
     void importRaster(PaintOpenGLWidget *view);
     void importOpenToonzLines(PaintOpenGLWidget *view);
     void importClipStudioPaint(PaintOpenGLWidget *view);
+    void createMainPaintView();
+    void showMainPaintView();
     void createTextureFileMenu();
+    void createHistoryDock();
+    void refreshHistoryList();
+    void scheduleHistoryRefresh();
+    PaintOpenGLWidget *undoTargetView() const;
+    PaintOpenGLWidget *redoTargetView() const;
+    void applyHistoryRestore(PaintOpenGLWidget *view);
     void showTextureView();
     void openTextureView();
     bool saveTextureViewAs();
@@ -94,6 +104,10 @@ private:
     QDockWidget *m_toolsDock = nullptr;
     QDockWidget *m_toolOptDock = nullptr;
     QDockWidget *m_pythonDebugDock = nullptr;
+    QDockWidget *m_historyDock = nullptr;
+    HistoryPanel *m_historyPanel = nullptr;
+    QAction *m_undoAction = nullptr;
+    QAction *m_redoAction = nullptr;
     QPlainTextEdit *m_pythonDebugOutput = nullptr;
     QLineEdit *m_pythonDebugCommand = nullptr;
     QString m_currentFilePath;
@@ -106,6 +120,8 @@ private:
     int m_toolPenWidth = 5;
     bool m_toolFillAllLayers = false;
     bool m_refreshingLists = false;
+    bool m_refreshingHistory = false;
+    bool m_historyRefreshQueued = false;
     bool m_listMousePressed = false;
     bool m_listDragActive = false;
     bool m_hasPendingAttention = false;

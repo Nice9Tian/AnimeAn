@@ -164,6 +164,10 @@ public:
 
     QVector<AnimeAsset> assets;
     AnimeXsheet xsheet;
+    // Opaque storage for script-side (Python) state that must travel with the
+    // scene: copied into history snapshots and saved with the project. The
+    // C++ side never interprets it.
+    QString scriptData;
 
 private:
     QString m_textId;
@@ -210,6 +214,9 @@ public:
     void setLayerOpacity(int layerIndex, qreal opacity);
     AnimeColumnType layerType(int layerIndex) const;
     bool isFillLayer(int layerIndex) const;
+
+    QString scriptData() const;
+    void setScriptData(const QString &data);
 
     int addLayer();
     int addFillLayer();

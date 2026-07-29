@@ -39,6 +39,7 @@ signals:
 private:
     Ui::ToolsPanel *ui;
     QVBoxLayout *m_layout = nullptr;
+    QPushButton *m_arrowButton = nullptr;
     QVector<QPushButton *> m_extraButtons;
     QVector<ExtraToolDefinition> m_extraTools;
 };

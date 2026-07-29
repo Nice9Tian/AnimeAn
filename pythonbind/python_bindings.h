@@ -30,5 +30,7 @@ void registerAnimeanUiOverlayCallback(std::function<void(const QString &view, co
 void clearAnimeanUiOverlayCallback();
 void registerAnimeanUiDrawColorCallback(std::function<void(const QColor &color)> callback);
 void clearAnimeanUiDrawColorCallback();
+void registerAnimeanUiHistoryCallback(std::function<void(const QString &op, const QString &view, const QString &label)> callback);
+void clearAnimeanUiHistoryCallback();
 
 #endif // PYTHON_BINDINGS_H

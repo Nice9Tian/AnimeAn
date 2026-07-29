@@ -23,6 +23,8 @@ QString fileNameForTool(PaintOpenGLWidget::Tool tool)
         return QStringLiteral("eraser.json");
     case PaintOpenGLWidget::Tool::Move:
         return QStringLiteral("move.json");
+    case PaintOpenGLWidget::Tool::Arrow:
+        return QStringLiteral("arrow.json");
     }
     return QStringLiteral("pen.json");
 }

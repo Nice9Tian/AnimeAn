@@ -841,6 +841,16 @@ bool AnimeSceneModel::isFillLayer(int layerIndex) const
     return layerType(layerIndex) == AnimeColumnType::Fill;
 }
 
+QString AnimeSceneModel::scriptData() const
+{
+    return m_scene.scriptData;
+}
+
+void AnimeSceneModel::setScriptData(const QString &data)
+{
+    m_scene.scriptData = data;
+}
+
 int AnimeSceneModel::addLayer()
 {
     if (m_currentFrame < 0) {

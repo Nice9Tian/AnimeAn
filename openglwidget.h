@@ -2,6 +2,7 @@
 #define OPENGLWIDGET_H
 
 #include "algorithm/animemodel.h"
+#include "algorithm/scenehistory.h"
 #include "algorithm/vectorlogic.h"
 
 #include <QColor>
@@ -25,7 +26,8 @@ public:
         Eraser,
         DeleteLine,
         Fill,
-        Move
+        Move,
+        Arrow
     };
 
     enum class FillScope {
@@ -61,6 +63,12 @@ public:
 
     void setViewName(const QString &name);
     QString viewName() const;
+    void setActiveIndicator(bool active);
+    qreal zoom() const;
+    QPointF panOffset() const;
+    void setScrollPosition(int horizontal, int vertical);
+    void setUnboundedCanvas(bool unbounded);
+    bool unboundedCanvas() const;
     void setPenColor(const QColor &color);
     void setDrawingColor(const QColor &color);
     void setPenWidth(qreal width);
@@ -71,6 +79,16 @@ public:
     Tool tool() const;
     void setFillScope(FillScope scope);
     void setSmoothValue(int value);
+    void setAxisSnapThreshold(qreal threshold);
+    qreal axisSnapThreshold() const;
+    SceneHistory &history();
+    const SceneHistory &history() const;
+    void commitHistory(const QString &label);
+    void resetHistory(const QString &label);
+    void dropRedoTail();
+    bool undoHistory();
+    bool redoHistory();
+    bool goToHistory(int index);
     void setCurrentLayer(int layerIndex);
     void setCurrentFrame(int frameIndex);
     int layerCount() const;
@@ -99,12 +117,17 @@ signals:
     void assetListChanged(int selectedAsset);
     void pythonDebugMessage(const QString &message);
     void focusGained();
+    void historyChanged();
+    void historyCommitted();
+    void viewTransformChanged();
 
 protected:
     void paintGL() override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    void wheelEvent(QWheelEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
     void focusInEvent(QFocusEvent *event) override;
 
 public:
@@ -120,13 +143,27 @@ private:
         QRectF rect;
     };
 
+    enum class AxisSnapState {
+        Inactive,
+        Pending,
+        Horizontal,
+        Vertical
+    };
+
     void paintOverlayItems(QPainter &painter);
     QRectF overlayHandleRect(const QRectF &bounds) const;
     bool removeOverlayItemAt(const QPointF &pos);
     void sendOverlayRemoveMessage(const QString &overlayId);
+    void resetAxisSnap(Qt::KeyboardModifiers modifiers, const QPointF &anchor);
+    QPointF applyAxisSnap(Qt::KeyboardModifiers modifiers, const QPointF &point, bool *retroChanged);
+    QPointF mapToDocument(const QPointF &screenPos) const;
+    void clampPan();
+    void notifyViewTransformChanged();
     void updateCurrentStroke();
     void finishCurrentStroke();
-    void pythonHookSendMessage(const QString &event, const QPointF &pos = QPointF(), const QPointF &delta = QPointF(), bool changed = true, int strokeIndex = -1);
+    // Dispatches the hook event; returns true when a hook set
+    // "cancel_history" in the message, vetoing the follow-up history commit.
+    bool pythonHookSendMessage(const QString &event, const QPointF &pos = QPointF(), const QPointF &delta = QPointF(), bool changed = true, int strokeIndex = -1);
     bool eraseAt(const QPointF &pos);
     bool eraseBetween(const QPointF &from, const QPointF &to);
     bool deleteLineAt(const QPointF &pos);
@@ -149,6 +186,7 @@ private:
     Tool m_tool = Tool::Pen;
     FillScope m_fillScope = FillScope::CurrentLayer;
     QString m_viewName = QStringLiteral("main");
+    bool m_activeIndicator = false;
     QColor m_penColor = Qt::black;
     QVector<QPointF> m_points;
     AnimeSceneModel m_model;
@@ -168,6 +206,16 @@ private:
     qreal m_eraserRadius = 12.0;
     qreal m_minPointDistance = 2.0;
     int m_smoothValue = 50;
+    AxisSnapState m_axisSnapState = AxisSnapState::Inactive;
+    QPointF m_axisSnapAnchor;
+    int m_axisSnapAnchorIndex = 0;
+    qreal m_axisSnapThreshold = 5.0;
+    qreal m_zoom = 1.0;
+    QPointF m_panOffset;
+    bool m_panning = false;
+    bool m_unboundedCanvas = false;
+    QPointF m_lastPanPos;
+    SceneHistory m_history;
     QVector<OverlayItem> m_overlayItems;
     QVector<OverlayHandle> m_overlayHandles;
 };
