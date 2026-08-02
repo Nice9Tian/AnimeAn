@@ -18,16 +18,23 @@ Workflow:
 5. Click "Auto Mapping": child pattern strokes are converted to UV through
    the child guides and re-created in main_paint_view through the main
    guides (arc-length evaluation, so curved guides bend the pattern).
-   The result always goes into its own dedicated layer named "mapped layer"
-   - never into whatever layer is currently selected - so it can be hidden,
-   reordered or deleted on its own. That layer is reused (not duplicated) on
-   every re-run, and the previous result is cleared first. Each mapping asset
-   shows an "x" badge on the canvas - click it to delete the item and redraw.
+   The result always goes into its own FRESH layer ("mapped layer",
+   "mapped layer1", ...) - never into whatever layer is currently selected.
+   Every click creates a new layer and previous results are left untouched,
+   so different runs stack and can be compared, hidden or deleted
+   individually. Each mapping asset shows an "x" badge on the canvas -
+   click it to delete the item and redraw.
+   The "Curve Mode" option controls the output geometry of each mapped
+   stroke: because the warp is non-linear, all modes sample between the
+   original vertices so the result follows the distortion. "spline" (default)
+   and "bezier" fit real curves; "polyline" emits the sampled points joined
+   by straight segments. See CURVE_MODES / _CURVE_MODE.
 
 Architecture note: C++ only provides generic services (overlay display list,
-"overlayremove" hook event, set_draw_color, geometry bindings). All tool
+"overlayremove" hook event, set_draw_color, geometry bindings, and building a
+stroke from a curved path via make_stroke_object_from_path). All tool
 semantics - property names, colors, the asset dict, region detection,
-clipping - live in this file.
+clipping, curve fitting - live in this file.
 """
 
 import bisect
@@ -48,6 +55,45 @@ POLY_STEP = 4.0
 
 GRID_COLOR = (255, 140, 0, 170)
 
+# How the mapped strokes' geometry is reconstructed after the warp. The warp
+# (build_mapper.map_point) is non-linear, so the straight line between two
+# mapped ORIGINAL vertices is NOT the image of the source segment - it is only
+# its chord. All three modes therefore share the same anchored sampling: the
+# original vertices are anchors, samples are inserted between them until the
+# warp is well captured, everything is mapped, and only the inserted samples
+# are decimated again (RDP). They differ in the output geometry:
+#   "polyline" - the decimated points joined by straight segments (no fitting).
+#   "spline"   - centripetal Catmull-Rom interpolated through the points
+#                (route 1: migrate spline knots).
+#   "bezier"   - no polyline sampling at all: the artist's own Bezier segments
+#                are kept and each control handle is transported through the
+#                warp's local directional derivative, splitting adaptively
+#                where that is not accurate enough (route 2: migrate handles).
+CURVE_MODES = ("polyline", "spline", "bezier")
+_CURVE_MODE = {"value": "spline"}
+
+# Curve-fitting tolerances, all in canvas (main-view) pixels.
+_CURVE_TOL = 0.4        # max chord/handle deviation before subdividing further
+_SPLINE_MAX_DEPTH = 8   # source-segment bisections in spline densification
+_BEZIER_MAX_DEPTH = 6   # source-cubic bisections in bezier handle transport
+_JAC_EPS = 0.5          # directional-derivative step, in child (source) pixels
+_CATMULL_ALPHA = 0.5    # centripetal parametrization (no overshoot on uneven knots)
+# Anti-aliasing guards: a straight source segment spanning whole periods of a
+# wavy main guide can pass a small fixed set of probe points even though its
+# true image oscillates (e.g. a full sine period has zero midpoint deviation).
+_FORCE_STEP = 16.0      # output px: always sample at least this dense
+_PROBE_T = 0.381966     # golden-section probe; never rational vs the midpoint
+
+# RDP decimation strength ("RDP" slider in the tool options, in 0.1px units).
+# Only the samples INSERTED between two original vertices are decimated; the
+# original vertices themselves are anchors and always survive (user rule:
+# 原始点不能被降采样).
+_RDP_STATE = {"eps": 0.3}
+
+
+def rdp_eps():
+    return _RDP_STATE["eps"]
+
 # Refer-rect debug grid state + which mapper variant ran last (drives the grid).
 _REFER_RECT = {"enabled": False}
 _MAPPER_VERSION = {"value": 1}
@@ -58,6 +104,10 @@ _GRID_CACHE = {"child": None, "main": None}
 
 def refer_rect_enabled():
     return _REFER_RECT["enabled"]
+
+
+def curve_mode():
+    return _CURVE_MODE["value"]
 
 
 def _invalidate_grid_cache():
@@ -412,6 +462,18 @@ def build_mapper(child_h_points, child_v_points, main_h_points, main_v_points, i
                                     / max(1e-9, min(h_scale_neg, h_scale_pos)))
         info["v_scale_mismatch"] = (max(v_scale_neg, v_scale_pos)
                                     / max(1e-9, min(v_scale_neg, v_scale_pos)))
+        # Handedness: the map is direction-faithful on both axes (child start
+        # -> main start, end -> end; audit-tested for all combinations), so
+        # the result is a MIRROR image exactly when the two frames have
+        # opposite orientation (child cross product vs main cross product at
+        # the crossing). Drawing e.g. child H vertically and main H
+        # horizontally with every line drawn "naturally" flips handedness
+        # without any arrow pair looking reversed - report it instead of
+        # letting users hunt for a sign bug.
+        main_h_dir = _tangent_at_arc(main_h_points, main_h_cum, main_h_arc, tangent_window)
+        main_v_dir = _tangent_at_arc(main_v_points, main_v_cum, main_v_arc, tangent_window)
+        main_cross = main_h_dir[0] * main_v_dir[1] - main_h_dir[1] * main_v_dir[0]
+        info["mirrored"] = (det > 0.0) != (main_cross > 0.0)
 
     def side_map(units, scale_neg, scale_pos):
         return units * (scale_pos if units >= 0.0 else scale_neg)
@@ -561,8 +623,443 @@ def _clip_polyline(points, polygons):
 
 
 # ---------------------------------------------------------------------------
+# curve reconstruction (spline / bezier modes)
+#
+# The whole point of these helpers is that build_mapper.map_point (W below) is
+# NON-LINEAR: W(straight source segment) is a curve, so joining mapped points
+# with straight lines (the old "polyline" mode) drops the distortion between
+# points. W is only PIECEWISE smooth (arc-length lookup on polyline guides is
+# C0 at guide vertices; the per-side scales jump across the guide crossing), so
+# every routine below is subdivision-based with a depth cap and never assumes a
+# globally smooth map: a genuine tangent kink just makes the segments there
+# small instead of sending the recursion to infinity.
+# ---------------------------------------------------------------------------
+
+def _dist(a, b):
+    return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def _mid(a, b):
+    return ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5)
+
+
+def _lerp(a, b, t):
+    return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+
+
+def _cubic_point(cub, t):
+    """de Casteljau evaluation of a cubic Bezier (p0, c1, c2, p3) at t."""
+    p0, c1, c2, p3 = cub
+    a = _lerp(p0, c1, t)
+    b = _lerp(c1, c2, t)
+    c = _lerp(c2, p3, t)
+    d = _lerp(a, b, t)
+    e = _lerp(b, c, t)
+    return _lerp(d, e, t)
+
+
+def _split_cubic(cub, t0, t1):
+    """Sub-cubic covering the parameter range [t0, t1] of `cub` (de Casteljau)."""
+    p0, c1, c2, p3 = cub
+    # left split at t1, then right split of that at t0 / t1.
+    def split_at(curve, t):
+        q0, q1, q2, q3 = curve
+        a = _lerp(q0, q1, t)
+        b = _lerp(q1, q2, t)
+        c = _lerp(q2, q3, t)
+        d = _lerp(a, b, t)
+        e = _lerp(b, c, t)
+        f = _lerp(d, e, t)
+        return (q0, a, d, f), (f, e, c, q3)
+    if t1 < 1.0:
+        cub = split_at(cub, t1)[0]
+    if t0 > 0.0:
+        denom = t1 if t1 > 1e-12 else 1e-12
+        cub = split_at(cub, t0 / denom)[1]
+    return cub
+
+
+def _line_cubic(p0, p3):
+    """Represent a straight segment as a cubic so all output shares one type."""
+    return (p0, _lerp(p0, p3, 1.0 / 3.0), _lerp(p0, p3, 2.0 / 3.0), p3)
+
+
+def _flatten_cubic(cub, out, step=POLY_STEP):
+    """Append samples of one cubic to `out` (excluding its start point)."""
+    p0, c1, c2, p3 = cub
+    net = _dist(p0, c1) + _dist(c1, c2) + _dist(c2, p3)
+    samples = max(2, min(64, int(math.ceil(net / max(0.5, step)))))
+    for k in range(1, samples + 1):
+        out.append(_cubic_point(cub, k / samples))
+
+
+def _rdp(points, eps):
+    """Ramer-Douglas-Peucker decimation; keeps the polyline within eps."""
+    if len(points) < 3:
+        return list(points)
+    keep = [False] * len(points)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(points) - 1)]
+    while stack:
+        first, last = stack.pop()
+        if last <= first + 1:
+            continue
+        ax, ay = points[first]
+        bx, by = points[last]
+        dx, dy = bx - ax, by - ay
+        seg = math.hypot(dx, dy)
+        worst = -1.0
+        split = -1
+        for i in range(first + 1, last):
+            px, py = points[i]
+            if seg <= 1e-12:
+                d = math.hypot(px - ax, py - ay)
+            else:
+                d = abs((px - ax) * dy - (py - ay) * dx) / seg
+            if d > worst:
+                worst = d
+                split = i
+        if worst > eps and split > 0:
+            keep[split] = True
+            stack.append((first, split))
+            stack.append((split, last))
+    return [points[i] for i in range(len(points)) if keep[i]]
+
+
+def _catmull_rom_cubics(knots, alpha=_CATMULL_ALPHA):
+    """Interpolating centripetal Catmull-Rom spline as a list of cubics.
+
+    Centripetal (alpha=0.5) is used on purpose: the knots come out of RDP and
+    are therefore unevenly spaced, and uniform Catmull-Rom overshoots / self-
+    intersects on uneven knots while the centripetal form never does.
+    """
+    n = len(knots)
+    if n < 2:
+        return []
+    if n == 2:
+        return [_line_cubic(knots[0], knots[1])]
+
+    ext = [knots[0]] + list(knots) + [knots[-1]]
+    cubics = []
+    for i in range(1, len(ext) - 2):
+        p0, p1, p2, p3 = ext[i - 1], ext[i], ext[i + 1], ext[i + 2]
+        t0 = 0.0
+        t1 = t0 + max(_dist(p0, p1) ** alpha, 1e-9)
+        t2 = t1 + max(_dist(p1, p2) ** alpha, 1e-9)
+        t3 = t2 + max(_dist(p2, p3) ** alpha, 1e-9)
+        # Hermite tangents at p1, p2 (non-uniform), scaled to this segment.
+        def tangent(pa, pb, pc, ta, tb, tc):
+            m1x = (pb[0] - pa[0]) / (tb - ta) - (pc[0] - pa[0]) / (tc - ta) + (pc[0] - pb[0]) / (tc - tb)
+            m1y = (pb[1] - pa[1]) / (tb - ta) - (pc[1] - pa[1]) / (tc - ta) + (pc[1] - pb[1]) / (tc - tb)
+            return (m1x * (t2 - t1), m1y * (t2 - t1))
+        m1 = tangent(p0, p1, p2, t0, t1, t2)
+        m2 = tangent(p1, p2, p3, t1, t2, t3)
+        c1 = (p1[0] + m1[0] / 3.0, p1[1] + m1[1] / 3.0)
+        c2 = (p2[0] - m2[0] / 3.0, p2[1] - m2[1] / 3.0)
+        cubics.append((p1, c1, c2, p2))
+    return cubics
+
+
+def _adaptive_map_polyline(map_point, points, tol=_CURVE_TOL, max_depth=_SPLINE_MAX_DEPTH):
+    """Map `points` through the warp, inserting samples between the ORIGINAL
+    vertices so the mapped polyline stays within `tol` of the true warped
+    curve.
+
+    Returns [(mapped_point, is_original), ...]. The original vertices are
+    anchors: downstream decimation only touches the inserted samples, never
+    them. Two flatness probes (midpoint + golden section) plus a forced
+    maximum output chord length guard against a straight source segment
+    aliasing through the probes when it spans whole periods of a wavy guide.
+    """
+    if len(points) < 2:
+        return [(map_point(p), True) for p in points]
+
+    result = [(map_point(points[0]), True)]
+
+    def recurse(a, b, wa, wb, depth):
+        if depth >= max_depth:
+            return
+        m = _mid(a, b)
+        wm = map_point(m)
+        g = _lerp(a, b, _PROBE_T)
+        wg = map_point(g)
+        if (_dist(wa, wb) > _FORCE_STEP
+                or _dist(wm, _mid(wa, wb)) > tol
+                or _dist(wg, _lerp(wa, wb, _PROBE_T)) > tol):
+            recurse(a, m, wa, wm, depth + 1)
+            result.append((wm, False))
+            recurse(m, b, wm, wb, depth + 1)
+
+    wa = result[0][0]
+    for i in range(len(points) - 1):
+        b = points[i + 1]
+        wb = map_point(b)
+        recurse(points[i], b, wa, wb, 0)
+        result.append((wb, True))
+        wa = wb
+    return result
+
+
+def _clip_flagged(flagged, polygons):
+    """_clip_polyline for (point, is_original) pairs; boundary cuts are anchors."""
+    if not polygons:
+        return [list(flagged)]
+    pieces = []
+    current = []
+    previous = None
+    previous_inside = False
+    for entry in flagged:
+        point = entry[0]
+        inside = _point_in_polygons(point, polygons)
+        if previous is None:
+            if inside:
+                current.append(entry)
+        elif inside and previous_inside:
+            current.append(entry)
+        elif inside and not previous_inside:
+            current = [(_boundary_point(point, previous, polygons), True), entry]
+        elif not inside and previous_inside:
+            current.append((_boundary_point(previous, point, polygons), True))
+            if len(current) >= 2:
+                pieces.append(current)
+            current = []
+        previous = point
+        previous_inside = inside
+    if len(current) >= 2:
+        pieces.append(current)
+    return pieces
+
+
+def _decimate_between_anchors(flagged, eps):
+    """RDP each run of inserted samples between two anchors; keep every anchor.
+
+    RDP always keeps its endpoints, and each span's endpoints are the mapped
+    original vertices, so the artist's points survive verbatim while the dense
+    warp samples collapse back to the few knots the curvature needs.
+    """
+    knots = [flagged[0][0]]
+    span = [flagged[0][0]]
+    for point, is_anchor in flagged[1:]:
+        span.append(point)
+        if is_anchor:
+            knots.extend(_rdp(span, eps)[1:])
+            span = [point]
+    if len(span) >= 2:  # tolerate a trailing non-anchor tail
+        knots.extend(_rdp(span, eps)[1:])
+    return knots
+
+
+def _directional_image(map_point, base, ctrl):
+    """Image of the handle vector (ctrl - base) under the warp at `base`.
+
+    A one-sided derivative in the handle's OWN direction, not a full Jacobian:
+    it never straddles the anchor's tangent kink, needs no matrix inverse (so a
+    singular / anisotropic warp is harmless), and is first-order exact - the end
+    tangent of a cubic is 3*(ctrl-base), and a smooth map sends a tangent vector
+    v to (D_v W), so the 1/3 handle maps to base' + D_(ctrl-base) W.
+    """
+    vx, vy = ctrl[0] - base[0], ctrl[1] - base[1]
+    length = math.hypot(vx, vy)
+    wb = map_point(base)
+    if length <= 1e-9:
+        return wb
+    eps = min(_JAC_EPS, 0.25 * length)
+    ux, uy = vx / length, vy / length
+    ahead = map_point((base[0] + ux * eps, base[1] + uy * eps))
+    # derivative * length = image of the full handle vector
+    return (wb[0] + (ahead[0] - wb[0]) / eps * length,
+            wb[1] + (ahead[1] - wb[1]) / eps * length)
+
+
+def _warp_cubic(map_point, cub, tol=_CURVE_TOL, max_depth=_BEZIER_MAX_DEPTH, depth=0):
+    """Transport one source cubic through the warp, subdividing on error.
+
+    Returns a list of output cubics whose union approximates W(cub). The handle
+    transport is only first-order, so wherever the warp bends hard (or crosses a
+    tangent kink) the transported cubic is checked at t=1/4,1/2,3/4 against the
+    true warped point and the SOURCE cubic is bisected until it fits or the depth
+    cap is hit (which also stops runaway recursion at a genuine discontinuity).
+    """
+    p0, c1, c2, p3 = cub
+    w0 = map_point(p0)
+    w3 = map_point(p3)
+    out_c1 = _directional_image(map_point, p0, c1)
+    out_c2 = _directional_image(map_point, p3, c2)
+    out = (w0, out_c1, out_c2, w3)
+
+    # Probe density scales with the OUTPUT size: a long cubic spanning whole
+    # periods of a wavy guide can slip through any small fixed probe set. The
+    # golden-section probe additionally breaks periodic alignment. Source
+    # anchors always survive as output anchors (subdividing only ADDS knots),
+    # matching the "originals are never decimated" rule of spline mode.
+    net = _dist(w0, out_c1) + _dist(out_c1, out_c2) + _dist(out_c2, w3)
+    probes = max(3, min(17, int(math.ceil(net / _FORCE_STEP))))
+    ts = [(k + 1.0) / (probes + 1.0) for k in range(probes)] + [_PROBE_T]
+    worst = 0.0
+    for t in ts:
+        worst = max(worst, _dist(map_point(_cubic_point(cub, t)), _cubic_point(out, t)))
+    if worst <= tol or depth >= max_depth:
+        return [out]
+    left = _split_cubic(cub, 0.0, 0.5)
+    right = _split_cubic(cub, 0.5, 1.0)
+    return (_warp_cubic(map_point, left, tol, max_depth, depth + 1)
+            + _warp_cubic(map_point, right, tol, max_depth, depth + 1))
+
+
+def _commands_to_subpaths(commands):
+    """Parse stroke `commands` into subpaths, each a list of cubic tuples.
+
+    line -> a straight cubic; quad -> its exact cubic elevation; cubic -> as is.
+    A "move" starts a new subpath so genuinely separate subpaths never get a
+    bogus connecting segment (the flaw in _stroke_points that concatenates all
+    polylines of a stroke into one list).
+    """
+    subpaths = []
+    current = []
+    start = None
+    for command in commands or []:
+        kind = command.get("type")
+        if kind == "move":
+            if current:
+                subpaths.append(current)
+            current = []
+            start = _command_point(command["to"])
+        elif kind == "line":
+            a = start if start is not None else (
+                _command_point(command["from"]) if "from" in command else None)
+            b = _command_point(command["to"])
+            if a is not None:
+                current.append(_line_cubic(a, b))
+            start = b
+        elif kind == "quad":
+            a = start if start is not None else (
+                _command_point(command["from"]) if "from" in command else None)
+            ctrl = _command_point(command["control"])
+            b = _command_point(command["to"])
+            if a is not None:
+                c1 = (a[0] + 2.0 / 3.0 * (ctrl[0] - a[0]), a[1] + 2.0 / 3.0 * (ctrl[1] - a[1]))
+                c2 = (b[0] + 2.0 / 3.0 * (ctrl[0] - b[0]), b[1] + 2.0 / 3.0 * (ctrl[1] - b[1]))
+                current.append((a, c1, c2, b))
+            start = b
+        elif kind == "cubic":
+            a = start if start is not None else (
+                _command_point(command["from"]) if "from" in command else None)
+            c1 = _command_point(command["control1"])
+            c2 = _command_point(command["control2"])
+            b = _command_point(command["to"])
+            if a is not None:
+                current.append((a, c1, c2, b))
+            start = b
+    if current:
+        subpaths.append(current)
+    return subpaths
+
+
+def _boundary_t(cub, t_in, t_out, polygons):
+    """Bisect the cubic parameter between an inside and an outside sample."""
+    inside_at_in = _point_in_polygons(_cubic_point(cub, t_in), polygons)
+    a, b = t_in, t_out
+    for _ in range(18):
+        m = (a + b) * 0.5
+        if _point_in_polygons(_cubic_point(cub, m), polygons) == inside_at_in:
+            a = m
+        else:
+            b = m
+    return (a + b) * 0.5
+
+
+def _clip_cubics(cubics, polygons):
+    """Split a subpath of cubics into the runs that lie inside `polygons`.
+
+    Mirrors _clip_polyline's semantics but keeps curve segments: each cubic is
+    sampled, boundary crossings are located by bisecting the cubic parameter,
+    and de Casteljau splitting extracts the inside sub-cubics. Runs that stay
+    inside across a cubic boundary are kept as one piece.
+    """
+    if not polygons:
+        return [list(cubics)]
+
+    pieces = []
+    current = []
+    for cub in cubics:
+        p0, c1, c2, p3 = cub
+        net = _dist(p0, c1) + _dist(c1, c2) + _dist(c2, p3)
+        n = max(6, min(64, int(math.ceil(net / 3.0))))
+        ts = [k / n for k in range(n + 1)]
+        inside = [_point_in_polygons(_cubic_point(cub, t), polygons) for t in ts]
+        k = 0
+        while k <= n:
+            if not inside[k]:
+                k += 1
+                continue
+            t_start = 0.0 if k == 0 else _boundary_t(cub, ts[k], ts[k - 1], polygons)
+            j = k
+            while j + 1 <= n and inside[j + 1]:
+                j += 1
+            t_end = 1.0 if j == n else _boundary_t(cub, ts[j], ts[j + 1], polygons)
+            sub = _split_cubic(cub, t_start, t_end)
+            if current and t_start <= 0.0:
+                current.append(sub)          # continues the previous cubic's run
+            else:
+                if current:
+                    pieces.append(current)
+                current = [sub]
+            if t_end < 1.0:                   # run ended inside this cubic
+                pieces.append(current)
+                current = []
+            k = j + 1
+    if current:
+        pieces.append(current)
+    return pieces
+
+
+def _cubics_to_commands(cubics):
+    """(command list for make_stroke_object_from_path, dense flattening)."""
+    if not cubics:
+        return [], []
+    commands = [{"type": "move", "to": {"x": cubics[0][0][0], "y": cubics[0][0][1]}}]
+    flat = [cubics[0][0]]
+    for _, c1, c2, p3 in cubics:
+        commands.append({
+            "type": "cubic",
+            "control1": {"x": c1[0], "y": c1[1]},
+            "control2": {"x": c2[0], "y": c2[1]},
+            "to": {"x": p3[0], "y": p3[1]},
+        })
+    for cub in cubics:
+        _flatten_cubic(cub, flat)
+    return commands, flat
+
+
+# ---------------------------------------------------------------------------
 # mapping asset dict + overlay display
 # ---------------------------------------------------------------------------
+
+def _direction_arrow_points(points, size):
+    """Arrowhead polyline [wing, tip, wing] at a guide's END point.
+
+    The mapping is direction-sensitive: child guide start/end maps onto main
+    guide start/end, so drawing a main center line in the opposite direction
+    deliberately flips the texture along that axis. The arrow makes the drawn
+    direction visible. The tangent is smoothed over a window because raw
+    hand-drawn end segments jitter (same reason as the spine rotation).
+    """
+    cumulative = _cumulative_lengths(points)
+    total = cumulative[-1]
+    if total <= 1e-6:
+        return None
+    window = max(2.0 * POLY_STEP, 0.05 * total)
+    dx, dy = _tangent_at_arc(points, cumulative, total, window)
+    tip = points[-1]
+    back_x, back_y = -dx, -dy
+    spread = math.radians(28.0)
+    cos_s, sin_s = math.cos(spread), math.sin(spread)
+    wing1 = (tip[0] + size * (back_x * cos_s - back_y * sin_s),
+             tip[1] + size * (back_x * sin_s + back_y * cos_s))
+    wing2 = (tip[0] + size * (back_x * cos_s + back_y * sin_s),
+             tip[1] + size * (-back_x * sin_s + back_y * cos_s))
+    return [wing1, tip, wing2]
+
 
 def _push_overlay(view_name):
     """Send this view's mapping assets to the generic C++ overlay display."""
@@ -571,13 +1068,23 @@ def _push_overlay(view_name):
     for prop, color in ((H_PROPERTY, H_COLOR), (V_PROPERTY, V_COLOR)):
         guide = assets.get(prop)
         if guide and len(guide.get("points") or []) >= 2:
+            width = float(guide.get("width", 3.0))
             items.append({
                 "id": prop,
                 "points": guide["points"],
                 "color": color,
-                "width": float(guide.get("width", 3.0)),
+                "width": width,
                 "removable": True,
             })
+            arrow = _direction_arrow_points(guide["points"], max(12.0, 3.5 * width))
+            if arrow:
+                items.append({
+                    "id": prop + "_arrow",
+                    "points": arrow,
+                    "color": color,
+                    "width": width,
+                    "removable": False,
+                })
     area = assets.get(MAPPING_AREA_PROPERTY)
     if area:
         for polygon in area.get("polygons") or []:
@@ -714,6 +1221,13 @@ def _detect_region(scene, view_name, frame, seed):
     for layer in structure["layers"]:
         if not layer["visible"] or layer["type"] == "fill":
             continue
+        # Cheap probe first (no 4px path flattening): stacked mapping runs add
+        # a layer per click, and every mapped layer is 100% MAPPED_PROPERTY
+        # strokes, so the expensive to_poly fetch would be pure waste there.
+        probe = scene.cell_to_dict(layer["index"], frame, False, POLY_STEP)
+        if all((stroke.get("property") or "") == MAPPED_PROPERTY
+               for stroke in probe["image"]["strokes"]):
+            continue
         cell = scene.cell_to_dict(layer["index"], frame, True, POLY_STEP)
         for stroke in cell["image"]["strokes"]:
             # A previous mapping result must not act as a region boundary,
@@ -749,7 +1263,14 @@ def _content_rect(segments, seed):
 
 
 def _absorb_legacy_items(view_name, scene, frame):
-    """Migrate guide strokes / area fills that older builds stored in layers."""
+    """Migrate guide strokes / area fills that older builds stored in layers.
+
+    Fetched with to_poly=False: this scan runs on EVERY mapping click over
+    every layer (a growing set now that runs stack), and flattening each
+    stroke's path at 4px just to look for a legacy property is the dominant
+    per-click cost. _stroke_points falls back to raw_points, which for a
+    hand-drawn legacy guide are the drawn points themselves.
+    """
     assets = _assets_for(view_name)
     structure = scene.get_structure()
     if frame < 0 or frame >= structure["frame_count"]:
@@ -757,7 +1278,7 @@ def _absorb_legacy_items(view_name, scene, frame):
     changed = False
     for layer in structure["layers"]:
         layer_index = layer["index"]
-        cell = scene.cell_to_dict(layer_index, frame, True, POLY_STEP)
+        cell = scene.cell_to_dict(layer_index, frame, False, POLY_STEP)
         strokes = cell["image"]["strokes"]
         for index in range(len(strokes) - 1, -1, -1):
             prop = strokes[index].get("property") or ""
@@ -788,16 +1309,21 @@ def _absorb_legacy_items(view_name, scene, frame):
 # scene scanning + mapping
 # ---------------------------------------------------------------------------
 
-def _collect_pattern_strokes(scene, frame):
+def _collect_pattern_strokes(scene, frame, want_commands=False):
+    """Pattern strokes on `frame`. With want_commands the strokes carry their
+    real Bezier "commands" (to_poly=False, for bezier mode); otherwise the 4px
+    "polylines" flattening (for polyline / spline modes)."""
     pattern = []
     structure = scene.get_structure()
     if frame < 0 or frame >= structure["frame_count"]:
         return pattern
-    skip = (*GUIDE_PROPERTIES, MAPPED_PROPERTY, AUTO_MAPPING_TOOL, MAPPING_AREA_PROPERTY)
+    skip = (*GUIDE_PROPERTIES, MAPPED_PROPERTY, AUTO_MAPPING_TOOL, AUTO_MAPPING2_TOOL,
+            MAPPING_AREA_PROPERTY)
+    to_poly = not want_commands
     for layer in structure["layers"]:
         if not layer["visible"] or layer["type"] == "fill":
             continue
-        cell = scene.cell_to_dict(layer["index"], frame, True, POLY_STEP)
+        cell = scene.cell_to_dict(layer["index"], frame, to_poly, POLY_STEP)
         for stroke in cell["image"]["strokes"]:
             if (stroke.get("property") or "") in skip:
                 continue
@@ -805,137 +1331,173 @@ def _collect_pattern_strokes(scene, frame):
     return pattern
 
 
-def _remove_previous_mapping(scene, row):
-    """Drop every previously mapped stroke on this frame, in any layer.
+def _create_mapped_layer(scene, row):
+    """Create a FRESH mapped layer for this run and return its index (0 = top).
 
-    Scanning all layers (not just the mapped layer) also cleans up results
-    produced before the mapping got its own layer, so a re-run never leaves
-    a duplicate copy behind in whatever layer used to be current.
-    """
-    structure = scene.get_structure()
-    if row < 0 or row >= structure["frame_count"]:
-        return 0
+    Every Auto Mapping click gets its own layer (user request 2026-07-30):
+    results stack instead of replacing each other, so different guide setups
+    can be compared side by side and bad attempts hidden or deleted
+    individually (note: the Layers panel only lists a layer on frames where
+    it has a cell, i.e. on the frame it was mapped on). uniqueLayerName()
+    drifts the name to "mapped layer1", "mapped layer2", ... automatically.
 
-    removed = 0
-    for layer in structure["layers"]:
-        layer_index = layer["index"]
-        strokes = scene.cell_to_dict(layer_index, row, False, POLY_STEP)["image"]["strokes"]
-        for index in range(len(strokes) - 1, -1, -1):
-            if (strokes[index].get("property") or "") == MAPPED_PROPERTY:
-                scene.remove_stroke(row, layer_index, index)
-                removed += 1
-    return removed
+    The creation cell that add_layer() writes - {private asset, frame_id 1} -
+    is kept VERBATIM: the asset belongs to this run alone and holds exactly
+    one cell, so frame id 1 is collision-free, and 1 is the canonical id every
+    asset-resolution path assumes (assignAssetToLayer hard-codes it). Pointing
+    the cell elsewhere would leave an empty canonical image behind: dragging
+    the asset from the Asset panel onto the Layers panel would show nothing,
+    and every save would carry a dead drawing (review-proven).
 
-
-def _is_mapped_layer_name(name):
-    """True for "mapped layer" and its "mapped layer1"/"mapped layer2" variants.
-
-    Deleting a layer keeps its asset, and uniqueLayerName() refuses a name any
-    remaining asset still holds, so set_layer_name() can hand back a numbered
-    variant. Matching those too keeps the layer reusable instead of appending a
-    fresh one on every run.
-    """
-    if not name or not name.startswith(MAPPED_LAYER_NAME):
-        return False
-    suffix = name[len(MAPPED_LAYER_NAME):]
-    return suffix == "" or suffix.isdigit()
-
-
-def _free_frame_id(layer, row, asset_index):
-    """Pick a frame id no other row of this layer/asset already uses.
-
-    A cell resolves its drawing through (asset_index, frame_id), so two rows
-    sharing a frame id would silently share one image. add_layer() hard-codes
-    frame_id 1 on its creation row whatever that row number is, so row + 1 on
-    its own is not collision-free.
-    """
-    used = set()
-    for cell in (layer or {}).get("cells") or []:
-        if cell["frame_index"] != row and cell["asset_index"] == asset_index:
-            used.add(cell["frame_id"])
-    frame_id = row + 1
-    while frame_id in used:
-        frame_id += 1
-    return frame_id
-
-
-def _layer_info(scene, layer_index):
-    for layer in scene.get_structure()["layers"]:
-        if layer["index"] == layer_index:
-            return layer
-    return None
-
-
-def _ensure_mapped_layer(scene, row):
-    """Return the index of the dedicated "mapped layer", creating it if missing.
-
-    The mapping result never touches whatever layer the user has selected: it
-    always lands in its own layer, so it can be hidden, reordered or deleted
-    independently. The layer is reused across runs (matched by name) instead of
-    piling up a new layer every time Auto Mapping is clicked. The user's own
-    frame/layer/asset selection is restored before returning, because
-    add_layer()/add_asset() select what they create.
+    add_layer() appends, and paintGL draws last-index-first, so an appended
+    layer lands at the BOTTOM of the z-order - each new run would be occluded
+    by the previous ones. The fresh column is therefore moved to index 0
+    (top), with the fill source-layer indices remapped to follow the shift.
+    The user's frame/layer/asset selection is restored before returning
+    (add_layer() selects what it creates; the move shifts old indices by +1).
     """
     saved_frame = scene.current_frame()
     saved_layer = scene.current_layer()
     saved_asset = scene.current_asset()
 
-    def restore():
+    layer_index = scene.add_layer()
+    if layer_index < 0:
         scene.set_current_frame(saved_frame)
         scene.set_current_layer(saved_layer)
         scene.set_current_asset(saved_asset)
+        return -1
+    scene.set_layer_name(layer_index, MAPPED_LAYER_NAME)
 
-    exact = None
-    numbered = None
-    for layer in scene.get_structure()["layers"]:
-        name = layer["name"] or layer["column_name"]
-        if not _is_mapped_layer_name(name):
-            continue
-        if name == MAPPED_LAYER_NAME:
-            if exact is None:
-                exact = layer
-        elif numbered is None:
-            numbered = layer
-    found = exact if exact is not None else numbered
+    moved = scene.move_layer(layer_index, 0)
+    if moved:
+        scene.remap_fill_source_layers_after_move(layer_index, 0)
+        layer_index = 0
+        if saved_layer >= 0:
+            saved_layer += 1
 
-    layer_index = -1
-    asset_index = -1
-    if found is not None:
-        layer_index = found["index"]
-        for cell in found["cells"]:
-            if cell["asset_index"] >= 0:
-                asset_index = cell["asset_index"]
-                break
-    else:
-        layer_index = scene.add_layer()
-        if layer_index < 0:
-            restore()
-            return -1
-        scene.set_layer_name(layer_index, MAPPED_LAYER_NAME)
-        created_row = scene.current_frame()
-        asset_index = scene.cell_asset_index(created_row, layer_index)
-        # add_layer() writes frame_id 1 on the creation row; normalise it to the
-        # row + 1 convention used everywhere else so a later run on a different
-        # row cannot end up aliasing this row's drawing.
-        if asset_index >= 0:
-            cell = _animean().Cell()
-            cell.asset_index = asset_index
-            cell.frame_id = created_row + 1
-            scene.set_cell(created_row, layer_index, cell)
-        print(f"[auto_mapping] created layer '{scene.layer_name(layer_index)}' in main_paint_view")
-
-    # A reused layer may have no cell on this frame yet: back it with the
-    # layer's own asset so image_at() cannot silently rename the column.
-    if scene.cell_asset_index(row, layer_index) < 0:
-        if asset_index < 0:
-            asset_index = scene.add_asset("vector", MAPPED_LAYER_NAME)
-        cell = _animean().Cell()
-        cell.asset_index = asset_index
-        cell.frame_id = _free_frame_id(_layer_info(scene, layer_index), row, asset_index)
-        scene.set_cell(row, layer_index, cell)
-
-    restore()
+    scene.set_current_frame(saved_frame)
+    scene.set_current_layer(saved_layer)
+    scene.set_current_asset(saved_asset)
+    print(f"[auto_mapping] created layer '{scene.layer_name(layer_index)}' in main_paint_view")
     return layer_index
+
+
+def _discard_mapped_layer(scene, layer_index):
+    """Roll back _create_mapped_layer when a run cannot commit anything.
+
+    A failed or fully-clipped run must not leave an empty layer behind: with
+    no history commit of its own, the orphan would silently ride along in the
+    NEXT unrelated commit and could never be undone individually.
+    """
+    try:
+        scene.delete_layer(layer_index)
+        scene.remap_fill_source_layers_after_delete(layer_index)
+    except Exception as error:
+        print(f"[auto_mapping] could not roll back the empty mapped layer: {error}")
+
+
+def _stroke_polylines(stroke):
+    """Per-subpath point lists (does NOT concatenate separate subpaths, unlike
+    _stroke_points, so distinct subpaths never get a bogus joining segment)."""
+    result = []
+    for polyline in stroke.get("polylines") or []:
+        pts = [(float(point["x"]), float(point["y"])) for point in polyline]
+        if len(pts) >= 2:
+            result.append(pts)
+    if not result:
+        raw = [(float(point["x"]), float(point["y"])) for point in (stroke.get("raw_points") or [])]
+        if len(raw) >= 2:
+            result.append(raw)
+    return result
+
+
+def _stroke_style(stroke, width_scale):
+    color = stroke.get("color") or {}
+    color_tuple = (int(color.get("r", 0)), int(color.get("g", 0)),
+                   int(color.get("b", 0)), int(color.get("a", 255)))
+    width = max(0.5, float(stroke.get("width", 3.0)) * width_scale)
+    return color_tuple, width
+
+
+def _add_polyline_stroke(animean, image, points, color_tuple, width):
+    if len(points) < 2:
+        return False
+    obj = animean.vectorlogic.make_stroke_object(
+        points, color_tuple, width, image.stroke_count() + 1, False, False)
+    obj.property = MAPPED_PROPERTY
+    image.add_stroke_object(obj)
+    return True
+
+
+def _add_curved_stroke(animean, image, commands, flat, color_tuple, width):
+    if len(commands) < 2 or len(flat) < 2:
+        return False
+    obj = animean.vectorlogic.make_stroke_object_from_path(
+        commands, flat, color_tuple, width, image.stroke_count() + 1)
+    obj.property = MAPPED_PROPERTY
+    image.add_stroke_object(obj)
+    return True
+
+
+def _emit_polyline_mode(animean, image, stroke, map_point, child_area, main_area, color_tuple, width):
+    """Same anchored sampling as spline mode, but the output stays a polyline.
+
+    Originals are anchors, samples are inserted between them, everything is
+    mapped, the inserted samples are decimated span-wise - and the surviving
+    points are joined with straight segments instead of a fitted curve.
+    (User 2026-07-30: polyline mode must sample too; it is not a legacy mode.)
+    """
+    added = 0
+    eps = rdp_eps()
+    for poly in _stroke_polylines(stroke):
+        for piece in _clip_polyline(poly, child_area):
+            flagged = _adaptive_map_polyline(map_point, piece)
+            for out in _clip_flagged(flagged, main_area):
+                points = _decimate_between_anchors(out, eps)
+                if _add_polyline_stroke(animean, image, points, color_tuple, width):
+                    added += 1
+    return added
+
+
+def _emit_spline_mode(animean, image, stroke, map_point, child_area, main_area, color_tuple, width):
+    """The user's route 1: originals stay anchors, only inserted samples decimate.
+
+    Densify between the original vertices -> map everything -> RDP only the
+    inserted samples of each span -> centripetal Catmull-Rom through the knots.
+    """
+    added = 0
+    eps = rdp_eps()
+    for poly in _stroke_polylines(stroke):
+        for piece in _clip_polyline(poly, child_area):
+            flagged = _adaptive_map_polyline(map_point, piece)
+            for out in _clip_flagged(flagged, main_area):
+                knots = _decimate_between_anchors(out, eps)
+                commands, flat = _cubics_to_commands(_catmull_rom_cubics(knots))
+                if _add_curved_stroke(animean, image, commands, flat, color_tuple, width):
+                    added += 1
+    return added
+
+
+def _emit_bezier_mode(animean, image, stroke, map_point, child_area, main_area, color_tuple, width):
+    """Keep the artist's Bezier segments; transport each handle through the warp."""
+    added = 0
+    for cubics in _commands_to_subpaths(stroke.get("commands")):
+        for src_piece in _clip_cubics(cubics, child_area):
+            out_cubics = []
+            for cub in src_piece:
+                out_cubics.extend(_warp_cubic(map_point, cub))
+            for out_piece in _clip_cubics(out_cubics, main_area):
+                commands, flat = _cubics_to_commands(out_piece)
+                if _add_curved_stroke(animean, image, commands, flat, color_tuple, width):
+                    added += 1
+    return added
+
+
+_EMITTERS = {
+    "polyline": _emit_polyline_mode,
+    "spline": _emit_spline_mode,
+    "bezier": _emit_bezier_mode,
+}
 
 
 def _perform_mapping(version=1):
@@ -943,6 +1505,9 @@ def _perform_mapping(version=1):
     child = _scene_model("child")
     main = _scene_model("main")
     _MAPPER_VERSION["value"] = version
+    mode = curve_mode()
+    if mode not in _EMITTERS:
+        mode = "spline"
 
     child_frame = max(child.current_frame(), 0)
     main_frame = max(main.current_frame(), 0)
@@ -971,7 +1536,7 @@ def _perform_mapping(version=1):
         print("[auto_mapping] draw the guides with the 'H Center Line' / 'V Center Line' tools first.")
         return False
 
-    child_pattern = _collect_pattern_strokes(child, child_frame)
+    child_pattern = _collect_pattern_strokes(child, child_frame, want_commands=mode == "bezier")
     if not child_pattern:
         print("[auto_mapping] child_paint_view has no pattern strokes to map.")
         return False
@@ -1006,48 +1571,49 @@ def _perform_mapping(version=1):
               f"(side scale mismatch x{worst_mismatch:.1f}); strokes crossing a center "
               "line will fold there. Place both crossings at similar positions along "
               "their lines to avoid it.")
+    if mapper_info.get("mirrored"):
+        print("[auto_mapping] note: the child and main guide frames have OPPOSITE "
+              "handedness, so the result is a MIRROR image. If you wanted it "
+              "unmirrored, reverse ONE main center line (redraw it in the other "
+              "direction - watch the arrows).")
 
     child_area = (child_assets.get(MAPPING_AREA_PROPERTY) or {}).get("polygons")
     main_area = (main_assets.get(MAPPING_AREA_PROPERTY) or {}).get("polygons")
 
-    replaced = _remove_previous_mapping(main, main_frame)
-    mapped_layer = _ensure_mapped_layer(main, main_frame)
+    mapped_layer = _create_mapped_layer(main, main_frame)
     if mapped_layer < 0:
         print(f"[auto_mapping] could not create the '{MAPPED_LAYER_NAME}' in main_paint_view.")
         return False
 
     image = main.image_at(main_frame, mapped_layer, True)
     if image is None:
+        _discard_mapped_layer(main, mapped_layer)
         print(f"[auto_mapping] '{MAPPED_LAYER_NAME}' has no editable cell to draw into.")
         return False
 
+    emit = _EMITTERS[mode]
     added = 0
     clipped_out = 0
-    for stroke in child_pattern:
-        source_pieces = _clip_polyline(_stroke_points(stroke), child_area)
-        output_pieces = []
-        for piece in source_pieces:
-            mapped = [map_point(point) for point in piece]
-            output_pieces.extend(_clip_polyline(mapped, main_area))
-        if not output_pieces:
-            clipped_out += 1
-            continue
-        color = stroke.get("color") or {}
-        width = max(0.5, float(stroke.get("width", 3.0)) * width_scale)
-        for points in output_pieces:
-            if len(points) < 2:
-                continue
-            stroke_object = animean.vectorlogic.make_stroke_object(
-                points,
-                (int(color.get("r", 0)), int(color.get("g", 0)), int(color.get("b", 0)), int(color.get("a", 255))),
-                width,
-                image.stroke_count() + 1,
-                False,
-                False,
-            )
-            stroke_object.property = MAPPED_PROPERTY
-            image.add_stroke_object(stroke_object)
-            added += 1
+    try:
+        for stroke in child_pattern:
+            color_tuple, width = _stroke_style(stroke, width_scale)
+            before = added
+            added += emit(animean, image, stroke, map_point, child_area, main_area, color_tuple, width)
+            if added == before:
+                clipped_out += 1
+    except Exception:
+        # A half-filled layer without its own history commit would silently
+        # ride along in the NEXT unrelated commit; roll it back instead.
+        _discard_mapped_layer(main, mapped_layer)
+        animean.ui.refresh()
+        raise
+
+    if added == 0:
+        _discard_mapped_layer(main, mapped_layer)
+        animean.ui.refresh()
+        print(f"[auto_mapping] nothing mapped: all {clipped_out} stroke(s) fell outside "
+              "the mapping area(s); the empty layer was discarded.")
+        return False
 
     animean.ui.refresh()
     algorithm = "Auto Mapping" if version == 1 else "Auto Mapping 2"
@@ -1056,11 +1622,11 @@ def _perform_mapping(version=1):
     except Exception:
         pass  # older builds without the history binding
     summary = (f"[auto_mapping] {algorithm} "
-               f"({'spine rotation' if version == 1 else 'coons interpolation'}) mapped "
-               f"{added} stroke(s) into '{main.layer_name(mapped_layer)}' "
-               f"(layer {mapped_layer + 1} of main_paint_view, width x{width_scale:.2f})")
-    if replaced:
-        summary += f", replaced {replaced} previous"
+               f"({'spine rotation' if version == 1 else 'coons interpolation'}, {mode} mode) mapped "
+               f"{added} stroke(s) into NEW layer '{main.layer_name(mapped_layer)}' "
+               f"(top of stack, frame {main_frame + 1} of main_paint_view, width x{width_scale:.2f})")
+    if mapper_info.get("mirrored"):
+        summary += ", MIRRORED (opposite frame handedness)"
     if child_area:
         summary += ", source limited by child mapping area"
     if main_area:
@@ -1179,7 +1745,23 @@ def _auto_mapping2_button(cell, stroke, message):
 
 
 def _tool_option_changed(cell, stroke, message):
-    if message.get("hook") != "refer_rect":
+    hook = message.get("hook")
+    if hook == "curve_mode":
+        value = str(message.get("value", "")).lower()
+        if value in CURVE_MODES and _CURVE_MODE["value"] != value:
+            _CURVE_MODE["value"] = value
+            print(f"[auto_mapping] curve mode -> {value}")
+        return
+    if hook == "rdp_eps":
+        try:
+            eps = max(1, min(20, int(message.get("value", 3)))) / 10.0
+        except (TypeError, ValueError):
+            return
+        if _RDP_STATE["eps"] != eps:
+            _RDP_STATE["eps"] = eps
+            print(f"[auto_mapping] RDP tolerance -> {eps:.1f}px")
+        return
+    if hook != "refer_rect":
         return
     enabled = str(message.get("value", "")).lower() == "on"
     if _REFER_RECT["enabled"] == enabled:

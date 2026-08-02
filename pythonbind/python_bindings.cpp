@@ -1349,6 +1349,7 @@ void bindAnimeanPythonModule(py::module_ &m)
              py::arg("name") = "")
         .def("delete_layer", &AnimeSceneModel::deleteLayer)
         .def("remap_fill_source_layers_after_delete", &AnimeSceneModel::remapFillSourceLayersAfterDelete)
+        .def("remap_fill_source_layers_after_move", &AnimeSceneModel::remapFillSourceLayersAfterMove)
         .def("move_layer", &AnimeSceneModel::moveLayer)
         .def("add_frame", &AnimeSceneModel::addFrame)
         .def("delete_frame", &AnimeSceneModel::deleteFrame)
@@ -1607,6 +1608,29 @@ void bindAnimeanPythonModule(py::module_ &m)
                     py::arg("filter_input") = true,
                     py::arg("smooth_path") = true,
                     py::arg("smooth_value") = 50);
+    vectorLogic.def("make_stroke_object_from_path",
+                    [](py::object commands,
+                       py::object points,
+                       py::object color,
+                       qreal width,
+                       int id) {
+                        // Generic mechanism: build a stroke whose QPainterPath keeps
+                        // its curve segments (from `commands`) while `points` carries a
+                        // dense flattening so hit-testing / erasing / subStroke still
+                        // work. The command format is the same one objectToPath()
+                        // already parses (move/line/quad/cubic dicts). All the
+                        // curve-fitting logic lives in Python (auto_mapping.py).
+                        return AnimeVectorLogic::makeStrokeFromPath(objectToPath(commands),
+                                                                    objectToPoints(points),
+                                                                    objectToColor(color),
+                                                                    width,
+                                                                    id);
+                    },
+                    py::arg("commands"),
+                    py::arg("points"),
+                    py::arg("color") = py::make_tuple(0, 0, 0, 255),
+                    py::arg("width") = 3.0,
+                    py::arg("id") = 0);
     vectorLogic.def("stroke_hits_circle",
                     [](const AnimeVectorStroke &stroke, py::object center, qreal radius) {
                         return AnimeVectorLogic::strokeHitsCircle(stroke, objectToPointF(center, "center"), radius);

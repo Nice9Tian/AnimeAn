@@ -123,27 +123,52 @@ def options_for_extra_tool(tool, state=None):
             _slider("pen_width", "Width", "pen_width", 1, 50, int(state.get("pen_width", 5)), 1),
         ]
     elif tool in ("auto_mapping", "auto_mapping_2"):
-        # Debug aid: overlays the mapping's 3x3 anchor grid in both views so
-        # a wrong mapping is visible at a glance.
+        # Curve Mode picks how the mapped strokes' geometry is rebuilt after the
+        # (non-linear) warp; RDP is the decimation tolerance for the samples
+        # inserted between original points (0.1px units; originals are never
+        # decimated); Refer Rect overlays the mapping's 3x3 anchor grid in both
+        # views so a wrong mapping is visible at a glance.
         try:
             import auto_mapping
-            current = "on" if auto_mapping.refer_rect_enabled() else "off"
+            mode = auto_mapping.curve_mode()
+            rdp_tenths = int(round(auto_mapping.rdp_eps() * 10))
+            refer = "on" if auto_mapping.refer_rect_enabled() else "off"
         except Exception:
-            current = "off"
+            mode = "spline"
+            rdp_tenths = 3
+            refer = "off"
         controls = [
             {
-                "name": "refer_rect",
+                "name": "curve_mode",
                 "type": "list",
-                "title": "Refer Rect",
-                "hook": "refer_rect",
-                "value": current,
+                "title": "Curve Mode",
+                "hook": "curve_mode",
+                "value": mode,
                 "row": 0,
                 "start_column": 0,
                 "end_column": 2,
                 "options": [
-                    {"title": "Off", "value": "off"},
-                    {"title": "On", "value": "on"},
+                    {"title": "Spline", "value": "spline"},
+                    {"title": "Bezier", "value": "bezier"},
+                    {"title": "Polyline", "value": "polyline"},
                 ],
+            },
+            {
+                # RDP decimation exists in the sampled modes (spline/polyline):
+                # hide the label and slider on bezier so nobody assumes the
+                # handle-transport route uses it too.
+                **_slider("rdp_eps", "RDP (x0.1px)", "rdp_eps", 1, 20, rdp_tenths, 1),
+                "visible_when": {"name": "curve_mode", "values": ["spline", "polyline"]},
+            },
+            {
+                "name": "refer_rect",
+                "type": "check",
+                "title": "Refer Rect",
+                "hook": "refer_rect",
+                "value": refer,
+                "row": 2,
+                "start_column": 0,
+                "end_column": 2,
             },
         ]
     else:

@@ -2,6 +2,7 @@
 #include "ui_tooloptpanel.h"
 
 #include <QAbstractItemView>
+#include <QCheckBox>
 #include <QGridLayout>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -148,6 +149,8 @@ void ToolOptPanel::configureControls(const QJsonArray &controls, int rowSpacing,
             widget = createListControl(control);
         } else if (type == QStringLiteral("slider")) {
             widget = createSliderControl(control);
+        } else if (type == QStringLiteral("check") || type == QStringLiteral("checkbox")) {
+            widget = createCheckControl(control);
         }
 
         if (!widget) {
@@ -157,6 +160,23 @@ void ToolOptPanel::configureControls(const QJsonArray &controls, int rowSpacing,
         const QString name = textValue(control, QStringLiteral("name"));
         if (!name.isEmpty()) {
             m_controls.insert(name, widget);
+            m_controlValues.insert(name, control.value(QStringLiteral("value")).toVariant().toString());
+        }
+
+        const QJsonObject visibleWhen = control.value(QStringLiteral("visible_when")).toObject();
+        const QString watch = textValue(visibleWhen, QStringLiteral("name"));
+        if (!watch.isEmpty()) {
+            VisibilityRule rule;
+            rule.watch = watch;
+            for (const QJsonValue &option : visibleWhen.value(QStringLiteral("values")).toArray()) {
+                rule.values.append(option.toVariant().toString());
+            }
+            const QString single = visibleWhen.value(QStringLiteral("value")).toVariant().toString();
+            if (!single.isEmpty()) {
+                rule.values.append(single);
+            }
+            rule.target = widget;
+            m_visibilityRules.append(rule);
         }
 
         nextColumnForRow[row] = qMax(nextColumnForRow.value(row, 0), startColumn + columnSpan);
@@ -165,6 +185,7 @@ void ToolOptPanel::configureControls(const QJsonArray &controls, int rowSpacing,
     }
 
     if (hasWidgets) {
+        applyVisibilityRules();
         m_layout->insertWidget(m_layout->count() - 1, gridContainer);
     } else {
         gridContainer->deleteLater();
@@ -315,8 +336,43 @@ QWidget *ToolOptPanel::createSliderControl(const QJsonObject &control)
     return container;
 }
 
+QWidget *ToolOptPanel::createCheckControl(const QJsonObject &control)
+{
+    const QString name = textValue(control, QStringLiteral("name"));
+    const QString hook = textValue(control, QStringLiteral("hook"), name);
+    const int row = intValue(control, QStringLiteral("row"), 0);
+    const int startColumn = intValue(control, QStringLiteral("start_column"), 0);
+    const int endColumn = intValue(control, QStringLiteral("end_column"), startColumn);
+    QCheckBox *check = new QCheckBox(textValue(control, QStringLiteral("title")), this);
+    check->setObjectName(name);
+    check->setFont(ui->standardList->font());
+    const QString value = textValue(control, QStringLiteral("value")).toLower();
+    check->setChecked(value == QStringLiteral("on") || value == QStringLiteral("true")
+                      || control.value(QStringLiteral("value")).toBool(false));
+    connect(check, &QCheckBox::toggled, this, [this, hook, name, row, startColumn, endColumn](bool checked) {
+        emitOptionChanged(hook, name, QStringLiteral("check"),
+                          checked ? QStringLiteral("on") : QStringLiteral("off"),
+                          row, startColumn, endColumn);
+    });
+    return check;
+}
+
+void ToolOptPanel::applyVisibilityRules()
+{
+    for (const VisibilityRule &rule : m_visibilityRules) {
+        if (rule.target) {
+            rule.target->setVisible(rule.values.contains(m_controlValues.value(rule.watch)));
+        }
+    }
+}
+
 void ToolOptPanel::emitOptionChanged(const QString &hook, const QString &name, const QString &type, const QVariant &value, int row, int startColumn, int endColumn)
 {
+    if (!name.isEmpty()) {
+        m_controlValues.insert(name, value.toString());
+        applyVisibilityRules();
+    }
+
     emit optionChanged(hook, name, type, value, row, startColumn, endColumn);
 
     if (hook == QStringLiteral("color")) {
@@ -344,6 +400,8 @@ void ToolOptPanel::emitOptionChanged(const QString &hook, const QString &name, c
 void ToolOptPanel::clearControls()
 {
     m_controls.clear();
+    m_visibilityRules.clear();
+    m_controlValues.clear();
     while (m_layout->count() > 1) {
         QLayoutItem *item = m_layout->takeAt(0);
         if (QWidget *widget = item->widget()) {

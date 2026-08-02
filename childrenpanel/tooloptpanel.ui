@@ -104,18 +104,19 @@ QSlider::handle:horizontal:pressed {
    </property>
    <property name="styleSheet">
     <string notr="true">QListWidget {
-    border: 1px solid #b8b8b8;
+    border: 1px solid palette(mid);
     border-radius: 3px;
-    background: #ffffff;
+    background: palette(base);
     padding: 2px;
 }
 QListWidget::item {
     min-height: 22px;
     padding: 3px 6px;
     border-radius: 2px;
+    color: palette(text);
 }
 QListWidget::item:hover {
-    background: #e7f3ff;
+    background: rgba(61, 142, 201, 0.35);
 }
 QListWidget::item:selected {
     color: #ffffff;
