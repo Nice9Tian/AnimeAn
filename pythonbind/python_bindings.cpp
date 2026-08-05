@@ -30,6 +30,7 @@ std::function<void(bool frame, bool layer, bool asset, bool widget)> g_uiRefresh
 std::function<void(bool frozen)> g_uiFreezeCallback;
 std::function<void(const QString &view, const QVector<AnimeanOverlayItem> &items)> g_uiOverlayCallback;
 std::function<void(const QColor &color)> g_uiDrawColorCallback;
+std::function<void(const QString &pad, double x, double y)> g_uiPadValueCallback;
 std::function<void(const QString &op, const QString &view, const QString &label)> g_uiHistoryCallback;
 
 void requestUiRefresh(bool frame = true, bool layer = true, bool asset = true, bool widget = true)
@@ -1022,6 +1023,16 @@ void clearAnimeanUiDrawColorCallback()
     g_uiDrawColorCallback = nullptr;
 }
 
+void registerAnimeanUiPadValueCallback(std::function<void(const QString &pad, double x, double y)> callback)
+{
+    g_uiPadValueCallback = std::move(callback);
+}
+
+void clearAnimeanUiPadValueCallback()
+{
+    g_uiPadValueCallback = nullptr;
+}
+
 void registerAnimeanUiHistoryCallback(std::function<void(const QString &op, const QString &view, const QString &label)> callback)
 {
     g_uiHistoryCallback = std::move(callback);
@@ -1120,6 +1131,18 @@ void bindAnimeanPythonModule(py::module_ &m)
             g_uiDrawColorCallback(objectToColor(color, "color"));
         }
     });
+    ui.def("set_pad_value",
+           [](const std::string &pad, double x, double y) {
+               // Generic: move a named vector pad's handle (no signals fire).
+               // Tools use it to recenter a latched pad when the state the
+               // held vector referred to no longer exists.
+               if (g_uiPadValueCallback) {
+                   g_uiPadValueCallback(QString::fromStdString(pad), x, y);
+               }
+           },
+           py::arg("pad"),
+           py::arg("x") = 0.0,
+           py::arg("y") = 0.0);
     ui.def("history_commit",
            [](const std::string &label, const std::string &view) {
                if (g_uiHistoryCallback) {
@@ -1281,7 +1304,27 @@ void bindAnimeanPythonModule(py::module_ &m)
              py::arg("width") = 3.0)
         .def("add_stroke_object", [](AnimeVectorImageModel &image, const AnimeVectorStroke &stroke) {
             image.addStroke(stroke);
-        });
+        })
+        .def("replace_stroke_with_pieces",
+             [](AnimeVectorImageModel &image, int index, py::sequence pieces) {
+                 // Generic in-place geometry swap: keeps the stroke's position
+                 // in the draw order (z) instead of remove+append. Returns the
+                 // number of pieces actually inserted (-1 = invalid index) so
+                 // callers can detect silent drops of degenerate pieces.
+                 if (pieces.size() == 0) {
+                     // An empty list would silently DELETE the stroke; force
+                     // callers to say what they mean with remove_stroke().
+                     throw py::value_error("replace_stroke_with_pieces: pieces is empty; use remove_stroke() to delete.");
+                 }
+                 QVector<AnimeVectorStroke> strokes;
+                 strokes.reserve(static_cast<int>(pieces.size()));
+                 for (py::handle piece : pieces) {
+                     strokes.append(piece.cast<AnimeVectorStroke>());
+                 }
+                 return image.replaceStrokeWithPieces(index, strokes);
+             },
+             py::arg("index"),
+             py::arg("pieces"));
 
     py::class_<AnimeSceneModel>(m, "SceneModel")
         .def(py::init<>())
