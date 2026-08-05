@@ -80,7 +80,7 @@ public:
     bool setFillRegionColor(int index, const QColor &color);
     bool removeFillRegionAt(int index);
     void removeStrokeAt(int index);
-    void replaceStrokeWithPieces(int index, const QVector<AnimeVectorStroke> &pieces);
+    int replaceStrokeWithPieces(int index, const QVector<AnimeVectorStroke> &pieces);
     void clear();
 
 private:

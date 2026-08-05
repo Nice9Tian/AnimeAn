@@ -264,21 +264,27 @@ void AnimeVectorImageModel::removeStrokeAt(int index)
     rebuildBounds();
 }
 
-void AnimeVectorImageModel::replaceStrokeWithPieces(int index, const QVector<AnimeVectorStroke> &pieces)
+int AnimeVectorImageModel::replaceStrokeWithPieces(int index, const QVector<AnimeVectorStroke> &pieces)
 {
+    // Returns the number of pieces actually inserted, or -1 for an invalid
+    // index, so callers can tell a real replacement from a silent no-op
+    // (degenerate pieces are dropped) before e.g. committing history.
     if (index < 0 || index >= m_strokes.size()) {
-        return;
+        return -1;
     }
 
     m_strokes.removeAt(index);
+    int inserted = 0;
     for (int i = pieces.size() - 1; i >= 0; --i) {
         if (pieces[i].points.size() >= 2 && pieces[i].totalLength > 0.0001) {
             AnimeVectorStrokeNode node;
             node.stroke = pieces[i];
             m_strokes.insert(index, node);
+            ++inserted;
         }
     }
     rebuildBounds();
+    return inserted;
 }
 
 void AnimeVectorImageModel::clear()
