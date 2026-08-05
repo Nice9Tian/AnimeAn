@@ -1061,8 +1061,13 @@ def _direction_arrow_points(points, size):
     return [wing1, tip, wing2]
 
 
-def _push_overlay(view_name):
-    """Send this view's mapping assets to the generic C++ overlay display."""
+def overlay_items(view_name):
+    """This view's mapping overlay items (guides + arrows + area + grid).
+
+    Public so other tools (e.g. repulsion_tool's drag preview) can COMPOSE
+    their own items with the mapping display instead of clobbering it -
+    ui.set_overlay replaces a view's whole item list.
+    """
     assets = _assets_for(view_name)
     items = []
     for prop, color in ((H_PROPERTY, H_COLOR), (V_PROPERTY, V_COLOR)):
@@ -1101,8 +1106,13 @@ def _push_overlay(view_name):
         items.extend(_grid_overlay_items(view_name))
     except Exception as error:
         print(f"[auto_mapping] refer rect grid skipped: {error}")
+    return items
+
+
+def _push_overlay(view_name):
+    """Send this view's mapping assets to the generic C++ overlay display."""
     try:
-        _animean().ui.set_overlay(view_name, items)
+        _animean().ui.set_overlay(view_name, overlay_items(view_name))
     except Exception as error:
         print(f"[auto_mapping] overlay update failed: {error}")
 
