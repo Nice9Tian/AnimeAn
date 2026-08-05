@@ -1131,6 +1131,9 @@ void MainWindow::setupPythonDebugDock()
     m_pythonDebugOutput->setObjectName(QStringLiteral("PythonDebugOutput"));
     m_pythonDebugOutput->setPlaceholderText(QStringLiteral("Python debug output"));
     m_pythonDebugOutput->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+    // High-frequency hooks (pad drags, per-move events) must not grow the
+    // document without bound across a session.
+    m_pythonDebugOutput->setMaximumBlockCount(2000);
 
     QHBoxLayout *commandLayout = new QHBoxLayout;
     QLabel *commandLabel = new QLabel(QStringLiteral("Command"), panel);
