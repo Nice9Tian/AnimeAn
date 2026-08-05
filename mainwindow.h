@@ -11,6 +11,7 @@
 
 class AssetPanel;
 class ChildPaintWindow;
+class ForcePadPanel;
 class HistoryPanel;
 class QAction;
 class QDockWidget;
@@ -68,6 +69,7 @@ private:
     void advancePlaybackFrame();
     void createTextureFileMenu();
     void createHistoryDock();
+    void createForcePadDock();
     void refreshHistoryList();
     void scheduleHistoryRefresh();
     PaintOpenGLWidget *undoTargetView() const;
@@ -110,6 +112,8 @@ private:
     QDockWidget *m_pythonDebugDock = nullptr;
     QDockWidget *m_historyDock = nullptr;
     HistoryPanel *m_historyPanel = nullptr;
+    QDockWidget *m_forcePadDock = nullptr;
+    ForcePadPanel *m_forcePadPanel = nullptr;
     QAction *m_undoAction = nullptr;
     QAction *m_redoAction = nullptr;
     QTimer *m_playbackTimer = nullptr;

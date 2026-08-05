@@ -59,6 +59,8 @@ set(PROJECT_SOURCES
     childrenpanel/assetpanel.ui
     childrenpanel/childpaintwindow.cpp
     childrenpanel/childpaintwindow.h
+    childrenpanel/forcepad.cpp
+    childrenpanel/forcepad.h
     childrenpanel/framepanel.cpp
     childrenpanel/framepanel.h
     childrenpanel/framepanel.ui

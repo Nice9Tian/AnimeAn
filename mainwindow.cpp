@@ -3,6 +3,7 @@
 #include "childrenpanel/assetpanel.h"
 #include "childrenpanel/childpaintwindow.h"
 #include "childrenpanel/framepanel.h"
+#include "childrenpanel/forcepad.h"
 #include "childrenpanel/historypanel.h"
 #include "childrenpanel/layerpanel.h"
 #include "clipreader.h"
@@ -477,12 +478,13 @@ void MainWindow::setupDocks()
     m_paintWidget->resetHistory(QStringLiteral("Initial"));
     m_childPaintWidget->resetHistory(QStringLiteral("Initial"));
     createHistoryDock();
+    createForcePadDock();
 
     QMenu *viewMenu = menuBar()->addMenu(QStringLiteral("View"));
     viewMenu->addAction(m_childPaintWindow->toggleViewAction());
     viewMenu->addSeparator();
     for (QDockWidget *dock : {m_toolsDock, m_toolOptDock, m_layerDock, m_assetDock,
-                              m_frameDock, m_historyDock, m_pythonDebugDock}) {
+                              m_frameDock, m_historyDock, m_forcePadDock, m_pythonDebugDock}) {
         if (dock) {
             viewMenu->addAction(dock->toggleViewAction());
         }
@@ -597,6 +599,41 @@ void MainWindow::stopPlayback()
                     attentionFor(view).layer,
                     attentionFor(view).asset);
     setStatusText(QStringLiteral("Paused at frame %1 (vector view)").arg(pausedFrame + 1));
+}
+
+void MainWindow::createForcePadDock()
+{
+    m_forcePadPanel = new ForcePadPanel(this);
+    m_forcePadDock = new QDockWidget(QStringLiteral("Repulsion Pad"), this);
+    m_forcePadDock->setObjectName(QStringLiteral("ForcePadDock"));
+    m_forcePadDock->setWidget(m_forcePadPanel);
+    addDockWidget(Qt::RightDockWidgetArea, m_forcePadDock);
+    // Hidden by default: it is a special-purpose tool surface; the View menu
+    // toggle brings it up.
+    m_forcePadDock->hide();
+
+    // The pad itself is a generic vector input. Routing its phases into the
+    // Python hook system ("pad" event, pad name "force_pad") is the only tool
+    // coupling; the repulsion semantics live in pyfile/repulsion_tool.py.
+    connect(m_forcePadPanel, &ForcePadPanel::padPressed, this, [this](double x, double y) {
+        activePaintWidget()->sendPythonPadMessage(QStringLiteral("force_pad"), QStringLiteral("press"), x, y);
+    });
+    connect(m_forcePadPanel, &ForcePadPanel::padMoved, this, [this](double x, double y) {
+        activePaintWidget()->sendPythonPadMessage(QStringLiteral("force_pad"), QStringLiteral("move"), x, y);
+    });
+    connect(m_forcePadPanel, &ForcePadPanel::padReleased, this, [this](double x, double y) {
+        activePaintWidget()->sendPythonPadMessage(QStringLiteral("force_pad"), QStringLiteral("release"), x, y);
+    });
+
+#ifdef ANIMEAN_WITH_PYTHON
+    // Lets Python recenter the latched handle when its baseline dies
+    // (ui.set_pad_value("force_pad", 0, 0)).
+    registerAnimeanUiPadValueCallback([this](const QString &pad, double x, double y) {
+        if (pad == QStringLiteral("force_pad") && m_forcePadPanel) {
+            m_forcePadPanel->setValue(QPointF(x, y));
+        }
+    });
+#endif
 }
 
 void MainWindow::createHistoryDock()
@@ -1045,6 +1082,10 @@ void MainWindow::setActivePaintView(PaintOpenGLWidget *view)
     refreshPanelTargets();
     scheduleHistoryRefresh();
     syncEmbeddedPythonState();
+    if (m_forcePadDock) {
+        // The pad acts on the active view; say so where the user is looking.
+        m_forcePadDock->setWindowTitle(QStringLiteral("Repulsion Pad - %1").arg(view->viewName()));
+    }
     setStatusText(QStringLiteral("Active paint view: %1").arg(view->viewName()));
 }
 

@@ -451,6 +451,48 @@ void PaintOpenGLWidget::sendPythonToolOptionMessage(const QString &hook, const Q
 #endif
 }
 
+void PaintOpenGLWidget::sendPythonPadMessage(const QString &pad, const QString &phase, double x, double y)
+{
+#ifdef ANIMEAN_WITH_PYTHON
+    const int frameRow = m_model.currentFrame();
+    const int layer = m_model.currentLayer();
+    const AnimeCell cell = m_model.cellAt(frameRow, layer);
+
+    py::gil_scoped_acquire acquire;
+    py::dict cellInfo;
+    cellInfo["row"] = frameRow;
+    cellInfo["layer"] = layer;
+    cellInfo["asset"] = cell.assetIndex;
+    cellInfo["frame_id"] = cell.frameId;
+
+    py::dict message;
+    message["event"] = "pad";
+    message["view"] = m_viewName.toStdString();
+    message["tool"] = (m_activePythonTool.isEmpty() ? toolName(m_tool) : m_activePythonTool).toStdString();
+    message["base_tool"] = toolName(m_tool).toStdString();
+    message["property"] = m_strokeProperty.toStdString();
+    message["cell"] = cellInfo;
+    message["stroke"] = py::dict();
+    message["position"] = pointToPythonDict(QPointF());
+    message["delta"] = pointToPythonDict(QPointF());
+    message["pad"] = pad.toStdString();
+    message["phase"] = phase.toStdString();
+    message["value"] = pointToPythonDict(QPointF(x, y));
+
+    const QString output = ::pythonHookSendMessage(message);
+    // Pad moves stream continuously; quiet dispatches (the "(no output)"
+    // placeholder) would flood the debug dock with a line per mouse move.
+    if (!output.isEmpty() && !output.endsWith(QStringLiteral("(no output)"))) {
+        emit pythonDebugMessage(output);
+    }
+#else
+    Q_UNUSED(pad);
+    Q_UNUSED(phase);
+    Q_UNUSED(x);
+    Q_UNUSED(y);
+#endif
+}
+
 void PaintOpenGLWidget::setTool(Tool tool)
 {
     m_tool = tool;

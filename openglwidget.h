@@ -82,6 +82,7 @@ public:
     void setStrokeProperty(const QString &property);
     void sendPythonExtraToolMessage(const QString &name, const QString &property);
     void sendPythonToolOptionMessage(const QString &hook, const QString &name, const QString &type, const QVariant &value, int row, int startColumn, int endColumn);
+    void sendPythonPadMessage(const QString &pad, const QString &phase, double x, double y);
     void setTool(Tool tool);
     Tool tool() const;
     void setFillScope(FillScope scope);
