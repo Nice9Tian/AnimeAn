@@ -326,6 +326,12 @@ QJsonObject modelToJson(const AnimeSceneModel &model)
     QJsonArray columns;
     for (int columnIndex = 0; columnIndex < scene.xsheet.columns.size(); ++columnIndex) {
         const AnimeColumn &column = scene.xsheet.columns[columnIndex];
+        if (column.internal) {
+            // Script-owned working layers are ephemeral. They only ever live
+            // at the end of the column list (appended for the duration of a
+            // gesture), so skipping them cannot shift saved layer indices.
+            continue;
+        }
         QJsonObject columnObject;
         columnObject[QStringLiteral("name")] = column.name;
         columnObject[QStringLiteral("type")] = columnTypeName(column.type);
@@ -353,6 +359,12 @@ QJsonObject modelToJson(const AnimeSceneModel &model)
 
     QJsonArray assets;
     for (const AnimeAsset &asset : scene.assets) {
+        if (asset.internal) {
+            // Ephemeral working-layer asset: like internal columns it only
+            // ever lives at the end of the list, so skipping cannot shift
+            // the asset indices the saved cells reference.
+            continue;
+        }
         QJsonObject assetObject;
         assetObject[QStringLiteral("name")] = asset.name;
         assetObject[QStringLiteral("type")] = columnTypeName(asset.type);

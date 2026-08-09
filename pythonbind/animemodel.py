@@ -722,6 +722,24 @@ class LayerRef(DataObject):
         self._data["name"] = self.model.scene.layer_name(self.layer_index)
         return self
 
+    @property
+    def visible(self) -> bool:
+        return self.model.scene.layer_visible(self.layer_index)
+
+    @visible.setter
+    def visible(self, value: bool) -> None:
+        self.model.scene.set_layer_visible(self.layer_index, bool(value))
+        _cpp.ui.layer.refresh()
+        _cpp.ui.widget.refresh()
+
+    def show(self) -> "LayerRef":
+        self.visible = True
+        return self
+
+    def hide(self) -> "LayerRef":
+        self.visible = False
+        return self
+
     def location(self) -> list[LocationPath]:
         locations = _cell_locations_for_layer(self.model, self.layer_index)
         if locations:

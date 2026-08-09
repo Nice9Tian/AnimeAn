@@ -3,19 +3,28 @@ import inspect
 
 
 _HOOKS = []
-_EVENT_FLAGS = {
-    "update": "update",
-    "linefinish": "linefinish",
-    "erasefinish": "erasefinish",
-    "deletefinish": "deletefinish",
-    "fillfinish": "fillfinish",
-    "movefinish": "movefinish",
-    "extra": "extra",
-    "option": "option",
-    "overlayremove": "overlayremove",
-    "historyrestore": "historyrestore",
-    "pad": "pad",
-}
+
+
+def _push_subscriptions():
+    """Tell C++ which events have at least one hook.
+
+    C++ skips the whole cross-language dispatch (GIL, message dict) for
+    events outside this set, which keeps unsubscribed events - "update" in
+    particular - off the drawing hot path.
+    """
+    events = set()
+    for hook in _HOOKS:
+        events |= hook["events"]
+    try:
+        import animean_python
+
+        animean_python.ui.set_hook_events(sorted(events))
+    except ImportError:
+        pass  # embedded module not ready; C++ stays conservative (all pass)
+    except Exception as error:
+        # The C++ mask is sticky once valid - a silently dropped push would
+        # silently drop events, so make the failure visible.
+        print(f"[python_hooks] failed to push event subscriptions: {error}")
 
 
 def _resolve_function(function):
@@ -48,6 +57,8 @@ def set_hook(
     deletefinish=False,
     fillfinish=False,
     movefinish=False,
+    fillrequest=False,
+    visibility=False,
     extra=False,
     option=False,
     overlayremove=False,
@@ -57,23 +68,22 @@ def set_hook(
     property=None,
 ):
     resolved = _resolve_function(function)
-    events = {
-        name
-        for name, enabled in {
-            "update": update,
-            "linefinish": linefinish,
-            "erasefinish": erasefinish,
-            "deletefinish": deletefinish,
-            "fillfinish": fillfinish,
-            "movefinish": movefinish,
-            "extra": extra,
-            "option": option,
-            "overlayremove": overlayremove,
-            "historyrestore": historyrestore,
-            "pad": pad,
-        }.items()
-        if enabled
+    flags = {
+        "update": update,
+        "linefinish": linefinish,
+        "erasefinish": erasefinish,
+        "deletefinish": deletefinish,
+        "fillfinish": fillfinish,
+        "movefinish": movefinish,
+        "fillrequest": fillrequest,
+        "visibility": visibility,
+        "extra": extra,
+        "option": option,
+        "overlayremove": overlayremove,
+        "historyrestore": historyrestore,
+        "pad": pad,
     }
+    events = {name for name, enabled in flags.items() if enabled}
     if not events:
         return resolved
 
@@ -86,19 +96,23 @@ def set_hook(
             "property": property,
         }
     )
+    _push_subscriptions()
     return resolved
 
 
 def del_hook(function=None):
     if function is None:
         _HOOKS.clear()
+        _push_subscriptions()
         return
     resolved = _resolve_function(function)
     _HOOKS[:] = [hook for hook in _HOOKS if not _same_function(hook["function"], resolved)]
+    _push_subscriptions()
 
 
 def clear_tool_hooks():
     _HOOKS.clear()
+    _push_subscriptions()
 
 
 def _matches(hook, message):

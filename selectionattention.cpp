@@ -60,6 +60,9 @@ AttentionUpdate constrainAttention(const AnimeSceneModel &model, SelectionAttent
 int topLayerForFrame(const AnimeSceneModel &model, int frame)
 {
     for (int i = 0; i < model.layerCount(); ++i) {
+        if (model.layerInternal(i)) {
+            continue; // script-owned working layers are not selectable
+        }
         if (model.assetIndexAt(frame, i) >= 0) {
             return i;
         }
@@ -73,6 +76,9 @@ int firstLayerForAsset(const AnimeSceneModel &model, int frame, int asset)
         return -1;
     }
     for (int i = 0; i < model.layerCount(); ++i) {
+        if (model.layerInternal(i)) {
+            continue;
+        }
         if (model.assetIndexAt(frame, i) == asset) {
             return i;
         }

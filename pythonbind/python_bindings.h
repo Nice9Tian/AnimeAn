@@ -35,4 +35,10 @@ void clearAnimeanUiHistoryCallback();
 void registerAnimeanUiPadValueCallback(std::function<void(const QString &pad, double x, double y)> callback);
 void clearAnimeanUiPadValueCallback();
 
+// True when at least one Python hook subscribes to the event (python_hooks
+// pushes the subscription set via ui.set_hook_events). Lets dispatch sites
+// skip the GIL/message work entirely for events nobody listens to. Until the
+// first push arrives, every event counts as subscribed.
+bool animeanHookEventSubscribed(const QString &event);
+
 #endif // PYTHON_BINDINGS_H

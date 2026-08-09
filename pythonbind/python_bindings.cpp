@@ -12,6 +12,7 @@
 #include <QPainterPath>
 #include <QPoint>
 #include <QRect>
+#include <QSet>
 
 #include <cmath>
 #include <algorithm>
@@ -33,6 +34,31 @@ std::function<void(const QColor &color)> g_uiDrawColorCallback;
 std::function<void(const QString &pad, double x, double y)> g_uiPadValueCallback;
 std::function<void(const QString &op, const QString &view, const QString &label)> g_uiHistoryCallback;
 
+// Event subscription mask pushed by python_hooks (ui.set_hook_events).
+bool g_hookEventMaskValid = false;
+QSet<QString> g_hookEventMask;
+
+// Preview displacement session (ui.displace_*): base geometry plus per-vertex
+// offsets for the strokes of one internal layer. Scaling rewrites that
+// layer's strokes as base + scale (*) offset entirely in C++, so a pad drag
+// costs Python two floats per move instead of shipping every vertex across
+// the boundary.
+struct DisplacementEntry {
+    QVector<QPointF> base;
+    QVector<QPointF> offsets;
+    QColor color = QColor(0, 0, 0, 255);
+    qreal width = 3.0;
+};
+
+struct DisplacementSession {
+    AnimeSceneModel *model = nullptr;
+    int row = -1;
+    int layer = -1;
+    QVector<DisplacementEntry> entries;
+};
+
+DisplacementSession g_displacement;
+
 void requestUiRefresh(bool frame = true, bool layer = true, bool asset = true, bool widget = true)
 {
     if (g_uiRefreshCallback) {
@@ -52,6 +78,55 @@ void requestUiFreeze(bool frozen)
     if (g_uiFreezeCallback) {
         g_uiFreezeCallback(frozen);
     }
+}
+
+AnimeSceneModel *sceneForViewName(const QString &view)
+{
+    const QString wanted = view + QStringLiteral("_paint_view");
+    for (AnimeSceneModel *model : g_uiScenes) {
+        if (model && model->textId() == wanted) {
+            return model;
+        }
+    }
+    return nullptr;
+}
+
+void applyDisplacementScale(double scaleX, double scaleY)
+{
+    if (!g_displacement.model) {
+        return;
+    }
+    // Check the (bounds-safe) internal flag BEFORE touching imageAt: even
+    // with create=false, imageAt grows the column/frame tables to cover the
+    // requested index, which would resurrect a ghost column right after the
+    // undo that removed the session's layer.
+    if (!g_displacement.model->layerInternal(g_displacement.layer)) {
+        g_displacement = DisplacementSession();
+        return;
+    }
+    AnimeVectorImageModel *image =
+        g_displacement.model->imageAt(g_displacement.row, g_displacement.layer, false);
+    if (!image) {
+        g_displacement = DisplacementSession();
+        return;
+    }
+
+    image->clear();
+    int id = 1;
+    for (const DisplacementEntry &entry : g_displacement.entries) {
+        QVector<QPointF> points;
+        points.reserve(entry.base.size());
+        for (int i = 0; i < entry.base.size(); ++i) {
+            points.append(entry.base[i] + QPointF(scaleX * entry.offsets[i].x(),
+                                                  scaleY * entry.offsets[i].y()));
+        }
+        if (points.size() < 2) {
+            continue;
+        }
+        image->addStroke(AnimeVectorLogic::makeStroke(points, entry.color, entry.width, id++,
+                                                      false, false, 0));
+    }
+    requestUiRefresh(false, false, false, true);
 }
 
 AnimeVectorStroke makePolylineStroke(const std::vector<std::pair<double, double>> &points,
@@ -924,6 +999,7 @@ py::dict structureToDict(const AnimeSceneModel &model)
         layer["column_name"] = scene.xsheet.columns[layerIndex].name.toStdString();
         layer["name"] = model.layerName(layerIndex).toStdString();
         layer["visible"] = model.layerVisible(layerIndex);
+        layer["internal"] = model.layerInternal(layerIndex);
         layer["locked"] = model.layerLocked(layerIndex);
         layer["opacity"] = model.layerOpacity(layerIndex);
         layer["type"] = columnTypeToString(model.layerType(layerIndex));
@@ -944,6 +1020,7 @@ py::dict structureToDict(const AnimeSceneModel &model)
         asset["num"] = assetIndex + 1;
         asset["name"] = model.assetName(assetIndex).toStdString();
         asset["type"] = columnTypeToString(model.assetType(assetIndex));
+        asset["internal"] = model.assetInternal(assetIndex);
         assets.append(asset);
     }
     data["assets"] = assets;
@@ -1031,6 +1108,11 @@ void registerAnimeanUiPadValueCallback(std::function<void(const QString &pad, do
 void clearAnimeanUiPadValueCallback()
 {
     g_uiPadValueCallback = nullptr;
+}
+
+bool animeanHookEventSubscribed(const QString &event)
+{
+    return !g_hookEventMaskValid || g_hookEventMask.contains(event);
 }
 
 void registerAnimeanUiHistoryCallback(std::function<void(const QString &op, const QString &view, const QString &label)> callback)
@@ -1143,6 +1225,69 @@ void bindAnimeanPythonModule(py::module_ &m)
            py::arg("pad"),
            py::arg("x") = 0.0,
            py::arg("y") = 0.0);
+    ui.def("set_hook_events",
+           [](py::sequence events) {
+               // python_hooks pushes the set of events that currently have at
+               // least one hook; C++ dispatch sites skip everything else.
+               QSet<QString> mask;
+               for (py::handle handle : events) {
+                   mask.insert(QString::fromStdString(py::str(handle).cast<std::string>()));
+               }
+               g_hookEventMask = std::move(mask);
+               g_hookEventMaskValid = true;
+           },
+           py::arg("events"));
+    ui.def("displace_begin",
+           [](const std::string &view, int row, int layerIndex, py::sequence entries,
+              double scaleX, double scaleY) {
+               AnimeSceneModel *model = sceneForViewName(QString::fromStdString(view));
+               if (!model) {
+                   throw std::runtime_error("displace_begin: unknown view name.");
+               }
+               if (!model->layerInternal(layerIndex)) {
+                   throw std::runtime_error("displace_begin requires an internal (script-owned) layer.");
+               }
+               DisplacementSession session;
+               session.model = model;
+               session.row = row;
+               session.layer = layerIndex;
+               for (py::handle handle : entries) {
+                   if (!py::isinstance<py::dict>(handle)) {
+                       throw py::type_error("displacement entries must be dicts.");
+                   }
+                   py::dict data = py::reinterpret_borrow<py::dict>(handle);
+                   DisplacementEntry entry;
+                   entry.base = objectToPoints(data["points"], "displace.points");
+                   entry.offsets = objectToPoints(data["offsets"], "displace.offsets");
+                   if (entry.offsets.size() != entry.base.size()) {
+                       throw py::value_error("displacement entry offsets must match points 1:1.");
+                   }
+                   if (hasKey(data, "color")) {
+                       entry.color = objectToColor(data["color"], "displace.color");
+                   }
+                   if (hasKey(data, "width")) {
+                       entry.width = data["width"].cast<double>();
+                   }
+                   session.entries.append(entry);
+               }
+               g_displacement = std::move(session);
+               applyDisplacementScale(scaleX, scaleY);
+           },
+           py::arg("view"),
+           py::arg("row"),
+           py::arg("layer_index"),
+           py::arg("entries"),
+           py::arg("scale_x") = 0.0,
+           py::arg("scale_y") = 0.0);
+    ui.def("displace_scale",
+           [](double x, double y) {
+               applyDisplacementScale(x, y);
+           },
+           py::arg("x"),
+           py::arg("y"));
+    ui.def("displace_end", []() {
+        g_displacement = DisplacementSession();
+    });
     ui.def("history_commit",
            [](const std::string &label, const std::string &view) {
                if (g_uiHistoryCallback) {
@@ -1276,6 +1421,81 @@ void bindAnimeanPythonModule(py::module_ &m)
              },
              py::arg("index"),
              py::arg("color"))
+        .def("fill_regions_info", [](const AnimeVectorImageModel &image) {
+            py::list regions;
+            const QVector<AnimeVectorFillRegion> &fills = image.fillRegions();
+            for (int i = 0; i < fills.size(); ++i) {
+                const AnimeVectorFillRegion &fill = fills[i];
+                py::dict data;
+                data["index"] = i;
+                data["id"] = fill.id;
+                data["property"] = fill.property.toStdString();
+                data["seed"] = pointToDict(fill.seedPoint);
+                data["color"] = colorToDict(fill.color);
+                data["source_layer_index"] = fill.sourceLayerIndex;
+                data["based_on_all_layers"] = fill.basedOnAllLayers;
+                regions.append(data);
+            }
+            return regions;
+        })
+        .def("fill_region_contains",
+             [](const AnimeVectorImageModel &image, int index, py::object point) {
+                 const QVector<AnimeVectorFillRegion> &fills = image.fillRegions();
+                 if (index < 0 || index >= fills.size()) {
+                     return false;
+                 }
+                 return fills[index].path.contains(objectToPointF(point, "point"));
+             },
+             py::arg("index"),
+             py::arg("point"))
+        .def("add_fill_region",
+             [](AnimeVectorImageModel &image, py::object path, py::object color,
+                const std::string &property, py::object seed, int sourceLayerIndex,
+                bool basedOnAllLayers) {
+                 AnimeVectorFillRegion fill;
+                 fill.id = image.fillCount() + 1;
+                 fill.property = QString::fromUtf8(property.c_str());
+                 fill.path = objectToPath(path, "path");
+                 fill.bounds = fill.path.boundingRect();
+                 fill.color = objectToColor(color, "color");
+                 if (!seed.is_none()) {
+                     fill.seedPoint = objectToPointF(seed, "seed");
+                 }
+                 fill.sourceLayerIndex = sourceLayerIndex;
+                 fill.basedOnAllLayers = basedOnAllLayers;
+                 image.addFillRegion(fill);
+                 return image.fillCount() - 1;
+             },
+             py::arg("path"),
+             py::arg("color"),
+             py::arg("property") = "",
+             py::arg("seed") = py::none(),
+             py::arg("source_layer_index") = -1,
+             py::arg("based_on_all_layers") = false)
+        .def("set_fill_region",
+             [](AnimeVectorImageModel &image, int index, py::object path, py::object color,
+                py::object seed) {
+                 const QVector<AnimeVectorFillRegion> &fills = image.fillRegions();
+                 if (index < 0 || index >= fills.size()) {
+                     return false;
+                 }
+                 AnimeVectorFillRegion updated = fills[index];
+                 if (!path.is_none()) {
+                     updated.path = objectToPath(path, "path");
+                     updated.bounds = updated.path.boundingRect();
+                 }
+                 if (!color.is_none()) {
+                     updated.color = objectToColor(color, "color");
+                 }
+                 if (!seed.is_none()) {
+                     updated.seedPoint = objectToPointF(seed, "seed");
+                 }
+                 return image.setFillRegionAt(index, updated);
+             },
+             py::arg("index"),
+             py::arg("path") = py::none(),
+             py::arg("color") = py::none(),
+             py::arg("seed") = py::none())
         .def("clear_raster", &AnimeVectorImageModel::clearRasterImage)
         .def("bounds", [](const AnimeVectorImageModel &image) {
             return rectToTuple(image.bounds());
@@ -1378,11 +1598,16 @@ void bindAnimeanPythonModule(py::module_ &m)
         })
         .def("layer_visible", &AnimeSceneModel::layerVisible)
         .def("set_layer_visible", &AnimeSceneModel::setLayerVisible)
+        .def("layer_internal", &AnimeSceneModel::layerInternal)
+        .def("set_layer_internal", &AnimeSceneModel::setLayerInternal)
+        .def("asset_internal", &AnimeSceneModel::assetInternal)
+        .def("set_asset_internal", &AnimeSceneModel::setAssetInternal)
         .def("layer_locked", &AnimeSceneModel::layerLocked)
         .def("set_layer_locked", &AnimeSceneModel::setLayerLocked)
         .def("layer_opacity", &AnimeSceneModel::layerOpacity)
         .def("set_layer_opacity", &AnimeSceneModel::setLayerOpacity)
         .def("add_layer", &AnimeSceneModel::addLayer)
+        .def("add_fill_layer", &AnimeSceneModel::addFillLayer)
         .def("add_asset",
              [](AnimeSceneModel &model, const std::string &type, const std::string &name) {
                  return model.addAsset(columnTypeFromString(QString::fromUtf8(type.c_str())),
@@ -1391,6 +1616,7 @@ void bindAnimeanPythonModule(py::module_ &m)
              py::arg("type") = "vector",
              py::arg("name") = "")
         .def("delete_layer", &AnimeSceneModel::deleteLayer)
+        .def("delete_asset", &AnimeSceneModel::deleteAsset)
         .def("remap_fill_source_layers_after_delete", &AnimeSceneModel::remapFillSourceLayersAfterDelete)
         .def("remap_fill_source_layers_after_move", &AnimeSceneModel::remapFillSourceLayersAfterMove)
         .def("move_layer", &AnimeSceneModel::moveLayer)
@@ -1401,12 +1627,14 @@ void bindAnimeanPythonModule(py::module_ &m)
         .def("set_cell", &AnimeSceneModel::setCell)
         .def("clear_cell", &AnimeSceneModel::clearCell)
         .def("image_at",
-             [](AnimeSceneModel &model, int row, int layerIndex, bool create) {
-                 return model.imageAt(row, layerIndex, create, AnimeColumnType::Vector);
+             [](AnimeSceneModel &model, int row, int layerIndex, bool create, const std::string &assetType) {
+                 return model.imageAt(row, layerIndex, create,
+                                      columnTypeFromString(QString::fromUtf8(assetType.c_str())));
              },
              py::arg("row"),
              py::arg("layer_index"),
              py::arg("create") = false,
+             py::arg("asset_type") = "vector",
              py::return_value_policy::reference_internal)
         .def("current_image",
              [](AnimeSceneModel &model, bool create) {
@@ -1470,6 +1698,28 @@ void bindAnimeanPythonModule(py::module_ &m)
              },
              py::arg("layer_index"),
              py::arg("frame_index"),
+             py::arg("to_poly") = false,
+             py::arg("poly_step") = 4.0)
+        .def("fill_boundary_path_at",
+             // Region-fill geometry as a mechanism: walls are the visible
+             // non-fill strokes at the frame (layer_index >= 0 restricts to
+             // one column); which region to fill and where it lands is the
+             // caller's policy.
+             [](const AnimeSceneModel &model, int frame, py::object seed, py::object bounds,
+                int layerIndex, bool toPoly, double polyStep) -> py::object {
+                 const QPointF seedPoint = objectToPointF(seed, "seed");
+                 const QRectF boundsRect = objectToRectF(bounds, "bounds");
+                 const QPainterPath path = AnimeVectorLogic::vectorRegionPathAt(
+                     seedPoint, model.fillBoundarySegments(frame, layerIndex), boundsRect.toRect());
+                 if (path.isEmpty()) {
+                     return py::none();
+                 }
+                 return pathToDictValue(path, toPoly, polyStep);
+             },
+             py::arg("frame"),
+             py::arg("seed"),
+             py::arg("bounds"),
+             py::arg("layer_index") = -1,
              py::arg("to_poly") = false,
              py::arg("poly_step") = 4.0)
         .def("stroke_line_list",

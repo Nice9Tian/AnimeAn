@@ -30,3 +30,19 @@ def register_all_tool_hooks():
         movefinish=True,
         extra=True,
     )
+
+
+def enable_verbose():
+    """Debug aid: print every hook event (including per-move "update").
+
+    Never registered automatically - the update stream runs on the drawing
+    hot path. Call from the Python debug pane when needed, then
+    disable_verbose() to stop.
+    """
+    register_all_tool_hooks()
+    print("[hook-test] verbose hook logging ON (disable_verbose() to stop)")
+
+
+def disable_verbose():
+    python_hooks.del_hook(print_hook_message)
+    print("[hook-test] verbose hook logging OFF")

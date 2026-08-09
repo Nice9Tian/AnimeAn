@@ -1397,6 +1397,26 @@ void MainWindow::setupConnections()
         }
     });
 
+    connect(m_layerPanel->layerList(), &QListWidget::itemChanged, this, [this](QListWidgetItem *item) {
+        if (m_refreshingLists || !item) {
+            return;
+        }
+        const int layerIndex = item->data(Qt::UserRole).toInt();
+        const bool visible = item->checkState() == Qt::Checked;
+        PaintOpenGLWidget *view = layerPanelTarget();
+        // Deferred so the Python hook (which may rebuild this very list) never
+        // runs inside the itemChanged emission.
+        QMetaObject::invokeMethod(this, [this, view, layerIndex, visible]() {
+            // UI click -> Python decides -> commands come back through the
+            // bindings. The direct model write is the no-hook fallback.
+            if (!view->sendPythonLayerVisibilityMessage(layerIndex, visible)) {
+                view->model().setLayerVisible(layerIndex, visible);
+                view->update();
+                refreshLayerList(attentionFor(view).layer);
+            }
+        }, Qt::QueuedConnection);
+    });
+
     connect(m_framePanel->frameList(), &QListWidget::currentRowChanged, this, [this](int row) {
         if (!m_refreshingLists && row >= 0) {
             // Picking a frame by hand means the user is done watching; without
@@ -2298,11 +2318,16 @@ void MainWindow::refreshLayerList(int selectedRow)
     m_layerPanel->layerList()->clear();
     int selectedListRow = -1;
     for (int i = 0; i < view->layerCount(); ++i) {
+        if (view->model().layerInternal(i)) {
+            continue; // script-owned working layers never appear in the panel
+        }
         if (view->model().assetIndexAt(view->model().currentFrame(), i) < 0) {
             continue;
         }
         QListWidgetItem *item = new QListWidgetItem(view->layerName(i));
         item->setData(Qt::UserRole, i);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(view->model().layerVisible(i) ? Qt::Checked : Qt::Unchecked);
         m_layerPanel->layerList()->addItem(item);
         if (i == selectedRow) {
             selectedListRow = m_layerPanel->layerList()->count() - 1;
@@ -2351,6 +2376,12 @@ void MainWindow::refreshAssetList(int selectedRow)
     const QSignalBlocker blocker(m_assetPanel->assetList());
     m_assetPanel->assetList()->clear();
     for (int i = 0; i < view->assetCount(); ++i) {
+        // Backing assets of script-owned working layers stay out of the
+        // panel. They only ever live at the end of the asset list, so the
+        // row == asset-index mapping below survives the skip.
+        if (view->model().assetInternal(i)) {
+            continue;
+        }
         m_assetPanel->assetList()->addItem(view->assetName(i));
     }
     if (selectedRow >= 0 && m_assetPanel->assetList()->count() > 0) {

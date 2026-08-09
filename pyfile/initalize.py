@@ -14,6 +14,9 @@ PYTHON_FILE_MODULES = (
     "extra_tools",
     "midline_tool",
     "auto_mapping",
+    "repulsion_tool",
+    "fill_tool",
+    "visibility_tool",
     "linefinish",
     "hello_world",
     "toonz_to_dict",
@@ -154,8 +157,11 @@ def bind_test() -> str:
 
 
 def main() -> str:
+    # Startup only imports the tool modules. bind_test() stays callable from
+    # the debug pane, but it MUTATES the scene (draws a test polyline), so it
+    # must never run as a side effect of opening the app.
     import_all_modules()
-    return bind_test()
+    return "OK"
 
 
 if __name__ == "__main__":

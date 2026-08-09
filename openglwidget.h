@@ -6,6 +6,7 @@
 #include "algorithm/vectorlogic.h"
 
 #include <QColor>
+#include <QElapsedTimer>
 #include <QLineF>
 #include <QMouseEvent>
 #include <QOpenGLWidget>
@@ -83,6 +84,10 @@ public:
     void sendPythonExtraToolMessage(const QString &name, const QString &property);
     void sendPythonToolOptionMessage(const QString &hook, const QString &name, const QString &type, const QVariant &value, int row, int startColumn, int endColumn);
     void sendPythonPadMessage(const QString &pad, const QString &phase, double x, double y);
+    // "visibility" hook event: Python decides what a layer-visibility toggle
+    // means (and applies it through the bindings). Returns true when a hook
+    // set message["handled"]; the caller then skips its own default action.
+    bool sendPythonLayerVisibilityMessage(int layerIndex, bool visible);
     void setTool(Tool tool);
     Tool tool() const;
     void setFillScope(FillScope scope);
@@ -174,6 +179,10 @@ private:
     // Dispatches the hook event; returns true when a hook set
     // "cancel_history" in the message, vetoing the follow-up history commit.
     bool pythonHookSendMessage(const QString &event, const QPointF &pos = QPointF(), const QPointF &delta = QPointF(), bool changed = true, int strokeIndex = -1);
+    // "fillrequest" hook event: offers the click to Python BEFORE the built-in
+    // fill runs. Returns true when a hook set message["handled"], i.e. the
+    // fill policy ran in Python and the default C++ behavior must not.
+    bool sendPythonFillRequestMessage(const QPointF &pos);
     bool eraseAt(const QPointF &pos);
     bool eraseBetween(const QPointF &from, const QPointF &to);
     bool deleteLineAt(const QPointF &pos);
@@ -216,6 +225,10 @@ private:
     qreal m_eraserRadius = 12.0;
     qreal m_minPointDistance = 2.0;
     int m_smoothValue = 50;
+    // "update" fires on every accepted point while drawing; hooks get at most
+    // one dispatch per this interval so subscribers never run at tablet rate.
+    QElapsedTimer m_updateHookThrottle;
+    static constexpr qint64 kUpdateHookIntervalMs = 33;
     AxisSnapState m_axisSnapState = AxisSnapState::Inactive;
     QPointF m_axisSnapAnchor;
     int m_axisSnapAnchorIndex = 0;

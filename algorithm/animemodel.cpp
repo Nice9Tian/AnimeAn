@@ -1,4 +1,5 @@
 #include "animemodel.h"
+#include "algorithm/vectorlogic.h"
 
 namespace {
 int &nextSceneIntIdValue()
@@ -773,6 +774,22 @@ void AnimeSceneModel::setAssetName(int assetIndex, const QString &name)
     }
 }
 
+bool AnimeSceneModel::assetInternal(int assetIndex) const
+{
+    if (assetIndex < 0 || assetIndex >= m_scene.assets.size()) {
+        return false;
+    }
+    return m_scene.assets[assetIndex].internal;
+}
+
+void AnimeSceneModel::setAssetInternal(int assetIndex, bool internal)
+{
+    if (assetIndex < 0 || assetIndex >= m_scene.assets.size()) {
+        return;
+    }
+    m_scene.assets[assetIndex].internal = internal;
+}
+
 AnimeColumnType AnimeSceneModel::assetType(int assetIndex) const
 {
     if (assetIndex < 0 || assetIndex >= m_scene.assets.size()) {
@@ -795,6 +812,22 @@ void AnimeSceneModel::setLayerVisible(int layerIndex, bool visible)
         return;
     }
     m_scene.xsheet.columns[layerIndex].visible = visible;
+}
+
+bool AnimeSceneModel::layerInternal(int layerIndex) const
+{
+    if (layerIndex < 0 || layerIndex >= m_scene.xsheet.columns.size()) {
+        return false;
+    }
+    return m_scene.xsheet.columns[layerIndex].internal;
+}
+
+void AnimeSceneModel::setLayerInternal(int layerIndex, bool internal)
+{
+    if (layerIndex < 0 || layerIndex >= m_scene.xsheet.columns.size()) {
+        return;
+    }
+    m_scene.xsheet.columns[layerIndex].internal = internal;
 }
 
 bool AnimeSceneModel::layerLocked(int layerIndex) const
@@ -890,6 +923,36 @@ int AnimeSceneModel::addAsset(AnimeColumnType type, const QString &name)
     m_scene.assets[assetIndex].frame(1, true);
     setCurrentAsset(assetIndex);
     return assetIndex;
+}
+
+bool AnimeSceneModel::deleteAsset(int assetIndex)
+{
+    if (assetIndex < 0 || assetIndex >= m_scene.assets.size()) {
+        return false;
+    }
+
+    m_scene.assets.removeAt(assetIndex);
+
+    // Every cell keeps addressing the same asset it did before: references to
+    // the removed asset are cleared, higher indices shift down by one.
+    for (AnimeColumn &column : m_scene.xsheet.columns) {
+        for (int row = 0; row <= column.maxRow(); ++row) {
+            AnimeCell cell = column.cellAt(row);
+            if (cell.assetIndex == assetIndex) {
+                column.setCell(row, AnimeCell());
+            } else if (cell.assetIndex > assetIndex) {
+                --cell.assetIndex;
+                column.setCell(row, cell);
+            }
+        }
+    }
+
+    if (m_currentAsset == assetIndex) {
+        m_currentAsset = -1;
+    } else if (m_currentAsset > assetIndex) {
+        --m_currentAsset;
+    }
+    return true;
 }
 
 bool AnimeSceneModel::deleteLayer(int layerIndex)
@@ -1232,4 +1295,34 @@ bool AnimeSceneModel::currentColumnEditable() const
 {
     const AnimeColumn *column = currentColumn();
     return column && !column->locked && column->type == AnimeColumnType::Vector;
+}
+
+QVector<QLineF> AnimeSceneModel::fillBoundarySegments(int frame, int layerIndex) const
+{
+    QVector<QLineF> segments;
+    if (frame < 0) {
+        return segments;
+    }
+
+    for (int columnIndex = 0; columnIndex < m_scene.xsheet.columns.size(); ++columnIndex) {
+        if (layerIndex >= 0 && columnIndex != layerIndex) {
+            continue;
+        }
+
+        const AnimeColumn &column = m_scene.xsheet.columns[columnIndex];
+        if (column.type == AnimeColumnType::Fill || !column.visible || column.internal) {
+            continue;
+        }
+
+        const AnimeCell cell = column.cellAt(frame);
+        const AnimeVectorImageModel *image = imageForCell(cell);
+        if (!image) {
+            continue;
+        }
+
+        for (const AnimeVectorStrokeNode &node : image->strokeNodes()) {
+            segments += AnimeVectorLogic::segmentsFromPath(node.stroke.path);
+        }
+    }
+    return segments;
 }

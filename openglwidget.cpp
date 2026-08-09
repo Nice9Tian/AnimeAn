@@ -25,6 +25,8 @@ const qreal kOverlayHandleSize = 14.0;
 #include <cmath>
 
 #ifdef ANIMEAN_WITH_PYTHON
+#include "pythonbind/python_bindings.h"
+
 namespace py = pybind11;
 
 namespace {
@@ -85,6 +87,13 @@ py::dict strokeToPythonDict(const AnimeVectorStroke &stroke, int strokeIndex = -
         strokeInfo["index"] = strokeIndex;
     }
     return strokeInfo;
+}
+
+// Dispatches that produced no output at all print as "(no output)"; relaying
+// those to the debug dock buries real feedback under one line per event.
+bool isQuietHookOutput(const QString &output)
+{
+    return output.isEmpty() || output.endsWith(QStringLiteral("(no output)"));
 }
 
 QString pythonHookSendMessage(const py::dict &message)
@@ -397,6 +406,9 @@ void PaintOpenGLWidget::sendPythonExtraToolMessage(const QString &name, const QS
 void PaintOpenGLWidget::sendPythonToolOptionMessage(const QString &hook, const QString &name, const QString &type, const QVariant &value, int row, int startColumn, int endColumn)
 {
 #ifdef ANIMEAN_WITH_PYTHON
+    if (!animeanHookEventSubscribed(QStringLiteral("option"))) {
+        return;
+    }
     const int frameRow = m_model.currentFrame();
     const int layer = m_model.currentLayer();
     const AnimeCell cell = m_model.cellAt(frameRow, layer);
@@ -437,7 +449,7 @@ void PaintOpenGLWidget::sendPythonToolOptionMessage(const QString &hook, const Q
     message["end_column"] = endColumn;
 
     const QString output = ::pythonHookSendMessage(message);
-    if (!output.isEmpty()) {
+    if (!isQuietHookOutput(output)) {
         emit pythonDebugMessage(output);
     }
 #else
@@ -454,6 +466,9 @@ void PaintOpenGLWidget::sendPythonToolOptionMessage(const QString &hook, const Q
 void PaintOpenGLWidget::sendPythonPadMessage(const QString &pad, const QString &phase, double x, double y)
 {
 #ifdef ANIMEAN_WITH_PYTHON
+    if (!animeanHookEventSubscribed(QStringLiteral("pad"))) {
+        return;
+    }
     const int frameRow = m_model.currentFrame();
     const int layer = m_model.currentLayer();
     const AnimeCell cell = m_model.cellAt(frameRow, layer);
@@ -480,9 +495,9 @@ void PaintOpenGLWidget::sendPythonPadMessage(const QString &pad, const QString &
     message["value"] = pointToPythonDict(QPointF(x, y));
 
     const QString output = ::pythonHookSendMessage(message);
-    // Pad moves stream continuously; quiet dispatches (the "(no output)"
-    // placeholder) would flood the debug dock with a line per mouse move.
-    if (!output.isEmpty() && !output.endsWith(QStringLiteral("(no output)"))) {
+    // Pad moves stream continuously; quiet dispatches would flood the debug
+    // dock with a line per mouse move.
+    if (!isQuietHookOutput(output)) {
         emit pythonDebugMessage(output);
     }
 #else
@@ -490,6 +505,120 @@ void PaintOpenGLWidget::sendPythonPadMessage(const QString &pad, const QString &
     Q_UNUSED(phase);
     Q_UNUSED(x);
     Q_UNUSED(y);
+#endif
+}
+
+bool PaintOpenGLWidget::sendPythonLayerVisibilityMessage(int layerIndex, bool visible)
+{
+#ifdef ANIMEAN_WITH_PYTHON
+    if (!animeanHookEventSubscribed(QStringLiteral("visibility"))) {
+        return false;
+    }
+
+    const int frameRow = m_model.currentFrame();
+    const AnimeCell cell = m_model.cellAt(frameRow, layerIndex);
+
+    py::gil_scoped_acquire acquire;
+    py::dict cellInfo;
+    cellInfo["row"] = frameRow;
+    cellInfo["layer"] = layerIndex;
+    cellInfo["asset"] = cell.assetIndex;
+    cellInfo["frame_id"] = cell.frameId;
+
+    py::dict message;
+    message["event"] = "visibility";
+    message["view"] = m_viewName.toStdString();
+    message["tool"] = (m_activePythonTool.isEmpty() ? toolName(m_tool) : m_activePythonTool).toStdString();
+    message["base_tool"] = toolName(m_tool).toStdString();
+    message["property"] = m_strokeProperty.toStdString();
+    message["cell"] = cellInfo;
+    message["stroke"] = py::dict();
+    message["position"] = pointToPythonDict(QPointF());
+    message["delta"] = pointToPythonDict(QPointF());
+    message["layer"] = layerIndex;
+    message["visible"] = visible;
+
+    const QString output = ::pythonHookSendMessage(message);
+    if (!isQuietHookOutput(output)) {
+        emit pythonDebugMessage(output);
+    }
+
+    try {
+        if (message.contains(py::str("handled"))) {
+            return message[py::str("handled")].cast<bool>();
+        }
+    } catch (const py::error_already_set &) {
+    } catch (const py::cast_error &) {
+    }
+    return false;
+#else
+    Q_UNUSED(layerIndex);
+    Q_UNUSED(visible);
+    return false;
+#endif
+}
+
+bool PaintOpenGLWidget::sendPythonFillRequestMessage(const QPointF &pos)
+{
+#ifdef ANIMEAN_WITH_PYTHON
+    if (!animeanHookEventSubscribed(QStringLiteral("fillrequest"))) {
+        return false;
+    }
+
+    const int frameRow = m_model.currentFrame();
+    const int layer = m_model.currentLayer();
+    const AnimeCell cell = m_model.cellAt(frameRow, layer);
+
+    py::gil_scoped_acquire acquire;
+    py::dict cellInfo;
+    cellInfo["row"] = frameRow;
+    cellInfo["layer"] = layer;
+    cellInfo["asset"] = cell.assetIndex;
+    cellInfo["frame_id"] = cell.frameId;
+
+    py::dict colorInfo;
+    colorInfo["r"] = m_penColor.red();
+    colorInfo["g"] = m_penColor.green();
+    colorInfo["b"] = m_penColor.blue();
+    colorInfo["a"] = m_penColor.alpha();
+
+    // Same canvas rect the built-in fill uses as its outer boundary.
+    py::dict boundsInfo;
+    boundsInfo["x"] = 0.0;
+    boundsInfo["y"] = 0.0;
+    boundsInfo["width"] = double(width());
+    boundsInfo["height"] = double(height());
+
+    py::dict message;
+    message["event"] = "fillrequest";
+    message["view"] = m_viewName.toStdString();
+    message["tool"] = (m_activePythonTool.isEmpty() ? toolName(m_tool) : m_activePythonTool).toStdString();
+    message["base_tool"] = toolName(m_tool).toStdString();
+    message["property"] = m_strokeProperty.toStdString();
+    message["cell"] = cellInfo;
+    message["stroke"] = py::dict();
+    message["position"] = pointToPythonDict(pos);
+    message["delta"] = pointToPythonDict(QPointF());
+    message["fill_scope"] = (m_fillScope == FillScope::AllLayers ? "all" : "current");
+    message["color"] = colorInfo;
+    message["bounds"] = boundsInfo;
+
+    const QString output = ::pythonHookSendMessage(message);
+    if (!isQuietHookOutput(output)) {
+        emit pythonDebugMessage(output);
+    }
+
+    try {
+        if (message.contains(py::str("handled"))) {
+            return message[py::str("handled")].cast<bool>();
+        }
+    } catch (const py::error_already_set &) {
+    } catch (const py::cast_error &) {
+    }
+    return false;
+#else
+    Q_UNUSED(pos);
+    return false;
 #endif
 }
 
@@ -865,10 +994,10 @@ void PaintOpenGLWidget::setOverlayItems(const QVector<OverlayItem> &items)
 void PaintOpenGLWidget::paintSceneContent(QPainter &painter, int frameIndex, bool includeCurrentStroke)
 {
     const AnimeScene &scene = m_model.scene();
-    for (int columnIndex = scene.xsheet.columns.size() - 1; columnIndex >= 0; --columnIndex) {
+    const auto paintColumn = [&](int columnIndex) {
         const AnimeColumn &column = scene.xsheet.columns[columnIndex];
         if (!column.visible) {
-            continue;
+            return;
         }
 
         const AnimeCell cell = column.cellAt(frameIndex);
@@ -896,6 +1025,21 @@ void PaintOpenGLWidget::paintSceneContent(QPainter &painter, int frameIndex, boo
             painter.setPen(QPen(m_currentStroke.color, m_currentStroke.width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
             painter.drawPath(m_currentStroke.path);
         }
+    };
+
+    for (int columnIndex = scene.xsheet.columns.size() - 1; columnIndex >= 0; --columnIndex) {
+        if (scene.xsheet.columns[columnIndex].internal) {
+            continue;
+        }
+        paintColumn(columnIndex);
+    }
+    // Script-owned working layers (tool previews) always draw on top of the
+    // regular columns, wherever they sit in the column list.
+    for (int columnIndex = scene.xsheet.columns.size() - 1; columnIndex >= 0; --columnIndex) {
+        if (!scene.xsheet.columns[columnIndex].internal) {
+            continue;
+        }
+        paintColumn(columnIndex);
     }
     painter.setOpacity(1.0);
 }
@@ -1118,6 +1262,9 @@ bool PaintOpenGLWidget::removeOverlayItemAt(const QPointF &pos)
 void PaintOpenGLWidget::sendOverlayRemoveMessage(const QString &overlayId)
 {
 #ifdef ANIMEAN_WITH_PYTHON
+    if (!animeanHookEventSubscribed(QStringLiteral("overlayremove"))) {
+        return;
+    }
     const int row = m_model.currentFrame();
     const int layer = m_model.currentLayer();
     const AnimeCell cell = m_model.cellAt(row, layer);
@@ -1144,7 +1291,7 @@ void PaintOpenGLWidget::sendOverlayRemoveMessage(const QString &overlayId)
     message["overlay"] = overlayInfo;
 
     const QString output = ::pythonHookSendMessage(message);
-    if (!output.isEmpty()) {
+    if (!isQuietHookOutput(output)) {
         emit pythonDebugMessage(output);
     }
 #else
@@ -1194,6 +1341,14 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
     }
 
     if (m_tool == Tool::Fill) {
+        // Fill policy lives in Python (pyfile/fill_tool.py): where the region
+        // lands, scope upgrades and dedup are decided there. The built-in
+        // fillAt below is the fallback for builds without Python hooks.
+        if (sendPythonFillRequestMessage(pos)) {
+            update();
+            event->accept();
+            return;
+        }
         if (fillAt(pos)) {
             const bool cancelHistory = pythonHookSendMessage(QStringLiteral("fillfinish"), pos);
             if (!cancelHistory) {
@@ -1243,6 +1398,9 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
     m_points.clear();
     appendPoint(pos);
     resetAxisSnap(event->modifiers(), pos);
+    // Each stroke gets a fresh throttle window so its first "update" is
+    // never swallowed by the previous stroke's timestamp.
+    m_updateHookThrottle.invalidate();
     m_currentStroke = makeStroke(m_points, m_penColor, m_penWidth);
     m_currentStroke.property = m_strokeProperty;
     m_hasCurrentStroke = true;
@@ -1402,7 +1560,13 @@ void PaintOpenGLWidget::updateCurrentStroke()
 
     m_currentStroke = makeStroke(m_points, m_currentStroke.color, m_currentStroke.width);
     m_currentStroke.property = m_strokeProperty;
-    pythonHookSendMessage(QStringLiteral("update"));
+    // "update" is a best-effort preview notification, throttled so a
+    // subscriber never runs at tablet sample rate; "linefinish" remains the
+    // only guaranteed drawing event.
+    if (!m_updateHookThrottle.isValid() || m_updateHookThrottle.elapsed() >= kUpdateHookIntervalMs) {
+        m_updateHookThrottle.start();
+        pythonHookSendMessage(QStringLiteral("update"));
+    }
     update();
 }
 
@@ -1441,6 +1605,9 @@ bool PaintOpenGLWidget::pythonHookSendMessage(const QString &event, const QPoint
     if (!changed) {
         return false;
     }
+    if (!animeanHookEventSubscribed(event)) {
+        return false;
+    }
 
     const int row = m_model.currentFrame();
     const int layer = m_model.currentLayer();
@@ -1468,7 +1635,7 @@ bool PaintOpenGLWidget::pythonHookSendMessage(const QString &event, const QPoint
     message["delta"] = pointToPythonDict(delta);
 
     const QString output = ::pythonHookSendMessage(message);
-    if (!output.isEmpty()) {
+    if (!isQuietHookOutput(output)) {
         emit pythonDebugMessage(output);
     }
 
@@ -1723,36 +1890,8 @@ bool PaintOpenGLWidget::currentLayerAcceptsFill() const
 
 QVector<QLineF> PaintOpenGLWidget::fillGraphSegments(FillScope scope, int layerIndex) const
 {
-    QVector<QLineF> segments;
-
-    const AnimeScene &scene = m_model.scene();
-    const int frame = m_model.currentFrame();
     const bool allLayers = scope == FillScope::AllLayers;
-    for (int columnIndex = 0; columnIndex < scene.xsheet.columns.size(); ++columnIndex) {
-        if (!allLayers && layerIndex >= 0 && columnIndex != layerIndex) {
-            continue;
-        }
-
-        const AnimeColumn &column = scene.xsheet.columns[columnIndex];
-        if (column.type == AnimeColumnType::Fill) {
-            continue;
-        }
-        if (!column.visible) {
-            continue;
-        }
-
-        const AnimeCell cell = column.cellAt(frame);
-        const VectorImageModel *image = m_model.imageForCell(cell);
-        if (!image) {
-            continue;
-        }
-
-        for (const VectorStrokeNode &node : image->strokeNodes()) {
-            const VectorStroke &stroke = node.stroke;
-            segments += AnimeVectorLogic::segmentsFromPath(stroke.path);
-        }
-    }
-    return segments;
+    return m_model.fillBoundarySegments(m_model.currentFrame(), allLayers ? -1 : layerIndex);
 }
 
 QPainterPath PaintOpenGLWidget::vectorRegionPathAt(const QPointF &seed, FillScope scope, int layerIndex) const

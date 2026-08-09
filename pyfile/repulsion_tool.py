@@ -20,10 +20,19 @@ INTERACTION MODEL - the handle is an ABSOLUTE control over a cached baseline:
    each stroke and normalized so the strongest vertex has magnitude 1 (the
    normalized per-vertex repulsion map of the request).
 2. Dragging previews displacement = handle * MAX_PUSH * force per axis,
-   ALWAYS measured from the baseline originals. Releasing applies it and the
-   handle LATCHES - it keeps showing the direction/strength in effect.
-   Dragging further adjusts from the same baseline, so pulling the handle
-   back to the center restores the original geometry exactly.
+   ALWAYS measured from the baseline originals. The preview lives on a
+   TEMPORARY DATA LAYER (AnimeColumn.internal - rendered on top, absent
+   from the layer panel, history-safe, never saved): press copies the
+   editable strokes onto it, hides their source layers, and uploads the
+   per-vertex offsets to C++ once (ui.displace_begin). Every pad move is
+   then a single numeric call (ui.displace_scale) - C++ recomputes
+   base + handle * offset itself, so no vertex ever crosses the language
+   boundary during the drag. Locked layers stay visible in place (they do
+   not move on apply, so they no longer pretend to move in the preview).
+   Releasing applies it and the handle LATCHES - it keeps showing the
+   direction/strength in effect. Dragging further adjusts from the same
+   baseline, so pulling the handle back to the center restores the
+   original geometry exactly.
 3. Applying preserves TOPOLOGY: the stroke's own command points (anchors and
    bezier handles) and raw points are displaced 1:1 - no resampling, no
    knot changes, no subpath splitting - and the stroke is swapped in place
@@ -33,13 +42,14 @@ INTERACTION MODEL - the handle is an ABSOLUTE control over a cached baseline:
    moving, filling, undo/redo on that view): the pad recenters via
    ui.set_pad_value and the next press re-caches from the current state.
 
-Architecture note: C++ provides only the generic pad widget, the "pad" hook
-event, ui.set_pad_value and the replace_stroke_with_pieces binding. All
-force semantics are in this file.
+Architecture note: C++ provides only generic mechanisms - the pad widget,
+the "pad" hook event, ui.set_pad_value, replace_stroke_with_pieces, the
+internal-layer flag and the displacement session (ui.displace_begin /
+displace_scale / displace_end: "here is base geometry plus per-vertex
+offsets; scale them"). All force semantics are in this file.
 """
 
 import math
-import time
 import traceback
 
 import python_hooks
@@ -48,7 +58,6 @@ RADIUS = 30.0        # px: neighbourhood radius for vertex repulsion
 MAX_PUSH = 60.0      # px: displacement at full handle deflection
 COINCIDENT_D = 2.0   # px: below this, treat vertices as coincident (no direction)
 SMOOTH_WINDOW = 4    # vertices to each side in the per-stroke force smoothing
-PREVIEW_INTERVAL = 0.03   # seconds between overlay preview pushes
 POLY_STEP = 4.0
 # ALL vertices repel each other (user: 所有顶点之间互相推远), including a
 # stroke's own fold-backs - EXCEPT neighbours along the same polyline. Without
@@ -64,7 +73,10 @@ PREVIEW_ALPHA = 200
 # currently written into the model; "gesture" tracks the live drag.
 _BASELINE = {"valid": False, "view": None, "frame": -1, "strokes": [],
              "fingerprints": {}, "applied": (0.0, 0.0)}
-_GESTURE = {"active": False, "moved": False, "last_preview": 0.0}
+_GESTURE = {"active": False, "moved": False}
+# The temporary preview layer (press -> release): its column/asset indices
+# and the source layers hidden while the copies are showing.
+_PREVIEW = {"active": False, "view": None, "layer": -1, "asset": -1, "hidden": ()}
 
 
 def _animean():
@@ -114,7 +126,7 @@ def _collect_strokes(scene, frame):
     sid = 0
     seen_images = set()
     for layer in structure["layers"]:
-        if not layer["visible"] or layer["type"] == "fill":
+        if not layer["visible"] or layer["type"] == "fill" or layer.get("internal"):
             continue
         cmd_cell = scene.cell_to_dict(layer["index"], frame, False, POLY_STEP)
         image_key = (cmd_cell.get("asset_index", -1), cmd_cell.get("frame_id", 0))
@@ -306,13 +318,11 @@ def _reset_pad():
 
 def _invalidate_baseline(reason=None):
     had_state = _BASELINE["valid"] or _BASELINE["applied"] != (0.0, 0.0)
-    view = _BASELINE["view"]
     _BASELINE.update({"valid": False, "strokes": [], "fingerprints": {},
                       "applied": (0.0, 0.0)})
     if _GESTURE["active"]:
         _GESTURE.update({"active": False, "moved": False})
-        if view:
-            _restore_overlay(view)
+    _end_preview()
     if had_state:
         _reset_pad()
         if reason:
@@ -429,29 +439,108 @@ def _displace_commands(stroke, scale_x, scale_y):
 
 
 # ---------------------------------------------------------------------------
-# preview + apply
+# preview (temporary internal data layer + C++ displacement session) + apply
 # ---------------------------------------------------------------------------
 
-def _push_preview(view, scale_x, scale_y):
-    import auto_mapping
-    items = auto_mapping.overlay_items(view)
+def _start_preview(view):
+    """Copy the editable strokes onto a temporary internal layer and hand
+    their per-vertex offsets to C++ (ui.displace_begin). From here on a pad
+    move costs Python exactly one numeric call."""
+    animean = _animean()
+    scene = _scene_model(view)
+    frame = _BASELINE["frame"]
+
+    entries = []
+    editable_images = set()
     for stroke in _BASELINE["strokes"]:
-        displaced, _ = _displaced_polylines(stroke, scale_x, scale_y)
+        if not stroke["editable"]:
+            continue
+        editable_images.add((stroke["asset"], stroke["frame_id"]))
         r, g, b, _a = stroke["color"]
-        for points in displaced:
-            items.append({
-                "id": "repulsion_preview",
+        for points, forces in zip(stroke["polylines"], stroke["forces"]):
+            entries.append({
                 "points": points,
+                "offsets": [(MAX_PUSH * fx, MAX_PUSH * fy) for fx, fy in forces],
                 "color": (r, g, b, PREVIEW_ALPHA),
                 "width": stroke["width"],
-                "removable": False,
             })
-    _animean().ui.set_overlay(view, items)
+    if not entries:
+        return False
+    if _PREVIEW["active"]:
+        # Never stack sessions: a leftover preview would lose its hidden-layer
+        # bookkeeping the moment _PREVIEW is overwritten below.
+        _end_preview()
+
+    # The temp layer is created through plain model bindings; the internal
+    # flag keeps it out of the layer panel, attention and project files.
+    previous_layer = scene.current_layer()
+    previous_asset = scene.current_asset()
+    layer = scene.add_layer()
+    if layer < 0:
+        return False
+    scene.set_layer_internal(layer, True)
+    scene.set_layer_name(layer, "repulsion preview")
+    asset = scene.cell_asset_index(frame, layer)
+    if asset >= 0:
+        scene.set_asset_internal(asset, True)
+    scene.set_current_layer(previous_layer)
+    if previous_asset >= 0:
+        scene.set_current_asset(previous_asset)
+
+    # Register the session BEFORE hiding anything or crossing into
+    # displace_begin: if any of that throws, the press handler's
+    # _end_preview() must be able to restore visibility and drop the layer -
+    # with the bookkeeping done last, that rollback would be a no-op and the
+    # document would keep an invisible ghost column forever.
+    _PREVIEW.update({"active": True, "view": view, "layer": layer,
+                     "asset": asset, "hidden": ()})
+
+    hidden = []
+    for info in scene.get_structure()["layers"]:
+        if info.get("internal") or info["type"] == "fill":
+            continue
+        if not info["visible"] or info.get("locked"):
+            continue
+        cell = info["cells"][frame] if 0 <= frame < len(info["cells"]) else None
+        key = (cell.get("asset_index", -1), cell.get("frame_id", 0)) if cell else None
+        if key in editable_images:
+            scene.set_layer_visible(info["index"], False)
+            hidden.append(info["index"])
+            _PREVIEW["hidden"] = tuple(hidden)
+
+    applied = _BASELINE["applied"]
+    animean.ui.displace_begin(view, frame, layer, entries, applied[0], applied[1])
+    return True
 
 
-def _restore_overlay(view):
-    import auto_mapping
-    auto_mapping._push_overlay(view)
+def _end_preview():
+    """Tear the preview down: restore source visibility, drop the temp layer
+    and its backing asset. Safe to call when nothing is active or after an
+    undo already removed the temp layer with the rest of the model state."""
+    if not _PREVIEW["active"]:
+        return
+    view = _PREVIEW["view"]
+    layer = _PREVIEW["layer"]
+    asset = _PREVIEW["asset"]
+    hidden = _PREVIEW["hidden"]
+    _PREVIEW.update({"active": False, "view": None, "layer": -1,
+                     "asset": -1, "hidden": ()})
+
+    animean = _animean()
+    animean.ui.displace_end()
+    try:
+        scene = _scene_model(view)
+    except Exception:
+        return
+    for index in hidden:
+        scene.set_layer_visible(index, True)
+    # Only delete what is still OUR layer: an undo mid-gesture restores an
+    # older model where the temp column (and asset) no longer exist.
+    if 0 <= layer < scene.layer_count() and scene.layer_internal(layer):
+        scene.delete_layer(layer)
+        if asset >= 0:
+            scene.delete_asset(asset)
+    animean.ui.widget.refresh()
 
 
 def _polyline_length(points):
@@ -553,10 +642,12 @@ def _pad_event(cell, stroke, message):
             _invalidate_baseline("active view changed")
         try:
             _ensure_baseline(view)
+            _start_preview(view)
         except Exception:
+            _end_preview()
             print(f"[repulsion] baseline failed:\n{traceback.format_exc()}")
             return
-        _GESTURE.update({"active": True, "moved": False, "last_preview": 0.0})
+        _GESTURE.update({"active": True, "moved": False})
         return
 
     if phase == "release":
@@ -564,11 +655,16 @@ def _pad_event(cell, stroke, message):
             return
         _GESTURE["active"] = False
         session_view = _BASELINE["view"] or view
+        moved = _GESTURE["moved"]
+        _GESTURE["moved"] = False
+        # Tear the preview down BEFORE applying: the history commit that
+        # follows must snapshot a model without the temp layer in it.
+        _end_preview()
         try:
-            if _GESTURE["moved"]:
+            if moved:
                 _apply(session_view, x, y)
             else:
-                # A bare click never showed a preview; keep the pad honest by
+                # A bare click pushed nothing; keep the pad honest by
                 # snapping it back to the force actually in effect.
                 applied = _BASELINE["applied"]
                 try:
@@ -578,9 +674,6 @@ def _pad_event(cell, stroke, message):
                 print("[repulsion] click ignored - drag the handle to push.")
         except Exception:
             print(f"[repulsion] apply failed:\n{traceback.format_exc()}")
-        finally:
-            _GESTURE["moved"] = False
-            _restore_overlay(session_view)
         return
 
     if not _GESTURE["active"] or not _BASELINE["valid"]:
@@ -588,11 +681,10 @@ def _pad_event(cell, stroke, message):
 
     if phase == "move":
         _GESTURE["moved"] = True
-        now = time.monotonic()
-        if now - _GESTURE["last_preview"] >= PREVIEW_INTERVAL:
-            _GESTURE["last_preview"] = now
+        if _PREVIEW["active"]:
             try:
-                _push_preview(_BASELINE["view"], x, y)
+                # Absolute handle vector; C++ recomputes base + handle*offset.
+                _animean().ui.displace_scale(x, y)
             except Exception as error:
                 print(f"[repulsion] preview failed: {error}")
 

@@ -3,6 +3,7 @@
 
 #include <QColor>
 #include <QImage>
+#include <QLineF>
 #include <QMap>
 #include <QPainterPath>
 #include <QPointF>
@@ -109,6 +110,9 @@ class AnimeAsset {
 public:
     QString name;
     AnimeColumnType type = AnimeColumnType::Vector;
+    // Backing asset of a script-owned working layer: excluded from the asset
+    // panel and project files, same contract as AnimeColumn::internal.
+    bool internal = false;
     AnimeVectorImageModel *frame(int frameId, bool create);
     const AnimeVectorImageModel *frame(int frameId) const;
     QVector<int> frameIds() const;
@@ -124,6 +128,10 @@ public:
     bool visible = true;
     bool locked = false;
     qreal opacity = 1.0;
+    // Ephemeral working layer owned by a script (e.g. a tool preview): renders
+    // normally (on top of regular columns) but is excluded from the layer
+    // panel, selection attention, and project files. Never persisted.
+    bool internal = false;
 
     AnimeCell cellAt(int row) const;
     void setCell(int row, const AnimeCell &cell);
@@ -205,9 +213,13 @@ public:
     QString assetName(int assetIndex) const;
     void setAssetName(int assetIndex, const QString &name);
     AnimeColumnType assetType(int assetIndex) const;
+    bool assetInternal(int assetIndex) const;
+    void setAssetInternal(int assetIndex, bool internal);
 
     bool layerVisible(int layerIndex) const;
     void setLayerVisible(int layerIndex, bool visible);
+    bool layerInternal(int layerIndex) const;
+    void setLayerInternal(int layerIndex, bool internal);
     bool layerLocked(int layerIndex) const;
     void setLayerLocked(int layerIndex, bool locked);
     qreal layerOpacity(int layerIndex) const;
@@ -221,6 +233,7 @@ public:
     int addLayer();
     int addFillLayer();
     int addAsset(AnimeColumnType type = AnimeColumnType::Vector, const QString &name = QString());
+    bool deleteAsset(int assetIndex);
     bool deleteLayer(int layerIndex);
     bool moveLayer(int fromIndex, int toIndex);
     int addFrame();
@@ -249,6 +262,11 @@ public:
     AnimeColumn *currentColumn();
     const AnimeColumn *currentColumn() const;
     bool currentColumnEditable() const;
+
+    // Boundary geometry for region filling: every stroke segment on visible,
+    // non-fill, non-internal columns at the given frame. layerIndex >= 0
+    // restricts the walls to that single column.
+    QVector<QLineF> fillBoundarySegments(int frame, int layerIndex = -1) const;
 
 private:
     AnimeScene m_scene;

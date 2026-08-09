@@ -2,7 +2,6 @@ import importlib
 import json
 
 import auto_mapping
-import hook_test
 
 
 def extra_tools():
@@ -47,7 +46,9 @@ def extra_tools():
 
 
 def tools_json():
-    hook_test.register_all_tool_hooks()
+    # NOTE: no debug hooks here. hook_test's verbose printer used to be
+    # registered unconditionally, which put a print + debug-pane append on
+    # every pen move; enable it explicitly with hook_test.enable_verbose().
     auto_mapping.register_hooks()
     return json.dumps(extra_tools(), ensure_ascii=False)
 
