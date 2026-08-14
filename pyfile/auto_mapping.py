@@ -282,6 +282,25 @@ def _point_at_arc(points, cumulative, arc):
             points[index][1] + (points[index + 1][1] - points[index][1]) * t)
 
 
+def _direction_at_arc(points, cumulative, arc):
+    """d/d(arc) of _point_at_arc: the unit direction of the active segment.
+
+    Mirrors _point_at_arc's branch structure exactly, including the linear
+    extrapolation past either end, so it really is that function's derivative
+    (used as a Jacobian column when inverting the frame).
+    """
+    total = cumulative[-1]
+    if len(points) < 2 or total <= 0.0:
+        return (1.0, 0.0)
+    if arc <= 0.0:
+        return _segment_direction(points, 0)
+    if arc >= total:
+        return _segment_direction(points, len(points) - 2)
+    index = bisect.bisect_right(cumulative, arc) - 1
+    index = max(0, min(index, len(points) - 2))
+    return _segment_direction(points, index)
+
+
 def _tangent_at_arc(points, cumulative, arc, window=0.0):
     """Unit tangent of the polyline at arc position (end tangents outside).
 
@@ -391,118 +410,221 @@ def _arc_sides(total, crossing_arc):
     return max(crossing_arc, floor), max(total - crossing_arc, floor)
 
 
+class _Frame:
+    """One board's HV frame: two crossing guides plus the coordinate system
+    they induce. `hv` is THE shared reconstruction function - child and main
+    differ only in the point lists handed to it.
+
+    Coordinates (l_h, l_v) are SIGNED ARC LENGTHS measured from the crossing
+    along each guide. Arc length (not chord projection) is what makes the
+    child side symmetric with the main side; see build_mapper.
+    """
+
+    def __init__(self, h_points, v_points):
+        self.h = h_points
+        self.v = v_points
+        self.h_cum = _cumulative_lengths(h_points)
+        self.v_cum = _cumulative_lengths(v_points)
+        self.h_total = self.h_cum[-1]
+        self.v_total = self.v_cum[-1]
+        self.origin, self.h_arc, self.v_arc = _polyline_intersection(h_points, v_points)
+        # Outward extent on each side of the crossing, floored at 1% so a
+        # T-shaped crossing cannot divide by (nearly) zero. The RAW values are
+        # kept too: the floored ones cannot tell "collapsed side" apart from
+        # "genuinely 1% long", which is what the transfer scales need to know.
+        self.h_side = _arc_sides(self.h_total, self.h_arc)
+        self.v_side = _arc_sides(self.v_total, self.v_arc)
+        self.h_side_raw = (self.h_arc, self.h_total - self.h_arc)
+        self.v_side_raw = (self.v_arc, self.v_total - self.v_arc)
+
+    def hv(self, l_h, l_v):
+        """H(l_h) + V(l_v) - O: the Coons patch in its collapsed form."""
+        on_h = _point_at_arc(self.h, self.h_cum, self.h_arc + l_h)
+        on_v = _point_at_arc(self.v, self.v_cum, self.v_arc + l_v)
+        return (on_h[0] + on_v[0] - self.origin[0],
+                on_h[1] + on_v[1] - self.origin[1])
+
+    def jacobian(self, l_h, l_v):
+        """Columns of d(hv)/d(l_h, l_v): the two guide tangents."""
+        return (_direction_at_arc(self.h, self.h_cum, self.h_arc + l_h),
+                _direction_at_arc(self.v, self.v_cum, self.v_arc + l_v))
+
+    def solve(self, point, guess_h, guess_v, iterations=24, tol=1e-7):
+        """Invert hv: find (l_h, l_v) with hv(l_h, l_v) == point.
+
+        hv is piecewise affine (arc-length lookup on polylines), so Newton
+        lands exactly once the iterate reaches the right cell - typically two
+        or three steps from the chord-based guess.
+
+        Strongly curved guides make hv genuinely non-injective in places (the
+        two tangents turn parallel - the frame folds), so this is written to
+        DEGRADE, never to diverge: every step is damped to the frame's own
+        extent, only improving iterates are accepted, and the best one found
+        is returned. Iterate 0 is the caller's chord-basis guess, i.e. the
+        previous implementation's coordinates - so the result is never worse
+        than what the old code did, and the caller's residual term carries
+        whatever is left over.
+        """
+        limit = self.h_total + self.v_total + 1.0
+        l_h, l_v = guess_h, guess_v
+        current = self.hv(l_h, l_v)
+        best_error = math.hypot(current[0] - point[0], current[1] - point[1])
+        best = (l_h, l_v)
+        for _ in range(iterations):
+            if best_error <= tol:
+                break
+            fx = current[0] - point[0]
+            fy = current[1] - point[1]
+            (hx, hy), (vx, vy) = self.jacobian(l_h, l_v)
+            det = hx * vy - hy * vx
+            if abs(det) < 1e-9:
+                break  # locally folded frame: no usable step from here
+            step_h = (-fx * vy + fy * vx) / det
+            step_v = (-hx * fy + hy * fx) / det
+            scale = math.hypot(step_h, step_v)
+            if scale > limit:
+                step_h *= limit / scale
+                step_v *= limit / scale
+            l_h += step_h
+            l_v += step_v
+            current = self.hv(l_h, l_v)
+            error = math.hypot(current[0] - point[0], current[1] - point[1])
+            if error < best_error:
+                best_error = error
+                best = (l_h, l_v)
+            elif error > best_error * 4.0:
+                break  # diverging; keep the best iterate instead
+        return best
+
+
+def _transfer_scales(child_raw, child_total, main_side):
+    """Per-side arc scale child -> main, with a CONTINUOUS collapsed-side blend.
+
+    A side collapsed onto the 1% floor (T-shaped crossing at an endpoint) has
+    no real extent, so dividing by the floor would catapult stray points by a
+    ~100x amplifier; the old code switched to the opposite side's scale with a
+    hard `if`, which made the map discontinuous exactly at the threshold -
+    moving the crossing by 1e-7 px across it moved a mapped point by ~200 px
+    (measured). Ramping the weight over [0, floor] of the RAW side length
+    keeps both endpoint behaviours (fallback at 0, plain ratio at/above the
+    floor) and removes the cliff.
+    """
+    raw_neg, raw_pos = child_raw
+    m_neg, m_pos = main_side
+    floor = 0.01 * child_total
+    if floor <= 0.0:
+        return 1.0, 1.0
+    base_neg = m_neg / max(raw_neg, floor)
+    base_pos = m_pos / max(raw_pos, floor)
+    w_neg = min(1.0, max(0.0, raw_neg / floor))
+    w_pos = min(1.0, max(0.0, raw_pos / floor))
+    return ((1.0 - w_neg) * base_pos + w_neg * base_neg,
+            (1.0 - w_pos) * base_neg + w_pos * base_pos)
+
+
 def build_mapper(child_h_points, child_v_points, main_h_points, main_v_points, info=None):
-    """Build point mapper from child UV frame to main frame.
+    """Build point mapper from the child frame to the main frame.
 
     Returns (map_point, width_scale) or (None, reason).
-    The child guides act as chord axes: a stroke point is decomposed into
-    (u, v) relative to the guide intersection. The parametrization is
-    ENDPOINT-ANCHORED: the crossing splits every guide into two sides, and
-    each side of a child chord maps proportionally onto the SAME side of the
-    matching main guide's arc — for straight child guides the endpoints
-    correspond exactly to the main guide endpoints wherever the lines cross
-    (curved child guides make this approximate: decomposition is chord-based).
-    The two sides therefore carry DIFFERENT scales when the crossings sit at
-    different relative positions, which folds strokes crossing a guide by a
-    bounded angle; keep the crossings at similar relative positions to avoid
-    it (info dict, if given, receives h/v_scale_mismatch ratios). Stroke
-    width uses one global geometric-mean scale — an approximation once the
-    sides differ. The main guides are evaluated by arc length, so curved
-    main guides bend the mapped pattern.
+
+    DECOUPLED FORM (user request 2026-08-10): both boards go through the SAME
+    reconstruction function `_Frame.hv(l_h, l_v) = H(l_h) + V(l_v) - O`, and
+    the map is
+
+        Phi(p) = p - hv_child(l_h, l_v) + hv_main(s_h*l_h, s_v*l_v)
+
+    where (l_h, l_v) are p's ARC-LENGTH coordinates in the child frame,
+    obtained by inverting hv_child (Newton from the cheap chord-basis guess).
+
+    Two properties the previous chord-only formulation did not have:
+      * IDENTITY. Draw the same guides on both boards and Phi is the identity,
+        for any guide shape. The old form decomposed p on the child CHORDS and
+        rebuilt it on the main ARC, so a curved child guide displaced the whole
+        pattern by tens of pixels (measured: 28 px at amplitude 10, 157 px at
+        amplitude 60) even when both boards were identical.
+      * The child guides' curvature actually participates. Previously only
+        their two endpoints did (`eh`/`ev` were half-chords), so drawing a
+        curved child center line silently discarded its shape AND injected
+        that shape as an off-axis displacement.
+
+    The residual `p - hv_child(...)` is zero wherever the inverse converged;
+    it stays in the formula as the fallback that keeps the map defined (and
+    identity-preserving) on degenerate cells and outside the frame's coverage.
+
+    Parametrization is still ENDPOINT-ANCHORED: the crossing splits each guide
+    into two sides and each child side maps proportionally onto the matching
+    main side, so endpoints land on endpoints and the crossing on the crossing.
+    Differing side ratios still fold strokes that cross a guide (info dict, if
+    given, receives h/v_scale_mismatch). Stroke width uses one global
+    geometric-mean scale - an approximation once the sides differ.
     """
     if min(len(child_h_points), len(child_v_points), len(main_h_points), len(main_v_points)) < 2:
         return None, "a center line has fewer than 2 points"
 
-    child_origin, _, _ = _polyline_intersection(child_h_points, child_v_points)
+    child = _Frame(child_h_points, child_v_points)
+    main = _Frame(main_h_points, main_v_points)
+    if child.h_total <= 1e-9 or child.v_total <= 1e-9:
+        return None, "child center lines are degenerate"
+    if main.h_total <= 1e-9 or main.v_total <= 1e-9:
+        return None, "main center lines are degenerate"
+
+    # The chord basis is no longer the coordinate system, but it still seeds
+    # the inverse - and a near-parallel child pair has no usable frame at all,
+    # so keep rejecting it here (same angle test, same message as before).
     eh = ((child_h_points[-1][0] - child_h_points[0][0]) * 0.5,
           (child_h_points[-1][1] - child_h_points[0][1]) * 0.5)
     ev = ((child_v_points[-1][0] - child_v_points[0][0]) * 0.5,
           (child_v_points[-1][1] - child_v_points[0][1]) * 0.5)
     det = eh[0] * ev[1] - eh[1] * ev[0]
-    # Reject by ANGLE, not absolute area: for long guides an absolute det
-    # threshold lets near-parallel axes through and the decomposition blows up.
     axis_sin = abs(det) / max(1e-9, math.hypot(eh[0], eh[1]) * math.hypot(ev[0], ev[1]))
     if axis_sin < 0.05:  # ~3 degrees
         return None, "child center lines are (nearly) parallel"
+    child_h_chord = max(2.0 * math.hypot(eh[0], eh[1]), 1e-6)
+    child_v_chord = max(2.0 * math.hypot(ev[0], ev[1]), 1e-6)
 
-    main_h_cum = _cumulative_lengths(main_h_points)
-    main_v_cum = _cumulative_lengths(main_v_points)
-    if main_h_cum[-1] <= 1e-9 or main_v_cum[-1] <= 1e-9:
-        return None, "main center lines are degenerate"
-    main_origin, main_h_arc, main_v_arc = _polyline_intersection(main_h_points, main_v_points)
-    tangent_window = max(2.0 * POLY_STEP, 0.03 * main_h_cum[-1])
+    h_scale_neg, h_scale_pos = _transfer_scales(child.h_side_raw, child.h_total, main.h_side)
+    v_scale_neg, v_scale_pos = _transfer_scales(child.v_side_raw, child.v_total, main.v_side)
 
-    child_h_len = max(2.0 * math.hypot(eh[0], eh[1]), 1e-6)
-    child_v_len = max(2.0 * math.hypot(ev[0], ev[1]), 1e-6)
-    child_h_neg, child_h_pos = _chord_sides(child_h_points, child_origin, child_h_len)
-    child_v_neg, child_v_pos = _chord_sides(child_v_points, child_origin, child_v_len)
-    main_h_neg, main_h_pos = _arc_sides(main_h_cum[-1], main_h_arc)
-    main_v_neg, main_v_pos = _arc_sides(main_v_cum[-1], main_v_arc)
-
-    def side_scales(c_neg, c_pos, m_neg, m_pos, chord_len):
-        # Per-side scale = matching-main-side / child-side, so +/- one child
-        # side length lands exactly on the guide endpoint. A side collapsed
-        # to the floor (T-shaped crossing at an endpoint) has no real extent:
-        # reuse the opposite side's scale there instead of dividing by the 1%
-        # floor, which would catapult stray points by a ~100x amplifier.
-        floor = 0.01 * chord_len + 1e-9
-        s_neg = m_neg / c_neg
-        s_pos = m_pos / c_pos
-        if c_neg <= floor < c_pos:
-            s_neg = s_pos
-        elif c_pos <= floor < c_neg:
-            s_pos = s_neg
-        return s_neg, s_pos
-
-    h_scale_neg, h_scale_pos = side_scales(child_h_neg, child_h_pos,
-                                           main_h_neg, main_h_pos, child_h_len)
-    v_scale_neg, v_scale_pos = side_scales(child_v_neg, child_v_pos,
-                                           main_v_neg, main_v_pos, child_v_len)
     if info is not None:
         info["h_scale_mismatch"] = (max(h_scale_neg, h_scale_pos)
                                     / max(1e-9, min(h_scale_neg, h_scale_pos)))
         info["v_scale_mismatch"] = (max(v_scale_neg, v_scale_pos)
                                     / max(1e-9, min(v_scale_neg, v_scale_pos)))
         # Handedness: the map is direction-faithful on both axes (child start
-        # -> main start, end -> end; audit-tested for all combinations), so
-        # the result is a MIRROR image exactly when the two frames have
-        # opposite orientation (child cross product vs main cross product at
-        # the crossing). Drawing e.g. child H vertically and main H
-        # horizontally with every line drawn "naturally" flips handedness
-        # without any arrow pair looking reversed - report it instead of
-        # letting users hunt for a sign bug.
-        main_h_dir = _tangent_at_arc(main_h_points, main_h_cum, main_h_arc, tangent_window)
-        main_v_dir = _tangent_at_arc(main_v_points, main_v_cum, main_v_arc, tangent_window)
-        main_cross = main_h_dir[0] * main_v_dir[1] - main_h_dir[1] * main_v_dir[0]
-        info["mirrored"] = (det > 0.0) != (main_cross > 0.0)
-
-    def side_map(units, scale_neg, scale_pos):
-        return units * (scale_pos if units >= 0.0 else scale_neg)
+        # -> main start, end -> end), so the result is a MIRROR image exactly
+        # when the two frames have opposite orientation. Both sides now use
+        # the tangents at their own crossing, which is the same quantity for
+        # both boards instead of chord-vs-tangent as before.
+        child_cross_h, child_cross_v = child.jacobian(0.0, 0.0)
+        main_cross_h, main_cross_v = main.jacobian(0.0, 0.0)
+        child_cross = child_cross_h[0] * child_cross_v[1] - child_cross_h[1] * child_cross_v[0]
+        main_cross = main_cross_h[0] * main_cross_v[1] - main_cross_h[1] * main_cross_v[0]
+        info["mirrored"] = (child_cross > 0.0) != (main_cross > 0.0)
 
     def map_point(point):
-        dx = point[0] - child_origin[0]
-        dy = point[1] - child_origin[1]
-        u = (dx * ev[1] - dy * ev[0]) / det
-        v = (eh[0] * dy - eh[1] * dx) / det
-        u_units = u * 0.5 * child_h_len
-        v_units = v * 0.5 * child_v_len
-        arc_u = main_h_arc + side_map(u_units, h_scale_neg, h_scale_pos)
-        on_h = _point_at_arc(main_h_points, main_h_cum, arc_u)
-        on_v = _point_at_arc(main_v_points, main_v_cum,
-                             main_v_arc + side_map(v_units, v_scale_neg, v_scale_pos))
-        # Pure per-quadrant Coons interpolation: with translated boundary
-        # curves the patch collapses to exactly H(s) + V(t) - O, so the V
-        # displacement is translated (never rotated) along the spine. The
-        # Jacobian is independent of the off-axis distance (it degenerates
-        # only where the two main guides' local tangents turn parallel -
-        # spec theorem 3) - unlike the retired spine-rotation algorithm
-        # (old_history/auto_mapping_1.py), which folded at the spine's
-        # curvature radius. For straight guides both were identical.
-        off_x = on_v[0] - main_origin[0]
-        off_y = on_v[1] - main_origin[1]
-        return (on_h[0] + off_x, on_h[1] + off_y)
+        # Cheap chord-basis estimate of the arc coordinates (exact for
+        # straight child guides, which is why this reduces to the previous
+        # implementation there).
+        dx = point[0] - child.origin[0]
+        dy = point[1] - child.origin[1]
+        guess_h = (dx * ev[1] - dy * ev[0]) / det * 0.5 * child_h_chord
+        guess_v = (eh[0] * dy - eh[1] * dx) / det * 0.5 * child_v_chord
 
-    width_scale = math.sqrt((main_h_cum[-1] / child_h_len) * (main_v_cum[-1] / child_v_len))
+        l_h, l_v = child.solve(point, guess_h, guess_v)
+        rebuilt = child.hv(l_h, l_v)
+        image = main.hv(l_h * (h_scale_pos if l_h >= 0.0 else h_scale_neg),
+                        l_v * (v_scale_pos if l_v >= 0.0 else v_scale_neg))
+        return (image[0] + point[0] - rebuilt[0],
+                image[1] + point[1] - rebuilt[1])
+
+    # Arc lengths on both sides now, so a curved child guide scales widths by
+    # its real length rather than by its chord.
+    width_scale = math.sqrt((main.h_total / child.h_total) * (main.v_total / child.v_total))
+
+    map_point.child_frame = child
+    map_point.main_frame = main
+    map_point.h_scales = (h_scale_neg, h_scale_pos)
+    map_point.v_scales = (v_scale_neg, v_scale_pos)
     return map_point, width_scale
 
 
@@ -573,17 +695,50 @@ def _point_in_polygons(point, polygons):
     return inside
 
 
-def _boundary_point(inside_point, outside_point, polygons):
-    """Bisect between an inside and an outside point to approximate the border."""
-    a = inside_point
-    b = outside_point
-    for _ in range(14):
-        mid = ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5)
-        if _point_in_polygons(mid, polygons):
-            a = mid
-        else:
-            b = mid
-    return ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5)
+def _segment_polygon_crossings(a, b, polygons):
+    """Parameters t in (0,1) where segment a->b crosses a polygon edge.
+
+    Exact: one 2x2 solve per edge. The previous implementation only tested
+    the polyline's own vertices and bisected between an inside and an outside
+    sample, so the clip resolution was the SAMPLING density - a region
+    narrower than the vertex spacing, or a stroke clipping a corner between
+    two samples, was simply never seen.
+    """
+    abx, aby = b[0] - a[0], b[1] - a[1]
+    if abx * abx + aby * aby <= 1e-24:
+        return []
+    crossings = []
+    for polygon in polygons:
+        count = len(polygon)
+        for index in range(count):
+            e0 = polygon[index]
+            e1 = polygon[(index + 1) % count]
+            ex, ey = e1[0] - e0[0], e1[1] - e0[1]
+            den = abx * ey - aby * ex
+            if abs(den) <= 1e-12:
+                continue  # parallel (a grazing overlap changes no inside/outside run)
+            wx, wy = e0[0] - a[0], e0[1] - a[1]
+            t = (wx * ey - wy * ex) / den
+            u = (wx * aby - wy * abx) / den
+            if 0.0 < t < 1.0 and -1e-12 <= u <= 1.0 + 1e-12:
+                crossings.append(t)
+    return crossings
+
+
+def _clip_runs(a, b, polygons):
+    """Sub-intervals [t0, t1] of segment a->b with a definite inside/outside.
+
+    Yields (t0, t1, inside). Between two consecutive crossings the segment
+    cannot change side, so one midpoint test decides the whole run.
+    """
+    bounds = sorted(set(_segment_polygon_crossings(a, b, polygons)))
+    bounds = [0.0] + bounds + [1.0]
+    for t0, t1 in zip(bounds, bounds[1:]):
+        if t1 - t0 <= 1e-12:
+            continue
+        mid = (t0 + t1) * 0.5
+        point = (a[0] + (b[0] - a[0]) * mid, a[1] + (b[1] - a[1]) * mid)
+        yield t0, t1, _point_in_polygons(point, polygons)
 
 
 def _clip_polyline(points, polygons):
@@ -592,24 +747,16 @@ def _clip_polyline(points, polygons):
         return [points]
     pieces = []
     current = []
-    previous = None
-    previous_inside = False
-    for point in points:
-        inside = _point_in_polygons(point, polygons)
-        if previous is None:
-            if inside:
-                current.append(point)
-        elif inside and previous_inside:
-            current.append(point)
-        elif inside and not previous_inside:
-            current = [_boundary_point(point, previous, polygons), point]
-        elif not inside and previous_inside:
-            current.append(_boundary_point(previous, point, polygons))
-            if len(current) >= 2:
-                pieces.append(current)
-            current = []
-        previous = point
-        previous_inside = inside
+    for a, b in zip(points, points[1:]):
+        for t0, t1, inside in _clip_runs(a, b, polygons):
+            if not inside:
+                if len(current) >= 2:
+                    pieces.append(current)
+                current = []
+                continue
+            if not current:
+                current.append((a[0] + (b[0] - a[0]) * t0, a[1] + (b[1] - a[1]) * t0))
+            current.append((a[0] + (b[0] - a[0]) * t1, a[1] + (b[1] - a[1]) * t1))
     if len(current) >= 2:
         pieces.append(current)
     return pieces
@@ -708,7 +855,15 @@ def _rdp(points, eps):
             if seg <= 1e-12:
                 d = math.hypot(px - ax, py - ay)
             else:
-                d = abs((px - ax) * dy - (py - ay) * dx) / seg
+                # Distance to the SEGMENT, not to the infinite line through it.
+                # The map folds wherever the two side scales differ, and a
+                # folded-back point sits near that infinite line while being
+                # far from the segment - the line metric deleted it silently.
+                # Repro: _rdp([(0,0),(120,.1),(-40,-.1),(10,0)], 0.3) used to
+                # collapse to the endpoints, a 110 px error.
+                t = ((px - ax) * dx + (py - ay) * dy) / (seg * seg)
+                t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+                d = math.hypot(px - (ax + dx * t), py - (ay + dy * t))
             if d > worst:
                 worst = d
                 split = i
@@ -799,25 +954,21 @@ def _clip_flagged(flagged, polygons):
         return [list(flagged)]
     pieces = []
     current = []
-    previous = None
-    previous_inside = False
-    for entry in flagged:
-        point = entry[0]
-        inside = _point_in_polygons(point, polygons)
-        if previous is None:
-            if inside:
-                current.append(entry)
-        elif inside and previous_inside:
-            current.append(entry)
-        elif inside and not previous_inside:
-            current = [(_boundary_point(point, previous, polygons), True), entry]
-        elif not inside and previous_inside:
-            current.append((_boundary_point(previous, point, polygons), True))
-            if len(current) >= 2:
-                pieces.append(current)
-            current = []
-        previous = point
-        previous_inside = inside
+    for first, second in zip(flagged, flagged[1:]):
+        a, b = first[0], second[0]
+        for t0, t1, inside in _clip_runs(a, b, polygons):
+            if not inside:
+                if len(current) >= 2:
+                    pieces.append(current)
+                current = []
+                continue
+            if not current:
+                head = first if t0 <= 0.0 else ((a[0] + (b[0] - a[0]) * t0,
+                                                 a[1] + (b[1] - a[1]) * t0), True)
+                current.append(head)
+            tail = second if t1 >= 1.0 else ((a[0] + (b[0] - a[0]) * t1,
+                                              a[1] + (b[1] - a[1]) * t1), True)
+            current.append(tail)
     if len(current) >= 2:
         pieces.append(current)
     return pieces
@@ -948,26 +1099,95 @@ def _commands_to_subpaths(commands):
     return subpaths
 
 
-def _boundary_t(cub, t_in, t_out, polygons):
-    """Bisect the cubic parameter between an inside and an outside sample."""
-    inside_at_in = _point_in_polygons(_cubic_point(cub, t_in), polygons)
-    a, b = t_in, t_out
-    for _ in range(18):
-        m = (a + b) * 0.5
-        if _point_in_polygons(_cubic_point(cub, m), polygons) == inside_at_in:
-            a = m
-        else:
-            b = m
-    return (a + b) * 0.5
+def _bernstein_cubic_roots(b0, b1, b2, b3):
+    """Roots in (0, 1) of the cubic with these Bernstein coefficients.
+
+    Isolation instead of a closed form: the derivative is a quadratic whose
+    roots split [0, 1] into at most three MONOTONE pieces, and a monotone
+    piece holds at most one root, found by bisection to machine precision.
+    Robust for the double/triple roots a tangential touch produces, where
+    Cardano loses most of its digits.
+    """
+    c0 = b0
+    c1 = 3.0 * (b1 - b0)
+    c2 = 3.0 * (b2 - 2.0 * b1 + b0)
+    c3 = b3 - 3.0 * b2 + 3.0 * b1 - b0
+
+    def value(t):
+        return ((c3 * t + c2) * t + c1) * t + c0
+
+    breaks = [0.0, 1.0]
+    qa, qb, qc = 3.0 * c3, 2.0 * c2, c1
+    if abs(qa) > 1e-14:
+        disc = qb * qb - 4.0 * qa * qc
+        if disc > 0.0:
+            root = math.sqrt(disc)
+            for extremum in ((-qb - root) / (2.0 * qa), (-qb + root) / (2.0 * qa)):
+                if 0.0 < extremum < 1.0:
+                    breaks.append(extremum)
+    elif abs(qb) > 1e-14:
+        extremum = -qc / qb
+        if 0.0 < extremum < 1.0:
+            breaks.append(extremum)
+    breaks.sort()
+
+    roots = []
+    for lo, hi in zip(breaks, breaks[1:]):
+        flo, fhi = value(lo), value(hi)
+        if flo == 0.0 and 0.0 < lo < 1.0:
+            roots.append(lo)
+            continue
+        if flo * fhi > 0.0 or flo == fhi:
+            continue
+        a, b = lo, hi
+        for _ in range(60):
+            mid = (a + b) * 0.5
+            if value(a) * value(mid) <= 0.0:
+                b = mid
+            else:
+                a = mid
+        root = (a + b) * 0.5
+        if 0.0 < root < 1.0:
+            roots.append(root)
+    return roots
+
+
+def _cubic_polygon_crossings(cub, polygons):
+    """Parameters t in (0,1) where a cubic crosses a polygon edge.
+
+    Exact, like _segment_polygon_crossings: the signed distance of the cubic
+    to an edge's line is itself a cubic whose Bernstein coefficients are just
+    that distance evaluated at the four control points, so the convex-hull
+    test rejects most edges without any root finding.
+    """
+    crossings = []
+    for polygon in polygons:
+        count = len(polygon)
+        for index in range(count):
+            e0 = polygon[index]
+            e1 = polygon[(index + 1) % count]
+            ex, ey = e1[0] - e0[0], e1[1] - e0[1]
+            extent = ex * ex + ey * ey
+            if extent <= 1e-18:
+                continue
+            side = [(point[0] - e0[0]) * ey - (point[1] - e0[1]) * ex for point in cub]
+            if min(side) > 0.0 or max(side) < 0.0:
+                continue  # whole curve on one side of this edge's line
+            for t in _bernstein_cubic_roots(*side):
+                hit = _cubic_point(cub, t)
+                along = ((hit[0] - e0[0]) * ex + (hit[1] - e0[1]) * ey) / extent
+                if -1e-12 <= along <= 1.0 + 1e-12:
+                    crossings.append(t)
+    return crossings
 
 
 def _clip_cubics(cubics, polygons):
     """Split a subpath of cubics into the runs that lie inside `polygons`.
 
-    Mirrors _clip_polyline's semantics but keeps curve segments: each cubic is
-    sampled, boundary crossings are located by bisecting the cubic parameter,
-    and de Casteljau splitting extracts the inside sub-cubics. Runs that stay
-    inside across a cubic boundary are kept as one piece.
+    Mirrors _clip_polyline's semantics but keeps curve segments: the crossing
+    parameters are SOLVED (cubic-vs-edge), not sampled, and de Casteljau
+    splitting extracts the inside sub-cubics. Runs that stay inside across a
+    cubic boundary are kept as one piece.
     """
     if not polygons:
         return [list(cubics)]
@@ -975,32 +1195,18 @@ def _clip_cubics(cubics, polygons):
     pieces = []
     current = []
     for cub in cubics:
-        p0, c1, c2, p3 = cub
-        net = _dist(p0, c1) + _dist(c1, c2) + _dist(c2, p3)
-        n = max(6, min(64, int(math.ceil(net / 3.0))))
-        ts = [k / n for k in range(n + 1)]
-        inside = [_point_in_polygons(_cubic_point(cub, t), polygons) for t in ts]
-        k = 0
-        while k <= n:
-            if not inside[k]:
-                k += 1
+        bounds = sorted({t for t in _cubic_polygon_crossings(cub, polygons)
+                         if 1e-9 < t < 1.0 - 1e-9})
+        bounds = [0.0] + bounds + [1.0]
+        for t0, t1 in zip(bounds, bounds[1:]):
+            if t1 - t0 <= 1e-9:
                 continue
-            t_start = 0.0 if k == 0 else _boundary_t(cub, ts[k], ts[k - 1], polygons)
-            j = k
-            while j + 1 <= n and inside[j + 1]:
-                j += 1
-            t_end = 1.0 if j == n else _boundary_t(cub, ts[j], ts[j + 1], polygons)
-            sub = _split_cubic(cub, t_start, t_end)
-            if current and t_start <= 0.0:
-                current.append(sub)          # continues the previous cubic's run
-            else:
+            if not _point_in_polygons(_cubic_point(cub, (t0 + t1) * 0.5), polygons):
                 if current:
                     pieces.append(current)
-                current = [sub]
-            if t_end < 1.0:                   # run ended inside this cubic
-                pieces.append(current)
-                current = []
-            k = j + 1
+                    current = []
+                continue
+            current.append(_split_cubic(cub, t0, t1))
     if current:
         pieces.append(current)
     return pieces
@@ -1401,6 +1607,35 @@ def _discard_mapped_layer(scene, layer_index):
         print(f"[auto_mapping] could not roll back the empty mapped layer: {error}")
 
 
+def _densify(points, step=POLY_STEP):
+    """Split runs longer than `step` so straight stretches carry vertices too.
+
+    The C++ flattener only subdivides CURVE elements: a lineTo contributes
+    exactly two points no matter how long it is, so a 500 px straight stroke
+    arrives here as a 2-point polyline. Two consequences, both real:
+      * child mapping-area clipping tests inside/outside per vertex, so a
+        region boundary crossing the middle of such a stroke is never seen;
+      * the image of a straight source segment is a CURVE, and with only two
+        anchors the sampler has to discover the whole deformation by probing
+        - exactly the case its probes can be fooled on.
+    Already-flattened curves arrive with ~4 px spacing, so this is a no-op
+    for them; it only fills in the straight runs.
+    """
+    if len(points) < 2:
+        return list(points)
+    out = [points[0]]
+    for a, b in zip(points, points[1:]):
+        length = math.hypot(b[0] - a[0], b[1] - a[1])
+        # round(), not ceil(): a flattened curve arrives with spacing already
+        # around `step`, and ceil() would split every one of those in two for
+        # a few percent of overshoot. Only genuinely long runs get filled in.
+        count = max(1, int(round(length / step))) if step > 0.0 else 1
+        for k in range(1, count + 1):
+            t = k / count
+            out.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
+    return out
+
+
 def _stroke_polylines(stroke):
     """Per-subpath point lists (does NOT concatenate separate subpaths, unlike
     _stroke_points, so distinct subpaths never get a bogus joining segment)."""
@@ -1408,11 +1643,11 @@ def _stroke_polylines(stroke):
     for polyline in stroke.get("polylines") or []:
         pts = [(float(point["x"]), float(point["y"])) for point in polyline]
         if len(pts) >= 2:
-            result.append(pts)
+            result.append(_densify(pts))
     if not result:
         raw = [(float(point["x"]), float(point["y"])) for point in (stroke.get("raw_points") or [])]
         if len(raw) >= 2:
-            result.append(raw)
+            result.append(_densify(raw))
     return result
 
 
