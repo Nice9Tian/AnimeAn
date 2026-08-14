@@ -48,7 +48,10 @@ V_PROPERTY = "v_center_line"
 GUIDE_PROPERTIES = (H_PROPERTY, V_PROPERTY)
 MAPPED_PROPERTY = "auto_mapped"
 MAPPED_LAYER_NAME = "mapped layer"
-AUTO_MAPPING_TOOL = "auto_mapping"
+# The one and only automapping button. Its internal id keeps the historical
+# "_2" suffix ("Auto Mapping 2", Coons interpolation) so nothing stored in
+# old sessions changes meaning; the retired spine-rotation algorithm lives in
+# old_history/auto_mapping_1.py.
 AUTO_MAPPING2_TOOL = "auto_mapping_2"
 MAPPING_AREA_PROPERTY = "mapping_area"
 POLY_STEP = 4.0
@@ -94,11 +97,10 @@ _RDP_STATE = {"eps": 0.3}
 def rdp_eps():
     return _RDP_STATE["eps"]
 
-# Refer-rect debug grid state + which mapper variant ran last (drives the grid).
+# Refer-rect debug grid state.
 _REFER_RECT = {"enabled": False}
-_MAPPER_VERSION = {"value": 1}
 # Grid polylines are O(n^2) in guide points to build (intersection searches):
-# cache per view, invalidated whenever guides or the mapper version change.
+# cache per view, invalidated whenever the guides change.
 _GRID_CACHE = {"child": None, "main": None}
 
 
@@ -285,9 +287,10 @@ def _tangent_at_arc(points, cumulative, arc, window=0.0):
 
     With a positive window the tangent is a central difference over
     [arc-window, arc+window]: hand-drawn guides carry per-segment direction
-    jitter and release hooks at the ends, and feeding those raw into the
-    spine rotation scrambles the mapped pattern. The window keeps genuine
-    curvature while averaging the noise away.
+    jitter and release hooks at the ends, and the raw values would make the
+    consumers (the handedness/mirror check in build_mapper, the direction
+    arrows) flicker with the noise. The window keeps genuine curvature
+    while averaging the noise away.
     """
     if len(points) < 2:
         return (1.0, 0.0)
@@ -388,8 +391,7 @@ def _arc_sides(total, crossing_arc):
     return max(crossing_arc, floor), max(total - crossing_arc, floor)
 
 
-def build_mapper(child_h_points, child_v_points, main_h_points, main_v_points, info=None,
-                 spine_rotation=True):
+def build_mapper(child_h_points, child_v_points, main_h_points, main_v_points, info=None):
     """Build point mapper from child UV frame to main frame.
 
     Returns (map_point, width_scale) or (None, reason).
@@ -429,7 +431,6 @@ def build_mapper(child_h_points, child_v_points, main_h_points, main_v_points, i
         return None, "main center lines are degenerate"
     main_origin, main_h_arc, main_v_arc = _polyline_intersection(main_h_points, main_v_points)
     tangent_window = max(2.0 * POLY_STEP, 0.03 * main_h_cum[-1])
-    base_tangent = _tangent_at_arc(main_h_points, main_h_cum, main_h_arc, tangent_window)
 
     child_h_len = max(2.0 * math.hypot(eh[0], eh[1]), 1e-6)
     child_v_len = max(2.0 * math.hypot(ev[0], ev[1]), 1e-6)
@@ -489,25 +490,17 @@ def build_mapper(child_h_points, child_v_points, main_h_points, main_v_points, i
         on_h = _point_at_arc(main_h_points, main_h_cum, arc_u)
         on_v = _point_at_arc(main_v_points, main_v_cum,
                              main_v_arc + side_map(v_units, v_scale_neg, v_scale_pos))
-        # The H guide is the spine: the V displacement is expressed in the
-        # spine's LOCAL frame, rotating with its tangent. A curved spine
-        # therefore keeps deforming the pattern all the way to its far ends
-        # (and beyond, where the end tangent freezes the rotation) instead of
-        # fading into a translated copy. For a straight spine the rotation is
-        # identity and this reduces to the plain affine mapping.
+        # Pure per-quadrant Coons interpolation: with translated boundary
+        # curves the patch collapses to exactly H(s) + V(t) - O, so the V
+        # displacement is translated (never rotated) along the spine. The
+        # Jacobian is independent of the off-axis distance (it degenerates
+        # only where the two main guides' local tangents turn parallel -
+        # spec theorem 3) - unlike the retired spine-rotation algorithm
+        # (old_history/auto_mapping_1.py), which folded at the spine's
+        # curvature radius. For straight guides both were identical.
         off_x = on_v[0] - main_origin[0]
         off_y = on_v[1] - main_origin[1]
-        if not spine_rotation:
-            # "Auto Mapping 2": pure per-quadrant Coons interpolation. With
-            # translated boundary curves the patch collapses to exactly
-            # H(s) + V(t) - O: the V displacement is translated (never
-            # rotated) along the spine.
-            return (on_h[0] + off_x, on_h[1] + off_y)
-        tangent = _tangent_at_arc(main_h_points, main_h_cum, arc_u, tangent_window)
-        cos_t = tangent[0] * base_tangent[0] + tangent[1] * base_tangent[1]
-        sin_t = tangent[1] * base_tangent[0] - tangent[0] * base_tangent[1]
-        return (on_h[0] + off_x * cos_t - off_y * sin_t,
-                on_h[1] + off_x * sin_t + off_y * cos_t)
+        return (on_h[0] + off_x, on_h[1] + off_y)
 
     width_scale = math.sqrt((main_h_cum[-1] / child_h_len) * (main_v_cum[-1] / child_v_len))
     return map_point, width_scale
@@ -1042,7 +1035,8 @@ def _direction_arrow_points(points, size):
     guide start/end, so drawing a main center line in the opposite direction
     deliberately flips the texture along that axis. The arrow makes the drawn
     direction visible. The tangent is smoothed over a window because raw
-    hand-drawn end segments jitter (same reason as the spine rotation).
+    hand-drawn end segments jitter (same smoothing as _tangent_at_arc's
+    other consumers).
     """
     cumulative = _cumulative_lengths(points)
     total = cumulative[-1]
@@ -1187,8 +1181,7 @@ def _grid_overlay_items(view_name):
             return []
         mapper, _ = build_mapper(
             child_assets[H_PROPERTY]["points"], child_assets[V_PROPERTY]["points"],
-            main_assets[H_PROPERTY]["points"], main_assets[V_PROPERTY]["points"],
-            spine_rotation=_MAPPER_VERSION["value"] == 1)
+            main_assets[H_PROPERTY]["points"], main_assets[V_PROPERTY]["points"])
         if mapper is None:
             return []
 
@@ -1327,7 +1320,9 @@ def _collect_pattern_strokes(scene, frame, want_commands=False):
     structure = scene.get_structure()
     if frame < 0 or frame >= structure["frame_count"]:
         return pattern
-    skip = (*GUIDE_PROPERTIES, MAPPED_PROPERTY, AUTO_MAPPING_TOOL, AUTO_MAPPING2_TOOL,
+    # "auto_mapping" stays as a literal: strokes drawn while the retired
+    # Auto Mapping 1 button was active carry that property in old sessions.
+    skip = (*GUIDE_PROPERTIES, MAPPED_PROPERTY, "auto_mapping", AUTO_MAPPING2_TOOL,
             MAPPING_AREA_PROPERTY)
     to_poly = not want_commands
     for layer in structure["layers"]:
@@ -1510,11 +1505,10 @@ _EMITTERS = {
 }
 
 
-def _perform_mapping(version=1):
+def _perform_mapping():
     animean = _animean()
     child = _scene_model("child")
     main = _scene_model("main")
-    _MAPPER_VERSION["value"] = version
     mode = curve_mode()
     if mode not in _EMITTERS:
         mode = "spline"
@@ -1524,14 +1518,6 @@ def _perform_mapping(version=1):
 
     _absorb_legacy_items("child", child, child_frame)
     _absorb_legacy_items("main", main, main_frame)
-
-    # The refer-rect grid tracks the selected algorithm even when the run
-    # below is refused (e.g. no pattern yet — checking the grid first is a
-    # legitimate workflow).
-    _invalidate_grid_cache()
-    if _REFER_RECT["enabled"]:
-        _push_overlay("child")
-        _push_overlay("main")
 
     child_assets = _assets_for("child")
     main_assets = _assets_for("main")
@@ -1569,7 +1555,6 @@ def _perform_mapping(version=1):
         main_assets[H_PROPERTY]["points"],
         main_assets[V_PROPERTY]["points"],
         mapper_info,
-        spine_rotation=version == 1,
     )
     if map_point is None:
         print(f"[auto_mapping] cannot build mapping: {width_scale}")
@@ -1626,13 +1611,11 @@ def _perform_mapping(version=1):
         return False
 
     animean.ui.refresh()
-    algorithm = "Auto Mapping" if version == 1 else "Auto Mapping 2"
     try:
-        animean.ui.history_commit(algorithm, "main")
+        animean.ui.history_commit("Auto Mapping", "main")
     except Exception:
         pass  # older builds without the history binding
-    summary = (f"[auto_mapping] {algorithm} "
-               f"({'spine rotation' if version == 1 else 'coons interpolation'}, {mode} mode) mapped "
+    summary = (f"[auto_mapping] Auto Mapping (coons interpolation, {mode} mode) mapped "
                f"{added} stroke(s) into NEW layer '{main.layer_name(mapped_layer)}' "
                f"(top of stack, frame {main_frame + 1} of main_paint_view, width x{width_scale:.2f})")
     if mapper_info.get("mirrored"):
@@ -1647,9 +1630,9 @@ def _perform_mapping(version=1):
     return True
 
 
-def _run(version=1):
+def _run():
     try:
-        _perform_mapping(version)
+        _perform_mapping()
     except Exception as error:  # keep the UI alive; feedback goes to the debug dock
         print(f"[auto_mapping] error: {error!r}")
 
@@ -1745,13 +1728,7 @@ def _history_restored(cell, stroke, message):
 def _auto_mapping_button(cell, stroke, message):
     global _last_run_handled
     _last_run_handled = True
-    _run(1)
-
-
-def _auto_mapping2_button(cell, stroke, message):
-    global _last_run_handled
-    _last_run_handled = True
-    _run(2)
+    _run()
 
 
 def _tool_option_changed(cell, stroke, message):
@@ -1780,16 +1757,14 @@ def _tool_option_changed(cell, stroke, message):
     _invalidate_grid_cache()
     _push_overlay("child")
     _push_overlay("main")
-    print(f"[auto_mapping] refer rect grid {'ON' if enabled else 'OFF'} "
-          f"(algorithm: {'Auto Mapping' if _MAPPER_VERSION['value'] == 1 else 'Auto Mapping 2'})")
+    print(f"[auto_mapping] refer rect grid {'ON' if enabled else 'OFF'}")
 
 
 def register_hooks():
     python_hooks.set_hook(_capture_mapping_item, linefinish=True, tool="extra")
     python_hooks.set_hook(_overlay_removed, overlayremove=True)
     python_hooks.set_hook(_history_restored, historyrestore=True)
-    python_hooks.set_hook(_auto_mapping_button, extra=True, tool=AUTO_MAPPING_TOOL)
-    python_hooks.set_hook(_auto_mapping2_button, extra=True, tool=AUTO_MAPPING2_TOOL)
+    python_hooks.set_hook(_auto_mapping_button, extra=True, tool=AUTO_MAPPING2_TOOL)
     # tool="extra" keeps this hook from intercepting (and debug-dock-spamming)
     # every built-in tool's option events — refer_rect only exists on extra
     # tools anyway.
@@ -1812,22 +1787,12 @@ def activate_mapping_area_tool(name="mapping_area", property_value=MAPPING_AREA_
     return property_value
 
 
-def run_auto_mapping(name=AUTO_MAPPING_TOOL, property_value=AUTO_MAPPING_TOOL):
+def run_auto_mapping(name=AUTO_MAPPING2_TOOL, property_value=AUTO_MAPPING2_TOOL):
     global _last_run_handled
     register_hooks()
     if _last_run_handled:
         # the "extra" event hook already performed this click's mapping
         _last_run_handled = False
         return property_value
-    _run(1)
-    return property_value
-
-
-def run_auto_mapping_2(name=AUTO_MAPPING2_TOOL, property_value=AUTO_MAPPING2_TOOL):
-    global _last_run_handled
-    register_hooks()
-    if _last_run_handled:
-        _last_run_handled = False
-        return property_value
-    _run(2)
+    _run()
     return property_value

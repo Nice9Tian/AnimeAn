@@ -2,6 +2,12 @@
 
 **——两种中轴线引导形变映射的微分几何分析及其病态性来源**
 
+> **归档说明**：本文写于两种算法并存时期，正文保持原样、以当时的现在时口吻叙述。
+> 此后 AM1（脊柱旋转）已按本文结论从软件中移除——`build_mapper` 不再有
+> `spine_rotation` 开关，Coons 插值（原 AM2）成为唯一的 "Auto Mapping"。
+> AM1 的代码快照见同目录 `auto_mapping_1.py`；文中指向 `pyfile/auto_mapping.py`
+> 的行号是移除前的旧行号。现役算法的规格见 `../docs/auto_mapping_2_spec.md`。
+
 ---
 
 ## 摘要

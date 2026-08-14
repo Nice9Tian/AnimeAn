@@ -122,7 +122,7 @@ def options_for_extra_tool(tool, state=None):
             _slider("smooth", "Smooth", "smooth", 0, 100, int(state.get("smooth", 50)), 0),
             _slider("pen_width", "Width", "pen_width", 1, 50, int(state.get("pen_width", 5)), 1),
         ]
-    elif tool in ("auto_mapping", "auto_mapping_2"):
+    elif tool == "auto_mapping_2":
         # Curve Mode picks how the mapped strokes' geometry is rebuilt after the
         # (non-linear) warp; RDP is the decimation tolerance for the samples
         # inserted between original points (0.1px units; originals are never

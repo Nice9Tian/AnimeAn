@@ -31,16 +31,14 @@ def extra_tools():
             "handler": "auto_mapping.activate_mapping_area_tool",
         },
         {
-            "name": "auto_mapping",
-            "title": "Auto Mapping",
-            "property": auto_mapping.AUTO_MAPPING_TOOL,
-            "handler": "auto_mapping.run_auto_mapping",
-        },
-        {
+            # THE automapping (Coons interpolation, formerly "Auto Mapping 2").
+            # The internal name/property keep the historical "_2" suffix so
+            # old sessions keep their meaning; the retired spine-rotation
+            # algorithm is archived in old_history/auto_mapping_1.py.
             "name": "auto_mapping_2",
-            "title": "Auto Mapping 2",
+            "title": "Auto Mapping",
             "property": auto_mapping.AUTO_MAPPING2_TOOL,
-            "handler": "auto_mapping.run_auto_mapping_2",
+            "handler": "auto_mapping.run_auto_mapping",
         },
     ]
 

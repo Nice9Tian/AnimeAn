@@ -10,7 +10,7 @@
 
 算法分五个阶段：参考架采集、映射器构造、曲线重建、区域裁剪、结果输出。其核心 $\Phi_2 = H(s) + V(t) - O_m$ 是**可分离**的平移扫掠映射，等价于对边互为平移时的双线性混合 Coons 曲面（§5.5 定理 1，数值验证偏差 $6.4\times10^{-14}$）。由于该映射非线性，逐顶点变换后直接连直线会丢失顶点间的形变，故第三阶段提供三种曲线重建模式（polyline / spline / bezier），均遵循"原始顶点为锚点、仅对插值采样点降采样"的约束。
 
-本文所有公式均与实现逐行对应（附录 B），全部数学论断均经数值验证（§10）。AM2 与 Auto Mapping 1 的比较分析见 [`auto_mapping_algorithms.md`](auto_mapping_algorithms.md)。
+本文所有公式均与实现一一对应（附录 B 按函数名索引），全部数学论断均经数值验证（§10）。AM2 现在是本软件**唯一的** automapping（工具栏按钮 `Auto Mapping`）；被淘汰的 Auto Mapping 1（脊柱旋转）的代码与两算法比较分析归档于 [`../old_history/auto_mapping_algorithms.md`](../old_history/auto_mapping_algorithms.md) 与 `../old_history/auto_mapping_1.py`。
 
 ---
 
@@ -41,7 +41,7 @@
                  └────────────────────┬────────────────────────┘
                                       ▼
                  ┌─────────────────────────────────────────────┐
-   点击 AM2  ──▶ │ II 映射器构造    build_mapper(spine=False)  │
+   点击 AM2  ──▶ │ II 映射器构造    build_mapper(...)          │
                  │    斜基分解 → 逐侧标定 → 弧长求值 → 扫掠    │
                  │    产出 map_point : R² → R²,  width_scale   │
                  └────────────────────┬────────────────────────┘
@@ -330,7 +330,7 @@ $$c_1' = p_0' + D_{\mathbf h_1}\Phi_2(p_0),\qquad c_2' = p_3' + D_{\mathbf h_2}\
 2. **移至顶层**：`add_layer` 追加于列尾即 z 序最底（`paintGL` 倒序绘制），故新层 `move_layer(idx, 0)` 置顶，并同步 `remap_fill_source_layers_after_move`。
 3. **创建单元格保持原样**：私有资产 + `frame_id = 1`（该 id 是 `assignAssetToLayer` 硬编码的规范值，改写会遗留空白规范图）。
 4. **事务性**：异常或 `added == 0` 时回滚删除空图层——无历史提交的孤儿层会被下一次无关提交静默吞并，无法单独撤销。
-5. 每条输出笔画标记 `property = "auto_mapped"`；成功后 `ui.refresh()` + 一次 `history_commit("Auto Mapping 2", "main")`。
+5. 每条输出笔画标记 `property = "auto_mapped"`；成功后 `ui.refresh()` + 一次 `history_commit("Auto Mapping", "main")`（AM1 移除后 AM2 即 "Auto Mapping"）。
 
 ---
 
@@ -445,24 +445,24 @@ $$c_1' = p_0' + D_{\mathbf h_1}\Phi_2(p_0),\qquad c_2' = p_3' + D_{\mathbf h_2}\
 |---|---|
 | 参考架采集钩子 | `_capture_mapping_item` |
 | 叠加显示项（含方向箭头） | `overlay_items` / `_direction_arrow_points` |
-| 交点 $O,s_\times,t_\times$ | `_polyline_intersection` `:340` |
-| 累积弧长 | `_cumulative_lengths` `:246` |
-| $H(s),V(t)$ (4.5) | `_point_at_arc` `:263` |
-| 子系分侧 $a^\pm$ | `_chord_sides` `:372` |
-| 主系分侧 $b^\pm$ | `_arc_sides` `:386` |
-| 逐侧标定 (4.3) | `side_scales` `:441` |
-| 重参数化 $\mu$ (4.4) | `side_map` `:478` |
-| $\Phi_2$ (4.6) | `map_point` `:481`（`spine_rotation=False` 分支） |
-| 映射器入口 | `build_mapper` `:391` |
-| 锚点自适应采样 §6.2 | `_adaptive_map_polyline` `:763` |
+| 交点 $O,s_\times,t_\times$ | `_polyline_intersection` |
+| 累积弧长 | `_cumulative_lengths` |
+| $H(s),V(t)$ (4.5) | `_point_at_arc` |
+| 子系分侧 $a^\pm$ | `_chord_sides` |
+| 主系分侧 $b^\pm$ | `_arc_sides` |
+| 逐侧标定 (4.3) | `side_scales` |
+| 重参数化 $\mu$ (4.4) | `side_map` |
+| $\Phi_2$ (4.6) | `map_point`（AM1 移除后为唯一分支；原 `spine_rotation=False`） |
+| 映射器入口 | `build_mapper` |
+| 锚点自适应采样 §6.2 | `_adaptive_map_polyline` |
 | 区间内降采样 §6.3 | `_decimate_between_anchors` |
 | 向心 Catmull-Rom §6.4.1 | `_catmull_rom_cubics` |
-| 方向导数传输 (6.1) | `_directional_image` `:852` |
-| 三次曲线自适应变换 | `_warp_cubic` `:874` |
-| 三模式发射器 | `_emit_polyline_mode` `:1452` / `_emit_spline_mode` `:1472` / `_emit_bezier_mode` `:1491` |
+| 方向导数传输 (6.1) | `_directional_image` |
+| 三次曲线自适应变换 | `_warp_cubic` |
+| 三模式发射器 | `_emit_polyline_mode` / `_emit_spline_mode` / `_emit_bezier_mode` |
 | 折线 / 曲线裁剪 | `_clip_polyline` / `_clip_flagged` / `_clip_cubics` |
 | 输出层管理 | `_create_mapped_layer` / `_discard_mapped_layer` |
-| 主流程 | `_perform_mapping` `:1513` |
+| 主流程 | `_perform_mapping` |
 | 曲线笔画构造绑定 | `make_stroke_object_from_path`（`pythonbind/python_bindings.cpp`） |
 
 ## 附录 C：伪代码
@@ -482,7 +482,7 @@ def auto_mapping_2():
     assert pattern                            # 否则拒绝
 
     # ---- II 映射器 ----
-    W, width_scale = build_mapper(C_h, C_v, M_h, M_v, spine_rotation=False)
+    W, width_scale = build_mapper(C_h, C_v, M_h, M_v)   # Coons 是唯一算法
     assert W                                  # 角度 / 退化守卫
     warn_if(side_scale_mismatch > 1.5)
     warn_if(mirrored)                         # 旋向相反 (5.2)
@@ -519,7 +519,7 @@ def auto_mapping_2():
         return False
 
     ui.refresh()
-    ui.history_commit("Auto Mapping 2", "main")
+    ui.history_commit("Auto Mapping", "main")
     return True
 ```
 
