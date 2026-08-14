@@ -85,6 +85,7 @@ _CATMULL_ALPHA = 0.5    # centripetal parametrization (no overshoot on uneven kn
 # wavy main guide can pass a small fixed set of probe points even though its
 # true image oscillates (e.g. a full sine period has zero midpoint deviation).
 _FORCE_STEP = 16.0      # output px: always sample at least this dense
+_MAX_KNOTS_PER_SPAN = 48  # cap on structural knots forced into one source span
 _PROBE_T = 0.381966     # golden-section probe; never rational vs the midpoint
 
 # RDP decimation strength ("RDP" slider in the tool options, in 0.1px units).
@@ -601,16 +602,21 @@ def build_mapper(child_h_points, child_v_points, main_h_points, main_v_points, i
         main_cross = main_cross_h[0] * main_cross_v[1] - main_cross_h[1] * main_cross_v[0]
         info["mirrored"] = (child_cross > 0.0) != (main_cross > 0.0)
 
-    def map_point(point):
-        # Cheap chord-basis estimate of the arc coordinates (exact for
-        # straight child guides, which is why this reduces to the previous
-        # implementation there).
+    def coords(point):
+        """A point's arc-length coordinates in the child frame.
+
+        Seeded with the cheap chord-basis estimate, which is exact for
+        straight child guides - that is why the whole mapper reduces to the
+        previous implementation there.
+        """
         dx = point[0] - child.origin[0]
         dy = point[1] - child.origin[1]
         guess_h = (dx * ev[1] - dy * ev[0]) / det * 0.5 * child_h_chord
         guess_v = (eh[0] * dy - eh[1] * dx) / det * 0.5 * child_v_chord
+        return child.solve(point, guess_h, guess_v)
 
-        l_h, l_v = child.solve(point, guess_h, guess_v)
+    def map_point(point):
+        l_h, l_v = coords(point)
         rebuilt = child.hv(l_h, l_v)
         image = main.hv(l_h * (h_scale_pos if l_h >= 0.0 else h_scale_neg),
                         l_v * (v_scale_pos if l_v >= 0.0 else v_scale_neg))
@@ -621,6 +627,7 @@ def build_mapper(child_h_points, child_v_points, main_h_points, main_v_points, i
     # its real length rather than by its chord.
     width_scale = math.sqrt((main.h_total / child.h_total) * (main.v_total / child.v_total))
 
+    map_point.coords = coords
     map_point.child_frame = child
     map_point.main_frame = main
     map_point.h_scales = (h_scale_neg, h_scale_pos)
@@ -908,6 +915,62 @@ def _catmull_rom_cubics(knots, alpha=_CATMULL_ALPHA):
     return cubics
 
 
+def _structural_knots(map_point, a, b):
+    """Parameters in (0,1) where the map stops being affine along a->b.
+
+    The map is H(l) + V(l) rebuilt by arc length on both boards, so its only
+    kinks sit where a coordinate crosses a guide VERTEX - on the child frame
+    (where the coordinates themselves break) or, after the per-side scale, on
+    the main frame. Those are the samples flatness probes are worst at
+    finding: a source segment can span whole periods of a wavy guide and land
+    every probe back on the chord (the aliasing case in the spec). Feeding
+    them in directly costs one coordinate solve per endpoint and removes the
+    guesswork; the adaptive probes stay as the safety net for everything
+    these do not cover (a non-injective child frame, where the coordinates
+    are only a best effort and this whole argument breaks down).
+    """
+    coords = getattr(map_point, "coords", None)
+    if coords is None:
+        return []
+    child, main = map_point.child_frame, map_point.main_frame
+    start, end = coords(a), coords(b)
+
+    knots = []
+    for axis, (l0, l1) in enumerate(zip(start, end)):
+        if abs(l1 - l0) <= 1e-12:
+            continue
+        if axis == 0:
+            own_cum, own_arc = child.h_cum, child.h_arc
+            far_cum, far_arc = main.h_cum, main.h_arc
+            scale_neg, scale_pos = map_point.h_scales
+        else:
+            own_cum, own_arc = child.v_cum, child.v_arc
+            far_cum, far_arc = main.v_cum, main.v_arc
+            scale_neg, scale_pos = map_point.v_scales
+
+        targets = [value - own_arc for value in own_cum[1:-1]]
+        for value in far_cum[1:-1]:
+            offset = value - far_arc
+            scale = scale_pos if offset >= 0.0 else scale_neg
+            if abs(scale) > 1e-12:
+                targets.append(offset / scale)
+
+        lo, hi = (l0, l1) if l0 < l1 else (l1, l0)
+        for target in targets:
+            if lo < target < hi:
+                knots.append((target - l0) / (l1 - l0))
+    knots = sorted({t for t in knots if 1e-9 < t < 1.0 - 1e-9})
+    if len(knots) > _MAX_KNOTS_PER_SPAN:
+        # Safety valve for a folded child frame, where the coordinates run
+        # far and sweep hundreds of guide vertices inside one source segment.
+        # Thin them evenly rather than dropping the tail; the probes still
+        # cover whatever this misses.
+        stride = len(knots) / _MAX_KNOTS_PER_SPAN
+        knots = [knots[min(len(knots) - 1, int(i * stride))]
+                 for i in range(_MAX_KNOTS_PER_SPAN)]
+    return knots
+
+
 def _adaptive_map_polyline(map_point, points, tol=_CURVE_TOL, max_depth=_SPLINE_MAX_DEPTH):
     """Map `points` through the warp, inserting samples between the ORIGINAL
     vertices so the mapped polyline stays within `tol` of the true warped
@@ -940,9 +1003,18 @@ def _adaptive_map_polyline(map_point, points, tol=_CURVE_TOL, max_depth=_SPLINE_
 
     wa = result[0][0]
     for i in range(len(points) - 1):
-        b = points[i + 1]
+        a, b = points[i], points[i + 1]
         wb = map_point(b)
-        recurse(points[i], b, wa, wb, 0)
+        # Split the ORIGINAL interval at the map's own kinks first, then let
+        # the probes refine whatever is left inside each smooth piece.
+        previous, w_previous = a, wa
+        for t in _structural_knots(map_point, a, b):
+            knot = _lerp(a, b, t)
+            w_knot = map_point(knot)
+            recurse(previous, knot, w_previous, w_knot, 0)
+            result.append((w_knot, False))
+            previous, w_previous = knot, w_knot
+        recurse(previous, b, w_previous, wb, 0)
         result.append((wb, True))
         wa = wb
     return result
