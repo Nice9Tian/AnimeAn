@@ -1785,26 +1785,52 @@ def _split_by_fold(map_point, points):
         return [(list(points), 1)]
 
     pieces = []
-    for a, b in zip(points, points[1:]):
+    for index, (a, b) in enumerate(zip(points, points[1:])):
         bounds = [0.0] + _structural_knots(map_point, a, b) + [1.0]
         for t0, t1 in zip(bounds, bounds[1:]):
             if t1 - t0 <= 1e-12:
                 continue
-            pieces.append((_lerp(a, b, t0), _lerp(a, b, t1),
-                           _fold_sign(map_point, _lerp(a, b, (t0 + t1) * 0.5))))
+            pieces.append([index, a, b, t0, t1,
+                           _fold_sign(map_point, _lerp(a, b, (t0 + t1) * 0.5))])
     if not pieces:
         return [(list(points), 1)]
 
+    # Snap each side change onto the real boundary. The knots come from a
+    # LINEAR interpolation of the coordinates over the segment, so on a coarse
+    # source they can sit a few px off the true cell boundary - and then the
+    # cut would not lie on the crease, which is derived independently from the
+    # frames. _fold_sign is exact, so bisecting between the two neighbouring
+    # midpoints pins the cut down and the two derivations agree by
+    # construction. Folds are rare, so this costs a handful of solves per run.
+    for left, right in zip(pieces, pieces[1:]):
+        if left[5] == right[5] or left[0] != right[0]:
+            continue  # same side, or the change falls on a source vertex
+        a, b = left[1], left[2]
+        lo = (left[3] + left[4]) * 0.5
+        hi = (right[3] + right[4]) * 0.5
+        for _ in range(30):
+            mid = (lo + hi) * 0.5
+            if _fold_sign(map_point, _lerp(a, b, mid)) == left[5]:
+                lo = mid
+            else:
+                hi = mid
+        boundary = (lo + hi) * 0.5
+        left[4] = boundary
+        right[3] = boundary
+
     runs = []
-    current = [pieces[0][0], pieces[0][1]]
-    side = pieces[0][2]
-    for start, end, piece_side in pieces[1:]:
-        if piece_side == side:
+    first = pieces[0]
+    current = [_lerp(first[1], first[2], first[3]), _lerp(first[1], first[2], first[4])]
+    side = first[5]
+    for piece in pieces[1:]:
+        start = _lerp(piece[1], piece[2], piece[3])
+        end = _lerp(piece[1], piece[2], piece[4])
+        if piece[5] == side:
             current.append(end)
         else:
             runs.append((current, side))
             current = [start, end]
-            side = piece_side
+            side = piece[5]
     runs.append((current, side))
     return runs
 
