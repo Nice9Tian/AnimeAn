@@ -460,6 +460,27 @@ class _Frame:
         self.v_side = _arc_sides(self.v_total, self.v_arc)
         self.h_side_raw = (self.h_arc, self.h_total - self.h_arc)
         self.v_side_raw = (self.v_arc, self.v_total - self.v_arc)
+        # Orientation tests compare guide DIRECTIONS, and a hand-drawn polyline's
+        # per-segment tangents jitter enough to flip that comparison several
+        # times within a few px - measured on a real 301-point guide, the fold
+        # count oscillated between 2 and 4 eleven times along V, which shredded
+        # the output into fragments and tangled the crease. Smoothing the
+        # direction over an arc window (the rule the direction arrows already
+        # use) removes the flicker and leaves the real bend intact: an 8 px
+        # window was enough to make the count constant, and a 65 px one does
+        # not move the fold position further.
+        self.h_window = max(2.0 * POLY_STEP, 0.03 * self.h_total)
+        self.v_window = max(2.0 * POLY_STEP, 0.03 * self.v_total)
+
+    def directions(self, l_h, l_v):
+        """Window-smoothed guide directions, for ORIENTATION tests only.
+
+        Never for the Newton solve in `solve`: there the exact per-segment
+        tangent is the true derivative of `hv`, and smoothing it would break
+        convergence.
+        """
+        return (_tangent_at_arc(self.h, self.h_cum, self.h_arc + l_h, self.h_window),
+                _tangent_at_arc(self.v, self.v_cum, self.v_arc + l_v, self.v_window))
 
     def hv(self, l_h, l_v):
         """H(l_h) + V(l_v) - O: the Coons patch in its collapsed form."""
@@ -1757,13 +1778,13 @@ def _fold_sign(map_point, point):
     child = map_point.child_frame
     main = map_point.main_frame
     l_h, l_v = map_point.coords(point)
-    (tcx, tcy), (ncx, ncy) = child.jacobian(l_h, l_v)
+    (tcx, tcy), (ncx, ncy) = child.directions(l_h, l_v)
     denominator = tcx * ncy - tcy * ncx
     if abs(denominator) < 1e-12:
         return 1  # folded child frame: no usable orientation, treat as front
     scale_h = map_point.h_scales[1] if l_h >= 0.0 else map_point.h_scales[0]
     scale_v = map_point.v_scales[1] if l_v >= 0.0 else map_point.v_scales[0]
-    (tmx, tmy), (nmx, nmy) = main.jacobian(l_h * scale_h, l_v * scale_v)
+    (tmx, tmy), (nmx, nmy) = main.directions(l_h * scale_h, l_v * scale_v)
     value = scale_h * scale_v * (tmx * nmy - tmy * nmx) / denominator
     return 1 if value > 0.0 else -1
 
@@ -1838,64 +1859,124 @@ def _split_by_fold(map_point, points):
 def _crease_curves(map_point, v_range, samples=48):
     """The fold loci, traced from the FRAMES rather than from the strokes.
 
-    det J vanishes where the main H tangent turns parallel to the main V
-    tangent, so the crease is a property of the two guides alone. For every
-    sampled V arc the H guide is walked segment by segment (tangents are
-    piecewise constant, so a sign change between consecutive segments brackets
-    the crossing exactly at their shared vertex) and the crossings are chained
-    into curves.
+    det J vanishes where the main H direction turns parallel to the main V
+    direction, so the crease is a property of the two guides alone. For every
+    sampled V arc the H guide is walked and the sign changes are bracketed and
+    bisected; the crossings are then chained into curves BY RANK, which is
+    valid because sign changes along H alternate and therefore cannot swap
+    order.
+
+    The crease is NOT in general a translated copy of the V guide - that only
+    holds when the main V guide is straight, so that its direction (and hence
+    the critical H position) is the same at every height. On a curved V guide
+    the locus really does sweep along H: measured on a 211 px V guide bowing
+    45 px off its chord, it travels 112-123 px, and that survives even a 65 px
+    smoothing window, so it is geometry rather than noise.
 
     Deriving this per STROKE instead - recording where each stroke happened to
     change side - was wrong: several strokes crossing the SAME fold each
-    reported a slightly different arc (the knot positions come from a linear
-    interpolation), so one real fold was drawn as four near-parallel copies.
+    reported a slightly different arc, so one fold was drawn as four copies.
     """
     main = map_point.main_frame
     low, high = v_range
     if high - low <= 1e-6 or len(main.h) < 3:
         return []
 
+    total = main.h_cum[-1]
+    step = max(POLY_STEP, total / 400.0)
     columns = []
     for index in range(samples + 1):
         l_v = low + (high - low) * index / samples
-        normal = _direction_at_arc(main.v, main.v_cum, main.v_arc + l_v)
-        crossings = []
-        previous = None
-        for segment in range(len(main.h) - 1):
-            tangent = _segment_direction(main.h, segment)
-            side = tangent[0] * normal[1] - tangent[1] * normal[0]
-            sign = 1 if side > 0.0 else -1
-            if previous is not None and sign != previous:
-                crossings.append(main.h_cum[segment] - main.h_arc)
-            previous = sign
-        columns.append((l_v, crossings))
+        normal = _tangent_at_arc(main.v, main.v_cum, main.v_arc + l_v, main.v_window)
 
-    # chain crossing k of one column to the nearest crossing of the next
+        def side_at(arc, normal=normal):
+            tangent = _tangent_at_arc(main.h, main.h_cum, main.h_arc + arc, main.h_window)
+            return tangent[0] * normal[1] - tangent[1] * normal[0]
+
+        found = []
+        arc = -main.h_arc
+        limit = total - main.h_arc
+        previous = side_at(arc)
+        while arc < limit:
+            nxt = min(arc + step, limit)
+            value = side_at(nxt)
+            if (value > 0.0) != (previous > 0.0):
+                lo, hi = arc, nxt
+                for _ in range(24):
+                    mid = (lo + hi) * 0.5
+                    if (side_at(mid) > 0.0) == (previous > 0.0):
+                        lo = mid
+                    else:
+                        hi = mid
+                found.append((lo + hi) * 0.5)
+            arc, previous = nxt, value
+        columns.append((l_v, found))
+
+    # Chain by rank. Branches alternate in sign, so the k-th crossing of one
+    # column continues the k-th of the next; nearest-neighbour matching (what
+    # this used to do) let a branch jump to a different one when a transient
+    # pair appeared, which is what tied the crease in knots.
     curves = []
-    open_curves = {}
-    for l_v, crossings in columns:
-        used = set()
-        still_open = {}
-        for key, points in open_curves.items():
-            best = None
-            for position, arc in enumerate(crossings):
-                if position in used:
-                    continue
-                gap = abs(arc - points[-1][0])
-                if best is None or gap < best[0]:
-                    best = (gap, position, arc)
-            if best is not None and best[0] <= 0.25 * max(1.0, main.h_cum[-1]):
-                used.add(best[1])
-                points.append((best[2], l_v))
-                still_open[key] = points
-            elif len(points) >= 2:
-                curves.append(points)
-        for position, arc in enumerate(crossings):
-            if position not in used:
-                still_open[(l_v, position)] = [(arc, l_v)]
-        open_curves = still_open
-    curves.extend(points for points in open_curves.values() if len(points) >= 2)
-    return curves
+    open_curves = []
+    previous_count = None
+    for l_v, found in columns:
+        if previous_count == len(found) and open_curves:
+            for rank, arc in enumerate(found):
+                open_curves[rank].append((arc, l_v))
+        else:
+            curves.extend(curve for curve in open_curves if len(curve) >= 2)
+            open_curves = [[(arc, l_v)] for arc in found]
+        previous_count = len(found)
+    curves.extend(curve for curve in open_curves if len(curve) >= 2)
+
+    # The locus samples are exact (each is bisected onto det J = 0), but the
+    # H position ripples a couple of px between adjacent heights. Smooth that
+    # away so the cusp test in _emit_seals fires on real cusps only.
+    smoothed = []
+    for curve in curves:
+        arcs = [arc for arc, _ in curve]
+        for _ in range(2):
+            arcs = ([arcs[0]]
+                    + [(arcs[i - 1] + 2.0 * arcs[i] + arcs[i + 1]) * 0.25
+                       for i in range(1, len(arcs) - 1)]
+                    + [arcs[-1]])
+        smoothed.append([(arcs[i], curve[i][1]) for i in range(len(curve))])
+    return smoothed
+
+
+def _split_at_cusps(points):
+    """Break a crease polyline where it reverses on itself.
+
+    ON the fold the two guide directions are parallel by definition, so the
+    crease point H(s_x + a(t)) + V(t_x + t) - O has velocity
+    (a'(t) +/- 1) * T_h: one fixed direction times a scalar. Where that scalar
+    passes through zero the curve stops dead and comes back along itself - a
+    cusp - and drawing it as one stroke ties the visible knot.
+
+    Measured on the reported project: the branch whose slide rate a'(t) stayed
+    below 1 (mean 0.48) never stalled - minimum step 3.72 px, no crossing -
+    while the branch whose rate crossed 1 (max 2.58) fell to a 0.20 px step
+    and crossed itself once. Note the arc stays MONOTONE through this, which
+    is why splitting on arc reversal missed it entirely.
+    """
+    if len(points) < 3:
+        return [points]
+    pieces = []
+    start = 0
+    for index in range(1, len(points) - 1):
+        ax = points[index][0] - points[index - 1][0]
+        ay = points[index][1] - points[index - 1][1]
+        bx = points[index + 1][0] - points[index][0]
+        by = points[index + 1][1] - points[index][1]
+        if math.hypot(ax, ay) < 1e-9 or math.hypot(bx, by) < 1e-9:
+            continue
+        if ax * bx + ay * by < 0.0:           # direction reversed: a cusp
+            if index + 1 - start >= 2:
+                pieces.append(points[start:index + 1])
+            start = index
+    if len(points) - start >= 2:
+        pieces.append(points[start:])
+    return pieces
 
 
 def _stroke_style(stroke, width_scale):
@@ -2129,8 +2210,17 @@ def _emit_seals(animean, out, map_point, pattern, main_area, width_scale):
                   if h_low - POLY_STEP <= arc <= h_high + POLY_STEP]
         if len(points) < 2:
             continue
-        for piece in _clip_polyline(points, main_area):
-            out.add_polyline(_MappedOutput.SEAL, piece, color, width)
+        for run in _split_at_cusps(points):
+            # The crease is an annotation, so decimate it like any other output.
+            run = _rdp(run, max(rdp_eps(), 0.5))
+            if len(run) < 2:
+                continue
+            span = sum(math.hypot(run[i + 1][0] - run[i][0], run[i + 1][1] - run[i][1])
+                       for i in range(len(run) - 1))
+            if span < 2.0 * POLY_STEP:
+                continue  # a cusp can leave a stub a pixel long; not worth drawing
+            for piece in _clip_polyline(run, main_area):
+                out.add_polyline(_MappedOutput.SEAL, piece, color, width)
 
 
 def _fold_runs_cubic(map_point, cubics):
