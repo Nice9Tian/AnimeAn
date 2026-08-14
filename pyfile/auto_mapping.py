@@ -1809,35 +1809,67 @@ def _split_by_fold(map_point, points):
     return runs
 
 
-def _fold_crease_arcs(map_point, points):
-    """Arc positions (axis, l) of the fold boundaries crossed by `points`.
+def _crease_curves(map_point, v_range, samples=48):
+    """The fold loci, traced from the FRAMES rather than from the strokes.
 
-    axis 0 means the H coordinate crossed the critical value, axis 1 the V
-    one. The crease locus of an H-axis fold is the source line l_h = const,
-    whose image is H(s) + V(t) - O with s fixed - i.e. a TRANSLATED COPY of
-    the main V guide. That is what the seal stroke draws.
+    det J vanishes where the main H tangent turns parallel to the main V
+    tangent, so the crease is a property of the two guides alone. For every
+    sampled V arc the H guide is walked segment by segment (tangents are
+    piecewise constant, so a sign change between consecutive segments brackets
+    the crossing exactly at their shared vertex) and the crossings are chained
+    into curves.
+
+    Deriving this per STROKE instead - recording where each stroke happened to
+    change side - was wrong: several strokes crossing the SAME fold each
+    reported a slightly different arc (the knot positions come from a linear
+    interpolation), so one real fold was drawn as four near-parallel copies.
     """
     main = map_point.main_frame
-    creases = []
-    runs = _split_by_fold(map_point, points)
-    for before, after in zip(runs, runs[1:]):
-        boundary = before[0][-1]
-        l_h, l_v = map_point.coords(boundary)
-        scale_h = map_point.h_scales[1] if l_h >= 0.0 else map_point.h_scales[0]
-        scale_v = map_point.v_scales[1] if l_v >= 0.0 else map_point.v_scales[0]
-        # Which axis changed cell? Compare the segment index either side.
-        inner = before[0][-2] if len(before[0]) >= 2 else boundary
-        outer = after[0][1] if len(after[0]) >= 2 else boundary
-        h_before = _segment_index(main.h_cum, main.h_arc + map_point.coords(inner)[0] * scale_h)
-        h_after = _segment_index(main.h_cum, main.h_arc + map_point.coords(outer)[0] * scale_h)
-        axis = 0 if h_before != h_after else 1
-        creases.append((axis, l_h * scale_h if axis == 0 else l_v * scale_v, l_h, l_v))
-    return creases
+    low, high = v_range
+    if high - low <= 1e-6 or len(main.h) < 3:
+        return []
 
+    columns = []
+    for index in range(samples + 1):
+        l_v = low + (high - low) * index / samples
+        normal = _direction_at_arc(main.v, main.v_cum, main.v_arc + l_v)
+        crossings = []
+        previous = None
+        for segment in range(len(main.h) - 1):
+            tangent = _segment_direction(main.h, segment)
+            side = tangent[0] * normal[1] - tangent[1] * normal[0]
+            sign = 1 if side > 0.0 else -1
+            if previous is not None and sign != previous:
+                crossings.append(main.h_cum[segment] - main.h_arc)
+            previous = sign
+        columns.append((l_v, crossings))
 
-def _segment_index(cumulative, arc):
-    index = bisect.bisect_right(cumulative, arc) - 1
-    return max(0, min(index, len(cumulative) - 2))
+    # chain crossing k of one column to the nearest crossing of the next
+    curves = []
+    open_curves = {}
+    for l_v, crossings in columns:
+        used = set()
+        still_open = {}
+        for key, points in open_curves.items():
+            best = None
+            for position, arc in enumerate(crossings):
+                if position in used:
+                    continue
+                gap = abs(arc - points[-1][0])
+                if best is None or gap < best[0]:
+                    best = (gap, position, arc)
+            if best is not None and best[0] <= 0.25 * max(1.0, main.h_cum[-1]):
+                used.add(best[1])
+                points.append((best[2], l_v))
+                still_open[key] = points
+            elif len(points) >= 2:
+                curves.append(points)
+        for position, arc in enumerate(crossings):
+            if position not in used:
+                still_open[(l_v, position)] = [(arc, l_v)]
+        open_curves = still_open
+    curves.extend(points for points in open_curves.values() if len(points) >= 2)
+    return curves
 
 
 def _stroke_style(stroke, width_scale):
@@ -2046,39 +2078,33 @@ def _emit_seals(animean, out, map_point, pattern, main_area, width_scale):
     "use the V axis as the capping edge" idea, and it needs no new geometry.
     """
     main = map_point.main_frame
-    creases = {}
-    spans = {}
+    h_low = v_low = None
+    h_high = v_high = None
     for stroke in pattern:
         for poly in _stroke_polylines(stroke):
-            for piece in _clip_polyline(poly, None):
-                runs = _split_by_fold(map_point, piece)
-                for point in piece:
-                    l_h, l_v = map_point.coords(point)
-                    scale_h = map_point.h_scales[1] if l_h >= 0.0 else map_point.h_scales[0]
-                    scale_v = map_point.v_scales[1] if l_v >= 0.0 else map_point.v_scales[0]
-                    low, high = spans.get(0, (None, None))
-                    spans[0] = (l_v * scale_v if low is None else min(low, l_v * scale_v),
-                                l_v * scale_v if high is None else max(high, l_v * scale_v))
-                    low, high = spans.get(1, (None, None))
-                    spans[1] = (l_h * scale_h if low is None else min(low, l_h * scale_h),
-                                l_h * scale_h if high is None else max(high, l_h * scale_h))
-                for axis, arc, _l_h, _l_v in _fold_crease_arcs(map_point, piece):
-                    creases.setdefault(axis, set()).add(round(arc, 3))
+            for point in poly:
+                l_h, l_v = map_point.coords(point)
+                arc_h = l_h * (map_point.h_scales[1] if l_h >= 0.0 else map_point.h_scales[0])
+                arc_v = l_v * (map_point.v_scales[1] if l_v >= 0.0 else map_point.v_scales[0])
+                h_low = arc_h if h_low is None else min(h_low, arc_h)
+                h_high = arc_h if h_high is None else max(h_high, arc_h)
+                v_low = arc_v if v_low is None else min(v_low, arc_v)
+                v_high = arc_v if v_high is None else max(v_high, arc_v)
+    if h_low is None:
+        return
 
     color = _FOLD["back_color"]
-    width = max(0.5, 2.0 * width_scale)
-    for axis, arcs in creases.items():
-        low, high = spans.get(axis, (None, None))
-        if low is None or high - low <= 1e-6:
+    # Thinner than the artwork: the crease is an annotation of the fold, not
+    # part of the pattern, and at 2x width_scale it out-weighted every stroke
+    # it was meant to terminate.
+    width = max(0.5, 0.8 * width_scale)
+    for curve in _crease_curves(map_point, (v_low, v_high)):
+        points = [main.hv(arc, other) for arc, other in curve
+                  if h_low - POLY_STEP <= arc <= h_high + POLY_STEP]
+        if len(points) < 2:
             continue
-        steps = max(8, min(240, int(math.ceil((high - low) / POLY_STEP))))
-        for arc in sorted(arcs):
-            points = []
-            for k in range(steps + 1):
-                other = low + (high - low) * k / steps
-                points.append(main.hv(arc, other) if axis == 0 else main.hv(other, arc))
-            for piece in _clip_polyline(points, main_area):
-                out.add_polyline(_MappedOutput.SEAL, piece, color, width)
+        for piece in _clip_polyline(points, main_area):
+            out.add_polyline(_MappedOutput.SEAL, piece, color, width)
 
 
 def _fold_runs_cubic(map_point, cubics):
