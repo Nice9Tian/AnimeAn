@@ -1441,33 +1441,35 @@ def _set_draw_color(color):
 
 
 def _child_frame():
-    """Chord frame of the child guides: origin, unit axes, per-side lengths."""
+    """The child reference frame the MAPPER actually uses.
+
+    This used to build a straight chord frame from the guides' end points,
+    which disagreed with the mapper as soon as a guide was curved: the
+    coordinates are arc length measured from the CROSSING, not a projection
+    onto the start-to-end chord. Measured on sine guides, the nine anchors
+    were off by 16 / 40 / 82 px at amplitude 10 / 30 / 60, and the anchor the
+    grid calls "the H guide's end point" missed that end point by up to 30 px.
+    Since the grid exists to reveal a wrong mapping at a glance, it has to be
+    built out of the same frame the mapping is.
+    """
     assets = _assets_for("child")
     if H_PROPERTY not in assets or V_PROPERTY not in assets:
         return None
     h_pts = assets[H_PROPERTY]["points"]
     v_pts = assets[V_PROPERTY]["points"]
-    origin, _, _ = _polyline_intersection(h_pts, v_pts)
-    h_len = math.hypot(h_pts[-1][0] - h_pts[0][0], h_pts[-1][1] - h_pts[0][1])
-    v_len = math.hypot(v_pts[-1][0] - v_pts[0][0], v_pts[-1][1] - v_pts[0][1])
-    if h_len <= 1e-6 or v_len <= 1e-6:
+    if len(h_pts) < 2 or len(v_pts) < 2:
         return None
-    h_dir = ((h_pts[-1][0] - h_pts[0][0]) / h_len, (h_pts[-1][1] - h_pts[0][1]) / h_len)
-    v_dir = ((v_pts[-1][0] - v_pts[0][0]) / v_len, (v_pts[-1][1] - v_pts[0][1]) / v_len)
-    h_neg, h_pos = _chord_sides(h_pts, origin, h_len)
-    v_neg, v_pos = _chord_sides(v_pts, origin, v_len)
-    return {
-        "origin": origin, "h_dir": h_dir, "v_dir": v_dir,
-        "h_neg": h_neg, "h_pos": h_pos, "v_neg": v_neg, "v_pos": v_pos,
-    }
+    frame = _Frame(h_pts, v_pts)
+    if frame.h_total <= 1e-6 or frame.v_total <= 1e-6:
+        return None
+    return frame
 
 
 def _frame_point(frame, u_hat, v_hat):
     """Child-space point at normalised grid coords (u_hat, v_hat in [-1, 1])."""
-    du = u_hat * (frame["h_pos"] if u_hat >= 0.0 else frame["h_neg"])
-    dv = v_hat * (frame["v_pos"] if v_hat >= 0.0 else frame["v_neg"])
-    return (frame["origin"][0] + du * frame["h_dir"][0] + dv * frame["v_dir"][0],
-            frame["origin"][1] + du * frame["h_dir"][1] + dv * frame["v_dir"][1])
+    du = u_hat * (frame.h_side[1] if u_hat >= 0.0 else frame.h_side[0])
+    dv = v_hat * (frame.v_side[1] if v_hat >= 0.0 else frame.v_side[0])
+    return frame.hv(du, dv)
 
 
 def _grid_overlay_items(view_name):
