@@ -48,6 +48,29 @@ V_PROPERTY = "v_center_line"
 GUIDE_PROPERTIES = (H_PROPERTY, V_PROPERTY)
 MAPPED_PROPERTY = "auto_mapped"
 MAPPED_LAYER_NAME = "mapped layer"
+# Dual-layer fold output. Where the map is orientation-reversing (spec (5.1)
+# det J < 0) the pattern is mirrored - physically, we are looking at the BACK
+# of a fold. Rather than fight that (AM1 tried, and folded at the curvature
+# radius for its trouble), the run is split at the fold boundary and the two
+# sides go to their own layers, so the back can carry a lining colour and be
+# hidden independently.
+BACK_PROPERTY = "auto_mapped_back"
+SEAL_PROPERTY = "auto_mapped_seal"
+BACK_LAYER_NAME = "mapped layer back"
+SEAL_LAYER_NAME = "mapped layer crease"
+_FOLD = {"split": True, "seal": True, "back_color": (104, 112, 140, 255)}
+
+
+def fold_split_enabled():
+    return _FOLD["split"]
+
+
+def fold_seal_enabled():
+    return _FOLD["seal"]
+
+
+def fold_back_color():
+    return _FOLD["back_color"]
 # The one and only automapping button. Its internal id keeps the historical
 # "_2" suffix ("Auto Mapping 2", Coons interpolation) so nothing stored in
 # old sessions changes meaning; the retired spine-rotation algorithm lives in
@@ -1614,7 +1637,7 @@ def _collect_pattern_strokes(scene, frame, want_commands=False):
     return pattern
 
 
-def _create_mapped_layer(scene, row):
+def _create_mapped_layer(scene, row, name=MAPPED_LAYER_NAME):
     """Create a FRESH mapped layer for this run and return its index (0 = top).
 
     Every Auto Mapping click gets its own layer (user request 2026-07-30):
@@ -1649,7 +1672,7 @@ def _create_mapped_layer(scene, row):
         scene.set_current_layer(saved_layer)
         scene.set_current_asset(saved_asset)
         return -1
-    scene.set_layer_name(layer_index, MAPPED_LAYER_NAME)
+    scene.set_layer_name(layer_index, name)
 
     moved = scene.move_layer(layer_index, 0)
     if moved:
@@ -1723,6 +1746,100 @@ def _stroke_polylines(stroke):
     return result
 
 
+def _fold_sign(map_point, point):
+    """+1 / -1: the orientation of the map at `point` (spec (5.1)).
+
+    -1 means the map is locally orientation-REVERSING there: the pattern is
+    mirrored, i.e. we are looking at the BACK of a fold. det J carries the
+    child frame's own determinant in the denominator, so the sign is measured
+    relative to the child frame - the pointwise version of info["mirrored"].
+    """
+    child = map_point.child_frame
+    main = map_point.main_frame
+    l_h, l_v = map_point.coords(point)
+    (tcx, tcy), (ncx, ncy) = child.jacobian(l_h, l_v)
+    denominator = tcx * ncy - tcy * ncx
+    if abs(denominator) < 1e-12:
+        return 1  # folded child frame: no usable orientation, treat as front
+    scale_h = map_point.h_scales[1] if l_h >= 0.0 else map_point.h_scales[0]
+    scale_v = map_point.v_scales[1] if l_v >= 0.0 else map_point.v_scales[0]
+    (tmx, tmy), (nmx, nmy) = main.jacobian(l_h * scale_h, l_v * scale_v)
+    value = scale_h * scale_v * (tmx * nmy - tmy * nmx) / denominator
+    return 1 if value > 0.0 else -1
+
+
+def _split_by_fold(map_point, points):
+    """Split a source polyline into runs of constant orientation.
+
+    Returns [(run_points, side)] with side in (+1, -1); consecutive runs
+    SHARE their boundary point, so front and back meet exactly (the map is
+    continuous there - only its derivative flips, so a fold is never a gap).
+
+    The boundary needs no root finding. Guide tangents are piecewise CONSTANT
+    on polyline guides, so the orientation is constant inside a cell and can
+    only flip at a cell boundary - which is exactly a structural knot (§6.2),
+    already computed for the sampler. Measured: every sign flip along a
+    densified source lands on a knot (worst gap 0.01 px).
+    """
+    if len(points) < 2:
+        return [(list(points), 1)]
+
+    pieces = []
+    for a, b in zip(points, points[1:]):
+        bounds = [0.0] + _structural_knots(map_point, a, b) + [1.0]
+        for t0, t1 in zip(bounds, bounds[1:]):
+            if t1 - t0 <= 1e-12:
+                continue
+            pieces.append((_lerp(a, b, t0), _lerp(a, b, t1),
+                           _fold_sign(map_point, _lerp(a, b, (t0 + t1) * 0.5))))
+    if not pieces:
+        return [(list(points), 1)]
+
+    runs = []
+    current = [pieces[0][0], pieces[0][1]]
+    side = pieces[0][2]
+    for start, end, piece_side in pieces[1:]:
+        if piece_side == side:
+            current.append(end)
+        else:
+            runs.append((current, side))
+            current = [start, end]
+            side = piece_side
+    runs.append((current, side))
+    return runs
+
+
+def _fold_crease_arcs(map_point, points):
+    """Arc positions (axis, l) of the fold boundaries crossed by `points`.
+
+    axis 0 means the H coordinate crossed the critical value, axis 1 the V
+    one. The crease locus of an H-axis fold is the source line l_h = const,
+    whose image is H(s) + V(t) - O with s fixed - i.e. a TRANSLATED COPY of
+    the main V guide. That is what the seal stroke draws.
+    """
+    main = map_point.main_frame
+    creases = []
+    runs = _split_by_fold(map_point, points)
+    for before, after in zip(runs, runs[1:]):
+        boundary = before[0][-1]
+        l_h, l_v = map_point.coords(boundary)
+        scale_h = map_point.h_scales[1] if l_h >= 0.0 else map_point.h_scales[0]
+        scale_v = map_point.v_scales[1] if l_v >= 0.0 else map_point.v_scales[0]
+        # Which axis changed cell? Compare the segment index either side.
+        inner = before[0][-2] if len(before[0]) >= 2 else boundary
+        outer = after[0][1] if len(after[0]) >= 2 else boundary
+        h_before = _segment_index(main.h_cum, main.h_arc + map_point.coords(inner)[0] * scale_h)
+        h_after = _segment_index(main.h_cum, main.h_arc + map_point.coords(outer)[0] * scale_h)
+        axis = 0 if h_before != h_after else 1
+        creases.append((axis, l_h * scale_h if axis == 0 else l_v * scale_v, l_h, l_v))
+    return creases
+
+
+def _segment_index(cumulative, arc):
+    index = bisect.bisect_right(cumulative, arc) - 1
+    return max(0, min(index, len(cumulative) - 2))
+
+
 def _stroke_style(stroke, width_scale):
     color = stroke.get("color") or {}
     color_tuple = (int(color.get("r", 0)), int(color.get("g", 0)),
@@ -1731,27 +1848,95 @@ def _stroke_style(stroke, width_scale):
     return color_tuple, width
 
 
-def _add_polyline_stroke(animean, image, points, color_tuple, width):
-    if len(points) < 2:
-        return False
-    obj = animean.vectorlogic.make_stroke_object(
-        points, color_tuple, width, image.stroke_count() + 1, False, False)
-    obj.property = MAPPED_PROPERTY
-    image.add_stroke_object(obj)
-    return True
+class _MappedOutput:
+    """Buffers emitted strokes per fold side, then flushes them into layers.
+
+    Buffering (rather than writing straight into an image) keeps two things
+    simple: layers are created only for sides that actually got content - so
+    a run with no fold produces exactly one layer, as before - and they can
+    be created in z-order (front on top, crease, then back) regardless of
+    the order the strokes were generated in.
+    """
+
+    FRONT, BACK, SEAL = 1, -1, 0
+    _NAMES = {FRONT: MAPPED_LAYER_NAME, BACK: BACK_LAYER_NAME, SEAL: SEAL_LAYER_NAME}
+    _PROPERTIES = {FRONT: MAPPED_PROPERTY, BACK: BACK_PROPERTY, SEAL: SEAL_PROPERTY}
+
+    def __init__(self, animean, scene, row):
+        self.animean = animean
+        self.scene = scene
+        self.row = row
+        self.buffers = {self.FRONT: [], self.BACK: [], self.SEAL: []}
+        self.layers = []
+
+    def add_polyline(self, side, points, color, width):
+        if len(points) < 2:
+            return False
+        self.buffers[side].append(("polyline", points, color, width))
+        return True
+
+    def add_curved(self, side, commands, flat, color, width):
+        if len(commands) < 2 or len(flat) < 2:
+            return False
+        self.buffers[side].append(("curved", (commands, flat), color, width))
+        return True
+
+    def count(self, side=None):
+        if side is None:
+            return sum(len(items) for items in self.buffers.values())
+        return len(self.buffers[side])
+
+    def flush(self):
+        """Create the needed layers bottom-up and write the buffers out."""
+        added = 0
+        for side in (self.BACK, self.SEAL, self.FRONT):
+            items = self.buffers[side]
+            if not items:
+                continue
+            layer = _create_mapped_layer(self.scene, self.row, self._NAMES[side])
+            if layer < 0:
+                print(f"[auto_mapping] could not create the '{self._NAMES[side]}'.")
+                continue
+            # every earlier layer sits one lower now (the new one goes to 0)
+            self.layers = [index + 1 for index in self.layers]
+            self.layers.append(layer)
+            image = self.scene.image_at(self.row, layer, True)
+            if image is None:
+                print(f"[auto_mapping] '{self._NAMES[side]}' has no editable cell.")
+                continue
+            prop = self._PROPERTIES[side]
+            for kind, payload, color, width in items:
+                if kind == "polyline":
+                    obj = self.animean.vectorlogic.make_stroke_object(
+                        payload, color, width, image.stroke_count() + 1, False, False)
+                else:
+                    commands, flat = payload
+                    obj = self.animean.vectorlogic.make_stroke_object_from_path(
+                        commands, flat, color, width, image.stroke_count() + 1)
+                obj.property = prop
+                image.add_stroke_object(obj)
+                added += 1
+        return added
+
+    def rollback(self):
+        for layer in sorted(self.layers, reverse=True):
+            _discard_mapped_layer(self.scene, layer)
+        self.layers = []
 
 
-def _add_curved_stroke(animean, image, commands, flat, color_tuple, width):
-    if len(commands) < 2 or len(flat) < 2:
-        return False
-    obj = animean.vectorlogic.make_stroke_object_from_path(
-        commands, flat, color_tuple, width, image.stroke_count() + 1)
-    obj.property = MAPPED_PROPERTY
-    image.add_stroke_object(obj)
-    return True
+def _fold_runs(map_point, piece):
+    """Source runs of constant orientation, or the whole piece when the
+    front/back split is off."""
+    if not _FOLD["split"]:
+        return [(piece, _MappedOutput.FRONT)]
+    return _split_by_fold(map_point, piece)
 
 
-def _emit_polyline_mode(animean, image, stroke, map_point, child_area, main_area, color_tuple, width):
+def _side_style(side, color_tuple):
+    return color_tuple if side == _MappedOutput.FRONT else _FOLD["back_color"]
+
+
+def _emit_polyline_mode(animean, out, stroke, map_point, child_area, main_area, color_tuple, width):
     """Same anchored sampling as spline mode, but the output stays a polyline.
 
     Originals are anchors, samples are inserted between them, everything is
@@ -1763,15 +1948,16 @@ def _emit_polyline_mode(animean, image, stroke, map_point, child_area, main_area
     eps = rdp_eps()
     for poly in _stroke_polylines(stroke):
         for piece in _clip_polyline(poly, child_area):
-            flagged = _adaptive_map_polyline(map_point, piece)
-            for out in _clip_flagged(flagged, main_area):
-                points = _decimate_between_anchors(out, eps)
-                if _add_polyline_stroke(animean, image, points, color_tuple, width):
-                    added += 1
+            for run, side in _fold_runs(map_point, piece):
+                flagged = _adaptive_map_polyline(map_point, run)
+                for clipped in _clip_flagged(flagged, main_area):
+                    points = _decimate_between_anchors(clipped, eps)
+                    if out.add_polyline(side, points, _side_style(side, color_tuple), width):
+                        added += 1
     return added
 
 
-def _emit_spline_mode(animean, image, stroke, map_point, child_area, main_area, color_tuple, width):
+def _emit_spline_mode(animean, out, stroke, map_point, child_area, main_area, color_tuple, width):
     """The user's route 1: originals stay anchors, only inserted samples decimate.
 
     Densify between the original vertices -> map everything -> RDP only the
@@ -1781,28 +1967,132 @@ def _emit_spline_mode(animean, image, stroke, map_point, child_area, main_area, 
     eps = rdp_eps()
     for poly in _stroke_polylines(stroke):
         for piece in _clip_polyline(poly, child_area):
-            flagged = _adaptive_map_polyline(map_point, piece)
-            for out in _clip_flagged(flagged, main_area):
-                knots = _decimate_between_anchors(out, eps)
-                commands, flat = _cubics_to_commands(_catmull_rom_cubics(knots))
-                if _add_curved_stroke(animean, image, commands, flat, color_tuple, width):
-                    added += 1
+            for run, side in _fold_runs(map_point, piece):
+                flagged = _adaptive_map_polyline(map_point, run)
+                for clipped in _clip_flagged(flagged, main_area):
+                    knots = _decimate_between_anchors(clipped, eps)
+                    commands, flat = _cubics_to_commands(_catmull_rom_cubics(knots))
+                    if out.add_curved(side, commands, flat,
+                                      _side_style(side, color_tuple), width):
+                        added += 1
     return added
 
 
-def _emit_bezier_mode(animean, image, stroke, map_point, child_area, main_area, color_tuple, width):
+def _emit_bezier_mode(animean, out, stroke, map_point, child_area, main_area, color_tuple, width):
     """Keep the artist's Bezier segments; transport each handle through the warp."""
     added = 0
     for cubics in _commands_to_subpaths(stroke.get("commands")):
         for src_piece in _clip_cubics(cubics, child_area):
-            out_cubics = []
-            for cub in src_piece:
-                out_cubics.extend(_warp_cubic(map_point, cub))
-            for out_piece in _clip_cubics(out_cubics, main_area):
-                commands, flat = _cubics_to_commands(out_piece)
-                if _add_curved_stroke(animean, image, commands, flat, color_tuple, width):
-                    added += 1
+            for run, side in _fold_runs_cubic(map_point, src_piece):
+                out_cubics = []
+                for cub in run:
+                    out_cubics.extend(_warp_cubic(map_point, cub))
+                for out_piece in _clip_cubics(out_cubics, main_area):
+                    commands, flat = _cubics_to_commands(out_piece)
+                    if out.add_curved(side, commands, flat,
+                                      _side_style(side, color_tuple), width):
+                        added += 1
     return added
+
+
+def _split_cubic_by_fold(map_point, cub):
+    """Split ONE source cubic where the map's orientation flips inside it.
+
+    Unlike the polyline path there is no analytic knot list for a cubic, so
+    the crossings are located by scanning the source parameter and bisecting.
+    That is legitimate here: the sign is piecewise constant, so a sign change
+    between two probes brackets exactly one cell boundary.
+    """
+    net = _dist(cub[0], cub[1]) + _dist(cub[1], cub[2]) + _dist(cub[2], cub[3])
+    probes = max(4, min(96, int(math.ceil(net / POLY_STEP))))
+    ts = [k / probes for k in range(probes + 1)]
+    signs = [_fold_sign(map_point, _cubic_point(cub, t)) for t in ts]
+
+    cuts = []
+    for k in range(1, len(ts)):
+        if signs[k] == signs[k - 1]:
+            continue
+        lo, hi = ts[k - 1], ts[k]
+        for _ in range(24):
+            mid = (lo + hi) * 0.5
+            if _fold_sign(map_point, _cubic_point(cub, mid)) == signs[k - 1]:
+                lo = mid
+            else:
+                hi = mid
+        cuts.append((lo + hi) * 0.5)
+
+    bounds = [0.0] + cuts + [1.0]
+    parts = []
+    for t0, t1 in zip(bounds, bounds[1:]):
+        if t1 - t0 <= 1e-9:
+            continue
+        side = _fold_sign(map_point, _cubic_point(cub, (t0 + t1) * 0.5))
+        parts.append((_split_cubic(cub, t0, t1), side))
+    return parts
+
+
+def _emit_seals(animean, out, map_point, pattern, main_area, width_scale):
+    """Draw the crease where the surface folds back on itself.
+
+    The map is CONTINUOUS across a fold - only its derivative flips - so the
+    front and back runs already meet exactly and there is no gap to fill.
+    The crease matters for a different reason: once the back layer is hidden,
+    the remaining front edge needs a terminator.
+
+    Geometry: an H-axis fold happens at a fixed coordinate l_h = c, so its
+    locus in source space is a straight line, and its image is
+    H(c) + V(t) - O over the content's t range - a TRANSLATED COPY OF THE
+    MAIN V GUIDE. (Symmetrically for a V-axis fold.) That is exactly the
+    "use the V axis as the capping edge" idea, and it needs no new geometry.
+    """
+    main = map_point.main_frame
+    creases = {}
+    spans = {}
+    for stroke in pattern:
+        for poly in _stroke_polylines(stroke):
+            for piece in _clip_polyline(poly, None):
+                runs = _split_by_fold(map_point, piece)
+                for point in piece:
+                    l_h, l_v = map_point.coords(point)
+                    scale_h = map_point.h_scales[1] if l_h >= 0.0 else map_point.h_scales[0]
+                    scale_v = map_point.v_scales[1] if l_v >= 0.0 else map_point.v_scales[0]
+                    low, high = spans.get(0, (None, None))
+                    spans[0] = (l_v * scale_v if low is None else min(low, l_v * scale_v),
+                                l_v * scale_v if high is None else max(high, l_v * scale_v))
+                    low, high = spans.get(1, (None, None))
+                    spans[1] = (l_h * scale_h if low is None else min(low, l_h * scale_h),
+                                l_h * scale_h if high is None else max(high, l_h * scale_h))
+                for axis, arc, _l_h, _l_v in _fold_crease_arcs(map_point, piece):
+                    creases.setdefault(axis, set()).add(round(arc, 3))
+
+    color = _FOLD["back_color"]
+    width = max(0.5, 2.0 * width_scale)
+    for axis, arcs in creases.items():
+        low, high = spans.get(axis, (None, None))
+        if low is None or high - low <= 1e-6:
+            continue
+        steps = max(8, min(240, int(math.ceil((high - low) / POLY_STEP))))
+        for arc in sorted(arcs):
+            points = []
+            for k in range(steps + 1):
+                other = low + (high - low) * k / steps
+                points.append(main.hv(arc, other) if axis == 0 else main.hv(other, arc))
+            for piece in _clip_polyline(points, main_area):
+                out.add_polyline(_MappedOutput.SEAL, piece, color, width)
+
+
+def _fold_runs_cubic(map_point, cubics):
+    """Group source cubics into runs of constant orientation."""
+    if not _FOLD["split"]:
+        return [(list(cubics), _MappedOutput.FRONT)]
+    runs = []
+    for cub in cubics:
+        for part, side in _split_cubic_by_fold(map_point, cub):
+            if runs and runs[-1][1] == side:
+                runs[-1][0].append(part)
+            else:
+                runs.append(([part], side))
+    return runs
 
 
 _EMITTERS = {
@@ -1882,36 +2172,30 @@ def _perform_mapping():
     child_area = (child_assets.get(MAPPING_AREA_PROPERTY) or {}).get("polygons")
     main_area = (main_assets.get(MAPPING_AREA_PROPERTY) or {}).get("polygons")
 
-    mapped_layer = _create_mapped_layer(main, main_frame)
-    if mapped_layer < 0:
-        print(f"[auto_mapping] could not create the '{MAPPED_LAYER_NAME}' in main_paint_view.")
-        return False
-
-    image = main.image_at(main_frame, mapped_layer, True)
-    if image is None:
-        _discard_mapped_layer(main, mapped_layer)
-        print(f"[auto_mapping] '{MAPPED_LAYER_NAME}' has no editable cell to draw into.")
-        return False
-
+    out = _MappedOutput(animean, main, main_frame)
     emit = _EMITTERS[mode]
-    added = 0
+    generated = 0
     clipped_out = 0
     try:
         for stroke in child_pattern:
             color_tuple, width = _stroke_style(stroke, width_scale)
-            before = added
-            added += emit(animean, image, stroke, map_point, child_area, main_area, color_tuple, width)
-            if added == before:
+            before = generated
+            generated += emit(animean, out, stroke, map_point, child_area, main_area,
+                              color_tuple, width)
+            if generated == before:
                 clipped_out += 1
+        if _FOLD["split"] and _FOLD["seal"] and out.count(_MappedOutput.BACK):
+            _emit_seals(animean, out, map_point, child_pattern, main_area, width_scale)
+        added = out.flush()
     except Exception:
         # A half-filled layer without its own history commit would silently
         # ride along in the NEXT unrelated commit; roll it back instead.
-        _discard_mapped_layer(main, mapped_layer)
+        out.rollback()
         animean.ui.refresh()
         raise
 
     if added == 0:
-        _discard_mapped_layer(main, mapped_layer)
+        out.rollback()
         animean.ui.refresh()
         print(f"[auto_mapping] nothing mapped: all {clipped_out} stroke(s) fell outside "
               "the mapping area(s); the empty layer was discarded.")
@@ -1922,9 +2206,14 @@ def _perform_mapping():
         animean.ui.history_commit("Auto Mapping", "main")
     except Exception:
         pass  # older builds without the history binding
+    layer_names = ", ".join(f"'{main.layer_name(index)}'" for index in sorted(out.layers))
     summary = (f"[auto_mapping] Auto Mapping (coons interpolation, {mode} mode) mapped "
-               f"{added} stroke(s) into NEW layer '{main.layer_name(mapped_layer)}' "
-               f"(top of stack, frame {main_frame + 1} of main_paint_view, width x{width_scale:.2f})")
+               f"{added} stroke(s) into NEW layer(s) {layer_names} "
+               f"(frame {main_frame + 1} of main_paint_view, width x{width_scale:.2f})")
+    back_count = out.count(_MappedOutput.BACK)
+    if back_count:
+        summary += (f"; {back_count} stroke(s) landed on the BACK of a fold "
+                    f"(det J < 0) and went to '{BACK_LAYER_NAME}'")
     if mapper_info.get("mirrored"):
         summary += ", MIRRORED (opposite frame handedness)"
     if child_area:
@@ -2054,6 +2343,30 @@ def _tool_option_changed(cell, stroke, message):
         if _RDP_STATE["eps"] != eps:
             _RDP_STATE["eps"] = eps
             print(f"[auto_mapping] RDP tolerance -> {eps:.1f}px")
+        return
+    if hook == "fold_split":
+        enabled = str(message.get("value", "")).lower() == "on"
+        if _FOLD["split"] != enabled:
+            _FOLD["split"] = enabled
+            print(f"[auto_mapping] front/back fold split {'ON' if enabled else 'OFF'}")
+        return
+    if hook == "fold_seal":
+        enabled = str(message.get("value", "")).lower() == "on"
+        if _FOLD["seal"] != enabled:
+            _FOLD["seal"] = enabled
+            print(f"[auto_mapping] crease strokes {'ON' if enabled else 'OFF'}")
+        return
+    if hook == "back_shade":
+        try:
+            shade = max(0, min(100, int(message.get("value", 45))))
+        except (TypeError, ValueError):
+            return
+        # One slider drives a neutral cool lining colour: 0 = near black,
+        # 100 = near white. Tools that want a specific colour can set
+        # _FOLD["back_color"] directly from the debug pane.
+        level = int(round(20 + shade * 2.0))
+        _FOLD["back_color"] = (level, level + 8, level + 32, 255)
+        print(f"[auto_mapping] back/lining shade -> {_FOLD['back_color'][:3]}")
         return
     if hook != "refer_rect":
         return

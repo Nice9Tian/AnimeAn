@@ -133,10 +133,16 @@ def options_for_extra_tool(tool, state=None):
             mode = auto_mapping.curve_mode()
             rdp_tenths = int(round(auto_mapping.rdp_eps() * 10))
             refer = "on" if auto_mapping.refer_rect_enabled() else "off"
+            split = "on" if auto_mapping.fold_split_enabled() else "off"
+            seal = "on" if auto_mapping.fold_seal_enabled() else "off"
+            shade = max(0, min(100, int(round((auto_mapping.fold_back_color()[0] - 20) / 2.0))))
         except Exception:
             mode = "spline"
             rdp_tenths = 3
             refer = "off"
+            split = "on"
+            seal = "on"
+            shade = 45
         controls = [
             {
                 "name": "curve_mode",
@@ -169,6 +175,35 @@ def options_for_extra_tool(tool, state=None):
                 "row": 2,
                 "start_column": 0,
                 "end_column": 2,
+            },
+            # Where the map turns orientation-reversing (a fold past ~135 deg
+            # or a U-turn) the pattern is mirrored - that is the BACK of the
+            # fold. Split sends it to its own layer with a lining colour;
+            # Crease draws the fold line so hiding the back still reads.
+            {
+                "name": "fold_split",
+                "type": "check",
+                "title": "Front/Back Split",
+                "hook": "fold_split",
+                "value": split,
+                "row": 3,
+                "start_column": 0,
+                "end_column": 2,
+            },
+            {
+                "name": "fold_seal",
+                "type": "check",
+                "title": "Crease Line",
+                "hook": "fold_seal",
+                "value": seal,
+                "row": 4,
+                "start_column": 0,
+                "end_column": 2,
+                "visible_when": {"name": "fold_split", "values": ["on"]},
+            },
+            {
+                **_slider("back_shade", "Lining Shade", "back_shade", 0, 100, shade, 5),
+                "visible_when": {"name": "fold_split", "values": ["on"]},
             },
         ]
     else:
