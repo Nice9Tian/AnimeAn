@@ -58,6 +58,7 @@ private:
     // tree follows what the user dragged, and the dragged layer's z-order
     // follows the leaf it landed after.
     void applyLayerPanelStructure(int movedColumnId);
+    void showLayerContextMenu(const QPoint &pos);
     void runPythonDebugCommand(const QString &command);
     QString runEmbeddedPythonCommand(const QString &command);
     QString resolvePythonScriptPath(const QString &scriptName) const;

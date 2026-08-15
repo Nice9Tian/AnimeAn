@@ -91,6 +91,13 @@ public:
     // Generic dispatch for script-defined view buttons ("viewbutton" event);
     // the button semantics live entirely in Python.
     void sendPythonViewButtonMessage(const QString &name, bool on);
+    // Generic dispatch for a script-defined layer-panel context menu entry.
+    void sendPythonLayerMenuMessage(const QString &action,
+                                    int groupId,
+                                    const QString &groupName,
+                                    int layerIndex,
+                                    const QString &layerName,
+                                    const QVector<int> &memberLayers);
     void setTool(Tool tool);
     Tool tool() const;
     void setFillScope(FillScope scope);
@@ -169,7 +176,8 @@ private:
 
     void paintSceneContent(QPainter &painter, int frameIndex, bool includeCurrentStroke);
     void paintOverlayItems(QPainter &painter);
-    QRectF overlayHandleRect(const QRectF &bounds) const;
+    // Badge just above-right of `anchor` (an item's end point), clamped into view.
+    QRectF overlayHandleRect(const QPointF &anchor) const;
     bool removeOverlayItemAt(const QPointF &pos);
     void sendOverlayRemoveMessage(const QString &overlayId);
     void resetAxisSnap(Qt::KeyboardModifiers modifiers, const QPointF &anchor);

@@ -599,6 +599,51 @@ void PaintOpenGLWidget::sendPythonViewButtonMessage(const QString &name, bool on
 #endif
 }
 
+void PaintOpenGLWidget::sendPythonLayerMenuMessage(const QString &action,
+                                                   int groupId,
+                                                   const QString &groupName,
+                                                   int layerIndex,
+                                                   const QString &layerName,
+                                                   const QVector<int> &memberLayers)
+{
+#ifdef ANIMEAN_WITH_PYTHON
+    if (!animeanHookEventSubscribed(QStringLiteral("layermenu"))) {
+        return;
+    }
+
+    py::gil_scoped_acquire acquire;
+    py::list members;
+    for (int index : memberLayers) {
+        members.append(index);
+    }
+
+    py::dict message;
+    message["event"] = "layermenu";
+    message["view"] = m_viewName.toStdString();
+    message["tool"] = (m_activePythonTool.isEmpty() ? toolName(m_tool) : m_activePythonTool).toStdString();
+    message["base_tool"] = toolName(m_tool).toStdString();
+    message["property"] = m_strokeProperty.toStdString();
+    message["action"] = action.toStdString();
+    message["group"] = groupId;
+    message["group_name"] = groupName.toStdString();
+    message["layer"] = layerIndex;
+    message["layer_name"] = layerName.toStdString();
+    message["members"] = members;
+
+    const QString output = ::pythonHookSendMessage(message);
+    if (!isQuietHookOutput(output)) {
+        emit pythonDebugMessage(output);
+    }
+#else
+    Q_UNUSED(action);
+    Q_UNUSED(groupId);
+    Q_UNUSED(groupName);
+    Q_UNUSED(layerIndex);
+    Q_UNUSED(layerName);
+    Q_UNUSED(memberLayers);
+#endif
+}
+
 bool PaintOpenGLWidget::sendPythonFillRequestMessage(const QPointF &pos)
 {
 #ifdef ANIMEAN_WITH_PYTHON
@@ -1248,7 +1293,14 @@ void PaintOpenGLWidget::paintOverlayItems(QPainter &painter)
             OverlayHandle handle;
             handle.id = item.id;
             handle.badgeColor = item.strokeColor;
-            handle.rect = overlayHandleRect(path.boundingRect());
+            // Anchored on the item's END POINT, not on its bounding box. For a
+            // roughly horizontal guide the box's top-right corner happens to
+            // sit near the end and the badge looked right; for a vertical one
+            // it is the START of the line instead, which is why the green V
+            // guide carried its x at the wrong end. A CLOSED item (the mapping
+            // area) has no meaningful end, so it keeps the box corner.
+            handle.rect = overlayHandleRect(item.closed ? path.boundingRect().topRight()
+                                                        : item.points.last());
             m_overlayHandles.append(handle);
         }
     }
@@ -1267,10 +1319,11 @@ void PaintOpenGLWidget::paintOverlayItems(QPainter &painter)
     }
 }
 
-QRectF PaintOpenGLWidget::overlayHandleRect(const QRectF &bounds) const
+QRectF PaintOpenGLWidget::overlayHandleRect(const QPointF &anchor) const
 {
-    QRectF handleRect(bounds.right() + 4.0,
-                      bounds.top() - kOverlayHandleSize - 4.0,
+    // Just above and to the right of the anchor.
+    QRectF handleRect(anchor.x() + 4.0,
+                      anchor.y() - kOverlayHandleSize - 4.0,
                       kOverlayHandleSize,
                       kOverlayHandleSize);
     // The rect is built, drawn and hit-tested in DOCUMENT coordinates, so it

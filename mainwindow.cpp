@@ -1503,6 +1503,9 @@ void MainWindow::setupConnections()
         }
     });
 
+    connect(m_layerPanel->layerList(), &QTreeWidget::customContextMenuRequested, this,
+            [this](const QPoint &pos) { showLayerContextMenu(pos); });
+
     connect(m_layerPanel->addButton(), &QPushButton::clicked, this, [this]() {
         PaintOpenGLWidget *view = layerPanelTarget();
         const int layerIndex = view->addLayer();
@@ -2410,6 +2413,97 @@ QVector<QTreeWidgetItem *> MainWindow::layerPanelItems() const
         walk(tree->topLevelItem(i));
     }
     return items;
+}
+
+void MainWindow::showLayerContextMenu(const QPoint &pos)
+{
+#ifdef ANIMEAN_WITH_PYTHON
+    QTreeWidget *tree = m_layerPanel->layerList();
+    QTreeWidgetItem *item = tree->itemAt(pos);
+    if (!item) {
+        return;
+    }
+    PaintOpenGLWidget *view = layerPanelTarget();
+
+    const int groupId = item->data(0, kGroupIdRole).toInt();
+    const int layerIndex = groupId > 0 ? -1 : item->data(0, Qt::UserRole).toInt();
+    // A group's members, flattened, so a provider can inspect what it holds
+    // without needing its own view of the tree.
+    QVector<int> members;
+    if (groupId > 0) {
+        std::function<void(QTreeWidgetItem *)> walk = [&](QTreeWidgetItem *node) {
+            for (int i = 0; i < node->childCount(); ++i) {
+                QTreeWidgetItem *child = node->child(i);
+                if (child->data(0, kGroupIdRole).toInt() > 0) {
+                    walk(child);
+                } else {
+                    members.append(child->data(0, Qt::UserRole).toInt());
+                }
+            }
+        };
+        walk(item);
+    }
+
+    // Python decides what this row offers; C++ only renders and reports.
+    QJsonArray entries;
+    try {
+        py::dict context;
+        context["view"] = view->viewName().toStdString();
+        context["kind"] = groupId > 0 ? "group" : "layer";
+        context["group"] = groupId;
+        context["group_name"] = item->text(0).toStdString();
+        context["layer"] = layerIndex;
+        context["layer_name"] = layerIndex >= 0 ? view->layerName(layerIndex).toStdString()
+                                                : std::string();
+        py::list memberList;
+        for (int index : members) {
+            memberList.append(index);
+        }
+        context["members"] = memberList;
+
+        const std::string json = py::module_::import("python_hooks")
+                                     .attr("menu_items_json")(context)
+                                     .cast<std::string>();
+        QJsonParseError parseError;
+        const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json), &parseError);
+        if (parseError.error != QJsonParseError::NoError || !document.isArray()) {
+            return;
+        }
+        entries = document.array();
+    } catch (const py::error_already_set &error) {
+        setStatusText(QStringLiteral("layer menu error: %1").arg(QString::fromUtf8(error.what())));
+        return;
+    }
+    if (entries.isEmpty()) {
+        return;
+    }
+
+    QMenu menu(this);
+    for (const QJsonValue &value : entries) {
+        const QJsonObject object = value.toObject();
+        const QString name = object.value(QStringLiteral("name")).toString();
+        if (name.isEmpty()) {
+            continue;
+        }
+        QAction *action = menu.addAction(object.value(QStringLiteral("title")).toString(name));
+        action->setEnabled(object.value(QStringLiteral("enabled")).toBool(true));
+        const QString groupName = item->text(0);
+        const QString layerName = layerIndex >= 0 ? view->layerName(layerIndex) : QString();
+        connect(action, &QAction::triggered, this,
+                [this, view, name, groupId, groupName, layerIndex, layerName, members]() {
+            view->sendPythonLayerMenuMessage(name, groupId, groupName,
+                                             layerIndex, layerName, members);
+            // The handler may have edited the document (that is the point),
+            // so resync rather than trusting the panel to still be right.
+            refreshPanelTargets();
+        });
+    }
+    if (!menu.isEmpty()) {
+        menu.exec(tree->viewport()->mapToGlobal(pos));
+    }
+#else
+    Q_UNUSED(pos);
+#endif
 }
 
 void MainWindow::applyLayerPanelStructure(int movedColumnId)

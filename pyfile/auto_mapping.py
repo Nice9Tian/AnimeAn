@@ -63,12 +63,20 @@ SEAL_LAYER_NAME = "mapped layer crease"
 GUIDE_GROUP_NAME = "H/V"
 H_LAYER_NAME = "H axis"
 V_LAYER_NAME = "V axis"
+# The axis snapshot layers carry WHICH axis they are in the stroke property,
+# so restoring them never has to guess from a layer name the user may have
+# renamed. GUIDE_LAYER_PROPERTY is the undifferentiated name the first version
+# wrote; it is still recognised on load, falling back to the layer name.
 GUIDE_LAYER_PROPERTY = "auto_mapped_guide"
+H_GUIDE_LAYER_PROPERTY = "auto_mapped_guide_h"
+V_GUIDE_LAYER_PROPERTY = "auto_mapped_guide_v"
 MAPPING_GROUP_NAME = "Auto Mapping"
+RESTORE_GUIDES_ACTION = "restore_mapping_guides"
 # Everything a run puts on the board. None of it may act as a wall for region
 # detection, and none of it may be picked up as pattern by the next run.
 MAPPING_OUTPUT_PROPERTIES = (MAPPED_PROPERTY, BACK_PROPERTY, SEAL_PROPERTY,
-                             GUIDE_LAYER_PROPERTY)
+                             GUIDE_LAYER_PROPERTY, H_GUIDE_LAYER_PROPERTY,
+                             V_GUIDE_LAYER_PROPERTY)
 _FOLD = {"split": True, "seal": True, "back_color": (104, 112, 140, 255),
          # Qt::PenStyle for the crease strokes: 2 = DashLine. The crease is an
          # annotation of the fold, and a dashed line reads as annotation where
@@ -2422,8 +2430,14 @@ class _MappedOutput:
         self.layers.append(layer)
         return layer
 
-    def add_guide_layers(self, h_points, v_points, width):
+    def add_guide_layers(self, h_guide, v_guide):
         """Draw the two MAIN guide axes into their own layers.
+
+        Each axis is drawn at ITS OWN width, taken from the guide asset. An
+        earlier version drew both at 0.8 * width_scale - a stroke width chosen
+        for the crease - and Re-expand then handed that number back as the
+        guide's width, so restoring a guide visibly changed its thickness.
+        The snapshot has to be lossless in every field the restore reads.
 
         These are the axes that shaped this run, recorded next to the result
         they produced, on the board the result landed on. The live guides stay
@@ -2433,9 +2447,12 @@ class _MappedOutput:
         axes show what THAT run used.
         """
         created = []
-        for name, points in ((H_LAYER_NAME, h_points), (V_LAYER_NAME, v_points)):
-            if not points or len(points) < 2:
+        for name, guide, prop in ((H_LAYER_NAME, h_guide, H_GUIDE_LAYER_PROPERTY),
+                                  (V_LAYER_NAME, v_guide, V_GUIDE_LAYER_PROPERTY)):
+            points = (guide or {}).get("points") or []
+            if len(points) < 2:
                 continue
+            width = float((guide or {}).get("width", 3.0))
             layer = _create_mapped_layer(self.scene, self.row, name)
             if layer < 0:
                 continue
@@ -2448,11 +2465,11 @@ class _MappedOutput:
             image = self.scene.image_at(self.row, layer, True)
             if image is None:
                 continue
-            color = H_COLOR if name == H_LAYER_NAME else V_COLOR
+            color = H_COLOR if prop == H_GUIDE_LAYER_PROPERTY else V_COLOR
             obj = self.animean.vectorlogic.make_stroke_object(
                 [(float(x), float(y)) for x, y in points], color, width,
                 image.stroke_count() + 1, False, False)
-            obj.property = GUIDE_LAYER_PROPERTY
+            obj.property = prop
             image.add_stroke_object(obj)
             created.append(layer)
         return created
@@ -2845,9 +2862,8 @@ def _perform_mapping():
         if added:
             # Provenance first, so the axes sit above the artwork they shaped
             # and the whole run collapses to a single panel row.
-            guide_layers = out.add_guide_layers(main_assets[H_PROPERTY]["points"],
-                                                main_assets[V_PROPERTY]["points"],
-                                                max(1.0, 0.8 * width_scale))
+            guide_layers = out.add_guide_layers(main_assets.get(H_PROPERTY),
+                                                main_assets.get(V_PROPERTY))
             mapping_group = out.group_output(guide_layers)
     except Exception:
         # A half-filled layer without its own history commit would silently
@@ -2946,13 +2962,16 @@ def _capture_mapping_item(cell, stroke, message):
         assets[MAPPING_AREA_PROPERTY] = {"polygons": polygons}
         print(f"[auto_mapping] mapping area set in {view} view (click 'x' to remove)")
     else:
-        if len(points) < 2:
-            print("[auto_mapping] center line too short; draw a longer line.")
+        # Same entry point Re-expand uses; it saves and refreshes the overlays
+        # itself, which is why the shared tail below only runs for the area.
+        if not run_center_line_tool(view, prop, points, width):
             message["cancel_history"] = True
             _animean().ui.widget.refresh()
             return
-        assets[prop] = {"points": points, "width": width}
         print(f"[auto_mapping] {ITEM_LABELS[prop]} set in {view} view (redraw replaces it)")
+        _set_draw_color((0, 0, 0, 255))
+        _animean().ui.widget.refresh()
+        return
 
     # Written BEFORE the C++ stroke commit fires, so the new guide/area rides
     # in the same history entry and is undone/redone together with it.
@@ -3068,6 +3087,107 @@ def _view_button_toggled(message):
               f"guide rectangle lands face-down (tinted).")
 
 
+def _guide_axes_in_layers(scene, frame, layer_indices):
+    """{property -> (points, width)} for the axis snapshots on these layers.
+
+    Identified by the stroke property, so a renamed layer still restores
+    correctly; the layer name is only consulted for snapshots written before
+    the two axes carried separate properties.
+    """
+    found = {}
+    for index in layer_indices:
+        if index is None or index < 0:
+            continue
+        try:
+            cell = scene.cell_to_dict(index, frame, True, POLY_STEP)
+        except Exception:
+            continue
+        name = ""
+        try:
+            name = scene.layer_name(index)
+        except Exception:
+            pass
+        for stroke in cell["image"]["strokes"]:
+            prop = stroke.get("property") or ""
+            if prop == GUIDE_LAYER_PROPERTY:
+                prop = (H_GUIDE_LAYER_PROPERTY if name == H_LAYER_NAME
+                        else V_GUIDE_LAYER_PROPERTY if name == V_LAYER_NAME else "")
+            if prop not in (H_GUIDE_LAYER_PROPERTY, V_GUIDE_LAYER_PROPERTY):
+                continue
+            points = _stroke_points(stroke)
+            if len(points) < 2 or prop in found:
+                continue
+            found[prop] = (points, float(stroke.get("width", 3.0)))
+    return found
+
+
+def _layer_menu_items(context):
+    """Offer 'Re-expand' on a group that holds an axis snapshot."""
+    if context.get("kind") != "group":
+        return []
+    view = context.get("view") or "main"
+    try:
+        scene = _scene_model(view)
+    except Exception:
+        return []
+    axes = _guide_axes_in_layers(scene, scene.current_frame(),
+                                 context.get("members") or [])
+    if not axes:
+        return []
+    return [{
+        "name": RESTORE_GUIDES_ACTION,
+        "title": "Re-expand (restore these axes as the guides)",
+    }]
+
+
+def _layer_menu_action(message):
+    """Put a stored axis snapshot back as this view's live H/V guides.
+
+    The snapshot was taken in the coordinates of the board it sits on, so
+    restoring it is exact: the mapping that produced the group can be re-run
+    from the same axes, and the overlays land back on top of the very strokes
+    the group is showing.
+    """
+    if message.get("action") != RESTORE_GUIDES_ACTION:
+        return
+    view = message.get("view") or "main"
+    try:
+        scene = _scene_model(view)
+    except Exception as error:
+        print(f"[auto_mapping] re-expand skipped: {error}")
+        return
+
+    axes = _guide_axes_in_layers(scene, scene.current_frame(),
+                                 message.get("members") or [])
+    if not axes:
+        print("[auto_mapping] re-expand: this group holds no stored axes.")
+        return
+
+    # Drive the H and V line tools, one per axis - the same call drawing a
+    # guide makes - rather than writing the asset dict from here.
+    restored = []
+    for prop, target in ((H_GUIDE_LAYER_PROPERTY, H_PROPERTY),
+                         (V_GUIDE_LAYER_PROPERTY, V_PROPERTY)):
+        if prop not in axes:
+            continue
+        points, width = axes[prop]
+        if run_center_line_tool(view, target, points, width):
+            restored.append(ITEM_LABELS[target])
+    if not restored:
+        print("[auto_mapping] re-expand: nothing to restore.")
+        return
+
+    try:
+        _animean().ui.refresh()
+        _animean().ui.history_commit("Re-expand Guides", view)
+    except Exception:
+        pass  # older builds without the history binding
+    assets = _assets_for(view)
+    missing = [ITEM_LABELS[p] for p in GUIDE_PROPERTIES if p not in assets]
+    print(f"[auto_mapping] re-expanded {', '.join(restored)} onto {view}_paint_view"
+          + (f"; still missing: {', '.join(missing)}" if missing else ""))
+
+
 def register_hooks():
     python_hooks.set_hook(_capture_mapping_item, linefinish=True, tool="extra")
     python_hooks.set_hook(_overlay_removed, overlayremove=True)
@@ -3077,6 +3197,32 @@ def register_hooks():
     # every built-in tool's option events — refer_rect only exists on extra
     # tools anyway.
     python_hooks.set_hook(_tool_option_changed, option=True, tool="extra")
+
+
+def run_center_line_tool(view_name, property_value, points, width=3.0):
+    """Install one center line. THE entry point of the H / V line tools.
+
+    Drawing a guide and re-expanding a stored one are the same act - "this
+    polyline is now the H (or V) axis of this board" - so they go through this
+    one function instead of each writing the asset dict themselves. Anything
+    that installs a guide gets the save, the overlay refresh and the
+    validation for free, and there is one place to change when installing a
+    guide has to do more.
+
+    Note it deliberately does NOT arm the drawing tool: re-expanding from the
+    layer panel must not silently swap the pen out from under the user.
+    """
+    if property_value not in GUIDE_PROPERTIES:
+        return False
+    cleaned = [(float(x), float(y)) for x, y in points or []]
+    if len(cleaned) < 2:
+        print(f"[auto_mapping] {ITEM_LABELS.get(property_value, property_value)} "
+              "needs at least two points.")
+        return False
+    _assets_for(view_name)[property_value] = {"points": cleaned, "width": float(width)}
+    _save_assets(view_name)
+    _overlays_changed(view_name)
+    return True
 
 
 def activate_center_line_tool(name="h_center_line", property_value=H_PROPERTY):
@@ -3117,3 +3263,7 @@ python_hooks.register_view_button("child", {
     "checkable": True,
 })
 python_hooks.set_hook(_view_button_toggled, viewbutton=True)
+# The layer-panel context menu has the same requirement: right-clicking a
+# mapping group must work in a fresh session, before any tool is armed.
+python_hooks.register_menu_provider(_layer_menu_items)
+python_hooks.set_hook(_layer_menu_action, layermenu=True)

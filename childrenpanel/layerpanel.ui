@@ -22,6 +22,9 @@
      <property name="defaultDropAction">
       <enum>Qt::DropAction::MoveAction</enum>
      </property>
+     <property name="contextMenuPolicy">
+      <enum>Qt::ContextMenuPolicy::CustomContextMenu</enum>
+     </property>
      <property name="headerHidden">
       <bool>true</bool>
      </property>

@@ -32,6 +32,46 @@ def view_buttons_json(view):
     return json.dumps(_VIEW_BUTTONS.get(view, []))
 
 
+# Context-menu providers. C++ asks at right-click time what the menu for the
+# clicked row should contain, renders whatever it is handed, and reports the
+# choice back as a "layermenu" hook event. It never learns what any entry
+# means - the same split as view buttons and extra tools.
+_MENU_PROVIDERS = []
+
+
+def register_menu_provider(function):
+    """Add a callable(context) -> [{"name","title"[, "enabled"]}] provider."""
+    resolved = _resolve_function(function)
+    _MENU_PROVIDERS[:] = [p for p in _MENU_PROVIDERS if not _same_function(p, resolved)]
+    _MENU_PROVIDERS.append(resolved)
+    return resolved
+
+
+def menu_items_json(context):
+    """Every provider's entries for this click, as JSON for the C++ builder.
+
+    A provider that raises is skipped rather than taking the menu down with
+    it: a broken tool module must not make right-click stop working.
+    """
+    items = []
+    for provider in tuple(_MENU_PROVIDERS):
+        try:
+            produced = provider(dict(context)) or []
+        except Exception as error:
+            print(f"[python_hooks] menu provider failed: {error}")
+            continue
+        for item in produced:
+            name = item.get("name")
+            if not name:
+                continue
+            items.append({
+                "name": name,
+                "title": item.get("title") or name,
+                "enabled": bool(item.get("enabled", True)),
+            })
+    return json.dumps(items)
+
+
 def _push_subscriptions():
     """Tell C++ which events have at least one hook.
 
@@ -92,6 +132,7 @@ def set_hook(
     historyrestore=False,
     pad=False,
     viewbutton=False,
+    layermenu=False,
     tool=None,
     property=None,
 ):
@@ -111,6 +152,7 @@ def set_hook(
         "historyrestore": historyrestore,
         "pad": pad,
         "viewbutton": viewbutton,
+        "layermenu": layermenu,
     }
     events = {name for name, enabled in flags.items() if enabled}
     if not events:
