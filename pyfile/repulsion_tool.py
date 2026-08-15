@@ -155,6 +155,9 @@ def _collect_strokes(scene, frame):
                 "id": int(cmd_stroke.get("id", 0)),
                 "editable": not layer.get("locked", False),
                 "property": cmd_stroke.get("property") or "",
+                # Carried so _apply can restore it: displacing a stroke must
+                # not restyle it (a dashed crease came back solid otherwise).
+                "pen_style": int(cmd_stroke.get("pen_style", 1)),
                 "color": (int(color.get("r", 0)), int(color.get("g", 0)),
                           int(color.get("b", 0)), int(color.get("a", 255))),
                 "width": float(cmd_stroke.get("width", 3.0)),
@@ -590,6 +593,7 @@ def _apply(view, scale_x, scale_y):
         piece = animean.vectorlogic.make_stroke_object_from_path(
             commands, points, stroke["color"], stroke["width"], stroke["id"])
         piece.property = stroke["property"]
+        piece.pen_style = stroke["pen_style"]
         if image.replace_stroke_with_pieces(stroke["index"], [piece]) > 0:
             replaced += 1
 

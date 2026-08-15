@@ -58,7 +58,11 @@ BACK_PROPERTY = "auto_mapped_back"
 SEAL_PROPERTY = "auto_mapped_seal"
 BACK_LAYER_NAME = "mapped layer back"
 SEAL_LAYER_NAME = "mapped layer crease"
-_FOLD = {"split": True, "seal": True, "back_color": (104, 112, 140, 255)}
+_FOLD = {"split": True, "seal": True, "back_color": (104, 112, 140, 255),
+         # Qt::PenStyle for the crease strokes: 2 = DashLine. The crease is an
+         # annotation of the fold, and a dashed line reads as annotation where
+         # a solid one reads as artwork.
+         "seal_pen_style": 2}
 
 
 def fold_split_enabled():
@@ -127,6 +131,14 @@ _REFER_RECT = {"enabled": False}
 # cache per view, invalidated whenever the guides change.
 _GRID_CACHE = {"child": None, "main": None}
 
+# The child-view "Occluded Areas" toggle (a script-defined view button):
+# tint the parts of the child board that the CURRENT mapping folds
+# face-down, so the user can see what the lining hides before mapping.
+OCCLUSION_BUTTON = "occlusion_preview"
+OCCLUSION_FILL = (104, 112, 140, 70)   # the lining color, translucent
+_OCCLUSION = {"enabled": False}
+_OCCLUSION_CACHE = {"items": None, "note": "", "share": 0.0}
+
 
 def refer_rect_enabled():
     return _REFER_RECT["enabled"]
@@ -139,6 +151,8 @@ def curve_mode():
 def _invalidate_grid_cache():
     _GRID_CACHE["child"] = None
     _GRID_CACHE["main"] = None
+    # Same lifetime: both displays are pure functions of the guide assets.
+    _OCCLUSION_CACHE["items"] = None
 
 H_COLOR = (0, 0, 255, 255)
 V_COLOR = (0, 255, 0, 255)
@@ -1403,6 +1417,153 @@ def _direction_arrow_points(points, size):
     return [wing1, tip, wing2]
 
 
+def _current_mapper():
+    """The mapper for the guide assets as they stand, or (None, why-not)."""
+    child_assets = _assets_for("child")
+    main_assets = _assets_for("main")
+    for view, assets in (("child", child_assets), ("main", main_assets)):
+        missing = [ITEM_LABELS[prop] for prop in GUIDE_PROPERTIES if prop not in assets]
+        if missing:
+            return None, f"the {view} view is missing: {', '.join(missing)}"
+    if not _polylines_cross(child_assets[H_PROPERTY]["points"],
+                            child_assets[V_PROPERTY]["points"]):
+        return None, "the child center lines do not cross"
+    if not _polylines_cross(main_assets[H_PROPERTY]["points"],
+                            main_assets[V_PROPERTY]["points"]):
+        return None, "the main center lines do not cross"
+    mapper, _ = build_mapper(
+        child_assets[H_PROPERTY]["points"], child_assets[V_PROPERTY]["points"],
+        main_assets[H_PROPERTY]["points"], main_assets[V_PROPERTY]["points"])
+    if mapper is None:
+        return None, "the mapper refuses these guides"
+    return mapper, ""
+
+
+def _occlusion_overlay_items():
+    """Filled bands over the child regions the current mapping turns face-down.
+
+    The domain is the child guide rectangle (both guides' full arc spans) in
+    ARC coordinates, so no Newton inversion is ever needed: the fold sign at
+    a grid cell is the same determinant test as _orientation, evaluated
+    directly at the cell's arcs. Guide tangents are also cached per grid
+    row/column - they only depend on one coordinate each - which turns the
+    sweep into plain arithmetic (measured: the naive per-cell version spent
+    its whole budget re-fetching the same smoothed tangents).
+
+    Output: per scan row, each face-down run becomes one filled quad
+    (bottom edge + reversed top edge), so adjacent rows tile without the
+    seams or cap-bulges polyline bands would leave.
+    """
+    if not _OCCLUSION["enabled"]:
+        return []
+    cached = _OCCLUSION_CACHE["items"]
+    if cached is not None:
+        return cached
+
+    _OCCLUSION_CACHE["note"] = ""
+    _OCCLUSION_CACHE["share"] = 0.0
+    items = []
+    mapper, note = _current_mapper()
+    if mapper is None:
+        _OCCLUSION_CACHE["note"] = note
+        _OCCLUSION_CACHE["items"] = items
+        return items
+
+    child = mapper.child_frame
+    main = mapper.main_frame
+    h_lo, h_hi = -child.h_arc, child.h_cum[-1] - child.h_arc
+    v_lo, v_hi = -child.v_arc, child.v_cum[-1] - child.v_arc
+    if h_hi - h_lo <= 1e-6 or v_hi - v_lo <= 1e-6:
+        _OCCLUSION_CACHE["note"] = "a guide has no length"
+        _OCCLUSION_CACHE["items"] = items
+        return items
+
+    rows = 64
+    cols = 160
+    row_step = (v_hi - v_lo) / rows
+    col_step = (h_hi - h_lo) / cols
+    reference = mapper.fold_reference
+
+    def tangents_h(arc_h):
+        scale = mapper.h_scales[1] if arc_h >= 0.0 else mapper.h_scales[0]
+        return (scale,
+                _tangent_at_arc(child.h, child.h_cum, child.h_arc + arc_h, child.h_window),
+                _tangent_at_arc(main.h, main.h_cum, main.h_arc + arc_h * scale, main.h_window))
+
+    def tangents_v(arc_v):
+        scale = mapper.v_scales[1] if arc_v >= 0.0 else mapper.v_scales[0]
+        return (scale,
+                _tangent_at_arc(child.v, child.v_cum, child.v_arc + arc_v, child.v_window),
+                _tangent_at_arc(main.v, main.v_cum, main.v_arc + arc_v * scale, main.v_window))
+
+    def fold_sign(h_cache, v_cache):
+        scale_h, (tcx, tcy), (tmx, tmy) = h_cache
+        scale_v, (ncx, ncy), (nmx, nmy) = v_cache
+        denominator = tcx * ncy - tcy * ncx
+        if abs(denominator) < 1e-12:
+            return 1  # folded child frame: no usable orientation, same as _orientation
+        value = scale_h * scale_v * (tmx * nmy - tmy * nmx) / denominator
+        raw = 1 if value > 0.0 else -1
+        return 1 if raw == reference else -1
+
+    columns = [tangents_h(h_lo + (index + 0.5) * col_step) for index in range(cols)]
+    back_arc = 0.0
+    for row in range(rows):
+        arc_v = v_lo + (row + 0.5) * row_step
+        v_cache = tangents_v(arc_v)
+
+        def sign_at(arc_h):
+            return fold_sign(tangents_h(arc_h), v_cache)
+
+        # cell-centred signs from the cached column tangents
+        signs = [fold_sign(h_cache, v_cache) for h_cache in columns]
+        runs = []
+        start = h_lo if signs[0] < 0 else None
+        for index in range(cols - 1):
+            if signs[index] == signs[index + 1]:
+                continue
+            lo_b = h_lo + (index + 0.5) * col_step
+            hi_b = lo_b + col_step
+            for _ in range(12):
+                mid = (lo_b + hi_b) * 0.5
+                if sign_at(mid) == signs[index]:
+                    lo_b = mid
+                else:
+                    hi_b = mid
+            boundary = (lo_b + hi_b) * 0.5
+            if signs[index] < 0:
+                runs.append((start, boundary))
+                start = None
+            else:
+                start = boundary
+        if start is not None:
+            runs.append((start, h_hi))
+
+        bottom = arc_v - 0.5 * row_step
+        top = arc_v + 0.5 * row_step
+        for a0, a1 in runs:
+            if a1 - a0 <= 1e-6:
+                continue
+            back_arc += a1 - a0
+            count = max(2, int(round((a1 - a0) / (2.0 * POLY_STEP))) + 1)
+            arcs = [a0 + (a1 - a0) * k / (count - 1) for k in range(count)]
+            polygon = ([child.hv(a, bottom) for a in arcs]
+                       + [child.hv(a, top) for a in reversed(arcs)])
+            items.append({
+                "id": OCCLUSION_BUTTON,
+                "points": polygon,
+                "closed": True,
+                "color": (0, 0, 0, 0),
+                "fill_color": OCCLUSION_FILL,
+                "width": 0.1,
+                "removable": False,
+            })
+
+    _OCCLUSION_CACHE["share"] = back_arc / ((h_hi - h_lo) * rows)
+    _OCCLUSION_CACHE["items"] = items
+    return items
+
+
 def overlay_items(view_name):
     """This view's mapping overlay items (guides + arrows + area + grid).
 
@@ -1448,6 +1609,12 @@ def overlay_items(view_name):
         items.extend(_grid_overlay_items(view_name))
     except Exception as error:
         print(f"[auto_mapping] refer rect grid skipped: {error}")
+    if view_name == "child":
+        try:
+            # UNDER the guides and area, so the tint never covers them.
+            items[:0] = _occlusion_overlay_items()
+        except Exception as error:
+            print(f"[auto_mapping] occlusion preview skipped: {error}")
     return items
 
 
@@ -1558,11 +1725,15 @@ def _grid_overlay_items(view_name):
 
 def _overlays_changed(view_name):
     """Assets changed in view_name: refresh its overlay — and the main view's
-    too when refer rect is on, since the main grid mirrors the child frame."""
+    too when refer rect is on, since the main grid mirrors the child frame.
+    Symmetrically, the child's occlusion tint depends on the MAIN guides, so
+    a main-side change must re-push the child overlay."""
     _invalidate_grid_cache()
     _push_overlay(view_name)
     if _REFER_RECT["enabled"] and view_name != "main":
         _push_overlay("main")
+    if _OCCLUSION["enabled"] and view_name != "child":
+        _push_overlay("child")
 
 
 def _detect_region(scene, view_name, frame, seed):
@@ -2254,6 +2425,8 @@ class _MappedOutput:
                     obj = self.animean.vectorlogic.make_stroke_object_from_path(
                         commands, flat, color, width, image.stroke_count() + 1)
                 obj.property = prop
+                if side == self.SEAL:
+                    obj.pen_style = _FOLD["seal_pen_style"]
                 image.add_stroke_object(obj)
                 added += 1
         return added
@@ -2781,6 +2954,27 @@ def _tool_option_changed(cell, stroke, message):
     print(f"[auto_mapping] refer rect grid {'ON' if enabled else 'OFF'}")
 
 
+def _view_button_toggled(message):
+    if message.get("view") != "child" or message.get("name") != OCCLUSION_BUTTON:
+        return
+    _OCCLUSION["enabled"] = bool(message.get("on"))
+    _OCCLUSION_CACHE["items"] = None
+    _push_overlay("child")  # computes and caches the bands as a side effect
+    if not _OCCLUSION["enabled"]:
+        print("[auto_mapping] occlusion preview OFF")
+        return
+    note = _OCCLUSION_CACHE.get("note")
+    items = _OCCLUSION_CACHE.get("items") or []
+    if note:
+        print(f"[auto_mapping] occlusion preview: nothing to show - {note}.")
+    elif not items:
+        print("[auto_mapping] occlusion preview: these guides fold nothing face-down.")
+    else:
+        share = _OCCLUSION_CACHE.get("share", 0.0)
+        print(f"[auto_mapping] occlusion preview ON: {share * 100.0:.0f}% of the "
+              f"guide rectangle lands face-down (tinted).")
+
+
 def register_hooks():
     python_hooks.set_hook(_capture_mapping_item, linefinish=True, tool="extra")
     python_hooks.set_hook(_overlay_removed, overlayremove=True)
@@ -2817,3 +3011,16 @@ def run_auto_mapping(name=AUTO_MAPPING2_TOOL, property_value=AUTO_MAPPING2_TOOL)
         return property_value
     _run()
     return property_value
+
+
+# The occlusion toggle lives on the child window itself, so it must work from
+# startup - BEFORE any mapping tool has been armed. Register the button and
+# its hook at import time (register_hooks() only runs on tool activation).
+python_hooks.register_view_button("child", {
+    "name": OCCLUSION_BUTTON,
+    "title": "Occluded Areas",
+    "tooltip": "Tint the parts of this texture that the current mapping "
+               "folds face-down (covered by the lining).",
+    "checkable": True,
+})
+python_hooks.set_hook(_view_button_toggled, viewbutton=True)

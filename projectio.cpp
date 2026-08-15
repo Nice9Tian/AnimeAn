@@ -147,6 +147,11 @@ QJsonObject strokeToJson(const AnimeVectorStroke &stroke)
     object[QStringLiteral("boundsH")] = stroke.bounds.height();
     object[QStringLiteral("color")] = colorToJson(stroke.color);
     object[QStringLiteral("width")] = stroke.width;
+    if (stroke.penStyle != 1) {
+        // Written only when non-solid, so files without styled strokes stay
+        // byte-identical to what older builds produced.
+        object[QStringLiteral("penStyle")] = stroke.penStyle;
+    }
     return object;
 }
 
@@ -170,6 +175,7 @@ AnimeVectorStroke strokeFromJson(const QJsonValue &value)
                            object.value(QStringLiteral("boundsH")).toDouble());
     stroke.color = colorFromJson(object.value(QStringLiteral("color")));
     stroke.width = object.value(QStringLiteral("width")).toDouble(3.0);
+    stroke.penStyle = object.value(QStringLiteral("penStyle")).toInt(1);
     return stroke;
 }
 

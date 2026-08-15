@@ -4,6 +4,7 @@
 
 #include <QCheckBox>
 #include <QHBoxLayout>
+#include <QPushButton>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -18,6 +19,7 @@ ChildPaintWindow::ChildPaintWindow(QWidget *parent)
     layout->setSpacing(4);
 
     QHBoxLayout *optionLayout = new QHBoxLayout;
+    m_optionLayout = optionLayout;
     optionLayout->setSpacing(12);
     m_changableTimelineCheck = new QCheckBox(QStringLiteral("Changable Timeline"), panel);
     m_changableTimelineCheck->setToolTip(
@@ -70,4 +72,37 @@ void ChildPaintWindow::setChangableTimeline(bool enabled)
 void ChildPaintWindow::setChangableLayer(bool enabled)
 {
     m_changableLayerCheck->setChecked(enabled);
+}
+
+void ChildPaintWindow::setScriptButtons(const QVector<ScriptButtonDefinition> &definitions)
+{
+    for (QPushButton *button : m_scriptButtons) {
+        m_optionLayout->removeWidget(button);
+        button->deleteLater();
+    }
+    m_scriptButtons.clear();
+
+    for (const ScriptButtonDefinition &definition : definitions) {
+        if (definition.name.isEmpty()) {
+            continue;
+        }
+        QPushButton *button = new QPushButton(
+            definition.title.isEmpty() ? definition.name : definition.title,
+            m_optionLayout->parentWidget() ? m_optionLayout->parentWidget() : this);
+        button->setToolTip(definition.tooltip);
+        button->setCheckable(definition.checkable);
+        const QString name = definition.name;
+        if (definition.checkable) {
+            connect(button, &QPushButton::toggled, this, [this, name](bool on) {
+                emit scriptButtonToggled(name, on);
+            });
+        } else {
+            connect(button, &QPushButton::clicked, this, [this, name]() {
+                emit scriptButtonToggled(name, true);
+            });
+        }
+        // Keep the stretch item last so the row stays left-aligned.
+        m_optionLayout->insertWidget(m_optionLayout->count() - 1, button);
+        m_scriptButtons.append(button);
+    }
 }

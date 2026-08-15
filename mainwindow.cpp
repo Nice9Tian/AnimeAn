@@ -470,6 +470,9 @@ void MainWindow::setupDocks()
     m_paintWidget->setActiveIndicator(true);
     createListDocks();
     createToolDocks();
+    // After createToolDocks: importing extra_tools there pulls in the tool
+    // modules, whose import-time registrations fill the view-button registry.
+    populateChildViewButtons();
     setupPythonDebugDock();
     createTextureFileMenu();
     // Re-baseline both histories now that the views carry their fixed scene
@@ -840,6 +843,44 @@ void MainWindow::createChildPaintDock()
     // Added to the left area BEFORE the Tools dock, so the left column reads
     // child view on top, tools underneath.
     addDockWidget(Qt::LeftDockWidgetArea, m_childPaintWindow);
+    connect(m_childPaintWindow, &ChildPaintWindow::scriptButtonToggled, this,
+            [this](const QString &name, bool on) {
+                m_childPaintWidget->sendPythonViewButtonMessage(name, on);
+            });
+}
+
+void MainWindow::populateChildViewButtons()
+{
+#ifdef ANIMEAN_WITH_PYTHON
+    // Same shape as the extra-tools query: Python owns the definitions, C++
+    // renders whatever it is given.
+    try {
+        const std::string json = py::module_::import("python_hooks")
+                                     .attr("view_buttons_json")("child")
+                                     .cast<std::string>();
+        QJsonParseError parseError;
+        const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json), &parseError);
+        if (parseError.error != QJsonParseError::NoError || !document.isArray()) {
+            setStatusText(QStringLiteral("view_buttons JSON error: %1").arg(parseError.errorString()));
+            return;
+        }
+        QVector<ChildPaintWindow::ScriptButtonDefinition> definitions;
+        for (const QJsonValue &value : document.array()) {
+            const QJsonObject object = value.toObject();
+            ChildPaintWindow::ScriptButtonDefinition definition;
+            definition.name = object.value(QStringLiteral("name")).toString();
+            definition.title = object.value(QStringLiteral("title")).toString();
+            definition.tooltip = object.value(QStringLiteral("tooltip")).toString();
+            definition.checkable = object.value(QStringLiteral("checkable")).toBool(true);
+            if (!definition.name.isEmpty()) {
+                definitions.append(definition);
+            }
+        }
+        m_childPaintWindow->setScriptButtons(definitions);
+    } catch (const py::error_already_set &error) {
+        setStatusText(QStringLiteral("view_buttons error: %1").arg(QString::fromUtf8(error.what())));
+    }
+#endif
 }
 
 void MainWindow::createTextureFileMenu()

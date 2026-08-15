@@ -88,6 +88,9 @@ public:
     // means (and applies it through the bindings). Returns true when a hook
     // set message["handled"]; the caller then skips its own default action.
     bool sendPythonLayerVisibilityMessage(int layerIndex, bool visible);
+    // Generic dispatch for script-defined view buttons ("viewbutton" event);
+    // the button semantics live entirely in Python.
+    void sendPythonViewButtonMessage(const QString &name, bool on);
     void setTool(Tool tool);
     Tool tool() const;
     void setFillScope(FillScope scope);

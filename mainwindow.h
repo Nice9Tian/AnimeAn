@@ -51,6 +51,7 @@ private:
     void createToolDocks();
     void createListDocks();
     void createChildPaintDock();
+    void populateChildViewButtons();
     void runPythonDebugCommand(const QString &command);
     QString runEmbeddedPythonCommand(const QString &command);
     QString resolvePythonScriptPath(const QString &scriptName) const;

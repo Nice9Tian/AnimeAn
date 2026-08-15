@@ -133,8 +133,19 @@ QString pythonHookSendMessage(const py::dict &message)
         if (output.trimmed().isEmpty()) {
             output = QStringLiteral("(no output)");
         }
-        const QString event = QString::fromUtf8(py::str(message["event"]).cast<std::string>().c_str());
-        const QString tool = QString::fromUtf8(py::str(message["tool"]).cast<std::string>().c_str());
+        // Defaulted lookups: py::dict has no dict-specific operator[], so a
+        // missing key raises KeyError and would throw all the way out to the
+        // catch below - discarding the hook's real output and reporting a
+        // bogus "hook setup error" instead. The formatter must never be the
+        // thing that fails after the hook already ran.
+        const auto text = [&message](const char *key, const char *fallback) {
+            if (!message.contains(py::str(key))) {
+                return QString::fromUtf8(fallback);
+            }
+            return QString::fromUtf8(py::str(message[key]).cast<std::string>().c_str());
+        };
+        const QString event = text("event", "?");
+        const QString tool = text("tool", "-");
         return QStringLiteral("[python feedback] %1 tool=%2\n%3").arg(event, tool, output.trimmed());
     } catch (const py::error_already_set &error) {
         return QStringLiteral("[python feedback] hook setup error: %1").arg(QString::fromUtf8(error.what()));
@@ -555,6 +566,36 @@ bool PaintOpenGLWidget::sendPythonLayerVisibilityMessage(int layerIndex, bool vi
     Q_UNUSED(layerIndex);
     Q_UNUSED(visible);
     return false;
+#endif
+}
+
+void PaintOpenGLWidget::sendPythonViewButtonMessage(const QString &name, bool on)
+{
+#ifdef ANIMEAN_WITH_PYTHON
+    if (!animeanHookEventSubscribed(QStringLiteral("viewbutton"))) {
+        return;
+    }
+
+    py::gil_scoped_acquire acquire;
+    py::dict message;
+    message["event"] = "viewbutton";
+    message["view"] = m_viewName.toStdString();
+    // Every sender carries these: python_hooks._matches filters on "tool" and
+    // "property", so omitting them would make tool=... subscriptions to this
+    // event silently unmatchable.
+    message["tool"] = (m_activePythonTool.isEmpty() ? toolName(m_tool) : m_activePythonTool).toStdString();
+    message["base_tool"] = toolName(m_tool).toStdString();
+    message["property"] = m_strokeProperty.toStdString();
+    message["name"] = name.toStdString();
+    message["on"] = on;
+
+    const QString output = ::pythonHookSendMessage(message);
+    if (!isQuietHookOutput(output)) {
+        emit pythonDebugMessage(output);
+    }
+#else
+    Q_UNUSED(name);
+    Q_UNUSED(on);
 #endif
 }
 
@@ -1016,7 +1057,15 @@ void PaintOpenGLWidget::paintSceneContent(QPainter &painter, int frameIndex, boo
             painter.setBrush(Qt::NoBrush);
             for (const VectorStrokeNode &node : image->strokeNodes()) {
                 const VectorStroke &stroke = node.stroke;
-                painter.setPen(QPen(stroke.color, stroke.width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                // penStyle is a generic per-stroke property (Qt::PenStyle).
+                // Clamp out-of-range values to solid: 0 is NoPen, which would
+                // silently make the stroke invisible.
+                const Qt::PenStyle penStyle =
+                    (stroke.penStyle >= Qt::SolidLine && stroke.penStyle <= Qt::DashDotDotLine)
+                        ? static_cast<Qt::PenStyle>(stroke.penStyle)
+                        : Qt::SolidLine;
+                QPen pen(stroke.color, stroke.width, penStyle, Qt::RoundCap, Qt::RoundJoin);
+                painter.setPen(pen);
                 painter.drawPath(stroke.path);
             }
         }

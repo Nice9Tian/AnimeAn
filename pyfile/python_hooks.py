@@ -1,8 +1,35 @@
 import importlib
 import inspect
+import json
 
 
 _HOOKS = []
+
+# view name -> [button definition dicts]. Tool modules register buttons at
+# import time; C++ renders them on the view (currently the child window's
+# option row) and dispatches presses as "viewbutton" hook events. The C++
+# side stays generic - it only knows "a named toggle whose state goes to
+# script", never what any button means.
+_VIEW_BUTTONS = {}
+
+
+def register_view_button(view, definition):
+    """Add (or replace, by name) a script-defined button on a paint view.
+
+    definition: {"name": str, "title": str, "tooltip": str,
+                 "checkable": bool (default True)}
+    """
+    name = definition.get("name")
+    if not name:
+        raise ValueError("view button definition needs a 'name'.")
+    buttons = _VIEW_BUTTONS.setdefault(view, [])
+    buttons[:] = [entry for entry in buttons if entry.get("name") != name]
+    buttons.append(dict(definition))
+
+
+def view_buttons_json(view):
+    """The registered buttons for a view, as JSON for the C++ builder."""
+    return json.dumps(_VIEW_BUTTONS.get(view, []))
 
 
 def _push_subscriptions():
@@ -64,6 +91,7 @@ def set_hook(
     overlayremove=False,
     historyrestore=False,
     pad=False,
+    viewbutton=False,
     tool=None,
     property=None,
 ):
@@ -82,6 +110,7 @@ def set_hook(
         "overlayremove": overlayremove,
         "historyrestore": historyrestore,
         "pad": pad,
+        "viewbutton": viewbutton,
     }
     events = {name for name, enabled in flags.items() if enabled}
     if not events:

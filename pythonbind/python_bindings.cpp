@@ -769,6 +769,7 @@ py::dict strokeToDict(const AnimeVectorStroke &stroke, bool toPoly, double polyS
     data["id"] = stroke.id;
     data["property"] = stroke.property.toStdString();
     data["width"] = stroke.width;
+    data["pen_style"] = stroke.penStyle;
     data["color"] = colorToDict(stroke.color);
     data["bounds"] = rectToDict(stroke.bounds);
     data["raw_points"] = pointsToList(stroke.points);
@@ -1395,6 +1396,7 @@ void bindAnimeanPythonModule(py::module_ &m)
                           stroke.property = QString::fromUtf8(property.c_str());
                       })
         .def_readwrite("width", &AnimeVectorStroke::width)
+        .def_readwrite("pen_style", &AnimeVectorStroke::penStyle)
         .def_readwrite("total_length", &AnimeVectorStroke::totalLength)
         .def("to_dict",
              [](const AnimeVectorStroke &stroke, bool toPoly, double polyStep) {

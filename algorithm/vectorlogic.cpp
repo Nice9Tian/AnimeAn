@@ -454,11 +454,21 @@ QVector<AnimeVectorRange> AnimeVectorLogic::complementRanges(const QVector<Anime
 
 AnimeVectorStroke AnimeVectorLogic::subStroke(const AnimeVectorStroke &stroke, qreal fromW, qreal toW, int smoothValue)
 {
+    // Pieces keep the source stroke's identity attributes. Dropping them
+    // here silently untagged partially-erased strokes: a half-erased
+    // "auto_mapped" stroke lost its property and was re-collected as pattern
+    // by the next mapping run.
+    const auto inherit = [&stroke](AnimeVectorStroke piece) {
+        piece.property = stroke.property;
+        piece.penStyle = stroke.penStyle;
+        return piece;
+    };
+
     const qreal fromLength = clamp01(fromW) * stroke.totalLength;
     const qreal toLength = clamp01(toW) * stroke.totalLength;
     QVector<QPointF> points;
     if (toLength <= fromLength + kEpsilon) {
-        return makeStroke(points, stroke.color, stroke.width, stroke.id, false, true, smoothValue);
+        return inherit(makeStroke(points, stroke.color, stroke.width, stroke.id, false, true, smoothValue));
     }
 
     points.append(pointAtLength(stroke, fromLength));
@@ -470,7 +480,7 @@ AnimeVectorStroke AnimeVectorLogic::subStroke(const AnimeVectorStroke &stroke, q
     }
     points.append(pointAtLength(stroke, toLength));
 
-    return makeStroke(points, stroke.color, stroke.width, stroke.id, false, true, smoothValue);
+    return inherit(makeStroke(points, stroke.color, stroke.width, stroke.id, false, true, smoothValue));
 }
 
 QPointF AnimeVectorLogic::pointAtLength(const AnimeVectorStroke &stroke, qreal length)
