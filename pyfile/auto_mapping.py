@@ -497,18 +497,33 @@ class _Frame:
     def solve(self, point, guess_h, guess_v, iterations=24, tol=1e-7):
         """Invert hv: find (l_h, l_v) with hv(l_h, l_v) == point.
 
-        hv is piecewise affine (arc-length lookup on polylines), so Newton
-        lands exactly once the iterate reaches the right cell - typically two
-        or three steps from the chord-based guess.
+        DAMPED Newton (the descent variant). hv is piecewise affine - an
+        arc-length lookup on two polylines - so an undamped step lands exactly
+        once the iterate reaches the right cell, and on mild guides it does:
+        the chord seed is exact for straight guides (0 iterations) and two or
+        three steps suffice up to about 30 px of guide bow, with the residual
+        squaring each step.
 
-        Strongly curved guides make hv genuinely non-injective in places (the
-        two tangents turn parallel - the frame folds), so this is written to
-        DEGRADE, never to diverge: every step is damped to the frame's own
-        extent, only improving iterates are accepted, and the best one found
-        is returned. Iterate 0 is the caller's chord-basis guess, i.e. the
-        previous implementation's coordinates - so the result is never worse
-        than what the old code did, and the caller's residual term carries
-        whatever is left over.
+        Strongly bowed guides break that. hv becomes non-injective where the
+        two tangents turn parallel, and an undamped Newton then oscillates
+        between cells instead of settling - a measured residual cycle of
+        6.6 -> 5.4 -> 15.9 -> 6.6 -> ... forever. Halving the step until it
+        actually reduces the residual turns that into descent: on 60 px bowed
+        guides the share of points solved to 1e-7 px went from 59.5% to 89.9%,
+        while straight and mildly bowed guides converge in exactly the same
+        number of iterations as before (the first trial is accepted, so there
+        is no extra evaluation on the easy path).
+
+        See docs/point_mapping_newton.md for the full derivation, the flow
+        charts and the measurement tables.
+
+        Never converging is a legitimate outcome, not a bug: some of those
+        points have no preimage at all and others have several, because the
+        frame genuinely folds. So the search only ever ACCEPTS an improvement,
+        returns the best iterate it saw, and leaves the rest to the caller's
+        residual term. Iterate 0 is the chord seed - the coordinates the
+        pre-2026-08 implementation used - so the answer is never worse than
+        that.
         """
         limit = self.h_total + self.v_total + 1.0
         l_h, l_v = guess_h, guess_v
@@ -523,22 +538,29 @@ class _Frame:
             (hx, hy), (vx, vy) = self.jacobian(l_h, l_v)
             det = hx * vy - hy * vx
             if abs(det) < 1e-9:
-                break  # locally folded frame: no usable step from here
+                break  # locally folded frame: no usable direction from here
             step_h = (-fx * vy + fy * vx) / det
             step_v = (-hx * fy + hy * fx) / det
             scale = math.hypot(step_h, step_v)
             if scale > limit:
                 step_h *= limit / scale
                 step_v *= limit / scale
-            l_h += step_h
-            l_v += step_v
-            current = self.hv(l_h, l_v)
-            error = math.hypot(current[0] - point[0], current[1] - point[1])
-            if error < best_error:
-                best_error = error
-                best = (l_h, l_v)
-            elif error > best_error * 4.0:
-                break  # diverging; keep the best iterate instead
+
+            accepted = None
+            damping = 1.0
+            for _ in range(12):
+                trial_h = l_h + step_h * damping
+                trial_v = l_v + step_v * damping
+                trial = self.hv(trial_h, trial_v)
+                error = math.hypot(trial[0] - point[0], trial[1] - point[1])
+                if error < best_error:
+                    accepted = (trial_h, trial_v, trial, error)
+                    break
+                damping *= 0.5
+            if accepted is None:
+                break  # no downhill step along this direction; keep the best
+            l_h, l_v, current, best_error = accepted
+            best = (l_h, l_v)
         return best
 
 
@@ -1879,7 +1901,7 @@ def _split_by_fold(map_point, points):
     return runs
 
 
-def _crease_curves(map_point, v_range, samples=48):
+def _crease_curves(map_point, v_range, samples=48, max_columns=600):
     """The fold loci, traced from the FRAMES rather than from the strokes.
 
     det J vanishes where the main H direction turns parallel to the main V
@@ -1907,12 +1929,11 @@ def _crease_curves(map_point, v_range, samples=48):
 
     total = main.h_cum[-1]
     step = max(POLY_STEP, total / 400.0)
-    columns = []
-    for index in range(samples + 1):
-        l_v = low + (high - low) * index / samples
+
+    def crossings_at(l_v):
         normal = _tangent_at_arc(main.v, main.v_cum, main.v_arc + l_v, main.v_window)
 
-        def side_at(arc, normal=normal):
+        def side_at(arc):
             tangent = _tangent_at_arc(main.h, main.h_cum, main.h_arc + arc, main.h_window)
             return tangent[0] * normal[1] - tangent[1] * normal[0]
 
@@ -1933,7 +1954,35 @@ def _crease_curves(map_point, v_range, samples=48):
                         hi = mid
                 found.append((lo + hi) * 0.5)
             arc, previous = nxt, value
-        columns.append((l_v, found))
+        return found
+
+    columns = [(low + (high - low) * index / samples,
+                crossings_at(low + (high - low) * index / samples))
+               for index in range(samples + 1)]
+
+    # Refine in V wherever the crease slides fast along H. A uniform grid is
+    # not enough in the extreme: on a guide coiling through 944 degrees the
+    # slide rate reached 23 px of H per px of V, so consecutive samples were
+    # 70 px apart and a cut could sit 82 px from the drawn polyline. Halving
+    # the interval until the arc step is bounded fixes that; the cap keeps a
+    # pathological guide from running away.
+    for _ in range(24):
+        if len(columns) >= max_columns:
+            break
+        refined = [columns[0]]
+        inserted = False
+        for before, after in zip(columns, columns[1:]):
+            gap = 0.0
+            if before[1] and len(before[1]) == len(after[1]):
+                gap = max(abs(x - y) for x, y in zip(before[1], after[1]))
+            if gap > POLY_STEP and len(refined) + 1 < max_columns:
+                middle = (before[0] + after[0]) * 0.5
+                refined.append((middle, crossings_at(middle)))
+                inserted = True
+            refined.append(after)
+        columns = refined
+        if not inserted:
+            break
 
     # Chain by rank. Branches alternate in sign, so the k-th crossing of one
     # column continues the k-th of the next; nearest-neighbour matching (what
@@ -1946,8 +1995,36 @@ def _crease_curves(map_point, v_range, samples=48):
         if previous_count == len(found) and open_curves:
             for rank, arc in enumerate(found):
                 open_curves[rank].append((arc, l_v))
+        elif open_curves:
+            # The count changed - a fold pair appeared or vanished. Continuing
+            # every branch by rank would now shift them all by one, so match
+            # by arc instead, but only within a TIGHT window: refinement above
+            # keeps a genuine continuation within POLY_STEP of its previous
+            # sample, so anything further away is a different branch. (The
+            # original code allowed a quarter of the guide's length here,
+            # which is how branches used to swap and tie the crease in knots.)
+            limit = 2.0 * POLY_STEP
+            taken = set()
+            survivors = []
+            for curve in open_curves:
+                best = None
+                for index, arc in enumerate(found):
+                    if index in taken:
+                        continue
+                    gap = abs(arc - curve[-1][0])
+                    if best is None or gap < best[0]:
+                        best = (gap, index, arc)
+                if best is not None and best[0] <= limit:
+                    taken.add(best[1])
+                    curve.append((best[2], l_v))
+                    survivors.append(curve)
+                elif len(curve) >= 2:
+                    curves.append(curve)
+            for index, arc in enumerate(found):
+                if index not in taken:
+                    survivors.append([(arc, l_v)])
+            open_curves = sorted(survivors, key=lambda curve: curve[-1][0])
         else:
-            curves.extend(curve for curve in open_curves if len(curve) >= 2)
             open_curves = [[(arc, l_v)] for arc in found]
         previous_count = len(found)
     curves.extend(curve for curve in open_curves if len(curve) >= 2)
