@@ -2354,10 +2354,13 @@ void MainWindow::updateAttention(PaintOpenGLWidget *view, AttentionChange change
 void MainWindow::refreshLayerList(int selectedRow)
 {
     PaintOpenGLWidget *view = layerPanelTarget();
-    m_refreshingLists = true;
-    const QSignalBlocker blocker(m_layerPanel->layerList());
-    m_layerPanel->layerList()->clear();
-    int selectedListRow = -1;
+    QListWidget *list = m_layerPanel->layerList();
+
+    // Work out what the panel should show BEFORE touching it, so the common
+    // case can be applied in place.
+    QVector<int> layers;
+    QStringList names;
+    QVector<bool> visible;
     for (int i = 0; i < view->layerCount(); ++i) {
         if (view->model().layerInternal(i)) {
             continue; // script-owned working layers never appear in the panel
@@ -2365,24 +2368,70 @@ void MainWindow::refreshLayerList(int selectedRow)
         if (view->model().assetIndexAt(view->model().currentFrame(), i) < 0) {
             continue;
         }
-        QListWidgetItem *item = new QListWidgetItem(view->layerName(i));
-        item->setData(Qt::UserRole, i);
-        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        item->setCheckState(view->model().layerVisible(i) ? Qt::Checked : Qt::Unchecked);
-        m_layerPanel->layerList()->addItem(item);
-        if (i == selectedRow) {
-            selectedListRow = m_layerPanel->layerList()->count() - 1;
-        }
+        layers.append(i);
+        names.append(view->layerName(i));
+        visible.append(view->model().layerVisible(i));
     }
-    if (m_layerPanel->layerList()->count() > 0) {
-        if (selectedListRow >= 0) {
-            m_layerPanel->layerList()->setCurrentRow(selectedListRow);
-        } else {
-            m_layerPanel->layerList()->clearSelection();
-            m_layerPanel->layerList()->setCurrentRow(-1);
+    const int selectedListRow = layers.indexOf(selectedRow);
+    const QListWidgetItem *currentItem = list->currentItem();
+    const int previousLayer = currentItem ? currentItem->data(Qt::UserRole).toInt() : -1;
+
+    m_refreshingLists = true;
+    const QSignalBlocker blocker(list);
+
+    // Same layers in the same order means this refresh carries an ATTRIBUTE
+    // change - a visibility toggle, a rename - and rebuilding the widget for
+    // it is both wasteful and destructive: clear() drops the viewport's
+    // scroll position, so a user reading row 80 of 100 was thrown to wherever
+    // the current layer happened to sit the moment they ticked a checkbox.
+    bool sameRows = list->count() == layers.size();
+    for (int row = 0; sameRows && row < layers.size(); ++row) {
+        sameRows = list->item(row)->data(Qt::UserRole).toInt() == layers[row];
+    }
+
+    int restoreScroll = -1;
+    if (sameRows) {
+        for (int row = 0; row < layers.size(); ++row) {
+            QListWidgetItem *item = list->item(row);
+            const Qt::CheckState state = visible[row] ? Qt::Checked : Qt::Unchecked;
+            if (item->checkState() != state) {
+                item->setCheckState(state);
+            }
+            if (item->text() != names[row]) {
+                item->setText(names[row]);
+            }
         }
     } else {
-        m_layerPanel->layerList()->setCurrentRow(-1);
+        const int scroll = list->verticalScrollBar()->value();
+        list->clear();
+        for (int row = 0; row < layers.size(); ++row) {
+            QListWidgetItem *item = new QListWidgetItem(names[row]);
+            item->setData(Qt::UserRole, layers[row]);
+            item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+            item->setCheckState(visible[row] ? Qt::Checked : Qt::Unchecked);
+            list->addItem(item);
+        }
+        if (previousLayer == selectedRow) {
+            // The rows changed but the user's selection did not, so this is
+            // not a "go look over here" event - put the viewport back where
+            // they left it. Applied after setCurrentRow below, which would
+            // otherwise scroll the selection into view and undo it.
+            restoreScroll = scroll;
+        }
+    }
+
+    if (list->count() > 0 && selectedListRow >= 0) {
+        // Guarded: re-setting the row that is already current would be a
+        // no-op anyway, but saying so keeps the scroll restore below honest.
+        if (list->currentRow() != selectedListRow) {
+            list->setCurrentRow(selectedListRow);
+        }
+    } else {
+        list->clearSelection();
+        list->setCurrentRow(-1);
+    }
+    if (restoreScroll >= 0) {
+        list->verticalScrollBar()->setValue(restoreScroll);
     }
     m_refreshingLists = false;
 }
@@ -2390,22 +2439,31 @@ void MainWindow::refreshLayerList(int selectedRow)
 void MainWindow::refreshFrameList(int selectedRow)
 {
     PaintOpenGLWidget *view = framePanelTarget();
+    QListWidget *list = m_framePanel->frameList();
     m_refreshingLists = true;
-    const QSignalBlocker blocker(m_framePanel->frameList());
-    m_framePanel->frameList()->clear();
+    const QSignalBlocker blocker(list);
+    // Same reasoning as refreshLayerList: a refresh that leaves the selection
+    // where it was must leave the viewport where it was too.
+    const int previousRow = list->currentRow();
+    const int scroll = list->verticalScrollBar()->value();
+    list->clear();
     for (int i = 0; i < view->frameCount(); ++i) {
-        m_framePanel->frameList()->addItem(view->frameName(i));
+        list->addItem(view->frameName(i));
     }
-    if (m_framePanel->frameList()->count() > 0) {
+    if (list->count() > 0) {
         if (selectedRow < 0) {
-            m_framePanel->frameList()->clearSelection();
-            m_framePanel->frameList()->setCurrentRow(-1);
+            list->clearSelection();
+            list->setCurrentRow(-1);
+            list->verticalScrollBar()->setValue(scroll);
             m_refreshingLists = false;
             return;
-        } else if (selectedRow >= m_framePanel->frameList()->count()) {
-            selectedRow = m_framePanel->frameList()->count() - 1;
+        } else if (selectedRow >= list->count()) {
+            selectedRow = list->count() - 1;
         }
-        m_framePanel->frameList()->setCurrentRow(selectedRow);
+        list->setCurrentRow(selectedRow);
+        if (previousRow == selectedRow) {
+            list->verticalScrollBar()->setValue(scroll);
+        }
     }
     m_refreshingLists = false;
 }
@@ -2413,9 +2471,13 @@ void MainWindow::refreshFrameList(int selectedRow)
 void MainWindow::refreshAssetList(int selectedRow)
 {
     PaintOpenGLWidget *view = assetPanelTarget();
+    QListWidget *list = m_assetPanel->assetList();
     m_refreshingLists = true;
-    const QSignalBlocker blocker(m_assetPanel->assetList());
-    m_assetPanel->assetList()->clear();
+    const QSignalBlocker blocker(list);
+    // Same reasoning as refreshLayerList.
+    const int previousRow = list->currentRow();
+    const int scroll = list->verticalScrollBar()->value();
+    list->clear();
     for (int i = 0; i < view->assetCount(); ++i) {
         // Backing assets of script-owned working layers stay out of the
         // panel. They only ever live at the end of the asset list, so the
@@ -2423,16 +2485,20 @@ void MainWindow::refreshAssetList(int selectedRow)
         if (view->model().assetInternal(i)) {
             continue;
         }
-        m_assetPanel->assetList()->addItem(view->assetName(i));
+        list->addItem(view->assetName(i));
     }
-    if (selectedRow >= 0 && m_assetPanel->assetList()->count() > 0) {
-        if (selectedRow >= m_assetPanel->assetList()->count()) {
-            selectedRow = m_assetPanel->assetList()->count() - 1;
+    if (selectedRow >= 0 && list->count() > 0) {
+        if (selectedRow >= list->count()) {
+            selectedRow = list->count() - 1;
         }
-        m_assetPanel->assetList()->setCurrentRow(selectedRow);
+        list->setCurrentRow(selectedRow);
+        if (previousRow == selectedRow) {
+            list->verticalScrollBar()->setValue(scroll);
+        }
     } else {
-        m_assetPanel->assetList()->clearSelection();
-        m_assetPanel->assetList()->setCurrentRow(-1);
+        list->clearSelection();
+        list->setCurrentRow(-1);
+        list->verticalScrollBar()->setValue(scroll);
     }
     m_refreshingLists = false;
 }
