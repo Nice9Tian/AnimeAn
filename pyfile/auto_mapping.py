@@ -1,4 +1,4 @@
-"""Auto-mapping tools: H/V center lines, mapping area, and child->main mapping.
+﻿"""Auto-mapping tools: H/V center lines, mapping area, and child->main mapping.
 
 Mapping assets (the H/V center lines and the mapping area) do NOT live in the
 layer stack. They are captured into a Python dict (_MAPPING_ASSETS) the moment
@@ -1956,29 +1956,48 @@ def _crease_curves(map_point, v_range, samples=48, max_columns=600):
             arc, previous = nxt, value
         return found
 
-    columns = [(low + (high - low) * index / samples,
-                crossings_at(low + (high - low) * index / samples))
+    def column(l_v):
+        arcs = crossings_at(l_v)
+        return (l_v, arcs, [main.hv(arc, l_v) for arc in arcs])
+
+    columns = [column(low + (high - low) * index / samples)
                for index in range(samples + 1)]
 
-    # Refine in V wherever the crease slides fast along H. A uniform grid is
-    # not enough in the extreme: on a guide coiling through 944 degrees the
-    # slide rate reached 23 px of H per px of V, so consecutive samples were
-    # 70 px apart and a cut could sit 82 px from the drawn polyline. Halving
-    # the interval until the arc step is bounded fixes that; the cap keeps a
-    # pathological guide from running away.
-    for _ in range(24):
+    # Refine in V until the crease polyline is fine enough IN IMAGE SPACE.
+    # A uniform grid is not enough in the extreme: on a guide coiling through
+    # 944 degrees the crease slid 23 px of H per px of V, so consecutive
+    # samples were 70 px apart and a cut could sit 82 px from the polyline.
+    #
+    # Bounding the H arc alone was not enough either. The V spacing stayed at
+    # (v_high - v_low)/48 - about 19 px on a tall drawing - and the image step
+    # carries BOTH, so the chord could still cut the corner by more than the
+    # anchor tolerance and throw a cut that is genuinely on the locus (0.00 px
+    # at high resolution) 3 to 24 px off its own branch. Measured that way, a
+    # cut was rejected and its whole branch deleted for want of anchors, and
+    # in the worst case the entire crease layer vanished. The step that has to
+    # be bounded is the one distances are measured in.
+    #
+    # Intervals where the crossing COUNT changes are refined too. Skipping
+    # them was backwards: that is where a fold pair is born and the one place
+    # the chaining below must decide whether two samples are the same branch,
+    # and it was deciding it on the coarsest data in the sweep. Halving stops
+    # at a floor, so a genuine bifurcation cannot spin.
+    floor = (high - low) / 4096.0
+    for _ in range(32):
         if len(columns) >= max_columns:
             break
         refined = [columns[0]]
         inserted = False
         for before, after in zip(columns, columns[1:]):
-            gap = 0.0
-            if before[1] and len(before[1]) == len(after[1]):
-                gap = max(abs(x - y) for x, y in zip(before[1], after[1]))
-            if gap > POLY_STEP and len(refined) + 1 < max_columns:
-                middle = (before[0] + after[0]) * 0.5
-                refined.append((middle, crossings_at(middle)))
-                inserted = True
+            if after[0] - before[0] > floor and len(refined) + 1 < max_columns:
+                if len(before[1]) != len(after[1]):
+                    coarse = True
+                else:
+                    coarse = any(_dist(p, q) > POLY_STEP
+                                 for p, q in zip(before[2], after[2]))
+                if coarse:
+                    refined.append(column((before[0] + after[0]) * 0.5))
+                    inserted = True
             refined.append(after)
         columns = refined
         if not inserted:
@@ -1991,7 +2010,7 @@ def _crease_curves(map_point, v_range, samples=48, max_columns=600):
     curves = []
     open_curves = []
     previous_count = None
-    for l_v, found in columns:
+    for l_v, found, _image in columns:
         if previous_count == len(found) and open_curves:
             for rank, arc in enumerate(found):
                 open_curves[rank].append((arc, l_v))
@@ -2079,6 +2098,82 @@ def _split_at_cusps(points):
     return pieces
 
 
+def _polyline_arc_of(point, points):
+    """(distance, arc along `points`) of the closest point on the polyline."""
+    best = (float("inf"), 0.0)
+    run = 0.0
+    for a, b in zip(points, points[1:]):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        length = math.hypot(dx, dy)
+        if length <= 0.0:
+            continue
+        t = min(1.0, max(0.0, ((point[0] - a[0]) * dx + (point[1] - a[1]) * dy)
+                         / (length * length)))
+        gap = math.hypot(point[0] - (a[0] + dx * t), point[1] - (a[1] + dy * t))
+        if gap < best[0]:
+            best = (gap, run + t * length)
+        run += length
+    return best
+
+
+def _polyline_slice(points, start, end):
+    """The part of a polyline between two arc positions along it."""
+    sliced = []
+    run = 0.0
+    for a, b in zip(points, points[1:]):
+        length = math.hypot(b[0] - a[0], b[1] - a[1])
+        if length <= 0.0:
+            continue
+        low, run = run, run + length
+        t0 = max(0.0, (start - low) / length)
+        t1 = min(1.0, (end - low) / length)
+        if t1 <= t0:
+            continue
+        if not sliced:
+            sliced.append(_lerp(a, b, t0))
+        sliced.append(_lerp(a, b, t1))
+    return sliced
+
+
+def _trim_to_anchors(run, cuts, tolerance):
+    """Keep only the part of a crease that lies BETWEEN two cuts.
+
+    The cuts are the only VERTICES the drawing gives the crease: the frames
+    say where a fold COULD be, a cut says where one IS.
+
+    A fold ends at a vertex or at the edge of the material; one that just
+    stops in the middle of an intact sheet is not a fold. The crease here is
+    derived from the FRAMES (§4.5), so it exists along the whole guide whether
+    or not anything is drawn there, and the stretch past the outermost cut is
+    a locus rather than a fold - nothing changes side across it, so there is
+    no front edge for it to terminate. Measured on the reported project, that
+    unanchored stretch was 61% of everything drawn, including a 242 px tail.
+
+    Between two cuts the crease is kept even where no stroke touches it. The
+    alternative - pair each cut with the one the same RUN of artwork joins it
+    to, and keep only those spans - is stricter and was measured: on the two
+    reported projects it left 7.6 px of 445 and 0.0 px of 220, because a line
+    drawing mostly crosses a fold ONCE per stroke (16 cuts there yielded 6
+    two-ended runs), so the pairs that survive are between strokes anyway.
+
+    The cost of the rule is a branch carrying exactly ONE cut: it is dropped
+    whole, so a fold the artwork crosses only once gets no crease at all even
+    though its BACK run is real and its front edge is left unterminated. That
+    is the intended behaviour here - a single crossing gives a point, and a
+    crease needs an interval, and inventing one is what this function exists
+    to stop - but it is a choice, not a theorem. It costs nothing on dense
+    line art, where every branch collects several cuts; it costs the whole
+    crease on a sketch of three strokes over the same guides.
+    """
+    if len(run) < 2 or len(cuts) < 2:
+        return []
+    arcs = sorted(arc for gap, arc in (_polyline_arc_of(cut, run) for cut in cuts)
+                  if gap <= tolerance)
+    if len(arcs) < 2:
+        return []
+    return _polyline_slice(run, arcs[0], arcs[-1])
+
+
 def _stroke_style(stroke, width_scale):
     color = stroke.get("color") or {}
     color_tuple = (int(color.get("r", 0)), int(color.get("g", 0)),
@@ -2107,6 +2202,12 @@ class _MappedOutput:
         self.row = row
         self.buffers = {self.FRONT: [], self.BACK: [], self.SEAL: []}
         self.layers = []
+        # Where the emitters actually cut the artwork, in mapped space. The
+        # crease anchors onto these, so they have to come from the geometry
+        # that gets DRAWN: bezier mode splits the smoothed cubics, while
+        # _stroke_polylines falls back to the artist's raw input trail when a
+        # stroke carries commands instead of polylines - a different curve.
+        self.cuts = []
 
     def add_polyline(self, side, points, color, width):
         if len(points) < 2:
@@ -2163,12 +2264,16 @@ class _MappedOutput:
         self.layers = []
 
 
-def _fold_runs(map_point, piece):
+def _fold_runs(map_point, piece, cuts=None):
     """Source runs of constant orientation, or the whole piece when the
-    front/back split is off."""
+    front/back split is off. Records each cut for the crease to anchor on."""
     if not _FOLD["split"]:
         return [(piece, _MappedOutput.FRONT)]
-    return _split_by_fold(map_point, piece)
+    runs = _split_by_fold(map_point, piece)
+    if cuts is not None:
+        for before, _after in zip(runs, runs[1:]):
+            cuts.append(map_point(before[0][-1]))
+    return runs
 
 
 def _side_style(side, color_tuple):
@@ -2187,7 +2292,7 @@ def _emit_polyline_mode(animean, out, stroke, map_point, child_area, main_area, 
     eps = rdp_eps()
     for poly in _stroke_polylines(stroke):
         for piece in _clip_polyline(poly, child_area):
-            for run, side in _fold_runs(map_point, piece):
+            for run, side in _fold_runs(map_point, piece, out.cuts):
                 flagged = _adaptive_map_polyline(map_point, run)
                 for clipped in _clip_flagged(flagged, main_area):
                     points = _decimate_between_anchors(clipped, eps)
@@ -2206,7 +2311,7 @@ def _emit_spline_mode(animean, out, stroke, map_point, child_area, main_area, co
     eps = rdp_eps()
     for poly in _stroke_polylines(stroke):
         for piece in _clip_polyline(poly, child_area):
-            for run, side in _fold_runs(map_point, piece):
+            for run, side in _fold_runs(map_point, piece, out.cuts):
                 flagged = _adaptive_map_polyline(map_point, run)
                 for clipped in _clip_flagged(flagged, main_area):
                     knots = _decimate_between_anchors(clipped, eps)
@@ -2222,7 +2327,7 @@ def _emit_bezier_mode(animean, out, stroke, map_point, child_area, main_area, co
     added = 0
     for cubics in _commands_to_subpaths(stroke.get("commands")):
         for src_piece in _clip_cubics(cubics, child_area):
-            for run, side in _fold_runs_cubic(map_point, src_piece):
+            for run, side in _fold_runs_cubic(map_point, src_piece, out.cuts):
                 out_cubics = []
                 for cub in run:
                     out_cubics.extend(_warp_cubic(map_point, cub))
@@ -2270,7 +2375,7 @@ def _split_cubic_by_fold(map_point, cub):
     return parts
 
 
-def _emit_seals(animean, out, map_point, pattern, main_area, width_scale):
+def _emit_seals(animean, out, map_point, pattern, child_area, main_area, width_scale):
     """Draw the crease where the surface folds back on itself.
 
     The map is CONTINUOUS across a fold - only its derivative flips - so the
@@ -2285,20 +2390,43 @@ def _emit_seals(animean, out, map_point, pattern, main_area, width_scale):
     "use the V axis as the capping edge" idea, and it needs no new geometry.
     """
     main = map_point.main_frame
-    h_low = v_low = None
-    h_high = v_high = None
+    v_low = v_high = None
     for stroke in pattern:
         for poly in _stroke_polylines(stroke):
-            for point in poly:
-                l_h, l_v = map_point.coords(point)
-                arc_h = l_h * (map_point.h_scales[1] if l_h >= 0.0 else map_point.h_scales[0])
-                arc_v = l_v * (map_point.v_scales[1] if l_v >= 0.0 else map_point.v_scales[0])
-                h_low = arc_h if h_low is None else min(h_low, arc_h)
-                h_high = arc_h if h_high is None else max(h_high, arc_h)
-                v_low = arc_v if v_low is None else min(v_low, arc_v)
-                v_high = arc_v if v_high is None else max(v_high, arc_v)
-    if h_low is None:
+            for piece in _clip_polyline(poly, child_area):
+                for point in piece:
+                    l_v = map_point.coords(point)[1]
+                    arc_v = l_v * (map_point.v_scales[1] if l_v >= 0.0
+                                   else map_point.v_scales[0])
+                    v_low = arc_v if v_low is None else min(v_low, arc_v)
+                    v_high = arc_v if v_high is None else max(v_high, arc_v)
+    if v_low is None:
         return
+
+    # The crease used to be clipped to the artwork's H extent instead. That is
+    # both too weak - a bounding box says nothing about whether the sheet folds
+    # at that height - and unsound: dropping the out-of-range samples from the
+    # middle of a branch silently JOINED the two surviving halves with a
+    # straight line across the gap. Anchoring subsumes it, since a cut can
+    # never sit outside the artwork.
+    #
+    # The cuts come from the emitters, not from a second splitting pass here:
+    # bezier mode splits the SMOOTHED cubics while _stroke_polylines falls back
+    # to the artist's raw trail, so recomputing them would anchor the crease
+    # onto a curve the output never contains.
+    cuts = out.cuts
+    # The tolerance is the crease polyline's own step, not the accuracy of a
+    # cut. A cut is exact - bisected onto det J = 0 - and on a smooth stretch
+    # it measures 0.01 px from its branch. But where a fold PAIR IS BORN the
+    # two branches leave the birth point like +/- sqrt(l_v - l_v0), so the
+    # locus turns a square-root corner that halving in V only resolves as
+    # sqrt(2) per pass: measured 2.27 px off a branch whose steps are bounded
+    # at 4 px, and at 2.0 px tolerance that cut was rejected and its branch
+    # lost an anchor. Distinguishing branches does not need a tight number -
+    # the nearest other branch in that test was 750 px away - and the two
+    # branches that ARE close near a birth are close because they coincide
+    # there, so attributing a cut to either is the same crease.
+    tolerance = 2.0 * POLY_STEP
 
     color = _FOLD["back_color"]
     # Thinner than the artwork: the crease is an annotation of the fold, not
@@ -2306,24 +2434,51 @@ def _emit_seals(animean, out, map_point, pattern, main_area, width_scale):
     # it was meant to terminate.
     width = max(0.5, 0.8 * width_scale)
     for curve in _crease_curves(map_point, (v_low, v_high)):
-        points = [main.hv(arc, other) for arc, other in curve
-                  if h_low - POLY_STEP <= arc <= h_high + POLY_STEP]
+        points = [main.hv(arc, other) for arc, other in curve]
         if len(points) < 2:
             continue
-        for run in _split_at_cusps(points):
-            # The crease is an annotation, so decimate it like any other output.
-            run = _rdp(run, max(rdp_eps(), 0.5))
-            if len(run) < 2:
-                continue
-            span = sum(math.hypot(run[i + 1][0] - run[i][0], run[i + 1][1] - run[i][1])
-                       for i in range(len(run) - 1))
-            if span < 2.0 * POLY_STEP:
-                continue  # a cusp can leave a stub a pixel long; not worth drawing
+        # Anchor the WHOLE branch before cutting it up. A cusp is a feature of
+        # one continuous fold, not a break in it, so a cut past the cusp still
+        # vouches for the stretch leading up to it; anchoring the two arms
+        # separately orphaned a cut 145 px from anything drawn.
+        points = _trim_to_anchors(points, cuts, tolerance)
+        if len(points) < 2 or _cumulative_lengths(points)[-1] < 2.0 * POLY_STEP:
+            continue
+        # The crease is an annotation, so decimate it like any other output -
+        # but BEFORE splitting at cusps, which also dissolves the sub-pixel
+        # reversals that would each otherwise become their own quarter-pixel
+        # "stroke". Cusps are drawn as separate strokes because one stroke
+        # through a cusp ties a visible knot, and every arm that survives is
+        # inside the anchored span, so none may be dropped: consecutive arms
+        # share their cusp vertex, so dropping a short one does not shorten the
+        # crease, it punches a hole in the middle of it, and dropping an END
+        # arm pulls the crease off the stroke it exists to terminate (7 px).
+        points = _rdp(points, max(rdp_eps(), 0.5))
+        # Cusps are drawn as separate strokes because one stroke through a cusp
+        # ties a visible knot. A cusp can leave a stub under a pixel long,
+        # which is not worth a stroke object of its own - but it may not be
+        # DROPPED either: every arm is inside the anchored span, consecutive
+        # arms share their cusp vertex, so dropping a short one punches a hole
+        # in the middle of one continuous crease rather than shortening it,
+        # and dropping an END arm pulls the crease off the very stroke it
+        # exists to terminate (measured: 7 px short of it). So a stub is
+        # folded back into its neighbour, where a sub-pixel reversal is
+        # invisible, instead of being emitted or discarded.
+        arms = []
+        for arm in _split_at_cusps(points):
+            if arms and _cumulative_lengths(arm)[-1] < 2.0 * POLY_STEP:
+                arms[-1].extend(arm[1:])
+            else:
+                arms.append(list(arm))
+        if len(arms) > 1 and _cumulative_lengths(arms[0])[-1] < 2.0 * POLY_STEP:
+            arms[1][:0] = arms[0][:-1]
+            del arms[0]
+        for run in arms:
             for piece in _clip_polyline(run, main_area):
                 out.add_polyline(_MappedOutput.SEAL, piece, color, width)
 
 
-def _fold_runs_cubic(map_point, cubics):
+def _fold_runs_cubic(map_point, cubics, cuts=None):
     """Group source cubics into runs of constant orientation."""
     if not _FOLD["split"]:
         return [(list(cubics), _MappedOutput.FRONT)]
@@ -2334,6 +2489,9 @@ def _fold_runs_cubic(map_point, cubics):
                 runs[-1][0].append(part)
             else:
                 runs.append(([part], side))
+    if cuts is not None:
+        for before, _after in zip(runs, runs[1:]):
+            cuts.append(map_point(before[0][-1][3]))
     return runs
 
 
@@ -2427,7 +2585,8 @@ def _perform_mapping():
             if generated == before:
                 clipped_out += 1
         if _FOLD["split"] and _FOLD["seal"] and out.count(_MappedOutput.BACK):
-            _emit_seals(animean, out, map_point, child_pattern, main_area, width_scale)
+            _emit_seals(animean, out, map_point, child_pattern, child_area,
+                        main_area, width_scale)
         added = out.flush()
     except Exception:
         # A half-filled layer without its own history commit would silently
