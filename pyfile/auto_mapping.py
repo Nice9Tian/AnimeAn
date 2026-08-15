@@ -3087,6 +3087,34 @@ def _view_button_toggled(message):
               f"guide rectangle lands face-down (tinted).")
 
 
+def _legacy_guide_axis(stroke, layer_name):
+    """Which axis an OLD snapshot stroke is, when both shared one property.
+
+    By COLOUR, not by layer name. The name looks like the obvious key and is
+    the wrong one: _create_mapped_layer routes every name through
+    uniqueLayerName, which drifts a taken name to "H axis1", "H axis2", ... -
+    so only the very first run in a document ever owns the bare "H axis", and
+    keying on it silently lost every later run's snapshot. The colour is
+    exact: the old code picked it from the loop's intended name before the
+    model renamed anything, so blue IS the H axis and green IS the V axis.
+    The name is kept as a last resort, matched as a prefix.
+    """
+    color = stroke.get("color") or {}
+    try:
+        rgb = (int(color.get("r", -1)), int(color.get("g", -1)), int(color.get("b", -1)))
+    except (TypeError, ValueError):
+        rgb = (-1, -1, -1)
+    if rgb == H_COLOR[:3]:
+        return H_GUIDE_LAYER_PROPERTY
+    if rgb == V_COLOR[:3]:
+        return V_GUIDE_LAYER_PROPERTY
+    if layer_name.startswith(H_LAYER_NAME):
+        return H_GUIDE_LAYER_PROPERTY
+    if layer_name.startswith(V_LAYER_NAME):
+        return V_GUIDE_LAYER_PROPERTY
+    return ""
+
+
 def _guide_axes_in_layers(scene, frame, layer_indices):
     """{property -> (points, width)} for the axis snapshots on these layers.
 
@@ -3110,8 +3138,7 @@ def _guide_axes_in_layers(scene, frame, layer_indices):
         for stroke in cell["image"]["strokes"]:
             prop = stroke.get("property") or ""
             if prop == GUIDE_LAYER_PROPERTY:
-                prop = (H_GUIDE_LAYER_PROPERTY if name == H_LAYER_NAME
-                        else V_GUIDE_LAYER_PROPERTY if name == V_LAYER_NAME else "")
+                prop = _legacy_guide_axis(stroke, name)
             if prop not in (H_GUIDE_LAYER_PROPERTY, V_GUIDE_LAYER_PROPERTY):
                 continue
             points = _stroke_points(stroke)
