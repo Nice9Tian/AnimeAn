@@ -1,6 +1,12 @@
 #include "animemodel.h"
 #include "algorithm/vectorlogic.h"
 
+#include <QSet>
+
+#include <algorithm>
+#include <climits>
+#include <functional>
+
 namespace {
 int &nextSceneIntIdValue()
 {
@@ -626,6 +632,7 @@ void AnimeSceneModel::initializeScene(int layerCount, int frameCount)
     m_currentLayer = m_scene.xsheet.columns.isEmpty() ? -1 : 0;
     m_currentFrame = 0;
     m_currentAsset = -1;
+    normalizeLayerTreeInternal();
 }
 
 void AnimeSceneModel::setCurrentLayer(int layerIndex)
@@ -888,6 +895,344 @@ QString AnimeSceneModel::scriptData() const
 void AnimeSceneModel::setScriptData(const QString &data)
 {
     m_scene.scriptData = data;
+}
+
+namespace {
+
+void collectTreeIds(const QVector<AnimeLayerNode> &nodes, QSet<int> &layerIds, QSet<int> &groupIds)
+{
+    for (const AnimeLayerNode &node : nodes) {
+        if (node.isGroup()) {
+            groupIds.insert(node.groupId);
+            collectTreeIds(node.children, layerIds, groupIds);
+        } else if (node.layerId > 0) {
+            layerIds.insert(node.layerId);
+        }
+    }
+}
+
+// Drops leaves whose column no longer exists, duplicate references, and the
+// groups that end up empty. Returns false when this node itself should go.
+bool pruneTree(QVector<AnimeLayerNode> &nodes, const QSet<int> &liveLayerIds, QSet<int> &seen)
+{
+    for (int i = nodes.size() - 1; i >= 0; --i) {
+        AnimeLayerNode &node = nodes[i];
+        if (node.isGroup()) {
+            if (!pruneTree(node.children, liveLayerIds, seen)) {
+                nodes.removeAt(i);
+            }
+            continue;
+        }
+        if (node.layerId <= 0 || !liveLayerIds.contains(node.layerId) || seen.contains(node.layerId)) {
+            nodes.removeAt(i);
+            continue;
+        }
+        seen.insert(node.layerId);
+    }
+    return !nodes.isEmpty();
+}
+
+AnimeLayerNode *findGroup(QVector<AnimeLayerNode> &nodes, int groupId)
+{
+    for (AnimeLayerNode &node : nodes) {
+        if (!node.isGroup()) {
+            continue;
+        }
+        if (node.groupId == groupId) {
+            return &node;
+        }
+        if (AnimeLayerNode *found = findGroup(node.children, groupId)) {
+            return found;
+        }
+    }
+    return nullptr;
+}
+
+const AnimeLayerNode *findGroupConst(const QVector<AnimeLayerNode> &nodes, int groupId)
+{
+    for (const AnimeLayerNode &node : nodes) {
+        if (!node.isGroup()) {
+            continue;
+        }
+        if (node.groupId == groupId) {
+            return &node;
+        }
+        if (const AnimeLayerNode *found = findGroupConst(node.children, groupId)) {
+            return found;
+        }
+    }
+    return nullptr;
+}
+
+// Detaches the nodes named by `layerIds`/`groupIds`, appending them to `taken`
+// in TREE order so a group keeps the visual order the user already sees.
+//
+// The insertion point is recorded as the first member's PARENT GROUP ID plus
+// its row, never as a pointer: `nodes` here is a child vector living inside
+// its parent node, and a later removal in an outer vector can move that node,
+// so a pointer taken on the way down is only safe under an ordering argument
+// nobody will remember. An id survives anything. `parents` collects every
+// distinct parent the members came from.
+void takeNodes(QVector<AnimeLayerNode> &nodes,
+               int parentGroupId,
+               const QSet<int> &layerIds,
+               const QSet<int> &groupIds,
+               QVector<AnimeLayerNode> &taken,
+               QSet<int> &parents,
+               int *firstParentId,
+               int *firstRow)
+{
+    for (int i = 0; i < nodes.size();) {
+        AnimeLayerNode &node = nodes[i];
+        const bool wanted = node.isGroup() ? groupIds.contains(node.groupId)
+                                           : layerIds.contains(node.layerId);
+        if (wanted) {
+            if (taken.isEmpty()) {
+                *firstParentId = parentGroupId;
+                *firstRow = i;
+            }
+            parents.insert(parentGroupId);
+            taken.append(node);
+            nodes.removeAt(i);
+            continue;
+        }
+        if (node.isGroup()) {
+            // A wanted group is taken whole above, so this only ever descends
+            // into groups that stay put - a group can never end up inside
+            // itself.
+            takeNodes(node.children, node.groupId, layerIds, groupIds,
+                      taken, parents, firstParentId, firstRow);
+        }
+        ++i;
+    }
+}
+
+bool spliceOutGroup(QVector<AnimeLayerNode> &nodes, int groupId)
+{
+    for (int i = 0; i < nodes.size(); ++i) {
+        if (nodes[i].isGroup() && nodes[i].groupId == groupId) {
+            const QVector<AnimeLayerNode> children = nodes[i].children;
+            nodes.removeAt(i);
+            for (int k = 0; k < children.size(); ++k) {
+                nodes.insert(i + k, children[k]);
+            }
+            return true;
+        }
+        if (nodes[i].isGroup() && spliceOutGroup(nodes[i].children, groupId)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
+void AnimeSceneModel::normalizeLayerTreeInternal()
+{
+    // 1. every column gets an id.
+    //
+    // The counter is pushed past everything ALREADY present before a single
+    // new id is handed out. Doing it the other way round (assign as you scan,
+    // fix the counter after) mints duplicates the moment a file mixes columns
+    // that carry ids with columns that do not - which happens as soon as a
+    // layer is added to a scene whose tree nobody has read since, because
+    // modelToJson writes column.id verbatim and that column still has 0.
+    // A duplicate is not a cosmetic problem: the second column collapses into
+    // the first in liveLayerIds, so it never gets a node, never appears in the
+    // panel, and layerIdAt reports the wrong column's identity.
+    for (const AnimeColumn &column : m_scene.xsheet.columns) {
+        m_scene.nextColumnId = std::max(m_scene.nextColumnId, column.id + 1);
+    }
+    QSet<int> liveLayerIds;
+    for (AnimeColumn &column : m_scene.xsheet.columns) {
+        if (column.id <= 0) {
+            column.id = m_scene.nextColumnId++;
+        }
+        liveLayerIds.insert(column.id);
+    }
+
+    // 2. drop dead references, duplicates and emptied groups
+    QSet<int> seen;
+    pruneTree(m_scene.layerTree, liveLayerIds, seen);
+
+    // 3. anything ungrouped joins the top level AT ITS PLACE IN THE COLUMN
+    //    ORDER, not at the end. Appending was wrong in the one case that
+    //    matters most: an Auto Mapping run moves its layers to column index 0
+    //    so it paints over everything, and the panel then listed it LAST -
+    //    the panel would claim the result sits under the artwork it covers.
+    auto minColumnIndex = [this](const AnimeLayerNode &node) {
+        std::function<int(const AnimeLayerNode &)> walk = [&](const AnimeLayerNode &n) {
+            if (!n.isGroup()) {
+                const int index = layerIndexForId(n.layerId);
+                return index < 0 ? INT_MAX : index;
+            }
+            int best = INT_MAX;
+            for (const AnimeLayerNode &child : n.children) {
+                best = std::min(best, walk(child));
+            }
+            return best;
+        };
+        return walk(node);
+    };
+    for (int columnIndex = 0; columnIndex < m_scene.xsheet.columns.size(); ++columnIndex) {
+        const AnimeColumn &column = m_scene.xsheet.columns[columnIndex];
+        if (seen.contains(column.id)) {
+            continue;
+        }
+        AnimeLayerNode node;
+        node.layerId = column.id;
+        int row = m_scene.layerTree.size();
+        for (int i = 0; i < m_scene.layerTree.size(); ++i) {
+            if (minColumnIndex(m_scene.layerTree[i]) > columnIndex) {
+                row = i;
+                break;
+            }
+        }
+        m_scene.layerTree.insert(row, node);
+        seen.insert(column.id);
+    }
+
+    // 4. keep the group counter ahead of anything loaded from a file
+    QSet<int> layerIds;
+    QSet<int> groupIds;
+    collectTreeIds(m_scene.layerTree, layerIds, groupIds);
+    int highestGroup = 0;
+    for (int id : groupIds) {
+        highestGroup = std::max(highestGroup, id);
+    }
+    m_scene.nextGroupId = std::max(m_scene.nextGroupId, highestGroup + 1);
+}
+
+void AnimeSceneModel::normalizeLayerTree()
+{
+    normalizeLayerTreeInternal();
+}
+
+const QVector<AnimeLayerNode> &AnimeSceneModel::layerTree() const
+{
+    const_cast<AnimeSceneModel *>(this)->normalizeLayerTreeInternal();
+    return m_scene.layerTree;
+}
+
+void AnimeSceneModel::setLayerTree(const QVector<AnimeLayerNode> &tree)
+{
+    m_scene.layerTree = tree;
+    normalizeLayerTreeInternal();
+}
+
+int AnimeSceneModel::layerIdAt(int layerIndex) const
+{
+    if (layerIndex < 0 || layerIndex >= m_scene.xsheet.columns.size()) {
+        return 0;
+    }
+    const_cast<AnimeSceneModel *>(this)->normalizeLayerTreeInternal();
+    return m_scene.xsheet.columns[layerIndex].id;
+}
+
+int AnimeSceneModel::layerIndexForId(int layerId) const
+{
+    if (layerId <= 0) {
+        return -1;
+    }
+    for (int i = 0; i < m_scene.xsheet.columns.size(); ++i) {
+        if (m_scene.xsheet.columns[i].id == layerId) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int AnimeSceneModel::createLayerGroup(const QString &name,
+                                      const QVector<int> &layerIndices,
+                                      const QVector<int> &groupIds,
+                                      bool collapsed)
+{
+    normalizeLayerTreeInternal();
+
+    QSet<int> wantedLayers;
+    for (int index : layerIndices) {
+        const int id = layerIdAt(index);
+        if (id > 0) {
+            wantedLayers.insert(id);
+        }
+    }
+    QSet<int> wantedGroups;
+    for (int id : groupIds) {
+        if (id > 0 && findGroup(m_scene.layerTree, id)) {
+            wantedGroups.insert(id);
+        }
+    }
+    if (wantedLayers.isEmpty() && wantedGroups.isEmpty()) {
+        return 0;
+    }
+
+    AnimeLayerNode group;
+    group.groupId = m_scene.nextGroupId++;
+    group.name = name.isEmpty() ? QStringLiteral("Group %1").arg(group.groupId) : name;
+    group.collapsed = collapsed;
+
+    QSet<int> parents;
+    int firstParentId = 0;
+    int row = 0;
+    takeNodes(m_scene.layerTree, 0, wantedLayers, wantedGroups,
+              group.children, parents, &firstParentId, &row);
+    if (group.children.isEmpty()) {
+        return 0;
+    }
+
+    // The new group takes the first member's place - but only when every
+    // member came from the SAME parent. Members pulled out of different
+    // groups have no common place to sit, and burying the result inside
+    // whichever one happened to come first (possibly a group the take just
+    // emptied) would be arbitrary, so those land at the top level.
+    QVector<AnimeLayerNode> *parent = &m_scene.layerTree;
+    if (parents.size() == 1 && firstParentId > 0) {
+        if (AnimeLayerNode *host = findGroup(m_scene.layerTree, firstParentId)) {
+            parent = &host->children;
+        } else {
+            row = static_cast<int>(m_scene.layerTree.size());
+        }
+    } else if (parents.size() != 1) {
+        row = static_cast<int>(m_scene.layerTree.size());
+    }
+    row = std::max(0, std::min(row, static_cast<int>(parent->size())));
+    parent->insert(row, group);
+    return group.groupId;
+}
+
+bool AnimeSceneModel::setLayerGroupCollapsed(int groupId, bool collapsed)
+{
+    normalizeLayerTreeInternal();
+    if (AnimeLayerNode *group = findGroup(m_scene.layerTree, groupId)) {
+        group->collapsed = collapsed;
+        return true;
+    }
+    return false;
+}
+
+bool AnimeSceneModel::setLayerGroupName(int groupId, const QString &name)
+{
+    normalizeLayerTreeInternal();
+    if (AnimeLayerNode *group = findGroup(m_scene.layerTree, groupId)) {
+        if (!name.isEmpty()) {
+            group->name = name;
+        }
+        return true;
+    }
+    return false;
+}
+
+bool AnimeSceneModel::dissolveLayerGroup(int groupId)
+{
+    normalizeLayerTreeInternal();
+    return spliceOutGroup(m_scene.layerTree, groupId);
+}
+
+bool AnimeSceneModel::layerGroupCollapsed(int groupId) const
+{
+    const_cast<AnimeSceneModel *>(this)->normalizeLayerTreeInternal();
+    const AnimeLayerNode *group = findGroupConst(m_scene.layerTree, groupId);
+    return group && group->collapsed;
 }
 
 int AnimeSceneModel::addLayer()

@@ -1622,6 +1622,62 @@ void bindAnimeanPythonModule(py::module_ &m)
         .def("remap_fill_source_layers_after_delete", &AnimeSceneModel::remapFillSourceLayersAfterDelete)
         .def("remap_fill_source_layers_after_move", &AnimeSceneModel::remapFillSourceLayersAfterMove)
         .def("move_layer", &AnimeSceneModel::moveLayer)
+        // --- layer groups -------------------------------------------------
+        // The tree is handed to Python in the nested form the C++ model uses,
+        // but with layer INDICES rather than internal column ids, so it lines
+        // up with every other layer call here (set_layer_visible, move_layer,
+        // get_structure, ...). An element that is an int IS a layer; an
+        // element that is a dict is a group and carries its children.
+        .def("layer_tree", [](const AnimeSceneModel &model) {
+            std::function<py::list(const QVector<AnimeLayerNode> &)> convert =
+                [&](const QVector<AnimeLayerNode> &nodes) {
+                py::list out;
+                for (const AnimeLayerNode &node : nodes) {
+                    if (node.isGroup()) {
+                        py::dict group;
+                        group["group"] = node.groupId;
+                        group["name"] = node.name.toStdString();
+                        group["collapsed"] = node.collapsed;
+                        group["children"] = convert(node.children);
+                        out.append(group);
+                        continue;
+                    }
+                    const int index = model.layerIndexForId(node.layerId);
+                    if (index >= 0) {
+                        out.append(index);
+                    }
+                }
+                return out;
+            };
+            return convert(model.layerTree());
+        })
+        .def("create_layer_group",
+             [](AnimeSceneModel &model, const std::string &name,
+                const std::vector<int> &layers, const std::vector<int> &groups, bool collapsed) {
+                 QVector<int> layerIndices;
+                 for (int index : layers) {
+                     layerIndices.append(index);
+                 }
+                 QVector<int> groupIds;
+                 for (int id : groups) {
+                     groupIds.append(id);
+                 }
+                 return model.createLayerGroup(QString::fromUtf8(name.c_str()),
+                                               layerIndices, groupIds, collapsed);
+             },
+             py::arg("name"),
+             py::arg("layers") = std::vector<int>{},
+             py::arg("groups") = std::vector<int>{},
+             py::arg("collapsed") = false)
+        .def("set_layer_group_collapsed", &AnimeSceneModel::setLayerGroupCollapsed)
+        .def("layer_group_collapsed", &AnimeSceneModel::layerGroupCollapsed)
+        .def("set_layer_group_name",
+             [](AnimeSceneModel &model, int groupId, const std::string &name) {
+                 return model.setLayerGroupName(groupId, QString::fromUtf8(name.c_str()));
+             })
+        .def("dissolve_layer_group", &AnimeSceneModel::dissolveLayerGroup)
+        .def("layer_id_at", &AnimeSceneModel::layerIdAt)
+        .def("layer_index_for_id", &AnimeSceneModel::layerIndexForId)
         .def("add_frame", &AnimeSceneModel::addFrame)
         .def("delete_frame", &AnimeSceneModel::deleteFrame)
         .def("move_frame", &AnimeSceneModel::moveFrame)

@@ -58,6 +58,17 @@ BACK_PROPERTY = "auto_mapped_back"
 SEAL_PROPERTY = "auto_mapped_seal"
 BACK_LAYER_NAME = "mapped layer back"
 SEAL_LAYER_NAME = "mapped layer crease"
+# Every run packs its output into one nested layer group: the two guide axes
+# in a collapsed "H/V" subgroup, then the front / back / crease layers.
+GUIDE_GROUP_NAME = "H/V"
+H_LAYER_NAME = "H axis"
+V_LAYER_NAME = "V axis"
+GUIDE_LAYER_PROPERTY = "auto_mapped_guide"
+MAPPING_GROUP_NAME = "Auto Mapping"
+# Everything a run puts on the board. None of it may act as a wall for region
+# detection, and none of it may be picked up as pattern by the next run.
+MAPPING_OUTPUT_PROPERTIES = (MAPPED_PROPERTY, BACK_PROPERTY, SEAL_PROPERTY,
+                             GUIDE_LAYER_PROPERTY)
 _FOLD = {"split": True, "seal": True, "back_color": (104, 112, 140, 255),
          # Qt::PenStyle for the crease strokes: 2 = DashLine. The crease is an
          # annotation of the fold, and a dashed line reads as annotation where
@@ -1749,14 +1760,18 @@ def _detect_region(scene, view_name, frame, seed):
         # a layer per click, and every mapped layer is 100% MAPPED_PROPERTY
         # strokes, so the expensive to_poly fetch would be pure waste there.
         probe = scene.cell_to_dict(layer["index"], frame, False, POLY_STEP)
-        if all((stroke.get("property") or "") == MAPPED_PROPERTY
+        if all((stroke.get("property") or "") in MAPPING_OUTPUT_PROPERTIES
                for stroke in probe["image"]["strokes"]):
             continue
         cell = scene.cell_to_dict(layer["index"], frame, True, POLY_STEP)
         for stroke in cell["image"]["strokes"]:
             # A previous mapping result must not act as a region boundary,
             # otherwise the mapped layer shatters the bucket into tiny pieces.
-            if (stroke.get("property") or "") == MAPPED_PROPERTY:
+            # ALL of the run's output counts, not just the front layer: the
+            # back and crease layers were already walling the bucket off, and
+            # the two guide-axis layers would have cut every shape they cross
+            # into quadrants.
+            if (stroke.get("property") or "") in MAPPING_OUTPUT_PROPERTIES:
                 continue
             segments.extend(_stroke_segments(stroke))
     if not segments:
@@ -1843,8 +1858,8 @@ def _collect_pattern_strokes(scene, frame, want_commands=False):
         return pattern
     # "auto_mapping" stays as a literal: strokes drawn while the retired
     # Auto Mapping 1 button was active carry that property in old sessions.
-    skip = (*GUIDE_PROPERTIES, MAPPED_PROPERTY, "auto_mapping", AUTO_MAPPING2_TOOL,
-            MAPPING_AREA_PROPERTY)
+    skip = (*GUIDE_PROPERTIES, *MAPPING_OUTPUT_PROPERTIES, "auto_mapping",
+            AUTO_MAPPING2_TOOL, MAPPING_AREA_PROPERTY)
     to_poly = not want_commands
     for layer in structure["layers"]:
         if not layer["visible"] or layer["type"] == "fill":
@@ -2397,6 +2412,72 @@ class _MappedOutput:
             return sum(len(items) for items in self.buffers.values())
         return len(self.buffers[side])
 
+    def _track_new_layer(self, layer):
+        """Record a freshly created layer; everything older shifted down one.
+
+        _create_mapped_layer moves what it makes to index 0, so every index
+        this object already holds is now one lower in the stack.
+        """
+        self.layers = [index + 1 for index in self.layers]
+        self.layers.append(layer)
+        return layer
+
+    def add_guide_layers(self, h_points, v_points, width):
+        """Draw the two MAIN guide axes into their own layers.
+
+        These are the axes that shaped this run, recorded next to the result
+        they produced, on the board the result landed on. The live guides stay
+        where they were - session assets drawn as overlays, still editable and
+        still removable by their x badge - so this is a snapshot, not a move:
+        re-running the mapping after nudging a guide gives a new group whose
+        axes show what THAT run used.
+        """
+        created = []
+        for name, points in ((H_LAYER_NAME, h_points), (V_LAYER_NAME, v_points)):
+            if not points or len(points) < 2:
+                continue
+            layer = _create_mapped_layer(self.scene, self.row, name)
+            if layer < 0:
+                continue
+            self._track_new_layer(layer)
+            # Same shift _track_new_layer applies to self.layers: the new layer
+            # went to index 0, so everything recorded here moved down one.
+            # Without this both axes reported index 0 and the H/V group was
+            # built from one layer named twice.
+            created = [index + 1 for index in created]
+            image = self.scene.image_at(self.row, layer, True)
+            if image is None:
+                continue
+            color = H_COLOR if name == H_LAYER_NAME else V_COLOR
+            obj = self.animean.vectorlogic.make_stroke_object(
+                [(float(x), float(y)) for x, y in points], color, width,
+                image.stroke_count() + 1, False, False)
+            obj.property = GUIDE_LAYER_PROPERTY
+            image.add_stroke_object(obj)
+            created.append(layer)
+        return created
+
+    def group_output(self, guide_layers):
+        """Pack this run into one nested group: [H/V [H, V], front, back, crease].
+
+        The guide subgroup starts collapsed - it is provenance, not something
+        you edit - which is exactly what nesting buys: one row in the panel
+        that opens into two axes.
+        """
+        try:
+            guide_group = 0
+            if guide_layers:
+                guide_group = self.scene.create_layer_group(
+                    GUIDE_GROUP_NAME, guide_layers, [], True)
+            members = [index for index in self.layers if index not in guide_layers]
+            groups = [guide_group] if guide_group else []
+            if not members and not groups:
+                return 0
+            return self.scene.create_layer_group(
+                MAPPING_GROUP_NAME, members, groups, False)
+        except AttributeError:
+            return 0  # older build without the grouping bindings
+
     def flush(self):
         """Create the needed layers bottom-up and write the buffers out."""
         added = 0
@@ -2408,9 +2489,7 @@ class _MappedOutput:
             if layer < 0:
                 print(f"[auto_mapping] could not create the '{self._NAMES[side]}'.")
                 continue
-            # every earlier layer sits one lower now (the new one goes to 0)
-            self.layers = [index + 1 for index in self.layers]
-            self.layers.append(layer)
+            self._track_new_layer(layer)
             image = self.scene.image_at(self.row, layer, True)
             if image is None:
                 print(f"[auto_mapping] '{self._NAMES[side]}' has no editable cell.")
@@ -2749,6 +2828,8 @@ def _perform_mapping():
     emit = _EMITTERS[mode]
     generated = 0
     clipped_out = 0
+    guide_layers = []
+    mapping_group = 0
     try:
         for stroke in child_pattern:
             color_tuple, width = _stroke_style(stroke, width_scale)
@@ -2761,6 +2842,13 @@ def _perform_mapping():
             _emit_seals(animean, out, map_point, child_pattern, child_area,
                         main_area, width_scale)
         added = out.flush()
+        if added:
+            # Provenance first, so the axes sit above the artwork they shaped
+            # and the whole run collapses to a single panel row.
+            guide_layers = out.add_guide_layers(main_assets[H_PROPERTY]["points"],
+                                                main_assets[V_PROPERTY]["points"],
+                                                max(1.0, 0.8 * width_scale))
+            mapping_group = out.group_output(guide_layers)
     except Exception:
         # A half-filled layer without its own history commit would silently
         # ride along in the NEXT unrelated commit; roll it back instead.
@@ -2784,6 +2872,11 @@ def _perform_mapping():
     summary = (f"[auto_mapping] Auto Mapping (coons interpolation, {mode} mode) mapped "
                f"{added} stroke(s) into NEW layer(s) {layer_names} "
                f"(frame {main_frame + 1} of main_paint_view, width x{width_scale:.2f})")
+    if mapping_group:
+        summary += (f"; packed into layer group '{MAPPING_GROUP_NAME}' with a collapsed "
+                    f"'{GUIDE_GROUP_NAME}' subgroup holding the two axes")
+    elif guide_layers:
+        summary += "; the axes were recorded but this build cannot group layers"
     back_count = out.count(_MappedOutput.BACK)
     if back_count:
         summary += (f"; {back_count} stroke(s) landed on the BACK of a fold "

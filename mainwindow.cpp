@@ -50,10 +50,12 @@
 #include <QSignalBlocker>
 #include <QStatusBar>
 #include <QTimer>
+#include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QWidget>
 
 #include <cmath>
+#include <functional>
 #include <string>
 
 #ifdef ANIMEAN_WITH_PYTHON
@@ -73,6 +75,11 @@ namespace py = pybind11;
 namespace {
 // Timeline playback rate; the prerendered frames are blitted at this cadence.
 constexpr int kPlaybackFps = 12;
+
+// Layer panel item roles. Qt::UserRole stays the layer index (it is what the
+// rest of this file already reads); groups carry -1 there and their group id
+// here, so "is this row a group" is one lookup.
+constexpr int kGroupIdRole = Qt::UserRole + 1;
 
 int movedRowTarget(int sourceRow, int destinationChild)
 {
@@ -1428,22 +1435,49 @@ void MainWindow::setupConnections()
         refreshPanelTargets();
     });
 
-    connect(m_layerPanel->layerList(), &QListWidget::currentRowChanged, this, [this](int row) {
-        if (!m_refreshingLists && row >= 0) {
-            QListWidgetItem *item = m_layerPanel->layerList()->item(row);
-            const int layerIndex = item ? item->data(Qt::UserRole).toInt() : -1;
-            PaintOpenGLWidget *view = layerPanelTarget();
-            requestAttentionUpdate(view, AttentionChange::LayerChange,
-                                   attentionFor(view).frame, layerIndex, attentionFor(view).asset);
+    connect(m_layerPanel->layerList(), &QTreeWidget::currentItemChanged, this,
+            [this](QTreeWidgetItem *item, QTreeWidgetItem *) {
+        // Group rows carry no layer of their own; selecting one must not
+        // move attention (and must not be read as "layer 0" either).
+        if (m_refreshingLists || !item || item->data(0, kGroupIdRole).toInt() != 0) {
+            return;
         }
+        const int layerIndex = item->data(0, Qt::UserRole).toInt();
+        if (layerIndex < 0) {
+            return;
+        }
+        PaintOpenGLWidget *view = layerPanelTarget();
+        requestAttentionUpdate(view, AttentionChange::LayerChange,
+                               attentionFor(view).frame, layerIndex, attentionFor(view).asset);
     });
 
-    connect(m_layerPanel->layerList(), &QListWidget::itemChanged, this, [this](QListWidgetItem *item) {
+    // Collapsing a group is a document edit, not a view whim: it is what the
+    // H/V group's "collapsed by default" means, so it has to survive a
+    // refresh, a save and a history restore.
+    auto rememberExpansion = [this](QTreeWidgetItem *item, bool collapsed) {
         if (m_refreshingLists || !item) {
             return;
         }
-        const int layerIndex = item->data(Qt::UserRole).toInt();
-        const bool visible = item->checkState() == Qt::Checked;
+        const int groupId = item->data(0, kGroupIdRole).toInt();
+        if (groupId > 0) {
+            layerPanelTarget()->model().setLayerGroupCollapsed(groupId, collapsed);
+        }
+    };
+    connect(m_layerPanel->layerList(), &QTreeWidget::itemExpanded, this,
+            [rememberExpansion](QTreeWidgetItem *item) { rememberExpansion(item, false); });
+    connect(m_layerPanel->layerList(), &QTreeWidget::itemCollapsed, this,
+            [rememberExpansion](QTreeWidgetItem *item) { rememberExpansion(item, true); });
+
+    connect(m_layerPanel->layerList(), &QTreeWidget::itemChanged, this,
+            [this](QTreeWidgetItem *item, int) {
+        if (m_refreshingLists || !item || item->data(0, kGroupIdRole).toInt() != 0) {
+            return;
+        }
+        const int layerIndex = item->data(0, Qt::UserRole).toInt();
+        if (layerIndex < 0) {
+            return;
+        }
+        const bool visible = item->checkState(0) == Qt::Checked;
         PaintOpenGLWidget *view = layerPanelTarget();
         // Deferred so the Python hook (which may rebuild this very list) never
         // runs inside the itemChanged emission.
@@ -1477,9 +1511,21 @@ void MainWindow::setupConnections()
     });
 
     connect(m_layerPanel->deleteButton(), &QPushButton::clicked, this, [this]() {
-        QListWidgetItem *item = m_layerPanel->layerList()->currentItem();
-        const int layerIndex = item ? item->data(Qt::UserRole).toInt() : -1;
+        QTreeWidgetItem *item = m_layerPanel->layerList()->currentItem();
         PaintOpenGLWidget *view = layerPanelTarget();
+        if (item && item->data(0, kGroupIdRole).toInt() > 0) {
+            // Removing a group removes the grouping, never the drawings: the
+            // members splice back into its parent.
+            const int groupId = item->data(0, kGroupIdRole).toInt();
+            if (view->model().dissolveLayerGroup(groupId)) {
+                view->commitHistory(QStringLiteral("Ungroup Layers"));
+                updateAttention(view, AttentionChange::LayerChange,
+                                attentionFor(view).frame, attentionFor(view).layer,
+                                attentionFor(view).asset);
+            }
+            return;
+        }
+        const int layerIndex = item ? item->data(0, Qt::UserRole).toInt() : -1;
         if (view->deleteLayer(layerIndex)) {
             const int nextLayer = layerIndex < view->layerCount() ? layerIndex : view->layerCount() - 1;
             updateAttention(view, AttentionChange::LayerChange,
@@ -1537,46 +1583,38 @@ void MainWindow::setupConnections()
         }
     });
 
-    connect(m_layerPanel->layerList()->model(), &QAbstractItemModel::rowsMoved,
-            this, [this](const QModelIndex &, int sourceStart, int sourceEnd,
-                         const QModelIndex &, int destinationChild) {
-        if (m_refreshingLists || sourceStart != sourceEnd) {
+    // NOT rowsMoved. QListModel overrides moveRows, so the old flat list really
+    // did emit it; QTreeModel does not, and QTreeWidget::dropEvent implements
+    // an internal move itself as takeItem + insertItem - which emits
+    // rowsRemoved then rowsInserted and NEVER rowsMoved. Listening for the
+    // signal Qt does not send left the panel reshaping itself on a drop while
+    // the model was never told, so the row snapped back on the next refresh
+    // and layer reordering by drag silently stopped working.
+    connect(m_layerPanel->layerList()->model(), &QAbstractItemModel::rowsInserted,
+            this, [this](const QModelIndex &parent, int first, int last) {
+        if (m_refreshingLists || !m_layerDropInProgress || first != last) {
             return;
         }
-        PaintOpenGLWidget *view = layerPanelTarget();
-        const int targetRow = movedRowTarget(sourceStart, destinationChild);
-        QListWidgetItem *movedItem = m_layerPanel->layerList()->item(targetRow);
-        if (!movedItem) {
-            updateAttention(view,
-                            AttentionChange::LayerChange,
-                            view->model().currentFrame(),
-                            view->model().currentLayer(),
-                            view->model().currentAsset());
+        QTreeWidget *tree = m_layerPanel->layerList();
+        QTreeWidgetItem *parentItem = parent.isValid() ? tree->itemFromIndex(parent) : nullptr;
+        const int count = parentItem ? parentItem->childCount() : tree->topLevelItemCount();
+        if (first < 0 || first >= count) {
             return;
         }
-
-        const int fromIndex = movedItem->data(Qt::UserRole).toInt();
-        int toIndex = fromIndex;
-        if (targetRow <= 0) {
-            toIndex = 0;
-        } else {
-            QListWidgetItem *previousItem = m_layerPanel->layerList()->item(targetRow - 1);
-            toIndex = previousItem ? previousItem->data(Qt::UserRole).toInt() + 1 : fromIndex;
-        }
-        if (fromIndex < toIndex) {
-            --toIndex;
-        }
-
-        if (!view->moveLayer(fromIndex, toIndex)) {
-            updateAttention(view,
-                            AttentionChange::LayerChange,
-                            view->model().currentFrame(),
-                            view->model().currentLayer(),
-                            view->model().currentAsset());
-            return;
-        }
-        updateAttention(view, AttentionChange::LayerChange,
-                        attentionFor(view).frame, toIndex, attentionFor(view).asset);
+        QTreeWidgetItem *movedItem = parentItem ? parentItem->child(first)
+                                                : tree->topLevelItem(first);
+        m_layerDropInProgress = false;
+        // Qt has already reshaped the widget; the model has to be told what
+        // the new shape means. Deferred so the model edit never runs inside
+        // the view's own drop handling - and re-found by column id there,
+        // because a refresh in between would delete this pointer.
+        const int movedColumnId = movedItem && movedItem->data(0, kGroupIdRole).toInt() == 0
+                                      ? layerPanelTarget()->model().layerIdAt(
+                                            movedItem->data(0, Qt::UserRole).toInt())
+                                      : 0;
+        QMetaObject::invokeMethod(this, [this, movedColumnId]() {
+            applyLayerPanelStructure(movedColumnId);
+        }, Qt::QueuedConnection);
     });
 
     connect(m_framePanel->frameList()->model(), &QAbstractItemModel::rowsMoved,
@@ -1655,6 +1693,12 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         QDropEvent *dropEvent = static_cast<QDropEvent *>(event);
         m_listDragActive = true;
         if (dropEvent->source() == m_layerPanel->layerList()) {
+            // Arms the rowsInserted handler: QTreeWidget reorders itself with
+            // takeItem + insertItem, and an insert only means "a drop landed"
+            // while one is actually in flight.
+            if (event->type() == QEvent::Drop) {
+                m_layerDropInProgress = true;
+            }
             return QMainWindow::eventFilter(watched, event);
         }
 
@@ -2351,87 +2395,277 @@ void MainWindow::updateAttention(PaintOpenGLWidget *view, AttentionChange change
     syncEmbeddedPythonState();
 }
 
+QVector<QTreeWidgetItem *> MainWindow::layerPanelItems() const
+{
+    // Display order, depth first, independent of what is expanded.
+    QVector<QTreeWidgetItem *> items;
+    std::function<void(QTreeWidgetItem *)> walk = [&](QTreeWidgetItem *item) {
+        items.append(item);
+        for (int i = 0; i < item->childCount(); ++i) {
+            walk(item->child(i));
+        }
+    };
+    QTreeWidget *tree = m_layerPanel->layerList();
+    for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+        walk(tree->topLevelItem(i));
+    }
+    return items;
+}
+
+void MainWindow::applyLayerPanelStructure(int movedColumnId)
+{
+    PaintOpenGLWidget *view = layerPanelTarget();
+    AnimeSceneModel &model = view->model();
+    QTreeWidget *tree = m_layerPanel->layerList();
+
+    // Capture the widget as a node tree BEFORE touching the columns. Leaves
+    // are recorded by stable column id, so the reorder below - which shifts
+    // every index after it - cannot invalidate what we captured.
+    std::function<QVector<AnimeLayerNode>(QTreeWidgetItem *)> capture =
+        [&](QTreeWidgetItem *parent) {
+        QVector<AnimeLayerNode> nodes;
+        const int count = parent ? parent->childCount() : tree->topLevelItemCount();
+        for (int i = 0; i < count; ++i) {
+            QTreeWidgetItem *item = parent ? parent->child(i) : tree->topLevelItem(i);
+            AnimeLayerNode node;
+            const int groupId = item->data(0, kGroupIdRole).toInt();
+            if (groupId > 0) {
+                node.groupId = groupId;
+                node.name = item->text(0);
+                node.collapsed = !item->isExpanded();
+                node.children = capture(item);
+                if (node.children.isEmpty()) {
+                    continue;
+                }
+            } else {
+                node.layerId = model.layerIdAt(item->data(0, Qt::UserRole).toInt());
+                if (node.layerId <= 0) {
+                    continue;
+                }
+            }
+            nodes.append(node);
+        }
+        return nodes;
+    };
+    const QVector<AnimeLayerNode> captured = capture(nullptr);
+
+    // Z-order follows the panel: the dragged layer lands right after the leaf
+    // shown above it, exactly as the flat list behaved. The item is re-found
+    // by column id rather than held as a pointer, because any refresh between
+    // the drop and this queued call deletes every item in the widget.
+    int landedOn = -1;
+    const int fromIndex = model.layerIndexForId(movedColumnId);
+    if (fromIndex >= 0) {
+        const QVector<QTreeWidgetItem *> items = layerPanelItems();
+        int position = -1;
+        for (int i = 0; i < items.size(); ++i) {
+            if (items[i]->data(0, kGroupIdRole).toInt() == 0
+                && items[i]->data(0, Qt::UserRole).toInt() == fromIndex) {
+                position = i;
+                break;
+            }
+        }
+        int toIndex = 0;
+        for (int i = position - 1; i >= 0; --i) {
+            if (items[i]->data(0, kGroupIdRole).toInt() == 0) {
+                toIndex = items[i]->data(0, Qt::UserRole).toInt() + 1;
+                break;
+            }
+        }
+        if (fromIndex < toIndex) {
+            --toIndex;
+        }
+        if (position >= 0 && fromIndex != toIndex && model.moveLayer(fromIndex, toIndex)) {
+            model.remapFillSourceLayersAfterMove(fromIndex, toIndex);
+            landedOn = toIndex;
+        }
+    }
+
+    model.setLayerTree(captured);
+    view->commitHistory(QStringLiteral("Reorder Layers"));
+    updateAttention(view, AttentionChange::LayerChange, attentionFor(view).frame,
+                    landedOn >= 0 ? landedOn : attentionFor(view).layer,
+                    attentionFor(view).asset);
+}
+
 void MainWindow::refreshLayerList(int selectedRow)
 {
     PaintOpenGLWidget *view = layerPanelTarget();
-    QListWidget *list = m_layerPanel->layerList();
+    QTreeWidget *tree = m_layerPanel->layerList();
+    const AnimeSceneModel &model = view->model();
+    const int frame = model.currentFrame();
 
     // Work out what the panel should show BEFORE touching it, so the common
     // case can be applied in place.
-    QVector<int> layers;
-    QStringList names;
-    QVector<bool> visible;
-    for (int i = 0; i < view->layerCount(); ++i) {
-        if (view->model().layerInternal(i)) {
-            continue; // script-owned working layers never appear in the panel
+    struct Row {
+        bool group = false;
+        int layerIndex = -1;
+        int groupId = 0;
+        QString name;
+        bool visible = true;
+        bool collapsed = false;
+        int depth = 0;
+    };
+    QVector<Row> rows;
+    // A layer shows when it is not a script-owned working layer and it has a
+    // cell on the current frame - the same two tests the flat list used, now
+    // applied while walking the group tree instead of the column vector.
+    std::function<int(const QVector<AnimeLayerNode> &, int)> collect =
+        [&](const QVector<AnimeLayerNode> &nodes, int depth) {
+        int shown = 0;
+        for (const AnimeLayerNode &node : nodes) {
+            if (node.isGroup()) {
+                const int mark = rows.size();
+                Row row;
+                row.group = true;
+                row.groupId = node.groupId;
+                row.name = node.name;
+                row.collapsed = node.collapsed;
+                row.depth = depth;
+                rows.append(row);
+                if (collect(node.children, depth + 1) == 0) {
+                    // Every member is hidden on this frame; an empty group
+                    // would suggest content that is not there.
+                    rows.remove(mark);
+                    continue;
+                }
+                ++shown;
+                continue;
+            }
+            const int index = model.layerIndexForId(node.layerId);
+            if (index < 0 || model.layerInternal(index)
+                || model.assetIndexAt(frame, index) < 0) {
+                continue;
+            }
+            Row row;
+            row.layerIndex = index;
+            row.name = view->layerName(index);
+            row.visible = model.layerVisible(index);
+            row.depth = depth;
+            rows.append(row);
+            ++shown;
         }
-        if (view->model().assetIndexAt(view->model().currentFrame(), i) < 0) {
-            continue;
-        }
-        layers.append(i);
-        names.append(view->layerName(i));
-        visible.append(view->model().layerVisible(i));
-    }
-    const int selectedListRow = layers.indexOf(selectedRow);
-    const QListWidgetItem *currentItem = list->currentItem();
-    const int previousLayer = currentItem ? currentItem->data(Qt::UserRole).toInt() : -1;
+        return shown;
+    };
+    collect(model.layerTree(), 0);
+
+    const QTreeWidgetItem *currentItem = tree->currentItem();
+    const int previousLayer = currentItem ? currentItem->data(0, Qt::UserRole).toInt() : -1;
 
     m_refreshingLists = true;
-    const QSignalBlocker blocker(list);
+    const QSignalBlocker blocker(tree);
 
-    // Same layers in the same order means this refresh carries an ATTRIBUTE
+    // Same rows in the same shape means this refresh carries an ATTRIBUTE
     // change - a visibility toggle, a rename - and rebuilding the widget for
     // it is both wasteful and destructive: clear() drops the viewport's
-    // scroll position, so a user reading row 80 of 100 was thrown to wherever
-    // the current layer happened to sit the moment they ticked a checkbox.
-    bool sameRows = list->count() == layers.size();
-    for (int row = 0; sameRows && row < layers.size(); ++row) {
-        sameRows = list->item(row)->data(Qt::UserRole).toInt() == layers[row];
+    // scroll position (and every expanded state), so a user reading row 80 of
+    // 100 was thrown to wherever the current layer happened to sit the moment
+    // they ticked a checkbox.
+    QVector<QTreeWidgetItem *> existing = layerPanelItems();
+    bool sameRows = existing.size() == rows.size();
+    for (int i = 0; sameRows && i < rows.size(); ++i) {
+        const QTreeWidgetItem *item = existing[i];
+        // DEPTH is part of the comparison. Without it a widget whose nesting
+        // disagreed with the model still counted as "same rows", so the
+        // in-place path preserved the wrong shape forever instead of
+        // rebuilding it from the document.
+        int depth = 0;
+        for (const QTreeWidgetItem *parent = item->parent(); parent; parent = parent->parent()) {
+            ++depth;
+        }
+        sameRows = item->data(0, kGroupIdRole).toInt() == rows[i].groupId
+                   && item->data(0, Qt::UserRole).toInt() == rows[i].layerIndex
+                   && depth == rows[i].depth;
     }
 
     int restoreScroll = -1;
     if (sameRows) {
-        for (int row = 0; row < layers.size(); ++row) {
-            QListWidgetItem *item = list->item(row);
-            const Qt::CheckState state = visible[row] ? Qt::Checked : Qt::Unchecked;
-            if (item->checkState() != state) {
-                item->setCheckState(state);
+        for (int i = 0; i < rows.size(); ++i) {
+            QTreeWidgetItem *item = existing[i];
+            if (item->text(0) != rows[i].name) {
+                item->setText(0, rows[i].name);
             }
-            if (item->text() != names[row]) {
-                item->setText(names[row]);
+            if (rows[i].group) {
+                if (item->isExpanded() == rows[i].collapsed) {
+                    item->setExpanded(!rows[i].collapsed);
+                }
+                continue;
+            }
+            const Qt::CheckState state = rows[i].visible ? Qt::Checked : Qt::Unchecked;
+            if (item->checkState(0) != state) {
+                item->setCheckState(0, state);
             }
         }
     } else {
-        const int scroll = list->verticalScrollBar()->value();
-        list->clear();
-        for (int row = 0; row < layers.size(); ++row) {
-            QListWidgetItem *item = new QListWidgetItem(names[row]);
-            item->setData(Qt::UserRole, layers[row]);
-            item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-            item->setCheckState(visible[row] ? Qt::Checked : Qt::Unchecked);
-            list->addItem(item);
+        const int scroll = tree->verticalScrollBar()->value();
+        tree->clear();
+        QVector<QTreeWidgetItem *> stack;   // stack[d] = the open parent at depth d
+        for (const Row &row : rows) {
+            QTreeWidgetItem *item = new QTreeWidgetItem;
+            item->setText(0, row.name);
+            item->setData(0, Qt::UserRole, row.layerIndex);
+            item->setData(0, kGroupIdRole, row.groupId);
+            if (row.group) {
+                // Groups are containers: no visibility of their own, and not
+                // a drop target for reordering.
+                item->setFlags((item->flags() | Qt::ItemIsDragEnabled)
+                               & ~Qt::ItemIsUserCheckable);
+                QFont font = item->font(0);
+                font.setBold(true);
+                item->setFont(0, font);
+            } else {
+                // A layer may be dragged, but nothing may be dropped INTO it:
+                // the model has no way to express a layer inside a layer, and
+                // the widget happily drew one (complete with an expander) that
+                // no refresh could ever repair.
+                item->setFlags((item->flags() | Qt::ItemIsUserCheckable)
+                               & ~Qt::ItemIsDropEnabled);
+                item->setCheckState(0, row.visible ? Qt::Checked : Qt::Unchecked);
+            }
+            if (row.depth > 0 && row.depth - 1 < stack.size() && stack[row.depth - 1]) {
+                stack[row.depth - 1]->addChild(item);
+            } else {
+                tree->addTopLevelItem(item);
+            }
+            stack.resize(row.depth + 1);
+            stack[row.depth] = row.group ? item : nullptr;
+            if (row.group) {
+                item->setExpanded(!row.collapsed);
+            }
         }
         if (previousLayer == selectedRow) {
             // The rows changed but the user's selection did not, so this is
             // not a "go look over here" event - put the viewport back where
-            // they left it. Applied after setCurrentRow below, which would
+            // they left it. Applied after the selection below, which would
             // otherwise scroll the selection into view and undo it.
             restoreScroll = scroll;
         }
     }
 
-    if (list->count() > 0 && selectedListRow >= 0) {
-        // Guarded: re-setting the row that is already current would be a
-        // no-op anyway, but saying so keeps the scroll restore below honest.
-        if (list->currentRow() != selectedListRow) {
-            list->setCurrentRow(selectedListRow);
+    QTreeWidgetItem *selectedItem = nullptr;
+    if (selectedRow >= 0) {
+        for (QTreeWidgetItem *item : layerPanelItems()) {
+            if (item->data(0, kGroupIdRole).toInt() == 0
+                && item->data(0, Qt::UserRole).toInt() == selectedRow) {
+                selectedItem = item;
+                break;
+            }
+        }
+    }
+    if (selectedItem) {
+        // A selected layer inside a collapsed group has to be reachable.
+        for (QTreeWidgetItem *parent = selectedItem->parent(); parent; parent = parent->parent()) {
+            parent->setExpanded(true);
+        }
+        if (tree->currentItem() != selectedItem) {
+            tree->setCurrentItem(selectedItem);
         }
     } else {
-        list->clearSelection();
-        list->setCurrentRow(-1);
+        tree->clearSelection();
+        tree->setCurrentItem(nullptr);
     }
     if (restoreScroll >= 0) {
-        list->verticalScrollBar()->setValue(restoreScroll);
+        tree->verticalScrollBar()->setValue(restoreScroll);
     }
     m_refreshingLists = false;
 }

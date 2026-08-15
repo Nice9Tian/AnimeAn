@@ -3,8 +3,8 @@
 
 #include <QWidget>
 
-class QListWidget;
 class QPushButton;
+class QTreeWidget;
 
 namespace Ui {
 class LayerPanel;
@@ -18,7 +18,8 @@ public:
     explicit LayerPanel(QWidget *parent = nullptr);
     ~LayerPanel();
 
-    QListWidget *layerList() const;
+    // A tree now: layer groups render as expandable parents, layers as leaves.
+    QTreeWidget *layerList() const;
     QPushButton *addButton() const;
     QPushButton *deleteButton() const;
     QPushButton *unselectButton() const;

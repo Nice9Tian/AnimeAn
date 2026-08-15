@@ -21,6 +21,7 @@ class PaintOpenGLWidget;
 class QLineEdit;
 class QPlainTextEdit;
 class QTimer;
+class QTreeWidgetItem;
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -52,6 +53,11 @@ private:
     void createListDocks();
     void createChildPaintDock();
     void populateChildViewButtons();
+    QVector<QTreeWidgetItem *> layerPanelItems() const;
+    // Writes the panel's current shape back into the model: the layer group
+    // tree follows what the user dragged, and the dragged layer's z-order
+    // follows the leaf it landed after.
+    void applyLayerPanelStructure(int movedColumnId);
     void runPythonDebugCommand(const QString &command);
     QString runEmbeddedPythonCommand(const QString &command);
     QString resolvePythonScriptPath(const QString &scriptName) const;
@@ -137,6 +143,8 @@ private:
     bool m_historyRefreshQueued = false;
     bool m_listMousePressed = false;
     bool m_listDragActive = false;
+    // True only between a layer-panel drop and the rowsInserted it produces.
+    bool m_layerDropInProgress = false;
     bool m_hasPendingAttention = false;
     int m_pythonFreezeDepth = 0;
 };

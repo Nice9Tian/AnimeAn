@@ -127,6 +127,12 @@ private:
 class AnimeColumn {
 public:
     QString name;
+    // Stable identity, handed out by the scene and never reused. The layer
+    // GROUP tree references columns by this rather than by index, so adding,
+    // deleting or reordering layers needs no index fix-up in the tree.
+    // 0 means "not assigned yet" (legacy project, or a column appended by a
+    // path that predates ids); normalizeLayerTree fills those in.
+    int id = 0;
     AnimeColumnType type = AnimeColumnType::Vector;
     bool visible = true;
     bool locked = false;
@@ -149,6 +155,25 @@ private:
 
     QVector<AnimeCell> m_cells;
     int m_firstRow = 0;
+};
+
+// One entry in the layer group tree. A node is EITHER a leaf naming a column
+// (layerId > 0) or a group (groupId > 0) holding an ordered child list; groups
+// nest arbitrarily. This is the "nested integer array" scheme: an element that
+// is a plain id is a layer, an element with children is a group, and the id is
+// looked up in the column table for the name, asset and everything else.
+//
+// The tree is a GROUPING view, not the z-order. Draw order stays the column
+// order (paintGL walks columns last-to-first), so grouping never silently
+// restacks a drawing; a group's members are simply the layers it names.
+struct AnimeLayerNode {
+    int layerId = 0;
+    int groupId = 0;
+    QString name;          // groups only
+    bool collapsed = false; // groups only
+    QVector<AnimeLayerNode> children;
+
+    bool isGroup() const { return groupId > 0; }
 };
 
 class AnimeXsheet {
@@ -175,6 +200,12 @@ public:
 
     QVector<AnimeAsset> assets;
     AnimeXsheet xsheet;
+    // Layer group tree (top level). Reconciled against the columns by
+    // AnimeSceneModel::normalizeLayerTree, so it survives any layer edit and
+    // any project file that predates it.
+    QVector<AnimeLayerNode> layerTree;
+    int nextColumnId = 1;
+    int nextGroupId = 1;
     // Opaque storage for script-side (Python) state that must travel with the
     // scene: copied into history snapshots and saved with the project. The
     // C++ side never interprets it.
@@ -233,6 +264,33 @@ public:
     QString scriptData() const;
     void setScriptData(const QString &data);
 
+    // --- layer groups -----------------------------------------------------
+    // The tree is RECONCILED rather than maintained in lockstep: every read
+    // assigns ids to new columns, drops leaves whose column is gone, and
+    // appends columns nobody has grouped yet. That is what lets addLayer,
+    // deleteLayer, moveLayer, project loading and history snapshots stay
+    // untouched by grouping.
+    void normalizeLayerTree();
+    const QVector<AnimeLayerNode> &layerTree() const;
+    // Replaces the whole tree (then reconciles it, so anything the caller
+    // forgot to mention simply reappears ungrouped rather than vanishing).
+    void setLayerTree(const QVector<AnimeLayerNode> &tree);
+    int layerIdAt(int layerIndex) const;
+    int layerIndexForId(int layerId) const;
+    // Members are given as layer INDICES and existing group ids; both are
+    // detached from wherever they sit now and moved into the new group, which
+    // takes the position of the first member. Returns the new group id, or 0
+    // if nothing valid was named.
+    int createLayerGroup(const QString &name,
+                         const QVector<int> &layerIndices,
+                         const QVector<int> &groupIds,
+                         bool collapsed = false);
+    bool setLayerGroupCollapsed(int groupId, bool collapsed);
+    bool setLayerGroupName(int groupId, const QString &name);
+    // Removes the group itself, splicing its children into its parent.
+    bool dissolveLayerGroup(int groupId);
+    bool layerGroupCollapsed(int groupId) const;
+
     int addLayer();
     int addFillLayer();
     int addAsset(AnimeColumnType type = AnimeColumnType::Vector, const QString &name = QString());
@@ -272,6 +330,10 @@ public:
     QVector<QLineF> fillBoundarySegments(int frame, int layerIndex = -1) const;
 
 private:
+    // normalizeLayerTree is logically const (it only reconciles bookkeeping),
+    // but it writes, so the const readers go through this.
+    void normalizeLayerTreeInternal();
+
     AnimeScene m_scene;
     int m_currentLayer = 0;
     int m_currentFrame = 0;

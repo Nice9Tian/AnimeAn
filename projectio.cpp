@@ -3,6 +3,9 @@
 #include <QBuffer>
 #include <QJsonArray>
 #include <QRegularExpression>
+#include <QSet>
+
+#include <functional>
 
 namespace {
 QString columnTypeName(AnimeColumnType type)
@@ -340,6 +343,7 @@ QJsonObject modelToJson(const AnimeSceneModel &model)
         }
         QJsonObject columnObject;
         columnObject[QStringLiteral("name")] = column.name;
+        columnObject[QStringLiteral("id")] = column.id;
         columnObject[QStringLiteral("type")] = columnTypeName(column.type);
         columnObject[QStringLiteral("visible")] = column.visible;
         columnObject[QStringLiteral("locked")] = column.locked;
@@ -362,6 +366,51 @@ QJsonObject modelToJson(const AnimeSceneModel &model)
     }
     xsheet[QStringLiteral("columns")] = columns;
     root[QStringLiteral("xsheet")] = xsheet;
+
+    // Layer groups. Internal (script-owned) columns are skipped above and
+    // their leaves are simply dropped here; on load, normalizeLayerTree
+    // re-appends anything the tree does not mention, so a file written by an
+    // older build - or one whose tree lost entries - still opens with every
+    // layer present and ungrouped.
+    std::function<QJsonValue(const AnimeLayerNode &)> nodeToJson =
+        [&](const AnimeLayerNode &node) -> QJsonValue {
+        if (!node.isGroup()) {
+            return QJsonValue(node.layerId);
+        }
+        QJsonObject groupObject;
+        groupObject[QStringLiteral("groupId")] = node.groupId;
+        groupObject[QStringLiteral("name")] = node.name;
+        groupObject[QStringLiteral("collapsed")] = node.collapsed;
+        QJsonArray children;
+        for (const AnimeLayerNode &child : node.children) {
+            children.append(nodeToJson(child));
+        }
+        groupObject[QStringLiteral("children")] = children;
+        return groupObject;
+    };
+    QSet<int> savedColumnIds;
+    for (const AnimeColumn &column : scene.xsheet.columns) {
+        if (!column.internal) {
+            savedColumnIds.insert(column.id);
+        }
+    }
+    std::function<QJsonArray(const QVector<AnimeLayerNode> &)> treeToJson =
+        [&](const QVector<AnimeLayerNode> &nodes) -> QJsonArray {
+        QJsonArray array;
+        for (const AnimeLayerNode &node : nodes) {
+            if (node.isGroup()) {
+                QJsonObject groupObject = nodeToJson(node).toObject();
+                groupObject[QStringLiteral("children")] = treeToJson(node.children);
+                if (!groupObject.value(QStringLiteral("children")).toArray().isEmpty()) {
+                    array.append(groupObject);
+                }
+            } else if (savedColumnIds.contains(node.layerId)) {
+                array.append(node.layerId);
+            }
+        }
+        return array;
+    };
+    root[QStringLiteral("layerTree")] = treeToJson(scene.layerTree);
 
     QJsonArray assets;
     for (const AnimeAsset &asset : scene.assets) {
@@ -446,6 +495,7 @@ bool modelFromJson(const QJsonObject &root, AnimeSceneModel *model, QString *err
         const QJsonObject columnObject = columnValue.toObject();
         AnimeColumn column;
         column.name = columnObject.value(QStringLiteral("name")).toString();
+        column.id = columnObject.value(QStringLiteral("id")).toInt(0);
         column.type = columnTypeFromName(columnObject.value(QStringLiteral("type")).toString());
         column.visible = columnObject.value(QStringLiteral("visible")).toBool(true);
         column.locked = columnObject.value(QStringLiteral("locked")).toBool(false);
@@ -464,9 +514,40 @@ bool modelFromJson(const QJsonObject &root, AnimeSceneModel *model, QString *err
         scene.xsheet.columns.append(column);
     }
 
+    // Layer groups. A file from an older build has no "layerTree" at all and
+    // no column ids either; normalizeLayerTree (called below through the
+    // model) then hands out fresh ids and puts every layer at the top level,
+    // which is exactly the pre-grouping look.
+    std::function<QVector<AnimeLayerNode>(const QJsonArray &)> treeFromJson =
+        [&](const QJsonArray &array) -> QVector<AnimeLayerNode> {
+        QVector<AnimeLayerNode> nodes;
+        for (const QJsonValue &value : array) {
+            AnimeLayerNode node;
+            if (value.isObject()) {
+                const QJsonObject groupObject = value.toObject();
+                node.groupId = groupObject.value(QStringLiteral("groupId")).toInt(0);
+                if (node.groupId <= 0) {
+                    continue;
+                }
+                node.name = groupObject.value(QStringLiteral("name")).toString();
+                node.collapsed = groupObject.value(QStringLiteral("collapsed")).toBool(false);
+                node.children = treeFromJson(groupObject.value(QStringLiteral("children")).toArray());
+            } else {
+                node.layerId = value.toInt(0);
+                if (node.layerId <= 0) {
+                    continue;
+                }
+            }
+            nodes.append(node);
+        }
+        return nodes;
+    };
+    scene.layerTree = treeFromJson(root.value(QStringLiteral("layerTree")).toArray());
+
     loaded.setCurrentFrame(root.value(QStringLiteral("currentFrame")).toInt(0));
     loaded.setCurrentLayer(root.value(QStringLiteral("currentLayer")).toInt(-1));
     loaded.setCurrentAsset(root.value(QStringLiteral("currentAsset")).toInt(-1));
+    loaded.normalizeLayerTree();
     *model = loaded;
     return true;
 }

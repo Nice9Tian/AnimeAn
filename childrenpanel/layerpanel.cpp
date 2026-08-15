@@ -13,7 +13,7 @@ LayerPanel::~LayerPanel()
     delete ui;
 }
 
-QListWidget *LayerPanel::layerList() const
+QTreeWidget *LayerPanel::layerList() const
 {
     return ui->LayerList;
 }
