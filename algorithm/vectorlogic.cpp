@@ -388,15 +388,25 @@ struct FitParams {
     qreal inflectionNoise = 0.08; // min |normalized turn| to trust a sign
 };
 
-FitParams fitParamsFor(int smoothValue)
+FitParams fitParamsFor(const AnimeStrokeFitSettings &settings)
 {
-    const qreal s = std::max(0, std::min(100, smoothValue)) / 100.0;
+    const qreal s = std::max(0, std::min(100, settings.simplify)) / 100.0;
+    const qreal c = std::max(0, std::min(100, settings.corner)) / 100.0;
     FitParams params;
+    // SIMPLIFY drives denoise strength and the two tolerances. The floors are
+    // 1.2 px rather than 0.8: below roughly a pixel the fit starts chasing
+    // sensor noise instead of the drawing, and a straight line came back as
+    // 61 collinear chords - worse on BOTH axes than a mid setting (16 nodes
+    // at better fidelity), i.e. the old bottom end was strictly dominated.
     // In PIXELS of arc (fitPiece divides by the piece's sample spacing).
     params.gaussianSigma = 1.2 + 3.6 * s;
-    params.strideWindow = 4.0 + 4.0 * s;
-    params.lineTolerance = 0.8 + 1.0 * s;
-    params.fitTolerance = 0.8 + 1.2 * s;
+    params.lineTolerance = 1.2 + 0.8 * s;
+    params.fitTolerance = 1.2 + 1.0 * s;
+    // CORNER drives the angle threshold and the window the turn is measured
+    // over. A wider window averages a turn out, so a corner-shy setting gets
+    // both a steeper threshold and a longer window; they pull the same way.
+    params.cornerAngleDeg = 55.0 - 35.0 * c;
+    params.strideWindow = 8.0 - 4.0 * c;
     return params;
 }
 
@@ -858,7 +868,8 @@ void fitPiece(const QVector<QPointF> &piece, const FitParams &params, QPainterPa
 
 } // namespace
 
-QPainterPath AnimeVectorLogic::fitStrokePath(const QVector<QPointF> &points, int smoothValue)
+QPainterPath AnimeVectorLogic::fitStrokePath(const QVector<QPointF> &points,
+                                             const AnimeStrokeFitSettings &settings)
 {
     QPainterPath path;
     const QVector<QPointF> deduped = dedupePoints(points);
@@ -875,7 +886,7 @@ QPainterPath AnimeVectorLogic::fitStrokePath(const QVector<QPointF> &points, int
         return path;
     }
 
-    const FitParams params = fitParamsFor(smoothValue);
+    const FitParams params = fitParamsFor(settings);
 
     // CORNERS FIRST, on a lightly-smoothed copy. Running the full Gaussian
     // before corner detection was measured to round a 90-degree corner over
@@ -932,7 +943,7 @@ AnimeVectorStroke AnimeVectorLogic::makeStroke(const QVector<QPointF> &points,
                                                int id,
                                                bool filterInput,
                                                bool smoothPath,
-                                               int smoothValue)
+                                               const AnimeStrokeFitSettings &settings)
 {
     AnimeVectorStroke stroke;
     stroke.id = id;
@@ -950,7 +961,7 @@ AnimeVectorStroke AnimeVectorLogic::makeStroke(const QVector<QPointF> &points,
     // curved runs become least-squares cubics, corners stay corners. The old
     // midpoint-quad smoother (makeSmoothedPath) remains only for callers that
     // ask for it explicitly.
-    stroke.path = smoothPath ? fitStrokePath(stroke.points, smoothValue) : makePolylinePath(stroke.points);
+    stroke.path = smoothPath ? fitStrokePath(stroke.points, settings) : makePolylinePath(stroke.points);
     stroke.bounds = stroke.path.boundingRect().adjusted(-width, -width, width, width);
     stroke.color = color;
     stroke.width = width;
@@ -1198,10 +1209,66 @@ QVector<AnimeStrokeCrossing> AnimeVectorLogic::strokeCrossings(const AnimeVector
         }
     }
 
-    std::sort(crossings.begin(), crossings.end(),
-              [](const AnimeStrokeCrossing &lhs, const AnimeStrokeCrossing &rhs) {
-                  return lhs.arc < rhs.arc;
-              });
+    // The stroke against ITSELF. A line that loops back through its own path
+    // makes a junction there exactly as if a second line had crossed it, and
+    // the loop is usually the very piece the user wants to trim off.
+    //
+    // Adjoining segments are skipped: they meet at a shared vertex by
+    // construction, which is how a polyline is joined, not where it cuts
+    // across itself. The closing vertex of a closed stroke is the same story
+    // between the first and last segment, so a hit sitting on both ends is
+    // skipped too.
+    const bool closed = stroke.points.size() > 2
+                        && QLineF(stroke.points.first(), stroke.points.last()).length() <= kEpsilon;
+    for (int i = 0; i + 1 < stroke.points.size(); ++i) {
+        const QLineF a(stroke.points[i], stroke.points[i + 1]);
+        if (a.length() <= kEpsilon) {
+            continue;
+        }
+        const qreal arcA = (i < stroke.lengths.size()) ? stroke.lengths[i] : 0.0;
+
+        for (int j = i + 2; j + 1 < stroke.points.size(); ++j) {
+            const QLineF b(stroke.points[j], stroke.points[j + 1]);
+            if (b.length() <= kEpsilon) {
+                continue;
+            }
+            QPointF hit;
+            if (a.intersects(b, &hit) != QLineF::BoundedIntersection) {
+                continue;
+            }
+            if (closed && i == 0 && j + 2 == stroke.points.size()) {
+                continue;   // the closure vertex, not a crossing
+            }
+            const qreal arcB = (j < stroke.lengths.size()) ? stroke.lengths[j] : 0.0;
+            const qreal first =
+                clamp01((arcA + std::min(QLineF(a.p1(), hit).length(), a.length())) / stroke.totalLength);
+            const qreal second =
+                clamp01((arcB + std::min(QLineF(b.p1(), hit).length(), b.length())) / stroke.totalLength);
+
+            // Both sides of the junction, each pointing at the other: the cut
+            // can be bounded by either, and whichever bounds it knows where
+            // its partner sits so the survivor can be divided there too.
+            AnimeStrokeCrossing lower;
+            lower.arc = first;
+            lower.wallIndex = AnimeStrokeCrossing::SelfCrossing;
+            lower.wallArc = second;
+            crossings.append(lower);
+
+            AnimeStrokeCrossing upper;
+            upper.arc = second;
+            upper.wallIndex = AnimeStrokeCrossing::SelfCrossing;
+            upper.wallArc = first;
+            crossings.append(upper);
+        }
+    }
+
+    // Stable, so that when a wall crossing and a self-crossing land on the
+    // same arc the survivor of the merge below is decided by discovery order
+    // rather than by the sort's internals.
+    std::stable_sort(crossings.begin(), crossings.end(),
+                     [](const AnimeStrokeCrossing &lhs, const AnimeStrokeCrossing &rhs) {
+                         return lhs.arc < rhs.arc;
+                     });
     // One crossing found on two adjoining segments (it sits on their shared
     // vertex) must not count twice, or a cut would collapse to nothing.
     QVector<AnimeStrokeCrossing> merged;
@@ -1215,7 +1282,7 @@ QVector<AnimeStrokeCrossing> AnimeVectorLogic::strokeCrossings(const AnimeVector
 
 QVector<AnimeVectorStroke> AnimeVectorLogic::splitStrokeAt(const AnimeVectorStroke &stroke,
                                                            QVector<qreal> arcs,
-                                                           int smoothValue,
+                                                           const AnimeStrokeFitSettings &settings,
                                                            qreal endTolerance)
 {
     QVector<AnimeVectorStroke> pieces;
@@ -1238,10 +1305,10 @@ QVector<AnimeVectorStroke> AnimeVectorLogic::splitStrokeAt(const AnimeVectorStro
 
     qreal previous = 0.0;
     for (qreal cut : cuts) {
-        pieces.append(subStroke(stroke, previous, cut, smoothValue));
+        pieces.append(subStroke(stroke, previous, cut, settings));
         previous = cut;
     }
-    pieces.append(subStroke(stroke, previous, 1.0, smoothValue));
+    pieces.append(subStroke(stroke, previous, 1.0, settings));
     return pieces;
 }
 
@@ -1322,7 +1389,8 @@ bool AnimeVectorLogic::planCutAt(const AnimeVectorStroke &stroke,
     return true;
 }
 
-AnimeVectorStroke AnimeVectorLogic::subStroke(const AnimeVectorStroke &stroke, qreal fromW, qreal toW, int smoothValue)
+AnimeVectorStroke AnimeVectorLogic::subStroke(const AnimeVectorStroke &stroke, qreal fromW, qreal toW,
+                                              const AnimeStrokeFitSettings &settings)
 {
     // Pieces keep the source stroke's identity attributes. Dropping them
     // here silently untagged partially-erased strokes: a half-erased
@@ -1338,7 +1406,7 @@ AnimeVectorStroke AnimeVectorLogic::subStroke(const AnimeVectorStroke &stroke, q
     const qreal toLength = clamp01(toW) * stroke.totalLength;
     QVector<QPointF> points;
     if (toLength <= fromLength + kEpsilon) {
-        return inherit(makeStroke(points, stroke.color, stroke.width, stroke.id, false, true, smoothValue));
+        return inherit(makeStroke(points, stroke.color, stroke.width, stroke.id, false, true, settings));
     }
 
     points.append(pointAtLength(stroke, fromLength));
@@ -1350,7 +1418,7 @@ AnimeVectorStroke AnimeVectorLogic::subStroke(const AnimeVectorStroke &stroke, q
     }
     points.append(pointAtLength(stroke, toLength));
 
-    return inherit(makeStroke(points, stroke.color, stroke.width, stroke.id, false, true, smoothValue));
+    return inherit(makeStroke(points, stroke.color, stroke.width, stroke.id, false, true, settings));
 }
 
 qreal AnimeVectorLogic::displayStrokeWidth(qreal documentWidth, qreal zoom, qreal minScreenPx)

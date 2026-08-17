@@ -16,15 +16,23 @@ struct AnimeVectorRange {
     qreal second = 1.0;
 };
 
-// One place where a stroke crosses another. Carries BOTH sides of the
-// junction: where it sits on the stroke being cut, and where it sits on the
-// wall it crossed - a junction belongs to two lines, and a cut that only ever
-// knows about one of them leaves the other running whole through a point that
-// has just become its neighbour's endpoint.
+// One place where a stroke crosses another - or ITSELF. Carries both sides of
+// the junction: where it sits on the stroke being cut, and where it sits on
+// the line it crossed. A junction belongs to two lines, and a cut that only
+// ever knows about one of them leaves the other running whole through a point
+// that has just become its neighbour's endpoint.
 struct AnimeStrokeCrossing {
+    // What the crossing was with. Anything >= 0 indexes the walls vector.
+    enum Kind {
+        StrokeEnd = -1,   // not a junction at all: an end of the cut stroke
+        SelfCrossing = -2 // the stroke through itself; wallArc is its OTHER arc
+    };
+
     qreal arc = 0.0;       // normalised position along the cut stroke
-    int wallIndex = -1;    // index into the walls vector, -1 for "a stroke end"
-    qreal wallArc = 0.0;   // normalised position along that wall
+    int wallIndex = StrokeEnd;
+    qreal wallArc = 0.0;   // normalised position along the line it crossed
+
+    bool isJunction() const { return wallIndex != StrokeEnd; }
 };
 
 // What a CutMode click removes, and which junctions bounded it.
@@ -73,6 +81,22 @@ private:
     qulonglong m_lastMs = 0;
 };
 
+// How a committed stroke is turned into lines + curves. SEPARATE from the
+// realtime stabilizer above: measured over the full range, the two are
+// near-orthogonal - the stabilizer decides how faithful the result is to what
+// the hand meant, the settings here decide how economically it is described -
+// and one knob driving both could only ever walk the diagonal of that square.
+struct AnimeStrokeFitSettings {
+    // 0..100: how aggressively straight runs are merged and curves are
+    // allowed to depart from the samples. Low = follow the input closely with
+    // many nodes; high = few nodes, looser.
+    int simplify = 50;
+    // 0..100: how eagerly a turn is called a CORNER rather than a curve.
+    // Low = only very sharp turns break the curve (rounder, fewer breaks);
+    // high = gentle turns already count (crisper angles, more pieces).
+    int corner = 50;
+};
+
 struct AnimeVectorRegionFace {
     QPainterPath path;
     qreal signedArea = 0.0;
@@ -88,14 +112,15 @@ QPainterPath makePolylinePath(const QVector<QPointF> &points);
 // inflections, classify each piece straight/curved, emit chords for the
 // straight ones and least-squares cubic Beziers for the curved ones, G1 at
 // every joint that is not a deliberate corner.
-QPainterPath fitStrokePath(const QVector<QPointF> &points, int smoothValue);
+QPainterPath fitStrokePath(const QVector<QPointF> &points,
+                           const AnimeStrokeFitSettings &settings = {});
 AnimeVectorStroke makeStroke(const QVector<QPointF> &points,
                              const QColor &color,
                              qreal width,
                              int id = 0,
                              bool filterInput = true,
                              bool smoothPath = true,
-                             int smoothValue = 50);
+                             const AnimeStrokeFitSettings &settings = {});
 AnimeVectorStroke makeStrokeFromPath(const QPainterPath &path,
                                      const QVector<QPointF> &points,
                                      const QColor &color,
@@ -108,10 +133,17 @@ QVector<AnimeVectorRange> keepRangesForCircle(const AnimeVectorStroke &stroke, c
 QVector<AnimeVectorRange> keepRangesForCapsule(const AnimeVectorStroke &stroke, const QPointF &from, const QPointF &to, qreal radius);
 QVector<AnimeVectorRange> complementRanges(const QVector<AnimeVectorRange> &eraseRanges);
 
-// One place where a stroke crosses another. Carries BOTH sides of the
-// Every crossing of `stroke` with `walls`, sorted by arc along `stroke` and
-// de-duplicated within `mergeTolerance` (a crossing that lands on a shared
-// vertex is found by both adjoining segments and is still one crossing).
+// Every crossing of `stroke` with `walls` AND with itself, sorted by arc
+// along `stroke` and de-duplicated within `mergeTolerance` (a crossing that
+// lands on a shared vertex is found by both adjoining segments and is still
+// one crossing).
+//
+// A self-crossing - the stroke loops back through its own path - is a
+// junction like any other, and appears TWICE: once at each of the two arcs
+// the stroke passes through that point, each naming the other in wallArc.
+// Adjoining segments and the closing vertex of a closed stroke are not
+// crossings; they are how a line is joined to itself, not where it cuts
+// across itself.
 QVector<AnimeStrokeCrossing> strokeCrossings(const AnimeVectorStroke &stroke,
                                              const QVector<AnimeVectorStroke> &walls,
                                              qreal mergeTolerance = 1e-4);
@@ -146,9 +178,10 @@ bool cutSpanAt(const AnimeVectorStroke &stroke,
 // survives that test.
 QVector<AnimeVectorStroke> splitStrokeAt(const AnimeVectorStroke &stroke,
                                          QVector<qreal> arcs,
-                                         int smoothValue = 50,
+                                         const AnimeStrokeFitSettings &settings = {},
                                          qreal endTolerance = 1e-3);
-AnimeVectorStroke subStroke(const AnimeVectorStroke &stroke, qreal fromW, qreal toW, int smoothValue = 50);
+AnimeVectorStroke subStroke(const AnimeVectorStroke &stroke, qreal fromW, qreal toW,
+                            const AnimeStrokeFitSettings &settings = {});
 QPointF pointAtLength(const AnimeVectorStroke &stroke, qreal length);
 
 // The DOCUMENT-space width to hand the pen so a stroke never renders thinner

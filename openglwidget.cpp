@@ -849,6 +849,17 @@ void PaintOpenGLWidget::setSmoothValue(int value)
     m_smoothValue = value;
 }
 
+void PaintOpenGLWidget::setStrokeFitSettings(const AnimeStrokeFitSettings &settings)
+{
+    m_fitSettings.simplify = std::max(0, std::min(100, settings.simplify));
+    m_fitSettings.corner = std::max(0, std::min(100, settings.corner));
+}
+
+AnimeStrokeFitSettings PaintOpenGLWidget::strokeFitSettings() const
+{
+    return m_fitSettings;
+}
+
 void PaintOpenGLWidget::setAxisSnapThreshold(qreal threshold)
 {
     m_axisSnapThreshold = std::max<qreal>(1.0, threshold);
@@ -2327,16 +2338,36 @@ bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
     // longer has. Only the one or two walls that BOUNDED this cut are
     // divided; every other stroke the target happens to cross is left alone.
     QHash<int, QVector<qreal>> wallCuts;
+    QVector<qreal> selfCuts;
     for (const AnimeStrokeCrossing *bound : {&plan.low, &plan.high}) {
         if (bound->wallIndex >= 0 && bound->wallIndex < wallStrokeIndex.size()) {
             wallCuts[wallStrokeIndex[bound->wallIndex]].append(bound->wallArc);
+        } else if (bound->wallIndex == AnimeStrokeCrossing::SelfCrossing) {
+            // The other side of THIS junction is on the target itself, so the
+            // survivor has to be divided there: the same rule as for a wall,
+            // applied to the one line that is its own neighbour.
+            selfCuts.append(bound->wallArc);
         }
     }
 
     QVector<VectorStroke> pieces;
     for (const AnimeVectorRange &keep :
          AnimeVectorLogic::complementRanges({plan.span})) {
-        pieces.append(AnimeVectorLogic::subStroke(target, keep.first, keep.second, m_smoothValue));
+        const qreal width = keep.second - keep.first;
+        if (width <= AnimeVectorLogic::epsilon()) {
+            continue;
+        }
+        const VectorStroke survivor =
+            AnimeVectorLogic::subStroke(target, keep.first, keep.second, m_fitSettings);
+        // A partner arc landing inside this survivor, re-expressed in the
+        // survivor's own 0..1 rather than the original stroke's.
+        QVector<qreal> local;
+        for (qreal arc : selfCuts) {
+            if (arc > keep.first && arc < keep.second) {
+                local.append((arc - keep.first) / width);
+            }
+        }
+        pieces.append(AnimeVectorLogic::splitStrokeAt(survivor, local, m_fitSettings));
     }
 
     // Highest index first: every replacement renumbers the strokes after it,
@@ -2350,7 +2381,7 @@ bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
     int currentTarget = targetIndex;
     for (int strokeIndex : editOrder) {
         const QVector<VectorStroke> wallPieces = AnimeVectorLogic::splitStrokeAt(
-            image->strokeAt(strokeIndex), wallCuts[strokeIndex], m_smoothValue);
+            image->strokeAt(strokeIndex), wallCuts[strokeIndex], m_fitSettings);
         if (wallPieces.size() < 2) {
             continue;   // the crossing was already at one of the wall's ends
         }
@@ -2624,7 +2655,7 @@ bool PaintOpenGLWidget::eraseStrokeAt(int strokeIndex, const QPointF &pos)
 
     QVector<VectorStroke> pieces;
     for (const AnimeVectorRange &range : keepRanges) {
-        pieces.append(AnimeVectorLogic::subStroke(stroke, range.first, range.second, m_smoothValue));
+        pieces.append(AnimeVectorLogic::subStroke(stroke, range.first, range.second, m_fitSettings));
     }
     image->replaceStrokeWithPieces(strokeIndex, pieces);
     return true;
@@ -2657,7 +2688,7 @@ bool PaintOpenGLWidget::eraseStrokeBetween(int strokeIndex, const QPointF &from,
 
     QVector<VectorStroke> pieces;
     for (const AnimeVectorRange &range : keepRanges) {
-        pieces.append(AnimeVectorLogic::subStroke(stroke, range.first, range.second, m_smoothValue));
+        pieces.append(AnimeVectorLogic::subStroke(stroke, range.first, range.second, m_fitSettings));
     }
     image->replaceStrokeWithPieces(strokeIndex, pieces);
     return true;
@@ -2665,7 +2696,7 @@ bool PaintOpenGLWidget::eraseStrokeBetween(int strokeIndex, const QPointF &from,
 
 PaintOpenGLWidget::VectorStroke PaintOpenGLWidget::makeStroke(const QVector<QPointF> &points, const QColor &color, qreal width, int id, bool filterInput, bool smoothPath) const
 {
-    return AnimeVectorLogic::makeStroke(points, color, width, id, filterInput, smoothPath, m_smoothValue);
+    return AnimeVectorLogic::makeStroke(points, color, width, id, filterInput, smoothPath, m_fitSettings);
 }
 
 bool PaintOpenGLWidget::appendPoint(const QPointF &point)
