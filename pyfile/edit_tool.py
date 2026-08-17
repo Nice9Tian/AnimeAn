@@ -728,6 +728,18 @@ def _rebuild(view, session, zoom):
         _push(view, handles, arms)
         return
     elements = _elements(geometry["commands"])
+    # A stroke that already IS a clean cubic chain - one of ours, or a
+    # sparse fit - is shown verbatim. This is what keeps undo/redo honest:
+    # restoring the pre-drag stroke re-derives the exact pre-drag anchors,
+    # instead of re-detecting and re-fitting what a fit just produced (a
+    # fit-of-a-fit drifts a little every round trip).
+    if elements:
+        anchors, cubics = _chain_from_elements(elements)
+        if anchors is not None and len(anchors) <= 200:
+            session["chain"] = {"anchors": anchors, "cubics": cubics}
+            handles, arms = _chain_handles(session["chain"])
+            _push(view, handles, arms)
+            return
     dense = _flatten_elements(elements) if elements else list(geometry["points"])
     if len(dense) < 2:
         session["chain"] = None
@@ -1045,10 +1057,44 @@ def _pick(view, pos, zoom):
         "changed": False,
     }
     _SESSIONS[view] = session
+    # Re-registering moves this hook to the END of the dispatch order, AFTER
+    # auto_mapping's historyrestore hook (which re-pushes the overlay and
+    # would otherwise clobber the tangent arms we re-draw on restore).
+    python_hooks.set_hook(_history_restored, historyrestore=True)
     _rebuild(view, session, zoom)
     mode = _STATE["mode"]
     print(f"[edit_tool] editing stroke {index} on layer {layer} ({mode} mode; "
           f"min spacing {perceptual_min_separation_px():.1f}px on screen)")
+
+
+def _history_restored(message):
+    """Undo/redo/jump replaced the model: the session and the handles on
+    screen still describe the OLD stroke. Left alone, the handles float at
+    stale positions and the next press resolves its grab against geometry
+    that no longer exists - which is exactly the reported "handles computed
+    wrong after undo". Revalidate against the restored model: same stroke ->
+    rebuild the handles from restored truth; anything else -> clear."""
+    view = message.get("view") or "main"
+    session = _SESSIONS.get(view)
+    if session is None:
+        return
+    try:
+        refreshed = _fetch(_scene_model(view), session["frame"],
+                           session["layer"], session["index"])
+    except Exception:
+        refreshed = None
+    if refreshed is None or refreshed["id"] != session["geometry"]["id"] \
+            or refreshed["property"] != session["geometry"]["property"]:
+        _clear(view)
+        return
+    session["geometry"] = refreshed
+    session["elements"] = _elements(refreshed["commands"]) if refreshed["commands"] else None
+    session["points"] = list(refreshed["points"])
+    session["chain0"] = None
+    session["drag_target"] = None
+    session["moved"] = False
+    session["changed"] = False
+    _rebuild(view, session, _STATE["last_zoom"])
 
 
 def _option_changed(message):
@@ -1067,3 +1113,4 @@ def _option_changed(message):
 
 python_hooks.set_hook(_handle_event, handle=True)
 python_hooks.set_hook(_option_changed, option=True, tool="arrow")
+python_hooks.set_hook(_history_restored, historyrestore=True)
