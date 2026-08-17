@@ -3,7 +3,9 @@
 
 #include <QAbstractItemView>
 #include <QCheckBox>
+#include <QColorDialog>
 #include <QGridLayout>
+#include <QHBoxLayout>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLabel>
@@ -151,6 +153,8 @@ void ToolOptPanel::configureControls(const QJsonArray &controls, int rowSpacing,
             widget = createSliderControl(control);
         } else if (type == QStringLiteral("check") || type == QStringLiteral("checkbox")) {
             widget = createCheckControl(control);
+        } else if (type == QStringLiteral("color")) {
+            widget = createColorControl(control);
         }
 
         if (!widget) {
@@ -355,6 +359,70 @@ QWidget *ToolOptPanel::createCheckControl(const QJsonObject &control)
                           row, startColumn, endColumn);
     });
     return check;
+}
+
+QWidget *ToolOptPanel::createColorControl(const QJsonObject &control)
+{
+    const QString name = textValue(control, QStringLiteral("name"));
+    const QString hook = textValue(control, QStringLiteral("hook"), name);
+    const int row = intValue(control, QStringLiteral("row"), 0);
+    const int startColumn = intValue(control, QStringLiteral("start_column"), 0);
+    const int endColumn = intValue(control, QStringLiteral("end_column"), startColumn);
+
+    QWidget *container = new QWidget(this);
+    QHBoxLayout *layout = new QHBoxLayout(container);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(6);
+
+    const QString title = textValue(control, QStringLiteral("title"));
+    if (!title.isEmpty()) {
+        QLabel *label = new QLabel(title, container);
+        label->setFont(ui->standardList->font());
+        layout->addWidget(label);
+    }
+
+    QPushButton *swatch = new QPushButton(container);
+    swatch->setObjectName(name);
+    swatch->setFlat(false);
+    swatch->setFixedWidth(52);
+    // The alpha is carried in the value and preserved on edit, but the swatch
+    // paints it opaque: a translucent chip on a themed button reads as a
+    // different colour than the one it stands for.
+    QColor current(textValue(control, QStringLiteral("value")));
+    if (!current.isValid()) {
+        current = QColor(0, 0, 0, 255);
+    }
+    const auto paintSwatch = [swatch](const QColor &color) {
+        QColor opaque = color;
+        opaque.setAlpha(255);
+        swatch->setStyleSheet(QStringLiteral("background-color: %1; border: 1px solid palette(mid);")
+                                  .arg(opaque.name(QColor::HexRgb)));
+        swatch->setToolTip(color.name(QColor::HexArgb));
+    };
+    paintSwatch(current);
+
+    QColor *held = new QColor(current);
+    swatch->connect(swatch, &QPushButton::clicked, this,
+                    [this, swatch, held, paintSwatch, hook, name, row, startColumn, endColumn]() {
+        QColorDialog dialog(*held, this);
+        dialog.setOption(QColorDialog::ShowAlphaChannel, true);
+        if (dialog.exec() != QDialog::Accepted) {
+            return;
+        }
+        const QColor chosen = dialog.currentColor();
+        if (!chosen.isValid()) {
+            return;
+        }
+        *held = chosen;
+        paintSwatch(chosen);
+        emitOptionChanged(hook, name, QStringLiteral("color"),
+                          chosen.name(QColor::HexArgb), row, startColumn, endColumn);
+    });
+    swatch->connect(swatch, &QObject::destroyed, [held]() { delete held; });
+
+    layout->addWidget(swatch);
+    layout->addStretch(1);
+    return container;
 }
 
 void ToolOptPanel::applyVisibilityRules()

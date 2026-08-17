@@ -28,6 +28,8 @@
 #include <QEvent>
 #include <QEventLoop>
 #include <QFile>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFileInfo>
 #include <QFileDialog>
 #include <QHBoxLayout>
@@ -409,10 +411,31 @@ MainWindow::MainWindow(QWidget *parent)
             overlayItem.strokeColor = item.strokeColor;
             overlayItem.fillColor = item.fillColor;
             overlayItem.width = item.width;
+            overlayItem.penStyle = item.penStyle;
             overlayItem.removable = item.removable;
             converted.append(overlayItem);
         }
         target->setOverlayItems(converted);
+    });
+    registerAnimeanUiEditHandleCallback([this](const QString &view, const QVector<AnimeanEditHandle> &handles) {
+        PaintOpenGLWidget *target = m_paintWidget;
+        for (PaintOpenGLWidget *paintView : m_paintViews) {
+            if (paintView->viewName() == view) {
+                target = paintView;
+                break;
+            }
+        }
+        QVector<PaintOpenGLWidget::EditHandle> converted;
+        converted.reserve(handles.size());
+        for (const AnimeanEditHandle &handle : handles) {
+            PaintOpenGLWidget::EditHandle editHandle;
+            editHandle.id = handle.id;
+            editHandle.pos = handle.pos;
+            editHandle.shape = handle.shape;
+            editHandle.color = handle.color;
+            converted.append(editHandle);
+        }
+        target->setEditHandles(converted);
     });
     registerAnimeanUiDrawColorCallback([this](const QColor &color) {
         for (PaintOpenGLWidget *paintView : m_paintViews) {
@@ -493,6 +516,10 @@ void MainWindow::setupDocks()
     populateChildViewButtons();
     setupPythonDebugDock();
     createTextureFileMenu();
+    // After the View menu below would be too late to matter, but after the
+    // tool modules are imported is what counts: their import-time
+    // registrations are what these menus are built from.
+    createScriptMenus();
     // Re-baseline both histories now that the views carry their fixed scene
     // identities; the constructor-time baseline predates setTextId/setIntId
     // and undoing into it would corrupt the main/child identity invariant.
@@ -868,6 +895,162 @@ void MainWindow::createChildPaintDock()
             [this](const QString &name, bool on) {
                 m_childPaintWidget->sendPythonViewButtonMessage(name, on);
             });
+}
+
+#ifdef ANIMEAN_WITH_PYTHON
+void MainWindow::fillScriptMenu(QMenu *menu, const QString &menuName, const QJsonArray &items)
+{
+    for (const QJsonValue &value : items) {
+        const QJsonObject object = value.toObject();
+        const QString kind = object.value(QStringLiteral("kind")).toString(QStringLiteral("action"));
+        if (kind == QStringLiteral("separator")) {
+            menu->addSeparator();
+            continue;
+        }
+        const QString title = object.value(QStringLiteral("title")).toString();
+        if (kind == QStringLiteral("submenu")) {
+            QMenu *child = menu->addMenu(title);
+            fillScriptMenu(child, menuName, object.value(QStringLiteral("items")).toArray());
+            continue;
+        }
+        const QString name = object.value(QStringLiteral("name")).toString();
+        if (name.isEmpty()) {
+            continue;
+        }
+        QAction *action = menu->addAction(title.isEmpty() ? name : title);
+        action->setEnabled(object.value(QStringLiteral("enabled")).toBool(true));
+        if (kind == QStringLiteral("settings")) {
+            // Declarative rather than a call back into C++ from the handler:
+            // opening a modal window from inside a menu trigger that Python
+            // dispatched would re-enter the interpreter while the menu is
+            // still up.
+            const QString target = object.value(QStringLiteral("settings")).toString(name);
+            connect(action, &QAction::triggered, this, [this, target, title]() {
+                openScriptSettings(target, title);
+            });
+            continue;
+        }
+        if (kind == QStringLiteral("check") || kind == QStringLiteral("radio")) {
+            action->setCheckable(true);
+            action->setChecked(object.value(QStringLiteral("checked")).toBool(false));
+        }
+        connect(action, &QAction::triggered, this, [this, menuName, name](bool checked) {
+            activePaintWidget()->sendPythonMenuMessage(menuName, name, checked);
+            // The handler may have changed what the panels show.
+            refreshPanelTargets();
+        });
+    }
+}
+
+void MainWindow::rebuildScriptMenu(QMenu *menu, const QString &menuName)
+{
+    // Rebuilt every time the menu opens, from Python. That is what keeps a
+    // check mark honest: the state lives in the script, and asking at open
+    // time means C++ never has to mirror it (and never drifts from it).
+    menu->clear();
+    try {
+        const std::string json = py::module_::import("python_hooks")
+                                     .attr("menus_json")()
+                                     .cast<std::string>();
+        const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json));
+        for (const QJsonValue &value : document.array()) {
+            const QJsonObject object = value.toObject();
+            if (object.value(QStringLiteral("name")).toString() != menuName) {
+                continue;
+            }
+            fillScriptMenu(menu, menuName, object.value(QStringLiteral("items")).toArray());
+            return;
+        }
+    } catch (const py::error_already_set &error) {
+        setStatusText(QStringLiteral("menu error: %1").arg(QString::fromUtf8(error.what())));
+    }
+}
+#endif
+
+void MainWindow::openScriptSettings(const QString &name, const QString &title)
+{
+#ifdef ANIMEAN_WITH_PYTHON
+    // The window is built from the SAME control schema the tool options panel
+    // uses, and its changes travel down the SAME option hook, so a settings
+    // window costs Python a layout description and nothing else.
+    QJsonObject layout;
+    try {
+        const std::string json = py::module_::import("python_hooks")
+                                     .attr("settings_layout_json")(name.toStdString())
+                                     .cast<std::string>();
+        const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json));
+        layout = document.object();
+    } catch (const py::error_already_set &error) {
+        setStatusText(QStringLiteral("settings error: %1").arg(QString::fromUtf8(error.what())));
+        return;
+    }
+    if (layout.isEmpty()) {
+        setStatusText(QStringLiteral("No settings registered for '%1'.").arg(name));
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(title.isEmpty() ? name : title);
+    QVBoxLayout *box = new QVBoxLayout(&dialog);
+    ToolOptPanel *panel = new ToolOptPanel(&dialog);
+    connect(panel, &ToolOptPanel::optionChanged, this,
+            [this](const QString &hook, const QString &optionName, const QString &type,
+                   const QVariant &value, int row, int startColumn, int endColumn) {
+        activePaintWidget()->sendPythonToolOptionMessage(hook, optionName, type, value,
+                                                         row, startColumn, endColumn);
+        for (PaintOpenGLWidget *view : m_paintViews) {
+            view->update();
+        }
+    });
+    panel->configureLayout(layout);
+    box->addWidget(panel, 1);
+
+    QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    box->addWidget(buttons);
+
+    // Applied live, so there is nothing to confirm: every change has already
+    // gone through the option hook by the time this closes.
+    dialog.exec();
+#else
+    Q_UNUSED(name);
+    Q_UNUSED(title);
+#endif
+}
+
+void MainWindow::createScriptMenus()
+{
+#ifdef ANIMEAN_WITH_PYTHON
+    // Same shape as the extra-tools and view-button queries: Python owns the
+    // menus, C++ renders whatever it is given.
+    try {
+        const std::string json = py::module_::import("python_hooks")
+                                     .attr("menus_json")()
+                                     .cast<std::string>();
+        QJsonParseError parseError;
+        const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json), &parseError);
+        if (parseError.error != QJsonParseError::NoError || !document.isArray()) {
+            setStatusText(QStringLiteral("menus JSON error: %1").arg(parseError.errorString()));
+            return;
+        }
+        for (const QJsonValue &value : document.array()) {
+            const QJsonObject object = value.toObject();
+            const QString name = object.value(QStringLiteral("name")).toString();
+            if (name.isEmpty()) {
+                continue;
+            }
+            const QString title = object.value(QStringLiteral("title")).toString(name);
+            QMenu *menu = menuBar()->addMenu(title);
+            connect(menu, &QMenu::aboutToShow, this, [this, menu, name]() {
+                rebuildScriptMenu(menu, name);
+            });
+            rebuildScriptMenu(menu, name);
+        }
+    } catch (const py::error_already_set &error) {
+        setStatusText(QStringLiteral("menus error: %1").arg(QString::fromUtf8(error.what())));
+    }
+#endif
 }
 
 void MainWindow::populateChildViewButtons()

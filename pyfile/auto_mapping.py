@@ -183,6 +183,43 @@ V_COLOR = (0, 255, 0, 255)
 AREA_BORDER_COLOR = (120, 185, 250, 190)
 AREA_FILL_COLOR = (150, 205, 255, 60)
 
+# How every line this tool draws is DISPLAYED. One dict so the settings
+# window has a single thing to read and write, and so nothing has to guess
+# what "the crease colour" means. Widths are on-screen px; "style" is a
+# Qt::PenStyle number (1 solid, 2 dash, 3 dot, 4 dash-dot).
+LINE_STYLES = (("Solid", 1), ("Dashed", 2), ("Dotted", 3), ("Dash-Dot", 4))
+_LINE_DISPLAY = {
+    "h_color": H_COLOR,
+    "h_width": 3.0,
+    "h_style": 1,
+    "v_color": V_COLOR,
+    "v_width": 3.0,
+    "v_style": 1,
+    # The crease ("fold line") between the front and the back of a fold.
+    "seal_color": (104, 112, 140, 255),
+    "seal_width": 0.8,      # relative to the mapped stroke width
+    "seal_style": 2,
+    # The lining: the back-of-the-fold strokes, and the occlusion tint that
+    # previews which parts of the texture land there.
+    "back_color": (104, 112, 140, 255),
+    "occlusion_alpha": 70,
+}
+
+
+def line_display():
+    return dict(_LINE_DISPLAY)
+
+
+def _display_color(key):
+    value = _LINE_DISPLAY.get(key) or (0, 0, 0, 255)
+    return tuple(int(c) for c in value)
+
+
+def _display_style(key):
+    style = int(_LINE_DISPLAY.get(key, 1))
+    # 0 is Qt::NoPen: a guide that cannot be seen is never what was meant.
+    return style if 1 <= style <= 5 else 1
+
 ITEM_LABELS = {
     H_PROPERTY: "H center line",
     V_PROPERTY: "V center line",
@@ -1874,7 +1911,8 @@ def _occlusion_overlay_items():
                 "points": polygon,
                 "closed": True,
                 "color": (0, 0, 0, 0),
-                "fill_color": OCCLUSION_FILL,
+                "fill_color": (*_display_color("back_color")[:3],
+                                int(_LINE_DISPLAY.get("occlusion_alpha", 70))),
                 "width": 0.1,
                 "removable": False,
             })
@@ -1893,15 +1931,20 @@ def overlay_items(view_name):
     """
     assets = _assets_for(view_name)
     items = []
-    for prop, color in ((H_PROPERTY, H_COLOR), (V_PROPERTY, V_COLOR)):
+    for prop, key in ((H_PROPERTY, "h"), (V_PROPERTY, "v")):
         guide = assets.get(prop)
         if guide and len(guide.get("points") or []) >= 2:
-            width = float(guide.get("width", 3.0))
+            # Colour, width and style come from the display settings now, not
+            # from the stroke that happened to draw the guide.
+            color = _display_color(f"{key}_color")
+            width = float(_LINE_DISPLAY.get(f"{key}_width", 3.0))
+            style = _display_style(f"{key}_style")
             items.append({
                 "id": prop,
                 "points": guide["points"],
                 "color": color,
                 "width": width,
+                "pen_style": style,
                 "removable": True,
             })
             arrow = _direction_arrow_points(guide["points"], max(12.0, 3.5 * width))
@@ -1911,6 +1954,8 @@ def overlay_items(view_name):
                     "points": arrow,
                     "color": color,
                     "width": width,
+                    # The arrow says which way the guide runs; dashing it
+                    # would make a short mark nearly invisible.
                     "removable": False,
                 })
     area = assets.get(MAPPING_AREA_PROPERTY)
@@ -3000,7 +3045,7 @@ class _MappedOutput:
                         commands, flat, color, width, image.stroke_count() + 1)
                 obj.property = prop
                 if side == self.SEAL:
-                    obj.pen_style = _FOLD["seal_pen_style"]
+                    obj.pen_style = _display_style("seal_style")
                 image.add_stroke_object(obj)
                 added += 1
         return added
@@ -3024,7 +3069,7 @@ def _fold_runs(map_point, piece, cuts=None):
 
 
 def _side_style(side, color_tuple):
-    return color_tuple if side == _MappedOutput.FRONT else _FOLD["back_color"]
+    return color_tuple if side == _MappedOutput.FRONT else _display_color("back_color")
 
 
 def _emit_polyline_mode(animean, out, stroke, map_point, child_area, main_area, color_tuple, width):
@@ -3179,11 +3224,11 @@ def _emit_seals(animean, out, map_point, pattern, child_area, main_area, width_s
     # there, so attributing a cut to either is the same crease.
     tolerance = 2.0 * POLY_STEP
 
-    color = _FOLD["back_color"]
+    color = _display_color("seal_color")
     # Thinner than the artwork: the crease is an annotation of the fold, not
     # part of the pattern, and at 2x width_scale it out-weighted every stroke
-    # it was meant to terminate.
-    width = max(0.5, 0.8 * width_scale)
+    # it was meant to terminate. The factor is a display setting now.
+    width = max(0.5, float(_LINE_DISPLAY.get("seal_width", 0.8)) * width_scale)
     for curve in _crease_curves(map_point, (v_low, v_high), (h_low, h_high)):
         points = [main.hv(arc, other) for arc, other in curve]
         if len(points) < 2:
@@ -3720,6 +3765,147 @@ def _layer_menu_action(message):
           + (f"; still missing: {', '.join(missing)}" if missing else ""))
 
 
+MENU_NAME = "auto_mapping"
+LINE_SETTINGS_NAME = "auto_mapping_lines"
+
+
+def _menu_items():
+    """Built fresh every time the menu opens, so the ticks are the truth."""
+    mode = curve_mode()
+    return [
+        {"name": "line_settings", "title": "Line Display Settings...",
+         "kind": "settings", "settings": LINE_SETTINGS_NAME},
+        {"kind": "separator"},
+        {"name": "calc_mode", "title": "Calculation Mode", "kind": "submenu",
+         "items": [
+             {"name": "mode_bezier", "title": "Bezier", "kind": "radio",
+              "checked": mode == "bezier"},
+             {"name": "mode_spline", "title": "Spline", "kind": "radio",
+              "checked": mode == "spline"},
+             {"name": "mode_polyline", "title": "Polyline", "kind": "radio",
+              "checked": mode == "polyline"},
+         ]},
+    ]
+
+
+def _line_settings_layout():
+    """The settings window, in the same control schema the tool panel uses."""
+    def color(name, title, key, row):
+        return {"name": name, "type": "color", "title": title,
+                "hook": "line_display", "value": _hex_color(_display_color(key)),
+                "row": row, "start_column": 0, "end_column": 1}
+
+    def style(name, title, key, row):
+        return {"name": name, "type": "list", "title": title,
+                "hook": "line_display", "value": str(_display_style(key)),
+                "row": row, "start_column": 0, "end_column": 2,
+                "options": [{"title": t, "value": str(v)} for t, v in LINE_STYLES]}
+
+    def width(name, title, key, row, low, high, scale=1.0):
+        return {"name": name, "type": "slider", "title": title,
+                "hook": "line_display", "min": low, "max": high,
+                "value": int(round(float(_LINE_DISPLAY.get(key, 3.0)) * scale)),
+                "row": row, "start_column": 0, "end_column": 2}
+
+    return {
+        "row_spacing": 8,
+        "column_spacing": 6,
+        "controls": [
+            color("h_color", "H axis colour", "h_color", 0),
+            width("h_width", "H axis width", "h_width", 1, 1, 30),
+            style("h_style", "H axis line", "h_style", 2),
+
+            color("v_color", "V axis colour", "v_color", 3),
+            width("v_width", "V axis width", "v_width", 4, 1, 30),
+            style("v_style", "V axis line", "v_style", 5),
+
+            color("seal_color", "Crease colour", "seal_color", 6),
+            # Stored as a FACTOR of the mapped stroke width, so the slider is
+            # in tenths and the label says so.
+            width("seal_width", "Crease width (x0.1)", "seal_width", 7, 1, 40, 10.0),
+            style("seal_style", "Crease line", "seal_style", 8),
+
+            color("back_color", "Lining colour", "back_color", 9),
+            {"name": "occlusion_alpha", "type": "slider",
+             "title": "Occluded-area tint", "hook": "line_display",
+             "min": 0, "max": 255,
+             "value": int(_LINE_DISPLAY.get("occlusion_alpha", 70)),
+             "row": 10, "start_column": 0, "end_column": 2},
+        ],
+    }
+
+
+def _hex_color(rgba):
+    r, g, b, a = (list(rgba) + [255, 255, 255, 255])[:4]
+    return f"#{a:02x}{r:02x}{g:02x}{b:02x}"
+
+
+def _parse_hex_color(text):
+    text = str(text).strip().lstrip("#")
+    try:
+        if len(text) == 8:      # AARRGGBB, what the colour control reports
+            a, r, g, b = (int(text[i:i + 2], 16) for i in (0, 2, 4, 6))
+            return (r, g, b, a)
+        if len(text) == 6:
+            r, g, b = (int(text[i:i + 2], 16) for i in (0, 2, 4))
+            return (r, g, b, 255)
+    except ValueError:
+        pass
+    return None
+
+
+def _menu_action(message):
+    if message.get("menu") != MENU_NAME:
+        return
+    name = message.get("name") or ""
+    if not name.startswith("mode_"):
+        return
+    mode = name[len("mode_"):]
+    if mode not in CURVE_MODES or _CURVE_MODE["value"] == mode:
+        return
+    _CURVE_MODE["value"] = mode
+    print(f"[auto_mapping] calculation mode -> {mode}")
+
+
+def _line_display_changed(message):
+    """One hook for the whole settings window; the control name is the key."""
+    if message.get("hook") != "line_display":
+        return
+    name = message.get("name") or ""
+    value = message.get("value")
+    if name.endswith("_color"):
+        parsed = _parse_hex_color(value)
+        if parsed is None:
+            return
+        _LINE_DISPLAY[name] = parsed
+    elif name.endswith("_style"):
+        try:
+            _LINE_DISPLAY[name] = max(1, min(5, int(value)))
+        except (TypeError, ValueError):
+            return
+    elif name == "occlusion_alpha":
+        try:
+            _LINE_DISPLAY[name] = max(0, min(255, int(value)))
+        except (TypeError, ValueError):
+            return
+    elif name.endswith("_width"):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return
+        # The crease width is a factor, so its slider is in tenths.
+        _LINE_DISPLAY[name] = number / 10.0 if name == "seal_width" else number
+    else:
+        return
+
+    # Guides are overlays, so a display change shows immediately; the crease
+    # and the lining are baked into strokes and apply to the NEXT run.
+    _invalidate_grid_cache()
+    _push_overlay("main")
+    _push_overlay("child")
+    print(f"[auto_mapping] {name} -> {_LINE_DISPLAY[name]}")
+
+
 def register_hooks():
     python_hooks.set_hook(_capture_mapping_item, linefinish=True, tool="extra")
     python_hooks.set_hook(_overlay_removed, overlayremove=True)
@@ -3811,4 +3997,14 @@ python_hooks.set_hook(_view_button_toggled, viewbutton=True)
 # The layer-panel context menu has the same requirement: right-clicking a
 # mapping group must work in a fresh session, before any tool is armed.
 python_hooks.register_menu_provider(_layer_menu_items)
+# The menu bar and its settings window: registered at import so they exist in
+# a fresh session, before any tool has been armed.
+python_hooks.register_menu({
+    "name": MENU_NAME,
+    "title": "Auto Mapping",
+    "items": _menu_items,          # callable: re-evaluated on every open
+})
+python_hooks.register_settings(LINE_SETTINGS_NAME, _line_settings_layout)
+python_hooks.set_hook(_menu_action, menu=True)
+python_hooks.set_hook(_line_display_changed, option=True)
 python_hooks.set_hook(_layer_menu_action, layermenu=True)

@@ -56,6 +56,8 @@ private:
     QWidget *createListControl(const QJsonObject &control);
     QWidget *createSliderControl(const QJsonObject &control);
     QWidget *createCheckControl(const QJsonObject &control);
+    // Generic colour swatch: opens QColorDialog and reports #AARRGGBB.
+    QWidget *createColorControl(const QJsonObject &control);
     void configureControls(const QJsonArray &controls, int rowSpacing, int columnSpacing);
     void emitOptionChanged(const QString &hook, const QString &name, const QString &type, const QVariant &value, int row, int startColumn, int endColumn);
     void applyVisibilityRules();

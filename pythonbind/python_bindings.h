@@ -17,7 +17,19 @@ struct AnimeanOverlayItem {
     QColor strokeColor = QColor(0, 0, 0, 255);
     QColor fillColor = QColor(0, 0, 0, 0);
     qreal width = 3.0;
+    int penStyle = 1;
     bool removable = true;
+};
+
+// A draggable edit handle, drawn at constant SCREEN size above everything.
+// Pure mechanism: C++ renders it, hit-tests it and reports presses/drags as
+// "handle" hook events; what a handle means - which control point of which
+// stroke, or a synthesized key point - lives entirely in Python.
+struct AnimeanEditHandle {
+    QString id;
+    QPointF pos;                              // document coordinates
+    int shape = 0;                            // 0 square, 1 circle, 2 diamond
+    QColor color = QColor(255, 255, 255, 255);
 };
 
 void registerAnimeanUiScene(AnimeSceneModel *model);

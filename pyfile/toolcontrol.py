@@ -128,46 +128,30 @@ def options_for_extra_tool(tool, state=None):
         # inserted between original points (0.1px units; originals are never
         # decimated); Refer Rect overlays the mapping's 3x3 anchor grid in both
         # views so a wrong mapping is visible at a glance.
+        # MIGRATED OUT of this panel: Curve Mode now lives in the menu bar
+        # (Auto Mapping > Calculation Mode) and every DISPLAY setting - the
+        # guide axes, the crease and the lining - in Auto Mapping > Line
+        # Display Settings. What stays here is what is neither: the sampling
+        # tolerance, the debug grid, and whether the fold is split at all.
         try:
             import auto_mapping
-            mode = auto_mapping.curve_mode()
             rdp_tenths = int(round(auto_mapping.rdp_eps() * 10))
             refer = "on" if auto_mapping.refer_rect_enabled() else "off"
             split = "on" if auto_mapping.fold_split_enabled() else "off"
             seal = "on" if auto_mapping.fold_seal_enabled() else "off"
-            shade = max(0, min(100, int(round((auto_mapping.fold_back_color()[0] - 20) / 2.0))))
         except Exception:
-            # Matches auto_mapping.DEFAULT_CURVE_MODE; only reached when that
-            # module could not be imported at all.
-            mode = "bezier"
             rdp_tenths = 3
             refer = "off"
             split = "on"
             seal = "on"
-            shade = 45
         controls = [
             {
-                "name": "curve_mode",
-                "type": "list",
-                "title": "Curve Mode",
-                "hook": "curve_mode",
-                "value": mode,
-                "row": 0,
-                "start_column": 0,
-                "end_column": 2,
-                # Default first.
-                "options": [
-                    {"title": "Bezier", "value": "bezier"},
-                    {"title": "Spline", "value": "spline"},
-                    {"title": "Polyline", "value": "polyline"},
-                ],
-            },
-            {
-                # RDP decimation exists in the sampled modes (spline/polyline):
-                # hide the label and slider on bezier so nobody assumes the
-                # handle-transport route uses it too.
-                **_slider("rdp_eps", "RDP (x0.1px)", "rdp_eps", 1, 20, rdp_tenths, 1),
-                "visible_when": {"name": "curve_mode", "values": ["spline", "polyline"]},
+                # RDP decimation exists in the sampled modes (spline/polyline)
+                # only; the bezier route transports handles instead. The mode
+                # moved to the menu bar, so this can no longer hide itself
+                # against it - the title says where it applies instead.
+                **_slider("rdp_eps", "RDP (x0.1px, sampled modes)", "rdp_eps",
+                          1, 20, rdp_tenths, 0),
             },
             {
                 "name": "refer_rect",

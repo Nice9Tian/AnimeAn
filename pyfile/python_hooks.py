@@ -39,6 +39,78 @@ def view_buttons_json(view):
 _MENU_PROVIDERS = []
 
 
+# Menu-bar menus a tool module contributes. C++ builds whatever it is handed
+# and reports the choice as a "menu" hook event; it never learns what an entry
+# means, and it re-asks every time a menu opens so check marks are current.
+_MENUS = []
+
+
+def register_menu(definition):
+    """Add (or replace, by name) a menu-bar menu.
+
+    definition: {"name": str, "title": str, "items": [item, ...]}
+    item:       {"name": str, "title": str,
+                 "kind": "action" | "check" | "radio" | "separator" | "submenu",
+                 "checked": bool, "items": [...] (submenu only)}
+    """
+    name = definition.get("name")
+    if not name:
+        raise ValueError("menu definition needs a 'name'.")
+    _MENUS[:] = [entry for entry in _MENUS if entry.get("name") != name]
+    _MENUS.append(dict(definition))
+
+
+def menus_json():
+    """Every registered menu, freshly evaluated, as JSON for the C++ builder.
+
+    An "items" value may be a CALLABLE, so a menu that shows state (which
+    curve mode is active, say) reports the truth at the moment it opens
+    instead of whatever was true when it was registered.
+    """
+    def resolve(items):
+        if callable(items):
+            items = items() or []
+        out = []
+        for item in items or []:
+            entry = dict(item)
+            if "items" in entry:
+                entry["items"] = resolve(entry["items"])
+            out.append(entry)
+        return out
+
+    menus = []
+    for menu in _MENUS:
+        entry = dict(menu)
+        try:
+            entry["items"] = resolve(entry.get("items"))
+        except Exception as error:
+            print(f"[python_hooks] menu '{entry.get('name')}' failed: {error}")
+            continue
+        menus.append(entry)
+    return json.dumps(menus)
+
+
+# Settings windows a tool module contributes, keyed by name. The layout is the
+# same control schema the tool options panel uses, so one builder serves both.
+_SETTINGS = {}
+
+
+def register_settings(name, layout):
+    """`layout` is a dict or a callable returning one (see menus_json)."""
+    _SETTINGS[name] = layout
+
+
+def settings_layout_json(name):
+    layout = _SETTINGS.get(name)
+    if callable(layout):
+        try:
+            layout = layout()
+        except Exception as error:
+            print(f"[python_hooks] settings '{name}' failed: {error}")
+            layout = None
+    return json.dumps(layout or {})
+
+
 def register_menu_provider(function):
     """Add a callable(context) -> [{"name","title"[, "enabled"]}] provider."""
     resolved = _resolve_function(function)
@@ -133,6 +205,8 @@ def set_hook(
     pad=False,
     viewbutton=False,
     layermenu=False,
+    handle=False,
+    menu=False,
     tool=None,
     property=None,
 ):
@@ -153,6 +227,7 @@ def set_hook(
         "pad": pad,
         "viewbutton": viewbutton,
         "layermenu": layermenu,
+        "menu": menu,
     }
     events = {name for name, enabled in flags.items() if enabled}
     if not events:

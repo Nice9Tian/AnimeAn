@@ -55,12 +55,25 @@ public:
         QColor strokeColor = QColor(0, 0, 0, 255);
         QColor fillColor = QColor(0, 0, 0, 0);
         qreal width = 3.0;
+        // Qt::PenStyle as an int, same convention as AnimeVectorStroke.
+        int penStyle = 1;
         bool removable = true;
+    };
+
+    // Draggable edit handle, drawn at constant SCREEN size above everything.
+    // What a handle means lives in Python; this widget only renders it,
+    // hit-tests it and reports presses and drags ("handle" hook events).
+    struct EditHandle {
+        QString id;
+        QPointF pos;      // document coordinates
+        int shape = 0;    // 0 square, 1 circle, 2 diamond
+        QColor color = QColor(255, 255, 255, 255);
     };
 
     explicit PaintOpenGLWidget(QWidget *parent = nullptr);
 
     void setOverlayItems(const QVector<OverlayItem> &items);
+    void setEditHandles(const QVector<EditHandle> &handles);
 
     void setViewName(const QString &name);
     QString viewName() const;
@@ -99,6 +112,8 @@ public:
     // Generic dispatch for script-defined view buttons ("viewbutton" event);
     // the button semantics live entirely in Python.
     void sendPythonViewButtonMessage(const QString &name, bool on);
+    // Generic dispatch for a script-defined menu-bar entry ("menu" event).
+    void sendPythonMenuMessage(const QString &menu, const QString &item, bool checked);
     // Generic dispatch for a script-defined layer-panel context menu entry.
     void sendPythonLayerMenuMessage(const QString &action,
                                     int groupId,

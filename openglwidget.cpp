@@ -696,6 +696,37 @@ void PaintOpenGLWidget::sendPythonLayerMenuMessage(const QString &action,
 #endif
 }
 
+void PaintOpenGLWidget::sendPythonMenuMessage(const QString &menu,
+                                              const QString &item,
+                                              bool checked)
+{
+#ifdef ANIMEAN_WITH_PYTHON
+    if (!animeanHookEventSubscribed(QStringLiteral("menu"))) {
+        return;
+    }
+
+    py::gil_scoped_acquire acquire;
+    py::dict message;
+    message["event"] = "menu";
+    message["view"] = m_viewName.toStdString();
+    message["tool"] = (m_activePythonTool.isEmpty() ? toolName(m_tool) : m_activePythonTool).toStdString();
+    message["base_tool"] = toolName(m_tool).toStdString();
+    message["property"] = m_strokeProperty.toStdString();
+    message["menu"] = menu.toStdString();
+    message["name"] = item.toStdString();
+    message["checked"] = checked;
+
+    const QString output = ::pythonHookSendMessage(message);
+    if (!isQuietHookOutput(output)) {
+        emit pythonDebugMessage(output);
+    }
+#else
+    Q_UNUSED(menu);
+    Q_UNUSED(item);
+    Q_UNUSED(checked);
+#endif
+}
+
 bool PaintOpenGLWidget::sendPythonFillRequestMessage(const QPointF &pos)
 {
 #ifdef ANIMEAN_WITH_PYTHON
@@ -1401,9 +1432,13 @@ void PaintOpenGLWidget::paintOverlayItems(QPainter &painter)
         } else {
             painter.setBrush(Qt::NoBrush);
         }
+        const Qt::PenStyle overlayStyle =
+            (item.penStyle >= Qt::SolidLine && item.penStyle <= Qt::DashDotDotLine)
+                ? static_cast<Qt::PenStyle>(item.penStyle)
+                : Qt::SolidLine;   // 0 is NoPen: never let a guide vanish
         painter.setPen(QPen(item.strokeColor,
                             AnimeVectorLogic::displayStrokeWidth(item.width, m_zoom),
-                            Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                            overlayStyle, Qt::RoundCap, Qt::RoundJoin));
         painter.drawPath(path);
 
         if (item.removable) {

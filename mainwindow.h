@@ -2,6 +2,7 @@
 #define MAINWINDOW_H
 
 #include <QHash>
+#include <QJsonArray>
 #include <QMainWindow>
 #include <QPoint>
 #include <QString>
@@ -21,6 +22,7 @@ class PaintOpenGLWidget;
 class QLineEdit;
 class QPlainTextEdit;
 class QTimer;
+class QMenu;
 class QTreeWidgetItem;
 
 QT_BEGIN_NAMESPACE
@@ -53,6 +55,16 @@ private:
     void createListDocks();
     void createChildPaintDock();
     void populateChildViewButtons();
+    // Script-defined menu-bar menus: Python describes them, C++ renders them
+    // and reports the choice back. Rebuilt on every open so check marks stay
+    // in step with the script's own state.
+    void createScriptMenus();
+#ifdef ANIMEAN_WITH_PYTHON
+    void rebuildScriptMenu(QMenu *menu, const QString &menuName);
+    void fillScriptMenu(QMenu *menu, const QString &menuName, const QJsonArray &items);
+#endif
+    void openScriptSettings(const QString &name, const QString &title);
+    void refreshFpsCombo();
     QVector<QTreeWidgetItem *> layerPanelItems() const;
     // Writes the panel's current shape back into the model: the layer group
     // tree follows what the user dragged, and the dragged layer's z-order

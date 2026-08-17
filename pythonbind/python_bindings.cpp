@@ -1200,6 +1200,9 @@ void bindAnimeanPythonModule(py::module_ &m)
                    if (hasKey(data, "width")) {
                        item.width = data["width"].cast<double>();
                    }
+                   if (hasKey(data, "pen_style")) {
+                       item.penStyle = data["pen_style"].cast<int>();
+                   }
                    if (hasKey(data, "removable")) {
                        item.removable = data["removable"].cast<bool>();
                    }
