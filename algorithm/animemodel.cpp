@@ -1416,6 +1416,58 @@ int AnimeSceneModel::addFrame()
     return row;
 }
 
+int AnimeSceneModel::addHoldFrame()
+{
+    const int previous = m_scene.xsheet.frameCount - 1;
+    const int row = addFrame();
+    if (row <= 0 || previous < 0) {
+        return row;
+    }
+    // The SAME cell, not a copy of the drawing: both rows point at one asset
+    // and one frame id, so a stroke drawn on either appears on both.
+    for (AnimeColumn &column : m_scene.xsheet.columns) {
+        const AnimeCell held = column.cellAt(previous);
+        if (!held.isEmpty()) {
+            column.setCell(row, held);
+        }
+    }
+    m_currentAsset = assetIndexAt(row, m_currentLayer);
+    return row;
+}
+
+bool AnimeSceneModel::isHoldFrame(int frameIndex) const
+{
+    if (frameIndex <= 0 || frameIndex >= m_scene.xsheet.frameCount) {
+        return false;
+    }
+    bool hasContent = false;
+    for (const AnimeColumn &column : m_scene.xsheet.columns) {
+        if (column.internal) {
+            continue;   // script working layers are not part of the exposure
+        }
+        const AnimeCell here = column.cellAt(frameIndex);
+        if (here.isEmpty()) {
+            continue;
+        }
+        hasContent = true;
+        const AnimeCell above = column.cellAt(frameIndex - 1);
+        if (above.assetIndex != here.assetIndex || above.frameId != here.frameId) {
+            return false;
+        }
+    }
+    return hasContent;
+}
+
+int AnimeSceneModel::playbackFps() const
+{
+    return std::max(1, std::min(120, m_scene.playbackFps));
+}
+
+void AnimeSceneModel::setPlaybackFps(int fps)
+{
+    m_scene.playbackFps = std::max(1, std::min(120, fps));
+}
+
 bool AnimeSceneModel::deleteFrame(int frameIndex)
 {
     if (frameIndex < 0 || frameIndex >= m_scene.xsheet.frameCount ||

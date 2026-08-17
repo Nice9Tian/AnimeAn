@@ -211,6 +211,8 @@ public:
     // paper is, what an export covers and what a bucket fill is bounded by,
     // none of which may change because someone resized the window.
     QSize canvasSize = QSize(1280, 720);
+    // Timeline playback rate. 24 is "on ones"; 12 (the default) is on twos.
+    int playbackFps = 12;
     // Opaque storage for script-side (Python) state that must travel with the
     // scene: copied into history snapshots and saved with the project. The
     // C++ side never interprets it.
@@ -314,7 +316,19 @@ public:
     bool deleteLayer(int layerIndex);
     bool moveLayer(int fromIndex, int toIndex);
     int addFrame();
+    // A HELD frame: the new row reuses the previous row's cells verbatim, so
+    // both rows resolve to the SAME drawing. Editing on either shows on both,
+    // which is the whole point of a hold - it is one exposure shown twice,
+    // not a copy that can drift.
+    int addHoldFrame();
+    // True when this row holds the one above it: it has content and every
+    // non-empty cell is the same cell as the row above. Derived rather than
+    // flagged, so it stays honest if the user later repoints a cell.
+    bool isHoldFrame(int frameIndex) const;
     bool deleteFrame(int frameIndex);
+
+    int playbackFps() const;
+    void setPlaybackFps(int fps);
     bool moveFrame(int fromIndex, int toIndex);
 
     AnimeCell cellAt(int row, int layerIndex) const;

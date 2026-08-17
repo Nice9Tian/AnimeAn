@@ -331,6 +331,7 @@ QJsonObject modelToJson(const AnimeSceneModel &model)
     const AnimeScene &scene = model.scene();
     root[QStringLiteral("canvasWidth")] = model.canvasSize().width();
     root[QStringLiteral("canvasHeight")] = model.canvasSize().height();
+    root[QStringLiteral("playbackFps")] = model.playbackFps();
     QJsonObject xsheet;
     xsheet[QStringLiteral("frameCount")] = scene.xsheet.frameCount;
 
@@ -551,6 +552,8 @@ bool modelFromJson(const QJsonObject &root, AnimeSceneModel *model, QString *err
     const QSize defaultCanvas = AnimeSceneModel::defaultCanvasSize();
     loaded.setCanvasSize(QSize(root.value(QStringLiteral("canvasWidth")).toInt(defaultCanvas.width()),
                                root.value(QStringLiteral("canvasHeight")).toInt(defaultCanvas.height())));
+
+    loaded.setPlaybackFps(root.value(QStringLiteral("playbackFps")).toInt(12));
 
     loaded.setCurrentFrame(root.value(QStringLiteral("currentFrame")).toInt(0));
     loaded.setCurrentLayer(root.value(QStringLiteral("currentLayer")).toInt(-1));

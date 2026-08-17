@@ -27,6 +27,26 @@
    <item>
     <layout class="QHBoxLayout" name="playbackLayout">
      <item>
+      <widget class="QLabel" name="FpsLabel">
+       <property name="text">
+        <string>FPS</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QComboBox" name="FpsCombo">
+       <property name="editable">
+        <bool>true</bool>
+       </property>
+       <property name="toolTip">
+        <string>Playback rate. Pick a shooting cadence or type any frames-per-second value.</string>
+       </property>
+       <property name="insertPolicy">
+        <enum>QComboBox::InsertPolicy::NoInsert</enum>
+       </property>
+      </widget>
+     </item>
+     <item>
       <widget class="QPushButton" name="PlayButton">
        <property name="text">
         <string>Play</string>
@@ -51,6 +71,16 @@
       <widget class="QPushButton" name="AddFrameButton">
        <property name="text">
         <string>Add Frame</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="AddHoldFrameButton">
+       <property name="text">
+        <string>Add Hold (O)</string>
+       </property>
+       <property name="toolTip">
+        <string>Hold the last frame: the new frame shows the same drawing, and editing either one changes both.</string>
        </property>
       </widget>
      </item>

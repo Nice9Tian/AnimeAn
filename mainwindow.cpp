@@ -7,6 +7,8 @@
 #include "childrenpanel/historypanel.h"
 #include "childrenpanel/layerpanel.h"
 #include "childrenpanel/newprojectdialog.h"
+
+#include <QComboBox>
 #include "clipreader.h"
 #include "openglwidget.h"
 #include "paintviewcontainer.h"
@@ -599,6 +601,8 @@ void MainWindow::startPlayback()
     view->showPlaybackFrame(m_playbackIndex);
     m_framePanel->playButton()->setEnabled(false);
     m_framePanel->pauseButton()->setEnabled(true);
+    // The rate comes from the document being played, not from a constant.
+    m_playbackTimer->setInterval(1000 / view->model().playbackFps());
     m_playbackTimer->start();
     setStatusText(QStringLiteral("Playing %1 frames of %2 at %3 fps (prerendered)")
                       .arg(frameCount)
@@ -1340,6 +1344,9 @@ void MainWindow::refreshPanelTargets()
     refreshFrameList(attentionFor(framePanelTarget()).frame);
     refreshLayerList(attentionFor(layerPanelTarget()).layer);
     refreshAssetList(attentionFor(assetPanelTarget()).asset);
+    // The rate is per document, so it follows whichever view the Frames panel
+    // is pointed at - and it has to resync after a load or an undo too.
+    refreshFpsCombo();
 }
 
 void MainWindow::setupListDragDrop()
@@ -1752,6 +1759,14 @@ void MainWindow::setupConnections()
                         frameIndex, attentionFor(view).layer, attentionFor(view).asset);
     });
 
+    connect(m_framePanel->addHoldButton(), &QPushButton::clicked, this, [this]() {
+        stopPlayback();
+        PaintOpenGLWidget *view = framePanelTarget();
+        const int frameIndex = view->addHoldFrame();
+        updateAttention(view, AttentionChange::FrameChange,
+                        frameIndex, attentionFor(view).layer, attentionFor(view).asset);
+    });
+
     connect(m_framePanel->deleteButton(), &QPushButton::clicked, this, [this]() {
         stopPlayback();
         const int row = m_framePanel->frameList()->currentRow();
@@ -1768,6 +1783,30 @@ void MainWindow::setupConnections()
     connect(m_playbackTimer, &QTimer::timeout, this, &MainWindow::advancePlaybackFrame);
     connect(m_framePanel->playButton(), &QPushButton::clicked, this, &MainWindow::startPlayback);
     connect(m_framePanel->pauseButton(), &QPushButton::clicked, this, &MainWindow::stopPlayback);
+
+    // The rate belongs to the document, so both the preset list and a typed
+    // number land in the model; the panel then re-reads it, which normalises
+    // whatever was typed back into the canonical text.
+    auto applyFps = [this]() {
+        if (m_refreshingLists) {
+            return;
+        }
+        PaintOpenGLWidget *view = framePanelTarget();
+        const int current = view->model().playbackFps();
+        const int fps = FramePanel::fpsForComboText(m_framePanel->fpsCombo()->currentText(), current);
+        if (fps != current) {
+            view->model().setPlaybackFps(fps);
+            view->commitHistory(QStringLiteral("Playback Rate"));
+        }
+        refreshFpsCombo();
+        if (m_playbackTimer->isActive()) {
+            m_playbackTimer->setInterval(1000 / fps);
+        }
+        setStatusText(QStringLiteral("Playback: %1 fps").arg(fps));
+    };
+    connect(m_framePanel->fpsCombo(), &QComboBox::activated, this, [applyFps](int) { applyFps(); });
+    connect(m_framePanel->fpsCombo()->lineEdit(), &QLineEdit::editingFinished, this, applyFps);
+    refreshFpsCombo();
 
     connect(m_assetPanel->addButton(), &QPushButton::clicked, this, [this]() {
         PaintOpenGLWidget *view = assetPanelTarget();
@@ -3037,6 +3076,27 @@ void MainWindow::refreshLayerList(int selectedRow)
     m_refreshingLists = false;
 }
 
+void MainWindow::refreshFpsCombo()
+{
+    QComboBox *combo = m_framePanel->fpsCombo();
+    const int fps = framePanelTarget()->model().playbackFps();
+    const QString text = FramePanel::comboTextForFps(fps);
+    if (combo->currentText() == text) {
+        return;
+    }
+    const bool wasRefreshing = m_refreshingLists;
+    m_refreshingLists = true;
+    const QSignalBlocker blocker(combo);
+    const int index = combo->findText(text);
+    if (index >= 0) {
+        combo->setCurrentIndex(index);
+    } else {
+        combo->setCurrentIndex(-1);
+        combo->setEditText(text);
+    }
+    m_refreshingLists = wasRefreshing;
+}
+
 void MainWindow::refreshFrameList(int selectedRow)
 {
     PaintOpenGLWidget *view = framePanelTarget();
@@ -3049,7 +3109,17 @@ void MainWindow::refreshFrameList(int selectedRow)
     const int scroll = list->verticalScrollBar()->value();
     list->clear();
     for (int i = 0; i < view->frameCount(); ++i) {
-        list->addItem(view->frameName(i));
+        // "O" marks a HELD frame - one that shows the row above's drawing
+        // rather than one of its own. Derived from the cells every refresh,
+        // so it disappears the moment the frame stops holding.
+        const bool hold = view->model().isHoldFrame(i);
+        list->addItem(hold ? QStringLiteral("%1   O").arg(view->frameName(i))
+                           : view->frameName(i));
+        if (hold) {
+            list->item(list->count() - 1)->setToolTip(
+                QStringLiteral("Held: shows the same drawing as frame %1. "
+                               "Editing either one changes both.").arg(i));
+        }
     }
     if (list->count() > 0) {
         if (selectedRow < 0) {
