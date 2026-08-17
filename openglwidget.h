@@ -175,6 +175,10 @@ private:
         QString id;
         QColor badgeColor;
         QRectF rect;
+        // Union of every part drawn under this id, and whether the badge
+        // follows it (closed items) or an end point (open ones).
+        QRectF extent;
+        bool anchorIsExtent = false;
     };
 
     enum class AxisSnapState {

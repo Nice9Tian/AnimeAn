@@ -119,7 +119,12 @@ GRID_COLOR = (255, 140, 0, 170)
 #                warp's local directional derivative, splitting adaptively
 #                where that is not accurate enough (route 2: migrate handles).
 CURVE_MODES = ("polyline", "spline", "bezier")
-_CURVE_MODE = {"value": "spline"}
+# Bezier is the default: it carries the stroke's OWN curve segments through the
+# warp instead of resampling it into points and fitting a new curve through
+# them, so the output keeps the geometry the artist drew rather than an
+# approximation of it.
+DEFAULT_CURVE_MODE = "bezier"
+_CURVE_MODE = {"value": DEFAULT_CURVE_MODE}
 
 # Curve-fitting tolerances, all in canvas (main-view) pixels.
 _CURVE_TOL = 0.4        # max chord/handle deviation before subdividing further
@@ -3082,7 +3087,7 @@ def _perform_mapping():
     main = _scene_model("main")
     mode = curve_mode()
     if mode not in _EMITTERS:
-        mode = "spline"
+        mode = DEFAULT_CURVE_MODE
 
     child_frame = max(child.current_frame(), 0)
     main_frame = max(main.current_frame(), 0)

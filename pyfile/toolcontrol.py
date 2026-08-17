@@ -137,7 +137,9 @@ def options_for_extra_tool(tool, state=None):
             seal = "on" if auto_mapping.fold_seal_enabled() else "off"
             shade = max(0, min(100, int(round((auto_mapping.fold_back_color()[0] - 20) / 2.0))))
         except Exception:
-            mode = "spline"
+            # Matches auto_mapping.DEFAULT_CURVE_MODE; only reached when that
+            # module could not be imported at all.
+            mode = "bezier"
             rdp_tenths = 3
             refer = "off"
             split = "on"
@@ -153,9 +155,10 @@ def options_for_extra_tool(tool, state=None):
                 "row": 0,
                 "start_column": 0,
                 "end_column": 2,
+                # Default first.
                 "options": [
-                    {"title": "Spline", "value": "spline"},
                     {"title": "Bezier", "value": "bezier"},
+                    {"title": "Spline", "value": "spline"},
                     {"title": "Polyline", "value": "polyline"},
                 ],
             },

@@ -1397,16 +1397,39 @@ void PaintOpenGLWidget::paintOverlayItems(QPainter &painter)
         painter.drawPath(path);
 
         if (item.removable) {
+            // ONE badge per id, not per item. A badge means "remove the thing
+            // called <id>", and an id can legitimately arrive as several
+            // items: a mapping area detected around a shape with a hole comes
+            // back as one polygon per subpath, and every one of them was
+            // getting its own x - several badges that all did the same thing.
+            // Later parts only widen the extent the single badge sits on.
+            int existing = -1;
+            for (int i = 0; i < m_overlayHandles.size(); ++i) {
+                if (m_overlayHandles[i].id == item.id) {
+                    existing = i;
+                    break;
+                }
+            }
+            if (existing >= 0) {
+                m_overlayHandles[existing].extent |= path.boundingRect();
+                if (m_overlayHandles[existing].anchorIsExtent) {
+                    m_overlayHandles[existing].rect =
+                        overlayHandleRect(m_overlayHandles[existing].extent.topRight());
+                }
+                continue;
+            }
             OverlayHandle handle;
             handle.id = item.id;
             handle.badgeColor = item.strokeColor;
+            handle.extent = path.boundingRect();
             // Anchored on the item's END POINT, not on its bounding box. For a
             // roughly horizontal guide the box's top-right corner happens to
             // sit near the end and the badge looked right; for a vertical one
             // it is the START of the line instead, which is why the green V
             // guide carried its x at the wrong end. A CLOSED item (the mapping
             // area) has no meaningful end, so it keeps the box corner.
-            handle.rect = overlayHandleRect(item.closed ? path.boundingRect().topRight()
+            handle.anchorIsExtent = item.closed;
+            handle.rect = overlayHandleRect(item.closed ? handle.extent.topRight()
                                                         : item.points.last());
             m_overlayHandles.append(handle);
         }
