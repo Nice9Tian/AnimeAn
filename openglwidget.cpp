@@ -2304,41 +2304,84 @@ bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
     // Walls: every OTHER stroke of this layer. The target is excluded, so a
     // stroke that crosses itself is not chopped at its own crossing - the
     // user asked for crossings with the other lines.
-    QVector<QLineF> walls;
+    QVector<VectorStroke> walls;
+    QVector<int> wallStrokeIndex;
     for (int i = 0; i < image->strokeCount(); ++i) {
         if (i == targetIndex) {
             continue;
         }
-        const VectorStroke &other = image->strokeAt(i);
-        for (int k = 0; k + 1 < other.points.size(); ++k) {
-            walls.append(QLineF(other.points[k], other.points[k + 1]));
-        }
+        walls.append(image->strokeAt(i));
+        wallStrokeIndex.append(i);
     }
 
     const VectorStroke target = image->strokeAt(targetIndex);
-    AnimeVectorRange span;
-    if (!AnimeVectorLogic::cutSpanAt(target, walls, pos, &span)) {
+    AnimeCutPlan plan;
+    if (!AnimeVectorLogic::planCutAt(target, walls, pos, &plan)) {
         return false;
+    }
+
+    // A junction belongs to BOTH lines. Where a bound of the cut is a real
+    // crossing, that wall is divided there too, so the point that just became
+    // an endpoint of the target is an endpoint of its neighbour as well -
+    // otherwise the wall still runs whole through a junction the drawing no
+    // longer has. Only the one or two walls that BOUNDED this cut are
+    // divided; every other stroke the target happens to cross is left alone.
+    QHash<int, QVector<qreal>> wallCuts;
+    for (const AnimeStrokeCrossing *bound : {&plan.low, &plan.high}) {
+        if (bound->wallIndex >= 0 && bound->wallIndex < wallStrokeIndex.size()) {
+            wallCuts[wallStrokeIndex[bound->wallIndex]].append(bound->wallArc);
+        }
     }
 
     QVector<VectorStroke> pieces;
     for (const AnimeVectorRange &keep :
-         AnimeVectorLogic::complementRanges({span})) {
+         AnimeVectorLogic::complementRanges({plan.span})) {
         pieces.append(AnimeVectorLogic::subStroke(target, keep.first, keep.second, m_smoothValue));
     }
+
+    // Highest index first: every replacement renumbers the strokes after it,
+    // so editing downwards keeps the indices collected above valid. Both
+    // bounds landing on the SAME wall arrive as one entry with two arcs, so
+    // that wall is divided into three in a single pass rather than having its
+    // second arc measured against a stroke the first pass already replaced.
+    QVector<int> editOrder = wallCuts.keys();
+    std::sort(editOrder.begin(), editOrder.end(), std::greater<int>());
+    bool changed = false;
+    int currentTarget = targetIndex;
+    for (int strokeIndex : editOrder) {
+        const QVector<VectorStroke> wallPieces = AnimeVectorLogic::splitStrokeAt(
+            image->strokeAt(strokeIndex), wallCuts[strokeIndex], m_smoothValue);
+        if (wallPieces.size() < 2) {
+            continue;   // the crossing was already at one of the wall's ends
+        }
+        const int inserted = image->replaceStrokeWithPieces(strokeIndex, wallPieces);
+        if (inserted <= 0) {
+            continue;
+        }
+        changed = true;
+        // One stroke out, `inserted` in, so everything after this index moves
+        // by inserted - 1. Only edits BELOW the target move the target, and
+        // the count is exact - no re-finding it by guesswork.
+        if (strokeIndex < currentTarget) {
+            currentTarget += inserted - 1;
+        }
+    }
+
     // No surviving piece means the cut spans the whole stroke (no crossing on
     // either side): removing it outright is the same rule, and going through
     // replaceStrokeWithPieces with an empty list would report "no change".
     if (pieces.isEmpty()) {
-        image->removeStrokeAt(targetIndex);
+        image->removeStrokeAt(currentTarget);
         removeInvalidFillRegions();
         return true;
     }
-    if (image->replaceStrokeWithPieces(targetIndex, pieces) <= 0) {
-        return false;
+    if (image->replaceStrokeWithPieces(currentTarget, pieces) > 0) {
+        changed = true;
     }
-    removeInvalidFillRegions();
-    return true;
+    if (changed) {
+        removeInvalidFillRegions();
+    }
+    return changed;
 }
 
 bool PaintOpenGLWidget::deleteLineAt(const QPointF &pos)

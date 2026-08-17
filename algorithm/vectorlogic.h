@@ -16,6 +16,24 @@ struct AnimeVectorRange {
     qreal second = 1.0;
 };
 
+// One place where a stroke crosses another. Carries BOTH sides of the
+// junction: where it sits on the stroke being cut, and where it sits on the
+// wall it crossed - a junction belongs to two lines, and a cut that only ever
+// knows about one of them leaves the other running whole through a point that
+// has just become its neighbour's endpoint.
+struct AnimeStrokeCrossing {
+    qreal arc = 0.0;       // normalised position along the cut stroke
+    int wallIndex = -1;    // index into the walls vector, -1 for "a stroke end"
+    qreal wallArc = 0.0;   // normalised position along that wall
+};
+
+// What a CutMode click removes, and which junctions bounded it.
+struct AnimeCutPlan {
+    AnimeVectorRange span;      // the arc range to remove from the target
+    AnimeStrokeCrossing low;    // wallIndex < 0 when this bound is the start
+    AnimeStrokeCrossing high;   // wallIndex < 0 when this bound is the end
+};
+
 // 1 Euro filter over a 2D input stream, with phase-lag compensation.
 //
 // The classic adaptive lowpass: the cutoff frequency follows the FILTERED
@@ -90,12 +108,13 @@ QVector<AnimeVectorRange> keepRangesForCircle(const AnimeVectorStroke &stroke, c
 QVector<AnimeVectorRange> keepRangesForCapsule(const AnimeVectorStroke &stroke, const QPointF &from, const QPointF &to, qreal radius);
 QVector<AnimeVectorRange> complementRanges(const QVector<AnimeVectorRange> &eraseRanges);
 
-// Normalised arc positions along `stroke` where it crosses any of `walls`.
-// Sorted, de-duplicated within `mergeTolerance` of arc (a crossing found on
-// two adjoining segments is one crossing).
-QVector<qreal> strokeCrossings(const AnimeVectorStroke &stroke,
-                               const QVector<QLineF> &walls,
-                               qreal mergeTolerance = 1e-4);
+// One place where a stroke crosses another. Carries BOTH sides of the
+// Every crossing of `stroke` with `walls`, sorted by arc along `stroke` and
+// de-duplicated within `mergeTolerance` (a crossing that lands on a shared
+// vertex is found by both adjoining segments and is still one crossing).
+QVector<AnimeStrokeCrossing> strokeCrossings(const AnimeVectorStroke &stroke,
+                                             const QVector<AnimeVectorStroke> &walls,
+                                             qreal mergeTolerance = 1e-4);
 
 // The span to cut out of `stroke` for a CutMode click at `pos`: the piece
 // between the crossing before the click and the crossing after it.
@@ -109,10 +128,26 @@ QVector<qreal> strokeCrossings(const AnimeVectorStroke &stroke,
 // one, not a special case.
 //
 // Returns false when the stroke has no length (nothing to cut).
+bool planCutAt(const AnimeVectorStroke &stroke,
+               const QVector<AnimeVectorStroke> &walls,
+               const QPointF &pos,
+               AnimeCutPlan *plan);
+
+// The span alone, for callers that do not care which junctions bounded it.
 bool cutSpanAt(const AnimeVectorStroke &stroke,
-               const QVector<QLineF> &walls,
+               const QVector<AnimeVectorStroke> &walls,
                const QPointF &pos,
                AnimeVectorRange *span);
+
+// Splits `stroke` at each normalised arc in `arcs`, in order. Arcs within
+// `endTolerance` of either end are ignored: there is nothing to divide at a
+// point that already IS an endpoint, and splitting there would only shed a
+// degenerate sliver. Returns the stroke unchanged (one piece) when no arc
+// survives that test.
+QVector<AnimeVectorStroke> splitStrokeAt(const AnimeVectorStroke &stroke,
+                                         QVector<qreal> arcs,
+                                         int smoothValue = 50,
+                                         qreal endTolerance = 1e-3);
 AnimeVectorStroke subStroke(const AnimeVectorStroke &stroke, qreal fromW, qreal toW, int smoothValue = 50);
 QPointF pointAtLength(const AnimeVectorStroke &stroke, qreal length);
 
