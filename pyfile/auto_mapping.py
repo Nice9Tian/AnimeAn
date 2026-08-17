@@ -281,7 +281,13 @@ def _load_assets(view_name):
         elif prop in GUIDE_PROPERTIES:
             points = [(float(p[0]), float(p[1])) for p in item.get("points") or []]
             if len(points) >= 2:
-                assets[prop] = {"points": points, "width": float(item.get("width", 3.0))}
+                loaded = {"points": points, "width": float(item.get("width", 3.0))}
+                # Curve guides round-trip: dropping the commands here would
+                # silently demote every guide to its flattening on the first
+                # undo or project load.
+                if item.get("commands"):
+                    loaded["commands"] = item["commands"]
+                assets[prop] = loaded
     _MAPPING_ASSETS[view_name] = assets
     _overlays_changed(view_name)
 
@@ -481,24 +487,277 @@ def _arc_sides(total, crossing_arc):
     return max(crossing_arc, floor), max(total - crossing_arc, floor)
 
 
+# 8-node Gauss-Legendre on [-1, 1]: exact for polynomials to degree 15. The
+# speed |r'(t)| of a cubic is not a polynomial, but on the few-px segments the
+# smoother emits its quadrature error is far below machine-relevant scales.
+_GL8 = ((-0.9602898564975363, 0.1012285362903763),
+        (-0.7966664774136267, 0.2223810344533745),
+        (-0.5255324099163290, 0.3137066458778873),
+        (-0.1834346424956498, 0.3626837833783620),
+        (0.1834346424956498, 0.3626837833783620),
+        (0.5255324099163290, 0.3137066458778873),
+        (0.7966664774136267, 0.2223810344533745),
+        (0.9602898564975363, 0.1012285362903763))
+
+# Per-segment arc<->t lookup resolution. Slices are ~seg/16 long and the speed
+# barely varies across one, so inverting by linear interpolation in the table
+# mis-parameterizes by well under 1e-3 px while every returned POINT still
+# lies exactly on the curve - the error is where along the curve, never off it.
+_CURVE_LUT = 16
+
+
+class _Curve:
+    """One guide: a chain of line/cubic segments with a Gauss-Legendre arc table.
+
+    Two modes. A plain point list stays a POLYLINE and delegates to the exact
+    module functions the frame always used, so every existing polyline guide
+    (straight tests, legacy scriptData, stored axis snapshots) reproduces the
+    previous arithmetic bit for bit. `commands` - the stroke's real mixed
+    line/Bezier path, which capture now keeps - switch the guide to CURVE
+    mode: arc length comes from GL(8) per t-slice instead of summed chords,
+    and points/tangents are evaluated on the true curve. That is the honest
+    fix for the flattening error: geometry and integral upgrade TOGETHER, so
+    endpoint anchoring (spec 4.2) keeps holding exactly - patching only the
+    integral was measured to overshoot the drawn guide end by 0.56 px.
+    """
+
+    def __init__(self, points, commands=None):
+        cubics = []
+        if commands:
+            subpaths = _commands_to_subpaths(commands)
+            if subpaths:
+                cubics = [cubic for cubic in subpaths[0]
+                          if _dist(cubic[0], cubic[3]) > 1e-12
+                          or _dist(cubic[0], cubic[1]) > 1e-12
+                          or _dist(cubic[2], cubic[3]) > 1e-12]
+        self.curved = bool(cubics)
+        if not self.curved:
+            self.points = [(float(p[0]), float(p[1])) for p in points]
+            self.cum = _cumulative_lengths(self.points)
+            self.total = self.cum[-1]
+            self.knots = self.cum
+            # Every vertex lies on the "curve" (the polyline itself) and its
+            # chord arc IS its arc, so the flattening table is the cum table.
+            # Needed because a frame may pair a curve guide with a polyline
+            # one (legacy asset, axis snapshot, absorbed guide) and the
+            # crossing search then runs on both flattenings alike.
+            self.flat_arcs = self.cum
+            return
+
+        # --- curve mode ---
+        self.segs = cubics
+        self.luts = []
+        self.cum = [0.0]
+        for p0, c1, c2, p3 in cubics:
+            lut = [0.0]
+            for k in range(_CURVE_LUT):
+                a = k / _CURVE_LUT
+                b = (k + 1) / _CURVE_LUT
+                half, mid = (b - a) * 0.5, (a + b) * 0.5
+                length = half * sum(w * self._speed(p0, c1, c2, p3, mid + half * x)
+                                    for x, w in _GL8)
+                lut.append(lut[-1] + length)
+            self.luts.append(lut)
+            self.cum.append(self.cum[-1] + lut[-1])
+        self.total = self.cum[-1]
+        self.knots = self.cum
+        # A flattening for crossing seeds and any consumer that wants a point
+        # list; every vertex lies exactly on the curve, and flat_arcs carries
+        # its TRUE arc position so seeds convert into curve coordinates.
+        self.points = []
+        self.flat_arcs = []
+        for index, (p0, c1, c2, p3) in enumerate(cubics):
+            net = _dist(p0, c1) + _dist(c1, c2) + _dist(c2, p3)
+            count = max(1, int(math.ceil(net / POLY_STEP)))
+            start = 0 if index == 0 else 1
+            for k in range(start, count + 1):
+                t = k / count
+                self.points.append(_cubic_point((p0, c1, c2, p3), t))
+                self.flat_arcs.append(self.cum[index] + self._partial(index, t))
+
+    @staticmethod
+    def of(spec):
+        """Build from a guide spec: a bare point list, or an asset dict
+        {"points": ..., "commands": ...} (commands optional)."""
+        if isinstance(spec, dict):
+            return _Curve(spec.get("points") or [], spec.get("commands"))
+        return _Curve(spec)
+
+    @staticmethod
+    def _speed(p0, c1, c2, p3, t):
+        mt = 1.0 - t
+        dx = (3.0 * mt * mt * (c1[0] - p0[0]) + 6.0 * mt * t * (c2[0] - c1[0])
+              + 3.0 * t * t * (p3[0] - c2[0]))
+        dy = (3.0 * mt * mt * (c1[1] - p0[1]) + 6.0 * mt * t * (c2[1] - c1[1])
+              + 3.0 * t * t * (p3[1] - c2[1]))
+        return math.hypot(dx, dy)
+
+    def _partial(self, index, t):
+        """Arc from the segment's start to parameter t (GL on the last slice)."""
+        lut = self.luts[index]
+        slot = min(_CURVE_LUT - 1, int(t * _CURVE_LUT))
+        a = slot / _CURVE_LUT
+        half, mid = (t - a) * 0.5, (t + a) * 0.5
+        p0, c1, c2, p3 = self.segs[index]
+        if half > 0.0:
+            tail = half * sum(w * self._speed(p0, c1, c2, p3, mid + half * x)
+                              for x, w in _GL8)
+        else:
+            tail = 0.0
+        return lut[slot] + tail
+
+    def _locate(self, arc):
+        """(segment index, t) for an interior arc position."""
+        index = bisect.bisect_right(self.cum, arc) - 1
+        index = max(0, min(index, len(self.segs) - 1))
+        local = arc - self.cum[index]
+        lut = self.luts[index]
+        slot = bisect.bisect_right(lut, local) - 1
+        slot = max(0, min(slot, _CURVE_LUT - 1))
+        span = lut[slot + 1] - lut[slot]
+        frac = 0.0 if span <= 0.0 else (local - lut[slot]) / span
+        return index, (slot + frac) / _CURVE_LUT
+
+    def _seg_dir(self, index, t):
+        p0, c1, c2, p3 = self.segs[index]
+        mt = 1.0 - t
+        dx = (3.0 * mt * mt * (c1[0] - p0[0]) + 6.0 * mt * t * (c2[0] - c1[0])
+              + 3.0 * t * t * (p3[0] - c2[0]))
+        dy = (3.0 * mt * mt * (c1[1] - p0[1]) + 6.0 * mt * t * (c2[1] - c1[1])
+              + 3.0 * t * t * (p3[1] - c2[1]))
+        length = math.hypot(dx, dy)
+        if length <= 1e-12:
+            # degenerate derivative (a stubby control net): fall back to the
+            # segment chord, mirroring _segment_direction's guard
+            return _segment_direction([p0, p3], 0)
+        return dx / length, dy / length
+
+    def point_at(self, arc):
+        if not self.curved:
+            return _point_at_arc(self.points, self.cum, arc)
+        if arc <= 0.0:
+            dx, dy = self._seg_dir(0, 0.0)
+            p = self.segs[0][0]
+            return (p[0] + dx * arc, p[1] + dy * arc)
+        if arc >= self.total:
+            dx, dy = self._seg_dir(len(self.segs) - 1, 1.0)
+            p = self.segs[-1][3]
+            extra = arc - self.total
+            return (p[0] + dx * extra, p[1] + dy * extra)
+        index, t = self._locate(arc)
+        return _cubic_point(self.segs[index], t)
+
+    def dir_at(self, arc):
+        """Exact unit tangent at the arc position (end tangents outside)."""
+        if not self.curved:
+            return _direction_at_arc(self.points, self.cum, arc)
+        if arc <= 0.0:
+            return self._seg_dir(0, 0.0)
+        if arc >= self.total:
+            return self._seg_dir(len(self.segs) - 1, 1.0)
+        index, t = self._locate(arc)
+        return self._seg_dir(index, t)
+
+    def tangent_at(self, arc, window=0.0):
+        """Window-smoothed tangent; window 0 is the exact curve tangent."""
+        if not self.curved:
+            return _tangent_at_arc(self.points, self.cum, arc, window)
+        if window > 0.0:
+            before = self.point_at(arc - window)
+            after = self.point_at(arc + window)
+            dx, dy = after[0] - before[0], after[1] - before[1]
+            length = math.hypot(dx, dy)
+            if length > 1e-9:
+                return (dx / length, dy / length)
+        return self.dir_at(arc)
+
+
+def _curve_crossing(gh, gv):
+    """(point, arc_on_h, arc_on_v) where two CURVE guides cross.
+
+    Seeded on the flattenings (whose vertices lie exactly on the curves and
+    carry their true arc positions), then converged onto the curves by a 2x2
+    Newton in (arc_h, arc_v). Transversal crossings converge in a few steps;
+    if the iteration will not settle, the flattening seed - already within a
+    chord's deviation of the truth - is kept.
+    """
+    a, b = gh.points, gv.points
+    seed = None
+    eps = 1e-6
+    for i in range(len(a) - 1):
+        for j in range(len(b) - 1):
+            hit = _segment_intersection(a[i], a[i + 1], b[j], b[j + 1])
+            if hit is None:
+                continue
+            t, u = hit
+            if -eps <= t <= 1.0 + eps and -eps <= u <= 1.0 + eps:
+                t = min(max(t, 0.0), 1.0)
+                u = min(max(u, 0.0), 1.0)
+                seed = (gh.flat_arcs[i] + (gh.flat_arcs[i + 1] - gh.flat_arcs[i]) * t,
+                        gv.flat_arcs[j] + (gv.flat_arcs[j + 1] - gv.flat_arcs[j]) * u)
+                break
+        if seed is not None:
+            break
+    if seed is None:
+        best = None
+        for i, pa in enumerate(a):
+            for j, pb in enumerate(b):
+                distance = math.hypot(pa[0] - pb[0], pa[1] - pb[1])
+                if best is None or distance < best[0]:
+                    best = (distance, i, j)
+        _, i, j = best
+        point = ((a[i][0] + b[j][0]) * 0.5, (a[i][1] + b[j][1]) * 0.5)
+        return point, gh.flat_arcs[i], gv.flat_arcs[j]
+
+    arc_h, arc_v = seed
+    for _ in range(12):
+        ph = gh.point_at(arc_h)
+        pv = gv.point_at(arc_v)
+        fx, fy = ph[0] - pv[0], ph[1] - pv[1]
+        if math.hypot(fx, fy) <= 1e-10:
+            break
+        hx, hy = gh.dir_at(arc_h)
+        vx, vy = gv.dir_at(arc_v)
+        # solve [hx -vx; hy -vy] [dh dv]^T = -[fx fy]^T by Cramer
+        det = vx * hy - hx * vy
+        if abs(det) < 1e-12:
+            break
+        step_h = (fx * vy - fy * vx) / det
+        step_v = (fx * hy - fy * hx) / det
+        if abs(step_h) > gh.total or abs(step_v) > gv.total:
+            break
+        arc_h = min(max(arc_h + step_h, 0.0), gh.total)
+        arc_v = min(max(arc_v + step_v, 0.0), gv.total)
+    return gh.point_at(arc_h), arc_h, arc_v
+
+
 class _Frame:
     """One board's HV frame: two crossing guides plus the coordinate system
     they induce. `hv` is THE shared reconstruction function - child and main
-    differ only in the point lists handed to it.
+    differ only in the guides handed to it.
 
     Coordinates (l_h, l_v) are SIGNED ARC LENGTHS measured from the crossing
-    along each guide. Arc length (not chord projection) is what makes the
-    child side symmetric with the main side; see build_mapper.
+    along each guide - on the CURVE when the guide carries its commands
+    (Gauss-Legendre tables in _Curve), on the polyline otherwise. Arc length
+    (not chord projection) is what makes the child side symmetric with the
+    main side; see build_mapper.
     """
 
-    def __init__(self, h_points, v_points):
-        self.h = h_points
-        self.v = v_points
-        self.h_cum = _cumulative_lengths(h_points)
-        self.v_cum = _cumulative_lengths(v_points)
-        self.h_total = self.h_cum[-1]
-        self.v_total = self.v_cum[-1]
-        self.origin, self.h_arc, self.v_arc = _polyline_intersection(h_points, v_points)
+    def __init__(self, h_spec, v_spec):
+        self.gh = _Curve.of(h_spec)
+        self.gv = _Curve.of(v_spec)
+        # The flattenings stay exposed: crossing seeds, direction arrows and
+        # the chord-basis Newton seed all read plain point lists.
+        self.h = self.gh.points
+        self.v = self.gv.points
+        self.h_cum = self.gh.cum
+        self.v_cum = self.gv.cum
+        self.h_total = self.gh.total
+        self.v_total = self.gv.total
+        if self.gh.curved or self.gv.curved:
+            self.origin, self.h_arc, self.v_arc = _curve_crossing(self.gh, self.gv)
+        else:
+            self.origin, self.h_arc, self.v_arc = _polyline_intersection(self.h, self.v)
         # Outward extent on each side of the crossing, floored at 1% so a
         # T-shaped crossing cannot divide by (nearly) zero. The RAW values are
         # kept too: the floored ones cannot tell "collapsed side" apart from
@@ -507,39 +766,43 @@ class _Frame:
         self.v_side = _arc_sides(self.v_total, self.v_arc)
         self.h_side_raw = (self.h_arc, self.h_total - self.h_arc)
         self.v_side_raw = (self.v_arc, self.v_total - self.v_arc)
-        # Orientation tests compare guide DIRECTIONS, and a hand-drawn polyline's
-        # per-segment tangents jitter enough to flip that comparison several
-        # times within a few px - measured on a real 301-point guide, the fold
-        # count oscillated between 2 and 4 eleven times along V, which shredded
-        # the output into fragments and tangled the crease. Smoothing the
-        # direction over an arc window (the rule the direction arrows already
-        # use) removes the flicker and leaves the real bend intact: an 8 px
-        # window was enough to make the count constant, and a 65 px one does
-        # not move the fold position further.
+        # Orientation tests compare guide DIRECTIONS, and the raw per-sample
+        # directions of a hand-drawn guide jitter enough to flip that
+        # comparison several times within a few px - measured on a real
+        # 301-point guide, the fold count oscillated between 2 and 4 eleven
+        # times along V, which shredded the output and tangled the crease.
+        # CURVE guides keep the window too: the smoother's quad chain is
+        # tangent-CONTINUOUS, but its tangent at every joint is exactly
+        # (p_i - p_{i-1})/2 - the raw inter-sample direction, i.e. the very
+        # jitter signal, merely interpolated continuously between joints.
+        # Continuity is not smoothness; zeroing the window here was measured
+        # to reverse the joint-to-joint heading 17 times over 161 joints.
+        # (The window only feeds orientation tests; the Newton solve keeps
+        # the exact tangents via jacobian/dir_at.)
         self.h_window = max(2.0 * POLY_STEP, 0.03 * self.h_total)
         self.v_window = max(2.0 * POLY_STEP, 0.03 * self.v_total)
 
     def directions(self, l_h, l_v):
         """Window-smoothed guide directions, for ORIENTATION tests only.
 
-        Never for the Newton solve in `solve`: there the exact per-segment
-        tangent is the true derivative of `hv`, and smoothing it would break
-        convergence.
+        Never for the Newton solve in `solve`: there the exact tangent is the
+        true derivative of `hv`, and smoothing it would break convergence.
+        (On curve guides the window is zero and these ARE the exact tangents.)
         """
-        return (_tangent_at_arc(self.h, self.h_cum, self.h_arc + l_h, self.h_window),
-                _tangent_at_arc(self.v, self.v_cum, self.v_arc + l_v, self.v_window))
+        return (self.gh.tangent_at(self.h_arc + l_h, self.h_window),
+                self.gv.tangent_at(self.v_arc + l_v, self.v_window))
 
     def hv(self, l_h, l_v):
         """H(l_h) + V(l_v) - O: the Coons patch in its collapsed form."""
-        on_h = _point_at_arc(self.h, self.h_cum, self.h_arc + l_h)
-        on_v = _point_at_arc(self.v, self.v_cum, self.v_arc + l_v)
+        on_h = self.gh.point_at(self.h_arc + l_h)
+        on_v = self.gv.point_at(self.v_arc + l_v)
         return (on_h[0] + on_v[0] - self.origin[0],
                 on_h[1] + on_v[1] - self.origin[1])
 
     def jacobian(self, l_h, l_v):
         """Columns of d(hv)/d(l_h, l_v): the two guide tangents."""
-        return (_direction_at_arc(self.h, self.h_cum, self.h_arc + l_h),
-                _direction_at_arc(self.v, self.v_cum, self.v_arc + l_v))
+        return (self.gh.dir_at(self.h_arc + l_h),
+                self.gv.dir_at(self.v_arc + l_v))
 
     def solve(self, point, guess_h, guess_v, iterations=24, tol=1e-7):
         """Invert hv: find (l_h, l_v) with hv(l_h, l_v) == point.
@@ -636,8 +899,13 @@ def _transfer_scales(child_raw, child_total, main_side):
             (1.0 - w_pos) * base_neg + w_pos * base_pos)
 
 
-def build_mapper(child_h_points, child_v_points, main_h_points, main_v_points, info=None):
+def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None):
     """Build point mapper from the child frame to the main frame.
+
+    Each guide spec is a bare point list (polyline guide - chord arithmetic,
+    bit-identical to the previous implementation) or an asset dict whose
+    optional "commands" carry the stroke's real mixed line/Bezier path, on
+    which the frame then evaluates with Gauss-Legendre arc tables (_Curve).
 
     Returns (map_point, width_scale) or (None, reason).
 
@@ -672,11 +940,18 @@ def build_mapper(child_h_points, child_v_points, main_h_points, main_v_points, i
     given, receives h/v_scale_mismatch). Stroke width uses one global
     geometric-mean scale - an approximation once the sides differ.
     """
+    def spec_points(spec):
+        return spec["points"] if isinstance(spec, dict) else spec
+
+    child_h_points = spec_points(child_h_spec)
+    child_v_points = spec_points(child_v_spec)
+    main_h_points = spec_points(main_h_spec)
+    main_v_points = spec_points(main_v_spec)
     if min(len(child_h_points), len(child_v_points), len(main_h_points), len(main_v_points)) < 2:
         return None, "a center line has fewer than 2 points"
 
-    child = _Frame(child_h_points, child_v_points)
-    main = _Frame(main_h_points, main_v_points)
+    child = _Frame(child_h_spec, child_v_spec)
+    main = _Frame(main_h_spec, main_v_spec)
     if child.h_total <= 1e-9 or child.v_total <= 1e-9:
         return None, "child center lines are degenerate"
     if main.h_total <= 1e-9 or main.v_total <= 1e-9:
@@ -1035,16 +1310,23 @@ def _catmull_rom_cubics(knots, alpha=_CATMULL_ALPHA):
 def _structural_knots(map_point, a, b):
     """Parameters in (0,1) where the map stops being affine along a->b.
 
-    The map is H(l) + V(l) rebuilt by arc length on both boards, so its only
-    kinks sit where a coordinate crosses a guide VERTEX - on the child frame
-    (where the coordinates themselves break) or, after the per-side scale, on
-    the main frame. Those are the samples flatness probes are worst at
-    finding: a source segment can span whole periods of a wavy guide and land
-    every probe back on the chord (the aliasing case in the spec). Feeding
-    them in directly costs one coordinate solve per endpoint and removes the
-    guesswork; the adaptive probes stay as the safety net for everything
-    these do not cover (a non-injective child frame, where the coordinates
-    are only a best effort and this whole argument breaks down).
+    The map is H(l) + V(l) rebuilt by arc length on both boards, so its
+    kinks sit where a coordinate crosses a guide SEGMENT BOUNDARY - on the
+    child frame (where the coordinates themselves break) or, after the
+    per-side scale, on the main frame. Those are the samples flatness probes
+    are worst at finding: a source segment can span whole periods of a wavy
+    guide and land every probe back on the chord (the aliasing case in the
+    spec). Feeding them in directly costs one coordinate solve per endpoint
+    and removes the guesswork; the adaptive probes stay as the safety net for
+    everything these do not cover (a non-injective child frame, where the
+    coordinates are only a best effort and this whole argument breaks down).
+
+    On POLYLINE guides the map is exactly affine between these knots. On
+    CURVE guides (kept commands) it is smooth-but-curved inside a segment, so
+    the knots degrade from "the only possible kinks" to "the candidate
+    positions curvature concentrates at" - the adaptive probes and the fold
+    split's midpoint sampling carry the rest, and each source piece is at
+    most one POLY_STEP long, which bounds what a between-knot wiggle can hide.
     """
     coords = getattr(map_point, "coords", None)
     if coords is None:
@@ -1057,12 +1339,12 @@ def _structural_knots(map_point, a, b):
         if abs(l1 - l0) <= 1e-12:
             continue
         if axis == 0:
-            own_cum, own_arc = child.h_cum, child.h_arc
-            far_cum, far_arc = main.h_cum, main.h_arc
+            own_cum, own_arc = child.gh.knots, child.h_arc
+            far_cum, far_arc = main.gh.knots, main.h_arc
             scale_neg, scale_pos = map_point.h_scales
         else:
-            own_cum, own_arc = child.v_cum, child.v_arc
-            far_cum, far_arc = main.v_cum, main.v_arc
+            own_cum, own_arc = child.gv.knots, child.v_arc
+            far_cum, far_arc = main.gv.knots, main.v_arc
             scale_neg, scale_pos = map_point.v_scales
 
         targets = [value - own_arc for value in own_cum[1:-1]]
@@ -1465,8 +1747,8 @@ def _current_mapper():
                             main_assets[V_PROPERTY]["points"]):
         return None, "the main center lines do not cross"
     mapper, _ = build_mapper(
-        child_assets[H_PROPERTY]["points"], child_assets[V_PROPERTY]["points"],
-        main_assets[H_PROPERTY]["points"], main_assets[V_PROPERTY]["points"])
+        child_assets[H_PROPERTY], child_assets[V_PROPERTY],
+        main_assets[H_PROPERTY], main_assets[V_PROPERTY])
     if mapper is None:
         return None, "the mapper refuses these guides"
     return mapper, ""
@@ -1520,14 +1802,14 @@ def _occlusion_overlay_items():
     def tangents_h(arc_h):
         scale = mapper.h_scales[1] if arc_h >= 0.0 else mapper.h_scales[0]
         return (scale,
-                _tangent_at_arc(child.h, child.h_cum, child.h_arc + arc_h, child.h_window),
-                _tangent_at_arc(main.h, main.h_cum, main.h_arc + arc_h * scale, main.h_window))
+                child.gh.tangent_at(child.h_arc + arc_h, child.h_window),
+                main.gh.tangent_at(main.h_arc + arc_h * scale, main.h_window))
 
     def tangents_v(arc_v):
         scale = mapper.v_scales[1] if arc_v >= 0.0 else mapper.v_scales[0]
         return (scale,
-                _tangent_at_arc(child.v, child.v_cum, child.v_arc + arc_v, child.v_window),
-                _tangent_at_arc(main.v, main.v_cum, main.v_arc + arc_v * scale, main.v_window))
+                child.gv.tangent_at(child.v_arc + arc_v, child.v_window),
+                main.gv.tangent_at(main.v_arc + arc_v * scale, main.v_window))
 
     def fold_sign(h_cache, v_cache):
         scale_h, (tcx, tcy), (tmx, tmy) = h_cache
@@ -1681,11 +1963,10 @@ def _child_frame():
     assets = _assets_for("child")
     if H_PROPERTY not in assets or V_PROPERTY not in assets:
         return None
-    h_pts = assets[H_PROPERTY]["points"]
-    v_pts = assets[V_PROPERTY]["points"]
-    if len(h_pts) < 2 or len(v_pts) < 2:
+    if (len(assets[H_PROPERTY].get("points") or []) < 2
+            or len(assets[V_PROPERTY].get("points") or []) < 2):
         return None
-    frame = _Frame(h_pts, v_pts)
+    frame = _Frame(assets[H_PROPERTY], assets[V_PROPERTY])
     if frame.h_total <= 1e-6 or frame.v_total <= 1e-6:
         return None
     return frame
@@ -1730,8 +2011,8 @@ def _grid_overlay_items(view_name):
                                 main_assets[V_PROPERTY]["points"]):
             return []
         mapper, _ = build_mapper(
-            child_assets[H_PROPERTY]["points"], child_assets[V_PROPERTY]["points"],
-            main_assets[H_PROPERTY]["points"], main_assets[V_PROPERTY]["points"])
+            child_assets[H_PROPERTY], child_assets[V_PROPERTY],
+            main_assets[H_PROPERTY], main_assets[V_PROPERTY])
         if mapper is None:
             return []
 
@@ -2139,10 +2420,10 @@ def _crease_curves(map_point, v_range, samples=48, max_columns=600):
     step = max(POLY_STEP, total / 400.0)
 
     def crossings_at(l_v):
-        normal = _tangent_at_arc(main.v, main.v_cum, main.v_arc + l_v, main.v_window)
+        normal = main.gv.tangent_at(main.v_arc + l_v, main.v_window)
 
         def side_at(arc):
-            tangent = _tangent_at_arc(main.h, main.h_cum, main.h_arc + arc, main.h_window)
+            tangent = main.gh.tangent_at(main.h_arc + arc, main.h_window)
             return tangent[0] * normal[1] - tangent[1] * normal[0]
 
         found = []
@@ -2480,9 +2761,19 @@ class _MappedOutput:
             if image is None:
                 continue
             color = H_COLOR if prop == H_GUIDE_LAYER_PROPERTY else V_COLOR
-            obj = self.animean.vectorlogic.make_stroke_object(
-                [(float(x), float(y)) for x, y in points], color, width,
-                image.stroke_count() + 1, False, False)
+            commands = (guide or {}).get("commands")
+            if commands:
+                # The snapshot must be lossless in every field the restore
+                # reads, and the restore now reads the CURVE: building the
+                # stroke from the real path keeps Re-expand from demoting a
+                # curve guide to its flattening.
+                obj = self.animean.vectorlogic.make_stroke_object_from_path(
+                    commands, [(float(x), float(y)) for x, y in points],
+                    color, width, image.stroke_count() + 1)
+            else:
+                obj = self.animean.vectorlogic.make_stroke_object(
+                    [(float(x), float(y)) for x, y in points], color, width,
+                    image.stroke_count() + 1, False, False)
             obj.property = prop
             image.add_stroke_object(obj)
             created.append(layer)
@@ -2830,10 +3121,10 @@ def _perform_mapping():
 
     mapper_info = {}
     map_point, width_scale = build_mapper(
-        child_assets[H_PROPERTY]["points"],
-        child_assets[V_PROPERTY]["points"],
-        main_assets[H_PROPERTY]["points"],
-        main_assets[V_PROPERTY]["points"],
+        child_assets[H_PROPERTY],
+        child_assets[V_PROPERTY],
+        main_assets[H_PROPERTY],
+        main_assets[V_PROPERTY],
         mapper_info,
     )
     if map_point is None:
@@ -2956,6 +3247,17 @@ def _capture_mapping_item(cell, stroke, message):
         return
     points = _stroke_points(strokes[index])
     width = float(strokes[index].get("width", 3.0))
+    # The stroke's REAL path is a mixed line/Bezier chain (the smoother's quad
+    # spline); the polyline above is only its 4 px flattening. Keep the
+    # commands so the frame can evaluate on the true curve (_Curve).
+    commands = None
+    try:
+        raw_strokes = scene.cell_to_dict(layer, row, False)["image"]["strokes"]
+        if index < len(raw_strokes):
+            commands = raw_strokes[index].get("commands") or None
+    except Exception as error:
+        print(f"[auto_mapping] curve capture unavailable ({error}); "
+              "keeping the flattened guide.")
     scene.remove_stroke(row, layer, index)
 
     assets = _assets_for(view)
@@ -2978,7 +3280,7 @@ def _capture_mapping_item(cell, stroke, message):
     else:
         # Same entry point Re-expand uses; it saves and refreshes the overlays
         # itself, which is why the shared tail below only runs for the area.
-        if not run_center_line_tool(view, prop, points, width):
+        if not run_center_line_tool(view, prop, points, width, commands):
             message["cancel_history"] = True
             _animean().ui.widget.refresh()
             return
@@ -3130,11 +3432,15 @@ def _legacy_guide_axis(stroke, layer_name):
 
 
 def _guide_axes_in_layers(scene, frame, layer_indices):
-    """{property -> (points, width)} for the axis snapshots on these layers.
+    """{property -> (points, width, commands)} for the axis snapshots on
+    these layers.
 
     Identified by the stroke property, so a renamed layer still restores
     correctly; the layer name is only consulted for snapshots written before
-    the two axes carried separate properties.
+    the two axes carried separate properties. `commands` is the snapshot
+    stroke's real path (None on snapshots from before guides kept curves) -
+    the restore hands it back to run_center_line_tool so a curve guide
+    round-trips as a curve.
     """
     found = {}
     for index in layer_indices:
@@ -3144,12 +3450,17 @@ def _guide_axes_in_layers(scene, frame, layer_indices):
             cell = scene.cell_to_dict(index, frame, True, POLY_STEP)
         except Exception:
             continue
+        raw_strokes = []
+        try:
+            raw_strokes = scene.cell_to_dict(index, frame, False)["image"]["strokes"]
+        except Exception:
+            pass
         name = ""
         try:
             name = scene.layer_name(index)
         except Exception:
             pass
-        for stroke in cell["image"]["strokes"]:
+        for position, stroke in enumerate(cell["image"]["strokes"]):
             prop = stroke.get("property") or ""
             if prop == GUIDE_LAYER_PROPERTY:
                 prop = _legacy_guide_axis(stroke, name)
@@ -3158,7 +3469,10 @@ def _guide_axes_in_layers(scene, frame, layer_indices):
             points = _stroke_points(stroke)
             if len(points) < 2 or prop in found:
                 continue
-            found[prop] = (points, float(stroke.get("width", 3.0)))
+            commands = None
+            if position < len(raw_strokes):
+                commands = raw_strokes[position].get("commands") or None
+            found[prop] = (points, float(stroke.get("width", 3.0)), commands)
     return found
 
 
@@ -3211,8 +3525,8 @@ def _layer_menu_action(message):
                          (V_GUIDE_LAYER_PROPERTY, V_PROPERTY)):
         if prop not in axes:
             continue
-        points, width = axes[prop]
-        if run_center_line_tool(view, target, points, width):
+        points, width, commands = axes[prop]
+        if run_center_line_tool(view, target, points, width, commands):
             restored.append(ITEM_LABELS[target])
     if not restored:
         print("[auto_mapping] re-expand: nothing to restore.")
@@ -3240,15 +3554,20 @@ def register_hooks():
     python_hooks.set_hook(_tool_option_changed, option=True, tool="extra")
 
 
-def run_center_line_tool(view_name, property_value, points, width=3.0):
+def run_center_line_tool(view_name, property_value, points, width=3.0, commands=None):
     """Install one center line. THE entry point of the H / V line tools.
 
     Drawing a guide and re-expanding a stored one are the same act - "this
-    polyline is now the H (or V) axis of this board" - so they go through this
+    line is now the H (or V) axis of this board" - so they go through this
     one function instead of each writing the asset dict themselves. Anything
     that installs a guide gets the save, the overlay refresh and the
     validation for free, and there is one place to change when installing a
     guide has to do more.
+
+    `commands` is the stroke's real mixed line/Bezier path when the caller
+    has it (capture does; stored axis snapshots and legacy assets do not).
+    With commands the frame evaluates the guide on the true curve with
+    Gauss-Legendre arc tables; without, it stays the flattened polyline.
 
     Note it deliberately does NOT arm the drawing tool: re-expanding from the
     layer panel must not silently swap the pen out from under the user.
@@ -3260,7 +3579,15 @@ def run_center_line_tool(view_name, property_value, points, width=3.0):
         print(f"[auto_mapping] {ITEM_LABELS.get(property_value, property_value)} "
               "needs at least two points.")
         return False
-    _assets_for(view_name)[property_value] = {"points": cleaned, "width": float(width)}
+    item = {"points": cleaned, "width": float(width)}
+    if commands:
+        try:
+            if _Curve(cleaned, commands).curved:
+                item["commands"] = commands
+        except Exception as error:
+            print(f"[auto_mapping] guide commands rejected ({error}); "
+                  "keeping the flattened polyline.")
+    _assets_for(view_name)[property_value] = item
     _save_assets(view_name)
     _overlays_changed(view_name)
     return True
