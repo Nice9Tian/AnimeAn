@@ -2224,15 +2224,19 @@ void PaintOpenGLWidget::updateCurrentStroke()
         return;
     }
 
-    // Live preview: polyline of the stabilized points. The input filter has
-    // already smoothed them, and running the hybrid Bezier fit on every move
-    // would cost a full fit per sample; the one real fit happens on release.
-    // Live preview runs the SAME hybrid fit the release will commit (it
-    // costs well under a millisecond even on very long strokes), so lifting
-    // the pen changes nothing on screen - the old raw-polyline preview made
-    // every release visibly jump to the fitted curve.
-    m_currentStroke = makeStroke(m_points, m_currentStroke.color, m_currentStroke.width, 0, true, true);
-    m_currentStroke.property = m_strokeProperty;
+    // Live preview runs the SAME hybrid fit the release will commit, so
+    // lifting the pen changes nothing on screen - the old raw-polyline
+    // preview made every release visibly jump to the fitted curve. The fit
+    // runs at display cadence, not event cadence: tablets deliver samples
+    // faster than frames, and a per-event whole-stroke refit made the total
+    // cost quadratic in stroke length. Between fits the preview lags the pen
+    // by at most one frame of ink; the release always fits the final points.
+    if (!m_liveFitThrottle.isValid() || m_liveFitThrottle.elapsed() >= kLiveFitIntervalMs
+        || m_points.size() < 3) {
+        m_liveFitThrottle.start();
+        m_currentStroke = makeStroke(m_points, m_currentStroke.color, m_currentStroke.width, 0, true, true);
+        m_currentStroke.property = m_strokeProperty;
+    }
     // "update" is a best-effort preview notification, throttled so a
     // subscriber never runs at tablet sample rate; "linefinish" remains the
     // only guaranteed drawing event.
@@ -2245,10 +2249,10 @@ void PaintOpenGLWidget::updateCurrentStroke()
 
 void PaintOpenGLWidget::finishCurrentStroke()
 {
-    updateCurrentStroke();
     m_hasRawPenPos = false;
-    // The committed stroke gets the real fit: hybrid polyline + Bezier over
-    // the stabilized points. The live preview above was a plain polyline.
+    // The definitive fit over the final points. Not via updateCurrentStroke:
+    // that one is throttled (and fired a redundant "update" hook right
+    // before "linefinish"); this fit must never be skipped or stale.
     if (!m_points.isEmpty()) {
         m_currentStroke = makeStroke(m_points, m_currentStroke.color, m_currentStroke.width);
         m_currentStroke.property = m_strokeProperty;
@@ -2836,12 +2840,12 @@ bool PaintOpenGLWidget::appendPoint(const QPointF &point)
     // units, is what limits how much detail a sample can carry. Fixed in
     // document px it starved zoomed-in work - at 8x zoom the pen had to
     // travel 16 screen px between samples, so small drawn-in-close shapes
-    // arrived with a handful of points. The document-space clamps keep the
-    // point count sane at extreme zooms.
-    const qreal zoom = std::max<qreal>(0.01, m_zoom);
-    const qreal minDistance =
-        std::max<qreal>(0.05, std::min<qreal>(8.0, m_minPointDistance / zoom));
-    if (QLineF(m_points.last(), point).length() >= minDistance) {
+    // arrived with a handful of points. The zoom is clamped, not the
+    // distance: beyond 16x the capture gains nothing (points are bounded by
+    // the event rate anyway), and below 1/4x a coarser capture would start
+    // visibly faceting big sweeping strokes.
+    const qreal zoom = std::max<qreal>(0.25, std::min<qreal>(16.0, m_zoom));
+    if (QLineF(m_points.last(), point).length() >= m_minPointDistance / zoom) {
         m_points.append(point);
         return true;
     }

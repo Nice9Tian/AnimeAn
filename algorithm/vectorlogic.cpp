@@ -412,6 +412,23 @@ FitParams fitParamsFor(const AnimeStrokeFitSettings &settings)
     return params;
 }
 
+// NOTE on scale: an earlier draft rescaled EVERY px budget above by the
+// stroke's arc length to help short strokes. Adversarial review measured it
+// strictly worse: hand tremor does not shrink with stroke length, so a
+// noise budget scaled below the tremor floor chases jitter (3-6x the nodes
+// AND further from the intended line), sub-sample windows invent corners,
+// and 3-sample spans slip through the Schneider solve as runaway cubics.
+// What helps short strokes is narrower: gaussianSigma, lineTolerance and
+// the windows are NOISE budgets and stay fixed; only fitTolerance - the
+// curve-follow budget, which also caps the smoothing displacement in
+// fitPiece - scales down with the WHOLE stroke's arc (floored near the
+// tremor amplitude), so a small curved drawing cannot be deformed by a
+// long-stroke-sized allowance.
+qreal shortStrokeFitTolerance(qreal fitTolerance, qreal arc)
+{
+    return std::max<qreal>(0.8, fitTolerance * std::min<qreal>(1.0, arc / 60.0));
+}
+
 QVector<QPointF> dedupePoints(const QVector<QPointF> &points)
 {
     QVector<QPointF> out;
@@ -652,6 +669,17 @@ void fitCubicRecursive(const QVector<QPointF> &pts, int first, int last,
         path.cubicTo(chord[1], chord[2], chord[3]);
         return;
     }
+    // A single interior sample cannot constrain the least-squares solve: it
+    // is interpolated exactly, computeMaxError reads 0, the tolerance test
+    // is vacuous, and with near-antiparallel end tangents the alphas balloon
+    // just under the runaway guard (measured: a 4 px chord emitted with a
+    // 24 px control hull that folded back on itself). Wu/Barsky handles
+    // along the requested tangents keep the joint G1 and the hull bounded.
+    if (last - first == 2) {
+        const qreal alpha = QLineF(pts[first], pts[last]).length() / 3.0;
+        path.cubicTo(pts[first] + tHat1 * alpha, pts[last] + tHat2 * alpha, pts[last]);
+        return;
+    }
 
     QVector<qreal> u;
     chordLengthParameterize(pts, first, last, u);
@@ -775,19 +803,44 @@ void fitPiece(const QVector<QPointF> &piece, const FitParams &params, QPainterPa
     // the piece's mean sample spacing, otherwise the denoise strength rides
     // the pen speed: a fast pass at 8 px spacing was smoothed over 4x the arc
     // of a slow pass at 2 px spacing and visibly shrank tight arcs.
-    qreal meanSpacing = 1.0;
-    {
-        qreal total = 0.0;
-        for (int i = 1; i < piece.size(); ++i) {
-            total += QLineF(piece[i - 1], piece[i]).length();
-        }
-        meanSpacing = std::max<qreal>(0.25, total / (piece.size() - 1));
+    qreal pieceArc = 0.0;
+    for (int i = 1; i < piece.size(); ++i) {
+        pieceArc += QLineF(piece[i - 1], piece[i]).length();
     }
-    const qreal sigmaSamples =
-        std::min<qreal>(4.0, params.gaussianSigma / meanSpacing);
-    const QVector<QPointF> pts = gaussianSmooth(piece, sigmaSamples);
+    const qreal meanSpacing = std::max<qreal>(0.25, pieceArc / (piece.size() - 1));
+    const FitParams &local = params;
+
+    // Denoise, but never let it MOVE the drawing further than the fit is
+    // allowed to deviate: the smoothed polyline is what the Beziers are
+    // anchored to, so an unbounded smoothing displacement became a visible
+    // jump between the ink the user just drew and the committed curve - on
+    // a small drawing the same px of displacement is a large share of the
+    // shape (a 10 px hook moved 21% of its size, a 12 px circle lost 12% of
+    // its roundness). Displacement grows ~ sigma^2, so a sqrt-rescale homes
+    // in quickly; if the bound still fails after the rounds, fall back to
+    // the raw piece - zero displacement always satisfies it. The sample cap
+    // is 20 (not 4): with a fine capture spacing the px sigma needs many
+    // samples, and the old cap silently weakened Simplify at high zoom.
+    qreal sigmaSamples = std::min<qreal>(20.0, local.gaussianSigma / meanSpacing);
+    QVector<QPointF> pts = gaussianSmooth(piece, sigmaSamples);
+    for (int round = 0; round <= 3; ++round) {
+        qreal worst = 0.0;
+        for (int i = 0; i < piece.size(); ++i) {
+            worst = std::max(worst, QLineF(piece[i], pts[i]).length());
+        }
+        if (worst <= local.fitTolerance || sigmaSamples <= 0.1) {
+            break;
+        }
+        if (round == 3) {
+            pts = piece;   // the bound is a promise, not a hope
+            break;
+        }
+        sigmaSamples *= std::sqrt(local.fitTolerance / worst);
+        pts = sigmaSamples > 0.05 ? gaussianSmooth(piece, sigmaSamples) : piece;
+    }
+
     const QVector<qreal> arc = arcLengths(pts);
-    const QVector<qreal> turn = turnAngles(pts, arc, params.strideWindow);
+    const QVector<qreal> turn = turnAngles(pts, arc, local.strideWindow);
     const int n = pts.size();
 
     // Inflections: the signed turn crosses zero with real turning on both
@@ -805,8 +858,8 @@ void fitPiece(const QVector<QPointF> &piece, const FitParams &params, QPainterPa
             const qreal sign = turn[i] > 0.0 ? 1.0 : -1.0;
             if (lastSign != 0.0 && sign != lastSign && lastSignedIndex >= 0) {
                 const int mid = (lastSignedIndex + i) / 2;
-                if (arc[mid] - arc[boundaries.last()] > params.strideWindow
-                    && arc[n - 1] - arc[mid] > params.strideWindow) {
+                if (arc[mid] - arc[boundaries.last()] > local.strideWindow
+                    && arc[n - 1] - arc[mid] > local.strideWindow) {
                     boundaries.append(mid);
                 }
             }
@@ -843,9 +896,9 @@ void fitPiece(const QVector<QPointF> &piece, const FitParams &params, QPainterPa
         if (last <= first) {
             continue;
         }
-        if (chordDeviation(pts, first, last) <= params.lineTolerance) {
+        if (chordDeviation(pts, first, last) <= local.lineTolerance) {
             if (pendingLineStart >= 0
-                && chordDeviation(pts, pendingLineStart, last) <= params.lineTolerance) {
+                && chordDeviation(pts, pendingLineStart, last) <= local.lineTolerance) {
                 continue; // extends the pending chord; keep absorbing
             }
             flushLine(first);
@@ -856,9 +909,9 @@ void fitPiece(const QVector<QPointF> &piece, const FitParams &params, QPainterPa
         flushLine(first);
         QPointF tHat1 = haveExitTangent
                             ? exitTangent
-                            : strideTangent(pts, arc, std::min(first + 1, last), params.strideWindow);
-        const QPointF tHat2 = -strideTangent(pts, arc, std::max(last - 1, first), params.strideWindow);
-        fitCubicRecursive(pts, first, last, tHat1, tHat2, params.fitTolerance, 0, path);
+                            : strideTangent(pts, arc, std::min(first + 1, last), local.strideWindow);
+        const QPointF tHat2 = -strideTangent(pts, arc, std::max(last - 1, first), local.strideWindow);
+        fitCubicRecursive(pts, first, last, tHat1, tHat2, local.fitTolerance, 0, path);
         exitTangent = -tHat2;
         haveExitTangent = true;
     }
@@ -885,7 +938,7 @@ QPainterPath AnimeVectorLogic::fitStrokePath(const QVector<QPointF> &points,
         return path;
     }
 
-    const FitParams params = fitParamsFor(settings);
+    FitParams params = fitParamsFor(settings);
 
     // CORNERS FIRST, on a lightly-smoothed copy. Running the full Gaussian
     // before corner detection was measured to round a 90-degree corner over
@@ -893,10 +946,20 @@ QPainterPath AnimeVectorLogic::fitStrokePath(const QVector<QPointF> &points,
     // both sides and the square came back as Beziers with 3-5 px corner
     // error. Detecting on light smoothing keeps the corner localized, and
     // smoothing PER PIECE afterwards pins the corner as a shared endpoint,
-    // so it cannot move at all.
-    const QVector<QPointF> light = gaussianSmooth(deduped, 0.8);
+    // so it cannot move at all. The light sigma is a PX budget converted by
+    // the sample spacing - as a fixed sample count it stopped smoothing at
+    // all under a fine (zoomed-in) capture and the detector saw raw tremor.
+    qreal rawArc = 0.0;
+    for (int i = 1; i < deduped.size(); ++i) {
+        rawArc += QLineF(deduped[i - 1], deduped[i]).length();
+    }
+    params.fitTolerance = shortStrokeFitTolerance(params.fitTolerance, rawArc);
+    const qreal captureSpacing = std::max<qreal>(0.05, rawArc / (deduped.size() - 1));
+    const qreal lightSigma = std::max<qreal>(0.5, std::min<qreal>(6.0, 1.6 / captureSpacing));
+    const QVector<QPointF> light = gaussianSmooth(deduped, lightSigma);
     const QVector<qreal> arc = arcLengths(light);
-    const QVector<qreal> turn = turnAngles(light, arc, params.strideWindow);
+    const qreal cornerWindow = params.strideWindow;
+    const QVector<qreal> turn = turnAngles(light, arc, cornerWindow);
     const int n = light.size();
     const qreal cornerThreshold = params.cornerAngleDeg * (kTwoPi * 0.5) / 180.0;
 
@@ -907,19 +970,19 @@ QPainterPath AnimeVectorLogic::fitStrokePath(const QVector<QPointF> &points,
             continue;
         }
         bool localMax = true;
-        for (int j = i - 1; j > 0 && arc[i] - arc[j] < params.strideWindow; --j) {
+        for (int j = i - 1; j > 0 && arc[i] - arc[j] < cornerWindow; --j) {
             if (std::abs(turn[j]) > std::abs(turn[i])) {
                 localMax = false;
                 break;
             }
         }
-        for (int j = i + 1; j + 1 < n && arc[j] - arc[i] < params.strideWindow; ++j) {
+        for (int j = i + 1; j + 1 < n && arc[j] - arc[i] < cornerWindow; ++j) {
             if (std::abs(turn[j]) >= std::abs(turn[i])) {
                 localMax = false;
                 break;
             }
         }
-        if (localMax && arc[i] - arc[corners.last()] > params.strideWindow * 0.5) {
+        if (localMax && arc[i] - arc[corners.last()] > cornerWindow * 0.5) {
             corners.append(i);
         }
     }
@@ -1189,6 +1252,19 @@ QVector<AnimeStrokeCrossing> AnimeVectorLogic::strokeCrossings(const AnimeVector
         return crossings;
     }
 
+    // A wall whose bounding box misses this stroke's cannot cross it: the
+    // all-pairs segment walk below is quadratic, and on densely captured
+    // artwork most walls are nowhere near the stroke.
+    QVector<int> nearWalls;
+    for (int w = 0; w < walls.size(); ++w) {
+        const AnimeVectorStroke &wall = walls[w];
+        if (wall.points.size() >= 2 && wall.totalLength > kEpsilon
+            && (wall.bounds.isNull() || stroke.bounds.isNull()
+                || wall.bounds.intersects(stroke.bounds))) {
+            nearWalls.append(w);
+        }
+    }
+
     for (int i = 0; i + 1 < stroke.points.size(); ++i) {
         const QPointF a = stroke.points[i];
         const QPointF b = stroke.points[i + 1];
@@ -1201,11 +1277,12 @@ QVector<AnimeStrokeCrossing> AnimeVectorLogic::strokeCrossings(const AnimeVector
         // already carries, so a crossing's position is exact rather than
         // re-integrated.
         const qreal arcStart = (i < stroke.lengths.size()) ? stroke.lengths[i] : 0.0;
+        const QRectF segmentBounds = QRectF(a, b).normalized();
 
-        for (int w = 0; w < walls.size(); ++w) {
+        for (int w : nearWalls) {
             const AnimeVectorStroke &wall = walls[w];
-            if (wall.points.size() < 2 || wall.totalLength <= kEpsilon) {
-                continue;
+            if (!wall.bounds.isNull() && !wall.bounds.intersects(segmentBounds)) {
+                continue;   // this segment is nowhere near that wall
             }
             for (int k = 0; k + 1 < wall.points.size(); ++k) {
                 const QLineF wallSegment(wall.points[k], wall.points[k + 1]);

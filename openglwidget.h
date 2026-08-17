@@ -323,6 +323,10 @@ private:
     // one dispatch per this interval so subscribers never run at tablet rate.
     QElapsedTimer m_updateHookThrottle;
     static constexpr qint64 kUpdateHookIntervalMs = 33;
+    // The live-preview hybrid fit runs at display cadence, not event cadence
+    // (a per-event whole-stroke refit is quadratic in stroke length).
+    QElapsedTimer m_liveFitThrottle;
+    static constexpr qint64 kLiveFitIntervalMs = 16;
     AxisSnapState m_axisSnapState = AxisSnapState::Inactive;
     QPointF m_axisSnapAnchor;
     int m_axisSnapAnchorIndex = 0;
