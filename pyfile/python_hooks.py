@@ -227,6 +227,7 @@ def set_hook(
         "pad": pad,
         "viewbutton": viewbutton,
         "layermenu": layermenu,
+        "handle": handle,
         "menu": menu,
     }
     events = {name for name, enabled in flags.items() if enabled}
