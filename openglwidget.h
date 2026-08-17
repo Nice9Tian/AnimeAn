@@ -124,6 +124,8 @@ public:
     int importVectorLineLayer(const QVector<ImportedVectorFrame> &frames, const QString &layerName);
     int addLayer();
     bool deleteLayer(int layerIndex);
+    // Deletes a layer group and everything inside it, as one history entry.
+    int deleteLayerGroup(int groupId);
     bool moveLayer(int fromIndex, int toIndex);
     int addFrame();
     bool deleteFrame(int frameIndex);

@@ -1228,6 +1228,52 @@ bool AnimeSceneModel::dissolveLayerGroup(int groupId)
     return spliceOutGroup(m_scene.layerTree, groupId);
 }
 
+QVector<int> AnimeSceneModel::layerIdsInGroup(int groupId) const
+{
+    const_cast<AnimeSceneModel *>(this)->normalizeLayerTreeInternal();
+    QVector<int> ids;
+    const AnimeLayerNode *group = findGroupConst(m_scene.layerTree, groupId);
+    if (!group) {
+        return ids;
+    }
+    std::function<void(const QVector<AnimeLayerNode> &)> walk =
+        [&](const QVector<AnimeLayerNode> &nodes) {
+        for (const AnimeLayerNode &node : nodes) {
+            if (node.isGroup()) {
+                walk(node.children);
+            } else if (node.layerId > 0) {
+                ids.append(node.layerId);
+            }
+        }
+    };
+    walk(group->children);
+    return ids;
+}
+
+int AnimeSceneModel::deleteLayerGroup(int groupId)
+{
+    // By ID, resolved one at a time: every deletion renumbers the columns
+    // after it, so a list of indices captured up front would delete the wrong
+    // layers from the second one on.
+    const QVector<int> ids = layerIdsInGroup(groupId);
+    int deleted = 0;
+    for (int id : ids) {
+        const int index = layerIndexForId(id);
+        if (index < 0) {
+            continue;
+        }
+        if (deleteLayer(index)) {
+            remapFillSourceLayersAfterDelete(index);
+            ++deleted;
+        }
+    }
+    // The now-empty group is dropped by the reconcile; dissolve covers the
+    // case where the group held nothing deletable so the node would linger.
+    normalizeLayerTreeInternal();
+    dissolveLayerGroup(groupId);
+    return deleted;
+}
+
 bool AnimeSceneModel::layerGroupCollapsed(int groupId) const
 {
     const_cast<AnimeSceneModel *>(this)->normalizeLayerTreeInternal();

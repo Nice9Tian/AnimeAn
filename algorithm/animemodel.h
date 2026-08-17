@@ -289,6 +289,11 @@ public:
     bool setLayerGroupName(int groupId, const QString &name);
     // Removes the group itself, splicing its children into its parent.
     bool dissolveLayerGroup(int groupId);
+    // Every column id at or below this group, in tree order.
+    QVector<int> layerIdsInGroup(int groupId) const;
+    // Deletes the group AND the layers inside it (subgroups included),
+    // remapping fill sources as it goes. Returns how many layers went.
+    int deleteLayerGroup(int groupId);
     bool layerGroupCollapsed(int groupId) const;
 
     int addLayer();

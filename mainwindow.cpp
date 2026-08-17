@@ -1517,14 +1517,15 @@ void MainWindow::setupConnections()
         QTreeWidgetItem *item = m_layerPanel->layerList()->currentItem();
         PaintOpenGLWidget *view = layerPanelTarget();
         if (item && item->data(0, kGroupIdRole).toInt() > 0) {
-            // Removing a group removes the grouping, never the drawings: the
-            // members splice back into its parent.
+            // Remove Layer on a group removes the group AND its layers - that
+            // is what "delete" means for the thing the user is pointing at.
+            // Dropping only the grouping lives on the right-click menu as
+            // "Ungroup", so the non-destructive option is still one click away.
             const int groupId = item->data(0, kGroupIdRole).toInt();
-            if (view->model().dissolveLayerGroup(groupId)) {
-                view->commitHistory(QStringLiteral("Ungroup Layers"));
+            if (view->deleteLayerGroup(groupId) > 0) {
+                const int next = std::min(attentionFor(view).layer, view->layerCount() - 1);
                 updateAttention(view, AttentionChange::LayerChange,
-                                attentionFor(view).frame, attentionFor(view).layer,
-                                attentionFor(view).asset);
+                                attentionFor(view).frame, next, attentionFor(view).asset);
             }
             return;
         }
@@ -2466,19 +2467,41 @@ void MainWindow::showLayerContextMenu(const QPoint &pos)
                                      .cast<std::string>();
         QJsonParseError parseError;
         const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json), &parseError);
-        if (parseError.error != QJsonParseError::NoError || !document.isArray()) {
-            return;
+        // A script problem costs the script's entries and nothing else - the
+        // built-in group actions below must not depend on Python being well.
+        if (parseError.error == QJsonParseError::NoError && document.isArray()) {
+            entries = document.array();
         }
-        entries = document.array();
     } catch (const py::error_already_set &error) {
         setStatusText(QStringLiteral("layer menu error: %1").arg(QString::fromUtf8(error.what())));
-        return;
     }
-    if (entries.isEmpty()) {
-        return;
-    }
-
     QMenu menu(this);
+    if (groupId > 0) {
+        // Built in, not script-provided: ungrouping is a generic layer
+        // operation with no tool semantics, so C++ owns it. It is the
+        // counterpart to Remove Layer, which deletes the group's contents.
+        QAction *ungroup = menu.addAction(QStringLiteral("Ungroup (keep the layers)"));
+        connect(ungroup, &QAction::triggered, this, [this, view, groupId]() {
+            if (view->model().dissolveLayerGroup(groupId)) {
+                view->commitHistory(QStringLiteral("Ungroup Layers"));
+                refreshPanelTargets();
+            }
+        });
+        QAction *deleteGroup = menu.addAction(QStringLiteral("Delete Group and Layers"));
+        connect(deleteGroup, &QAction::triggered, this, [this, view, groupId]() {
+            if (view->deleteLayerGroup(groupId) > 0) {
+                const int next = std::min(attentionFor(view).layer, view->layerCount() - 1);
+                updateAttention(view, AttentionChange::LayerChange,
+                                attentionFor(view).frame, next, attentionFor(view).asset);
+            }
+        });
+        if (!entries.isEmpty()) {
+            menu.addSeparator();
+        }
+    }
+    if (groupId <= 0 && entries.isEmpty()) {
+        return;
+    }
     for (const QJsonValue &value : entries) {
         const QJsonObject object = value.toObject();
         const QString name = object.value(QStringLiteral("name")).toString();

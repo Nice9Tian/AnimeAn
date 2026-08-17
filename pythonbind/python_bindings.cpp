@@ -1676,6 +1676,15 @@ void bindAnimeanPythonModule(py::module_ &m)
                  return model.setLayerGroupName(groupId, QString::fromUtf8(name.c_str()));
              })
         .def("dissolve_layer_group", &AnimeSceneModel::dissolveLayerGroup)
+        .def("delete_layer_group", &AnimeSceneModel::deleteLayerGroup)
+        .def("layer_ids_in_group",
+             [](const AnimeSceneModel &model, int groupId) {
+                 py::list ids;
+                 for (int id : model.layerIdsInGroup(groupId)) {
+                     ids.append(id);
+                 }
+                 return ids;
+             })
         .def("layer_id_at", &AnimeSceneModel::layerIdAt)
         .def("layer_index_for_id", &AnimeSceneModel::layerIndexForId)
         .def("add_frame", &AnimeSceneModel::addFrame)

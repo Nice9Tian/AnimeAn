@@ -968,6 +968,23 @@ bool PaintOpenGLWidget::deleteLayer(int layerIndex)
     return true;
 }
 
+int PaintOpenGLWidget::deleteLayerGroup(int groupId)
+{
+    const int deleted = m_model.deleteLayerGroup(groupId);
+    if (deleted <= 0) {
+        return deleted;
+    }
+
+    removeInvalidFillRegions();
+    // ONE history entry for the whole group: deleting a mapping run is a
+    // single act to the user, and undoing it layer by layer would be tedious
+    // and would leave half-restored states in the list.
+    commitHistory(deleted == 1 ? QStringLiteral("Delete Group")
+                               : QStringLiteral("Delete Group (%1 layers)").arg(deleted));
+    update();
+    return deleted;
+}
+
 bool PaintOpenGLWidget::moveLayer(int fromIndex, int toIndex)
 {
     if (!m_model.moveLayer(fromIndex, toIndex)) {
