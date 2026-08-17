@@ -38,6 +38,7 @@ clipping, curve fitting - live in this file.
 """
 
 import bisect
+import heapq
 import json
 import math
 
@@ -2470,7 +2471,7 @@ def _crease_scan(map_point, row_range, axis, samples=48, max_columns=600):
         scan_guide, scan_zero, scan_window = main.gv, main.v_arc, main.v_window
         row_guide, row_zero, row_window = main.gh, main.h_arc, main.h_window
     if high - low <= 1e-6 or len(scan_guide.points) < 3:
-        return []
+        return [], []
 
     total = scan_guide.total
     step = max(POLY_STEP, total / 400.0)
@@ -2609,19 +2610,24 @@ def _crease_scan(map_point, row_range, axis, samples=48, max_columns=600):
                     + [arcs[-1]])
         smoothed.append([(arcs[i], curve[i][1]) for i in range(len(curve))])
 
-    # Keep only the stretches this sweep samples WELL. Where the locus runs
-    # steeper than ~1:1 against the walk direction, consecutive rows land far
-    # apart along the scan guide and the chain degenerates into long chords
-    # (the refinement floor caps how finely rows can subdivide - measured
-    # 12-23 px off the true locus there), and worse, deduping against those
-    # chords shredded the transposed sweep's exact version into single-cut
-    # fragments that the anchoring rule then dropped whole. The TRANSPOSED
-    # sweep sees exactly those stretches at slope < 1 and samples them
-    # densely, so each sweep contributes what it is well-conditioned for.
-    # The 25% margin keeps a band both sweeps cover; dedupe collapses it.
-    culled = []
+    # Grade each stretch by how well this sweep samples it. Where the locus
+    # runs steeper than ~1:1 against the walk direction, consecutive rows
+    # land far apart along the scan guide and the chain degenerates into long
+    # chords (the refinement floor caps how finely rows can subdivide -
+    # measured 12-23 px off the true locus there). The TRANSPOSED sweep sees
+    # those stretches at slope < 1 and samples them densely, so they are
+    # DEGRADED here, not deleted: an earlier version deleted them outright,
+    # and everything the transposed sweep failed to re-cover - branch tips
+    # (the slope is steepest there), stretches outside its row window - was
+    # gone for good, shrinking branches under the minimum-length guard and
+    # orphaning their cuts. The merge in _crease_curves accepts a degraded
+    # stretch whenever nothing better covers it. The 25% margin keeps a band
+    # both sweeps grade as good; the merge collapses the doubled band.
+    good = []
+    degraded = []
     for curve in smoothed:
         run = []
+        run_ok = None
         for index, sample in enumerate(curve):
             ok = False
             for j in (index - 1, index):
@@ -2630,64 +2636,93 @@ def _crease_scan(map_point, row_range, axis, samples=48, max_columns=600):
                     d_row = abs(curve[j + 1][1] - curve[j][1])
                     if d_arc <= 1.25 * d_row + 1e-9:
                         ok = True
-            if ok:
+            if run_ok is None or ok == run_ok:
                 run.append(sample)
+                run_ok = ok
             else:
-                if len(run) >= 2:
-                    culled.append(run)
-                run = []
-        if len(run) >= 2:
-            culled.append(run)
+                (good if run_ok else degraded).append(run)
+                run = [sample]
+                run_ok = ok
+        if run:
+            (good if run_ok else degraded).append(run)
 
     # Normalize to (l_h, l_v) pairs whichever way the sweep ran.
-    if axis == "h":
-        return culled
-    return [[(row, arc) for arc, row in curve] for curve in culled]
+    if axis != "h":
+        good = [[(row, arc) for arc, row in curve] for curve in good]
+        degraded = [[(row, arc) for arc, row in curve] for curve in degraded]
+    return good, degraded
 
 
-def _dedupe_crease(candidates, base_curves):
-    """Drop candidate points already covered by a base branch.
+class _ArcGrid:
+    """Spatial hash of locus segments in ARC space, for coverage queries.
 
-    The two sweeps find the same locus wherever it runs diagonally, and both
-    bisect onto the exact same zero set, so duplicates sit within sampling
-    distance of each other IN ARC SPACE. A candidate point is covered when
-    some base branch (monotone in l_v, being an "h"-sweep product) brackets
-    its l_v and interpolates to within a few POLY_STEP of its l_h. Surviving
-    stretches are re-split into curves; arc space is used rather than image
-    space because a folded sheet can bring two DISTINCT loci close together
-    in the image while they stay far apart in the domain.
+    Cell size >= the query tolerance, so a point's 3x3 cell neighbourhood is
+    guaranteed to contain every segment within tolerance of it.
     """
-    tolerance = 2.5 * POLY_STEP
-    kept = []
-    for curve in candidates:
-        run = []
-        for l_h, l_v in curve:
-            covered = False
-            for base in base_curves:
-                lo_v = min(base[0][1], base[-1][1])
-                hi_v = max(base[0][1], base[-1][1])
-                if not lo_v - tolerance <= l_v <= hi_v + tolerance:
-                    continue
-                best = None
-                for (h0, v0), (h1, v1) in zip(base, base[1:]):
-                    if (v0 - l_v) * (v1 - l_v) <= 0.0:
-                        span = v1 - v0
-                        t = 0.0 if abs(span) <= 1e-12 else (l_v - v0) / span
-                        gap = abs(l_h - (h0 + (h1 - h0) * t))
-                        if best is None or gap < best:
-                            best = gap
-                if best is not None and best <= tolerance:
-                    covered = True
-                    break
-            if covered:
-                if len(run) >= 2:
-                    kept.append(run)
-                run = []
-            else:
-                run.append((l_h, l_v))
-        if len(run) >= 2:
-            kept.append(run)
-    return kept
+
+    def __init__(self, cell):
+        self.cell = cell
+        self.cells = {}
+
+    def add_curve(self, curve):
+        if len(curve) == 1:
+            segments = [(curve[0], curve[0])]
+        else:
+            segments = list(zip(curve, curve[1:]))
+        for a, b in segments:
+            lo_x = int(min(a[0], b[0]) // self.cell)
+            hi_x = int(max(a[0], b[0]) // self.cell)
+            lo_y = int(min(a[1], b[1]) // self.cell)
+            hi_y = int(max(a[1], b[1]) // self.cell)
+            for cx in range(lo_x, hi_x + 1):
+                for cy in range(lo_y, hi_y + 1):
+                    self.cells.setdefault((cx, cy), []).append((a, b))
+
+    def covered(self, point, tolerance):
+        cx = int(point[0] // self.cell)
+        cy = int(point[1] // self.cell)
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for a, b in self.cells.get((cx + dx, cy + dy), ()):
+                    ux, uy = b[0] - a[0], b[1] - a[1]
+                    length_sq = ux * ux + uy * uy
+                    if length_sq <= 0.0:
+                        t = 0.0
+                    else:
+                        t = ((point[0] - a[0]) * ux + (point[1] - a[1]) * uy) / length_sq
+                        t = min(1.0, max(0.0, t))
+                    gx = point[0] - (a[0] + ux * t)
+                    gy = point[1] - (a[1] + uy * t)
+                    if gx * gx + gy * gy <= tolerance * tolerance:
+                        return True
+        return False
+
+
+def _uncovered_runs(curve, grid, tolerance):
+    """The stretches of `curve` not already covered in the grid.
+
+    Single-point runs are KEPT: the transposed copy of a culled branch tip is
+    often exactly one sample (everything past it is covered), and dropping it
+    was measured to cost a whole branch - the tip is what the stitcher needs
+    to reach the anchoring cut. An isolated single point that never stitches
+    onto anything is filtered after stitching instead.
+
+    Coverage is judged in ARC space rather than image space because a folded
+    sheet can bring two DISTINCT loci close together in the image while they
+    stay far apart in the domain.
+    """
+    runs = []
+    run = []
+    for point in curve:
+        if grid.covered(point, tolerance):
+            if run:
+                runs.append(run)
+            run = []
+        else:
+            run.append(point)
+    if run:
+        runs.append(run)
+    return runs
 
 
 def _stitch_crease(pieces, tolerance, boundaries):
@@ -2708,7 +2743,7 @@ def _stitch_crease(pieces, tolerance, boundaries):
     boundary (the locus continues outside the swept window) are edge
     truncations, not meetings.
     """
-    pieces = [list(piece) for piece in pieces if len(piece) >= 2]
+    pieces = {index: list(piece) for index, piece in enumerate(pieces) if piece}
 
     def on_same_boundary(a, b):
         for index, low, high in boundaries:
@@ -2717,27 +2752,72 @@ def _stitch_crease(pieces, tolerance, boundaries):
                     return True
         return False
 
-    while True:
-        best = None
-        for i in range(len(pieces)):
-            for j in range(i + 1, len(pieces)):
-                for i_end in (0, -1):
-                    for j_end in (0, -1):
-                        a = pieces[i][i_end]
-                        b = pieces[j][j_end]
-                        gap = math.hypot(a[0] - b[0], a[1] - b[1])
-                        if gap <= tolerance and not on_same_boundary(a, b):
-                            if best is None or gap < best[0]:
-                                best = (gap, i, j, i_end, j_end)
-        if best is None:
-            return pieces
-        _, i, j, i_end, j_end = best
-        a, b = pieces[i], pieces[j]
-        if i_end == -1:
-            a.extend(b if j_end == 0 else reversed(b))
+    # Endpoint bucket grid + a lazily validated heap. The first version
+    # rescanned every piece pair after every join - O(P^3) - and on ruffled
+    # guides (8-lobe sines on both axes, 480 pieces) one Auto Mapping click
+    # froze the UI for 13-15 s, 55+ s at 10 lobes. After a join only the
+    # merged piece's endpoints gain new candidates, so the scan happens once
+    # and each join adds local work only.
+    cell = tolerance
+
+    def bucket_key(point):
+        return (int(point[0] // cell), int(point[1] // cell))
+
+    buckets = {}
+
+    def add_ends(pid):
+        piece = pieces[pid]
+        for end in (0, -1):
+            buckets.setdefault(bucket_key(piece[end]), set()).add((pid, end))
+
+    def remove_ends(pid, piece):
+        for end in (0, -1):
+            entries = buckets.get(bucket_key(piece[end]))
+            if entries:
+                entries.discard((pid, end))
+
+    def candidates_for(pid):
+        found = []
+        piece = pieces[pid]
+        for end in (0, -1):
+            point = piece[end]
+            cx, cy = bucket_key(point)
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for other_id, other_end in buckets.get((cx + dx, cy + dy), ()):
+                        if other_id == pid:
+                            continue
+                        other = pieces[other_id][other_end]
+                        gap = math.hypot(point[0] - other[0], point[1] - other[1])
+                        if gap <= tolerance and not on_same_boundary(point, other):
+                            found.append((gap, pid, end, point, other_id, other_end, other))
+        return found
+
+    heap = []
+    for pid in pieces:
+        add_ends(pid)
+    for pid in pieces:
+        for candidate in candidates_for(pid):
+            heapq.heappush(heap, candidate)
+
+    while heap:
+        gap, a_id, a_end, a_point, b_id, b_end, b_point = heapq.heappop(heap)
+        if a_id not in pieces or b_id not in pieces:
+            continue  # one side was already merged away
+        if pieces[a_id][a_end] != a_point or pieces[b_id][b_end] != b_point:
+            continue  # stale candidate: that endpoint moved in a merge
+        remove_ends(a_id, pieces[a_id])
+        remove_ends(b_id, pieces[b_id])
+        a, b = pieces[a_id], pieces[b_id]
+        if a_end == -1:
+            a.extend(b if b_end == 0 else reversed(b))
         else:
-            pieces[i] = (b if j_end == -1 else list(reversed(b))) + a
-        del pieces[j]
+            pieces[a_id] = (b if b_end == -1 else list(reversed(b))) + a
+        del pieces[b_id]
+        add_ends(a_id)
+        for candidate in candidates_for(a_id):
+            heapq.heappush(heap, candidate)
+    return list(pieces.values())
 
 
 def _crease_curves(map_point, v_range, h_range=None, samples=48, max_columns=600):
@@ -2761,13 +2841,30 @@ def _crease_curves(map_point, v_range, h_range=None, samples=48, max_columns=600
     change side - was wrong: several strokes crossing the SAME fold each
     reported a slightly different arc, so one fold was drawn as four copies.
     """
-    curves = _crease_scan(map_point, v_range, "h", samples, max_columns)
+    h_good, h_bad = _crease_scan(map_point, v_range, "h", samples, max_columns)
+    boundaries = [(1, v_range[0], v_range[1])]
     if h_range is None:
-        return curves
-    transposed = _crease_scan(map_point, h_range, "v", samples, max_columns)
-    pieces = curves + _dedupe_crease(transposed, curves)
-    boundaries = [(1, v_range[0], v_range[1]), (0, h_range[0], h_range[1])]
-    return _stitch_crease(pieces, 4.0 * POLY_STEP, boundaries)
+        pieces = h_good + h_bad
+    else:
+        v_good, v_bad = _crease_scan(map_point, h_range, "v", samples, max_columns)
+        boundaries.append((0, h_range[0], h_range[1]))
+        # Priority merge: geometry is only ever DROPPED when something at
+        # least as good already covers it. Well-conditioned stretches first
+        # (the h sweep's, then the transposed sweep's exact fill of what h
+        # graded badly), then the degraded stretches as fallback for whatever
+        # neither sweep sampled well - branch tips, stretches outside the
+        # other sweep's row window. Degraded beats deleted: it is exactly the
+        # quality the single-sweep tracer always had there.
+        tolerance = 2.5 * POLY_STEP
+        grid = _ArcGrid(4.0 * POLY_STEP)
+        pieces = []
+        for pool in (h_good, v_good, h_bad, v_bad):
+            for curve in pool:
+                for run in _uncovered_runs(curve, grid, tolerance):
+                    pieces.append(run)
+                    grid.add_curve(run)
+    stitched = _stitch_crease(pieces, 4.0 * POLY_STEP, boundaries)
+    return [curve for curve in stitched if len(curve) >= 2]
 
 
 def _split_at_cusps(points):
@@ -3229,7 +3326,12 @@ def _emit_seals(animean, out, map_point, pattern, child_area, main_area, width_s
     # part of the pattern, and at 2x width_scale it out-weighted every stroke
     # it was meant to terminate. The factor is a display setting now.
     width = max(0.5, float(_LINE_DISPLAY.get("seal_width", 0.8)) * width_scale)
-    for curve in _crease_curves(map_point, (v_low, v_high), (h_low, h_high)):
+    # Pad the sweep windows: a locus stretch whose anchoring cut sits right
+    # at the pattern's arc extent needs the rows just beyond it to give the
+    # branch tip room to reach the cut.
+    pad = 4.0 * POLY_STEP
+    for curve in _crease_curves(map_point, (v_low - pad, v_high + pad),
+                                (h_low - pad, h_high + pad)):
         points = [main.hv(arc, other) for arc, other in curve]
         if len(points) < 2:
             continue
@@ -3238,8 +3340,15 @@ def _emit_seals(animean, out, map_point, pattern, child_area, main_area, width_s
         # vouches for the stretch leading up to it; anchoring the two arms
         # separately orphaned a cut 145 px from anything drawn.
         points = _trim_to_anchors(points, cuts, tolerance)
-        if len(points) < 2 or _cumulative_lengths(points)[-1] < 2.0 * POLY_STEP:
+        if len(points) < 2:
             continue
+        # No minimum span here: a non-empty trim is BY CONSTRUCTION vouched
+        # for by two cuts, and a short anchored sliver is real geometry - the
+        # map compresses whole source bands into a few px where det J nears
+        # zero, so dozens of cuts can legitimately pile onto a 3 px stretch
+        # (measured: 36 cuts on a 2.6 px trim; the old 8 px minimum deleted
+        # it and orphaned every one of them). Unanchored stubs never reach
+        # this point - the trim already returned [] for them.
         # The crease is an annotation, so decimate it like any other output -
         # but BEFORE splitting at cusps, which also dissolves the sub-pixel
         # reversals that would each otherwise become their own quarter-pixel
