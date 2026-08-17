@@ -963,8 +963,16 @@ void MainWindow::fillScriptMenu(QMenu *menu, const QString &menuName, const QJso
             action->setCheckable(true);
             action->setChecked(object.value(QStringLiteral("checked")).toBool(false));
         }
-        connect(action, &QAction::triggered, this, [this, menuName, name](bool checked) {
-            activePaintWidget()->sendPythonMenuMessage(menuName, name, checked);
+        connect(action, &QAction::triggered, this, [this, menuName, name, owner](bool checked) {
+            // Through the view that OWNS this menu, never the focused one.
+            // sendPythonMenuMessage stamps message["view"] from the widget it
+            // goes through, and the CHECK MARK is already built from the
+            // owning board - so reading the active view instead made the tick
+            // and the click disagree: the main bar's Mapping Refer Rect, used
+            // while the texture had focus, turned the grid on for the TEXTURE
+            // and left its own tick unchecked, after which it could neither be
+            // turned on nor off.
+            (owner ? owner : activePaintWidget())->sendPythonMenuMessage(menuName, name, checked);
             // The handler may have changed what the panels show.
             refreshPanelTargets();
         });
@@ -1337,8 +1345,17 @@ bool MainWindow::exportTextureImage()
     m_childPaintWindow->show();
     m_childPaintWindow->raise();
     m_childPaintWidget->setActiveIndicator(false);
+    // The Background choice is a VIEWING aid, so it is suppressed for the
+    // grab the same way the active-view border is. A black board would tint
+    // the export, and the transparency chequer would bake a grey checkerboard
+    // into the PNG as if it were artwork - the chequer means "nothing here",
+    // and paint is the wrong way to say that. (Writing real alpha instead is
+    // a separate job: grabFramebuffer returns what was composited.)
+    const PaintOpenGLWidget::BackgroundMode savedBackground = m_childPaintWidget->backgroundMode();
+    m_childPaintWidget->setBackgroundMode(PaintOpenGLWidget::BackgroundMode::White);
     QCoreApplication::processEvents();
     const QImage image = m_childPaintWidget->grabFramebuffer();
+    m_childPaintWidget->setBackgroundMode(savedBackground);
     m_childPaintWidget->setActiveIndicator(activePaintWidget() == m_childPaintWidget);
     if (image.isNull()) {
         QMessageBox::warning(this,

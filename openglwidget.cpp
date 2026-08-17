@@ -1,4 +1,4 @@
-﻿#include "openglwidget.h"
+#include "openglwidget.h"
 
 #include <QLineF>
 #include <QImage>
@@ -1510,15 +1510,16 @@ bool PaintOpenGLWidget::buildPlaybackCache(int frameCount, QString *error)
     for (int frame = 0; frame < frameCount; ++frame) {
         QImage image(pixelSize, QImage::Format_ARGB32_Premultiplied);
         image.setDevicePixelRatio(ratio);
-        image.fill(m_unboundedCanvas ? Qt::white : QColor(72, 72, 72));
+        // CONTENT ONLY, on transparent. The background is painted live under
+        // the blit instead of being baked in here: baked, it froze whatever
+        // mode was current when playback started (so the Background menu did
+        // nothing while playing), and because the cache is blitted through a
+        // pan/zoom correction the chequer would have travelled with the
+        // drawing instead of staying screen-space.
+        image.fill(Qt::transparent);
 
         QPainter painter(&image);
         painter.setRenderHint(QPainter::Antialiasing);
-        if (m_unboundedCanvas) {
-            // The same background the live view shows, so pressing play does
-            // not change what sits behind the drawing.
-            paintBackground(painter, QRectF(rect()));
-        }
         painter.translate(m_panOffset);
         painter.scale(m_zoom, m_zoom);
         if (!m_unboundedCanvas) {
@@ -1908,12 +1909,19 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
     m_hoverPos = pos;
     m_hasHoverPos = true;
 
-    // Content lock. Gated here, at the single point every mutating gesture
-    // starts, rather than in each tool: a per-tool check is a list that the
-    // next tool forgets to join. Arrow (selection) is exempt - it inspects
-    // rather than edits, and locking it would make a protected board
-    // unnavigable.
-    if (m_tool != Tool::Arrow && !editingAllowed()) {
+    // Content lock, first of two layers. This one stops a gesture from
+    // STARTING; the mutating helpers (eraseAt, eraseBetween, deleteLineAt,
+    // deleteLineBetween, cutLineAt, fillAt, moveCurrentLayerBy) each check
+    // editingAllowed() too, and that is the layer that actually holds:
+    // gating the press alone did NOT work, because the erase and move
+    // gestures seed themselves in mouseMoveEvent when no press was recorded
+    // and the erase tools also act on release, so a blocked press still let a
+    // click or a drag rub out protected artwork.
+    //
+    // Arrow is NOT exempt. It looks like a selection tool but it is the point
+    // editor: dragging a handle rewrites and commits stroke geometry, which is
+    // exactly what a protected board must refuse.
+    if (!editingAllowed()) {
         event->accept();
         return;
     }
@@ -2219,7 +2227,11 @@ void PaintOpenGLWidget::updateCurrentStroke()
     // Live preview: polyline of the stabilized points. The input filter has
     // already smoothed them, and running the hybrid Bezier fit on every move
     // would cost a full fit per sample; the one real fit happens on release.
-    m_currentStroke = makeStroke(m_points, m_currentStroke.color, m_currentStroke.width, 0, true, false);
+    // Live preview runs the SAME hybrid fit the release will commit (it
+    // costs well under a millisecond even on very long strokes), so lifting
+    // the pen changes nothing on screen - the old raw-polyline preview made
+    // every release visibly jump to the fitted curve.
+    m_currentStroke = makeStroke(m_points, m_currentStroke.color, m_currentStroke.width, 0, true, true);
     m_currentStroke.property = m_strokeProperty;
     // "update" is a best-effort preview notification, throttled so a
     // subscriber never runs at tablet sample rate; "linefinish" remains the
@@ -2330,7 +2342,7 @@ bool PaintOpenGLWidget::pythonHookSendMessage(const QString &event, const QPoint
 bool PaintOpenGLWidget::eraseAt(const QPointF &pos)
 {
     VectorImageModel *image = currentImage(false);
-    if (!image || (m_model.currentLayer() >= 0 && !currentColumnEditable())) {
+    if (!image || !editingAllowed() || (m_model.currentLayer() >= 0 && !currentColumnEditable())) {
         return false;
     }
 
@@ -2354,7 +2366,7 @@ bool PaintOpenGLWidget::eraseAt(const QPointF &pos)
 bool PaintOpenGLWidget::eraseBetween(const QPointF &from, const QPointF &to)
 {
     VectorImageModel *image = currentImage(false);
-    if (!image || (m_model.currentLayer() >= 0 && !currentColumnEditable())) {
+    if (!image || !editingAllowed() || (m_model.currentLayer() >= 0 && !currentColumnEditable())) {
         return false;
     }
 
@@ -2420,7 +2432,7 @@ int PaintOpenGLWidget::nearestStrokeToBrush(const VectorImageModel *image,
 bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
 {
     VectorImageModel *image = currentImage(false);
-    if (!image || (m_model.currentLayer() >= 0 && !currentColumnEditable())) {
+    if (!image || !editingAllowed() || (m_model.currentLayer() >= 0 && !currentColumnEditable())) {
         return false;
     }
 
@@ -2559,7 +2571,7 @@ bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
 bool PaintOpenGLWidget::deleteLineAt(const QPointF &pos)
 {
     VectorImageModel *image = currentImage(false);
-    if (!image || (m_model.currentLayer() >= 0 && !currentColumnEditable())) {
+    if (!image || !editingAllowed() || (m_model.currentLayer() >= 0 && !currentColumnEditable())) {
         return false;
     }
 
@@ -2578,7 +2590,7 @@ bool PaintOpenGLWidget::deleteLineAt(const QPointF &pos)
 bool PaintOpenGLWidget::deleteLineBetween(const QPointF &from, const QPointF &to)
 {
     VectorImageModel *image = currentImage(false);
-    if (!image || (m_model.currentLayer() >= 0 && !currentColumnEditable())) {
+    if (!image || !editingAllowed() || (m_model.currentLayer() >= 0 && !currentColumnEditable())) {
         return false;
     }
 
@@ -2596,7 +2608,7 @@ bool PaintOpenGLWidget::deleteLineBetween(const QPointF &from, const QPointF &to
 
 bool PaintOpenGLWidget::fillAt(const QPointF &pos)
 {
-    if (!currentLayerAcceptsFill()) {
+    if (!currentLayerAcceptsFill() || !editingAllowed()) {
         return false;
     }
     // `pos` is in DOCUMENT space (mousePressEvent maps it), so it has to be
@@ -2684,7 +2696,7 @@ bool PaintOpenGLWidget::fillAt(const QPointF &pos)
 
 bool PaintOpenGLWidget::moveCurrentLayerBy(const QPointF &delta)
 {
-    if (delta.isNull() || (m_model.currentLayer() >= 0 && !currentColumnEditable())) {
+    if (delta.isNull() || !editingAllowed() || (m_model.currentLayer() >= 0 && !currentColumnEditable())) {
         return false;
     }
 
@@ -2820,7 +2832,16 @@ bool PaintOpenGLWidget::appendPoint(const QPointF &point)
         return true;
     }
 
-    if (QLineF(m_points.last(), point).length() >= m_minPointDistance) {
+    // The capture floor is in SCREEN pixels: hand motion, not document
+    // units, is what limits how much detail a sample can carry. Fixed in
+    // document px it starved zoomed-in work - at 8x zoom the pen had to
+    // travel 16 screen px between samples, so small drawn-in-close shapes
+    // arrived with a handful of points. The document-space clamps keep the
+    // point count sane at extreme zooms.
+    const qreal zoom = std::max<qreal>(0.01, m_zoom);
+    const qreal minDistance =
+        std::max<qreal>(0.05, std::min<qreal>(8.0, m_minPointDistance / zoom));
+    if (QLineF(m_points.last(), point).length() >= minDistance) {
         m_points.append(point);
         return true;
     }

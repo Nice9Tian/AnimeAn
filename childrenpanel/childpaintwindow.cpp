@@ -27,6 +27,9 @@ ChildPaintWindow::ChildPaintWindow(QWidget *parent)
     m_menuBar = new QMenuBar(panel);
 
     QMenu *settingMenu = m_menuBar->addMenu(QStringLiteral("Setting"));
+    // Qt hides action tool tips in menus by default, so the explanations
+    // below were written and then never shown.
+    settingMenu->setToolTipsVisible(true);
     m_changableTimelineAction = settingMenu->addAction(QStringLiteral("Changable Timeline"));
     m_changableTimelineAction->setCheckable(true);
     m_changableTimelineAction->setChecked(false);

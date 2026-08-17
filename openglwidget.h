@@ -85,8 +85,9 @@ public:
     qreal zoom() const;
     QPointF panOffset() const;
     void setScrollPosition(int horizontal, int vertical);
-    // What sits behind the drawing. A VIEW preference, not a document one -
-    // it changes nothing that is saved or exported.
+    // What sits behind the drawing. A VIEW preference, not a document one: it
+    // is not saved with the project, and the texture export suppresses it so
+    // the choice never reaches a file.
     enum class BackgroundMode { White, Black, Transparent };
     void setBackgroundMode(BackgroundMode mode);
     BackgroundMode backgroundMode() const;

@@ -61,6 +61,10 @@ private:
     // and reports the choice back. Rebuilt on every open so check marks stay
     // in step with the script's own state.
     void createScriptMenus();
+    // Declared unconditionally because it is DEFINED and CALLED
+    // unconditionally (its body is what the #ifdef guards). Declaring it only
+    // under ANIMEAN_WITH_PYTHON broke the Python-less build.
+    void attachChildScriptMenus();
 #ifdef ANIMEAN_WITH_PYTHON
     // `host` selects which menu bar the definitions come from ("main" /
     // "child"); `owner` is the view the menu acts on, so a per-view toggle
@@ -69,7 +73,6 @@ private:
                            const QString &host, PaintOpenGLWidget *owner);
     void fillScriptMenu(QMenu *menu, const QString &menuName, const QJsonArray &items,
                         const QString &host, PaintOpenGLWidget *owner);
-    void attachChildScriptMenus();
 #endif
     void openScriptSettings(const QString &name, const QString &title);
     // Rebuild the tool options panel for the current tool (the Draw Setting
