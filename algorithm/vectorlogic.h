@@ -92,6 +92,13 @@ QVector<AnimeVectorRange> complementRanges(const QVector<AnimeVectorRange> &eras
 AnimeVectorStroke subStroke(const AnimeVectorStroke &stroke, qreal fromW, qreal toW, int smoothValue = 50);
 QPointF pointAtLength(const AnimeVectorStroke &stroke, qreal length);
 
+// The DOCUMENT-space width to hand the pen so a stroke never renders thinner
+// than `minScreenPx` on screen. Display only - the stored width is untouched.
+// A smooth maximum (6-norm) rather than a hard max: the width the user sees
+// is a differentiable function of zoom, with no kink at the floor, and above
+// the floor it converges to the true width almost immediately (0.07% at 3x).
+qreal displayStrokeWidth(qreal documentWidth, qreal zoom, qreal minScreenPx = 1.0);
+
 QVector<QLineF> segmentsFromPath(const QPainterPath &path);
 QVector<AnimeVectorRegionFace> computeVectorRegionFaces(const QVector<QLineF> &segments);
 QPainterPath vectorRegionPathAt(const QPointF &seed, const QVector<QLineF> &segments, const QRect &canvasRect);

@@ -1183,14 +1183,20 @@ void PaintOpenGLWidget::paintSceneContent(QPainter &painter, int frameIndex, boo
                     (stroke.penStyle >= Qt::SolidLine && stroke.penStyle <= Qt::DashDotDotLine)
                         ? static_cast<Qt::PenStyle>(stroke.penStyle)
                         : Qt::SolidLine;
-                QPen pen(stroke.color, stroke.width, penStyle, Qt::RoundCap, Qt::RoundJoin);
+                // Floored on-screen width: zoomed out, the raw width fades
+                // into an invisible sub-pixel smear. Display only.
+                QPen pen(stroke.color,
+                         AnimeVectorLogic::displayStrokeWidth(stroke.width, m_zoom),
+                         penStyle, Qt::RoundCap, Qt::RoundJoin);
                 painter.setPen(pen);
                 painter.drawPath(stroke.path);
             }
         }
 
         if (includeCurrentStroke && columnIndex == m_model.currentLayer() && m_hasCurrentStroke) {
-            painter.setPen(QPen(m_currentStroke.color, m_currentStroke.width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            painter.setPen(QPen(m_currentStroke.color,
+                                AnimeVectorLogic::displayStrokeWidth(m_currentStroke.width, m_zoom),
+                                Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
             painter.drawPath(m_currentStroke.path);
         }
     };
@@ -1359,7 +1365,9 @@ void PaintOpenGLWidget::paintGL()
     paintOverlayItems(painter);
 
     if ((m_tool == Tool::Eraser || m_tool == Tool::DeleteLine) && m_hasHoverPos) {
-        painter.setPen(QPen(QColor(220, 0, 180), 1.5, Qt::DashLine));
+        painter.setPen(QPen(QColor(220, 0, 180),
+                            AnimeVectorLogic::displayStrokeWidth(1.5, m_zoom),
+                            Qt::DashLine));
         painter.setBrush(Qt::NoBrush);
         painter.drawEllipse(m_hoverPos, m_eraserRadius, m_eraserRadius);
     }
@@ -1393,7 +1401,9 @@ void PaintOpenGLWidget::paintOverlayItems(QPainter &painter)
         } else {
             painter.setBrush(Qt::NoBrush);
         }
-        painter.setPen(QPen(item.strokeColor, item.width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setPen(QPen(item.strokeColor,
+                            AnimeVectorLogic::displayStrokeWidth(item.width, m_zoom),
+                            Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.drawPath(path);
 
         if (item.removable) {

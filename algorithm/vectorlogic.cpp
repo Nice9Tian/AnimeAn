@@ -1179,6 +1179,26 @@ AnimeVectorStroke AnimeVectorLogic::subStroke(const AnimeVectorStroke &stroke, q
     return inherit(makeStroke(points, stroke.color, stroke.width, stroke.id, false, true, smoothValue));
 }
 
+qreal AnimeVectorLogic::displayStrokeWidth(qreal documentWidth, qreal zoom, qreal minScreenPx)
+{
+    // Zoomed out, width * zoom drops below one screen pixel and antialiasing
+    // renders the line as a faint alpha smear - at 5% zoom a 3px stroke is a
+    // 0.15px ghost the user simply cannot find. Flooring the ON-SCREEN width
+    // keeps every stroke visible at any zoom.
+    //
+    // The floor is a SMOOTH maximum, max(s, t) ~ (s^6 + t^6)^(1/6) in screen
+    // space: the rendered width is a differentiable function of zoom instead
+    // of kinking at the threshold, and the price is nothing - at the floor
+    // itself the width is 2^(1/6) = 1.12x the hard max, and by 3x the floor
+    // the difference is 0.07%, so the true width at working zoom is intact.
+    if (zoom <= 0.0 || minScreenPx <= 0.0 || documentWidth <= 0.0) {
+        return documentWidth;
+    }
+    const qreal s = (documentWidth * zoom) / minScreenPx;   // screen widths, in floors
+    const qreal smooth = std::pow(1.0 + std::pow(s, 6.0), 1.0 / 6.0);
+    return smooth * minScreenPx / zoom;
+}
+
 QPointF AnimeVectorLogic::pointAtLength(const AnimeVectorStroke &stroke, qreal length)
 {
     if (stroke.points.isEmpty()) {
