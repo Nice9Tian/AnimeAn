@@ -1,4 +1,4 @@
-#include "mainwindow.h"
+﻿#include "mainwindow.h"
 #include "ui_mainwindow.h"
 #include "childrenpanel/assetpanel.h"
 #include "childrenpanel/childpaintwindow.h"
@@ -6,6 +6,7 @@
 #include "childrenpanel/forcepad.h"
 #include "childrenpanel/historypanel.h"
 #include "childrenpanel/layerpanel.h"
+#include "childrenpanel/newprojectdialog.h"
 #include "clipreader.h"
 #include "openglwidget.h"
 #include "paintviewcontainer.h"
@@ -349,6 +350,12 @@ MainWindow::MainWindow(QWidget *parent)
     }
     setupConnections();
     updateWindowTitle();
+    // Queued: the dialog is modal, so running it from the constructor would
+    // block before the window is laid out or shown - the user would meet a
+    // floating dialog with no app behind it, and it could not centre itself.
+    QMetaObject::invokeMethod(this, [this]() {
+        promptForNewCanvasOnStartup();
+    }, Qt::QueuedConnection);
 #ifdef ANIMEAN_WITH_PYTHON
     registerAnimeanUiScene(&m_childPaintWidget->model());
     registerAnimeanUiScene(&m_paintWidget->model());
@@ -372,7 +379,11 @@ MainWindow::MainWindow(QWidget *parent)
         }
         if (widget) {
             for (PaintOpenGLWidget *paintView : m_paintViews) {
-                paintView->update();
+                // modelReplaced, not update: a script can change the page
+                // (set_canvas_size) as easily as it can change a stroke, and
+                // a bare repaint would leave the pan and the scroll bars on
+                // the old one - with the new area unreachable by scrolling.
+                paintView->modelReplaced();
             }
         }
         syncEmbeddedPythonState();
@@ -817,6 +828,9 @@ void MainWindow::applyHistoryRestore(PaintOpenGLWidget *view)
         view->model().setTextId(QStringLiteral("main_paint_view"));
         view->model().setIntId(1);
     }
+    // The snapshot carries the page size too, so undoing across a canvas
+    // change has to move the view with it.
+    view->modelReplaced();
 
     // Chronological undo/redo may land on the other — possibly hidden — view;
     // surface and activate it so the user sees what just changed instead of
@@ -975,6 +989,7 @@ void MainWindow::openTextureView()
     m_childPaintWidget->model() = loadedModel;
     m_childPaintWidget->model().setTextId(QStringLiteral("child_paint_view"));
     m_childPaintWidget->model().setIntId(2);
+    m_childPaintWidget->modelReplaced();
     m_childPaintWidget->resetHistory(QStringLiteral("Open Texture View"));
     showTextureView();
     updateAttention(m_childPaintWidget,
@@ -1381,12 +1396,15 @@ void MainWindow::syncEmbeddedPythonState()
         globals["current"] = animeModel.attr("current");
         globals["model_pybind"] = animeanPython.attr("model_pybind");
         globals["vectorlogic"] = animeanPython.attr("vectorlogic");
-        globals["canvas_width"] = view->width();
-        globals["canvas_height"] = view->height();
-        globals["main_canvas_width"] = m_paintWidget->width();
-        globals["main_canvas_height"] = m_paintWidget->height();
-        globals["child_canvas_width"] = m_childPaintWidget->width();
-        globals["child_canvas_height"] = m_childPaintWidget->height();
+        // The DOCUMENT's page, not the widget's size: these bound region
+        // detection and anything else script-side that asks "how big is the
+        // canvas", and neither should move when a dock is dragged.
+        globals["canvas_width"] = view->model().canvasSize().width();
+        globals["canvas_height"] = view->model().canvasSize().height();
+        globals["main_canvas_width"] = m_paintWidget->model().canvasSize().width();
+        globals["main_canvas_height"] = m_paintWidget->model().canvasSize().height();
+        globals["child_canvas_width"] = m_childPaintWidget->model().canvasSize().width();
+        globals["child_canvas_height"] = m_childPaintWidget->model().canvasSize().height();
     } catch (const py::error_already_set &error) {
         appendPythonDebugMessage(QStringLiteral("[python register] error: %1").arg(QString::fromUtf8(error.what())));
         setStatusText(QStringLiteral("Python state sync error: %1").arg(QString::fromUtf8(error.what())));
@@ -1396,6 +1414,7 @@ void MainWindow::syncEmbeddedPythonState()
 
 void MainWindow::setupConnections()
 {
+    connect(ui->actionNew, &QAction::triggered, this, &MainWindow::newProject);
     connect(ui->actionOpen, &QAction::triggered, this, &MainWindow::openProject);
     connect(ui->actionSave, &QAction::triggered, this, &MainWindow::saveProject);
     connect(ui->actionSaveAs, &QAction::triggered, this, &MainWindow::saveProjectAs);
@@ -1936,6 +1955,49 @@ void MainWindow::createListDocks()
     addDockWidget(Qt::RightDockWidgetArea, m_assetDock);
 }
 
+void MainWindow::newProject()
+{
+    // Named "Canvas Size...", not "New": it resizes the page of the document
+    // that is already open and deliberately does NOT start a blank one. A
+    // menu entry called New that leaves the artwork and the file path in
+    // place would be a trap - the next Ctrl+S would write the old drawing
+    // back over the file the user thought they had left behind.
+    NewProjectDialog dialog(m_paintWidget->model().canvasSize(), this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    applyNewCanvasSize(dialog.canvasSize());
+}
+
+void MainWindow::applyNewCanvasSize(const QSize &size)
+{
+    if (m_paintWidget->model().canvasSize() == size) {
+        // Nothing changed, so nothing is committed. A commit here would be a
+        // phantom history entry that also drops the redo future of BOTH views
+        // (a new edit anywhere clears the whole redo tail), so pressing Enter
+        // on the dialog without touching it would silently cost the user
+        // their redo stack.
+        setStatusText(QStringLiteral("Canvas: %1 x %2 px").arg(size.width()).arg(size.height()));
+        return;
+    }
+    m_paintWidget->setCanvasSize(size);
+    // The page belongs to the document, so changing it is an edit: it has to
+    // be undoable and it has to be saved.
+    m_paintWidget->commitHistory(QStringLiteral("Canvas Size"));
+    syncEmbeddedPythonState();
+    setStatusText(QStringLiteral("Canvas: %1 x %2 px").arg(size.width()).arg(size.height()));
+}
+
+void MainWindow::promptForNewCanvasOnStartup()
+{
+    NewProjectDialog dialog(m_paintWidget->model().canvasSize(), this);
+    // Cancel keeps the default page rather than closing the app: the user
+    // asked to be shown a size, not to be blocked by one.
+    if (dialog.exec() == QDialog::Accepted) {
+        applyNewCanvasSize(dialog.canvasSize());
+    }
+}
+
 void MainWindow::openProject()
 {
     const QString fileName = QFileDialog::getOpenFileName(
@@ -2039,6 +2101,7 @@ bool MainWindow::loadProjectFrom(const QString &fileName)
     // collide with the child scene once loaded into the main model.
     m_paintWidget->model().setTextId(QStringLiteral("main_paint_view"));
     m_paintWidget->model().setIntId(1);
+    m_paintWidget->modelReplaced();   // the loaded document brings its own page
     m_paintWidget->resetHistory(QStringLiteral("Open Project"));
     m_currentFilePath = fileName;
     updateWindowTitle();
@@ -2136,7 +2199,9 @@ void MainWindow::importOpenToonzLines(PaintOpenGLWidget *view)
         }
 
         const QRectF sourceBounds = importedVectorFramesBounds(frames);
-        const QSizeF canvasSize(view->width(), view->height());
+        // The PAGE, not the viewport: "fit to canvas" has to mean the document,
+    // and the message below quotes this same size back to the user.
+    const QSizeF canvasSize = view->documentRect().size();
         const QRectF canvasBounds(QPointF(0.0, 0.0), canvasSize);
         const bool needsScale = sourceBounds.isValid()
                                 && sourceBounds.width() > 0.0
@@ -2154,8 +2219,8 @@ void MainWindow::importOpenToonzLines(PaintOpenGLWidget *view)
                     .arg(qRound(sourceBounds.y()))
                     .arg(qRound(sourceBounds.width()))
                     .arg(qRound(sourceBounds.height()))
-                    .arg(view->width())
-                    .arg(view->height()),
+                    .arg(qRound(canvasSize.width()))
+                    .arg(qRound(canvasSize.height())),
                 QMessageBox::Yes | QMessageBox::No,
                 QMessageBox::Yes);
             if (button == QMessageBox::Yes) {
@@ -2240,7 +2305,9 @@ void MainWindow::importClipStudioPaint(PaintOpenGLWidget *view)
     frames.append(frame);
 
     const QRectF sourceBounds = importedVectorFramesBounds(frames);
-    const QSizeF canvasSize(view->width(), view->height());
+    // The PAGE, not the viewport: "fit to canvas" has to mean the document,
+    // and the message below quotes this same size back to the user.
+    const QSizeF canvasSize = view->documentRect().size();
     const QRectF canvasBounds(QPointF(0.0, 0.0), canvasSize);
     const bool needsScale = sourceBounds.isValid()
                             && sourceBounds.width() > 0.0
@@ -2258,8 +2325,8 @@ void MainWindow::importClipStudioPaint(PaintOpenGLWidget *view)
                 .arg(qRound(sourceBounds.y()))
                 .arg(qRound(sourceBounds.width()))
                 .arg(qRound(sourceBounds.height()))
-                .arg(view->width())
-                .arg(view->height()),
+                .arg(qRound(canvasSize.width()))
+                .arg(qRound(canvasSize.height())),
             QMessageBox::Yes | QMessageBox::No,
             QMessageBox::Yes);
         if (button == QMessageBox::Yes) {

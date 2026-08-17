@@ -897,6 +897,28 @@ void AnimeSceneModel::setScriptData(const QString &data)
     m_scene.scriptData = data;
 }
 
+QSize AnimeSceneModel::defaultCanvasSize()
+{
+    return QSize(1280, 720);
+}
+
+QSize AnimeSceneModel::canvasSize() const
+{
+    const QSize size = m_scene.canvasSize;
+    return size.isValid() && size.width() > 0 && size.height() > 0
+               ? size
+               : defaultCanvasSize();
+}
+
+void AnimeSceneModel::setCanvasSize(const QSize &size)
+{
+    // 16 keeps a page usable at any zoom; 16384 is well past any raster the
+    // app can hold and stops a typo from allocating an export nobody wanted.
+    const int width = std::max(16, std::min(16384, size.width()));
+    const int height = std::max(16, std::min(16384, size.height()));
+    m_scene.canvasSize = QSize(width, height);
+}
+
 namespace {
 
 void collectTreeIds(const QVector<AnimeLayerNode> &nodes, QSet<int> &layerIds, QSet<int> &groupIds)

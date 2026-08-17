@@ -8,6 +8,7 @@
 #include <QPainterPath>
 #include <QPointF>
 #include <QRectF>
+#include <QSize>
 #include <QString>
 #include <QVector>
 
@@ -206,6 +207,10 @@ public:
     QVector<AnimeLayerNode> layerTree;
     int nextColumnId = 1;
     int nextGroupId = 1;
+    // The page. A DOCUMENT property, not a view one: it decides where the
+    // paper is, what an export covers and what a bucket fill is bounded by,
+    // none of which may change because someone resized the window.
+    QSize canvasSize = QSize(1280, 720);
     // Opaque storage for script-side (Python) state that must travel with the
     // scene: copied into history snapshots and saved with the project. The
     // C++ side never interprets it.
@@ -263,6 +268,12 @@ public:
 
     QString scriptData() const;
     void setScriptData(const QString &data);
+
+    QSize canvasSize() const;
+    // Clamped to a sane range; a zero or negative page would make the view
+    // and every bounds-driven algorithm degenerate.
+    void setCanvasSize(const QSize &size);
+    static QSize defaultCanvasSize();
 
     // --- layer groups -----------------------------------------------------
     // The tree is RECONCILED rather than maintained in lockstep: every read

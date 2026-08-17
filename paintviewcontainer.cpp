@@ -58,9 +58,13 @@ void PaintViewContainer::syncScrollBars()
     m_horizontalBar->setVisible(true);
     m_verticalBar->setVisible(true);
 
+    // Against the PAGE, not the widget: with the canvas a document property
+    // the two are unrelated, and scrolling a widget-sized "document" against
+    // itself could only ever produce an empty range.
     const qreal zoomFactor = m_paintWidget->zoom();
-    const int docWidth = int(std::lround(m_paintWidget->width() * zoomFactor));
-    const int docHeight = int(std::lround(m_paintWidget->height() * zoomFactor));
+    const QRectF page = m_paintWidget->documentRect();
+    const int docWidth = int(std::lround(page.width() * zoomFactor));
+    const int docHeight = int(std::lround(page.height() * zoomFactor));
     const int hRange = std::max(0, docWidth - m_paintWidget->width());
     const int vRange = std::max(0, docHeight - m_paintWidget->height());
 

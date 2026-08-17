@@ -329,6 +329,8 @@ QJsonObject modelToJson(const AnimeSceneModel &model)
     root[QStringLiteral("scriptData")] = model.scriptData();
 
     const AnimeScene &scene = model.scene();
+    root[QStringLiteral("canvasWidth")] = model.canvasSize().width();
+    root[QStringLiteral("canvasHeight")] = model.canvasSize().height();
     QJsonObject xsheet;
     xsheet[QStringLiteral("frameCount")] = scene.xsheet.frameCount;
 
@@ -543,6 +545,12 @@ bool modelFromJson(const QJsonObject &root, AnimeSceneModel *model, QString *err
         return nodes;
     };
     scene.layerTree = treeFromJson(root.value(QStringLiteral("layerTree")).toArray());
+
+    // A file from before the canvas was a document property has neither key;
+    // it gets the default page rather than a zero one.
+    const QSize defaultCanvas = AnimeSceneModel::defaultCanvasSize();
+    loaded.setCanvasSize(QSize(root.value(QStringLiteral("canvasWidth")).toInt(defaultCanvas.width()),
+                               root.value(QStringLiteral("canvasHeight")).toInt(defaultCanvas.height())));
 
     loaded.setCurrentFrame(root.value(QStringLiteral("currentFrame")).toInt(0));
     loaded.setCurrentLayer(root.value(QStringLiteral("currentLayer")).toInt(-1));

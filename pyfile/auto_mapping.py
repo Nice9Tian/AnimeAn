@@ -216,6 +216,20 @@ def _scene_model(view_name):
 
 
 def _canvas_rect(view_name):
+    """The page of `view_name`, straight from its scene.
+
+    The globals below are a fallback for older builds; asking the model is
+    both current (a global is only as fresh as the last state sync) and
+    correct now that the page is a document property rather than the widget's
+    size.
+    """
+    try:
+        width, height = _scene_model(view_name).canvas_size()
+        if width and height:
+            return (0.0, 0.0, float(width), float(height))
+    except Exception:
+        pass
+
     import __main__
 
     width = getattr(__main__, f"{view_name}_canvas_width", None) or getattr(__main__, "canvas_width", 0)

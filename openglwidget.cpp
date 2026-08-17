@@ -287,14 +287,66 @@ QPointF PaintOpenGLWidget::mapToDocument(const QPointF &screenPos) const
     return (screenPos - m_panOffset) / m_zoom;
 }
 
+QRectF PaintOpenGLWidget::documentRect() const
+{
+    // The page comes from the DOCUMENT. It used to be the widget rect, which
+    // made the paper resize with the window - the drawing area, the export
+    // and every bounds-driven algorithm silently changed shape when the user
+    // dragged a dock.
+    const QSize canvas = m_model.canvasSize();
+    return QRectF(0.0, 0.0, canvas.width(), canvas.height());
+}
+
+QRectF PaintOpenGLWidget::fillBoundsRect() const
+{
+    // The outer wall a bucket fill is clipped against, in DOCUMENT space.
+    // This used to be rect() - the widget - which was the same rectangle as
+    // the page only while the page WAS the widget. Now they are unrelated:
+    // with a page wider than the viewport, every click past the viewport's
+    // width was silently refused, and a region reaching past it was sliced
+    // off at the old widget edge and saved that way.
+    if (!m_unboundedCanvas) {
+        return documentRect();
+    }
+    // The reference board has no page, so the wall follows what is on screen,
+    // converted to document space (at zoom 1 with no pan this is the old
+    // widget rect, which is what the child board had before).
+    const QPointF topLeft = mapToDocument(QPointF(0.0, 0.0));
+    const QPointF bottomRight = mapToDocument(QPointF(width(), height()));
+    return QRectF(topLeft, bottomRight).normalized();
+}
+
+void PaintOpenGLWidget::modelReplaced()
+{
+    // Loading a project and restoring a history snapshot both copy-assign the
+    // whole model, and the page size rides along inside it. Without this the
+    // view kept the OLD page: the pan stayed where the previous document put
+    // it (possibly off the new one entirely) and the scroll bars kept the
+    // previous range, since only a viewTransformChanged makes them resync.
+    clampPan();
+    update();
+    notifyViewTransformChanged();
+}
+
+void PaintOpenGLWidget::setCanvasSize(const QSize &size)
+{
+    if (m_model.canvasSize() == size) {
+        return;
+    }
+    m_model.setCanvasSize(size);
+    clampPan();
+    update();
+    notifyViewTransformChanged();
+}
+
 void PaintOpenGLWidget::clampPan()
 {
     if (m_unboundedCanvas) {
         return;
     }
 
-    const qreal docWidth = width() * m_zoom;
-    const qreal docHeight = height() * m_zoom;
+    const qreal docWidth = documentRect().width() * m_zoom;
+    const qreal docHeight = documentRect().height() * m_zoom;
 
     const qreal minX = std::min<qreal>(0.0, width() - docWidth);
     const qreal maxX = std::max<qreal>(0.0, width() - docWidth);
@@ -668,12 +720,14 @@ bool PaintOpenGLWidget::sendPythonFillRequestMessage(const QPointF &pos)
     colorInfo["b"] = m_penColor.blue();
     colorInfo["a"] = m_penColor.alpha();
 
-    // Same canvas rect the built-in fill uses as its outer boundary.
+    // Same canvas rect the built-in fill uses as its outer boundary - the
+    // PAGE, in document space, which is the space `position` below is in.
+    const QRectF fillBounds = fillBoundsRect();
     py::dict boundsInfo;
-    boundsInfo["x"] = 0.0;
-    boundsInfo["y"] = 0.0;
-    boundsInfo["width"] = double(width());
-    boundsInfo["height"] = double(height());
+    boundsInfo["x"] = fillBounds.x();
+    boundsInfo["y"] = fillBounds.y();
+    boundsInfo["width"] = fillBounds.width();
+    boundsInfo["height"] = fillBounds.height();
 
     py::dict message;
     message["event"] = "fillrequest";
@@ -859,7 +913,10 @@ int PaintOpenGLWidget::importRasterLayer(const QImage &image, const QString &lay
         return -1;
     }
 
-    const QPointF canvasCenter(width() * 0.5, height() * 0.5);
+    // Centre on the PAGE. Centring on the widget put the image wherever the
+    // window happened to be, so the same file landed somewhere else after a
+    // dock was dragged.
+    const QPointF canvasCenter = documentRect().center();
     const QPointF rasterCenter(image.width() * 0.5, image.height() * 0.5);
     const QPointF topLeft = canvasCenter - rasterCenter;
     const int columnIndex = m_model.addRasterLayer(layerName, m_model.currentFrame(), image, topLeft);
@@ -1196,7 +1253,7 @@ bool PaintOpenGLWidget::buildPlaybackCache(int frameCount, QString *error)
         painter.translate(m_panOffset);
         painter.scale(m_zoom, m_zoom);
         if (!m_unboundedCanvas) {
-            painter.fillRect(rect(), Qt::white);
+            painter.fillRect(documentRect(), Qt::white);
         }
         // Overlays and the in-progress stroke are editing aids, not content.
         paintSceneContent(painter, frame, false);
@@ -1261,7 +1318,12 @@ void PaintOpenGLWidget::paintGL()
     painter.translate(m_panOffset);
     painter.scale(m_zoom, m_zoom);
     if (!m_unboundedCanvas) {
-        painter.fillRect(rect(), Qt::white);
+        const QRectF page = documentRect();
+        painter.fillRect(page, Qt::white);
+        // The page can now be smaller than the viewport, so say where it ends.
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(QColor(140, 140, 140), 1.0 / m_zoom));
+        painter.drawRect(page);
     }
 
     paintSceneContent(painter, m_model.currentFrame(), true);
@@ -1899,7 +1961,9 @@ bool PaintOpenGLWidget::fillAt(const QPointF &pos)
     if (!currentLayerAcceptsFill()) {
         return false;
     }
-    if (!rect().contains(pos.toPoint())) {
+    // `pos` is in DOCUMENT space (mousePressEvent maps it), so it has to be
+    // tested against the page, not against the widget.
+    if (!fillBoundsRect().contains(pos)) {
         return false;
     }
 
@@ -2015,7 +2079,10 @@ QVector<QLineF> PaintOpenGLWidget::fillGraphSegments(FillScope scope, int layerI
 
 QPainterPath PaintOpenGLWidget::vectorRegionPathAt(const QPointF &seed, FillScope scope, int layerIndex) const
 {
-    return AnimeVectorLogic::vectorRegionPathAt(seed, fillGraphSegments(scope, layerIndex), rect());
+    // The produced region is clipped to this rect, so a widget rect here made
+    // a fill's SHAPE depend on the window size.
+    return AnimeVectorLogic::vectorRegionPathAt(seed, fillGraphSegments(scope, layerIndex),
+                                                fillBoundsRect().toAlignedRect());
 }
 
 void PaintOpenGLWidget::removeInvalidFillRegions()

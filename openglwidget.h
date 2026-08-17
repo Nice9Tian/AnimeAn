@@ -70,6 +70,14 @@ public:
     void setScrollPosition(int horizontal, int vertical);
     void setUnboundedCanvas(bool unbounded);
     bool unboundedCanvas() const;
+    // The page, in document coordinates. Comes from the scene's canvas size,
+    // NOT from the widget geometry.
+    QRectF documentRect() const;
+    void setCanvasSize(const QSize &size);
+    // Call after copy-assigning model(): the page may have changed with it.
+    void modelReplaced();
+    // Outer wall for a bucket fill, in document space.
+    QRectF fillBoundsRect() const;
     // Timeline playback: every frame is rendered to pixels up front, then the
     // cached images are blitted per tick so playback never pays the vector
     // drawing cost. Vector rendering resumes when playback ends.

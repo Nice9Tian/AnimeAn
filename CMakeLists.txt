@@ -69,6 +69,8 @@ set(PROJECT_SOURCES
     childrenpanel/layerpanel.cpp
     childrenpanel/layerpanel.h
     childrenpanel/layerpanel.ui
+    childrenpanel/newprojectdialog.cpp
+    childrenpanel/newprojectdialog.h
     childrenpanel/toolcontrolconfig.cpp
     childrenpanel/toolcontrolconfig.h
     childrenpanel/tooloptpanel.cpp

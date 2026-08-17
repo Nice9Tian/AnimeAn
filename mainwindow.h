@@ -62,6 +62,9 @@ private:
     void runPythonDebugCommand(const QString &command);
     QString runEmbeddedPythonCommand(const QString &command);
     QString resolvePythonScriptPath(const QString &scriptName) const;
+    void newProject();
+    void applyNewCanvasSize(const QSize &size);
+    void promptForNewCanvasOnStartup();
     void openProject();
     bool saveProject();
     bool saveProjectAs();

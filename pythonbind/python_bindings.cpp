@@ -1677,6 +1677,12 @@ void bindAnimeanPythonModule(py::module_ &m)
              })
         .def("dissolve_layer_group", &AnimeSceneModel::dissolveLayerGroup)
         .def("delete_layer_group", &AnimeSceneModel::deleteLayerGroup)
+        .def("canvas_size", [](const AnimeSceneModel &model) {
+            return py::make_tuple(model.canvasSize().width(), model.canvasSize().height());
+        })
+        .def("set_canvas_size", [](AnimeSceneModel &model, int width, int height) {
+            model.setCanvasSize(QSize(width, height));
+        }, py::arg("width"), py::arg("height"))
         .def("layer_ids_in_group",
              [](const AnimeSceneModel &model, int groupId) {
                  py::list ids;
