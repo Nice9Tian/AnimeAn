@@ -21,6 +21,8 @@ const qreal kOverlayHandleSize = 14.0;
 #endif
 #endif
 
+#include <QTimer>
+
 #include <algorithm>
 #include <cmath>
 
@@ -257,9 +259,9 @@ QPointF PaintOpenGLWidget::panOffset() const
 void PaintOpenGLWidget::setScrollPosition(int horizontal, int vertical)
 {
     if (m_playbackActive) {
-        // Scrolling moves the view the cache was rendered for — same deal as
-        // the wheel: leave playback first (the handler runs before the pan).
-        emit playbackInterrupted();
+        // Same as the wheel: the frame is re-mapped onto the new view and the
+        // cache catches up once scrolling stops.
+        schedulePlaybackCacheRefresh();
     }
     m_panOffset = QPointF(-horizontal, -vertical);
     clampPan();
@@ -364,10 +366,13 @@ void PaintOpenGLWidget::notifyViewTransformChanged()
 
 void PaintOpenGLWidget::wheelEvent(QWheelEvent *event)
 {
+    // Zooming no longer leaves playback. paintGL maps the cached frames from
+    // the view they were rendered for onto the current one, so the animation
+    // keeps running through the gesture; the cache is re-rendered once the
+    // wheel stops, which is what makes it sharp again (and fills in anything
+    // the old viewport did not cover).
     if (m_playbackActive) {
-        // The cache was rendered at the current transform, so zooming has to
-        // leave playback first (the handler runs before the zoom below).
-        emit playbackInterrupted();
+        schedulePlaybackCacheRefresh();
     }
 
     const qreal steps = event->angleDelta().y() / 120.0;
@@ -391,6 +396,12 @@ void PaintOpenGLWidget::wheelEvent(QWheelEvent *event)
     clampPan();
     update();
     notifyViewTransformChanged();
+    // The artist-mode key-point filter is zoom-dependent (a perceptual
+    // threshold in SCREEN space), so a zoom while handles are up re-asks
+    // Python which handles survive at the new magnification.
+    if (m_tool == Tool::Arrow && !m_editHandles.isEmpty() && m_activeHandleDrag.isEmpty()) {
+        sendPythonHandleMessage(QStringLiteral("view"), QString(), docAnchor);
+    }
     event->accept();
 }
 
@@ -398,9 +409,11 @@ void PaintOpenGLWidget::resizeEvent(QResizeEvent *event)
 {
     QOpenGLWidget::resizeEvent(event);
     if (m_playbackActive) {
-        // The cache was rendered for the old viewport size and pan; resizing
-        // invalidates it, so leave playback rather than show a stale frame.
-        emit playbackInterrupted();
+        // A resize does not move the view, so the mapped blit still lands
+        // correctly; it only means the cache covers less than the new viewport.
+        // Re-rendering once the resize settles fills that in - much better than
+        // dropping the user out of playback for dragging a dock.
+        schedulePlaybackCacheRefresh();
     }
     clampPan();
     notifyViewTransformChanged();
@@ -795,6 +808,16 @@ bool PaintOpenGLWidget::sendPythonFillRequestMessage(const QPointF &pos)
 
 void PaintOpenGLWidget::setTool(Tool tool)
 {
+    if (m_tool == Tool::Arrow && tool != Tool::Arrow
+        && (!m_editHandles.isEmpty() || !m_activeHandleDrag.isEmpty())) {
+        // Leaving the edit tool dismisses its handles - and TELLS Python, so
+        // the tangent arms it drew into the overlay go with them. Clearing
+        // only the C++ side left the arms floating over the canvas until the
+        // next pick.
+        sendPythonHandleMessage(QStringLiteral("cancel"), QString(), QPointF());
+        m_editHandles.clear();
+        m_activeHandleDrag.clear();
+    }
     m_tool = tool;
     m_points.clear();
     m_hasCurrentStroke = false;
@@ -1099,6 +1122,19 @@ int PaintOpenGLWidget::addFrame()
     return row;
 }
 
+int PaintOpenGLWidget::addHoldFrame()
+{
+    const int row = m_model.addHoldFrame();
+    m_points.clear();
+    m_hasCurrentStroke = false;
+    m_hasLastEraserPos = false;
+    if (row >= 0) {
+        commitHistory(QStringLiteral("Add Hold Frame"));
+    }
+    update();
+    return row;
+}
+
 bool PaintOpenGLWidget::deleteFrame(int frameIndex)
 {
     if (!m_model.deleteFrame(frameIndex)) {
@@ -1180,6 +1216,106 @@ void PaintOpenGLWidget::setOverlayItems(const QVector<OverlayItem> &items)
 {
     m_overlayItems = items;
     update();
+}
+
+void PaintOpenGLWidget::setEditHandles(const QVector<EditHandle> &handles)
+{
+    m_editHandles = handles;
+    // Python may legitimately clear or rebuild the set mid-drag (it re-pushes
+    // after every edit); the drag keeps its id and simply stops matching a
+    // drawn handle if the set no longer contains it.
+    update();
+}
+
+namespace {
+constexpr qreal kEditHandleScreenPx = 9.0;   // drawn size
+constexpr qreal kEditHandleHitPx = 7.0;      // half-size of the hit box
+}
+
+void PaintOpenGLWidget::paintEditHandles(QPainter &painter)
+{
+    // SCREEN space: handles keep a constant size at any zoom, like every
+    // vector editor's - a handle is a tool, not a mark on the paper.
+    for (const EditHandle &handle : m_editHandles) {
+        const QPointF screen = handle.pos * m_zoom + m_panOffset;
+        const qreal half = kEditHandleScreenPx * 0.5;
+        painter.setPen(QPen(QColor(30, 30, 30, 230), 1.2));
+        painter.setBrush(handle.color);
+        switch (handle.shape) {
+        case 1:
+            painter.drawEllipse(screen, half, half);
+            break;
+        case 2: {
+            const QPointF diamond[4] = {
+                screen + QPointF(0.0, -half - 1.5), screen + QPointF(half + 1.5, 0.0),
+                screen + QPointF(0.0, half + 1.5), screen + QPointF(-half - 1.5, 0.0)};
+            painter.drawPolygon(diamond, 4);
+            break;
+        }
+        default:
+            painter.drawRect(QRectF(screen.x() - half, screen.y() - half,
+                                    kEditHandleScreenPx, kEditHandleScreenPx));
+            break;
+        }
+    }
+}
+
+QString PaintOpenGLWidget::editHandleAt(const QPointF &screenPos) const
+{
+    // Last drawn is on top, so scan backwards.
+    for (int i = m_editHandles.size() - 1; i >= 0; --i) {
+        const QPointF screen = m_editHandles[i].pos * m_zoom + m_panOffset;
+        if (std::abs(screen.x() - screenPos.x()) <= kEditHandleHitPx
+            && std::abs(screen.y() - screenPos.y()) <= kEditHandleHitPx) {
+            return m_editHandles[i].id;
+        }
+    }
+    return QString();
+}
+
+void PaintOpenGLWidget::sendPythonHandleMessage(const QString &phase, const QString &handleId, const QPointF &pos)
+{
+#ifdef ANIMEAN_WITH_PYTHON
+    if (!animeanHookEventSubscribed(QStringLiteral("handle"))) {
+        return;
+    }
+
+    const int frameRow = m_model.currentFrame();
+    const int layer = m_model.currentLayer();
+    const AnimeCell cell = m_model.cellAt(frameRow, layer);
+
+    py::gil_scoped_acquire acquire;
+    py::dict cellInfo;
+    cellInfo["row"] = frameRow;
+    cellInfo["layer"] = layer;
+    cellInfo["asset"] = cell.assetIndex;
+    cellInfo["frame_id"] = cell.frameId;
+
+    py::dict message;
+    message["event"] = "handle";
+    message["view"] = m_viewName.toStdString();
+    message["tool"] = (m_activePythonTool.isEmpty() ? toolName(m_tool) : m_activePythonTool).toStdString();
+    message["base_tool"] = toolName(m_tool).toStdString();
+    message["property"] = m_strokeProperty.toStdString();
+    message["cell"] = cellInfo;
+    message["stroke"] = py::dict();
+    message["position"] = pointToPythonDict(pos);
+    message["delta"] = pointToPythonDict(QPointF());
+    message["phase"] = phase.toStdString();
+    message["handle"] = handleId.toStdString();
+    // The perceptual key-point filter is zoom-dependent (the eye resolves a
+    // fixed angular period, which maps through the zoom to document space).
+    message["zoom"] = m_zoom;
+
+    const QString output = ::pythonHookSendMessage(message);
+    if (!isQuietHookOutput(output)) {
+        emit pythonDebugMessage(output);
+    }
+#else
+    Q_UNUSED(phase);
+    Q_UNUSED(handleId);
+    Q_UNUSED(pos);
+#endif
 }
 
 void PaintOpenGLWidget::paintSceneContent(QPainter &painter, int frameIndex, bool includeCurrentStroke)
@@ -1299,8 +1435,51 @@ bool PaintOpenGLWidget::buildPlaybackCache(int frameCount, QString *error)
         m_playbackFrames.append(image);
     }
 
+    // Remember the view these pixels were rendered for. paintGL maps them onto
+    // the CURRENT view from this, so zooming or scrolling during playback no
+    // longer has to stop it.
+    m_playbackCachePan = m_panOffset;
+    m_playbackCacheZoom = m_zoom;
+    m_playbackCacheFrameCount = frameCount;
+
     m_playbackActive = true;
     return true;
+}
+
+void PaintOpenGLWidget::schedulePlaybackCacheRefresh()
+{
+    if (!m_playbackActive || m_playbackCacheFrameCount <= 0) {
+        return;
+    }
+    if (!m_playbackCacheTimer) {
+        m_playbackCacheTimer = new QTimer(this);
+        m_playbackCacheTimer->setSingleShot(true);
+        connect(m_playbackCacheTimer, &QTimer::timeout, this, [this]() {
+            if (!m_playbackActive || m_playbackCacheFrameCount <= 0) {
+                return;
+            }
+            if (qFuzzyCompare(m_zoom, m_playbackCacheZoom)
+                && m_panOffset == m_playbackCachePan) {
+                return;   // the view came back to what the cache already holds
+            }
+            // Keep playing at the same frame: buildPlaybackCache resets the
+            // index, and losing the user's position mid-playback would be a
+            // worse artifact than the soft frame it is replacing.
+            const int index = m_playbackIndex;
+            QString error;
+            if (buildPlaybackCache(m_playbackCacheFrameCount, &error)) {
+                m_playbackIndex = std::min(index, int(m_playbackFrames.size()) - 1);
+                update();
+            } else {
+                // Out of budget at the new size: stop rather than keep
+                // blitting a cache that no longer matches anything.
+                emit playbackInterrupted();
+            }
+        });
+    }
+    // Restarted on every tick, so a long gesture re-renders once at its end
+    // rather than once per wheel notch.
+    m_playbackCacheTimer->start(180);
 }
 
 void PaintOpenGLWidget::showPlaybackFrame(int index)
@@ -1314,6 +1493,10 @@ void PaintOpenGLWidget::showPlaybackFrame(int index)
 
 void PaintOpenGLWidget::endPlayback()
 {
+    if (m_playbackCacheTimer) {
+        m_playbackCacheTimer->stop();   // no re-render after playback is over
+    }
+    m_playbackCacheFrameCount = 0;
     m_playbackFrames.clear();
     m_playbackIndex = -1;
     m_playbackActive = false;
@@ -1335,7 +1518,23 @@ void PaintOpenGLWidget::paintGL()
         // (a resize ends playback, but the repaint may arrive before that),
         // and uncovered pixels of a recreated FBO are undefined.
         painter.fillRect(rect(), m_unboundedCanvas ? Qt::white : QColor(72, 72, 72));
-        painter.drawImage(QPointF(0.0, 0.0), m_playbackFrames[m_playbackIndex]);
+        // Map the cached pixels from the view they were rendered for onto the
+        // view we are looking at now. A cache pixel p is document
+        // (p - cachePan)/cacheZoom, which is on screen at
+        // pan + doc*zoom - so one scale and one translate covers it.
+        // Without this the frame could only ever be blitted 1:1, which is why
+        // zooming used to have to drop out of playback.
+        const qreal scale = m_playbackCacheZoom > 0.0 ? m_zoom / m_playbackCacheZoom : 1.0;
+        if (!qFuzzyCompare(scale, qreal(1.0)) || m_panOffset != m_playbackCachePan) {
+            painter.save();
+            painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+            painter.translate(m_panOffset - m_playbackCachePan * scale);
+            painter.scale(scale, scale);
+            painter.drawImage(QPointF(0.0, 0.0), m_playbackFrames[m_playbackIndex]);
+            painter.restore();
+        } else {
+            painter.drawImage(QPointF(0.0, 0.0), m_playbackFrames[m_playbackIndex]);
+        }
         if (m_activeIndicator) {
             painter.setBrush(Qt::NoBrush);
             painter.setPen(QPen(QColor(0, 120, 255), 3.0));
@@ -1404,6 +1603,9 @@ void PaintOpenGLWidget::paintGL()
     }
 
     painter.restore();
+
+    // Edit handles live in screen space, above everything on the paper.
+    paintEditHandles(painter);
 
     // The active-view indicator hugs the viewport, not the document.
     if (m_activeIndicator) {
@@ -1605,14 +1807,29 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
     m_hoverPos = pos;
     m_hasHoverPos = true;
 
-    if (removeOverlayItemAt(pos)) {
+    // Arrow: selection/edit tool. A press lands on a handle (drag it), or on
+    // the canvas (Python decides whether a stroke sits there and which
+    // handles it grows). The model is only ever touched by Python.
+    //
+    // Handles are tested BEFORE the overlay x badges: a badge's hit rect is
+    // clamped in document space and at high zoom covers a large screen area,
+    // so testing it first made handles under it ungrabbable - the click
+    // deleted a guide instead of starting the drag the user aimed at.
+    if (m_tool == Tool::Arrow) {
+        const QString handleId = editHandleAt(event->position());
+        if (!handleId.isEmpty()) {
+            m_activeHandleDrag = handleId;
+            sendPythonHandleMessage(QStringLiteral("press"), handleId, pos);
+        } else if (removeOverlayItemAt(pos)) {
+            // fallthrough handled: the badge consumed the click
+        } else {
+            sendPythonHandleMessage(QStringLiteral("pick"), QString(), pos);
+        }
         event->accept();
         return;
     }
 
-    // Arrow: pure focus/selection tool — clicking activates the view (via
-    // ClickFocus) and must not touch the model.
-    if (m_tool == Tool::Arrow) {
+    if (removeOverlayItemAt(pos)) {
         event->accept();
         return;
     }
@@ -1715,6 +1932,14 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
         return;
     }
 
+    if (m_tool == Tool::Arrow) {
+        if (!m_activeHandleDrag.isEmpty()) {
+            sendPythonHandleMessage(QStringLiteral("move"), m_activeHandleDrag, m_hoverPos);
+        }
+        event->accept();
+        return;
+    }
+
     if (m_tool == Tool::Eraser || m_tool == Tool::DeleteLine) {
         if (!m_hasLastEraserPos) {
             m_lastEraserPos = m_hoverPos;
@@ -1779,6 +2004,17 @@ void PaintOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
 
     if (event->button() != Qt::LeftButton) {
         QOpenGLWidget::mouseReleaseEvent(event);
+        return;
+    }
+
+    if (m_tool == Tool::Arrow) {
+        if (!m_activeHandleDrag.isEmpty()) {
+            const QString handleId = m_activeHandleDrag;
+            m_activeHandleDrag.clear();
+            sendPythonHandleMessage(QStringLiteral("release"), handleId,
+                                    mapToDocument(event->position()));
+        }
+        event->accept();
         return;
     }
 

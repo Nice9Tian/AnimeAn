@@ -30,6 +30,7 @@ AnimeSceneModel *g_currentUiScene = nullptr;
 std::function<void(bool frame, bool layer, bool asset, bool widget)> g_uiRefreshCallback;
 std::function<void(bool frozen)> g_uiFreezeCallback;
 std::function<void(const QString &view, const QVector<AnimeanOverlayItem> &items)> g_uiOverlayCallback;
+std::function<void(const QString &view, const QVector<AnimeanEditHandle> &handles)> g_uiEditHandleCallback;
 std::function<void(const QColor &color)> g_uiDrawColorCallback;
 std::function<void(const QString &pad, double x, double y)> g_uiPadValueCallback;
 std::function<void(const QString &op, const QString &view, const QString &label)> g_uiHistoryCallback;
@@ -1091,6 +1092,16 @@ void clearAnimeanUiOverlayCallback()
     g_uiOverlayCallback = nullptr;
 }
 
+void registerAnimeanUiEditHandleCallback(std::function<void(const QString &view, const QVector<AnimeanEditHandle> &handles)> callback)
+{
+    g_uiEditHandleCallback = std::move(callback);
+}
+
+void clearAnimeanUiEditHandleCallback()
+{
+    g_uiEditHandleCallback = nullptr;
+}
+
 void registerAnimeanUiDrawColorCallback(std::function<void(const QColor &color)> callback)
 {
     g_uiDrawColorCallback = std::move(callback);
@@ -1212,6 +1223,34 @@ void bindAnimeanPythonModule(py::module_ &m)
            },
            py::arg("view"),
            py::arg("items"));
+    ui.def("set_edit_handles",
+           [](const std::string &view, py::sequence handles) {
+               if (!g_uiEditHandleCallback) {
+                   return;
+               }
+               QVector<AnimeanEditHandle> converted;
+               for (py::handle entry : handles) {
+                   if (!py::isinstance<py::dict>(entry)) {
+                       throw py::type_error("edit handles must be dicts.");
+                   }
+                   py::dict data = py::reinterpret_borrow<py::dict>(entry);
+                   AnimeanEditHandle handle;
+                   if (hasKey(data, "id")) {
+                       handle.id = QString::fromStdString(data["id"].cast<std::string>());
+                   }
+                   handle.pos = QPointF(data["x"].cast<double>(), data["y"].cast<double>());
+                   if (hasKey(data, "shape")) {
+                       handle.shape = data["shape"].cast<int>();
+                   }
+                   if (hasKey(data, "color")) {
+                       handle.color = objectToColor(data["color"], "handle.color");
+                   }
+                   converted.append(handle);
+               }
+               g_uiEditHandleCallback(QString::fromStdString(view), converted);
+           },
+           py::arg("view"),
+           py::arg("handles"));
     ui.def("set_draw_color", [](py::object color) {
         if (g_uiDrawColorCallback) {
             g_uiDrawColorCallback(objectToColor(color, "color"));

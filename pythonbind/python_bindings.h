@@ -40,6 +40,8 @@ void registerAnimeanUiFreezeCallback(std::function<void(bool frozen)> callback);
 void clearAnimeanUiFreezeCallback();
 void registerAnimeanUiOverlayCallback(std::function<void(const QString &view, const QVector<AnimeanOverlayItem> &items)> callback);
 void clearAnimeanUiOverlayCallback();
+void registerAnimeanUiEditHandleCallback(std::function<void(const QString &view, const QVector<AnimeanEditHandle> &handles)> callback);
+void clearAnimeanUiEditHandleCallback();
 void registerAnimeanUiDrawColorCallback(std::function<void(const QColor &color)> callback);
 void clearAnimeanUiDrawColorCallback();
 void registerAnimeanUiHistoryCallback(std::function<void(const QString &op, const QString &view, const QString &label)> callback);

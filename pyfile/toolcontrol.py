@@ -90,7 +90,32 @@ def options_for_tool(tool, state=None):
                 ],
             },
         ]
-    elif tool in ("move", "arrow"):
+    elif tool == "arrow":
+        # The Arrow is the edit tool: clicking a stroke grows draggable
+        # handles. Debug shows the stored control points verbatim; Artist
+        # shows perceptually-spaced pseudo-handles (see edit_tool.py).
+        try:
+            import edit_tool
+            edit_mode = edit_tool.edit_mode()
+        except Exception:
+            edit_mode = "artist"
+        controls = [
+            {
+                "name": "edit_mode",
+                "type": "list",
+                "title": "Edit Mode",
+                "hook": "edit_mode",
+                "value": edit_mode,
+                "row": 0,
+                "start_column": 0,
+                "end_column": 2,
+                "options": [
+                    {"title": "Artist", "value": "artist"},
+                    {"title": "Debug", "value": "debug"},
+                ],
+            },
+        ]
+    elif tool == "move":
         controls = []
     else:
         controls = [

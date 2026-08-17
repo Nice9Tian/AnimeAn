@@ -16,6 +16,7 @@
 #include <QVector>
 
 class QPainter;
+class QTimer;
 
 class PaintOpenGLWidget : public QOpenGLWidget
 {
@@ -151,6 +152,8 @@ public:
     int deleteLayerGroup(int groupId);
     bool moveLayer(int fromIndex, int toIndex);
     int addFrame();
+    // Appends a frame that HOLDS the last one: same cells, so one drawing.
+    int addHoldFrame();
     bool deleteFrame(int frameIndex);
     bool moveFrame(int fromIndex, int toIndex);
     int addAsset(AnimeColumnType type = AnimeColumnType::Vector, const QString &name = QString());
@@ -204,11 +207,21 @@ private:
     };
 
     void paintSceneContent(QPainter &painter, int frameIndex, bool includeCurrentStroke);
+    // Re-render the playback cache for the current view, once the gesture that
+    // changed it has settled.
+    void schedulePlaybackCacheRefresh();
     void paintOverlayItems(QPainter &painter);
     // Badge just above-right of `anchor` (an item's end point), clamped into view.
     QRectF overlayHandleRect(const QPointF &anchor) const;
     bool removeOverlayItemAt(const QPointF &pos);
     void sendOverlayRemoveMessage(const QString &overlayId);
+    void paintEditHandles(QPainter &painter);
+    // Topmost handle whose SCREEN-space box contains the screen position.
+    QString editHandleAt(const QPointF &screenPos) const;
+    // "handle" hook event. Phases: "pick" (arrow click on no handle),
+    // "press"/"move"/"release" (a handle drag), "view" (zoom changed while
+    // handles are shown). Carries the document position and the current zoom.
+    void sendPythonHandleMessage(const QString &phase, const QString &handleId, const QPointF &pos);
     void resetAxisSnap(Qt::KeyboardModifiers modifiers, const QPointF &anchor);
     QPointF applyAxisSnap(Qt::KeyboardModifiers modifiers, const QPointF &point, bool *retroChanged);
     QPointF mapToDocument(const QPointF &screenPos) const;
@@ -282,12 +295,22 @@ private:
     qreal m_zoom = 1.0;
     QPointF m_panOffset;
     bool m_panning = false;
+    QVector<EditHandle> m_editHandles;
+    // Id of the handle being dragged; empty when no drag is in flight.
+    QString m_activeHandleDrag;
     bool m_unboundedCanvas = false;
     QPointF m_lastPanPos;
     SceneHistory m_history;
     QVector<QImage> m_playbackFrames;
     int m_playbackIndex = -1;
     bool m_playbackActive = false;
+    // The view the cached frames were rendered for. paintGL maps them from
+    // this onto the current view, so zoom/scroll/resize during playback are
+    // re-mapped rather than fatal; the timer re-renders once the gesture ends.
+    QPointF m_playbackCachePan;
+    qreal m_playbackCacheZoom = 1.0;
+    int m_playbackCacheFrameCount = 0;
+    QTimer *m_playbackCacheTimer = nullptr;
     bool m_swallowNextPress = false;
     QVector<OverlayItem> m_overlayItems;
     QVector<OverlayHandle> m_overlayHandles;
