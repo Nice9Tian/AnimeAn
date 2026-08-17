@@ -1148,6 +1148,109 @@ QVector<AnimeVectorRange> AnimeVectorLogic::complementRanges(const QVector<Anime
     return keepRanges;
 }
 
+QVector<qreal> AnimeVectorLogic::strokeCrossings(const AnimeVectorStroke &stroke,
+                                                 const QVector<QLineF> &walls,
+                                                 qreal mergeTolerance)
+{
+    QVector<qreal> crossings;
+    if (stroke.points.size() < 2 || stroke.totalLength <= kEpsilon) {
+        return crossings;
+    }
+
+    for (int i = 0; i + 1 < stroke.points.size(); ++i) {
+        const QPointF a = stroke.points[i];
+        const QPointF b = stroke.points[i + 1];
+        const QLineF segment(a, b);
+        const qreal segmentLength = segment.length();
+        if (segmentLength <= kEpsilon) {
+            continue;
+        }
+        // Arc at each end of this segment, from the prefix table the stroke
+        // already carries, so a crossing's position is exact rather than
+        // re-integrated.
+        const qreal arcStart = (i < stroke.lengths.size()) ? stroke.lengths[i] : 0.0;
+
+        for (const QLineF &wall : walls) {
+            QPointF hit;
+            if (segment.intersects(wall, &hit) != QLineF::BoundedIntersection) {
+                continue;
+            }
+            const qreal along = QLineF(a, hit).length();
+            const qreal arc = arcStart + std::min(along, segmentLength);
+            crossings.append(clamp01(arc / stroke.totalLength));
+        }
+    }
+
+    std::sort(crossings.begin(), crossings.end());
+    // One crossing found on two adjoining segments (it sits on their shared
+    // vertex) must not count twice, or a cut would collapse to nothing.
+    QVector<qreal> merged;
+    for (qreal value : crossings) {
+        if (merged.isEmpty() || value - merged.last() > mergeTolerance) {
+            merged.append(value);
+        }
+    }
+    return merged;
+}
+
+bool AnimeVectorLogic::cutSpanAt(const AnimeVectorStroke &stroke,
+                                 const QVector<QLineF> &walls,
+                                 const QPointF &pos,
+                                 AnimeVectorRange *span)
+{
+    if (!span || stroke.points.size() < 2 || stroke.totalLength <= kEpsilon) {
+        return false;
+    }
+
+    // Where the click sits along the stroke, in the same normalised arc the
+    // crossings use.
+    qreal bestDistanceSq = std::numeric_limits<qreal>::max();
+    qreal clickArc = 0.0;
+    for (int i = 0; i + 1 < stroke.points.size(); ++i) {
+        const QPointF a = stroke.points[i];
+        const QPointF b = stroke.points[i + 1];
+        const qreal dx = b.x() - a.x();
+        const qreal dy = b.y() - a.y();
+        const qreal lengthSq = dx * dx + dy * dy;
+        qreal t = 0.0;
+        if (lengthSq > kEpsilon) {
+            t = ((pos.x() - a.x()) * dx + (pos.y() - a.y()) * dy) / lengthSq;
+            t = std::min<qreal>(1.0, std::max<qreal>(0.0, t));
+        }
+        const qreal projX = a.x() + dx * t;
+        const qreal projY = a.y() + dy * t;
+        const qreal distanceSq = (pos.x() - projX) * (pos.x() - projX)
+                                 + (pos.y() - projY) * (pos.y() - projY);
+        if (distanceSq < bestDistanceSq) {
+            bestDistanceSq = distanceSq;
+            const qreal arcStart = (i < stroke.lengths.size()) ? stroke.lengths[i] : 0.0;
+            clickArc = clamp01((arcStart + std::sqrt(lengthSq) * t) / stroke.totalLength);
+        }
+    }
+
+    const QVector<qreal> crossings = strokeCrossings(stroke, walls);
+
+    // The nearest crossing on each SIDE of the click. Strictly opposite by
+    // construction: one is below the click's arc, the other above it.
+    qreal low = 0.0;
+    qreal high = 1.0;
+    for (qreal crossing : crossings) {
+        if (crossing <= clickArc) {
+            low = crossing;      // sorted, so the last one under the click wins
+        } else {
+            high = crossing;     // and the first one over it
+            break;
+        }
+    }
+
+    if (high - low <= kEpsilon) {
+        return false;
+    }
+    span->first = low;
+    span->second = high;
+    return true;
+}
+
 AnimeVectorStroke AnimeVectorLogic::subStroke(const AnimeVectorStroke &stroke, qreal fromW, qreal toW, int smoothValue)
 {
     // Pieces keep the source stroke's identity attributes. Dropping them

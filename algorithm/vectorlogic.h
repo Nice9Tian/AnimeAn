@@ -89,6 +89,30 @@ bool strokeHitsCapsule(const AnimeVectorStroke &stroke, const QPointF &from, con
 QVector<AnimeVectorRange> keepRangesForCircle(const AnimeVectorStroke &stroke, const QPointF &center, qreal radius);
 QVector<AnimeVectorRange> keepRangesForCapsule(const AnimeVectorStroke &stroke, const QPointF &from, const QPointF &to, qreal radius);
 QVector<AnimeVectorRange> complementRanges(const QVector<AnimeVectorRange> &eraseRanges);
+
+// Normalised arc positions along `stroke` where it crosses any of `walls`.
+// Sorted, de-duplicated within `mergeTolerance` of arc (a crossing found on
+// two adjoining segments is one crossing).
+QVector<qreal> strokeCrossings(const AnimeVectorStroke &stroke,
+                               const QVector<QLineF> &walls,
+                               qreal mergeTolerance = 1e-4);
+
+// The span to cut out of `stroke` for a CutMode click at `pos`: the piece
+// between the crossing before the click and the crossing after it.
+//
+// "Before" and "after" are along the stroke's own arc, so the two bounds are
+// always on opposite sides of the click - that is what makes the removed
+// piece the one the user is pointing at rather than an arbitrary neighbour.
+// With a crossing on only one side the cut runs from it to that END of the
+// stroke, and with no crossing at all the whole stroke goes: an uncrossed
+// stroke is a single span bounded by its two ends, so the rule is the same
+// one, not a special case.
+//
+// Returns false when the stroke has no length (nothing to cut).
+bool cutSpanAt(const AnimeVectorStroke &stroke,
+               const QVector<QLineF> &walls,
+               const QPointF &pos,
+               AnimeVectorRange *span);
 AnimeVectorStroke subStroke(const AnimeVectorStroke &stroke, qreal fromW, qreal toW, int smoothValue = 50);
 QPointF pointAtLength(const AnimeVectorStroke &stroke, qreal length);
 

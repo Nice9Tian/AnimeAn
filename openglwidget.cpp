@@ -41,6 +41,8 @@ QString toolName(PaintOpenGLWidget::Tool tool)
         return QStringLiteral("eraser");
     case PaintOpenGLWidget::Tool::DeleteLine:
         return QStringLiteral("delete_line");
+    case PaintOpenGLWidget::Tool::CutLine:
+        return QStringLiteral("cut_line");
     case PaintOpenGLWidget::Tool::Fill:
         return QStringLiteral("fill");
     case PaintOpenGLWidget::Tool::Move:
@@ -1594,7 +1596,8 @@ void PaintOpenGLWidget::paintGL()
 
     paintOverlayItems(painter);
 
-    if ((m_tool == Tool::Eraser || m_tool == Tool::DeleteLine) && m_hasHoverPos) {
+    if ((m_tool == Tool::Eraser || m_tool == Tool::DeleteLine || m_tool == Tool::CutLine)
+        && m_hasHoverPos) {
         painter.setPen(QPen(QColor(220, 0, 180),
                             AnimeVectorLogic::displayStrokeWidth(1.5, m_zoom),
                             Qt::DashLine));
@@ -1861,10 +1864,12 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
         return;
     }
 
-    if (m_tool == Tool::Eraser || m_tool == Tool::DeleteLine) {
+    if (m_tool == Tool::Eraser || m_tool == Tool::DeleteLine || m_tool == Tool::CutLine) {
         m_hasLastEraserPos = true;
         m_lastEraserPos = pos;
-        if (m_tool == Tool::DeleteLine) {
+        if (m_tool == Tool::CutLine) {
+            m_eraseGestureChanged = cutLineAt(pos);
+        } else if (m_tool == Tool::DeleteLine) {
             m_eraseGestureChanged = deleteLineAt(pos);
         } else {
             m_eraseGestureChanged = eraseAt(pos);
@@ -1936,6 +1941,15 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
         if (!m_activeHandleDrag.isEmpty()) {
             sendPythonHandleMessage(QStringLiteral("move"), m_activeHandleDrag, m_hoverPos);
         }
+        event->accept();
+        return;
+    }
+
+    if (m_tool == Tool::CutLine) {
+        // One cut per CLICK. Cutting continuously along a drag would chew
+        // through every span the cursor passed and there would be no way to
+        // take back just the last one.
+        update();
         event->accept();
         return;
     }
@@ -2018,11 +2032,16 @@ void PaintOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
         return;
     }
 
-    if (m_tool == Tool::Eraser || m_tool == Tool::DeleteLine) {
+    if (m_tool == Tool::Eraser || m_tool == Tool::DeleteLine || m_tool == Tool::CutLine) {
         m_hoverPos = mapToDocument(event->position());
         m_hasHoverPos = true;
         bool cancelHistory = false;
-        if (m_tool == Tool::DeleteLine) {
+        if (m_tool == Tool::CutLine) {
+            // The cut already happened on PRESS; the release only reports it,
+            // so a click-and-wander does not cut a second span under wherever
+            // the button happened to come up.
+            cancelHistory = pythonHookSendMessage(QStringLiteral("deletefinish"), m_hoverPos, QPointF(), m_eraseGestureChanged);
+        } else if (m_tool == Tool::DeleteLine) {
             m_eraseGestureChanged = deleteLineAt(m_hoverPos) || m_eraseGestureChanged;
             cancelHistory = pythonHookSendMessage(QStringLiteral("deletefinish"), m_hoverPos, QPointF(), m_eraseGestureChanged);
         } else {
@@ -2030,8 +2049,9 @@ void PaintOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
             cancelHistory = pythonHookSendMessage(QStringLiteral("erasefinish"), m_hoverPos, QPointF(), m_eraseGestureChanged);
         }
         if (m_eraseGestureChanged && !cancelHistory) {
-            commitHistory(m_tool == Tool::DeleteLine ? QStringLiteral("Delete Line")
-                                                     : QStringLiteral("Erase"));
+            commitHistory(m_tool == Tool::CutLine ? QStringLiteral("Cut Line")
+                          : m_tool == Tool::DeleteLine ? QStringLiteral("Delete Line")
+                                                       : QStringLiteral("Erase"));
         }
         update();
         m_hasLastEraserPos = false;
@@ -2248,6 +2268,77 @@ bool PaintOpenGLWidget::eraseBetween(const QPointF &from, const QPointF &to)
         removeInvalidFillRegions();
     }
     return changed;
+}
+
+bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
+{
+    VectorImageModel *image = currentImage(false);
+    if (!image || (m_model.currentLayer() >= 0 && !currentColumnEditable())) {
+        return false;
+    }
+
+    const qreal imageRadius = m_eraserRadius + m_penWidth;
+    const QRectF hitBounds(pos.x() - imageRadius, pos.y() - imageRadius,
+                           imageRadius * 2.0, imageRadius * 2.0);
+    if (!image->bounds().intersects(hitBounds)) {
+        return false;
+    }
+
+    // Topmost stroke under the cursor. Strokes are drawn last-index-first, so
+    // walking down from the end picks the one the user actually sees on top.
+    int targetIndex = -1;
+    for (int i = image->strokeCount() - 1; i >= 0; --i) {
+        const VectorStroke &stroke = image->strokeAt(i);
+        if (!stroke.bounds.intersects(hitBounds)) {
+            continue;
+        }
+        if (AnimeVectorLogic::strokeHitsCircle(stroke, pos, m_eraserRadius)) {
+            targetIndex = i;
+            break;
+        }
+    }
+    if (targetIndex < 0) {
+        return false;
+    }
+
+    // Walls: every OTHER stroke of this layer. The target is excluded, so a
+    // stroke that crosses itself is not chopped at its own crossing - the
+    // user asked for crossings with the other lines.
+    QVector<QLineF> walls;
+    for (int i = 0; i < image->strokeCount(); ++i) {
+        if (i == targetIndex) {
+            continue;
+        }
+        const VectorStroke &other = image->strokeAt(i);
+        for (int k = 0; k + 1 < other.points.size(); ++k) {
+            walls.append(QLineF(other.points[k], other.points[k + 1]));
+        }
+    }
+
+    const VectorStroke target = image->strokeAt(targetIndex);
+    AnimeVectorRange span;
+    if (!AnimeVectorLogic::cutSpanAt(target, walls, pos, &span)) {
+        return false;
+    }
+
+    QVector<VectorStroke> pieces;
+    for (const AnimeVectorRange &keep :
+         AnimeVectorLogic::complementRanges({span})) {
+        pieces.append(AnimeVectorLogic::subStroke(target, keep.first, keep.second, m_smoothValue));
+    }
+    // No surviving piece means the cut spans the whole stroke (no crossing on
+    // either side): removing it outright is the same rule, and going through
+    // replaceStrokeWithPieces with an empty list would report "no change".
+    if (pieces.isEmpty()) {
+        image->removeStrokeAt(targetIndex);
+        removeInvalidFillRegions();
+        return true;
+    }
+    if (image->replaceStrokeWithPieces(targetIndex, pieces) <= 0) {
+        return false;
+    }
+    removeInvalidFillRegions();
+    return true;
 }
 
 bool PaintOpenGLWidget::deleteLineAt(const QPointF &pos)

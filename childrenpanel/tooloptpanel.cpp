@@ -453,9 +453,11 @@ void ToolOptPanel::emitOptionChanged(const QString &hook, const QString &name, c
                                    ? PaintOpenGLWidget::FillScope::AllLayers
                                    : PaintOpenGLWidget::FillScope::CurrentLayer);
     } else if (hook == QStringLiteral("eraser_mode")) {
-        const PaintOpenGLWidget::Tool eraserTool = value.toString() == QStringLiteral("line")
-                                                       ? PaintOpenGLWidget::Tool::DeleteLine
-                                                       : PaintOpenGLWidget::Tool::Eraser;
+        const QString mode = value.toString();
+        const PaintOpenGLWidget::Tool eraserTool =
+            mode == QStringLiteral("line") ? PaintOpenGLWidget::Tool::DeleteLine
+            : mode == QStringLiteral("cut") ? PaintOpenGLWidget::Tool::CutLine
+                                            : PaintOpenGLWidget::Tool::Eraser;
         setTool(eraserTool);
         emit eraserModeSelected(eraserTool);
     } else if (hook == QStringLiteral("smooth")) {

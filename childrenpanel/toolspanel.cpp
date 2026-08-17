@@ -71,7 +71,8 @@ void ToolsPanel::setTool(PaintOpenGLWidget::Tool tool)
     ui->penButton->setChecked(tool == PaintOpenGLWidget::Tool::Pen);
     ui->moveButton->setChecked(tool == PaintOpenGLWidget::Tool::Move);
     ui->eraserButton->setChecked(tool == PaintOpenGLWidget::Tool::Eraser ||
-                                 tool == PaintOpenGLWidget::Tool::DeleteLine);
+                                 tool == PaintOpenGLWidget::Tool::DeleteLine ||
+                                 tool == PaintOpenGLWidget::Tool::CutLine);
     ui->fillButton->setChecked(tool == PaintOpenGLWidget::Tool::Fill);
     for (QPushButton *button : m_extraButtons) {
         if (button) {

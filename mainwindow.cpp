@@ -104,6 +104,8 @@ QString toolControlName(PaintOpenGLWidget::Tool tool)
         return QStringLiteral("eraser");
     case PaintOpenGLWidget::Tool::DeleteLine:
         return QStringLiteral("delete_line");
+    case PaintOpenGLWidget::Tool::CutLine:
+        return QStringLiteral("cut_line");
     case PaintOpenGLWidget::Tool::Fill:
         return QStringLiteral("fill");
     case PaintOpenGLWidget::Tool::Move:

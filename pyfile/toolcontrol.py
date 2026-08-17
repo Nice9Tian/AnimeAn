@@ -73,20 +73,29 @@ def options_for_tool(tool, state=None):
                 ],
             },
         ]
-    elif tool in ("eraser", "delete_line", "deleteline"):
+    elif tool in ("eraser", "delete_line", "deleteline", "cut_line", "cutline"):
+        # Area rubs a radius away, Line deletes the whole stroke it touches,
+        # Cut trims one stroke back to where it crosses its neighbours.
+        if tool in ("delete_line", "deleteline"):
+            eraser_mode = "line"
+        elif tool in ("cut_line", "cutline"):
+            eraser_mode = "cut"
+        else:
+            eraser_mode = "area"
         controls = [
             {
                 "name": "eraser_mode",
                 "type": "list",
                 "title": "Eraser Mode",
                 "hook": "eraser_mode",
-                "value": "line" if tool in ("delete_line", "deleteline") else "area",
+                "value": eraser_mode,
                 "row": 0,
                 "start_column": 0,
                 "end_column": 2,
                 "options": [
                     {"title": "LineMode", "value": "line"},
                     {"title": "AreaMode", "value": "area"},
+                    {"title": "CutMode", "value": "cut"},
                 ],
             },
         ]

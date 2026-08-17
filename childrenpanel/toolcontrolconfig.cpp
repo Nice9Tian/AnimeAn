@@ -64,9 +64,10 @@ QJsonObject applyRuntimeState(QJsonObject layout,
     const QString fillScopeValue = fillScope == PaintOpenGLWidget::FillScope::AllLayers
                                        ? QStringLiteral("all")
                                        : QStringLiteral("current");
-    const QString eraserModeValue = tool == PaintOpenGLWidget::Tool::DeleteLine
-                                        ? QStringLiteral("line")
-                                        : QStringLiteral("area");
+    const QString eraserModeValue =
+        tool == PaintOpenGLWidget::Tool::DeleteLine ? QStringLiteral("line")
+        : tool == PaintOpenGLWidget::Tool::CutLine ? QStringLiteral("cut")
+                                                   : QStringLiteral("area");
 
     QJsonArray controls = layout.value(QStringLiteral("controls")).toArray();
     for (int index = 0; index < controls.size(); ++index) {

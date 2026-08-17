@@ -27,6 +27,9 @@ public:
         Pen,
         Eraser,
         DeleteLine,
+        // Trim to the crossings: removes the piece of a stroke between the
+        // two places it crosses its neighbours on either side of the click.
+        CutLine,
         Fill,
         Move,
         Arrow
@@ -240,6 +243,9 @@ private:
     bool eraseBetween(const QPointF &from, const QPointF &to);
     bool deleteLineAt(const QPointF &pos);
     bool deleteLineBetween(const QPointF &from, const QPointF &to);
+    // CutMode: trims the topmost stroke under `pos` back to its crossings
+    // with the OTHER strokes of the same layer.
+    bool cutLineAt(const QPointF &pos);
     bool fillAt(const QPointF &pos);
     bool moveCurrentLayerBy(const QPointF &delta);
     bool currentLayerAcceptsFill() const;
