@@ -205,6 +205,42 @@ void AnimeBezierSplit::cubicSegment(const QPointF p[4], qreal t0, qreal t1, QPoi
     }
 }
 
+QPointF AnimeBezierSplit::evaluateCubic(const QPointF p[4], qreal t)
+{
+    return splitCubic(p, t, nullptr, nullptr);
+}
+
+QPointF AnimeBezierSplit::cubicDerivative(const QPointF p[4], qreal t)
+{
+    const qreal v = 1.0 - t;
+    return (p[1] - p[0]) * (3.0 * v * v)
+           + (p[2] - p[1]) * (6.0 * v * t)
+           + (p[3] - p[2]) * (3.0 * t * t);
+}
+
+void AnimeBezierSplit::lineToCubic(const QPointF &a, const QPointF &b, QPointF out[4])
+{
+    out[0] = a;
+    out[1] = a + (b - a) / 3.0;
+    out[2] = a + (b - a) * (2.0 / 3.0);
+    out[3] = b;
+}
+
+void AnimeBezierSplit::quadToCubic(const QPointF &a, const QPointF &control, const QPointF &b,
+                                   QPointF out[4])
+{
+    out[0] = a;
+    out[1] = a + (control - a) * (2.0 / 3.0);
+    out[2] = b + (control - b) * (2.0 / 3.0);
+    out[3] = b;
+}
+
+qreal AnimeBezierSplit::cubicHullLength(const QPointF p[4])
+{
+    return QLineF(p[0], p[1]).length() + QLineF(p[1], p[2]).length()
+           + QLineF(p[2], p[3]).length();
+}
+
 QPointF AnimeBezierSplit::curvePoint(const AnimeBezierCurve &curve, qreal t)
 {
     if (curve.isLine) {
@@ -216,42 +252,72 @@ QPointF AnimeBezierSplit::curvePoint(const AnimeBezierCurve &curve, qreal t)
 bool AnimeBezierSplit::parsePath(const QPainterPath &path, QVector<AnimeBezierCurve> *out)
 {
     out->clear();
-    const int count = path.elementCount();
-    if (count < 2 || path.elementAt(0).type != QPainterPath::MoveToElement) {
+    QVector<QVector<AnimeBezierCurve>> subpaths;
+    if (!parseSubpaths(path, &subpaths) || subpaths.size() != 1) {
         return false;
     }
-    QPointF current(path.elementAt(0).x, path.elementAt(0).y);
-    int i = 1;
+    // A single-run caller must not silently lose a malformed tail.
+    int parsedElements = 1;   // the MoveTo
+    for (const AnimeBezierCurve &curve : subpaths.first()) {
+        parsedElements += curve.isLine ? 1 : 3;
+    }
+    if (parsedElements != path.elementCount()) {
+        return false;
+    }
+    *out = subpaths.first();
+    return !out->isEmpty();
+}
+
+bool AnimeBezierSplit::parseSubpaths(const QPainterPath &path,
+                                     QVector<QVector<AnimeBezierCurve>> *out)
+{
+    out->clear();
+    const int count = path.elementCount();
+    if (count < 1 || path.elementAt(0).type != QPainterPath::MoveToElement) {
+        return false;
+    }
+    QVector<AnimeBezierCurve> run;
+    QPointF current;
+    const auto flush = [out, &run]() {
+        if (!run.isEmpty()) {
+            out->append(run);
+            run.clear();
+        }
+    };
+    int i = 0;
     while (i < count) {
         const QPainterPath::Element element = path.elementAt(i);
+        if (element.type == QPainterPath::MoveToElement) {
+            flush();
+            current = QPointF(element.x, element.y);
+            ++i;
+            continue;
+        }
         if (element.type == QPainterPath::LineToElement) {
             AnimeBezierCurve curve;
             curve.isLine = true;
             curve.p[0] = current;
             curve.p[3] = QPointF(element.x, element.y);
             current = curve.p[3];
-            out->append(curve);
+            run.append(curve);
             ++i;
             continue;
         }
-        if (element.type != QPainterPath::CurveToElement || i + 2 >= count) {
-            return false;   // a second MoveTo, or a truncated cubic
-        }
-        const QPainterPath::Element control2 = path.elementAt(i + 1);
-        const QPainterPath::Element end = path.elementAt(i + 2);
-        if (control2.type != QPainterPath::CurveToDataElement
-            || end.type != QPainterPath::CurveToDataElement) {
-            return false;
+        if (element.type != QPainterPath::CurveToElement || i + 2 >= count
+            || path.elementAt(i + 1).type != QPainterPath::CurveToDataElement
+            || path.elementAt(i + 2).type != QPainterPath::CurveToDataElement) {
+            break;   // malformed trailing data ends the walk
         }
         AnimeBezierCurve curve;
         curve.p[0] = current;
         curve.p[1] = QPointF(element.x, element.y);
-        curve.p[2] = QPointF(control2.x, control2.y);
-        curve.p[3] = QPointF(end.x, end.y);
+        curve.p[2] = QPointF(path.elementAt(i + 1).x, path.elementAt(i + 1).y);
+        curve.p[3] = QPointF(path.elementAt(i + 2).x, path.elementAt(i + 2).y);
         current = curve.p[3];
-        out->append(curve);
+        run.append(curve);
         i += 3;
     }
+    flush();
     return !out->isEmpty();
 }
 
@@ -266,12 +332,8 @@ AnimeBezierPathRun AnimeBezierSplit::buildRun(const QPainterPath &path,
     const int cap = std::max(2, options.maxSamplesPerCurve);
     for (int c = 0; c < run.curves.size(); ++c) {
         const AnimeBezierCurve &curve = run.curves[c];
-        const qreal hullLength =
-            curve.isLine
-                ? QLineF(curve.p[0], curve.p[3]).length()
-                : QLineF(curve.p[0], curve.p[1]).length()
-                      + QLineF(curve.p[1], curve.p[2]).length()
-                      + QLineF(curve.p[2], curve.p[3]).length();
+        const qreal hullLength = curve.isLine ? QLineF(curve.p[0], curve.p[3]).length()
+                                              : cubicHullLength(curve.p);
         const int steps = std::max(2, std::min(cap, int(hullLength / spacing) + 2));
         for (int k = 0; k <= steps; ++k) {
             AnimeBezierPathSample sample;

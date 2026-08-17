@@ -5,6 +5,7 @@
 #include "python_bindings.h"
 
 #include "algorithm/animemodel.h"
+#include "algorithm/beziersplit.h"
 #include "algorithm/vectorlogic.h"
 
 #include <QImage>
@@ -427,119 +428,77 @@ py::list rangesToList(const QVector<AnimeVectorRange> &ranges)
     return data;
 }
 
-QPointF cubicPointAt(const QPointF &p0,
-                     const QPointF &p1,
-                     const QPointF &p2,
-                     const QPointF &p3,
-                     qreal t)
-{
-    const qreal invT = 1.0 - t;
-    return p0 * (invT * invT * invT) +
-           p1 * (3.0 * invT * invT * t) +
-           p2 * (3.0 * invT * t * t) +
-           p3 * (t * t * t);
-}
+// Parsing, evaluation and elevation all come from the shared exact-bezier
+// home, algorithm/beziersplit.h. This file only keeps its own serialization
+// format and flattening density policy.
 
-int sampleCountForCurve(const QPointF &p0,
-                        const QPointF &p1,
-                        const QPointF &p2,
-                        const QPointF &p3,
-                        double polyStep)
+int sampleCountForCurve(const AnimeBezierCurve &curve, double polyStep)
 {
     const double step = std::max(0.1, polyStep);
-    const double controlNetLength = QLineF(p0, p1).length() +
-                                    QLineF(p1, p2).length() +
-                                    QLineF(p2, p3).length();
-    return std::max(1, static_cast<int>(std::ceil(controlNetLength / step)));
+    return std::max(1, static_cast<int>(std::ceil(AnimeBezierSplit::cubicHullLength(curve.p) / step)));
 }
 
 py::list pathCommandsToList(const QPainterPath &path)
 {
     py::list commands;
-    QPointF current;
-    for (int i = 0; i < path.elementCount(); ++i) {
-        const QPainterPath::Element element = path.elementAt(i);
-        const QPointF point(element.x, element.y);
-        if (element.isMoveTo()) {
+    QVector<QVector<AnimeBezierCurve>> subpaths;
+    if (!AnimeBezierSplit::parseSubpaths(path, &subpaths)) {
+        return commands;
+    }
+    for (const QVector<AnimeBezierCurve> &run : subpaths) {
+        py::dict move;
+        move["type"] = "move";
+        move["to"] = pointToDict(run.first().p[0]);
+        commands.append(move);
+        for (const AnimeBezierCurve &curve : run) {
             py::dict command;
-            command["type"] = "move";
-            command["to"] = pointToDict(point);
+            command["from"] = pointToDict(curve.p[0]);
+            command["to"] = pointToDict(curve.p[3]);
+            if (curve.isLine) {
+                command["type"] = "line";
+            } else {
+                command["type"] = "cubic";
+                command["control1"] = pointToDict(curve.p[1]);
+                command["control2"] = pointToDict(curve.p[2]);
+            }
             commands.append(command);
-            current = point;
-        } else if (element.isLineTo()) {
-            py::dict command;
-            command["type"] = "line";
-            command["from"] = pointToDict(current);
-            command["to"] = pointToDict(point);
-            commands.append(command);
-            current = point;
-        } else if (element.type == QPainterPath::CurveToElement && i + 2 < path.elementCount()) {
-            const QPainterPath::Element controlElement = path.elementAt(i + 1);
-            const QPainterPath::Element endElement = path.elementAt(i + 2);
-            const QPointF control1(element.x, element.y);
-            const QPointF control2(controlElement.x, controlElement.y);
-            const QPointF end(endElement.x, endElement.y);
-
-            py::dict command;
-            command["type"] = "cubic";
-            command["from"] = pointToDict(current);
-            command["control1"] = pointToDict(control1);
-            command["control2"] = pointToDict(control2);
-            command["to"] = pointToDict(end);
-            commands.append(command);
-            current = end;
-            i += 2;
         }
     }
     return commands;
 }
 
+QVector<QVector<QPointF>> pathPolylines(const QPainterPath &path, double polyStep)
+{
+    QVector<QVector<QPointF>> polylines;
+    QVector<QVector<AnimeBezierCurve>> subpaths;
+    if (!AnimeBezierSplit::parseSubpaths(path, &subpaths)) {
+        return polylines;
+    }
+    for (const QVector<AnimeBezierCurve> &run : subpaths) {
+        QVector<QPointF> polyline;
+        polyline.append(run.first().p[0]);
+        for (const AnimeBezierCurve &curve : run) {
+            if (curve.isLine) {
+                polyline.append(curve.p[3]);
+                continue;
+            }
+            const int count = sampleCountForCurve(curve, polyStep);
+            for (int sample = 1; sample <= count; ++sample) {
+                polyline.append(AnimeBezierSplit::evaluateCubic(curve.p,
+                                                                static_cast<qreal>(sample) / count));
+            }
+        }
+        polylines.append(polyline);
+    }
+    return polylines;
+}
+
 py::list pathToPolylines(const QPainterPath &path, double polyStep)
 {
     py::list polylines;
-    QVector<QPointF> currentPolyline;
-    QPointF current;
-
-    auto flushPolyline = [&]() {
-        if (!currentPolyline.isEmpty()) {
-            polylines.append(pointsToList(currentPolyline));
-            currentPolyline.clear();
-        }
-    };
-
-    for (int i = 0; i < path.elementCount(); ++i) {
-        const QPainterPath::Element element = path.elementAt(i);
-        const QPointF point(element.x, element.y);
-        if (element.isMoveTo()) {
-            flushPolyline();
-            currentPolyline.append(point);
-            current = point;
-        } else if (element.isLineTo()) {
-            if (currentPolyline.isEmpty()) {
-                currentPolyline.append(current);
-            }
-            currentPolyline.append(point);
-            current = point;
-        } else if (element.type == QPainterPath::CurveToElement && i + 2 < path.elementCount()) {
-            const QPainterPath::Element controlElement = path.elementAt(i + 1);
-            const QPainterPath::Element endElement = path.elementAt(i + 2);
-            const QPointF control1(element.x, element.y);
-            const QPointF control2(controlElement.x, controlElement.y);
-            const QPointF end(endElement.x, endElement.y);
-            if (currentPolyline.isEmpty()) {
-                currentPolyline.append(current);
-            }
-            const int count = sampleCountForCurve(current, control1, control2, end, polyStep);
-            for (int sample = 1; sample <= count; ++sample) {
-                const qreal t = static_cast<qreal>(sample) / count;
-                currentPolyline.append(cubicPointAt(current, control1, control2, end, t));
-            }
-            current = end;
-            i += 2;
-        }
+    for (const QVector<QPointF> &polyline : pathPolylines(path, polyStep)) {
+        polylines.append(pointsToList(polyline));
     }
-
-    flushPolyline();
     return polylines;
 }
 
@@ -606,50 +565,12 @@ QVector<QPointF> simplifyRdp(const QVector<QPointF> &points, qreal epsilon)
 
 QVector<QVector<QPointF>> samplePathToPolylines(const QPainterPath &path, double polyStep, double simplify)
 {
+    // The same flattening as pathToPolylines (via algorithm/beziersplit.h),
+    // decimated per polyline.
     QVector<QVector<QPointF>> polylines;
-    QVector<QPointF> currentPolyline;
-    QPointF current;
-
-    auto flushPolyline = [&]() {
-        if (!currentPolyline.isEmpty()) {
-            polylines.append(simplifyRdp(currentPolyline, simplify));
-            currentPolyline.clear();
-        }
-    };
-
-    for (int i = 0; i < path.elementCount(); ++i) {
-        const QPainterPath::Element element = path.elementAt(i);
-        const QPointF point(element.x, element.y);
-        if (element.isMoveTo()) {
-            flushPolyline();
-            currentPolyline.append(point);
-            current = point;
-        } else if (element.isLineTo()) {
-            if (currentPolyline.isEmpty()) {
-                currentPolyline.append(current);
-            }
-            currentPolyline.append(point);
-            current = point;
-        } else if (element.type == QPainterPath::CurveToElement && i + 2 < path.elementCount()) {
-            const QPainterPath::Element controlElement = path.elementAt(i + 1);
-            const QPainterPath::Element endElement = path.elementAt(i + 2);
-            const QPointF control1(element.x, element.y);
-            const QPointF control2(controlElement.x, controlElement.y);
-            const QPointF end(endElement.x, endElement.y);
-            if (currentPolyline.isEmpty()) {
-                currentPolyline.append(current);
-            }
-            const int count = sampleCountForCurve(current, control1, control2, end, polyStep);
-            for (int sample = 1; sample <= count; ++sample) {
-                const qreal t = static_cast<qreal>(sample) / count;
-                currentPolyline.append(cubicPointAt(current, control1, control2, end, t));
-            }
-            current = end;
-            i += 2;
-        }
+    for (const QVector<QPointF> &polyline : pathPolylines(path, polyStep)) {
+        polylines.append(simplifyRdp(polyline, simplify));
     }
-
-    flushPolyline();
     return polylines;
 }
 

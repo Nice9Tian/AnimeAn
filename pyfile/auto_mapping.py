@@ -42,6 +42,7 @@ import heapq
 import json
 import math
 
+import bezier
 import python_hooks
 
 H_PROPERTY = "h_center_line"
@@ -150,8 +151,11 @@ _RDP_STATE = {"eps": 0.3}
 def rdp_eps():
     return _RDP_STATE["eps"]
 
-# Refer-rect debug grid state.
-_REFER_RECT = {"enabled": False}
+# Refer-rect debug grid state, PER VIEW. It answers "is my mapping right?",
+# and the two boards answer it separately: the child shows the reference frame
+# itself, the main shows its image under the mapper, and wanting one is no
+# reason to be shown the other.
+_REFER_RECT = {"child": False, "main": False}
 # Grid polylines are O(n^2) in guide points to build (intersection searches):
 # cache per view, invalidated whenever the guides change.
 _GRID_CACHE = {"child": None, "main": None}
@@ -165,8 +169,8 @@ _OCCLUSION = {"enabled": False}
 _OCCLUSION_CACHE = {"items": None, "note": "", "share": 0.0}
 
 
-def refer_rect_enabled():
-    return _REFER_RECT["enabled"]
+def refer_rect_enabled(view_name="main"):
+    return bool(_REFER_RECT.get(view_name, False))
 
 
 def curve_mode():
@@ -610,7 +614,7 @@ class _Curve:
         self.points = []
         self.flat_arcs = []
         for index, (p0, c1, c2, p3) in enumerate(cubics):
-            net = _dist(p0, c1) + _dist(c1, c2) + _dist(c2, p3)
+            net = bezier.hull_length((p0, c1, c2, p3))
             count = max(1, int(math.ceil(net / POLY_STEP)))
             start = 0 if index == 0 else 1
             for k in range(start, count + 1):
@@ -628,12 +632,9 @@ class _Curve:
 
     @staticmethod
     def _speed(p0, c1, c2, p3, t):
-        mt = 1.0 - t
-        dx = (3.0 * mt * mt * (c1[0] - p0[0]) + 6.0 * mt * t * (c2[0] - c1[0])
-              + 3.0 * t * t * (p3[0] - c2[0]))
-        dy = (3.0 * mt * mt * (c1[1] - p0[1]) + 6.0 * mt * t * (c2[1] - c1[1])
-              + 3.0 * t * t * (p3[1] - c2[1]))
-        return math.hypot(dx, dy)
+        # |r'(t)| via the shared wheel pyfile/bezier.py (its arithmetic is
+        # expression-identical, preserving this table's sub-1e-3px contract).
+        return math.hypot(*bezier.cubic_derivative((p0, c1, c2, p3), t))
 
     def _partial(self, index, t):
         """Arc from the segment's start to parameter t (GL on the last slice)."""
@@ -662,17 +663,14 @@ class _Curve:
         return index, (slot + frac) / _CURVE_LUT
 
     def _seg_dir(self, index, t):
-        p0, c1, c2, p3 = self.segs[index]
-        mt = 1.0 - t
-        dx = (3.0 * mt * mt * (c1[0] - p0[0]) + 6.0 * mt * t * (c2[0] - c1[0])
-              + 3.0 * t * t * (p3[0] - c2[0]))
-        dy = (3.0 * mt * mt * (c1[1] - p0[1]) + 6.0 * mt * t * (c2[1] - c1[1])
-              + 3.0 * t * t * (p3[1] - c2[1]))
+        # Hodograph from the shared wheel pyfile/bezier.py.
+        seg = self.segs[index]
+        dx, dy = bezier.cubic_derivative(seg, t)
         length = math.hypot(dx, dy)
         if length <= 1e-12:
             # degenerate derivative (a stubby control net): fall back to the
             # segment chord, mirroring _segment_direction's guard
-            return _segment_direction([p0, p3], 0)
+            return _segment_direction([seg[0], seg[3]], 0)
         return dx / length, dy / length
 
     def point_at(self, arc):
@@ -1101,21 +1099,15 @@ def _path_commands_to_polygons(commands):
                 current.append(_command_point(command["from"]))
             if not current:
                 continue
-            p0 = current[-1]
-            c1 = _command_point(command["control1"])
-            c2 = _command_point(command["control2"])
-            p3 = _command_point(command["to"])
-            net = (math.hypot(c1[0] - p0[0], c1[1] - p0[1])
-                   + math.hypot(c2[0] - c1[0], c2[1] - c1[1])
-                   + math.hypot(p3[0] - c2[0], p3[1] - c2[1]))
-            samples = max(4, min(24, int(math.ceil(net / 6.0))))
+            # Evaluation via the shared wheel pyfile/bezier.py; the 6px /
+            # 4..24 density is this sampler's own policy.
+            cub = (current[-1],
+                   _command_point(command["control1"]),
+                   _command_point(command["control2"]),
+                   _command_point(command["to"]))
+            samples = max(4, min(24, int(math.ceil(bezier.hull_length(cub) / 6.0))))
             for step in range(1, samples + 1):
-                t = step / samples
-                omt = 1.0 - t
-                current.append((
-                    omt * omt * omt * p0[0] + 3 * omt * omt * t * c1[0] + 3 * omt * t * t * c2[0] + t * t * t * p3[0],
-                    omt * omt * omt * p0[1] + 3 * omt * omt * t * c1[1] + 3 * omt * t * t * c2[1] + t * t * t * p3[1],
-                ))
+                current.append(_cubic_point(cub, step / samples))
     flush()
     return polygons
 
@@ -1225,51 +1217,18 @@ def _mid(a, b):
     return ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5)
 
 
-def _lerp(a, b, t):
-    return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
-
-
-def _cubic_point(cub, t):
-    """de Casteljau evaluation of a cubic Bezier (p0, c1, c2, p3) at t."""
-    p0, c1, c2, p3 = cub
-    a = _lerp(p0, c1, t)
-    b = _lerp(c1, c2, t)
-    c = _lerp(c2, p3, t)
-    d = _lerp(a, b, t)
-    e = _lerp(b, c, t)
-    return _lerp(d, e, t)
-
-
-def _split_cubic(cub, t0, t1):
-    """Sub-cubic covering the parameter range [t0, t1] of `cub` (de Casteljau)."""
-    p0, c1, c2, p3 = cub
-    # left split at t1, then right split of that at t0 / t1.
-    def split_at(curve, t):
-        q0, q1, q2, q3 = curve
-        a = _lerp(q0, q1, t)
-        b = _lerp(q1, q2, t)
-        c = _lerp(q2, q3, t)
-        d = _lerp(a, b, t)
-        e = _lerp(b, c, t)
-        f = _lerp(d, e, t)
-        return (q0, a, d, f), (f, e, c, q3)
-    if t1 < 1.0:
-        cub = split_at(cub, t1)[0]
-    if t0 > 0.0:
-        denom = t1 if t1 > 1e-12 else 1e-12
-        cub = split_at(cub, t0 / denom)[1]
-    return cub
-
-
-def _line_cubic(p0, p3):
-    """Represent a straight segment as a cubic so all output shares one type."""
-    return (p0, _lerp(p0, p3, 1.0 / 3.0), _lerp(p0, p3, 2.0 / 3.0), p3)
+# Exact bezier primitives come from the shared wheel pyfile/bezier.py (the
+# mirror of algorithm/beziersplit.h) - do not re-derive them here. The
+# aliases keep this module's historical names for its many call sites.
+_lerp = bezier.lerp
+_cubic_point = bezier.eval_cubic
+_split_cubic = bezier.cubic_segment
+_line_cubic = bezier.line_cubic
 
 
 def _flatten_cubic(cub, out, step=POLY_STEP):
     """Append samples of one cubic to `out` (excluding its start point)."""
-    p0, c1, c2, p3 = cub
-    net = _dist(p0, c1) + _dist(c1, c2) + _dist(c2, p3)
+    net = bezier.hull_length(cub)
     samples = max(2, min(64, int(math.ceil(net / max(0.5, step)))))
     for k in range(1, samples + 1):
         out.append(_cubic_point(cub, k / samples))
@@ -1550,7 +1509,7 @@ def _warp_cubic(map_point, cub, tol=_CURVE_TOL, max_depth=_BEZIER_MAX_DEPTH, dep
     # golden-section probe additionally breaks periodic alignment. Source
     # anchors always survive as output anchors (subdividing only ADDS knots),
     # matching the "originals are never decimated" rule of spline mode.
-    net = _dist(w0, out_c1) + _dist(out_c1, out_c2) + _dist(out_c2, w3)
+    net = bezier.hull_length(out)
     probes = max(3, min(17, int(math.ceil(net / _FORCE_STEP))))
     ts = [(k + 1.0) / (probes + 1.0) for k in range(probes)] + [_PROBE_T]
     worst = 0.0
@@ -1558,8 +1517,8 @@ def _warp_cubic(map_point, cub, tol=_CURVE_TOL, max_depth=_BEZIER_MAX_DEPTH, dep
         worst = max(worst, _dist(map_point(_cubic_point(cub, t)), _cubic_point(out, t)))
     if worst <= tol or depth >= max_depth:
         return [out]
-    left = _split_cubic(cub, 0.0, 0.5)
-    right = _split_cubic(cub, 0.5, 1.0)
+    # One shared-wheel split (pyfile/bezier.py) yields both halves at once.
+    left, right = bezier.split_cubic(cub, 0.5)
     return (_warp_cubic(map_point, left, tol, max_depth, depth + 1)
             + _warp_cubic(map_point, right, tol, max_depth, depth + 1))
 
@@ -1595,9 +1554,8 @@ def _commands_to_subpaths(commands):
             ctrl = _command_point(command["control"])
             b = _command_point(command["to"])
             if a is not None:
-                c1 = (a[0] + 2.0 / 3.0 * (ctrl[0] - a[0]), a[1] + 2.0 / 3.0 * (ctrl[1] - a[1]))
-                c2 = (b[0] + 2.0 / 3.0 * (ctrl[0] - b[0]), b[1] + 2.0 / 3.0 * (ctrl[1] - b[1]))
-                current.append((a, c1, c2, b))
+                # Elevation via the shared wheel pyfile/bezier.py.
+                current.append(bezier.quad_cubic(a, ctrl, b))
             start = b
         elif kind == "cubic":
             a = start if start is not None else (
@@ -1999,6 +1957,28 @@ def _set_draw_color(color):
         pass
 
 
+def _view_frame(view_name):
+    """The reference frame of ONE board, from that board's own axes.
+
+    Independent by construction: the texture's frame needs the texture's
+    axes and nothing else, and the main board's needs the main board's. The
+    refer grid used to build the main board's from the CHILD frame pushed
+    through the mapper, which made a grid on one board unavailable whenever
+    the OTHER board had no axes yet - the common state while a setup is only
+    half drawn, and exactly when a reference rectangle is most wanted.
+    """
+    assets = _assets_for(view_name)
+    if H_PROPERTY not in assets or V_PROPERTY not in assets:
+        return None
+    if (len(assets[H_PROPERTY].get("points") or []) < 2
+            or len(assets[V_PROPERTY].get("points") or []) < 2):
+        return None
+    frame = _Frame(assets[H_PROPERTY], assets[V_PROPERTY])
+    if frame.h_total <= 1e-6 or frame.v_total <= 1e-6:
+        return None
+    return frame
+
+
 def _child_frame():
     """The child reference frame the MAPPER actually uses.
 
@@ -2011,16 +1991,7 @@ def _child_frame():
     Since the grid exists to reveal a wrong mapping at a glance, it has to be
     built out of the same frame the mapping is.
     """
-    assets = _assets_for("child")
-    if H_PROPERTY not in assets or V_PROPERTY not in assets:
-        return None
-    if (len(assets[H_PROPERTY].get("points") or []) < 2
-            or len(assets[V_PROPERTY].get("points") or []) < 2):
-        return None
-    frame = _Frame(assets[H_PROPERTY], assets[V_PROPERTY])
-    if frame.h_total <= 1e-6 or frame.v_total <= 1e-6:
-        return None
-    return frame
+    return _view_frame("child")
 
 
 def _frame_point(frame, u_hat, v_hat):
@@ -2031,41 +2002,38 @@ def _frame_point(frame, u_hat, v_hat):
 
 
 def _grid_overlay_items(view_name):
-    """Refer-rect debug grid: the 3x3 anchor lattice (crossing, 4 guide
-    endpoints, 4 quadrant corners) with quarter-step iso-lines. The child
-    view shows the reference frame itself; the main view shows its image
-    under the CURRENT mapper, so a wrong mapping is visible at a glance.
-    No grid is shown for guide configurations the mapper itself refuses
-    (missing or non-crossing lines)."""
-    if not _REFER_RECT["enabled"]:
+    """Refer-rect grid: the 3x3 anchor lattice (crossing, 4 guide endpoints,
+    4 quadrant corners) with quarter-step iso-lines, for ONE board.
+
+    Each board draws ITS OWN frame from ITS OWN axes. The main board's grid
+    used to be the child frame pushed through the mapper, which made it a
+    picture of the mapping rather than of the board - and coupled the two:
+    with no axes on the texture, the main board could not show a grid even
+    though it had a perfectly good pair of its own. Comparing the two grids
+    by eye still reads a wrong mapping, and the numeric check for that lives
+    in the anchor tests rather than in an overlay.
+
+    A board with no axes, or with axes that do not cross, has no frame and so
+    draws nothing - there is no rectangle to refer to."""
+    if not _REFER_RECT.get(view_name, False):
         return []
     cached = _GRID_CACHE.get(view_name)
     if cached is not None:
         return cached
 
-    child_assets = _assets_for("child")
-    if H_PROPERTY not in child_assets or V_PROPERTY not in child_assets:
+    # This board's own axes, and nothing else. Asking for the grid on one
+    # board must not depend on what has been drawn on the other: half-drawn
+    # setups are the normal state while a mapping is being built, and that is
+    # exactly when a reference rectangle earns its keep.
+    assets = _assets_for(view_name)
+    if H_PROPERTY not in assets or V_PROPERTY not in assets:
         return []
-    if not _polylines_cross(child_assets[H_PROPERTY]["points"],
-                            child_assets[V_PROPERTY]["points"]):
+    if not _polylines_cross(assets[H_PROPERTY]["points"],
+                            assets[V_PROPERTY]["points"]):
         return []
-    frame = _child_frame()
+    frame = _view_frame(view_name)
     if frame is None:
         return []
-
-    mapper = None
-    if view_name == "main":
-        main_assets = _assets_for("main")
-        if H_PROPERTY not in main_assets or V_PROPERTY not in main_assets:
-            return []
-        if not _polylines_cross(main_assets[H_PROPERTY]["points"],
-                                main_assets[V_PROPERTY]["points"]):
-            return []
-        mapper, _ = build_mapper(
-            child_assets[H_PROPERTY], child_assets[V_PROPERTY],
-            main_assets[H_PROPERTY], main_assets[V_PROPERTY])
-        if mapper is None:
-            return []
 
     items = []
     levels = (-1.0, -0.5, 0.0, 0.5, 1.0)
@@ -2073,9 +2041,6 @@ def _grid_overlay_items(view_name):
     for level in levels:
         iso_u = [_frame_point(frame, level, s) for s in samples]
         iso_v = [_frame_point(frame, s, level) for s in samples]
-        if mapper is not None:
-            iso_u = [mapper(p) for p in iso_u]
-            iso_v = [mapper(p) for p in iso_v]
         for points in (iso_u, iso_v):
             items.append({
                 "id": "refer_rect_grid",
@@ -2089,14 +2054,15 @@ def _grid_overlay_items(view_name):
 
 
 def _overlays_changed(view_name):
-    """Assets changed in view_name: refresh its overlay — and the main view's
-    too when refer rect is on, since the main grid mirrors the child frame.
-    Symmetrically, the child's occlusion tint depends on the MAIN guides, so
-    a main-side change must re-push the child overlay."""
+    """Assets changed in view_name: refresh its overlay, and any OTHER view
+    whose display genuinely depends on those assets.
+
+    The refer grid no longer qualifies - each board builds its own from its
+    own axes, so a change here cannot move the grid there. The occlusion tint
+    still does: it is drawn on the texture but computed from the MAIN guides,
+    so a main-side edit has to re-push the child overlay."""
     _invalidate_grid_cache()
     _push_overlay(view_name)
-    if _REFER_RECT["enabled"] and view_name != "main":
-        _push_overlay("main")
     if _OCCLUSION["enabled"] and view_name != "child":
         _push_overlay("child")
 
@@ -3236,7 +3202,7 @@ def _split_cubic_by_fold(map_point, cub):
     That is legitimate here: the sign is piecewise constant, so a sign change
     between two probes brackets exactly one cell boundary.
     """
-    net = _dist(cub[0], cub[1]) + _dist(cub[1], cub[2]) + _dist(cub[2], cub[3])
+    net = bezier.hull_length(cub)
     probes = max(4, min(96, int(math.ceil(net / POLY_STEP))))
     ts = [k / probes for k in range(probes + 1)]
     signs = [_fold_sign(map_point, _cubic_point(cub, t)) for t in ts]
@@ -3701,27 +3667,58 @@ def _tool_option_changed(cell, stroke, message):
         _FOLD["back_color"] = (level, level + 8, level + 32, 255)
         print(f"[auto_mapping] back/lining shade -> {_FOLD['back_color'][:3]}")
         return
-    if hook != "refer_rect":
-        return
-    enabled = str(message.get("value", "")).lower() == "on"
-    if _REFER_RECT["enabled"] == enabled:
-        return
-    _REFER_RECT["enabled"] = enabled
-    _invalidate_grid_cache()
-    _push_overlay("child")
-    _push_overlay("main")
-    print(f"[auto_mapping] refer rect grid {'ON' if enabled else 'OFF'}")
+    # The refer grid used to be a tool option here. It moved to a per-board
+    # View menu: it is a display choice about a BOARD, not a setting of the
+    # mapping tool, and as one shared option it could not be answered
+    # separately for the two views.
 
 
-def _view_button_toggled(message):
-    if message.get("view") != "child" or message.get("name") != OCCLUSION_BUTTON:
+VIEW_MENU_NAME = "view"
+REFER_RECT_ITEM = "refer_rect"
+
+
+def _view_menu_items(view_name):
+    """The View menu of one board, re-read on every open so ticks are true."""
+    def build():
+        items = [{"name": REFER_RECT_ITEM, "title": "Mapping Refer Rect",
+                  "kind": "check", "checked": _REFER_RECT.get(view_name, False)}]
+        if view_name == "child":
+            items.append({"name": OCCLUSION_BUTTON, "title": "Occluded Areas",
+                          "kind": "check", "checked": _OCCLUSION["enabled"]})
+        return items
+    return build
+
+
+def _view_menu_action(message):
+    if message.get("menu") != VIEW_MENU_NAME:
         return
-    _OCCLUSION["enabled"] = bool(message.get("on"))
+    view = message.get("view") or "main"
+    name = message.get("name") or ""
+    checked = bool(message.get("checked"))
+    if name == REFER_RECT_ITEM:
+        if _REFER_RECT.get(view) == checked:
+            return
+        _REFER_RECT[view] = checked
+        _invalidate_grid_cache()
+        _push_overlay(view)
+        print(f"[auto_mapping] refer rect grid on {view} "
+              f"{'ON' if checked else 'OFF'}")
+        return
+    if name == OCCLUSION_BUTTON:
+        _set_occlusion(checked)
+
+
+def _set_occlusion(enabled):
+    _OCCLUSION["enabled"] = bool(enabled)
     _OCCLUSION_CACHE["items"] = None
     _push_overlay("child")  # computes and caches the bands as a side effect
     if not _OCCLUSION["enabled"]:
         print("[auto_mapping] occlusion preview OFF")
         return
+    _report_occlusion()
+
+
+def _report_occlusion():
     note = _OCCLUSION_CACHE.get("note")
     items = _OCCLUSION_CACHE.get("items") or []
     if note:
@@ -4092,17 +4089,22 @@ def run_auto_mapping(name=AUTO_MAPPING2_TOOL, property_value=AUTO_MAPPING2_TOOL)
     return property_value
 
 
-# The occlusion toggle lives on the child window itself, so it must work from
-# startup - BEFORE any mapping tool has been armed. Register the button and
-# its hook at import time (register_hooks() only runs on tool activation).
-python_hooks.register_view_button("child", {
-    "name": OCCLUSION_BUTTON,
-    "title": "Occluded Areas",
-    "tooltip": "Tint the parts of this texture that the current mapping "
-               "folds face-down (covered by the lining).",
-    "checkable": True,
-})
-python_hooks.set_hook(_view_button_toggled, viewbutton=True)
+# A View menu on each board. Both are named "view" and differ by HOST, which
+# is the point: "show the refer grid" is a question about one board, and the
+# answer for the texture is not the answer for the main view. Registered at
+# import time because the menus exist from startup, before any tool has been
+# armed (register_hooks() only runs on tool activation).
+for _host in ("main", "child"):
+    python_hooks.register_menu({
+        "name": VIEW_MENU_NAME,
+        "title": "View",
+        "host": _host,
+        "items": _view_menu_items(_host),   # callable: re-read on every open
+    })
+python_hooks.set_hook(_view_menu_action, menu=True)
+# The texture board can be locked against accidental edits; these are the
+# tools that still work while it is.
+python_hooks.register_protected_properties("child", [H_PROPERTY, V_PROPERTY])
 # The layer-panel context menu has the same requirement: right-clicking a
 # mapping group must work in a fresh session, before any tool is armed.
 python_hooks.register_menu_provider(_layer_menu_items)

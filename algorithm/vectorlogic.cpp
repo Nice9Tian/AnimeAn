@@ -522,13 +522,9 @@ qreal chordDeviation(const QVector<QPointF> &pts, int first, int last)
     return worst;
 }
 
-QPointF bezierPoint(const QPointF *c, qreal t)
-{
-    const qreal u = 1.0 - t;
-    return u * u * u * c[0] + 3.0 * u * u * t * c[1] + 3.0 * u * t * t * c[2] + t * t * t * c[3];
-}
-
 // --- Schneider least-squares cubic fit (Graphics Gems "FitCurve") ---------
+// Cubic evaluation comes from the shared exact-bezier home,
+// AnimeBezierSplit::evaluateCubic (algorithm/beziersplit.h).
 
 void chordLengthParameterize(const QVector<QPointF> &pts, int first, int last, QVector<qreal> &u)
 {
@@ -552,7 +548,7 @@ qreal refineParameter(const QPointF *bez, const QPointF &point, qreal u)
     const QPointF d1[3] = {3.0 * (bez[1] - bez[0]), 3.0 * (bez[2] - bez[1]), 3.0 * (bez[3] - bez[2])};
     const QPointF d2[2] = {2.0 * (d1[1] - d1[0]), 2.0 * (d1[2] - d1[1])};
 
-    const QPointF q = bezierPoint(bez, u);
+    const QPointF q = AnimeBezierSplit::evaluateCubic(bez, u);
     const qreal v = 1.0 - u;
     const QPointF q1 = v * v * d1[0] + 2.0 * v * u * d1[1] + u * u * d1[2];
     const QPointF q2 = v * d2[0] + u * d2[1];
@@ -627,7 +623,7 @@ qreal computeMaxError(const QVector<QPointF> &pts, int first, int last,
     qreal maxDistance = 0.0;
     *splitPoint = (first + last) / 2;
     for (int i = first + 1; i < last; ++i) {
-        const QPointF p = bezierPoint(bez, u[i - first]);
+        const QPointF p = AnimeBezierSplit::evaluateCubic(bez, u[i - first]);
         const qreal distance = dotP(p - pts[i], p - pts[i]);
         if (distance > maxDistance) {
             maxDistance = distance;
@@ -648,11 +644,12 @@ void fitCubicRecursive(const QVector<QPointF> &pts, int first, int last,
                        QPointF tHat1, QPointF tHat2,
                        qreal tolerance, int depth, QPainterPath &path)
 {
-    // Two samples: nothing to fit.
+    // Two samples: nothing to fit - the chord, elevated to a cubic by the
+    // shared home (algorithm/beziersplit.h).
     if (last - first < 2 || depth > 24) {
-        const QPointF a = pts[first];
-        const QPointF b = pts[last];
-        path.cubicTo(a + (b - a) / 3.0, a + 2.0 * (b - a) / 3.0, b);
+        QPointF chord[4];
+        AnimeBezierSplit::lineToCubic(pts[first], pts[last], chord);
+        path.cubicTo(chord[1], chord[2], chord[3]);
         return;
     }
 

@@ -21,6 +21,7 @@ The C++ side is a pure mechanism (render dots, hit-test, report drags as
 """
 import math
 
+import bezier
 import python_hooks
 
 POLY_STEP = 4.0
@@ -78,14 +79,16 @@ def _dist(a, b):
 
 
 def _cubic_point(p0, c1, c2, p3, t):
-    s = 1.0 - t
-    return (s * s * s * p0[0] + 3.0 * s * s * t * c1[0] + 3.0 * s * t * t * c2[0] + t * t * t * p3[0],
-            s * s * s * p0[1] + 3.0 * s * s * t * c1[1] + 3.0 * s * t * t * c2[1] + t * t * t * p3[1])
+    # Evaluation via the shared wheel pyfile/bezier.py (the mirror of
+    # algorithm/beziersplit.h); this module's four-loose-points signature
+    # stays for its call sites.
+    return bezier.eval_cubic((p0, c1, c2, p3), t)
 
 
 def _sample_cubic(p0, c1, c2, p3, step=POLY_STEP):
-    length = _dist(p0, c1) + _dist(c1, c2) + _dist(c2, p3)
-    count = max(2, int(math.ceil(length / step)) + 1)
+    # Density (t-uniform, hull-driven, uncapped) is THIS module's policy -
+    # _dominant_indices measures perceptual gaps on exactly these samples.
+    count = max(2, int(math.ceil(bezier.hull_length((p0, c1, c2, p3)) / step)) + 1)
     return [_cubic_point(p0, c1, c2, p3, k / (count - 1.0)) for k in range(count)]
 
 
@@ -198,21 +201,31 @@ def _command_point(entry):
 def _elements(commands):
     """[(kind, [pt, ...])]: 'move' [p], 'line' [p], 'cubic' [c1, c2, p]."""
     out = []
+    current = None
     for command in commands:
         kind = command.get("type")
         if kind == "move":
-            out.append(("move", [_command_point(command["to"])]))
+            current = _command_point(command["to"])
+            out.append(("move", [current]))
         elif kind == "line":
-            out.append(("line", [_command_point(command["to"])]))
+            current = _command_point(command["to"])
+            out.append(("line", [current]))
         elif kind == "quad":
-            # Elevate so editing sees one uniform cubic shape.
+            # Elevate (shared wheel pyfile/bezier.py) so editing really does
+            # see one uniform cubic shape - storing the quad raw made the
+            # cubic-chain fast path reject the stroke and re-fit it.
             ctrl = _command_point(command["control"])
             end = _command_point(command["to"])
-            out.append(("quad", [ctrl, end]))
+            start = current if current is not None else (
+                _command_point(command["from"]) if "from" in command else ctrl)
+            _, c1, c2, _ = bezier.quad_cubic(start, ctrl, end)
+            out.append(("cubic", [c1, c2, end]))
+            current = end
         elif kind == "cubic":
+            current = _command_point(command["to"])
             out.append(("cubic", [_command_point(command["control1"]),
                                   _command_point(command["control2"]),
-                                  _command_point(command["to"])]))
+                                  current]))
     return out
 
 
@@ -228,12 +241,6 @@ def _elements_to_commands(elements):
                              "from": {"x": current[0], "y": current[1]},
                              "to": {"x": pts[0][0], "y": pts[0][1]}})
             current = pts[0]
-        elif kind == "quad":
-            commands.append({"type": "quad",
-                             "from": {"x": current[0], "y": current[1]},
-                             "control": {"x": pts[0][0], "y": pts[0][1]},
-                             "to": {"x": pts[1][0], "y": pts[1][1]}})
-            current = pts[1]
         elif kind == "cubic":
             commands.append({"type": "cubic",
                              "from": {"x": current[0], "y": current[1]},
@@ -261,14 +268,6 @@ def _flatten_elements(elements, step=POLY_STEP):
                     points.append((current[0] + (pts[0][0] - current[0]) * t,
                                    current[1] + (pts[0][1] - current[1]) * t))
             current = pts[0]
-        elif kind == "quad":
-            if current is not None:
-                a = current
-                ctrl, end = pts
-                c1 = (a[0] + 2.0 / 3.0 * (ctrl[0] - a[0]), a[1] + 2.0 / 3.0 * (ctrl[1] - a[1]))
-                c2 = (end[0] + 2.0 / 3.0 * (ctrl[0] - end[0]), end[1] + 2.0 / 3.0 * (ctrl[1] - end[1]))
-                points.extend(_sample_cubic(a, c1, c2, end, step)[1:])
-            current = pts[1]
         elif kind == "cubic":
             if current is not None:
                 points.extend(_sample_cubic(current, pts[0], pts[1], pts[2], step)[1:])
@@ -294,15 +293,6 @@ def _debug_handles(geometry):
                 handles.append({"id": f"e{i}:p", "x": pts[0][0], "y": pts[0][1],
                                 "shape": SHAPE_ANCHOR, "color": ANCHOR_COLOR})
                 previous = pts[0]
-            elif kind == "quad":
-                handles.append({"id": f"e{i}:c1", "x": pts[0][0], "y": pts[0][1],
-                                "shape": SHAPE_CONTROL, "color": CONTROL_COLOR})
-                handles.append({"id": f"e{i}:p", "x": pts[1][0], "y": pts[1][1],
-                                "shape": SHAPE_ANCHOR, "color": ANCHOR_COLOR})
-                if previous is not None:
-                    arms.append([previous, pts[0]])
-                    arms.append([pts[0], pts[1]])
-                previous = pts[1]
             elif kind == "cubic":
                 handles.append({"id": f"e{i}:c1", "x": pts[0][0], "y": pts[0][1],
                                 "shape": SHAPE_CONTROL, "color": CONTROL_COLOR})
@@ -571,16 +561,8 @@ def _fit_chain(dense, kept):
 
 
 def _split_cubic(cubic, t=0.5):
-    """de Casteljau: the same curve as two cubics with smaller handles."""
-    p0, c1, c2, p3 = cubic
-    lerp = lambda a, b: (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
-    q0 = lerp(p0, c1)
-    q1 = lerp(c1, c2)
-    q2 = lerp(c2, p3)
-    r0 = lerp(q0, q1)
-    r1 = lerp(q1, q2)
-    mid = lerp(r0, r1)
-    return [p0, q0, r0, mid], [mid, r1, q2, p3]
+    """de Casteljau split, from the shared wheel pyfile/bezier.py."""
+    return bezier.split_cubic(cubic, t)
 
 
 def _chain_from_elements(elements):
@@ -812,7 +794,7 @@ def _drag_debug(session, handle_id, pos):
         return
     kind, pts = elements[index]
     if role == "p":
-        end_slot = {"move": 0, "line": 0, "quad": 1, "cubic": 2}[kind]
+        end_slot = {"move": 0, "line": 0, "cubic": 2}[kind]
         old = pts[end_slot]
         delta = (pos[0] - old[0], pos[1] - old[1])
         pts[end_slot] = pos
@@ -824,7 +806,7 @@ def _drag_debug(session, handle_id, pos):
             next_kind, next_pts = elements[index + 1]
             if next_kind == "cubic":
                 next_pts[0] = (next_pts[0][0] + delta[0], next_pts[0][1] + delta[1])
-    elif role == "c1" and kind in ("cubic", "quad"):
+    elif role == "c1" and kind == "cubic":
         pts[0] = pos
     elif role == "c2" and kind == "cubic":
         pts[1] = pos

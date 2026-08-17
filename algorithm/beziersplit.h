@@ -86,12 +86,35 @@ QPointF splitCubic(const QPointF p[4], qreal t, QPointF *left = nullptr, QPointF
 // The [t0, t1] stretch of one cubic, as a cubic (two de Casteljau splits).
 void cubicSegment(const QPointF p[4], qreal t0, qreal t1, QPointF out[4]);
 
+// The on-curve point alone (the lerp cascade, better conditioned than the
+// expanded Bernstein form).
+QPointF evaluateCubic(const QPointF p[4], qreal t);
+
+// First derivative r'(t) (the hodograph, evaluated in Bernstein form).
+QPointF cubicDerivative(const QPointF p[4], qreal t);
+
+// Degree elevations: the SAME curve one degree up, so every consumer can
+// work in cubics alone.
+void lineToCubic(const QPointF &a, const QPointF &b, QPointF out[4]);
+void quadToCubic(const QPointF &a, const QPointF &control, const QPointF &b, QPointF out[4]);
+
+// Control-hull length |p0p1|+|p1p2|+|p2p3| - the standard upper bound on a
+// cubic's arc length that drives every flattening density in the app. The
+// step-count each caller derives from it (floor, cap, rounding) is that
+// caller's policy and deliberately stays with the caller.
+qreal cubicHullLength(const QPointF p[4]);
+
 // Evaluate one run element at t.
 QPointF curvePoint(const AnimeBezierCurve &curve, qreal t);
 
 // A path as one uninterrupted run of curves. False for anything else (empty,
 // several subpaths, malformed curve data).
 bool parsePath(const QPainterPath &path, QVector<AnimeBezierCurve> *out);
+
+// Every subpath of a path as its own run of curves. Tolerant: malformed
+// trailing curve data ends the walk instead of failing, matching what the
+// serialization call sites always did. False only for an empty path.
+bool parseSubpaths(const QPainterPath &path, QVector<QVector<AnimeBezierCurve>> *out);
 
 // Parse + arc-sample in one step. Check isValid() on the result.
 AnimeBezierPathRun buildRun(const QPainterPath &path,

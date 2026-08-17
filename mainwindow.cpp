@@ -11,6 +11,7 @@
 #include <QComboBox>
 #include "clipreader.h"
 #include "openglwidget.h"
+#include "algorithm/beziersplit.h"
 #include "paintviewcontainer.h"
 #include "projectio.h"
 #include "selectionattention.h"
@@ -186,11 +187,15 @@ void appendQuadraticMetricPoints(QVector<QPointF> *points,
         points->append(p0);
     }
 
+    // Elevated and evaluated by the shared exact-bezier home
+    // (algorithm/beziersplit.h). The path stores this quad as an elevated
+    // cubic (quadTo), so the metric polyline now samples exactly the
+    // geometry the stored path renders.
+    QPointF cubic[4];
+    AnimeBezierSplit::quadToCubic(p0, p1, p2, cubic);
     sampleCount = std::max(2, sampleCount);
     for (int i = 1; i <= sampleCount; ++i) {
-        const qreal t = static_cast<qreal>(i) / sampleCount;
-        const qreal omt = 1.0 - t;
-        points->append((omt * omt) * p0 + (2.0 * omt * t) * p1 + (t * t) * p2);
+        points->append(AnimeBezierSplit::evaluateCubic(cubic, static_cast<qreal>(i) / sampleCount));
     }
 }
 
