@@ -128,7 +128,12 @@ public:
     void setTool(Tool tool);
     Tool tool() const;
     void setFillScope(FillScope scope);
+    // The realtime stabilizer strength (0-100). Named "smooth" in the tool
+    // panel, where it is the ONLY drawing knob; it no longer touches how the
+    // committed stroke is fitted - that is setStrokeFitSettings.
     void setSmoothValue(int value);
+    void setStrokeFitSettings(const AnimeStrokeFitSettings &settings);
+    AnimeStrokeFitSettings strokeFitSettings() const;
     void setAxisSnapThreshold(qreal threshold);
     qreal axisSnapThreshold() const;
     SceneHistory &history();
@@ -289,7 +294,8 @@ private:
     bool m_moveGestureChanged = false;
     qreal m_eraserRadius = 12.0;
     qreal m_minPointDistance = 2.0;
-    int m_smoothValue = 50;
+    int m_smoothValue = 50;              // stabilizer strength
+    AnimeStrokeFitSettings m_fitSettings; // how a committed stroke is fitted
     // "update" fires on every accepted point while drawing; hooks get at most
     // one dispatch per this interval so subscribers never run at tablet rate.
     QElapsedTimer m_updateHookThrottle;

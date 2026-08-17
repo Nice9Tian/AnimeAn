@@ -1,6 +1,22 @@
 import json
 
 
+def _stabilizer(state):
+    """The tool panel's one drawing slider: REALTIME ANTI-SHAKE, nothing else.
+
+    It used to be labelled "Smooth" and drove both the stabilizer and the
+    curve fit, which are near-orthogonal in effect. Fitting moved to the
+    Draw Setting window (draw_settings.py); this slider is the stabilizer,
+    and the two are kept showing the same number.
+    """
+    try:
+        import draw_settings
+
+        return int(draw_settings.stabilizer())
+    except Exception:
+        return int(state.get("smooth", 50))
+
+
 def _color_controls():
     return [
         {
@@ -129,7 +145,7 @@ def options_for_tool(tool, state=None):
     else:
         controls = [
             *_color_controls(),
-            _slider("smooth", "Smooth", "smooth", 0, 100, int(state.get("smooth", 50)), 1),
+            _slider("smooth", "Stabilizer", "smooth", 0, 100, _stabilizer(state), 1),
             _slider("pen_width", "Width", "pen_width", 1, 50, int(state.get("pen_width", 5)), 2),
         ]
 
@@ -153,7 +169,7 @@ def options_for_extra_tool(tool, state=None):
         # Center lines are pen strokes, so they honour the same smoothing and
         # width parameters as the pen tool.
         controls = [
-            _slider("smooth", "Smooth", "smooth", 0, 100, int(state.get("smooth", 50)), 0),
+            _slider("smooth", "Stabilizer", "smooth", 0, 100, _stabilizer(state), 0),
             _slider("pen_width", "Width", "pen_width", 1, 50, int(state.get("pen_width", 5)), 1),
         ]
     elif tool == "auto_mapping_2":
@@ -227,7 +243,7 @@ def options_for_extra_tool(tool, state=None):
     elif tool in ("fukusato_line", "fukusato_cut"):
         # Handle / crease strokes are ordinary drawing: same knobs as the pen.
         controls = [
-            _slider("smooth", "Smooth", "smooth", 0, 100, int(state.get("smooth", 50)), 0),
+            _slider("smooth", "Stabilizer", "smooth", 0, 100, _stabilizer(state), 0),
             _slider("pen_width", "Width", "pen_width", 1, 50, int(state.get("pen_width", 5)), 1),
         ]
     elif tool == "fukusato_guide_mapping":

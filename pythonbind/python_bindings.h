@@ -43,6 +43,8 @@ void clearAnimeanUiOverlayCallback();
 void registerAnimeanUiEditHandleCallback(std::function<void(const QString &view, const QVector<AnimeanEditHandle> &handles)> callback);
 void clearAnimeanUiEditHandleCallback();
 void registerAnimeanUiDrawColorCallback(std::function<void(const QColor &color)> callback);
+// Stabilizer / simplify / corner, the three drawing parameters (0-100 each).
+void registerAnimeanUiDrawSettingsCallback(std::function<void(int, int, int)> callback);
 void clearAnimeanUiDrawColorCallback();
 void registerAnimeanUiHistoryCallback(std::function<void(const QString &op, const QString &view, const QString &label)> callback);
 void clearAnimeanUiHistoryCallback();

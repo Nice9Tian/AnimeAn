@@ -1,4 +1,4 @@
-﻿#include "mainwindow.h"
+#include "mainwindow.h"
 #include "ui_mainwindow.h"
 #include "childrenpanel/assetpanel.h"
 #include "childrenpanel/childpaintwindow.h"
@@ -445,6 +445,19 @@ MainWindow::MainWindow(QWidget *parent)
         for (PaintOpenGLWidget *paintView : m_paintViews) {
             paintView->setDrawingColor(color);
         }
+    });
+    registerAnimeanUiDrawSettingsCallback([this](int stabilizer, int simplify, int corner) {
+        m_toolSmoothValue = stabilizer;
+        AnimeStrokeFitSettings settings;
+        settings.simplify = simplify;
+        settings.corner = corner;
+        for (PaintOpenGLWidget *paintView : m_paintViews) {
+            paintView->setSmoothValue(stabilizer);
+            paintView->setStrokeFitSettings(settings);
+        }
+        // The tool panel shows the stabilizer as its "Smooth" slider, so a
+        // change made in the Draw Setting window has to be reflected there.
+        refreshToolOptions();
     });
     registerAnimeanUiHistoryCallback([this](const QString &op, const QString &viewName, const QString &label) {
         PaintOpenGLWidget *named = nullptr;
@@ -972,6 +985,16 @@ void MainWindow::rebuildScriptMenu(QMenu *menu, const QString &menuName)
     }
 }
 #endif
+
+void MainWindow::refreshToolOptions()
+{
+    // Rebuilds the tool options panel from the current tool state. Needed
+    // because the Draw Setting window and the panel's own Smooth slider are
+    // two views of the SAME stabilizer value.
+    if (m_reloadToolOptions) {
+        m_reloadToolOptions(m_currentToolForOptions);
+    }
+}
 
 void MainWindow::openScriptSettings(const QString &name, const QString &title)
 {
@@ -2020,7 +2043,9 @@ void MainWindow::createToolDocks()
     }
 #endif
 
+    m_toolOptPanel = toolOptPanel;
     auto loadToolOptions = [this, toolOptPanel](PaintOpenGLWidget::Tool tool) {
+        m_currentToolForOptions = int(tool);
         QJsonObject layout;
 #ifdef ANIMEAN_WITH_PYTHON
         try {
@@ -2051,6 +2076,9 @@ void MainWindow::createToolDocks()
                                     : PaintOpenGLWidget::FillScope::CurrentLayer);
         }
         toolOptPanel->configureLayout(layout);
+    };
+    m_reloadToolOptions = [loadToolOptions](int tool) {
+        loadToolOptions(static_cast<PaintOpenGLWidget::Tool>(tool));
     };
 
     auto applyTool = [this, toolsPanel, toolOptPanel, loadToolOptions](PaintOpenGLWidget::Tool tool, bool reloadOptions) {

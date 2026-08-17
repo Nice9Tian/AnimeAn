@@ -32,6 +32,7 @@ std::function<void(bool frozen)> g_uiFreezeCallback;
 std::function<void(const QString &view, const QVector<AnimeanOverlayItem> &items)> g_uiOverlayCallback;
 std::function<void(const QString &view, const QVector<AnimeanEditHandle> &handles)> g_uiEditHandleCallback;
 std::function<void(const QColor &color)> g_uiDrawColorCallback;
+std::function<void(int stabilizer, int simplify, int corner)> g_uiDrawSettingsCallback;
 std::function<void(const QString &pad, double x, double y)> g_uiPadValueCallback;
 std::function<void(const QString &op, const QString &view, const QString &label)> g_uiHistoryCallback;
 
@@ -124,8 +125,10 @@ void applyDisplacementScale(double scaleX, double scaleY)
         if (points.size() < 2) {
             continue;
         }
+        // smoothPath=false: a displaced stroke keeps the geometry it had, so
+        // the fit settings are irrelevant here.
         image->addStroke(AnimeVectorLogic::makeStroke(points, entry.color, entry.width, id++,
-                                                      false, false, 0));
+                                                      false, false));
     }
     requestUiRefresh(false, false, false, true);
 }
@@ -1102,6 +1105,11 @@ void clearAnimeanUiEditHandleCallback()
     g_uiEditHandleCallback = nullptr;
 }
 
+void registerAnimeanUiDrawSettingsCallback(std::function<void(int, int, int)> callback)
+{
+    g_uiDrawSettingsCallback = std::move(callback);
+}
+
 void registerAnimeanUiDrawColorCallback(std::function<void(const QColor &color)> callback)
 {
     g_uiDrawColorCallback = std::move(callback);
@@ -1110,6 +1118,7 @@ void registerAnimeanUiDrawColorCallback(std::function<void(const QColor &color)>
 void clearAnimeanUiDrawColorCallback()
 {
     g_uiDrawColorCallback = nullptr;
+    g_uiDrawSettingsCallback = nullptr;
 }
 
 void registerAnimeanUiPadValueCallback(std::function<void(const QString &pad, double x, double y)> callback)
@@ -1256,6 +1265,19 @@ void bindAnimeanPythonModule(py::module_ &m)
             g_uiDrawColorCallback(objectToColor(color, "color"));
         }
     });
+    ui.def("set_draw_settings",
+           [](int stabilizer, int simplify, int corner) {
+               // The three drawing parameters, applied to every view. Generic:
+               // C++ holds three numbers and the algorithms that read them,
+               // Python owns what the UI for them looks like and what the
+               // defaults are.
+               if (g_uiDrawSettingsCallback) {
+                   g_uiDrawSettingsCallback(stabilizer, simplify, corner);
+               }
+           },
+           py::arg("stabilizer"),
+           py::arg("simplify"),
+           py::arg("corner"));
     ui.def("set_pad_value",
            [](const std::string &pad, double x, double y) {
                // Generic: move a named vector pad's handle (no signals fire).
@@ -1973,15 +1995,21 @@ void bindAnimeanPythonModule(py::module_ &m)
                        bool filterInput,
                        bool smoothPath,
                        int smoothValue,
+                       int cornerValue,
                        bool toPoly,
                        double polyStep) {
+                        // smooth_value is the SIMPLIFY axis of the fit (how
+                        // economically the stroke is described). The realtime
+                        // stabilizer is a separate, view-side setting - one
+                        // number could only ever move both together.
+                        const AnimeStrokeFitSettings settings{smoothValue, cornerValue};
                         const AnimeVectorStroke stroke = AnimeVectorLogic::makeStroke(objectToPoints(points),
                                                                                       objectToColor(color),
                                                                                       width,
                                                                                       id,
                                                                                       filterInput,
                                                                                       smoothPath,
-                                                                                      smoothValue);
+                                                                                      settings);
                         return strokeToDict(stroke, toPoly, polyStep);
                     },
                     py::arg("points"),
@@ -1991,6 +2019,7 @@ void bindAnimeanPythonModule(py::module_ &m)
                     py::arg("filter_input") = true,
                     py::arg("smooth_path") = true,
                     py::arg("smooth_value") = 50,
+                    py::arg("corner_value") = 50,
                     py::arg("to_poly") = false,
                     py::arg("poly_step") = 4.0);
     vectorLogic.def("make_stroke_object",
@@ -2000,14 +2029,16 @@ void bindAnimeanPythonModule(py::module_ &m)
                        int id,
                        bool filterInput,
                        bool smoothPath,
-                       int smoothValue) {
+                       int smoothValue,
+                       int cornerValue) {
+                        const AnimeStrokeFitSettings settings{smoothValue, cornerValue};
                         return AnimeVectorLogic::makeStroke(objectToPoints(points),
                                                             objectToColor(color),
                                                             width,
                                                             id,
                                                             filterInput,
                                                             smoothPath,
-                                                            smoothValue);
+                                                            settings);
                     },
                     py::arg("points"),
                     py::arg("color") = py::make_tuple(0, 0, 0, 255),
@@ -2015,7 +2046,8 @@ void bindAnimeanPythonModule(py::module_ &m)
                     py::arg("id") = 0,
                     py::arg("filter_input") = true,
                     py::arg("smooth_path") = true,
-                    py::arg("smooth_value") = 50);
+                    py::arg("smooth_value") = 50,
+                    py::arg("corner_value") = 50);
     vectorLogic.def("make_stroke_object_from_path",
                     [](py::object commands,
                        py::object points,
@@ -2111,13 +2143,16 @@ void bindAnimeanPythonModule(py::module_ &m)
         return rangesToList(AnimeVectorLogic::complementRanges(objectToRanges(ranges)));
     });
     vectorLogic.def("sub_stroke",
-                    [](const AnimeVectorStroke &stroke, qreal fromW, qreal toW, int smoothValue, bool toPoly, double polyStep) {
-                        return strokeToDict(AnimeVectorLogic::subStroke(stroke, fromW, toW, smoothValue), toPoly, polyStep);
+                    [](const AnimeVectorStroke &stroke, qreal fromW, qreal toW, int smoothValue,
+                       int cornerValue, bool toPoly, double polyStep) {
+                        const AnimeStrokeFitSettings settings{smoothValue, cornerValue};
+                        return strokeToDict(AnimeVectorLogic::subStroke(stroke, fromW, toW, settings), toPoly, polyStep);
                     },
                     py::arg("stroke"),
                     py::arg("from_w"),
                     py::arg("to_w"),
                     py::arg("smooth_value") = 50,
+                    py::arg("corner_value") = 50,
                     py::arg("to_poly") = false,
                     py::arg("poly_step") = 4.0);
     vectorLogic.def("point_at_length",

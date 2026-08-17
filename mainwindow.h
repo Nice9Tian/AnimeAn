@@ -8,6 +8,8 @@
 #include <QString>
 #include <QVector>
 
+#include <functional>
+
 #include "selectionattention.h"
 
 class AssetPanel;
@@ -64,6 +66,9 @@ private:
     void fillScriptMenu(QMenu *menu, const QString &menuName, const QJsonArray &items);
 #endif
     void openScriptSettings(const QString &name, const QString &title);
+    // Rebuild the tool options panel for the current tool (the Draw Setting
+    // window and the panel's Smooth slider show the same stabilizer value).
+    void refreshToolOptions();
     void refreshFpsCombo();
     QVector<QTreeWidgetItem *> layerPanelItems() const;
     // Writes the panel's current shape back into the model: the layer group
@@ -151,7 +156,12 @@ private:
     AttentionChange m_pendingAttentionChange = AttentionChange::FrameChange;
     PaintOpenGLWidget *m_pendingAttentionView = nullptr;
     QPoint m_listPressPos;
-    int m_toolSmoothValue = 50;
+    int m_toolSmoothValue = 50;   // stabilizer, mirrored by the panel slider
+    class ToolOptPanel *m_toolOptPanel = nullptr;
+    // PaintOpenGLWidget is only forward-declared here, so the tool travels as
+    // its underlying int and the lambda casts it back.
+    std::function<void(int)> m_reloadToolOptions;
+    int m_currentToolForOptions = 0;
     int m_toolPenWidth = 5;
     bool m_toolFillAllLayers = false;
     bool m_refreshingLists = false;
