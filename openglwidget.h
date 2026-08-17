@@ -248,9 +248,15 @@ private:
     bool eraseBetween(const QPointF &from, const QPointF &to);
     bool deleteLineAt(const QPointF &pos);
     bool deleteLineBetween(const QPointF &from, const QPointF &to);
-    // CutMode: trims the topmost stroke under `pos` back to its crossings
-    // with the OTHER strokes of the same layer.
+    // CutMode: trims the stroke under `pos` back to its crossings with the
+    // OTHER strokes of the same layer.
     bool cutLineAt(const QPointF &pos);
+    // The single stroke a brush stroke from `from` to `to` is aimed at:
+    // within reach of the radius, and nearest the brush's own centre line.
+    // `from == to` for a click. -1 when nothing is in reach.
+    int nearestStrokeToBrush(const VectorImageModel *image,
+                             const QPointF &from,
+                             const QPointF &to) const;
     bool fillAt(const QPointF &pos);
     bool moveCurrentLayerBy(const QPointF &delta);
     bool currentLayerAcceptsFill() const;

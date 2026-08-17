@@ -129,6 +129,12 @@ AnimeVectorStroke makeStrokeFromPath(const QPainterPath &path,
 
 bool strokeHitsCircle(const AnimeVectorStroke &stroke, const QPointF &center, qreal radius);
 bool strokeHitsCapsule(const AnimeVectorStroke &stroke, const QPointF &from, const QPointF &to, qreal radius);
+
+// Distance from the brush AXIS to the stroke's centreline - `from == to` for
+// a click, the swept segment for a drag step. The stroke's own width is not
+// subtracted: this ranks candidates against the brush centre, and a thick
+// line should not win over a thin one it merely happens to be fatter than.
+qreal strokeDistanceToBrush(const AnimeVectorStroke &stroke, const QPointF &from, const QPointF &to);
 QVector<AnimeVectorRange> keepRangesForCircle(const AnimeVectorStroke &stroke, const QPointF &center, qreal radius);
 QVector<AnimeVectorRange> keepRangesForCapsule(const AnimeVectorStroke &stroke, const QPointF &from, const QPointF &to, qreal radius);
 QVector<AnimeVectorRange> complementRanges(const QVector<AnimeVectorRange> &eraseRanges);

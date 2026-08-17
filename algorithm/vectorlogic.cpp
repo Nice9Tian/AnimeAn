@@ -1029,6 +1029,28 @@ bool AnimeVectorLogic::strokeHitsCapsule(const AnimeVectorStroke &stroke, const 
     return false;
 }
 
+qreal AnimeVectorLogic::strokeDistanceToBrush(const AnimeVectorStroke &stroke,
+                                              const QPointF &from,
+                                              const QPointF &to)
+{
+    if (stroke.points.isEmpty()) {
+        return std::numeric_limits<qreal>::max();
+    }
+    if (stroke.points.size() == 1) {
+        return std::sqrt(distancePointToSegmentSquared(stroke.points.first(), from, to));
+    }
+
+    qreal best = std::numeric_limits<qreal>::max();
+    const bool isPoint = QLineF(from, to).length() <= kEpsilon;
+    for (int i = 1; i < stroke.points.size(); ++i) {
+        const qreal distanceSquared =
+            isPoint ? distancePointToSegmentSquared(from, stroke.points[i - 1], stroke.points[i])
+                    : segmentSegmentDistanceSquared(stroke.points[i - 1], stroke.points[i], from, to);
+        best = std::min(best, distanceSquared);
+    }
+    return std::sqrt(best);
+}
+
 QVector<AnimeVectorRange> AnimeVectorLogic::keepRangesForCircle(const AnimeVectorStroke &stroke, const QPointF &center, qreal radius)
 {
     QVector<AnimeVectorRange> eraseRanges;

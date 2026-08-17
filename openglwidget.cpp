@@ -2281,6 +2281,45 @@ bool PaintOpenGLWidget::eraseBetween(const QPointF &from, const QPointF &to)
     return changed;
 }
 
+int PaintOpenGLWidget::nearestStrokeToBrush(const VectorImageModel *image,
+                                            const QPointF &from,
+                                            const QPointF &to) const
+{
+    // A wide brush covers several lines at once. Picking "the first one found"
+    // or "the topmost" then acts on whichever the loop happened to reach,
+    // which from the user's side looks arbitrary - and for LineMode it deleted
+    // ALL of them. The brush CENTRE decides instead: exactly one line goes,
+    // the one the user aimed at.
+    if (!image) {
+        return -1;
+    }
+    const qreal imageRadius = m_eraserRadius + m_penWidth;
+    const QRectF hitBounds = QRectF(from, to).normalized()
+                                 .adjusted(-imageRadius, -imageRadius, imageRadius, imageRadius);
+
+    int best = -1;
+    qreal bestDistance = 0.0;
+    for (int i = 0; i < image->strokeCount(); ++i) {
+        const VectorStroke &stroke = image->strokeAt(i);
+        if (!stroke.bounds.intersects(hitBounds)) {
+            continue;
+        }
+        const bool hit = QLineF(from, to).length() <= AnimeVectorLogic::epsilon()
+                             ? AnimeVectorLogic::strokeHitsCircle(stroke, from, m_eraserRadius)
+                             : AnimeVectorLogic::strokeHitsCapsule(stroke, from, to, m_eraserRadius);
+        if (!hit) {
+            continue;
+        }
+        const qreal distance = AnimeVectorLogic::strokeDistanceToBrush(stroke, from, to);
+        // Ties go to the LATER index, which is the one drawn on top.
+        if (best < 0 || distance <= bestDistance) {
+            best = i;
+            bestDistance = distance;
+        }
+    }
+    return best;
+}
+
 bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
 {
     VectorImageModel *image = currentImage(false);
@@ -2295,19 +2334,7 @@ bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
         return false;
     }
 
-    // Topmost stroke under the cursor. Strokes are drawn last-index-first, so
-    // walking down from the end picks the one the user actually sees on top.
-    int targetIndex = -1;
-    for (int i = image->strokeCount() - 1; i >= 0; --i) {
-        const VectorStroke &stroke = image->strokeAt(i);
-        if (!stroke.bounds.intersects(hitBounds)) {
-            continue;
-        }
-        if (AnimeVectorLogic::strokeHitsCircle(stroke, pos, m_eraserRadius)) {
-            targetIndex = i;
-            break;
-        }
-    }
+    const int targetIndex = nearestStrokeToBrush(image, pos, pos);
     if (targetIndex < 0) {
         return false;
     }
@@ -2422,28 +2449,16 @@ bool PaintOpenGLWidget::deleteLineAt(const QPointF &pos)
         return false;
     }
 
-    const qreal imageRadius = m_eraserRadius + m_penWidth;
-    const QRectF hitBounds(pos.x() - imageRadius, pos.y() - imageRadius,
-                           imageRadius * 2.0, imageRadius * 2.0);
-    if (!image->bounds().intersects(hitBounds)) {
+    // ONE line per click, the one nearest the brush centre. It used to delete
+    // every stroke the radius touched, so a wide brush aimed between two
+    // parallel lines took them both.
+    const int target = nearestStrokeToBrush(image, pos, pos);
+    if (target < 0) {
         return false;
     }
-
-    bool changed = false;
-    for (int i = image->strokeCount() - 1; i >= 0; --i) {
-        const VectorStroke &stroke = image->strokeAt(i);
-        if (!stroke.bounds.intersects(hitBounds)) {
-            continue;
-        }
-        if (AnimeVectorLogic::strokeHitsCircle(stroke, pos, m_eraserRadius)) {
-            image->removeStrokeAt(i);
-            changed = true;
-        }
-    }
-    if (changed) {
-        removeInvalidFillRegions();
-    }
-    return changed;
+    image->removeStrokeAt(target);
+    removeInvalidFillRegions();
+    return true;
 }
 
 bool PaintOpenGLWidget::deleteLineBetween(const QPointF &from, const QPointF &to)
@@ -2453,31 +2468,16 @@ bool PaintOpenGLWidget::deleteLineBetween(const QPointF &from, const QPointF &to
         return false;
     }
 
-    const qreal imageRadius = m_eraserRadius + m_penWidth;
-    const qreal left = std::min(from.x(), to.x()) - imageRadius;
-    const qreal top = std::min(from.y(), to.y()) - imageRadius;
-    const qreal right = std::max(from.x(), to.x()) + imageRadius;
-    const qreal bottom = std::max(from.y(), to.y()) + imageRadius;
-    const QRectF hitBounds(QPointF(left, top), QPointF(right, bottom));
-    if (!image->bounds().intersects(hitBounds)) {
+    // One line per drag STEP, nearest to the swept brush axis. A sweep still
+    // takes out a run of lines - one per step - but a fat brush no longer
+    // takes the neighbours of the line it is actually tracing.
+    const int target = nearestStrokeToBrush(image, from, to);
+    if (target < 0) {
         return false;
     }
-
-    bool changed = false;
-    for (int i = image->strokeCount() - 1; i >= 0; --i) {
-        const VectorStroke &stroke = image->strokeAt(i);
-        if (!stroke.bounds.intersects(hitBounds)) {
-            continue;
-        }
-        if (AnimeVectorLogic::strokeHitsCapsule(stroke, from, to, m_eraserRadius)) {
-            image->removeStrokeAt(i);
-            changed = true;
-        }
-    }
-    if (changed) {
-        removeInvalidFillRegions();
-    }
-    return changed;
+    image->removeStrokeAt(target);
+    removeInvalidFillRegions();
+    return true;
 }
 
 bool PaintOpenGLWidget::fillAt(const QPointF &pos)
