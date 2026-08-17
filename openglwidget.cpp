@@ -2377,24 +2377,41 @@ bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
         }
     }
 
-    QVector<VectorStroke> pieces;
-    for (const AnimeVectorRange &keep :
-         AnimeVectorLogic::complementRanges({plan.span})) {
-        const qreal width = keep.second - keep.first;
-        if (width <= AnimeVectorLogic::epsilon()) {
-            continue;
+    // Every piece is cut straight out of the ORIGINAL stroke: all arcs are
+    // consumed on the stroke they were measured on. Re-expressing a partner
+    // arc in a survivor's own 0..1 (the old way) silently broke when pieces
+    // stopped inheriting the parent's parameterization - their polyline is
+    // re-sampled off the fitted path now, so the linear rescale landed the
+    // junction pixels away from the crossing the user sees.
+    QVector<qreal> boundaries;
+    boundaries.append(plan.span.first);
+    boundaries.append(plan.span.second);
+    for (qreal arc : selfCuts) {
+        // Interior arcs only, and not doubling a span bound - the same
+        // endpoint rule splitStrokeAt applies (its endTolerance default).
+        const qreal tolerance = 1e-3;
+        if (arc > tolerance && arc < 1.0 - tolerance
+            && std::abs(arc - plan.span.first) > tolerance
+            && std::abs(arc - plan.span.second) > tolerance) {
+            boundaries.append(arc);
         }
-        const VectorStroke survivor =
-            AnimeVectorLogic::subStroke(target, keep.first, keep.second, m_fitSettings);
-        // A partner arc landing inside this survivor, re-expressed in the
-        // survivor's own 0..1 rather than the original stroke's.
-        QVector<qreal> local;
-        for (qreal arc : selfCuts) {
-            if (arc > keep.first && arc < keep.second) {
-                local.append((arc - keep.first) / width);
+    }
+    std::sort(boundaries.begin(), boundaries.end());
+
+    QVector<VectorStroke> pieces;
+    qreal previous = 0.0;
+    for (int i = 0; i <= boundaries.size(); ++i) {
+        const qreal next = i < boundaries.size() ? boundaries[i] : 1.0;
+        const qreal middle = (previous + next) * 0.5;
+        const bool erased = middle >= plan.span.first && middle <= plan.span.second;
+        if (next - previous > AnimeVectorLogic::epsilon() && !erased) {
+            const VectorStroke piece =
+                AnimeVectorLogic::subStroke(target, previous, next, m_fitSettings);
+            if (piece.points.size() >= 2) {
+                pieces.append(piece);
             }
         }
-        pieces.append(AnimeVectorLogic::splitStrokeAt(survivor, local, m_fitSettings));
+        previous = next;
     }
 
     // Highest index first: every replacement renumbers the strokes after it,

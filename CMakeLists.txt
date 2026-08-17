@@ -36,6 +36,8 @@ find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets OpenGLWidgets)
 set(PROJECT_SOURCES
     algorithm/animemodel.cpp
     algorithm/animemodel.h
+    algorithm/beziersplit.cpp
+    algorithm/beziersplit.h
     algorithm/scenehistory.cpp
     algorithm/scenehistory.h
     algorithm/vectorlogic.cpp
@@ -300,7 +302,7 @@ if(ANIMEAN_BUILD_PYTHON_MODULE)
         message(FATAL_ERROR "ANIMEAN_BUILD_PYTHON_MODULE is ON, but ANIMEAN_PYTHON_BINDINGS does not exist: ${ANIMEAN_PYTHON_BINDINGS}")
     endif()
 
-    pybind11_add_module(animean_python MODULE "${ANIMEAN_PYTHON_BINDINGS}" algorithm/animemodel.cpp algorithm/animemodel.h algorithm/vectorlogic.cpp algorithm/vectorlogic.h)
+    pybind11_add_module(animean_python MODULE "${ANIMEAN_PYTHON_BINDINGS}" algorithm/animemodel.cpp algorithm/animemodel.h algorithm/beziersplit.cpp algorithm/beziersplit.h algorithm/vectorlogic.cpp algorithm/vectorlogic.h)
     target_include_directories(animean_python PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/algorithm ${CMAKE_CURRENT_SOURCE_DIR}/pythonbind)
     target_compile_definitions(animean_python PRIVATE ANIMEAN_BUILDING_PYTHON_MODULE)
     target_link_libraries(animean_python PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::OpenGLWidgets)

@@ -1,5 +1,7 @@
 ﻿#include "vectorlogic.h"
 
+#include "beziersplit.h"
+
 #include <QMap>
 #include <QPainterPathStroker>
 #include <QPolygonF>
@@ -1431,6 +1433,32 @@ AnimeVectorStroke AnimeVectorLogic::subStroke(const AnimeVectorStroke &stroke, q
         return inherit(makeStroke(points, stroke.color, stroke.width, stroke.id, false, true, settings));
     }
 
+    // The piece's path is CUT OUT of the stroke's fitted path with the shared
+    // exact splitting from algorithm/beziersplit.h, so it is the original
+    // curve restricted to the kept span, exactly. Re-fitting a slice of the
+    // samples (the old way) re-ran denoising, corner detection and tangent
+    // estimation on the slice and visibly changed the shape of what remained
+    // - inserting a junction must not move a pixel of the drawing. The
+    // piece's polyline is re-sampled off the path too: it has to describe
+    // the geometry the piece renders. The locate anchor is the point the
+    // caller's arc means on the DENSE polyline; the fitted path runs within
+    // the fit tolerance of it.
+    const AnimeBezierPathRun run = AnimeBezierSplit::buildRun(stroke.path);
+    if (run.isValid() && run.totalLength() > kEpsilon) {
+        const AnimeBezierPathPosition from = AnimeBezierSplit::locate(
+            run, clamp01(fromW), pointAtLength(stroke, fromLength));
+        const AnimeBezierPathPosition to = AnimeBezierSplit::locate(
+            run, clamp01(toW), pointAtLength(stroke, toLength));
+        QPainterPath piecePath;
+        QVector<QPointF> piecePoints;
+        if (AnimeBezierSplit::slice(run, from, to, &piecePath, &piecePoints)) {
+            return inherit(makeStrokeFromPath(piecePath, piecePoints,
+                                              stroke.color, stroke.width, stroke.id));
+        }
+    }
+
+    // No usable single-run path (empty, or several subpaths): slice the
+    // polyline and fit the slice, as before.
     points.append(pointAtLength(stroke, fromLength));
     for (int i = 1; i + 1 < stroke.points.size(); ++i) {
         if (stroke.lengths[i] > fromLength + kEpsilon &&
