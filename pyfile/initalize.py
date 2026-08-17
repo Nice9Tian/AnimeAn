@@ -14,6 +14,7 @@ PYTHON_FILE_MODULES = (
     "extra_tools",
     "midline_tool",
     "auto_mapping",
+    "fukusato_mapping",
     "repulsion_tool",
     "fill_tool",
     "visibility_tool",

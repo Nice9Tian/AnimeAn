@@ -184,21 +184,22 @@ def options_for_extra_tool(tool, state=None):
                 "title": "Refer Rect",
                 "hook": "refer_rect",
                 "value": refer,
-                "row": 2,
+                "row": 1,
                 "start_column": 0,
                 "end_column": 2,
             },
             # Where the map turns orientation-reversing (a fold past ~135 deg
             # or a U-turn) the pattern is mirrored - that is the BACK of the
-            # fold. Split sends it to its own layer with a lining colour;
-            # Crease draws the fold line so hiding the back still reads.
+            # fold. Split sends it to its own layer; Crease draws the fold
+            # line so hiding the back still reads. Both change WHAT is
+            # produced, so they stay here; their colours do not.
             {
                 "name": "fold_split",
                 "type": "check",
                 "title": "Front/Back Split",
                 "hook": "fold_split",
                 "value": split,
-                "row": 3,
+                "row": 2,
                 "start_column": 0,
                 "end_column": 2,
             },
@@ -208,14 +209,63 @@ def options_for_extra_tool(tool, state=None):
                 "title": "Crease Line",
                 "hook": "fold_seal",
                 "value": seal,
-                "row": 4,
+                "row": 3,
                 "start_column": 0,
                 "end_column": 2,
                 "visible_when": {"name": "fold_split", "values": ["on"]},
             },
+        ]
+    elif tool in ("fukusato_line", "fukusato_cut"):
+        # Handle / crease strokes are ordinary drawing: same knobs as the pen.
+        controls = [
+            _slider("smooth", "Smooth", "smooth", 0, 100, int(state.get("smooth", 50)), 0),
+            _slider("pen_width", "Width", "pen_width", 1, 50, int(state.get("pen_width", 5)), 1),
+        ]
+    elif tool == "fukusato_guide_mapping":
+        # Alpha blends the geodesic weight field (cut aware) with the plain
+        # euclidean one (paper Sec. 4.2); 0 = the cut fully blocks influence.
+        # Beta is the falloff exponent, Grid the mesh resolution, Samples the
+        # number of control points taken from each handle curve.
+        try:
+            import fukusato_mapping
+            opts = fukusato_mapping.options()
+        except Exception:
+            opts = {"alpha": 0.0, "beta": 2.0, "grid": 32, "samples": 16, "variant": "rigid"}
+        controls = [
             {
-                **_slider("back_shade", "Lining Shade", "back_shade", 0, 100, shade, 5),
-                "visible_when": {"name": "fold_split", "values": ["on"]},
+                "name": "fk_variant",
+                "type": "list",
+                "title": "MLS Variant",
+                "hook": "fk_variant",
+                "value": opts["variant"],
+                "row": 0,
+                "start_column": 0,
+                "end_column": 2,
+                "options": [
+                    {"title": "Rigid", "value": "rigid"},
+                    {"title": "Similarity", "value": "similarity"},
+                ],
+            },
+            _slider("fk_alpha", "Euclid Blend (%)", "fk_alpha", 0, 100,
+                    int(round(opts["alpha"] * 100)), 1),
+            _slider("fk_beta", "Falloff (x0.1)", "fk_beta", 1, 40,
+                    int(round(opts["beta"] * 10)), 2),
+            _slider("fk_grid", "Mesh Grid", "fk_grid", 8, 64, int(opts["grid"]), 3),
+            # samples on the LONGEST handle; shorter ones get proportionally
+            # fewer so influence follows arc length
+            _slider("fk_samples", "Samples (longest)", "fk_samples", 2, 64,
+                    int(opts["samples"]), 4),
+            {
+                # Paper Sec. 4.1 editing mode: releasing an Arrow-tool handle
+                # drag re-runs the mapping and replaces the previous output.
+                "name": "fk_rerun",
+                "type": "check",
+                "title": "Rerun On Edit",
+                "hook": "fk_rerun",
+                "value": "on" if opts.get("rerun", False) else "off",
+                "row": 5,
+                "start_column": 0,
+                "end_column": 2,
             },
         ]
     else:

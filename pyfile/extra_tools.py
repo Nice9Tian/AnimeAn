@@ -2,6 +2,7 @@ import importlib
 import json
 
 import auto_mapping
+import fukusato_mapping
 
 
 def extra_tools():
@@ -40,6 +41,24 @@ def extra_tools():
             "property": auto_mapping.AUTO_MAPPING2_TOOL,
             "handler": "auto_mapping.run_auto_mapping",
         },
+        {
+            "name": "fukusato_line",
+            "title": "Fukusato Line",
+            "property": fukusato_mapping.HANDLE_PROPERTY,
+            "handler": "fukusato_mapping.activate_fukusato_line",
+        },
+        {
+            "name": "fukusato_cut",
+            "title": "Fukusato Cut",
+            "property": fukusato_mapping.CUT_PROPERTY,
+            "handler": "fukusato_mapping.activate_fukusato_cut",
+        },
+        {
+            "name": "fukusato_guide_mapping",
+            "title": "Fukusato Mapping",
+            "property": fukusato_mapping.FUKUSATO_TOOL,
+            "handler": "fukusato_mapping.run_fukusato_mapping",
+        },
     ]
 
 
@@ -48,6 +67,7 @@ def tools_json():
     # registered unconditionally, which put a print + debug-pane append on
     # every pen move; enable it explicitly with hook_test.enable_verbose().
     auto_mapping.register_hooks()
+    fukusato_mapping.register_hooks()
     return json.dumps(extra_tools(), ensure_ascii=False)
 
 
