@@ -1,4 +1,4 @@
-import json
+﻿import json
 
 
 def _stabilizer(state):
@@ -176,8 +176,7 @@ def options_for_extra_tool(tool, state=None):
         # Curve Mode picks how the mapped strokes' geometry is rebuilt after the
         # (non-linear) warp; RDP is the decimation tolerance for the samples
         # inserted between original points (0.1px units; originals are never
-        # decimated); Refer Rect overlays the mapping's 3x3 anchor grid in both
-        # views so a wrong mapping is visible at a glance.
+        # decimated). The refer grid moved to each board's View menu.
         # MIGRATED OUT of this panel: Curve Mode now lives in the menu bar
         # (Auto Mapping > Calculation Mode) and every DISPLAY setting - the
         # guide axes, the crease and the lining - in Auto Mapping > Line
@@ -186,12 +185,10 @@ def options_for_extra_tool(tool, state=None):
         try:
             import auto_mapping
             rdp_tenths = int(round(auto_mapping.rdp_eps() * 10))
-            refer = "on" if auto_mapping.refer_rect_enabled() else "off"
             split = "on" if auto_mapping.fold_split_enabled() else "off"
             seal = "on" if auto_mapping.fold_seal_enabled() else "off"
         except Exception:
             rdp_tenths = 3
-            refer = "off"
             split = "on"
             seal = "on"
         controls = [
@@ -203,16 +200,10 @@ def options_for_extra_tool(tool, state=None):
                 **_slider("rdp_eps", "RDP (x0.1px, sampled modes)", "rdp_eps",
                           1, 20, rdp_tenths, 0),
             },
-            {
-                "name": "refer_rect",
-                "type": "check",
-                "title": "Refer Rect",
-                "hook": "refer_rect",
-                "value": refer,
-                "row": 1,
-                "start_column": 0,
-                "end_column": 2,
-            },
+            # Refer Rect used to sit here. It moved onto each board's View
+            # menu: it is a display choice about a BOARD, not a property of
+            # the mapping tool, and a single shared checkbox could not answer
+            # it separately for the texture and the main view.
             # Where the map turns orientation-reversing (a fold past ~135 deg
             # or a U-turn) the pattern is mirrored - that is the BACK of the
             # fold. Split sends it to its own layer; Crease draws the fold
@@ -224,7 +215,7 @@ def options_for_extra_tool(tool, state=None):
                 "title": "Front/Back Split",
                 "hook": "fold_split",
                 "value": split,
-                "row": 2,
+                "row": 1,
                 "start_column": 0,
                 "end_column": 2,
             },
@@ -234,7 +225,7 @@ def options_for_extra_tool(tool, state=None):
                 "title": "Crease Line",
                 "hook": "fold_seal",
                 "value": seal,
-                "row": 3,
+                "row": 2,
                 "start_column": 0,
                 "end_column": 2,
                 "visible_when": {"name": "fold_split", "values": ["on"]},

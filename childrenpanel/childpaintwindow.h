@@ -5,8 +5,9 @@
 #include <QVector>
 
 class PaintOpenGLWidget;
-class QCheckBox;
 class QHBoxLayout;
+class QMenu;
+class QMenuBar;
 class QPushButton;
 
 class ChildPaintWindow : public QDockWidget
@@ -28,24 +29,35 @@ public:
 
     PaintOpenGLWidget *paintWidget() const;
     bool changableTimeline() const;
-    bool changableLayer() const;
+    // "Changable Texture": when OFF the board's artwork is protected and only
+    // the guide tools may draw. Replaces the old "Changable Layer" checkbox,
+    // which also governed whether the Layers/Assets panels follow this view -
+    // that behaviour rides along with this flag now.
+    bool changableTexture() const;
     void setChangableTimeline(bool enabled);
-    void setChangableLayer(bool enabled);
+    void setChangableTexture(bool enabled);
     void setScriptButtons(const QVector<ScriptButtonDefinition> &definitions);
+    // The menu bar script menus are attached to (MainWindow owns the Python
+    // side, so it builds them; this just hands over the bar).
+    QMenuBar *menuBar() const;
 
 signals:
     void changableTimelineToggled(bool enabled);
-    void changableLayerToggled(bool enabled);
+    void changableTextureToggled(bool enabled);
     // For checkable buttons `on` is the new checked state; for plain buttons
     // it is always true (a press).
     void scriptButtonToggled(const QString &name, bool on);
 
 private:
+    void applyBackgroundMode(int mode);
+
     PaintOpenGLWidget *m_paintWidget = nullptr;
-    QCheckBox *m_changableTimelineCheck = nullptr;
-    QCheckBox *m_changableLayerCheck = nullptr;
+    QMenuBar *m_menuBar = nullptr;
     QHBoxLayout *m_optionLayout = nullptr;
+    QWidget *m_optionRow = nullptr;
     QVector<QPushButton *> m_scriptButtons;
+    QAction *m_changableTimelineAction = nullptr;
+    QAction *m_changableTextureAction = nullptr;
 };
 
 #endif // CHILDPAINTWINDOW_H

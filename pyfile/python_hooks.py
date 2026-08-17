@@ -32,6 +32,20 @@ def view_buttons_json(view):
     return json.dumps(_VIEW_BUTTONS.get(view, []))
 
 
+# Stroke properties that stay editable while a view's content is protected.
+# C++ enforces "only these"; which ones they are is a tool fact, so it asks.
+_PROTECTED_PROPERTIES = {}
+
+
+def register_protected_properties(view, properties):
+    """Name the tools that may still draw on `view` when it is protected."""
+    _PROTECTED_PROPERTIES[view] = [str(p) for p in properties or []]
+
+
+def protected_properties_json(view):
+    return json.dumps(_PROTECTED_PROPERTIES.get(view, []))
+
+
 # Context-menu providers. C++ asks at right-click time what the menu for the
 # clicked row should contain, renders whatever it is handed, and reports the
 # choice back as a "layermenu" hook event. It never learns what any entry
@@ -46,22 +60,36 @@ _MENUS = []
 
 
 def register_menu(definition):
-    """Add (or replace, by name) a menu-bar menu.
+    """Add (or replace) a menu-bar menu.
 
-    definition: {"name": str, "title": str, "items": [item, ...]}
+    definition: {"name": str, "title": str, "items": [item, ...],
+                 "host": "main" (default) | "child"}
     item:       {"name": str, "title": str,
                  "kind": "action" | "check" | "radio" | "separator" | "submenu",
                  "checked": bool, "items": [...] (submenu only)}
+
+    HOST is which menu bar the menu belongs to. It is part of the identity,
+    not just a filter: the same name may legitimately appear on both bars -
+    a "View" menu on the main window and a "View" menu on the texture window
+    are different menus about different views - and deduping by name alone
+    would let one silently replace the other.
     """
     name = definition.get("name")
     if not name:
         raise ValueError("menu definition needs a 'name'.")
-    _MENUS[:] = [entry for entry in _MENUS if entry.get("name") != name]
-    _MENUS.append(dict(definition))
+    host = definition.get("host") or "main"
+    entry = dict(definition)
+    entry["host"] = host
+    _MENUS[:] = [item for item in _MENUS
+                 if not (item.get("name") == name and (item.get("host") or "main") == host)]
+    _MENUS.append(entry)
 
 
-def menus_json():
-    """Every registered menu, freshly evaluated, as JSON for the C++ builder.
+def menus_json(host=None):
+    """Registered menus, freshly evaluated, as JSON for the C++ builder.
+
+    `host` filters to one menu bar ("main" / "child"); None returns all, which
+    is what a caller that predates hosts gets.
 
     An "items" value may be a CALLABLE, so a menu that shows state (which
     curve mode is active, say) reports the truth at the moment it opens
@@ -80,6 +108,8 @@ def menus_json():
 
     menus = []
     for menu in _MENUS:
+        if host is not None and (menu.get("host") or "main") != host:
+            continue
         entry = dict(menu)
         try:
             entry["items"] = resolve(entry.get("items"))

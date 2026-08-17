@@ -62,8 +62,14 @@ private:
     // in step with the script's own state.
     void createScriptMenus();
 #ifdef ANIMEAN_WITH_PYTHON
-    void rebuildScriptMenu(QMenu *menu, const QString &menuName);
-    void fillScriptMenu(QMenu *menu, const QString &menuName, const QJsonArray &items);
+    // `host` selects which menu bar the definitions come from ("main" /
+    // "child"); `owner` is the view the menu acts on, so a per-view toggle
+    // reports the right board rather than whichever one has focus.
+    void rebuildScriptMenu(QMenu *menu, const QString &menuName,
+                           const QString &host, PaintOpenGLWidget *owner);
+    void fillScriptMenu(QMenu *menu, const QString &menuName, const QJsonArray &items,
+                        const QString &host, PaintOpenGLWidget *owner);
+    void attachChildScriptMenus();
 #endif
     void openScriptSettings(const QString &name, const QString &title);
     // Rebuild the tool options panel for the current tool (the Draw Setting

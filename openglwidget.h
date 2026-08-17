@@ -85,6 +85,21 @@ public:
     qreal zoom() const;
     QPointF panOffset() const;
     void setScrollPosition(int horizontal, int vertical);
+    // What sits behind the drawing. A VIEW preference, not a document one -
+    // it changes nothing that is saved or exported.
+    enum class BackgroundMode { White, Black, Transparent };
+    void setBackgroundMode(BackgroundMode mode);
+    BackgroundMode backgroundMode() const;
+
+    // Content lock. When editing is off, only strokes whose active property is
+    // in the allowlist may be drawn or erased - the generic half: C++ enforces
+    // "these properties only", Python says WHICH (setEditablePropertyFilter).
+    void setContentEditable(bool editable);
+    bool contentEditable() const;
+    void setEditablePropertyFilter(const QStringList &properties);
+    // True when the tool currently armed is allowed to modify this view.
+    bool editingAllowed() const;
+
     void setUnboundedCanvas(bool unbounded);
     bool unboundedCanvas() const;
     // The page, in document coordinates. Comes from the scene's canvas size,
@@ -232,6 +247,7 @@ private:
     void sendPythonHandleMessage(const QString &phase, const QString &handleId, const QPointF &pos);
     void resetAxisSnap(Qt::KeyboardModifiers modifiers, const QPointF &anchor);
     QPointF applyAxisSnap(Qt::KeyboardModifiers modifiers, const QPointF &point, bool *retroChanged);
+    void paintBackground(QPainter &painter, const QRectF &target) const;
     QPointF mapToDocument(const QPointF &screenPos) const;
     void clampPan();
     void notifyViewTransformChanged();
@@ -317,6 +333,9 @@ private:
     // Id of the handle being dragged; empty when no drag is in flight.
     QString m_activeHandleDrag;
     bool m_unboundedCanvas = false;
+    BackgroundMode m_backgroundMode = BackgroundMode::White;
+    bool m_contentEditable = true;
+    QStringList m_editableProperties;
     QPointF m_lastPanPos;
     SceneHistory m_history;
     QVector<QImage> m_playbackFrames;

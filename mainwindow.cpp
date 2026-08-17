@@ -1,4 +1,4 @@
-#include "mainwindow.h"
+﻿#include "mainwindow.h"
 #include "ui_mainwindow.h"
 #include "childrenpanel/assetpanel.h"
 #include "childrenpanel/childpaintwindow.h"
@@ -542,6 +542,7 @@ void MainWindow::setupDocks()
     // tool modules are imported is what counts: their import-time
     // registrations are what these menus are built from.
     createScriptMenus();
+    attachChildScriptMenus();
     // Re-baseline both histories now that the views carry their fixed scene
     // identities; the constructor-time baseline predates setTextId/setIntId
     // and undoing into it would corrupt the main/child identity invariant.
@@ -550,13 +551,16 @@ void MainWindow::setupDocks()
     createHistoryDock();
     createForcePadDock();
 
-    QMenu *viewMenu = menuBar()->addMenu(QStringLiteral("View"));
-    viewMenu->addAction(m_childPaintWindow->toggleViewAction());
-    viewMenu->addSeparator();
+    // "Windows", not "View": every entry here shows or hides a PANEL. What is
+    // drawn on the canvas is a different question, and it now has its own
+    // View menu (script-provided, per board) so the two cannot be confused.
+    QMenu *windowsMenu = menuBar()->addMenu(QStringLiteral("Windows"));
+    windowsMenu->addAction(m_childPaintWindow->toggleViewAction());
+    windowsMenu->addSeparator();
     for (QDockWidget *dock : {m_toolsDock, m_toolOptDock, m_layerDock, m_assetDock,
                               m_frameDock, m_historyDock, m_forcePadDock, m_pythonDebugDock}) {
         if (dock) {
-            viewMenu->addAction(dock->toggleViewAction());
+            windowsMenu->addAction(dock->toggleViewAction());
         }
     }
 
@@ -922,7 +926,8 @@ void MainWindow::createChildPaintDock()
 }
 
 #ifdef ANIMEAN_WITH_PYTHON
-void MainWindow::fillScriptMenu(QMenu *menu, const QString &menuName, const QJsonArray &items)
+void MainWindow::fillScriptMenu(QMenu *menu, const QString &menuName, const QJsonArray &items,
+                                const QString &host, PaintOpenGLWidget *owner)
 {
     for (const QJsonValue &value : items) {
         const QJsonObject object = value.toObject();
@@ -934,7 +939,7 @@ void MainWindow::fillScriptMenu(QMenu *menu, const QString &menuName, const QJso
         const QString title = object.value(QStringLiteral("title")).toString();
         if (kind == QStringLiteral("submenu")) {
             QMenu *child = menu->addMenu(title);
-            fillScriptMenu(child, menuName, object.value(QStringLiteral("items")).toArray());
+            fillScriptMenu(child, menuName, object.value(QStringLiteral("items")).toArray(), host, owner);
             continue;
         }
         const QString name = object.value(QStringLiteral("name")).toString();
@@ -966,7 +971,8 @@ void MainWindow::fillScriptMenu(QMenu *menu, const QString &menuName, const QJso
     }
 }
 
-void MainWindow::rebuildScriptMenu(QMenu *menu, const QString &menuName)
+void MainWindow::rebuildScriptMenu(QMenu *menu, const QString &menuName,
+                                   const QString &host, PaintOpenGLWidget *owner)
 {
     // Rebuilt every time the menu opens, from Python. That is what keeps a
     // check mark honest: the state lives in the script, and asking at open
@@ -974,7 +980,7 @@ void MainWindow::rebuildScriptMenu(QMenu *menu, const QString &menuName)
     menu->clear();
     try {
         const std::string json = py::module_::import("python_hooks")
-                                     .attr("menus_json")()
+                                     .attr("menus_json")(host.toStdString())
                                      .cast<std::string>();
         const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json));
         for (const QJsonValue &value : document.array()) {
@@ -982,7 +988,7 @@ void MainWindow::rebuildScriptMenu(QMenu *menu, const QString &menuName)
             if (object.value(QStringLiteral("name")).toString() != menuName) {
                 continue;
             }
-            fillScriptMenu(menu, menuName, object.value(QStringLiteral("items")).toArray());
+            fillScriptMenu(menu, menuName, object.value(QStringLiteral("items")).toArray(), host, owner);
             return;
         }
     } catch (const py::error_already_set &error) {
@@ -1053,14 +1059,73 @@ void MainWindow::openScriptSettings(const QString &name, const QString &title)
 #endif
 }
 
+void MainWindow::attachChildScriptMenus()
+{
+#ifdef ANIMEAN_WITH_PYTHON
+    // The texture window's own menu bar, filled from host "child". Built here
+    // rather than in ChildPaintWindow because MainWindow owns the Python side
+    // (the interpreter, the dispatch, the panel resync); the window just
+    // provides the bar.
+    QMenuBar *bar = m_childPaintWindow->menuBar();
+    if (!bar) {
+        return;
+    }
+    try {
+        const std::string json = py::module_::import("python_hooks")
+                                     .attr("menus_json")(std::string("child"))
+                                     .cast<std::string>();
+        const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json));
+        for (const QJsonValue &value : document.array()) {
+            const QJsonObject object = value.toObject();
+            const QString name = object.value(QStringLiteral("name")).toString();
+            if (name.isEmpty()) {
+                continue;
+            }
+            const QString title = object.value(QStringLiteral("title")).toString(name);
+            QMenu *menu = bar->addMenu(title);
+            PaintOpenGLWidget *owner = m_childPaintWidget;
+            connect(menu, &QMenu::aboutToShow, this, [this, menu, name, owner]() {
+                rebuildScriptMenu(menu, name, QStringLiteral("child"), owner);
+            });
+            rebuildScriptMenu(menu, name, QStringLiteral("child"), owner);
+        }
+    } catch (const py::error_already_set &error) {
+        setStatusText(QStringLiteral("child menus error: %1").arg(QString::fromUtf8(error.what())));
+    }
+
+    // Which tools stay usable on a protected board is a SCRIPT fact (the
+    // guide properties are auto_mapping's), so C++ asks rather than assumes.
+    try {
+        const std::string json = py::module_::import("python_hooks")
+                                     .attr("protected_properties_json")(std::string("child"))
+                                     .cast<std::string>();
+        const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json));
+        QStringList allowed;
+        for (const QJsonValue &value : document.array()) {
+            const QString property = value.toString();
+            if (!property.isEmpty()) {
+                allowed.append(property);
+            }
+        }
+        m_childPaintWidget->setEditablePropertyFilter(allowed);
+    } catch (const py::error_already_set &error) {
+        setStatusText(QStringLiteral("protected properties error: %1")
+                          .arg(QString::fromUtf8(error.what())));
+    }
+#endif
+}
+
 void MainWindow::createScriptMenus()
 {
 #ifdef ANIMEAN_WITH_PYTHON
     // Same shape as the extra-tools and view-button queries: Python owns the
     // menus, C++ renders whatever it is given.
     try {
+        // Only the menus that belong on THIS bar. The texture window builds
+        // its own from host "child", so a "View" menu can exist on both and
+        // mean the board it sits on.
         const std::string json = py::module_::import("python_hooks")
-                                     .attr("menus_json")()
+                                     .attr("menus_json")(std::string("main"))
                                      .cast<std::string>();
         QJsonParseError parseError;
         const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json), &parseError);
@@ -1076,10 +1141,11 @@ void MainWindow::createScriptMenus()
             }
             const QString title = object.value(QStringLiteral("title")).toString(name);
             QMenu *menu = menuBar()->addMenu(title);
-            connect(menu, &QMenu::aboutToShow, this, [this, menu, name]() {
-                rebuildScriptMenu(menu, name);
+            PaintOpenGLWidget *owner = m_paintWidget;
+            connect(menu, &QMenu::aboutToShow, this, [this, menu, name, owner]() {
+                rebuildScriptMenu(menu, name, QStringLiteral("main"), owner);
             });
-            rebuildScriptMenu(menu, name);
+            rebuildScriptMenu(menu, name, QStringLiteral("main"), owner);
         }
     } catch (const py::error_already_set &error) {
         setStatusText(QStringLiteral("menus error: %1").arg(QString::fromUtf8(error.what())));
@@ -1324,7 +1390,7 @@ PaintOpenGLWidget *MainWindow::framePanelTarget() const
 PaintOpenGLWidget *MainWindow::layerPanelTarget() const
 {
     PaintOpenGLWidget *view = activePaintWidget();
-    if (view == m_childPaintWidget && m_childPaintWindow && !m_childPaintWindow->changableLayer()) {
+    if (view == m_childPaintWidget && m_childPaintWindow && !m_childPaintWindow->changableTexture()) {
         return m_paintWidget;
     }
     return view;
@@ -1670,7 +1736,7 @@ void MainWindow::setupConnections()
     connect(m_childPaintWindow, &ChildPaintWindow::changableTimelineToggled, this, [this](bool) {
         refreshPanelTargets();
     });
-    connect(m_childPaintWindow, &ChildPaintWindow::changableLayerToggled, this, [this](bool) {
+    connect(m_childPaintWindow, &ChildPaintWindow::changableTextureToggled, this, [this](bool) {
         refreshPanelTargets();
     });
 

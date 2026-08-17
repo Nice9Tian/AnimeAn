@@ -270,6 +270,84 @@ void PaintOpenGLWidget::setScrollPosition(int horizontal, int vertical)
     update();
 }
 
+void PaintOpenGLWidget::paintBackground(QPainter &painter, const QRectF &target) const
+{
+    switch (m_backgroundMode) {
+    case BackgroundMode::Black:
+        painter.fillRect(target, Qt::black);
+        return;
+    case BackgroundMode::Transparent: {
+        // The usual grey/white chequer. Drawn in SCREEN space (this runs
+        // before the zoom transform), so the squares stay a constant size on
+        // screen the way every other application's transparency chequer does
+        // - a chequer that zoomed with the drawing would read as content.
+        constexpr int kSquare = 8;
+        painter.save();
+        painter.fillRect(target, QColor(255, 255, 255));
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(204, 204, 204));
+        const int left = int(std::floor(target.left()));
+        const int top = int(std::floor(target.top()));
+        const int right = int(std::ceil(target.right()));
+        const int bottom = int(std::ceil(target.bottom()));
+        for (int y = top - (top % kSquare) - kSquare; y < bottom; y += kSquare) {
+            for (int x = left - (left % kSquare) - kSquare; x < right; x += kSquare) {
+                if (((x / kSquare) + (y / kSquare)) % 2 == 0) {
+                    painter.drawRect(QRect(x, y, kSquare, kSquare));
+                }
+            }
+        }
+        painter.restore();
+        return;
+    }
+    case BackgroundMode::White:
+    default:
+        painter.fillRect(target, Qt::white);
+        return;
+    }
+}
+
+void PaintOpenGLWidget::setBackgroundMode(BackgroundMode mode)
+{
+    if (m_backgroundMode == mode) {
+        return;
+    }
+    m_backgroundMode = mode;
+    update();
+}
+
+PaintOpenGLWidget::BackgroundMode PaintOpenGLWidget::backgroundMode() const
+{
+    return m_backgroundMode;
+}
+
+void PaintOpenGLWidget::setContentEditable(bool editable)
+{
+    m_contentEditable = editable;
+}
+
+bool PaintOpenGLWidget::contentEditable() const
+{
+    return m_contentEditable;
+}
+
+void PaintOpenGLWidget::setEditablePropertyFilter(const QStringList &properties)
+{
+    m_editableProperties = properties;
+}
+
+bool PaintOpenGLWidget::editingAllowed() const
+{
+    if (m_contentEditable) {
+        return true;
+    }
+    // Locked: only the tools the allowlist names may still draw. An empty
+    // allowlist locks everything, which is the honest reading of "no tool is
+    // allowed" - failing OPEN here would make the protection silently
+    // useless exactly when Python failed to register.
+    return m_editableProperties.contains(m_strokeProperty);
+}
+
 void PaintOpenGLWidget::setUnboundedCanvas(bool unbounded)
 {
     if (m_unboundedCanvas == unbounded) {
@@ -1436,6 +1514,11 @@ bool PaintOpenGLWidget::buildPlaybackCache(int frameCount, QString *error)
 
         QPainter painter(&image);
         painter.setRenderHint(QPainter::Antialiasing);
+        if (m_unboundedCanvas) {
+            // The same background the live view shows, so pressing play does
+            // not change what sits behind the drawing.
+            paintBackground(painter, QRectF(rect()));
+        }
         painter.translate(m_panOffset);
         painter.scale(m_zoom, m_zoom);
         if (!m_unboundedCanvas) {
@@ -1530,7 +1613,11 @@ void PaintOpenGLWidget::paintGL()
         // Always clear first: the widget can be larger than the cached frame
         // (a resize ends playback, but the repaint may arrive before that),
         // and uncovered pixels of a recreated FBO are undefined.
-        painter.fillRect(rect(), m_unboundedCanvas ? Qt::white : QColor(72, 72, 72));
+        if (m_unboundedCanvas) {
+            paintBackground(painter, QRectF(rect()));
+        } else {
+            painter.fillRect(rect(), QColor(72, 72, 72));
+        }
         // Map the cached pixels from the view they were rendered for onto the
         // view we are looking at now. A cache pixel p is document
         // (p - cachePan)/cacheZoom, which is on screen at
@@ -1558,7 +1645,7 @@ void PaintOpenGLWidget::paintGL()
 
     if (m_unboundedCanvas) {
         // Infinite reference board: the whole viewport is paper.
-        painter.fillRect(rect(), Qt::white);
+        paintBackground(painter, rect());
     } else {
         painter.fillRect(rect(), QColor(72, 72, 72));
     }
@@ -1820,6 +1907,16 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
     const QPointF pos = mapToDocument(event->position());
     m_hoverPos = pos;
     m_hasHoverPos = true;
+
+    // Content lock. Gated here, at the single point every mutating gesture
+    // starts, rather than in each tool: a per-tool check is a list that the
+    // next tool forgets to join. Arrow (selection) is exempt - it inspects
+    // rather than edits, and locking it would make a protected board
+    // unnavigable.
+    if (m_tool != Tool::Arrow && !editingAllowed()) {
+        event->accept();
+        return;
+    }
 
     // Arrow: selection/edit tool. A press lands on a handle (drag it), or on
     // the canvas (Python decides whether a stroke sits there and which

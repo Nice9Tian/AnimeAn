@@ -2,8 +2,11 @@
 #include "openglwidget.h"
 #include "paintviewcontainer.h"
 
-#include <QCheckBox>
+#include <QAction>
+#include <QActionGroup>
 #include <QHBoxLayout>
+#include <QMenu>
+#include <QMenuBar>
 #include <QPushButton>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -18,20 +21,28 @@ ChildPaintWindow::ChildPaintWindow(QWidget *parent)
     layout->setContentsMargins(4, 4, 4, 4);
     layout->setSpacing(4);
 
-    QHBoxLayout *optionLayout = new QHBoxLayout;
-    m_optionLayout = optionLayout;
-    optionLayout->setSpacing(12);
-    m_changableTimelineCheck = new QCheckBox(QStringLiteral("Changable Timeline"), panel);
-    m_changableTimelineCheck->setToolTip(
-        QStringLiteral("When checked, focusing this view switches the Frames panel to this view's timeline."));
-    m_changableTimelineCheck->setChecked(false);
-    m_changableLayerCheck = new QCheckBox(QStringLiteral("Changable Layer"), panel);
-    m_changableLayerCheck->setToolTip(
-        QStringLiteral("When checked, focusing this view switches the Layers/Assets panels to this view's layers."));
-    m_changableLayerCheck->setChecked(true);
-    optionLayout->addWidget(m_changableTimelineCheck);
-    optionLayout->addWidget(m_changableLayerCheck);
-    optionLayout->addStretch(1);
+    // The texture board carries its own menu bar. Its settings are about THIS
+    // board, and putting them on the application menu bar would make them
+    // read as global.
+    m_menuBar = new QMenuBar(panel);
+
+    QMenu *settingMenu = m_menuBar->addMenu(QStringLiteral("Setting"));
+    m_changableTimelineAction = settingMenu->addAction(QStringLiteral("Changable Timeline"));
+    m_changableTimelineAction->setCheckable(true);
+    m_changableTimelineAction->setChecked(false);
+    m_changableTimelineAction->setToolTip(
+        QStringLiteral("Focusing this view switches the Frames panel to its timeline."));
+    connect(m_changableTimelineAction, &QAction::toggled,
+            this, &ChildPaintWindow::changableTimelineToggled);
+
+    m_changableTextureAction = settingMenu->addAction(QStringLiteral("Changable Texture"));
+    m_changableTextureAction->setCheckable(true);
+    m_changableTextureAction->setChecked(true);
+    m_changableTextureAction->setToolTip(
+        QStringLiteral("Unchecked, the texture's own artwork is protected: only the "
+                       "H/V axis tools can draw here, so a stray stroke cannot damage "
+                       "the reference. Also governs whether the Layers/Assets panels "
+                       "follow this view."));
 
     PaintViewContainer *container = new PaintViewContainer(panel);
     m_paintWidget = container->paintWidget();
@@ -41,12 +52,54 @@ ChildPaintWindow::ChildPaintWindow(QWidget *parent)
     m_paintWidget->setUnboundedCanvas(true);
     container->setMinimumSize(320, 240);
 
-    layout->addLayout(optionLayout);
+    QMenu *backgroundMenu = m_menuBar->addMenu(QStringLiteral("Background"));
+    QActionGroup *backgroundGroup = new QActionGroup(this);
+    backgroundGroup->setExclusive(true);
+    struct BackgroundEntry { const char *title; int mode; };
+    const BackgroundEntry entries[] = {
+        {"White", int(PaintOpenGLWidget::BackgroundMode::White)},
+        {"Black", int(PaintOpenGLWidget::BackgroundMode::Black)},
+        {"Transparent", int(PaintOpenGLWidget::BackgroundMode::Transparent)},
+    };
+    for (const BackgroundEntry &entry : entries) {
+        QAction *action = backgroundMenu->addAction(QString::fromUtf8(entry.title));
+        action->setCheckable(true);
+        action->setActionGroup(backgroundGroup);
+        action->setChecked(entry.mode == int(m_paintWidget->backgroundMode()));
+        const int mode = entry.mode;
+        connect(action, &QAction::triggered, this, [this, mode]() { applyBackgroundMode(mode); });
+    }
+
+    // Kept for script buttons that ask for a button rather than a menu entry.
+    // Hidden while empty so it costs no height.
+    m_optionRow = new QWidget(panel);
+    QHBoxLayout *optionLayout = new QHBoxLayout(m_optionRow);
+    optionLayout->setContentsMargins(0, 0, 0, 0);
+    optionLayout->setSpacing(12);
+    optionLayout->addStretch(1);
+    m_optionLayout = optionLayout;
+    m_optionRow->setVisible(false);
+
+    layout->setMenuBar(m_menuBar);
+    layout->addWidget(m_optionRow);
     layout->addWidget(container, 1);
     setWidget(panel);
 
-    connect(m_changableTimelineCheck, &QCheckBox::toggled, this, &ChildPaintWindow::changableTimelineToggled);
-    connect(m_changableLayerCheck, &QCheckBox::toggled, this, &ChildPaintWindow::changableLayerToggled);
+    connect(m_changableTextureAction, &QAction::toggled, this, [this](bool on) {
+        m_paintWidget->setContentEditable(on);
+        emit changableTextureToggled(on);
+    });
+    m_paintWidget->setContentEditable(true);
+}
+
+QMenuBar *ChildPaintWindow::menuBar() const
+{
+    return m_menuBar;
+}
+
+void ChildPaintWindow::applyBackgroundMode(int mode)
+{
+    m_paintWidget->setBackgroundMode(static_cast<PaintOpenGLWidget::BackgroundMode>(mode));
 }
 
 PaintOpenGLWidget *ChildPaintWindow::paintWidget() const
@@ -56,22 +109,22 @@ PaintOpenGLWidget *ChildPaintWindow::paintWidget() const
 
 bool ChildPaintWindow::changableTimeline() const
 {
-    return m_changableTimelineCheck->isChecked();
+    return m_changableTimelineAction->isChecked();
 }
 
-bool ChildPaintWindow::changableLayer() const
+bool ChildPaintWindow::changableTexture() const
 {
-    return m_changableLayerCheck->isChecked();
+    return m_changableTextureAction->isChecked();
 }
 
 void ChildPaintWindow::setChangableTimeline(bool enabled)
 {
-    m_changableTimelineCheck->setChecked(enabled);
+    m_changableTimelineAction->setChecked(enabled);
 }
 
-void ChildPaintWindow::setChangableLayer(bool enabled)
+void ChildPaintWindow::setChangableTexture(bool enabled)
 {
-    m_changableLayerCheck->setChecked(enabled);
+    m_changableTextureAction->setChecked(enabled);
 }
 
 void ChildPaintWindow::setScriptButtons(const QVector<ScriptButtonDefinition> &definitions)
@@ -87,8 +140,7 @@ void ChildPaintWindow::setScriptButtons(const QVector<ScriptButtonDefinition> &d
             continue;
         }
         QPushButton *button = new QPushButton(
-            definition.title.isEmpty() ? definition.name : definition.title,
-            m_optionLayout->parentWidget() ? m_optionLayout->parentWidget() : this);
+            definition.title.isEmpty() ? definition.name : definition.title, m_optionRow);
         button->setToolTip(definition.tooltip);
         button->setCheckable(definition.checkable);
         const QString name = definition.name;
@@ -105,4 +157,5 @@ void ChildPaintWindow::setScriptButtons(const QVector<ScriptButtonDefinition> &d
         m_optionLayout->insertWidget(m_optionLayout->count() - 1, button);
         m_scriptButtons.append(button);
     }
+    m_optionRow->setVisible(!m_scriptButtons.isEmpty());
 }
