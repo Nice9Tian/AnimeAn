@@ -379,17 +379,311 @@ def _dominant_indices(points, zoom):
     return kept
 
 
-def _artist_handles(geometry, zoom):
-    """Pseudo-handles on the perceptually distinct key points."""
-    elements = _elements(geometry["commands"])
-    dense = _flatten_elements(elements) if elements else list(geometry["points"])
-    if len(dense) < 2:
-        return [], [], dense
-    kept = _dominant_indices(dense, zoom)
-    handles = [{"id": f"k{i}", "x": dense[i][0], "y": dense[i][1],
-                "shape": SHAPE_PSEUDO, "color": PSEUDO_COLOR}
-               for i in kept]
-    return handles, kept, dense
+# --- the artist-mode Bezier chain -------------------------------------------
+#
+# Artist mode is not a displacement field over the flattening any more: it
+# FITS a cubic chain whose anchors are exactly the perceptual key points, and
+# every edit operates on that chain. That is what makes the three reported
+# failures impossible by construction: the curve passes THROUGH a dragged
+# anchor (it is an interpolation point, so it cannot lag the mouse), an edit
+# rewrites the stroke as the same sparse chain (no surprise vertices, and a
+# raw polyline is auto-smoothed into a chain on its first edit), and the
+# anchors carry visible tangent handles like any Bezier editor.
+
+# An anchor whose sides meet harder than this is a CORNER: its two handles
+# are independent, so at a right angle they form the right angle.
+CORNER_DEG = 35.0
+# A fitted handle may lean at most this far off its chord, and may not be
+# longer than the chord. A cubic that cannot satisfy that is split - one
+# segment therefore never turns much more than ~90 degrees.
+MAX_HANDLE_ANGLE_DEG = 45.0
+FIT_TOL_PX = 0.75
+MAX_SPLIT_DEPTH = 8
+
+
+def _norm(v):
+    length = math.hypot(v[0], v[1])
+    return (v[0] / length, v[1] / length) if length > 1e-12 else (0.0, 0.0)
+
+
+def _one_sided_tangents(dense, cum, index, window):
+    """Unit tangents arriving at and leaving dense[index], chord-windowed."""
+    count = len(dense)
+
+    def reach(direction):
+        j = index
+        while 0 <= j + direction < count and abs(cum[j + direction] - cum[index]) < window:
+            j += direction
+        j = max(0, min(count - 1, j if j != index else index + direction))
+        return dense[j]
+
+    before = reach(-1)
+    after = reach(1)
+    t_in = _norm((dense[index][0] - before[0], dense[index][1] - before[1]))
+    t_out = _norm((after[0] - dense[index][0], after[1] - dense[index][1]))
+    return t_in, t_out
+
+
+def _fit_span(dense, cum, i0, i1, tan_out, tan_in):
+    """One cubic over dense[i0..i1] with FIXED end tangent directions.
+
+    Schneider's least-squares (Graphics Gems "FitCurve"): with c1 = p0 +
+    alpha*tan_out and c2 = p3 + beta*tan_in, the squared distance to the
+    samples is quadratic in (alpha, beta) - a 2x2 solve. Returns
+    (cubic, max_error, worst_index).
+    """
+    p0, p3 = dense[i0], dense[i1]
+    arc0, arc1 = cum[i0], cum[i1]
+    span = max(arc1 - arc0, 1e-9)
+    chord = _dist(p0, p3)
+
+    c11 = c12 = c22 = x1 = x2 = 0.0
+    for k in range(i0, i1 + 1):
+        t = (cum[k] - arc0) / span
+        s = 1.0 - t
+        b1 = 3.0 * s * s * t
+        b2 = 3.0 * s * t * t
+        base = (s * s * s * p0[0] + b1 * p0[0] + b2 * p3[0] + t * t * t * p3[0],
+                s * s * s * p0[1] + b1 * p0[1] + b2 * p3[1] + t * t * t * p3[1])
+        a1 = (tan_out[0] * b1, tan_out[1] * b1)
+        a2 = (tan_in[0] * b2, tan_in[1] * b2)
+        rhs = (dense[k][0] - base[0], dense[k][1] - base[1])
+        c11 += a1[0] * a1[0] + a1[1] * a1[1]
+        c12 += a1[0] * a2[0] + a1[1] * a2[1]
+        c22 += a2[0] * a2[0] + a2[1] * a2[1]
+        x1 += a1[0] * rhs[0] + a1[1] * rhs[1]
+        x2 += a2[0] * rhs[0] + a2[1] * rhs[1]
+
+    det = c11 * c22 - c12 * c12
+    if abs(det) > 1e-12:
+        alpha = (x1 * c22 - x2 * c12) / det
+        beta = (c11 * x2 - c12 * x1) / det
+    else:
+        alpha = beta = chord / 3.0
+    if alpha <= 1e-6 or beta <= 1e-6:
+        alpha = beta = max(chord / 3.0, 1e-6)
+
+    cubic = [p0,
+             (p0[0] + tan_out[0] * alpha, p0[1] + tan_out[1] * alpha),
+             (p3[0] + tan_in[0] * beta, p3[1] + tan_in[1] * beta),
+             p3]
+
+    worst = i0
+    error = 0.0
+    for k in range(i0, i1 + 1):
+        t = (cum[k] - arc0) / span
+        gap = _dist(dense[k], _cubic_point(*cubic, t))
+        if gap > error:
+            error, worst = gap, k
+    return cubic, error, worst
+
+
+def _handle_constraints_ok(cubic):
+    """The fitted-handle rules: within 45 degrees of the chord, no longer
+    than the chord."""
+    p0, c1, c2, p3 = cubic
+    chord = (p3[0] - p0[0], p3[1] - p0[1])
+    chord_len = math.hypot(*chord)
+    if chord_len < 1e-9:
+        return False
+    chord_dir = (chord[0] / chord_len, chord[1] / chord_len)
+    limit = math.cos(math.radians(MAX_HANDLE_ANGLE_DEG))
+    for handle, sign in (((c1[0] - p0[0], c1[1] - p0[1]), 1.0),
+                         ((p3[0] - c2[0], p3[1] - c2[1]), 1.0)):
+        length = math.hypot(*handle)
+        if length < 1e-9:
+            continue
+        if length > chord_len:
+            return False
+        cos_angle = (handle[0] * chord_dir[0] + handle[1] * chord_dir[1]) * sign / length
+        if cos_angle < limit:
+            return False
+    return True
+
+
+def _fit_chain(dense, kept):
+    """Cubic chain anchored at the kept indices, splitting where one cubic
+    cannot both stay within FIT_TOL_PX and keep its handles legal.
+
+    Returns (anchors, cubics): anchors = [{"pos", "corner"}], one cubic per
+    consecutive anchor pair.
+    """
+    cum = _cumulative(dense)
+    total = cum[-1]
+    window = max(2.0 * POLY_STEP, 0.02 * total)
+
+    tangents = {}
+    corner = {}
+    for i in kept:
+        t_in, t_out = _one_sided_tangents(dense, cum, i, window)
+        dot = max(-1.0, min(1.0, t_in[0] * t_out[0] + t_in[1] * t_out[1]))
+        is_corner = math.degrees(math.acos(dot)) > CORNER_DEG and 0 < i < len(dense) - 1
+        corner[i] = is_corner
+        if is_corner:
+            tangents[i] = (t_in, t_out)
+        else:
+            merged = _norm((t_in[0] + t_out[0], t_in[1] + t_out[1]))
+            if merged == (0.0, 0.0):
+                merged = t_out if t_out != (0.0, 0.0) else t_in
+            tangents[i] = (merged, merged)
+
+    anchor_indices = []
+    cubics = []
+
+    def tangent_out(i):
+        return tangents[i][1] if i in tangents else _one_sided_tangents(dense, cum, i, window)[1]
+
+    def tangent_in(i):
+        # incoming handle points BACK along the curve from the end anchor
+        t = tangents[i][0] if i in tangents else _one_sided_tangents(dense, cum, i, window)[0]
+        return (-t[0], -t[1])
+
+    def fit(i0, i1, depth):
+        if i1 - i0 < 2 or depth >= MAX_SPLIT_DEPTH \
+                or cum[i1] - cum[i0] < 2.0 * POLY_STEP:
+            cubic, _, _ = _fit_span(dense, cum, i0, i1, tangent_out(i0), tangent_in(i1))
+            cubics.append(cubic)
+            anchor_indices.append(i1)
+            return
+        cubic, error, worst = _fit_span(dense, cum, i0, i1, tangent_out(i0), tangent_in(i1))
+        if error <= FIT_TOL_PX and _handle_constraints_ok(cubic):
+            cubics.append(cubic)
+            anchor_indices.append(i1)
+            return
+        # Split where the fit is worst (mid-span for a pure constraint
+        # violation, whose worst sample can sit at an end).
+        split = worst if i0 + 1 < worst < i1 - 1 else (i0 + i1) // 2
+        if split not in tangents:
+            t_in, t_out = _one_sided_tangents(dense, cum, split, window)
+            merged = _norm((t_in[0] + t_out[0], t_in[1] + t_out[1]))
+            tangents[split] = (merged, merged)
+            corner[split] = False
+        fit(i0, split, depth + 1)
+        fit(split, i1, depth + 1)
+
+    anchor_indices.append(kept[0])
+    for a, b in zip(kept, kept[1:]):
+        fit(a, b, 0)
+
+    anchors = [{"pos": dense[i], "corner": corner.get(i, False)}
+               for i in anchor_indices]
+    return anchors, cubics
+
+
+def _split_cubic(cubic, t=0.5):
+    """de Casteljau: the same curve as two cubics with smaller handles."""
+    p0, c1, c2, p3 = cubic
+    lerp = lambda a, b: (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+    q0 = lerp(p0, c1)
+    q1 = lerp(c1, c2)
+    q2 = lerp(c2, p3)
+    r0 = lerp(q0, q1)
+    r1 = lerp(q1, q2)
+    mid = lerp(r0, r1)
+    return [p0, q0, r0, mid], [mid, r1, q2, p3]
+
+
+def _chain_from_elements(elements):
+    """Read a chain straight back from a stroke that IS one (all cubics).
+
+    Returns (anchors, cubics) or (None, None) when the elements are anything
+    else - then the caller falls back to detect-and-fit. Corners are
+    re-derived from the handle geometry: an anchor whose arms meet harder
+    than CORNER_DEG stays a corner.
+    """
+    if not elements or elements[0][0] != "move" \
+            or any(kind != "cubic" for kind, _ in elements[1:]) or len(elements) < 2:
+        return None, None
+    cubics = []
+    current = elements[0][1][0]
+    for _, pts in elements[1:]:
+        cubics.append([current, pts[0], pts[1], pts[2]])
+        current = pts[2]
+    anchors = [{"pos": cubics[0][0], "corner": False}]
+    for k in range(1, len(cubics)):
+        into = _norm((cubics[k - 1][3][0] - cubics[k - 1][2][0],
+                      cubics[k - 1][3][1] - cubics[k - 1][2][1]))
+        out = _norm((cubics[k][1][0] - cubics[k][0][0],
+                     cubics[k][1][1] - cubics[k][0][1]))
+        dot = max(-1.0, min(1.0, into[0] * out[0] + into[1] * out[1]))
+        corner = math.degrees(math.acos(dot)) > CORNER_DEG
+        anchors.append({"pos": cubics[k][0], "corner": corner})
+    anchors.append({"pos": cubics[-1][3], "corner": False})
+    return anchors, cubics
+
+
+def _chain_handles(chain):
+    """Anchors as diamonds, Bezier handle tips as circles, arms as overlay
+    lines. Corner anchors keep both arms independent - at a right angle the
+    arms ARE the right angle."""
+    handles = []
+    arms = []
+    anchors = chain["anchors"]
+    cubics = chain["cubics"]
+    for k, anchor in enumerate(anchors):
+        pos = anchor["pos"]
+        handles.append({"id": f"a{k}", "x": pos[0], "y": pos[1],
+                        "shape": SHAPE_PSEUDO, "color": PSEUDO_COLOR})
+        if k < len(cubics):
+            tip = cubics[k][1]
+            handles.append({"id": f"h{k}:out", "x": tip[0], "y": tip[1],
+                            "shape": SHAPE_CONTROL, "color": CONTROL_COLOR})
+            arms.append([pos, tip])
+        if k > 0:
+            tip = cubics[k - 1][2]
+            handles.append({"id": f"h{k}:in", "x": tip[0], "y": tip[1],
+                            "shape": SHAPE_CONTROL, "color": CONTROL_COLOR})
+            arms.append([pos, tip])
+    return handles, arms
+
+
+def _chain_commands(chain):
+    cubics = chain["cubics"]
+    if not cubics:
+        return []
+    start = cubics[0][0]
+    commands = [{"type": "move", "to": {"x": start[0], "y": start[1]}}]
+    current = start
+    for p0, c1, c2, p3 in cubics:
+        commands.append({"type": "cubic",
+                         "from": {"x": current[0], "y": current[1]},
+                         "control1": {"x": c1[0], "y": c1[1]},
+                         "control2": {"x": c2[0], "y": c2[1]},
+                         "to": {"x": p3[0], "y": p3[1]}})
+        current = p3
+    return commands
+
+
+def _chain_flat(chain, step=POLY_STEP):
+    points = []
+    for cubic in chain["cubics"]:
+        sampled = _sample_cubic(*cubic, step)
+        points.extend(sampled if not points else sampled[1:])
+    return points
+
+
+def _enforce_chain_constraints(chain):
+    """Split any segment whose handles ended up oversized after a drag.
+
+    de Casteljau keeps the SHAPE bit-identical while inserting an anchor and
+    shrinking the handles, so repeated halving always converges to legal
+    segments - this is the "automatically split into more vertices" rule.
+    """
+    changed = False
+    for _ in range(MAX_SPLIT_DEPTH):
+        for index, cubic in enumerate(chain["cubics"]):
+            if _handle_constraints_ok(cubic):
+                continue
+            if _dist(cubic[0], cubic[3]) < 2.0 * POLY_STEP:
+                continue    # too short to split meaningfully
+            left, right = _split_cubic(cubic)
+            chain["cubics"][index:index + 1] = [left, right]
+            chain["anchors"].insert(index + 1, {"pos": left[3], "corner": False})
+            changed = True
+            break
+        else:
+            return changed
+    return changed
 
 
 # --- pushing state to the view ----------------------------------------------
@@ -430,13 +724,19 @@ def _rebuild(view, session, zoom):
     geometry = session["geometry"]
     if _STATE["mode"] == "debug":
         handles, arms = _debug_handles(geometry)
-        session["kept"] = None
-        session["dense"] = None
-    else:
-        handles, kept, dense = _artist_handles(geometry, zoom)
-        arms = []
-        session["kept"] = kept
-        session["dense"] = dense
+        session["chain"] = None
+        _push(view, handles, arms)
+        return
+    elements = _elements(geometry["commands"])
+    dense = _flatten_elements(elements) if elements else list(geometry["points"])
+    if len(dense) < 2:
+        session["chain"] = None
+        _push(view, [], [])
+        return
+    kept = _dominant_indices(dense, zoom)
+    anchors, cubics = _fit_chain(dense, kept)
+    session["chain"] = {"anchors": anchors, "cubics": cubics}
+    handles, arms = _chain_handles(session["chain"])
     _push(view, handles, arms)
 
 
@@ -449,9 +749,18 @@ def _polyline_length(points):
 def _replace_stroke(view, session):
     geometry = session["geometry"]
     scene = _scene_model(view)
-    elements = _elements(geometry["commands"]) if geometry["commands"] else None
     animean = _animean()
-    if elements:
+    if _STATE["mode"] == "artist" and session.get("chain"):
+        # The chain IS the stroke now: sparse anchors, legal handles, cubic
+        # commands. A former raw polyline comes out auto-smoothed - editing
+        # never multiplies vertices.
+        commands = _chain_commands(session["chain"])
+        flat = _chain_flat(session["chain"])
+        if len(flat) < 2 or _polyline_length(flat) < 0.01:
+            return False
+        piece = animean.vectorlogic.make_stroke_object_from_path(
+            commands, flat, geometry["color"], geometry["width"], geometry["id"])
+    elif session.get("elements") is not None:
         commands = _elements_to_commands(session["elements"])
         flat = _flatten_elements(session["elements"])
         # A drag that collapses the stroke onto itself must not DELETE it:
@@ -509,52 +818,60 @@ def _drag_debug(session, handle_id, pos):
         pts[1] = pos
 
 
-def _drag_artist(session, dragged, pos):
-    """Deform locally: a smooth bump from the dragged key point out to its
-    neighbouring key points, in ARC distance - the same falloff both for the
-    dense points and, on curve strokes, for the command control points.
+def _drag_chain(session, target, pos):
+    """Apply a drag to the artist chain.
 
-    `dragged` is a DENSE index resolved at press time by proximity to the
-    grabbed handle - never parsed from the handle id, whose index spoke about
-    a previous flattening."""
-    dense = session["dense0"]
-    cum = session["cum0"]
-    kept = session["kept"]
-    if dragged not in kept:
+    `target` is ("anchor", k) or ("tip", k, "in"/"out"), resolved at press
+    time by geometry. An anchor drag is an INTERPOLATION move: the anchor and
+    both its handle tips translate with the mouse exactly, so the curve
+    passes through the cursor - the old displacement-field approach steered
+    only control points and the curve lagged behind on any large drag. A tip
+    drag re-aims that handle; on a smooth anchor the opposite arm mirrors the
+    direction (keeping its own length), on a corner both arms stay free.
+    """
+    chain = session["chain"]
+    anchors = chain["anchors"]
+    cubics = chain["cubics"]
+    kind = target[0]
+    k = target[1]
+    if kind == "anchor":
+        if not 0 <= k < len(anchors):
+            return
+        old = session["chain0"]["anchors"][k]["pos"]
+        delta = (pos[0] - old[0], pos[1] - old[1])
+        anchors[k]["pos"] = pos
+        if k < len(cubics):
+            base = session["chain0"]["cubics"][k]
+            cubics[k][0] = pos
+            cubics[k][1] = (base[1][0] + delta[0], base[1][1] + delta[1])
+        if k > 0:
+            base = session["chain0"]["cubics"][k - 1]
+            cubics[k - 1][3] = pos
+            cubics[k - 1][2] = (base[2][0] + delta[0], base[2][1] + delta[1])
         return
-    where = kept.index(dragged)
-    arc0 = cum[dragged]
-    left = cum[kept[where - 1]] if where > 0 else cum[0]
-    right = cum[kept[where + 1]] if where + 1 < len(kept) else cum[-1]
-    radius_left = max(arc0 - left, POLY_STEP)
-    radius_right = max(right - arc0, POLY_STEP)
-
-    start = session["press_pos"]
-    delta = (pos[0] - start[0], pos[1] - start[1])
-
-    def weight(arc):
-        offset = arc - arc0
-        radius = radius_right if offset >= 0.0 else radius_left
-        t = min(1.0, abs(offset) / radius)
-        c = math.cos(0.5 * math.pi * t)
-        return c * c
-
-    moved = [(p[0] + delta[0] * weight(cum[i]), p[1] + delta[1] * weight(cum[i]))
-             for i, p in enumerate(dense)]
-
-    if session["elements"] is not None:
-        elements = []
-        for (kind, pts0) in session["elements0"]:
-            new_pts = []
-            for point in pts0:
-                best = min(range(len(dense)), key=lambda i: _dist(point, dense[i]))
-                w = weight(cum[best])
-                new_pts.append((point[0] + delta[0] * w, point[1] + delta[1] * w))
-            elements.append((kind, new_pts))
-        session["elements"] = elements
-    else:
-        session["points"] = moved
-    session["dense"] = moved
+    role = target[2]
+    if role == "out":
+        if not 0 <= k < len(cubics):
+            return
+        cubics[k][1] = pos
+        if not anchors[k]["corner"] and k > 0:
+            anchor = anchors[k]["pos"]
+            direction = _norm((anchor[0] - pos[0], anchor[1] - pos[1]))
+            other = cubics[k - 1][2]
+            length = _dist(anchor, other)
+            cubics[k - 1][2] = (anchor[0] + direction[0] * length,
+                                anchor[1] + direction[1] * length)
+    elif role == "in":
+        if not 1 <= k <= len(cubics):
+            return
+        cubics[k - 1][2] = pos
+        if not anchors[k]["corner"] and k < len(cubics):
+            anchor = anchors[k]["pos"]
+            direction = _norm((anchor[0] - pos[0], anchor[1] - pos[1]))
+            other = cubics[k][1]
+            length = _dist(anchor, other)
+            cubics[k][1] = (anchor[0] + direction[0] * length,
+                            anchor[1] + direction[1] * length)
 
 
 # --- hook handlers -----------------------------------------------------------
@@ -595,27 +912,40 @@ def _handle_event(message):
             _clear(view)
             return
         # Where did the user actually grab? Resolved by GEOMETRY, not by the
-        # id: an artist id is an index into the flattening, and the previous
-        # drag changed the flattening, so yesterday's "k37" means nothing in
-        # today's dense array. The pushed handle's position is remembered at
-        # push time and re-anchored to the nearest key point after re-reading.
+        # id: ids are positions in a chain the previous drag may have
+        # re-shaped. The pushed handle's position is remembered at push time
+        # and re-anchored to the nearest counterpart after re-reading.
         grabbed_at = session.get("handles_by_id", {}).get(handle_id)
+        grabbed_kind = "anchor" if handle_id.startswith("a") \
+            else "tip" if handle_id.startswith("h") else "any"
         session["geometry"] = current
         session["elements"] = _elements(current["commands"]) if current["commands"] else None
         session["points"] = list(current["points"])
-        session["drag_index"] = None
+        session["drag_target"] = None
         if _STATE["mode"] == "artist":
-            _rebuild(view, session, zoom)   # refresh dense/kept from truth
-            dense = session.get("dense") or []
-            kept = session.get("kept") or []
-            if grabbed_at is not None and kept:
-                session["drag_index"] = min(
-                    kept, key=lambda i: _dist(dense[i], grabbed_at))
+            _rebuild(view, session, zoom)   # refresh the chain from truth
+            chain = session.get("chain")
+            if chain and grabbed_at is not None:
+                candidates = []
+                for k, anchor in enumerate(chain["anchors"]):
+                    candidates.append((("anchor", k), anchor["pos"]))
+                for k, cubic in enumerate(chain["cubics"]):
+                    candidates.append((("tip", k, "out"), cubic[1]))
+                    candidates.append((("tip", k + 1, "in"), cubic[2]))
+                if grabbed_kind == "anchor":
+                    candidates = [c for c in candidates if c[0][0] == "anchor"]
+                elif grabbed_kind == "tip":
+                    candidates = [c for c in candidates if c[0][0] == "tip"]
+                if candidates:
+                    session["drag_target"] = min(
+                        candidates, key=lambda c: _dist(c[1], grabbed_at))[0]
+            session["chain0"] = {
+                "anchors": [dict(a) for a in chain["anchors"]],
+                "cubics": [list(map(tuple, c)) for c in chain["cubics"]],
+            } if chain else None
         session["press_pos"] = pos
         session["elements0"] = [(k, list(p)) for k, p in session["elements"]] \
             if session["elements"] is not None else None
-        session["dense0"] = list(session["dense"]) if session.get("dense") else None
-        session["cum0"] = _cumulative(session["dense0"]) if session.get("dense0") else None
         session["changed"] = False
         session["moved"] = False
         return
@@ -629,8 +959,13 @@ def _handle_event(message):
         if session.get("moved"):
             if _STATE["mode"] == "debug":
                 _drag_debug(session, handle_id, pos)
-            elif session.get("dense0") and session.get("drag_index") is not None:
-                _drag_artist(session, session["drag_index"], pos)
+            elif session.get("chain") and session.get("chain0") \
+                    and session.get("drag_target") is not None:
+                _drag_chain(session, session["drag_target"], pos)
+                if phase == "release":
+                    # A drag can leave a segment with oversized handles; the
+                    # release splits it (shape-identical) until legal.
+                    _enforce_chain_constraints(session["chain"])
             if _replace_stroke(view, session):
                 session["changed"] = True
                 session["geometry"]["commands"] = (
@@ -653,6 +988,17 @@ def _handle_event(message):
             session["geometry"] = refreshed
             session["elements"] = _elements(refreshed["commands"]) if refreshed["commands"] else None
             session["points"] = list(refreshed["points"])
+            if session.get("changed") and _STATE["mode"] == "artist":
+                # The model now holds exactly the chain we wrote; showing that
+                # chain verbatim keeps the anchor set stable instead of
+                # re-detecting and re-fitting what we just built.
+                elements = _elements(refreshed["commands"])
+                anchors, cubics = _chain_from_elements(elements)
+                if anchors is not None:
+                    session["chain"] = {"anchors": anchors, "cubics": cubics}
+                    handles, arms = _chain_handles(session["chain"])
+                    _push(view, handles, arms)
+                    return
             _rebuild(view, session, zoom)
             return
         if session.get("moved"):
@@ -668,13 +1014,11 @@ def _rebuild_after_edit(view, session, zoom):
             geometry["points"] = session["points"]
         handles, arms = _debug_handles(geometry)
         _push(view, handles, arms)
-    else:
-        dense = session.get("dense") or []
-        kept = session.get("kept") or []
-        handles = [{"id": f"k{i}", "x": dense[i][0], "y": dense[i][1],
-                    "shape": SHAPE_PSEUDO, "color": PSEUDO_COLOR}
-                   for i in kept if i < len(dense)]
-        _push(view, handles, [])
+    elif session.get("chain"):
+        # Mid-gesture: show the chain as it currently stands; ids stay valid
+        # because the chain STRUCTURE is fixed while a drag is in flight.
+        handles, arms = _chain_handles(session["chain"])
+        _push(view, handles, arms)
 
 
 def _pick(view, pos, zoom):
