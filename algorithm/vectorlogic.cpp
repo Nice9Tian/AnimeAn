@@ -1,4 +1,4 @@
-#include "vectorlogic.h"
+﻿#include "vectorlogic.h"
 
 #include <QMap>
 #include <QPainterPathStroker>
@@ -169,6 +169,124 @@ qreal AnimeVectorLogic::epsilon()
     return kEpsilon;
 }
 
+// ---------------------------------------------------------------------------
+// AnimeOneEuroFilter
+// ---------------------------------------------------------------------------
+
+namespace {
+constexpr qreal kEuroFallbackDt = 1.0 / 120.0; // assumed rate for broken timestamps
+constexpr qreal kTwoPi = 6.28318530717958647692;
+
+qreal dotProduct(const QPointF &a, const QPointF &b)
+{
+    return a.x() * b.x() + a.y() * b.y();
+}
+}
+
+void AnimeOneEuroFilter::configure(qreal strength)
+{
+    m_strength = std::max<qreal>(0.0, std::min<qreal>(1.0, strength));
+    // Tuning, all as functions of one knob:
+    //  - minCutoff: 5 Hz at the lightest setting down to 0.9 Hz at the
+    //    heaviest. Below ~0.7 Hz the line starts feeling like a rope even
+    //    with compensation; above ~6 Hz the filter stops doing anything.
+    //  - beta: how fast speed opens the filter. Speeds are px/s in document
+    //    space, so a deliberate 600 px/s sweep adds ~9 Hz to the cutoff and
+    //    effectively disables smoothing, which is the "fast = raw" rule.
+    //  - compensation: the share of the theoretical lag distance added back.
+    //    Full strength at the heavy end, none at the light end where the lag
+    //    is imperceptible anyway.
+    m_minCutoff = 5.0 - 4.1 * m_strength;
+    m_beta = 0.015;
+    // 0.6 Hz rather than the paper's 1 Hz: the velocity is differenced from
+    // raw samples (rate-independent, see filter()), which doubles its noise
+    // variance, and a noisy speed chatters the adaptive cutoff - measured as
+    // jitter leaking back through at low speed. The slower estimate costs
+    // ~0.1 s of cutoff adaptation, imperceptible next to the smoothing it buys.
+    m_derivativeCutoff = 0.6;
+    m_compensation = m_strength;
+    reset();
+}
+
+void AnimeOneEuroFilter::reset()
+{
+    m_initialized = false;
+    m_position = QPointF();
+    m_lastRaw = QPointF();
+    m_velocity = QPointF();
+    m_lastMs = 0;
+}
+
+QPointF AnimeOneEuroFilter::lowpass(const QPointF &value, const QPointF &previous, qreal alpha)
+{
+    return previous + alpha * (value - previous);
+}
+
+qreal AnimeOneEuroFilter::alphaFor(qreal cutoff, qreal dt) const
+{
+    // alpha = 1 / (1 + tau/dt) with tau = 1/(2*pi*cutoff): the exact
+    // discretization of a first-order lowpass.
+    const qreal tau = 1.0 / (kTwoPi * cutoff);
+    return 1.0 / (1.0 + tau / dt);
+}
+
+QPointF AnimeOneEuroFilter::filter(const QPointF &raw, qulonglong timestampMs)
+{
+    if (m_strength <= 0.0) {
+        return raw;
+    }
+    if (!m_initialized) {
+        m_initialized = true;
+        m_position = raw;
+        m_lastRaw = raw;
+        m_velocity = QPointF();
+        m_lastMs = timestampMs;
+        return raw;
+    }
+
+    qreal dt = (timestampMs > m_lastMs)
+                   ? qreal(timestampMs - m_lastMs) / 1000.0
+                   : kEuroFallbackDt;
+    // A stall (palm lift, hitch) must not turn into one giant step that
+    // teleports the filter; treat it as a fresh-ish sample instead.
+    dt = std::min<qreal>(dt, 0.1);
+    m_lastMs = timestampMs;
+
+    // Velocity estimate from consecutive RAW samples (the classic filter's
+    // definition), itself lowpassed so the cutoff cannot chatter. Differencing
+    // against the FILTERED position instead made the estimate depend on the
+    // sample rate - the same 240 px/s hand on a 240 Hz tablet read 66% faster
+    // than on a 60 Hz mouse, so the two got visibly different smoothing.
+    const QPointF rawVelocity = (raw - m_lastRaw) / dt;
+    m_lastRaw = raw;
+    m_velocity = lowpass(rawVelocity, m_velocity, alphaFor(m_derivativeCutoff, dt));
+    const qreal speed = std::hypot(m_velocity.x(), m_velocity.y());
+
+    const qreal cutoff = m_minCutoff + m_beta * speed;
+    m_position = lowpass(raw, m_position, alphaFor(cutoff, dt));
+
+    // Phase-lag compensation. A first-order lowpass tracking a constant-
+    // velocity input settles exactly tau behind it, so |v| * tau is the lag
+    // distance. The push is applied ALONG THE FILTERED VELOCITY - that
+    // direction is the smoothed travel direction, so cross-track jitter is
+    // NOT reinstated (pushing toward the raw sample instead was measured to
+    // hand back most of the noise the filter had just removed). The
+    // magnitude is clamped to the gap's projection onto that direction: the
+    // output can never pass the pen tip, and on a hard reversal the
+    // projection goes negative and the push simply vanishes.
+    if (m_compensation > 0.0 && speed > 1e-9) {
+        const QPointF direction = m_velocity / speed;
+        const QPointF gap = raw - m_position;
+        const qreal ahead = dotProduct(gap, direction);
+        if (ahead > 1e-9) {
+            const qreal tau = 1.0 / (kTwoPi * cutoff);
+            const qreal push = std::min(ahead, m_compensation * speed * tau);
+            return m_position + direction * push;
+        }
+    }
+    return m_position;
+}
+
 QVector<QPointF> AnimeVectorLogic::filteredPoints(const QVector<QPointF> &points)
 {
     return points;
@@ -234,6 +352,580 @@ QPainterPath AnimeVectorLogic::makePolylinePath(const QVector<QPointF> &points)
     return path;
 }
 
+// ---------------------------------------------------------------------------
+// Hybrid polyline + Bezier stroke fitting
+//
+// Pure Bezier fitting bends hand-drawn straight runs into faint noodles and
+// spends dozens of control points doing it; pure polylines turn arcs into
+// facets. The pipeline here splits the trace at its FEATURES and gives each
+// piece the primitive it is actually shaped like:
+//
+//   1. Gaussian denoise of x(t), y(t) (endpoints pinned - they are anchors).
+//   2. Stride-window tangents: direction over a fixed arc window, so the
+//      derivative reads the macro shape instead of pixel jitter.
+//   3. Boundaries at curvature PEAKS (corners: the turn angle spikes) and at
+//      curvature SIGN CHANGES (inflections: left bend becomes right bend).
+//   4. Each piece is classified straight/curved by its max deviation from its
+//      own chord.
+//   5. Straight pieces emit one chord (every interior sample is within the
+//      tolerance by definition, so RDP would keep nothing anyway). Curved
+//      pieces get a least-squares cubic Bezier fit (Schneider), splitting at
+//      the worst sample until the error fits.
+//
+// Joints: a corner is a DELIBERATE break - tangents on either side are free,
+// so squares keep their corners. Every other joint (inflections, error
+// splits, straight-to-curve transitions) shares one tangent, giving G1.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct FitParams {
+    qreal gaussianSigma = 1.2;   // px; input denoise
+    qreal strideWindow = 6.0;    // px; arc half-window for tangents
+    qreal cornerAngleDeg = 35.0; // turn sharper than this is a corner
+    qreal lineTolerance = 1.2;   // px; max chord deviation of a "straight" run
+    qreal fitTolerance = 1.2;    // px; max Bezier fit error before splitting
+    qreal inflectionNoise = 0.08; // min |normalized turn| to trust a sign
+};
+
+FitParams fitParamsFor(int smoothValue)
+{
+    const qreal s = std::max(0, std::min(100, smoothValue)) / 100.0;
+    FitParams params;
+    // In PIXELS of arc (fitPiece divides by the piece's sample spacing).
+    params.gaussianSigma = 1.2 + 3.6 * s;
+    params.strideWindow = 4.0 + 4.0 * s;
+    params.lineTolerance = 0.8 + 1.0 * s;
+    params.fitTolerance = 0.8 + 1.2 * s;
+    return params;
+}
+
+QVector<QPointF> dedupePoints(const QVector<QPointF> &points)
+{
+    QVector<QPointF> out;
+    out.reserve(points.size());
+    for (const QPointF &p : points) {
+        if (out.isEmpty() || QLineF(out.last(), p).length() > 0.01) {
+            out.append(p);
+        }
+    }
+    return out;
+}
+
+// 1D Gaussian over the point list, endpoints pinned: the first and last
+// sample are where the user put the pen down and lifted it, and the fit must
+// pass through them exactly (the same anchor rule the mapper follows).
+QVector<QPointF> gaussianSmooth(const QVector<QPointF> &points, qreal sigma)
+{
+    if (points.size() < 3 || sigma <= 0.05) {
+        return points;
+    }
+    const int radius = std::max(1, int(std::ceil(2.5 * sigma)));
+    QVector<qreal> kernel(2 * radius + 1);
+    qreal sum = 0.0;
+    for (int i = -radius; i <= radius; ++i) {
+        const qreal w = std::exp(-0.5 * (i * i) / (sigma * sigma));
+        kernel[i + radius] = w;
+        sum += w;
+    }
+    for (qreal &w : kernel) {
+        w /= sum;
+    }
+
+    QVector<QPointF> out(points.size());
+    out.first() = points.first();
+    out.last() = points.last();
+    for (int i = 1; i + 1 < points.size(); ++i) {
+        QPointF acc(0.0, 0.0);
+        for (int k = -radius; k <= radius; ++k) {
+            // Reflect at the ends so the border samples keep full weight.
+            // LOOPED, not two sequential ifs: when the kernel radius exceeds
+            // the piece length one reflection can land past the OTHER end
+            // (j = 2n-2-j goes negative for j > 2n-2), and the single-pass
+            // version then indexed points[-1..-3] - an out-of-bounds read
+            // that aborted Debug builds on a 3-point tick and folded heap
+            // bytes into the curve in Release (measured: a 6 px straight
+            // tick came back as an S swinging 7 px off the stroke).
+            int j = i + k;
+            while (j < 0 || j >= points.size()) {
+                if (j < 0) {
+                    j = -j;
+                }
+                if (j >= points.size()) {
+                    j = 2 * points.size() - 2 - j;
+                }
+            }
+            acc += kernel[k + radius] * points[j];
+        }
+        out[i] = acc;
+    }
+    return out;
+}
+
+// Direction of travel around index i, measured over an ARC window rather
+// than adjacent samples: adjacent-sample tangents on a hand-drawn trace are
+// dominated by sensor jitter.
+QPointF strideTangent(const QVector<QPointF> &pts, const QVector<qreal> &arc, int i, qreal window)
+{
+    int back = i;
+    while (back > 0 && arc[i] - arc[back] < window) {
+        --back;
+    }
+    int fwd = i;
+    while (fwd + 1 < pts.size() && arc[fwd] - arc[i] < window) {
+        ++fwd;
+    }
+    const QPointF d = pts[fwd] - pts[back];
+    const qreal len = std::hypot(d.x(), d.y());
+    return len > 1e-9 ? d / len : QPointF(1.0, 0.0);
+}
+
+qreal crossZ(const QPointF &a, const QPointF &b)
+{
+    return a.x() * b.y() - a.y() * b.x();
+}
+
+qreal dotP(const QPointF &a, const QPointF &b)
+{
+    return a.x() * b.x() + a.y() * b.y();
+}
+
+// Max perpendicular distance of the samples in [first, last] from the chord.
+qreal chordDeviation(const QVector<QPointF> &pts, int first, int last)
+{
+    const QPointF a = pts[first];
+    const QPointF b = pts[last];
+    const QPointF ab = b - a;
+    const qreal len = std::hypot(ab.x(), ab.y());
+    qreal worst = 0.0;
+    if (len < 1e-9) {
+        for (int i = first + 1; i < last; ++i) {
+            worst = std::max(worst, QLineF(a, pts[i]).length());
+        }
+        return worst;
+    }
+    for (int i = first + 1; i < last; ++i) {
+        worst = std::max(worst, std::abs(crossZ(ab, pts[i] - a)) / len);
+    }
+    return worst;
+}
+
+QPointF bezierPoint(const QPointF *c, qreal t)
+{
+    const qreal u = 1.0 - t;
+    return u * u * u * c[0] + 3.0 * u * u * t * c[1] + 3.0 * u * t * t * c[2] + t * t * t * c[3];
+}
+
+// --- Schneider least-squares cubic fit (Graphics Gems "FitCurve") ---------
+
+void chordLengthParameterize(const QVector<QPointF> &pts, int first, int last, QVector<qreal> &u)
+{
+    u.resize(last - first + 1);
+    u[0] = 0.0;
+    for (int i = first + 1; i <= last; ++i) {
+        u[i - first] = u[i - first - 1] + QLineF(pts[i - 1], pts[i]).length();
+    }
+    const qreal total = u.last();
+    if (total > 1e-12) {
+        for (qreal &value : u) {
+            value /= total;
+        }
+    }
+}
+
+// One Newton-Raphson step moving u_i toward the parameter whose curve point
+// is closest to the sample.
+qreal refineParameter(const QPointF *bez, const QPointF &point, qreal u)
+{
+    const QPointF d1[3] = {3.0 * (bez[1] - bez[0]), 3.0 * (bez[2] - bez[1]), 3.0 * (bez[3] - bez[2])};
+    const QPointF d2[2] = {2.0 * (d1[1] - d1[0]), 2.0 * (d1[2] - d1[1])};
+
+    const QPointF q = bezierPoint(bez, u);
+    const qreal v = 1.0 - u;
+    const QPointF q1 = v * v * d1[0] + 2.0 * v * u * d1[1] + u * u * d1[2];
+    const QPointF q2 = v * d2[0] + u * d2[1];
+
+    const qreal numerator = dotP(q - point, q1);
+    const qreal denominator = dotP(q1, q1) + dotP(q - point, q2);
+    if (std::abs(denominator) < 1e-12) {
+        return u;
+    }
+    return std::max<qreal>(0.0, std::min<qreal>(1.0, u - numerator / denominator));
+}
+
+// Least-squares placement of the two inner control points for FIXED end
+// tangents tHat1/tHat2 (unit vectors, pointing INTO the segment).
+void generateBezier(const QVector<QPointF> &pts, int first, int last,
+                    const QVector<qreal> &u,
+                    const QPointF &tHat1, const QPointF &tHat2,
+                    QPointF *bez)
+{
+    const int n = last - first + 1;
+    bez[0] = pts[first];
+    bez[3] = pts[last];
+
+    qreal c00 = 0.0, c01 = 0.0, c11 = 0.0, x0 = 0.0, x1 = 0.0;
+    for (int i = 0; i < n; ++i) {
+        const qreal t = u[i];
+        const qreal v = 1.0 - t;
+        const QPointF a0 = tHat1 * (3.0 * v * v * t);
+        const QPointF a1 = tHat2 * (3.0 * v * t * t);
+        c00 += dotP(a0, a0);
+        c01 += dotP(a0, a1);
+        c11 += dotP(a1, a1);
+        const QPointF tmp = pts[first + i]
+                            - (pts[first] * (v * v * v + 3.0 * v * v * t)
+                               + pts[last] * (t * t * t + 3.0 * v * t * t));
+        x0 += dotP(a0, tmp);
+        x1 += dotP(a1, tmp);
+    }
+
+    const qreal det = c00 * c11 - c01 * c01;
+    qreal alpha1 = 0.0;
+    qreal alpha2 = 0.0;
+    if (std::abs(det) > 1e-12) {
+        alpha1 = (c11 * x0 - c01 * x1) / det;
+        alpha2 = (c00 * x1 - c01 * x0) / det;
+    }
+
+    // Degenerate, inverted OR RUNAWAY alphas fall back to the Wu/Barsky
+    // heuristic (handles at a third of the chord). The upper bound matters as
+    // much as the lower one: a nearly-collinear span leaves the normal matrix
+    // near-singular but still past the 1e-12 det test, and the solve then
+    // returns handles hundreds of chord lengths out. computeMaxError samples
+    // the curve only at the u_i, so such a balloon can pass within tolerance
+    // of every sample while swinging thousands of px between them (measured:
+    // control points at (28774,-10127) on a 450x235 px stroke). Three chord
+    // lengths comfortably covers every legitimate cubic - a handle longer
+    // than that means the solve went singular, not that the curve needs it.
+    const qreal segLength = QLineF(pts[first], pts[last]).length();
+    const qreal epsilonAlpha = 1e-6 * segLength;
+    const qreal maxAlpha = 3.0 * segLength;
+    if (alpha1 < epsilonAlpha || alpha2 < epsilonAlpha
+        || alpha1 > maxAlpha || alpha2 > maxAlpha) {
+        alpha1 = alpha2 = segLength / 3.0;
+    }
+    bez[1] = bez[0] + tHat1 * alpha1;
+    bez[2] = bez[3] + tHat2 * alpha2;
+}
+
+qreal computeMaxError(const QVector<QPointF> &pts, int first, int last,
+                      const QPointF *bez, const QVector<qreal> &u, int *splitPoint)
+{
+    qreal maxDistance = 0.0;
+    *splitPoint = (first + last) / 2;
+    for (int i = first + 1; i < last; ++i) {
+        const QPointF p = bezierPoint(bez, u[i - first]);
+        const qreal distance = dotP(p - pts[i], p - pts[i]);
+        if (distance > maxDistance) {
+            maxDistance = distance;
+            *splitPoint = i;
+        }
+    }
+    return std::sqrt(maxDistance);
+}
+
+QPointF centerTangent(const QVector<QPointF> &pts, int center)
+{
+    const QPointF d = pts[std::min<int>(center + 1, pts.size() - 1)] - pts[std::max(center - 1, 0)];
+    const qreal len = std::hypot(d.x(), d.y());
+    return len > 1e-9 ? d / len : QPointF(1.0, 0.0);
+}
+
+void fitCubicRecursive(const QVector<QPointF> &pts, int first, int last,
+                       QPointF tHat1, QPointF tHat2,
+                       qreal tolerance, int depth, QPainterPath &path)
+{
+    // Two samples: nothing to fit.
+    if (last - first < 2 || depth > 24) {
+        const QPointF a = pts[first];
+        const QPointF b = pts[last];
+        path.cubicTo(a + (b - a) / 3.0, a + 2.0 * (b - a) / 3.0, b);
+        return;
+    }
+
+    QVector<qreal> u;
+    chordLengthParameterize(pts, first, last, u);
+    QPointF bez[4];
+    generateBezier(pts, first, last, u, tHat1, tHat2, bez);
+
+    int splitPoint = 0;
+    qreal error = computeMaxError(pts, first, last, bez, u, &splitPoint);
+
+    // Try to rescue a near-miss by re-parameterizing before splitting: the
+    // chord-length guess is often what is wrong, not the curve.
+    if (error > tolerance && error < tolerance * 4.0) {
+        for (int iteration = 0; iteration < 4 && error > tolerance; ++iteration) {
+            for (int i = 1; i < last - first; ++i) {
+                u[i] = refineParameter(bez, pts[first + i], u[i]);
+            }
+            generateBezier(pts, first, last, u, tHat1, tHat2, bez);
+            error = computeMaxError(pts, first, last, bez, u, &splitPoint);
+        }
+    }
+
+    if (error <= tolerance) {
+        path.cubicTo(bez[1], bez[2], bez[3]);
+        return;
+    }
+
+    // Split at the worst sample with a SHARED center tangent: the two halves
+    // leave the split point in exactly opposite directions, so the joint is
+    // G1 by construction.
+    splitPoint = std::max(first + 1, std::min(last - 1, splitPoint));
+    const QPointF tCenter = centerTangent(pts, splitPoint);
+    // Schneider convention: an end tangent points INTO its segment, so the
+    // left half ends with -tCenter and the right half starts with +tCenter.
+    fitCubicRecursive(pts, first, splitPoint, tHat1, -tCenter, tolerance, depth + 1, path);
+    fitCubicRecursive(pts, splitPoint, last, tCenter, tHat2, tolerance, depth + 1, path);
+}
+
+} // namespace
+
+namespace {
+
+QVector<qreal> arcLengths(const QVector<QPointF> &pts)
+{
+    QVector<qreal> arc(pts.size());
+    if (pts.isEmpty()) {
+        return arc;
+    }
+    arc[0] = 0.0;
+    for (int i = 1; i < pts.size(); ++i) {
+        arc[i] = arc[i - 1] + QLineF(pts[i - 1], pts[i]).length();
+    }
+    return arc;
+}
+
+// Signed stride-window turn angle per sample (radians).
+QVector<qreal> turnAngles(const QVector<QPointF> &pts, const QVector<qreal> &arc, qreal window)
+{
+    const int n = pts.size();
+    QVector<qreal> turn(n, 0.0);
+    for (int i = 1; i + 1 < n; ++i) {
+        int back = i;
+        while (back > 0 && arc[i] - arc[back] < window) {
+            --back;
+        }
+        int fwd = i;
+        while (fwd + 1 < n && arc[fwd] - arc[i] < window) {
+            ++fwd;
+        }
+        QPointF vIn = pts[i] - pts[back];
+        QPointF vOut = pts[fwd] - pts[i];
+        const qreal lenIn = std::hypot(vIn.x(), vIn.y());
+        const qreal lenOut = std::hypot(vOut.x(), vOut.y());
+        if (lenIn < 1e-9 || lenOut < 1e-9) {
+            continue;
+        }
+        vIn /= lenIn;
+        vOut /= lenOut;
+        turn[i] = std::atan2(crossZ(vIn, vOut), dotP(vIn, vOut));
+    }
+    return turn;
+}
+
+// One corner-free piece: smooth it (endpoints pinned, so a corner endpoint
+// stays exactly where it was detected), split at inflections, classify each
+// span straight/curved, emit chords and Beziers with G1 handoff inside.
+void fitPiece(const QVector<QPointF> &piece, const FitParams &params, QPainterPath &path)
+{
+    if (piece.size() < 2) {
+        return;
+    }
+    if (piece.size() == 2) {
+        path.lineTo(piece.last());
+        return;
+    }
+    if (QLineF(piece.first(), piece.last()).length() < 1e-6) {
+        // Coincident endpoints with real samples between them is a CLOSED
+        // LOOP, not a degenerate segment - collapsing it to a zero-length
+        // lineTo deleted the whole circle (a drawn O rendered as nothing
+        // while stroke.points still claimed its full length). Split at the
+        // sample farthest from the shared endpoint: both halves then have
+        // distinct endpoints and fit normally, and the two joints inherit
+        // G1 through the usual exit-tangent handoff inside each half.
+        int farthest = piece.size() / 2;
+        qreal best = -1.0;
+        for (int i = 1; i + 1 < piece.size(); ++i) {
+            const qreal distance = QLineF(piece.first(), piece[i]).length();
+            if (distance > best) {
+                best = distance;
+                farthest = i;
+            }
+        }
+        if (best < 1e-6) {
+            return; // every sample coincides: nothing drawable
+        }
+        fitPiece(piece.mid(0, farthest + 1), params, path);
+        fitPiece(piece.mid(farthest), params, path);
+        return;
+    }
+
+    // The sigma budget is in PIXELS; the kernel walks SAMPLES. Convert with
+    // the piece's mean sample spacing, otherwise the denoise strength rides
+    // the pen speed: a fast pass at 8 px spacing was smoothed over 4x the arc
+    // of a slow pass at 2 px spacing and visibly shrank tight arcs.
+    qreal meanSpacing = 1.0;
+    {
+        qreal total = 0.0;
+        for (int i = 1; i < piece.size(); ++i) {
+            total += QLineF(piece[i - 1], piece[i]).length();
+        }
+        meanSpacing = std::max<qreal>(0.25, total / (piece.size() - 1));
+    }
+    const qreal sigmaSamples =
+        std::min<qreal>(4.0, params.gaussianSigma / meanSpacing);
+    const QVector<QPointF> pts = gaussianSmooth(piece, sigmaSamples);
+    const QVector<qreal> arc = arcLengths(pts);
+    const QVector<qreal> turn = turnAngles(pts, arc, params.strideWindow);
+    const int n = pts.size();
+
+    // Inflections: the signed turn crosses zero with real turning on both
+    // sides (the hysteresis keeps straight runs, whose sign is pure noise,
+    // from spraying phantom boundaries).
+    QVector<int> boundaries;
+    boundaries.append(0);
+    {
+        int lastSignedIndex = -1;
+        qreal lastSign = 0.0;
+        for (int i = 1; i + 1 < n; ++i) {
+            if (std::abs(turn[i]) < params.inflectionNoise) {
+                continue;
+            }
+            const qreal sign = turn[i] > 0.0 ? 1.0 : -1.0;
+            if (lastSign != 0.0 && sign != lastSign && lastSignedIndex >= 0) {
+                const int mid = (lastSignedIndex + i) / 2;
+                if (arc[mid] - arc[boundaries.last()] > params.strideWindow
+                    && arc[n - 1] - arc[mid] > params.strideWindow) {
+                    boundaries.append(mid);
+                }
+            }
+            lastSign = sign;
+            lastSignedIndex = i;
+        }
+    }
+    boundaries.append(n - 1);
+
+    // Emit. Consecutive STRAIGHT spans are merged first: the inflection
+    // detector reads noise signs on a straight run and can sprinkle phantom
+    // boundaries there (measured: a straight stroke came back as 12 collinear
+    // chords), and two adjacent chords whose UNION still passes the chord
+    // test are by definition one line. This is RDP's criterion applied at
+    // the span level. `exitTangent` carries the leave direction of the
+    // previous emission so every joint inside a piece stays G1.
+    QPointF exitTangent;
+    bool haveExitTangent = false;
+    int pendingLineStart = -1;
+    auto flushLine = [&](int upTo) {
+        if (pendingLineStart < 0) {
+            return;
+        }
+        path.lineTo(pts[upTo]);
+        const QPointF d = pts[upTo] - pts[pendingLineStart];
+        const qreal len = std::hypot(d.x(), d.y());
+        exitTangent = len > 1e-9 ? d / len : QPointF(1.0, 0.0);
+        haveExitTangent = true;
+        pendingLineStart = -1;
+    };
+    for (int span = 0; span + 1 < boundaries.size(); ++span) {
+        const int first = boundaries[span];
+        const int last = boundaries[span + 1];
+        if (last <= first) {
+            continue;
+        }
+        if (chordDeviation(pts, first, last) <= params.lineTolerance) {
+            if (pendingLineStart >= 0
+                && chordDeviation(pts, pendingLineStart, last) <= params.lineTolerance) {
+                continue; // extends the pending chord; keep absorbing
+            }
+            flushLine(first);
+            pendingLineStart = first;
+            continue;
+        }
+
+        flushLine(first);
+        QPointF tHat1 = haveExitTangent
+                            ? exitTangent
+                            : strideTangent(pts, arc, std::min(first + 1, last), params.strideWindow);
+        const QPointF tHat2 = -strideTangent(pts, arc, std::max(last - 1, first), params.strideWindow);
+        fitCubicRecursive(pts, first, last, tHat1, tHat2, params.fitTolerance, 0, path);
+        exitTangent = -tHat2;
+        haveExitTangent = true;
+    }
+    flushLine(boundaries.last());
+}
+
+} // namespace
+
+QPainterPath AnimeVectorLogic::fitStrokePath(const QVector<QPointF> &points, int smoothValue)
+{
+    QPainterPath path;
+    const QVector<QPointF> deduped = dedupePoints(points);
+    if (deduped.isEmpty()) {
+        return path;
+    }
+    path.moveTo(deduped.first());
+    if (deduped.size() == 1) {
+        path.lineTo(deduped.first() + QPointF(0.01, 0.01));
+        return path;
+    }
+    if (deduped.size() == 2) {
+        path.lineTo(deduped.last());
+        return path;
+    }
+
+    const FitParams params = fitParamsFor(smoothValue);
+
+    // CORNERS FIRST, on a lightly-smoothed copy. Running the full Gaussian
+    // before corner detection was measured to round a 90-degree corner over
+    // ~2.5 sigma of samples: the shoulder then failed the straight test on
+    // both sides and the square came back as Beziers with 3-5 px corner
+    // error. Detecting on light smoothing keeps the corner localized, and
+    // smoothing PER PIECE afterwards pins the corner as a shared endpoint,
+    // so it cannot move at all.
+    const QVector<QPointF> light = gaussianSmooth(deduped, 0.8);
+    const QVector<qreal> arc = arcLengths(light);
+    const QVector<qreal> turn = turnAngles(light, arc, params.strideWindow);
+    const int n = light.size();
+    const qreal cornerThreshold = params.cornerAngleDeg * (kTwoPi * 0.5) / 180.0;
+
+    QVector<int> corners;
+    corners.append(0);
+    for (int i = 1; i + 1 < n; ++i) {
+        if (std::abs(turn[i]) < cornerThreshold) {
+            continue;
+        }
+        bool localMax = true;
+        for (int j = i - 1; j > 0 && arc[i] - arc[j] < params.strideWindow; --j) {
+            if (std::abs(turn[j]) > std::abs(turn[i])) {
+                localMax = false;
+                break;
+            }
+        }
+        for (int j = i + 1; j + 1 < n && arc[j] - arc[i] < params.strideWindow; ++j) {
+            if (std::abs(turn[j]) >= std::abs(turn[i])) {
+                localMax = false;
+                break;
+            }
+        }
+        if (localMax && arc[i] - arc[corners.last()] > params.strideWindow * 0.5) {
+            corners.append(i);
+        }
+    }
+    corners.append(n - 1);
+
+    for (int piece = 0; piece + 1 < corners.size(); ++piece) {
+        const int first = corners[piece];
+        const int last = corners[piece + 1];
+        if (last <= first) {
+            continue;
+        }
+        fitPiece(deduped.mid(first, last - first + 1), params, path);
+    }
+    return path;
+}
+
 AnimeVectorStroke AnimeVectorLogic::makeStroke(const QVector<QPointF> &points,
                                                const QColor &color,
                                                qreal width,
@@ -254,7 +946,11 @@ AnimeVectorStroke AnimeVectorLogic::makeStroke(const QVector<QPointF> &points,
         }
         stroke.lengths.append(stroke.totalLength);
     }
-    stroke.path = smoothPath ? makeSmoothedPath(stroke.points, smoothValue) : makePolylinePath(stroke.points);
+    // smoothPath now means the HYBRID FIT: straight runs become chords,
+    // curved runs become least-squares cubics, corners stay corners. The old
+    // midpoint-quad smoother (makeSmoothedPath) remains only for callers that
+    // ask for it explicitly.
+    stroke.path = smoothPath ? fitStrokePath(stroke.points, smoothValue) : makePolylinePath(stroke.points);
     stroke.bounds = stroke.path.boundingRect().adjusted(-width, -width, width, width);
     stroke.color = color;
     stroke.width = width;

@@ -1,4 +1,4 @@
-#include "openglwidget.h"
+﻿#include "openglwidget.h"
 
 #include <QLineF>
 #include <QImage>
@@ -1328,6 +1328,34 @@ void PaintOpenGLWidget::paintGL()
 
     paintSceneContent(painter, m_model.currentFrame(), true);
 
+    // Predictive preview: a thin, translucent, UNFILTERED line from the
+    // stabilized tip to the physical pen tip. The stabilized ink trails the
+    // pen by whatever lag compensation could not cancel; this line covers
+    // that gap so the eye reads "the ink is at the tip" while the real
+    // stroke settles in behind it. Never part of the document.
+    if (m_hasCurrentStroke && m_hasRawPenPos && !m_points.isEmpty()
+        && m_inputFilter.active()) {
+        const QPointF tip = m_points.last();
+        // Under an axis lock the ink is constrained to the axis; a preview
+        // pointing at the free cursor would wag a wrong-direction tail off
+        // the locked line, so the target is projected onto the lock too.
+        QPointF previewTarget = m_rawPenPos;
+        if (m_axisSnapState == AxisSnapState::Horizontal) {
+            previewTarget.setY(m_axisSnapAnchor.y());
+        } else if (m_axisSnapState == AxisSnapState::Vertical) {
+            previewTarget.setX(m_axisSnapAnchor.x());
+        }
+        if (QLineF(tip, previewTarget).length() > 0.5) {
+            QColor preview = m_currentStroke.color;
+            preview.setAlpha(110);
+            const qreal previewWidth =
+                std::max<qreal>(0.75 / m_zoom, m_currentStroke.width * 0.35);
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(preview, previewWidth, Qt::SolidLine, Qt::RoundCap));
+            painter.drawLine(tip, previewTarget);
+        }
+    }
+
     paintOverlayItems(painter);
 
     if ((m_tool == Tool::Eraser || m_tool == Tool::DeleteLine) && m_hasHoverPos) {
@@ -1577,12 +1605,21 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
     }
 
     m_points.clear();
+    // Realtime stabilization for this stroke: strength follows the smooth
+    // slider. The filter is part of INPUT, not of fitting - the points the
+    // stroke is built from are already the stabilized ones.
+    m_inputFilter.configure(m_smoothValue / 100.0);
+    m_inputFilter.filter(pos, event->timestamp()); // seeds the state, returns pos
+    m_rawPenPos = pos;
+    m_hasRawPenPos = true;
     appendPoint(pos);
     resetAxisSnap(event->modifiers(), pos);
     // Each stroke gets a fresh throttle window so its first "update" is
     // never swallowed by the previous stroke's timestamp.
     m_updateHookThrottle.invalidate();
-    m_currentStroke = makeStroke(m_points, m_penColor, m_penWidth);
+    // The LIVE stroke is a polyline of the filtered points - already smooth,
+    // and O(n) per move. The hybrid Bezier fit runs once, on release.
+    m_currentStroke = makeStroke(m_points, m_penColor, m_penWidth, 0, true, false);
     m_currentStroke.property = m_strokeProperty;
     m_hasCurrentStroke = true;
     update();
@@ -1647,10 +1684,18 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
         return;
     }
 
+    // Stabilize FIRST, snap SECOND: the axis snap is an exact constraint and
+    // must win over the filter, not be smeared by it.
+    m_rawPenPos = m_hoverPos;
+    m_hasRawPenPos = true;
+    const QPointF stabilized = m_inputFilter.filter(m_hoverPos, event->timestamp());
     bool axisRetroChanged = false;
-    const QPointF snappedPos = applyAxisSnap(event->modifiers(), m_hoverPos, &axisRetroChanged);
+    const QPointF snappedPos = applyAxisSnap(event->modifiers(), stabilized, &axisRetroChanged);
     if (appendPoint(snappedPos) || axisRetroChanged) {
         updateCurrentStroke();
+    } else {
+        // Even a rejected point moved the raw tip; the preview line follows it.
+        update();
     }
 
     event->accept();
@@ -1739,7 +1784,10 @@ void PaintOpenGLWidget::updateCurrentStroke()
         return;
     }
 
-    m_currentStroke = makeStroke(m_points, m_currentStroke.color, m_currentStroke.width);
+    // Live preview: polyline of the stabilized points. The input filter has
+    // already smoothed them, and running the hybrid Bezier fit on every move
+    // would cost a full fit per sample; the one real fit happens on release.
+    m_currentStroke = makeStroke(m_points, m_currentStroke.color, m_currentStroke.width, 0, true, false);
     m_currentStroke.property = m_strokeProperty;
     // "update" is a best-effort preview notification, throttled so a
     // subscriber never runs at tablet sample rate; "linefinish" remains the
@@ -1754,6 +1802,13 @@ void PaintOpenGLWidget::updateCurrentStroke()
 void PaintOpenGLWidget::finishCurrentStroke()
 {
     updateCurrentStroke();
+    m_hasRawPenPos = false;
+    // The committed stroke gets the real fit: hybrid polyline + Bezier over
+    // the stabilized points. The live preview above was a plain polyline.
+    if (!m_points.isEmpty()) {
+        m_currentStroke = makeStroke(m_points, m_currentStroke.color, m_currentStroke.width);
+        m_currentStroke.property = m_strokeProperty;
+    }
     if (!m_currentStroke.points.isEmpty()) {
         const int assetCountBefore = m_model.assetCount();
         if (VectorImageModel *image = currentImage(true, AnimeColumnType::Vector)) {

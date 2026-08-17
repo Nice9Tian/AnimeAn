@@ -229,6 +229,12 @@ private:
     bool m_activeIndicator = false;
     QColor m_penColor = Qt::black;
     QVector<QPointF> m_points;
+    // Realtime input conditioning: 1 Euro filter with lag compensation over
+    // the raw samples of the CURRENT stroke, plus the raw pen tip so paintGL
+    // can draw the unfiltered predictive preview at the very front.
+    AnimeOneEuroFilter m_inputFilter;
+    QPointF m_rawPenPos;
+    bool m_hasRawPenPos = false;
     AnimeSceneModel m_model;
     VectorStroke m_currentStroke;
     bool m_hasCurrentStroke = false;
