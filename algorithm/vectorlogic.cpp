@@ -1590,7 +1590,13 @@ QVector<AnimeStrokeCrossing> AnimeVectorLogic::strokeCrossings(const AnimeVector
         // already carries, so a crossing's position is exact rather than
         // re-integrated.
         const qreal arcStart = (i < stroke.lengths.size()) ? stroke.lengths[i] : 0.0;
-        const QRectF segmentBounds = QRectF(a, b).normalized();
+        // An axis-aligned segment spans a ZERO-AREA rect, and QRectF's
+        // intersects() is defined false for ANY empty rect - so a snapped
+        // horizontal or vertical stroke silently saw no walls at all and
+        // CutMode deleted it whole instead of trimming to its crossings.
+        // The hair of padding keeps the prefilter a prefilter.
+        const QRectF segmentBounds =
+            QRectF(a, b).normalized().adjusted(-kEpsilon, -kEpsilon, kEpsilon, kEpsilon);
 
         for (int w : nearWalls) {
             const AnimeVectorStroke &wall = walls[w];
