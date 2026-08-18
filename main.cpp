@@ -60,10 +60,14 @@ int main(int argc, char *argv[])
     }
 
     QStringList pythonPath;
-    pythonPath << appDir;
+    // The source pyfile dir outranks the exe-side copies: the post-build copy
+    // step only runs on builds, so a script edited without rebuilding would
+    // otherwise be shadowed by a stale copy next to the exe. Shipped installs
+    // have no source tree and keep loading from appDir.
     if (QFileInfo::exists(QDir(QStringLiteral(ANIMEAN_PYFILE_DIR)).filePath(QStringLiteral("hello_world.py")))) {
         pythonPath << QStringLiteral(ANIMEAN_PYFILE_DIR);
     }
+    pythonPath << appDir;
     if (QFileInfo::exists(QDir(QStringLiteral(ANIMEAN_PYTHONBIND_DIR)).filePath(QStringLiteral("animemodel.py")))) {
         pythonPath << QStringLiteral(ANIMEAN_PYTHONBIND_DIR);
     }

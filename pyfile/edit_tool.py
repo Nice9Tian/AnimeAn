@@ -656,8 +656,22 @@ def _chain_flat(chain, step=POLY_STEP):
     return points
 
 
-def _enforce_chain_constraints(chain):
+def _dirty_segments(chain, chain0):
+    """Indices of the segments a drag actually moved, by diffing the press
+    snapshot. None (= examine everything) if the counts ever disagree."""
+    if not chain0 or len(chain["cubics"]) != len(chain0["cubics"]):
+        return None
+    return {i for i, (c, c0) in enumerate(zip(chain["cubics"], chain0["cubics"]))
+            if any(_dist(p, q) > 1e-9 for p, q in zip(c, c0))}
+
+
+def _enforce_chain_constraints(chain, dirty=None):
     """Split any segment whose handles ended up oversized after a drag.
+
+    Only the segments the drag moved are examined (`dirty`; None means all).
+    The stroke fitter legally emits harder-bent handles on strongly curved
+    spans, so "correcting" untouched stored geometry would grow anchors the
+    user never asked for - a fresh stroke gained several on every release.
 
     de Casteljau keeps the SHAPE bit-identical while inserting an anchor and
     shrinking the handles, so repeated halving always converges to legal
@@ -666,6 +680,8 @@ def _enforce_chain_constraints(chain):
     changed = False
     for _ in range(MAX_SPLIT_DEPTH):
         for index, cubic in enumerate(chain["cubics"]):
+            if dirty is not None and index not in dirty:
+                continue
             if _handle_constraints_ok(cubic):
                 continue
             if _dist(cubic[0], cubic[3]) < 2.0 * POLY_STEP:
@@ -673,6 +689,9 @@ def _enforce_chain_constraints(chain):
             left, right = _split_cubic(cubic)
             chain["cubics"][index:index + 1] = [left, right]
             chain["anchors"].insert(index + 1, {"pos": left[3], "corner": False})
+            if dirty is not None:
+                dirty = {i + 1 if i > index else i for i in dirty}
+                dirty.add(index + 1)
             changed = True
             break
         else:
@@ -976,8 +995,11 @@ def _handle_event(message):
                 _drag_chain(session, session["drag_target"], pos)
                 if phase == "release":
                     # A drag can leave a segment with oversized handles; the
-                    # release splits it (shape-identical) until legal.
-                    _enforce_chain_constraints(session["chain"])
+                    # release splits it (shape-identical) until legal. Only
+                    # the segments this drag moved are examined.
+                    _enforce_chain_constraints(
+                        session["chain"],
+                        _dirty_segments(session["chain"], session["chain0"]))
             if _replace_stroke(view, session):
                 session["changed"] = True
                 # Mirror what _replace_stroke just wrote. The artist chain
