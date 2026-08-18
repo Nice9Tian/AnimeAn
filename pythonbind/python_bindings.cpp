@@ -1175,6 +1175,9 @@ void bindAnimeanPythonModule(py::module_ &m)
                    if (hasKey(data, "color")) {
                        handle.color = objectToColor(data["color"], "handle.color");
                    }
+                   if (hasKey(data, "interactive")) {
+                       handle.interactive = data["interactive"].cast<bool>();
+                   }
                    converted.append(handle);
                }
                g_uiEditHandleCallback(QString::fromStdString(view), converted);

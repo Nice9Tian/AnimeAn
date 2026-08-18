@@ -40,6 +40,7 @@ private:
     Ui::ToolsPanel *ui;
     QVBoxLayout *m_layout = nullptr;
     QPushButton *m_arrowButton = nullptr;
+    QPushButton *m_connectButton = nullptr;
     QVector<QPushButton *> m_extraButtons;
     QVector<ExtraToolDefinition> m_extraTools;
 };

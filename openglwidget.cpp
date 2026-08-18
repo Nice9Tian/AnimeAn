@@ -49,6 +49,8 @@ QString toolName(PaintOpenGLWidget::Tool tool)
         return QStringLiteral("move");
     case PaintOpenGLWidget::Tool::Arrow:
         return QStringLiteral("arrow");
+    case PaintOpenGLWidget::Tool::Connect:
+        return QStringLiteral("connect");
     }
     return QStringLiteral("pen");
 }
@@ -478,8 +480,10 @@ void PaintOpenGLWidget::wheelEvent(QWheelEvent *event)
     notifyViewTransformChanged();
     // The artist-mode key-point filter is zoom-dependent (a perceptual
     // threshold in SCREEN space), so a zoom while handles are up re-asks
-    // Python which handles survive at the new magnification.
-    if (m_tool == Tool::Arrow && !m_editHandles.isEmpty() && m_activeHandleDrag.isEmpty()) {
+    // Python which handles survive at the new magnification. Connect's
+    // button offsets are screen-sized too, so its handles re-place as well.
+    if ((m_tool == Tool::Arrow || m_tool == Tool::Connect)
+        && !m_editHandles.isEmpty() && m_activeHandleDrag.isEmpty()) {
         sendPythonHandleMessage(QStringLiteral("view"), QString(), docAnchor);
     }
     event->accept();
@@ -888,12 +892,15 @@ bool PaintOpenGLWidget::sendPythonFillRequestMessage(const QPointF &pos)
 
 void PaintOpenGLWidget::setTool(Tool tool)
 {
-    if (m_tool == Tool::Arrow && tool != Tool::Arrow
-        && (!m_editHandles.isEmpty() || !m_activeHandleDrag.isEmpty())) {
-        // Leaving the edit tool dismisses its handles - and TELLS Python, so
-        // the tangent arms it drew into the overlay go with them. Clearing
-        // only the C++ side left the arms floating over the canvas until the
-        // next pick.
+    if ((m_tool == Tool::Arrow || m_tool == Tool::Connect) && tool != m_tool) {
+        // Leaving a handle-owning tool (Arrow's edit points, Connect's snap
+        // hints and its accept/delete buttons) dismisses its handles - and
+        // TELLS Python, so anything it drew into the overlay goes with them
+        // AND its per-view session dies. The cancel fires even when no
+        // handles happen to be up right now: Connect keeps a focused
+        // connection whose handles vanish whenever the hover leaves every
+        // snap target, and skipping the cancel then left a live session
+        // whose recorded stroke index later edited an innocent stroke.
         sendPythonHandleMessage(QStringLiteral("cancel"), QString(), QPointF());
         m_editHandles.clear();
         m_activeHandleDrag.clear();
@@ -1321,6 +1328,7 @@ void PaintOpenGLWidget::setEditHandles(const QVector<EditHandle> &handles)
 namespace {
 constexpr qreal kEditHandleScreenPx = 9.0;   // drawn size
 constexpr qreal kEditHandleHitPx = 7.0;      // half-size of the hit box
+constexpr qreal kEditHandleButtonScale = 1.8; // button shapes (3, 4) grow by this
 }
 
 void PaintOpenGLWidget::paintEditHandles(QPainter &painter)
@@ -1343,6 +1351,28 @@ void PaintOpenGLWidget::paintEditHandles(QPainter &painter)
             painter.drawPolygon(diamond, 4);
             break;
         }
+        // Shapes 3 and 4 are BUTTONS (accept / delete), drawn bigger than
+        // the point handles so a click target reads as one, with a matching
+        // bigger hit box in editHandleAt.
+        case 3: {
+            const qreal button = half * kEditHandleButtonScale;
+            painter.drawEllipse(screen, button, button);
+            painter.setPen(QPen(QColor(250, 250, 250, 245), 2.0));
+            const QPointF check[3] = {screen + QPointF(-button * 0.5, 0.05 * button),
+                                      screen + QPointF(-button * 0.12, button * 0.45),
+                                      screen + QPointF(button * 0.55, -button * 0.45)};
+            painter.drawPolyline(check, 3);
+            break;
+        }
+        case 4: {
+            const qreal button = half * kEditHandleButtonScale;
+            painter.drawEllipse(screen, button, button);
+            painter.setPen(QPen(QColor(250, 250, 250, 245), 2.0));
+            const qreal arm = button * 0.5;
+            painter.drawLine(screen + QPointF(-arm, -arm), screen + QPointF(arm, arm));
+            painter.drawLine(screen + QPointF(-arm, arm), screen + QPointF(arm, -arm));
+            break;
+        }
         default:
             painter.drawRect(QRectF(screen.x() - half, screen.y() - half,
                                     kEditHandleScreenPx, kEditHandleScreenPx));
@@ -1355,9 +1385,15 @@ QString PaintOpenGLWidget::editHandleAt(const QPointF &screenPos) const
 {
     // Last drawn is on top, so scan backwards.
     for (int i = m_editHandles.size() - 1; i >= 0; --i) {
+        if (!m_editHandles[i].interactive) {
+            continue;
+        }
         const QPointF screen = m_editHandles[i].pos * m_zoom + m_panOffset;
-        if (std::abs(screen.x() - screenPos.x()) <= kEditHandleHitPx
-            && std::abs(screen.y() - screenPos.y()) <= kEditHandleHitPx) {
+        const qreal hit = m_editHandles[i].shape >= 3
+                              ? kEditHandleHitPx * kEditHandleButtonScale
+                              : kEditHandleHitPx;
+        if (std::abs(screen.x() - screenPos.x()) <= hit
+            && std::abs(screen.y() - screenPos.y()) <= hit) {
             return m_editHandles[i].id;
         }
     }
@@ -1695,7 +1731,8 @@ void PaintOpenGLWidget::paintGL()
 
     paintOverlayItems(painter);
 
-    if ((m_tool == Tool::Eraser || m_tool == Tool::DeleteLine || m_tool == Tool::CutLine)
+    if ((m_tool == Tool::Eraser || m_tool == Tool::DeleteLine || m_tool == Tool::CutLine
+         || m_tool == Tool::Connect)
         && m_hasHoverPos) {
         painter.setPen(QPen(QColor(220, 0, 180),
                             AnimeVectorLogic::displayStrokeWidth(1.5, m_zoom),
@@ -1926,15 +1963,17 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
         return;
     }
 
-    // Arrow: selection/edit tool. A press lands on a handle (drag it), or on
-    // the canvas (Python decides whether a stroke sits there and which
-    // handles it grows). The model is only ever touched by Python.
+    // Arrow and Connect both route presses through the handle machinery: a
+    // press lands on a handle (Arrow drags it; Connect's buttons act on
+    // release), or on the canvas ("pick" - Python decides what sits there:
+    // Arrow grows edit handles, Connect snaps a vertex and, on the second
+    // one, builds the connection). The model is only ever touched by Python.
     //
     // Handles are tested BEFORE the overlay x badges: a badge's hit rect is
     // clamped in document space and at high zoom covers a large screen area,
     // so testing it first made handles under it ungrabbable - the click
     // deleted a guide instead of starting the drag the user aimed at.
-    if (m_tool == Tool::Arrow) {
+    if (m_tool == Tool::Arrow || m_tool == Tool::Connect) {
         const QString handleId = editHandleAt(event->position());
         if (!handleId.isEmpty()) {
             m_activeHandleDrag = handleId;
@@ -2048,12 +2087,22 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
     m_hasHoverPos = true;
 
     if (!(event->buttons() & Qt::LeftButton)) {
+        // Connect snaps on HOVER: Python needs the cursor to show which
+        // vertex a click would take, throttled so a fast mouse does not run
+        // the interpreter at tablet rate. A content-locked board gets no
+        // hints - presses are refused there, so advertising targets lies.
+        if (m_tool == Tool::Connect && editingAllowed()
+            && (!m_hoverHookThrottle.isValid()
+                || m_hoverHookThrottle.elapsed() >= kUpdateHookIntervalMs)) {
+            m_hoverHookThrottle.restart();
+            sendPythonHandleMessage(QStringLiteral("hover"), QString(), m_hoverPos);
+        }
         update();
         QOpenGLWidget::mouseMoveEvent(event);
         return;
     }
 
-    if (m_tool == Tool::Arrow) {
+    if (m_tool == Tool::Arrow || m_tool == Tool::Connect) {
         if (!m_activeHandleDrag.isEmpty()) {
             sendPythonHandleMessage(QStringLiteral("move"), m_activeHandleDrag, m_hoverPos);
         }
@@ -2137,7 +2186,7 @@ void PaintOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
         return;
     }
 
-    if (m_tool == Tool::Arrow) {
+    if (m_tool == Tool::Arrow || m_tool == Tool::Connect) {
         if (!m_activeHandleDrag.isEmpty()) {
             const QString handleId = m_activeHandleDrag;
             m_activeHandleDrag.clear();

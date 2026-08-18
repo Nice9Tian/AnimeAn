@@ -113,6 +113,8 @@ QString toolControlName(PaintOpenGLWidget::Tool tool)
         return QStringLiteral("move");
     case PaintOpenGLWidget::Tool::Arrow:
         return QStringLiteral("arrow");
+    case PaintOpenGLWidget::Tool::Connect:
+        return QStringLiteral("connect");
     }
     return QStringLiteral("pen");
 }
@@ -442,6 +444,7 @@ MainWindow::MainWindow(QWidget *parent)
             editHandle.pos = handle.pos;
             editHandle.shape = handle.shape;
             editHandle.color = handle.color;
+            editHandle.interactive = handle.interactive;
             converted.append(editHandle);
         }
         target->setEditHandles(converted);

@@ -1246,6 +1246,10 @@ def _handle_released(cell, stroke, message):
     Arrow-tool handle drag re-runs the mapping in place."""
     if not _OPTIONS["rerun"] or not _SESSION["ran"]:
         return
+    # Handle events are shared plumbing (the Connect tool's buttons release
+    # through the same pipeline); only the Arrow's drags mean an edit here.
+    if message.get("base_tool") != "arrow":
+        return
     if message.get("phase") != "release":
         return
     _run(replace=True)

@@ -28,8 +28,13 @@ struct AnimeanOverlayItem {
 struct AnimeanEditHandle {
     QString id;
     QPointF pos;                              // document coordinates
-    int shape = 0;                            // 0 square, 1 circle, 2 diamond
+    int shape = 0;                            // 0 square, 1 circle, 2 diamond,
+                                              // 3 accept button, 4 delete button
     QColor color = QColor(255, 255, 255, 255);
+    // False for display-only markers (e.g. a snap HINT drawn under the
+    // cursor): rendered normally, but invisible to the hit test - a hint
+    // that swallowed the very click it advertised armed nothing at all.
+    bool interactive = true;
 };
 
 void registerAnimeanUiScene(AnimeSceneModel *model);

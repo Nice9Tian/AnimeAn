@@ -871,6 +871,12 @@ def _drag_chain(session, target, pos):
 # --- hook handlers -----------------------------------------------------------
 
 def _handle_event(message):
+    # Handle events are shared plumbing now (the Connect tool routes its
+    # hover/click/buttons through the same pipeline); this module owns only
+    # the Arrow's. The cancel that fires on LEAVING Arrow still arrives with
+    # base_tool == "arrow" - setTool reports the tool being left.
+    if message.get("base_tool") != "arrow":
+        return
     view = message.get("view") or "main"
     phase = message.get("phase")
     zoom = float(message.get("zoom") or 1.0)

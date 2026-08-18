@@ -32,7 +32,11 @@ public:
         CutLine,
         Fill,
         Move,
-        Arrow
+        Arrow,
+        // Bridge two snapped vertices with a new stroke. Pure mechanism here
+        // (brush ring, hover/click forwarding, handle hints); the snapping
+        // and the connection geometry live in pyfile/connect_tool.py.
+        Connect
     };
 
     enum class FillScope {
@@ -70,8 +74,11 @@ public:
     struct EditHandle {
         QString id;
         QPointF pos;      // document coordinates
-        int shape = 0;    // 0 square, 1 circle, 2 diamond
+        int shape = 0;    // 0 square, 1 circle, 2 diamond, 3 accept, 4 delete
         QColor color = QColor(255, 255, 255, 255);
+        // Display-only markers (snap hints) render but never hit-test: a
+        // hint that swallowed the very click it advertised armed nothing.
+        bool interactive = true;
     };
 
     explicit PaintOpenGLWidget(QWidget *parent = nullptr);
@@ -323,6 +330,9 @@ private:
     // one dispatch per this interval so subscribers never run at tablet rate.
     QElapsedTimer m_updateHookThrottle;
     static constexpr qint64 kUpdateHookIntervalMs = 33;
+    // Connect-tool hover forwarding shares the same cadence: Python resolves
+    // the snap hint per event, so the interpreter must not run at mouse rate.
+    QElapsedTimer m_hoverHookThrottle;
     // The live-preview hybrid fit runs at display cadence, not event cadence
     // (a per-event whole-stroke refit is quadratic in stroke length).
     QElapsedTimer m_liveFitThrottle;

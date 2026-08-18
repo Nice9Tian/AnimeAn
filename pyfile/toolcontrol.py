@@ -140,6 +140,67 @@ def options_for_tool(tool, state=None):
                 ],
             },
         ]
+    elif tool == "connect":
+        # Bridge two snapped vertices (pyfile/connect_tool.py). Auto Snap can
+        # be turned off for free-point clicks; the Smooth slider only shows
+        # in Smooth mode (0 = pure CurveMode, 100 = the straight chord); Auto
+        # Accept skips the on-canvas accept/delete buttons entirely.
+        try:
+            import connect_tool
+            connect_state = connect_tool.options_state()
+        except Exception:
+            connect_state = {"auto_snap": True, "mode": "poly",
+                             "smooth": 50, "auto_accept": False}
+        controls = [
+            {
+                "name": "connect_auto_snap",
+                "type": "check",
+                "title": "Auto Snap",
+                "hook": "connect_auto_snap",
+                "value": "on" if connect_state["auto_snap"] else "off",
+                "row": 0,
+                "start_column": 0,
+                "end_column": 2,
+            },
+            {
+                "name": "connect_mode",
+                "type": "list",
+                "title": "Connect Mode",
+                "hook": "connect_mode",
+                "value": connect_state["mode"],
+                "row": 1,
+                "start_column": 0,
+                "end_column": 2,
+                "options": [
+                    {"title": "PolyMode", "value": "poly"},
+                    {"title": "CurveMode", "value": "curve"},
+                    {"title": "SmoothMode", "value": "smooth"},
+                ],
+            },
+            {
+                "name": "connect_smooth",
+                "type": "slider",
+                "title": "Smooth",
+                "hook": "connect_smooth",
+                "min": 0,
+                "max": 100,
+                "value": int(connect_state["smooth"]),
+                "row": 2,
+                "start_column": 0,
+                "end_column": 2,
+                "visible_when": {"name": "connect_mode", "values": ["smooth"]},
+            },
+            {
+                "name": "connect_auto_accept",
+                "type": "check",
+                "title": "Auto Accept",
+                "hook": "connect_auto_accept",
+                "value": "on" if connect_state["auto_accept"] else "off",
+                "row": 3,
+                "start_column": 0,
+                "end_column": 2,
+            },
+        ]
     elif tool == "move":
         controls = []
     else:

@@ -1,0 +1,66 @@
+{
+  "row_spacing": 8,
+  "column_spacing": 6,
+  "controls": [
+    {
+      "name": "connect_auto_snap",
+      "type": "check",
+      "title": "Auto Snap",
+      "hook": "connect_auto_snap",
+      "value": "on",
+      "row": 0,
+      "start_column": 0,
+      "end_column": 2
+    },
+    {
+      "name": "connect_mode",
+      "type": "list",
+      "title": "Connect Mode",
+      "hook": "connect_mode",
+      "value": "poly",
+      "row": 1,
+      "start_column": 0,
+      "end_column": 2,
+      "options": [
+        {
+          "title": "PolyMode",
+          "value": "poly"
+        },
+        {
+          "title": "CurveMode",
+          "value": "curve"
+        },
+        {
+          "title": "SmoothMode",
+          "value": "smooth"
+        }
+      ]
+    },
+    {
+      "name": "connect_smooth",
+      "type": "slider",
+      "title": "Smooth",
+      "hook": "connect_smooth",
+      "min": 0,
+      "max": 100,
+      "value": 50,
+      "row": 2,
+      "start_column": 0,
+      "end_column": 2,
+      "visible_when": {
+        "name": "connect_mode",
+        "values": ["smooth"]
+      }
+    },
+    {
+      "name": "connect_auto_accept",
+      "type": "check",
+      "title": "Auto Accept",
+      "hook": "connect_auto_accept",
+      "value": "off",
+      "row": 3,
+      "start_column": 0,
+      "end_column": 2
+    }
+  ]
+}

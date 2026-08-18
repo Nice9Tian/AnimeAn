@@ -20,11 +20,14 @@ QString fileNameForTool(PaintOpenGLWidget::Tool tool)
         return QStringLiteral("fill.json");
     case PaintOpenGLWidget::Tool::Eraser:
     case PaintOpenGLWidget::Tool::DeleteLine:
+    case PaintOpenGLWidget::Tool::CutLine:
         return QStringLiteral("eraser.json");
     case PaintOpenGLWidget::Tool::Move:
         return QStringLiteral("move.json");
     case PaintOpenGLWidget::Tool::Arrow:
         return QStringLiteral("arrow.json");
+    case PaintOpenGLWidget::Tool::Connect:
+        return QStringLiteral("connect.json");
     }
     return QStringLiteral("pen.json");
 }
