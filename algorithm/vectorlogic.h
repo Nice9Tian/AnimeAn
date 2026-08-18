@@ -132,6 +132,15 @@ struct AnimeLiveFitState {
     QPointF boundaryPoint;      // raw boundary sample - retro-edit guard
     QPointF entryTangent;       // forward-travel unit tangent at the boundary
     bool hasEntryTangent = false;
+    // The open CURVED RUN, for node-count consolidation: every bake refits
+    // the whole run and REPLACES its elements when the part already on
+    // screen would move imperceptibly (a per-chunk bake alone described one
+    // doodle with 2.3x the nodes of the offline fit). -1: no open run.
+    int runStartSample = -1;
+    int runStartElement = 0;    // frozenPath element index where the run begins
+    QPointF runStartPoint;
+    QPointF runEntryTangent;
+    bool hasRunEntryTangent = false;
 };
 
 namespace AnimeVectorLogic {

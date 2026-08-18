@@ -566,21 +566,33 @@ def _split_cubic(cubic, t=0.5):
 
 
 def _chain_from_elements(elements):
-    """Read a chain straight back from a stroke that IS one (all cubics).
+    """Read a chain straight back from a stroke that IS one (lines + cubics).
 
     Returns (anchors, cubics) or (None, None) when the elements are anything
     else - then the caller falls back to detect-and-fit. Corners are
     re-derived from the handle geometry: an anchor whose arms meet harder
     than CORNER_DEG stays a corner.
+
+    LINE elements are elevated on the spot (shared wheel pyfile/bezier.py):
+    the chord IS that cubic, so the chain stays the stored geometry
+    verbatim. Rejecting mixed line+cubic strokes - exactly what the live
+    fitter emits for straight runs - used to force the detect-and-fit
+    fallback, whose refit no longer matched the drawn curve: the first drag
+    then visibly reshaped the WHOLE stroke.
     """
     if not elements or elements[0][0] != "move" \
-            or any(kind != "cubic" for kind, _ in elements[1:]) or len(elements) < 2:
+            or any(kind not in ("line", "cubic") for kind, _ in elements[1:]) \
+            or len(elements) < 2:
         return None, None
     cubics = []
     current = elements[0][1][0]
-    for _, pts in elements[1:]:
-        cubics.append([current, pts[0], pts[1], pts[2]])
-        current = pts[2]
+    for kind, pts in elements[1:]:
+        if kind == "line":
+            cubics.append(bezier.line_cubic(current, pts[0]))
+            current = pts[0]
+        else:
+            cubics.append([current, pts[0], pts[1], pts[2]])
+            current = pts[2]
     anchors = [{"pos": cubics[0][0], "corner": False}]
     for k in range(1, len(cubics)):
         into = _norm((cubics[k - 1][3][0] - cubics[k - 1][2][0],

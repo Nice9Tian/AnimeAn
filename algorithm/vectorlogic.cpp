@@ -1074,6 +1074,104 @@ QPainterPath AnimeVectorLogic::fitStrokePath(const QVector<QPointF> &points,
     return path;
 }
 
+namespace {
+
+// Re-emit elements of `src` into `dst`, starting at raw element index
+// `first` (which must sit on an element boundary).
+void appendPathElements(QPainterPath &dst, const QPainterPath &src, int first)
+{
+    int i = first;
+    while (i < src.elementCount()) {
+        const QPainterPath::Element e = src.elementAt(i);
+        if (e.type == QPainterPath::MoveToElement) {
+            dst.moveTo(e.x, e.y);
+            ++i;
+        } else if (e.type == QPainterPath::LineToElement) {
+            dst.lineTo(e.x, e.y);
+            ++i;
+        } else {
+            dst.cubicTo(QPointF(e.x, e.y),
+                        QPointF(src.elementAt(i + 1).x, src.elementAt(i + 1).y),
+                        QPointF(src.elementAt(i + 2).x, src.elementAt(i + 2).y));
+            i += 3;
+        }
+    }
+}
+
+// Dense samples of `src` from raw element index `first` on.
+QVector<QPointF> flattenPathFrom(const QPainterPath &src, int first)
+{
+    QVector<QPointF> out;
+    QPointF current;
+    int i = 0;
+    while (i < src.elementCount()) {
+        const QPainterPath::Element e = src.elementAt(i);
+        if (e.type == QPainterPath::MoveToElement) {
+            current = QPointF(e.x, e.y);
+            if (i >= first) {
+                out.append(current);
+            }
+            ++i;
+        } else if (e.type == QPainterPath::LineToElement) {
+            const QPointF to(e.x, e.y);
+            if (i >= first) {
+                if (out.isEmpty()) {
+                    out.append(current);
+                }
+                for (int k = 1; k <= 8; ++k) {
+                    out.append(current + (to - current) * (qreal(k) / 8.0));
+                }
+            }
+            current = to;
+            ++i;
+        } else {
+            const QPointF bez[4] = {current,
+                                    QPointF(e.x, e.y),
+                                    QPointF(src.elementAt(i + 1).x, src.elementAt(i + 1).y),
+                                    QPointF(src.elementAt(i + 2).x, src.elementAt(i + 2).y)};
+            if (i >= first) {
+                if (out.isEmpty()) {
+                    out.append(current);
+                }
+                for (int k = 1; k <= 16; ++k) {
+                    out.append(AnimeBezierSplit::evaluateCubic(bez, qreal(k) / 16.0));
+                }
+            }
+            current = bez[3];
+            i += 3;
+        }
+    }
+    return out;
+}
+
+qreal worstDistanceToPolyline(const QVector<QPointF> &pts, const QVector<QPointF> &poly)
+{
+    qreal worst = 0.0;
+    for (const QPointF &p : pts) {
+        qreal best = std::numeric_limits<qreal>::max();
+        for (int i = 1; i < poly.size(); ++i) {
+            const QPointF a = poly[i - 1];
+            const QPointF ab = poly[i] - a;
+            const qreal len2 = ab.x() * ab.x() + ab.y() * ab.y();
+            qreal t = 0.0;
+            if (len2 > 1e-12) {
+                t = ((p.x() - a.x()) * ab.x() + (p.y() - a.y()) * ab.y()) / len2;
+                t = std::min<qreal>(1.0, std::max<qreal>(0.0, t));
+            }
+            const QPointF q = a + ab * t;
+            best = std::min(best,
+                            (p.x() - q.x()) * (p.x() - q.x()) + (p.y() - q.y()) * (p.y() - q.y()));
+        }
+        worst = std::max(worst, std::sqrt(best));
+        if (worst > 1e6) {
+            break;
+        }
+    }
+    return worst;
+}
+
+} // namespace
+
 QPainterPath AnimeVectorLogic::liveFitStrokePath(AnimeLiveFitState &state,
                                                  const QVector<QPointF> &points,
                                                  const AnimeStrokeFitSettings &settings,
@@ -1094,10 +1192,18 @@ QPainterPath AnimeVectorLogic::liveFitStrokePath(AnimeLiveFitState &state,
     // uses. In CURVED mode chunks bake as Beziers regardless of their own
     // sagitta, seamed G1 by shared forced tangents.
     // Screen px, like every other budget: what the pen can still influence
-    // is a hand-and-eye distance, not a canvas one.
+    // is a hand-and-eye distance, not a canvas one. The bake chunk is large
+    // because the tail previews as a polyline anyway (append-only, cheap)
+    // and longer bakes emit fewer, better-conditioned curve elements. The
+    // straight-mode probe windows are ABSOLUTE, not chunk-relative, so
+    // changing the chunk cannot change how modes classify the drawing.
     const qreal liveScale = fitPixelScale(settings);
     const qreal kFreezeMargin = 40.0 * liveScale;
-    const qreal kFreezeChunk = 48.0 * liveScale;
+    const qreal kFreezeChunk = 96.0 * liveScale;
+    const qreal kStraightProbe = 96.0 * liveScale;
+    const qreal kStraightContext = 76.8 * liveScale;
+    const qreal kRunCap = 300.0 * liveScale;        // consolidation lookback
+    const qreal kInvisibleBudget = 0.35 * liveScale; // max on-screen change
 
     // Retroactive edits of the prefix (axis snap rewriting captured points)
     // invalidate the frozen path: verify the boundary sample is still the
@@ -1248,12 +1354,12 @@ QPainterPath AnimeVectorLogic::liveFitStrokePath(AnimeLiveFitState &state,
             // drawing. The chord must also leave along the frozen curve's
             // exit tangent, or the seam would kink where the curve ends.
             int probeStart = boundary;
-            while (probeStart > 0 && arc[boundary] - arc[probeStart - 1] < 2.0 * kFreezeChunk) {
+            while (probeStart > 0 && arc[boundary] - arc[probeStart - 1] < kStraightProbe) {
                 --probeStart;
             }
             const bool enoughContext =
                 state.frozenSamples == 0
-                || arc[boundary] - arc[probeStart] >= 1.6 * kFreezeChunk;
+                || arc[boundary] - arc[probeStart] >= kStraightContext;
             const QPointF openDir = points[boundary] - points[state.frozenSamples];
             const qreal openLen = std::hypot(openDir.x(), openDir.y());
             const bool tangentAligned =
@@ -1270,6 +1376,7 @@ QPainterPath AnimeVectorLogic::liveFitStrokePath(AnimeLiveFitState &state,
                 state.boundaryPoint = points[boundary];
                 state.seamPoint = smoothedAt(boundary);
                 state.hasSeam = true;
+                state.runStartSample = -1;   // a chord ends the curved run
                 continue;
             }
         }
@@ -1278,8 +1385,73 @@ QPainterPath AnimeVectorLogic::liveFitStrokePath(AnimeLiveFitState &state,
         const QPointF tangent = strideTangent(points, arc, boundary, params.strideWindow);
         FitParams bakeParams = params;
         bakeParams.forceCurved = true;
-        fitRun(sliceFrom(boundary), bakeParams, state.frozenPath,
-               state.hasEntryTangent ? &state.entryTangent : nullptr, &tangent);
+
+        if (state.runStartSample < 0) {
+            state.runStartSample = state.frozenSamples;
+            state.runStartElement = state.frozenPath.elementCount();
+            state.runStartPoint = state.hasSeam ? state.seamPoint : points[state.frozenSamples];
+            state.runEntryTangent = state.entryTangent;
+            state.hasRunEntryTangent = state.hasEntryTangent;
+        }
+
+        // Consolidation: refit the WHOLE open run and replace its elements,
+        // but only when the part already on screen would move imperceptibly
+        // - per-chunk bakes alone described one doodle with 2.3x the nodes
+        // of the offline fit. A failed gate keeps the shown geometry and
+        // closes the run, so consolidation retries on fresher ink.
+        bool consolidated = false;
+        if (state.runStartSample < state.frozenSamples
+            && arc[boundary] - arc[state.runStartSample] < kRunCap) {
+            QVector<QPointF> runSlice =
+                points.mid(state.runStartSample, boundary - state.runStartSample + 1);
+            runSlice[0] = state.runStartPoint;
+            QPainterPath candidate;
+            candidate.moveTo(state.runStartPoint);
+            fitRun(dedupePoints(runSlice), bakeParams, candidate,
+                   state.hasRunEntryTangent ? &state.runEntryTangent : nullptr, &tangent);
+            const QVector<QPointF> shown =
+                flattenPathFrom(state.frozenPath, state.runStartElement);
+            const QVector<QPointF> replacement = flattenPathFrom(candidate, 0);
+            if (candidate.elementCount() >= 2 && !shown.isEmpty()
+                && worstDistanceToPolyline(shown, replacement) <= kInvisibleBudget) {
+                QPainterPath rebuilt;
+                // The prefix before the run, verbatim; then the refit run
+                // (skipping its moveTo - the prefix already ends there).
+                {
+                    QPainterPath fresh;
+                    int i = 0;
+                    while (i < state.runStartElement) {
+                        const QPainterPath::Element e = state.frozenPath.elementAt(i);
+                        if (e.type == QPainterPath::MoveToElement) {
+                            fresh.moveTo(e.x, e.y);
+                            ++i;
+                        } else if (e.type == QPainterPath::LineToElement) {
+                            fresh.lineTo(e.x, e.y);
+                            ++i;
+                        } else {
+                            fresh.cubicTo(
+                                QPointF(e.x, e.y),
+                                QPointF(state.frozenPath.elementAt(i + 1).x,
+                                        state.frozenPath.elementAt(i + 1).y),
+                                QPointF(state.frozenPath.elementAt(i + 2).x,
+                                        state.frozenPath.elementAt(i + 2).y));
+                            i += 3;
+                        }
+                    }
+                    rebuilt = fresh;
+                }
+                appendPathElements(rebuilt, candidate, 1);
+                state.frozenPath = rebuilt;
+                consolidated = true;
+            }
+        }
+        if (!consolidated) {
+            fitRun(sliceFrom(boundary), bakeParams, state.frozenPath,
+                   state.hasEntryTangent ? &state.entryTangent : nullptr, &tangent);
+            if (state.runStartSample < state.frozenSamples) {
+                state.runStartSample = -1;   // gate failed or run too long: restart
+            }
+        }
         state.frozenSamples = boundary;
         state.boundaryPoint = points[boundary];
         state.seamPoint = points[boundary];
@@ -1697,6 +1869,63 @@ QVector<AnimeStrokeCrossing> AnimeVectorLogic::strokeCrossings(const AnimeVector
                 crossing.wallArc = clamp01((wallArcStart + wallAlong) / wall.totalLength);
                 crossings.append(crossing);
             }
+        }
+    }
+
+    // T-JUNCTIONS. A wall whose ENDPOINT rests on this stroke joins it
+    // without crossing it: the Connect tool builds exactly such joints (a
+    // bridge's end lands on a snapped vertex - often an INTERIOR corner or
+    // curvature apex), and hand-drawn corners touch the same way. The
+    // transversal walk above cannot see them - the contact is measure zero,
+    // and the snapped point sits on the FITTED path, a fit tolerance away
+    // from this polyline - so a cut on the bridged side fell through to the
+    // stroke end and deleted the whole line. An endpoint within touching
+    // distance (the two half-widths of ink: if it looks joined, it is)
+    // becomes a crossing at its projection; a joint within that distance of
+    // the stroke's own end snaps TO the end, so it bounds cleanly instead
+    // of leaving a crumb.
+    for (int w : nearWalls) {
+        const AnimeVectorStroke &wall = walls[w];
+        const qreal touch = std::max<qreal>(1.0, (stroke.width + wall.width) * 0.5);
+        for (int endIndex = 0; endIndex < 2; ++endIndex) {
+            const QPointF endpoint =
+                endIndex == 0 ? wall.points.first() : wall.points.last();
+            qreal bestDistanceSquared = touch * touch;
+            qreal bestArcLength = -1.0;
+            for (int i = 0; i + 1 < stroke.points.size(); ++i) {
+                const QPointF a = stroke.points[i];
+                const QPointF b = stroke.points[i + 1];
+                const qreal dx = b.x() - a.x();
+                const qreal dy = b.y() - a.y();
+                const qreal lengthSquared = dx * dx + dy * dy;
+                if (lengthSquared <= kEpsilon) {
+                    continue;
+                }
+                qreal t = ((endpoint.x() - a.x()) * dx + (endpoint.y() - a.y()) * dy)
+                          / lengthSquared;
+                t = std::min<qreal>(1.0, std::max<qreal>(0.0, t));
+                const QPointF projected(a.x() + dx * t, a.y() + dy * t);
+                const qreal distanceSq = distanceSquared(endpoint, projected);
+                if (distanceSq < bestDistanceSquared) {
+                    bestDistanceSquared = distanceSq;
+                    const qreal arcStart =
+                        (i < stroke.lengths.size()) ? stroke.lengths[i] : 0.0;
+                    bestArcLength = arcStart + std::sqrt(lengthSquared) * t;
+                }
+            }
+            if (bestArcLength < 0.0) {
+                continue;
+            }
+            if (bestArcLength < touch) {
+                bestArcLength = 0.0;
+            } else if (stroke.totalLength - bestArcLength < touch) {
+                bestArcLength = stroke.totalLength;
+            }
+            AnimeStrokeCrossing crossing;
+            crossing.arc = clamp01(bestArcLength / stroke.totalLength);
+            crossing.wallIndex = w;
+            crossing.wallArc = endIndex == 0 ? 0.0 : 1.0;
+            crossings.append(crossing);
         }
     }
 
