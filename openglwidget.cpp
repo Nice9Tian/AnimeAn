@@ -1036,6 +1036,9 @@ void PaintOpenGLWidget::setTool(Tool tool)
         m_editHandles.clear();
         m_activeHandleDrag.clear();
     }
+    // A tool switch mid-drag abandons an overlay drag; Python's next press
+    // resets its own drag state, so no message is needed.
+    m_activeOverlayDrag.clear();
     m_tool = tool;
     m_points.clear();
     m_hasCurrentStroke = false;
@@ -1555,6 +1558,21 @@ const AnimeSceneModel &PaintOpenGLWidget::model() const
 void PaintOpenGLWidget::setOverlayItems(const QVector<OverlayItem> &items)
 {
     m_overlayItems = items;
+    // A live overlay drag survives a re-push AS LONG AS its item is still in
+    // the list (the dragged item re-pushes itself at its new position every
+    // move); if the item vanished, the drag has nothing to move.
+    if (!m_activeOverlayDrag.isEmpty()) {
+        bool present = false;
+        for (const OverlayItem &item : m_overlayItems) {
+            if (item.id == m_activeOverlayDrag && item.draggable) {
+                present = true;
+                break;
+            }
+        }
+        if (!present) {
+            m_activeOverlayDrag.clear();
+        }
+    }
     update();
 }
 
@@ -2142,6 +2160,42 @@ bool PaintOpenGLWidget::removeOverlayItemAt(const QPointF &pos)
     return false;
 }
 
+QString PaintOpenGLWidget::draggableOverlayItemAt(const QPointF &screenPos) const
+{
+    // Same grab range as the edit handles, measured in SCREEN pixels so the
+    // item stays grabbable when zoomed out. Distance is to the item's
+    // segments, not just its vertices - a sparse ring must not have holes in
+    // its hit area.
+    const qreal hit = kEditHandleHitPx;
+    for (int i = m_overlayItems.size() - 1; i >= 0; --i) {
+        const OverlayItem &item = m_overlayItems[i];
+        if (!item.draggable || item.points.size() < 2) {
+            continue;
+        }
+        const int count = item.points.size() + (item.closed ? 1 : 0);
+        for (int k = 0; k + 1 < count; ++k) {
+            const QPointF a = AnimeViewScale::toScreen(
+                item.points[k % item.points.size()], m_zoom, m_panOffset);
+            const QPointF b = AnimeViewScale::toScreen(
+                item.points[(k + 1) % item.points.size()], m_zoom, m_panOffset);
+            const QPointF delta = b - a;
+            const qreal lengthSq = delta.x() * delta.x() + delta.y() * delta.y();
+            qreal t = 0.0;
+            if (lengthSq > 0.0) {
+                t = ((screenPos.x() - a.x()) * delta.x()
+                     + (screenPos.y() - a.y()) * delta.y()) / lengthSq;
+                t = std::min(1.0, std::max(0.0, t));
+            }
+            const QPointF closest = a + delta * t;
+            const QPointF gap = screenPos - closest;
+            if (gap.x() * gap.x() + gap.y() * gap.y() <= hit * hit) {
+                return item.id;
+            }
+        }
+    }
+    return QString();
+}
+
 void PaintOpenGLWidget::sendOverlayRemoveMessage(const QString &overlayId)
 {
 #ifdef ANIMEAN_WITH_PYTHON
@@ -2250,6 +2304,20 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
         }
         event->accept();
         return;
+    }
+
+    // Draggable overlay items (e.g. the mapping's nearest-point anchor) are
+    // grabbable under ANY tool, like the x badges are clickable under any
+    // tool. Tested before the badges: the badge rect covers a large screen
+    // area at high zoom and would swallow the grab.
+    {
+        const QString overlayId = draggableOverlayItemAt(event->position());
+        if (!overlayId.isEmpty()) {
+            m_activeOverlayDrag = overlayId;
+            sendPythonHandleMessage(QStringLiteral("press"), overlayId, pos);
+            event->accept();
+            return;
+        }
     }
 
     if (removeOverlayItemAt(pos)) {
@@ -2379,6 +2447,13 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
         return;
     }
 
+    if (!m_activeOverlayDrag.isEmpty()) {
+        sendPythonHandleMessage(QStringLiteral("move"), m_activeOverlayDrag, m_hoverPos);
+        update();
+        event->accept();
+        return;
+    }
+
     if (m_tool == Tool::Arrow || m_tool == Tool::Connect) {
         if (!m_activeHandleDrag.isEmpty()) {
             sendPythonHandleMessage(QStringLiteral("move"), m_activeHandleDrag, m_hoverPos);
@@ -2484,6 +2559,16 @@ void PaintOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
 
     if (event->button() != Qt::LeftButton) {
         QOpenGLWidget::mouseReleaseEvent(event);
+        return;
+    }
+
+    if (!m_activeOverlayDrag.isEmpty()) {
+        const QString overlayId = m_activeOverlayDrag;
+        m_activeOverlayDrag.clear();
+        sendPythonHandleMessage(QStringLiteral("release"), overlayId,
+                                mapToDocument(event->position()));
+        update();
+        event->accept();
         return;
     }
 

@@ -241,6 +241,7 @@ ITEM_LABELS = {
     H_PROPERTY: "H center line",
     V_PROPERTY: "V center line",
     MAPPING_AREA_PROPERTY: "mapping area",
+    NEAREST_PROPERTY: "nearest point",
 }
 
 # view name -> {property -> item}; guide item: {"points": [...], "width": w},
@@ -1955,6 +1956,12 @@ def overlay_items(view_name):
             items[:0] = _occlusion_overlay_items()
         except Exception as error:
             print(f"[auto_mapping] occlusion preview skipped: {error}")
+    if view_name == "main":
+        try:
+            # ON TOP of the guides: the anchor is the one thing here you grab.
+            items.extend(_nearest_overlay_items())
+        except Exception as error:
+            print(f"[auto_mapping] nearest point overlay skipped: {error}")
     return items
 
 
@@ -2081,8 +2088,6 @@ def _overlays_changed(view_name):
     _push_overlay(view_name)
     if _OCCLUSION["enabled"] and view_name != "child":
         _push_overlay("child")
-    if view_name == "main":
-        _push_nearest_handle()
 
 
 def _main_guide_frame():
@@ -2109,45 +2114,50 @@ def _nearest_arc():
     return float(arc[0]), float(arc[1])
 
 
-_NEAREST_SHOWN = {"visible": False}
+def _nearest_overlay_items():
+    """The nearest-end anchor as an OVERLAY OBJECT, same family as the guides.
+
+    A small red ring with the same x badge the center lines carry (removing
+    it resets the anchor to the crossing, since the depth default is the
+    crossing) - and the one overlay item with `draggable`: C++ routes a drag
+    on it through the "handle" hook events with its id, so it moves like a
+    stroke's edit handle without ever touching the edit-handle channel that
+    the Arrow/Connect sessions own.
+    """
+    frame = _main_guide_frame()
+    if frame is None:
+        return []
+    arc_h, arc_v = _nearest_arc()
+    # A stored anchor can outlive the guides it was set on; clamp it back
+    # onto the sheet (point_at extrapolates linearly past the ends, which
+    # would float the ring off into empty space).
+    arc_h = min(max(arc_h, -frame.h_arc), frame.h_total - frame.h_arc)
+    arc_v = min(max(arc_v, -frame.v_arc), frame.v_total - frame.v_arc)
+    center = frame.hv(arc_h, arc_v)
+    radius = 6.0
+    ring = [(center[0] + radius * math.cos(2.0 * math.pi * k / 24),
+             center[1] + radius * math.sin(2.0 * math.pi * k / 24))
+            for k in range(24)]
+    fill = (NEAREST_HANDLE_COLOR[0], NEAREST_HANDLE_COLOR[1],
+            NEAREST_HANDLE_COLOR[2], 90)
+    return [{
+        "id": NEAREST_PROPERTY,
+        "points": ring,
+        "closed": True,
+        "color": NEAREST_HANDLE_COLOR,
+        "fill_color": fill,
+        "width": 1.5,
+        "removable": True,
+        "draggable": True,
+    }]
 
 
 def _push_nearest_handle():
-    """Show (or clear) the red nearest-end handle on the main board.
-
-    Shown whenever both main guides exist; sits ON the sheet at its stored
-    arc position, so redrawing a guide carries the anchor along. Note the
-    edit-handle channel is shared: an Arrow-edit session replaces the list
-    while it runs, and the handle returns on the next overlay refresh.
-    """
-    frame = _main_guide_frame()
-    try:
-        ui = _animean().ui
-        if frame is None:
-            if _NEAREST_SHOWN["visible"]:
-                ui.set_edit_handles("main", [])
-                _NEAREST_SHOWN["visible"] = False
-            return
-        arc_h, arc_v = _nearest_arc()
-        # A stored anchor can outlive the guides it was set on; clamp it back
-        # onto the sheet (point_at extrapolates linearly past the ends, which
-        # would float the handle off into empty space).
-        arc_h = min(max(arc_h, -frame.h_arc), frame.h_total - frame.h_arc)
-        arc_v = min(max(arc_v, -frame.v_arc), frame.v_total - frame.v_arc)
-        pos = frame.hv(arc_h, arc_v)
-        ui.set_edit_handles("main", [{
-            "id": NEAREST_PROPERTY,
-            "x": pos[0], "y": pos[1],
-            "shape": 1,                      # circle
-            "color": NEAREST_HANDLE_COLOR,
-            "interactive": True,
-        }])
-        _NEAREST_SHOWN["visible"] = True
-    except Exception as error:
-        print(f"[auto_mapping] nearest handle update failed: {error}")
+    """The anchor lives in the main overlay now; re-push that overlay."""
+    _push_overlay("main")
 
 
-_NEAREST_DRAG = {"frame": None, "moved": False}
+_NEAREST_DRAG = {"frame": None, "moved": False, "offset": (0.0, 0.0)}
 
 
 def _nearest_handle_event(message):
@@ -2162,17 +2172,26 @@ def _nearest_handle_event(message):
         return
     phase = message.get("phase")
     if phase == "cancel":
-        # Another tool released the handle channel (Arrow/Connect teardown
-        # sends a blanket cancel); reclaim our handle.
+        # Arrow/Connect teardown; the anchor lives in the overlay now, so
+        # nothing to reclaim - just drop any half-finished drag state.
         _NEAREST_DRAG["frame"] = None
         _NEAREST_DRAG["moved"] = False
-        _push_nearest_handle()
         return
     if message.get("handle") != NEAREST_PROPERTY:
         return
     if phase == "press":
-        _NEAREST_DRAG["frame"] = _main_guide_frame()
+        frame = _main_guide_frame()
+        _NEAREST_DRAG["frame"] = frame
         _NEAREST_DRAG["moved"] = False
+        # The handle accepts presses up to 7 screen px off centre; remember
+        # the miss so the first move does not snap the anchor to the cursor.
+        offset = (0.0, 0.0)
+        if frame is not None:
+            position = message.get("position") or {}
+            grabbed = (float(position.get("x", 0.0)), float(position.get("y", 0.0)))
+            shown = frame.hv(*_nearest_arc())
+            offset = (shown[0] - grabbed[0], shown[1] - grabbed[1])
+        _NEAREST_DRAG["offset"] = offset
         return
     if phase not in ("move", "release"):
         return
@@ -2182,7 +2201,9 @@ def _nearest_handle_event(message):
     _NEAREST_DRAG["frame"] = frame  # guides cannot change mid-drag: build once
     if phase == "move":
         position = message.get("position") or {}
-        point = (float(position.get("x", 0.0)), float(position.get("y", 0.0)))
+        offset = _NEAREST_DRAG.get("offset") or (0.0, 0.0)
+        point = (float(position.get("x", 0.0)) + offset[0],
+                 float(position.get("y", 0.0)) + offset[1])
         current = _nearest_arc()
         l_h, l_v = frame.solve(point, current[0], current[1])
         # Keep the anchor on the sheet the guides actually span.
@@ -4371,7 +4392,12 @@ def _overlay_removed(cell, stroke, message):
             _animean().ui.history_commit(f"Remove {label}", view)
         except Exception:
             pass  # older builds without the history binding
-        print(f"[auto_mapping] removed {label} in {view} view")
+        if item_id == NEAREST_PROPERTY:
+            # The anchor's default IS the crossing, so its x means "reset":
+            # the ring reappears there on the refresh below.
+            print("[auto_mapping] nearest point reset to the crossing")
+        else:
+            print(f"[auto_mapping] removed {label} in {view} view")
         _overlays_changed(view)
 
 

@@ -1169,6 +1169,9 @@ void bindAnimeanPythonModule(py::module_ &m)
                    if (hasKey(data, "removable")) {
                        item.removable = data["removable"].cast<bool>();
                    }
+                   if (hasKey(data, "draggable")) {
+                       item.draggable = data["draggable"].cast<bool>();
+                   }
                    converted.append(item);
                }
                g_uiOverlayCallback(QString::fromStdString(view), converted);

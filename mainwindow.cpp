@@ -429,6 +429,7 @@ MainWindow::MainWindow(QWidget *parent)
             overlayItem.width = item.width;
             overlayItem.penStyle = item.penStyle;
             overlayItem.removable = item.removable;
+            overlayItem.draggable = item.draggable;
             converted.append(overlayItem);
         }
         target->setOverlayItems(converted);

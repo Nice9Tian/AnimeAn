@@ -67,6 +67,9 @@ public:
         // Qt::PenStyle as an int, same convention as AnimeVectorStroke.
         int penStyle = 1;
         bool removable = true;
+        // A draggable item reports press/move/release through the "handle"
+        // hook events with its id, like an edit handle; Python owns meaning.
+        bool draggable = false;
     };
 
     // Draggable edit handle, drawn at constant SCREEN size above everything.
@@ -259,6 +262,8 @@ private:
     // Badge just above-right of `anchor` (an item's end point), clamped into view.
     QRectF overlayHandleRect(const QPointF &anchor) const;
     bool removeOverlayItemAt(const QPointF &pos);
+    // Topmost draggable overlay item within grab range of the screen position.
+    QString draggableOverlayItemAt(const QPointF &screenPos) const;
     void sendOverlayRemoveMessage(const QString &overlayId);
     void paintEditHandles(QPainter &painter);
     // Topmost handle whose SCREEN-space box contains the screen position.
@@ -398,6 +403,9 @@ private:
     QVector<EditHandle> m_editHandles;
     // Id of the handle being dragged; empty when no drag is in flight.
     QString m_activeHandleDrag;
+    // Id of the draggable OVERLAY item being dragged (any tool), empty when
+    // none. Routed through the same "handle" hook events as edit handles.
+    QString m_activeOverlayDrag;
     bool m_unboundedCanvas = false;
     BackgroundMode m_backgroundMode = BackgroundMode::White;
     bool m_contentEditable = true;

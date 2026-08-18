@@ -1,4 +1,4 @@
-#ifndef PYTHON_BINDINGS_H
+﻿#ifndef PYTHON_BINDINGS_H
 #define PYTHON_BINDINGS_H
 
 #include <QColor>
@@ -19,6 +19,10 @@ struct AnimeanOverlayItem {
     qreal width = 3.0;
     int penStyle = 1;
     bool removable = true;
+    // Dragging a draggable item routes through the "handle" hook events with
+    // the item's id, exactly like an edit handle - pure mechanism; what the
+    // drag MEANS lives in Python.
+    bool draggable = false;
 };
 
 // A draggable edit handle, drawn at constant SCREEN size above everything.
