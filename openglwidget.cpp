@@ -553,6 +553,23 @@ void PaintOpenGLWidget::resizeEvent(QResizeEvent *event)
     notifyViewTransformChanged();
 }
 
+void PaintOpenGLWidget::leaveEvent(QEvent *event)
+{
+    // The brush ring is drawn at the last hovered point, and nothing used to
+    // retract it: moving the pointer from one board to the other left a ring
+    // stuck against the edge of the board being left, on both boards at once.
+    // It is a cursor, so it goes when the cursor goes.
+    //
+    // Safe during a stroke: Qt keeps delivering moves to the widget that
+    // holds the mouse grab, and each one sets m_hoverPos again, so a drag
+    // that wanders outside the viewport keeps its ring.
+    if (m_hasHoverPos) {
+        m_hasHoverPos = false;
+        update();
+    }
+    QOpenGLWidget::leaveEvent(event);
+}
+
 void PaintOpenGLWidget::focusInEvent(QFocusEvent *event)
 {
     // Qt hands focus to a click target BEFORE delivering the press. When that
@@ -1910,6 +1927,19 @@ void PaintOpenGLWidget::paintGL()
                             Qt::DashLine));
         painter.setBrush(Qt::NoBrush);
         painter.drawEllipse(m_hoverPos, m_eraserRadius, m_eraserRadius);
+    }
+
+    // The pen gets a ring too, at the width it will actually lay down. Drawn
+    // in DOCUMENT units like the stroke itself, so it grows with the zoom and
+    // reads as "this much paper will be covered" rather than as a fixed
+    // screen decoration. A thin neutral outline: this is a cursor, and a ring
+    // as heavy as the ink would be mistaken for the ink.
+    if (m_tool == Tool::Pen && m_hasHoverPos) {
+        const qreal radius = m_penWidth * 0.5;
+        painter.setPen(QPen(QColor(40, 40, 40, 170),
+                            AnimeVectorLogic::displayStrokeWidth(0.75, m_zoom)));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawEllipse(m_hoverPos, radius, radius);
     }
 
     painter.restore();

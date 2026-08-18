@@ -220,6 +220,8 @@ protected:
     void wheelEvent(QWheelEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     void focusInEvent(QFocusEvent *event) override;
+    // The brush ring belongs to the cursor, so it has to leave with it.
+    void leaveEvent(QEvent *event) override;
 
 public:
     using VectorStroke = AnimeVectorStroke;
