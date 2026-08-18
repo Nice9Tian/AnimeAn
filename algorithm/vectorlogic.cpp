@@ -15,6 +15,10 @@ namespace {
 constexpr qreal kEpsilon = 0.0001;
 constexpr qreal kVectorRegionOverpaintWidth = 2.0;
 constexpr qreal kGraphEpsilon = 0.001;
+// Fill-side dangling-tip heal radius: well above any junction residual a cut
+// can leave (fit tolerance), well below the distance at which two REAL line
+// ends read as separate marks.
+constexpr qreal kFillGapHealPx = 1.0;
 
 struct GraphVertex {
     QPointF point;
@@ -1700,7 +1704,8 @@ QVector<AnimeStrokeCrossing> AnimeVectorLogic::strokeCrossings(const AnimeVector
 QVector<AnimeVectorStroke> AnimeVectorLogic::splitStrokeAt(const AnimeVectorStroke &stroke,
                                                            QVector<qreal> arcs,
                                                            const AnimeStrokeFitSettings &settings,
-                                                           qreal endTolerance)
+                                                           qreal endTolerance,
+                                                           QVector<qreal> *usedArcs)
 {
     QVector<AnimeVectorStroke> pieces;
     std::sort(arcs.begin(), arcs.end());
@@ -1714,6 +1719,9 @@ QVector<AnimeVectorStroke> AnimeVectorLogic::splitStrokeAt(const AnimeVectorStro
         if (cuts.isEmpty() || value - cuts.last() > endTolerance) {
             cuts.append(value);
         }
+    }
+    if (usedArcs) {
+        *usedArcs = cuts;
     }
     if (cuts.isEmpty()) {
         pieces.append(stroke);
@@ -1864,6 +1872,23 @@ AnimeVectorStroke AnimeVectorLogic::subStroke(const AnimeVectorStroke &stroke, q
     return inherit(makeStroke(points, stroke.color, stroke.width, stroke.id, false, true, settings));
 }
 
+AnimeVectorStroke AnimeVectorLogic::snapStrokeEndpoint(const AnimeVectorStroke &stroke, bool atEnd,
+                                                       const QPointF &target)
+{
+    if (stroke.points.size() < 2 || stroke.path.elementCount() < 2) {
+        return stroke;
+    }
+    QPainterPath path = stroke.path;
+    path.setElementPositionAt(atEnd ? path.elementCount() - 1 : 0, target.x(), target.y());
+    QVector<QPointF> points = stroke.points;
+    points[atEnd ? points.size() - 1 : 0] = target;
+    AnimeVectorStroke snapped =
+        makeStrokeFromPath(path, points, stroke.color, stroke.width, stroke.id);
+    snapped.property = stroke.property;
+    snapped.penStyle = stroke.penStyle;
+    return snapped;
+}
+
 qreal AnimeVectorLogic::displayStrokeWidth(qreal documentWidth, qreal zoom, qreal minScreenPx)
 {
     // Zoomed out, width * zoom drops below one screen pixel and antialiasing
@@ -1926,11 +1951,145 @@ QVector<QLineF> AnimeVectorLogic::segmentsFromPath(const QPainterPath &path)
     return segments;
 }
 
-QVector<AnimeVectorRegionFace> AnimeVectorLogic::computeVectorRegionFaces(const QVector<QLineF> &segments)
+QVector<AnimeVectorRegionFace> AnimeVectorLogic::computeVectorRegionFaces(const QVector<QLineF> &segments,
+                                                                          qreal healRadius)
 {
     QVector<AnimeVectorRegionFace> faces;
     if (segments.isEmpty()) {
         return faces;
+    }
+
+    if (healRadius > 0.0) {
+        // A point where exactly ONE segment terminates is a dangling tip - a
+        // flattening's interior vertex always closes two. Sub-pixel junction
+        // gaps (strokes cut before the endpoint snap existed, corners drawn
+        // almost closed, a cut end floating a fit tolerance off the wall it
+        // was cut against) leave such tips just short of the ink they were
+        // meant to touch. Each tip attaches INDEPENDENTLY to the nearest
+        // point of a segment it does not terminate: attaching to existing
+        // ink closes an almost-closed loop but can never invent a boundary
+        // between two separate lines, a three-way near-miss attaches all
+        // three, and a tip against a wall's INTERIOR (or a shared split
+        // vertex, where no partner tip exists) works the same as a tip
+        // against another tip's segment. The intersection pass below turns
+        // every touch into a shared graph vertex. The radius is a
+        // document-unit constant: with fresh cuts snapped at the source it
+        // only serves legacy content, which was drawn near 1:1 zoom.
+        QMap<QString, int> endCount;
+        for (const QLineF &segment : segments) {
+            ++endCount[vertexKey(segment.p1())];
+            ++endCount[vertexKey(segment.p2())];
+        }
+        QVector<QPointF> tips;
+        QVector<QString> tipKeys;
+        QMap<QString, bool> seenTips;
+        for (const QLineF &segment : segments) {
+            for (const QPointF &end : {segment.p1(), segment.p2()}) {
+                const QString key = vertexKey(end);
+                if (endCount.value(key) == 1 && !seenTips.contains(key)) {
+                    seenTips.insert(key, true);
+                    tips.append(end);
+                    tipKeys.append(key);
+                }
+            }
+        }
+
+        // PHASE 1 - mutual pairs: two tips that are each other's nearest tip
+        // merge onto their midpoint (a trimmed corner, where BOTH sides end
+        // free). Attaching such a pair each to the OTHER's segment instead
+        // just swapped their positions and still left no shared vertex.
+        QMap<QString, QPointF> remap;
+        QVector<bool> merged(tips.size(), false);
+        auto nearestTip = [&](int index) {
+            int best = -1;
+            qreal bestDistance = healRadius;
+            for (int other = 0; other < tips.size(); ++other) {
+                if (other == index) {
+                    continue;
+                }
+                const qreal distance = QLineF(tips[index], tips[other]).length();
+                if (distance <= bestDistance) {
+                    bestDistance = distance;
+                    best = other;
+                }
+            }
+            return best;
+        };
+        for (int a = 0; a < tips.size(); ++a) {
+            if (merged[a]) {
+                continue;
+            }
+            const int b = nearestTip(a);
+            if (b >= 0 && !merged[b] && nearestTip(b) == a) {
+                merged[a] = merged[b] = true;
+                const QPointF middle = (tips[a] + tips[b]) * 0.5;
+                remap.insert(tipKeys[a], middle);
+                remap.insert(tipKeys[b], middle);
+            }
+        }
+        QVector<QLineF> healed = segments;
+        bool changed = !remap.isEmpty();
+        if (changed) {
+            for (QLineF &segment : healed) {
+                const auto p1 = remap.constFind(vertexKey(segment.p1()));
+                if (p1 != remap.constEnd()) {
+                    segment.setP1(p1.value());
+                }
+                const auto p2 = remap.constFind(vertexKey(segment.p2()));
+                if (p2 != remap.constEnd()) {
+                    segment.setP2(p2.value());
+                }
+            }
+        }
+
+        // PHASE 2 - lone tips (a cut end floating against a wall the pieces
+        // of which share their split vertex exactly, or the odd arm of a
+        // three-way near-miss) attach to the nearest point of a segment they
+        // do not terminate. The intersection pass below turns the touch into
+        // a shared graph vertex.
+        for (QLineF &segment : healed) {
+            for (int endIndex = 0; endIndex < 2; ++endIndex) {
+                const QPointF tip = endIndex == 0 ? segment.p1() : segment.p2();
+                const QString tipKey = vertexKey(tip);
+                if (endCount.value(tipKey) != 1 || remap.contains(tipKey)) {
+                    continue;
+                }
+                QPointF best;
+                qreal bestDistance = healRadius;
+                bool found = false;
+                for (const QLineF &other : healed) {
+                    if (vertexKey(other.p1()) == tipKey || vertexKey(other.p2()) == tipKey) {
+                        continue;   // a segment that terminates at this tip
+                    }
+                    const QPointF d = other.p2() - other.p1();
+                    const qreal len2 = d.x() * d.x() + d.y() * d.y();
+                    if (len2 <= kEpsilon * kEpsilon) {
+                        continue;
+                    }
+                    qreal t = ((tip.x() - other.p1().x()) * d.x()
+                               + (tip.y() - other.p1().y()) * d.y()) / len2;
+                    t = std::min<qreal>(1.0, std::max<qreal>(0.0, t));
+                    const QPointF q = other.p1() + d * t;
+                    const qreal distance = QLineF(tip, q).length();
+                    if (distance > 1e-9 && distance <= bestDistance) {
+                        bestDistance = distance;
+                        best = q;
+                        found = true;
+                    }
+                }
+                if (found) {
+                    if (endIndex == 0) {
+                        segment.setP1(best);
+                    } else {
+                        segment.setP2(best);
+                    }
+                    changed = true;
+                }
+            }
+        }
+        if (changed) {
+            return computeVectorRegionFaces(healed, 0.0);
+        }
     }
 
     QVector<QVector<qreal>> splitParameters;
@@ -2063,7 +2222,11 @@ QPainterPath AnimeVectorLogic::vectorRegionPathAt(const QPointF &seed, const QVe
         return QPainterPath();
     }
 
-    const QVector<AnimeVectorRegionFace> faces = computeVectorRegionFaces(segments);
+    // Filling heals sub-pixel junction gaps (dangling-tip pairs): strokes
+    // cut before the endpoint snap existed, or corners drawn almost closed,
+    // still bound a fillable face.
+    const QVector<AnimeVectorRegionFace> faces =
+        computeVectorRegionFaces(segments, kFillGapHealPx);
     const AnimeVectorRegionFace *bestFace = nullptr;
     qreal bestArea = std::numeric_limits<qreal>::max();
     for (const AnimeVectorRegionFace &face : faces) {

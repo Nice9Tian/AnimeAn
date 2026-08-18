@@ -225,13 +225,28 @@ bool cutSpanAt(const AnimeVectorStroke &stroke,
 // point that already IS an endpoint, and splitting there would only shed a
 // degenerate sliver. Returns the stroke unchanged (one piece) when no arc
 // survives that test.
+// `usedArcs`, when given, receives the arcs that actually divided the stroke
+// (sorted, end-filtered, de-duplicated): pieces[k] and pieces[k+1] share the
+// boundary at usedArcs[k], so a caller can name each junction without
+// guessing by proximity.
 QVector<AnimeVectorStroke> splitStrokeAt(const AnimeVectorStroke &stroke,
                                          QVector<qreal> arcs,
                                          const AnimeStrokeFitSettings &settings = {},
-                                         qreal endTolerance = 1e-3);
+                                         qreal endTolerance = 1e-3,
+                                         QVector<qreal> *usedArcs = nullptr);
 AnimeVectorStroke subStroke(const AnimeVectorStroke &stroke, qreal fromW, qreal toW,
                             const AnimeStrokeFitSettings &settings = {});
 QPointF pointAtLength(const AnimeVectorStroke &stroke, qreal length);
+
+// The stroke with one TERMINAL point moved to `target` (path element and
+// polyline vertex together; lengths and bounds rebuilt). A junction belongs
+// to every line that meets it: exact path splitting puts each piece's cut
+// end on its OWN fitted path, and two fitted paths pass a fit tolerance
+// apart near the crossing - sub-pixel gaps that the fill's planar graph
+// (vertex snap 0.001 px) can never close. The nudge is at most that same
+// fit tolerance, confined to the endpoint.
+AnimeVectorStroke snapStrokeEndpoint(const AnimeVectorStroke &stroke, bool atEnd,
+                                     const QPointF &target);
 
 // The DOCUMENT-space width to hand the pen so a stroke never renders thinner
 // than `minScreenPx` on screen. Display only - the stored width is untouched.
@@ -241,7 +256,16 @@ QPointF pointAtLength(const AnimeVectorStroke &stroke, qreal length);
 qreal displayStrokeWidth(qreal documentWidth, qreal zoom, qreal minScreenPx = 1.0);
 
 QVector<QLineF> segmentsFromPath(const QPainterPath &path);
-QVector<AnimeVectorRegionFace> computeVectorRegionFaces(const QVector<QLineF> &segments);
+// healRadius > 0 additionally attaches every DANGLING end (a point where
+// exactly one segment terminates) to the nearest point of a segment it does
+// not terminate, when one lies within that distance. Drawings whose
+// junctions carry sub-pixel gaps - strokes cut before the endpoint snap
+// existed, hand-drawn corners that almost meet, a line end floating a fit
+// tolerance off the wall it was cut against - close into fillable faces.
+// Attaching to existing ink can never invent a boundary between two separate
+// lines, and interior vertices are untouched.
+QVector<AnimeVectorRegionFace> computeVectorRegionFaces(const QVector<QLineF> &segments,
+                                                        qreal healRadius = 0.0);
 QPainterPath vectorRegionPathAt(const QPointF &seed, const QVector<QLineF> &segments, const QRect &canvasRect);
 QPainterPath fillPathFromMask(const QPoint &seed, const QImage &boundary);
 }

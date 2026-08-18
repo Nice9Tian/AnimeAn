@@ -2580,6 +2580,46 @@ bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
     }
     std::sort(boundaries.begin(), boundaries.end());
 
+    // A junction is ONE point of the drawing, and every line that meets it
+    // must END on it - on literally the same coordinates. Exact splitting
+    // puts each piece's cut end on its own fitted path, and two fitted
+    // paths run a fit tolerance apart near a crossing: the sub-pixel gaps
+    // that left were invisible to the eye but fatal to the fill, whose
+    // planar graph merges vertices at 0.001 px. Both sides of a junction
+    // recover the same polyline intersection point from their arcs, so
+    // snapping every piece end there closes the drawing again; the nudge is
+    // bounded by the fit tolerance and confined to the endpoint.
+    const auto junctionPoint = [&target](qreal arc) {
+        return AnimeVectorLogic::pointAtLength(target, arc * target.totalLength);
+    };
+    // A snap must stay a NUDGE: bounded by the piece's own length (a short
+    // sliver must not have its ends cross) and by a sanity cap - a junction
+    // farther out than any plausible fit deviation means something else went
+    // wrong, and leaving the end in place beats teleporting ink. The fill's
+    // dangling-tip heal still catches an unsnapped end.
+    const auto snapEndBounded = [](VectorStroke piece, bool atEnd, const QPointF &junction) {
+        constexpr qreal kJunctionSnapLimitPx = 4.0;
+        if (piece.points.size() < 2) {
+            return piece;
+        }
+        const QPointF end = atEnd ? piece.points.last() : piece.points.first();
+        const qreal nudge = QLineF(end, junction).length();
+        if (nudge <= 1e-12 || nudge > kJunctionSnapLimitPx
+            || nudge > piece.totalLength * 0.5) {
+            return piece;
+        }
+        return AnimeVectorLogic::snapStrokeEndpoint(piece, atEnd, junction);
+    };
+    const auto boundaryIsJunction = [&plan](qreal arc) {
+        if (arc == plan.span.first) {
+            return plan.low.isJunction();
+        }
+        if (arc == plan.span.second) {
+            return plan.high.isJunction();
+        }
+        return true;   // the remaining boundaries are self-crossing partners
+    };
+
     QVector<VectorStroke> pieces;
     qreal previous = 0.0;
     for (int i = 0; i <= boundaries.size(); ++i) {
@@ -2587,9 +2627,15 @@ bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
         const qreal middle = (previous + next) * 0.5;
         const bool erased = middle >= plan.span.first && middle <= plan.span.second;
         if (next - previous > AnimeVectorLogic::epsilon() && !erased) {
-            const VectorStroke piece =
+            VectorStroke piece =
                 AnimeVectorLogic::subStroke(target, previous, next, m_fitSettings);
             if (piece.points.size() >= 2) {
+                if (i > 0 && boundaryIsJunction(previous)) {
+                    piece = snapEndBounded(piece, false, junctionPoint(previous));
+                }
+                if (i < boundaries.size() && boundaryIsJunction(next)) {
+                    piece = snapEndBounded(piece, true, junctionPoint(next));
+                }
                 pieces.append(piece);
             }
         }
@@ -2606,10 +2652,25 @@ bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
     bool changed = false;
     int currentTarget = targetIndex;
     for (int strokeIndex : editOrder) {
-        const QVector<VectorStroke> wallPieces = AnimeVectorLogic::splitStrokeAt(
-            image->strokeAt(strokeIndex), wallCuts[strokeIndex], m_fitSettings);
+        const VectorStroke wall = image->strokeAt(strokeIndex);
+        QVector<qreal> usedWallArcs;
+        QVector<VectorStroke> wallPieces = AnimeVectorLogic::splitStrokeAt(
+            wall, wallCuts[strokeIndex], m_fitSettings, 1e-3, &usedWallArcs);
         if (wallPieces.size() < 2) {
             continue;   // the crossing was already at one of the wall's ends
+        }
+        // The wall's side of each junction snaps to the crossing too. The
+        // wall recovers the point from ITS arc; both strokes' arcs invert to
+        // the same polyline intersection, so target and wall pieces end on
+        // coordinates the fill graph reads as one vertex. splitStrokeAt
+        // reports which arc made each boundary - pieces[k] and pieces[k+1]
+        // share usedWallArcs[k] - so no proximity guessing between two
+        // junctions on one wall.
+        for (int k = 0; k + 1 < wallPieces.size() && k < usedWallArcs.size(); ++k) {
+            const QPointF junction = AnimeVectorLogic::pointAtLength(
+                wall, usedWallArcs[k] * wall.totalLength);
+            wallPieces[k] = snapEndBounded(wallPieces[k], true, junction);
+            wallPieces[k + 1] = snapEndBounded(wallPieces[k + 1], false, junction);
         }
         const int inserted = image->replaceStrokeWithPieces(strokeIndex, wallPieces);
         if (inserted <= 0) {
