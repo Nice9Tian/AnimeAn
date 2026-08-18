@@ -2559,6 +2559,35 @@ QPainterPath AnimeVectorLogic::vectorRegionPathAt(const QPointF &seed, const QVe
         return QPainterPath();
     }
 
+    // HOLES. A face is traced as ONE cycle, so when the ink inside a region is
+    // a separate loop - the counter of an "A", a window inside a shape - that
+    // loop is its own face and the outer face's polygon simply spans it. Paint
+    // that polygon and the hole is coloured in with everything else, which is
+    // what "the fill leaked into the middle of the A" means.
+    //
+    // The graph cannot tell us the nesting (the two loops share no edge, which
+    // is precisely why they are separate faces), so it is decided
+    // geometrically: any other face that lies wholly inside the chosen one,
+    // and that the seed is not in, is a hole of it. QPainterPath::contains
+    // returns false as soon as the two outlines touch, so a face merely
+    // ADJACENT to the chosen one - the ordinary case, sharing a wall with it -
+    // is never mistaken for a hole.
+    QPainterPath region = bestFace->path;
+    const QRectF bestBounds = bestFace->path.boundingRect();
+    for (const AnimeVectorRegionFace &face : faces) {
+        if (&face == bestFace || std::abs(face.signedArea) >= bestArea) {
+            continue;
+        }
+        // Cheap reject first: containment of paths is the expensive test.
+        if (!bestBounds.contains(face.path.boundingRect())) {
+            continue;
+        }
+        if (face.path.contains(seed) || !bestFace->path.contains(face.path)) {
+            continue;
+        }
+        region = region.subtracted(face.path);
+    }
+
     QPainterPath canvas;
     canvas.addRect(canvasRect);
 
@@ -2566,7 +2595,10 @@ QPainterPath AnimeVectorLogic::vectorRegionPathAt(const QPointF &seed, const QVe
     overpaintStroker.setWidth(kVectorRegionOverpaintWidth);
     overpaintStroker.setCapStyle(Qt::RoundCap);
     overpaintStroker.setJoinStyle(Qt::RoundJoin);
-    return bestFace->path.united(overpaintStroker.createStroke(bestFace->path)).intersected(canvas).simplified();
+    // Stroking the region AFTER the holes are cut tucks the paint under the
+    // hole's outline too, the same way it tucks under the outer one - so a
+    // hole does not show a hairline of paper around its ink.
+    return region.united(overpaintStroker.createStroke(region)).intersected(canvas).simplified();
 }
 
 QPainterPath AnimeVectorLogic::fillPathFromMask(const QPoint &seed, const QImage &boundary)
