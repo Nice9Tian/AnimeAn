@@ -55,3 +55,26 @@ foreach ($dest in $destinations) {
 }
 
 Write-Host ("{0} file(s) updated across {1} deployment(s)." -f $updated, $destinations.Count)
+
+# --- stale-binary warning ----------------------------------------------------
+# Scripts are only half the picture: a .py fix cannot show up in an AnimeAn.exe
+# that predates the C++ it depends on, and a stale exe next to fresh scripts is
+# how "the fix does not work" reports start. Say so loudly rather than let the
+# next test run against yesterday's build.
+$newestSource = (Get-ChildItem -Path (Join-Path $root "*.cpp"), (Join-Path $root "*.h"),
+                                     (Join-Path $root "algorithm\*"), (Join-Path $root "childrenpanel\*"),
+                                     (Join-Path $root "pythonbind\*") -File -ErrorAction SilentlyContinue |
+                  Sort-Object LastWriteTime -Descending | Select-Object -First 1)
+if ($newestSource) {
+    foreach ($dest in $destinations) {
+        $exe = Join-Path $dest "AnimeAn.exe"
+        if ((Test-Path $exe) -and (Get-Item $exe).LastWriteTime -lt $newestSource.LastWriteTime) {
+            Write-Host ""
+            Write-Host ("STALE BINARY: {0}" -f $exe)
+            Write-Host ("  built {0}, but {1} changed {2}" -f (Get-Item $exe).LastWriteTime,
+                        $newestSource.Name, $newestSource.LastWriteTime)
+            Write-Host "  C++ changed since this exe was built - rebuild it (and run the"
+            Write-Host "  deploy_AnimeAn target for dist\) before testing."
+        }
+    }
+}
