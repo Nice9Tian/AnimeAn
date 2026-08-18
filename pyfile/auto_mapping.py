@@ -472,6 +472,70 @@ def _tangent_at_arc(points, cumulative, arc, window=0.0):
     return _segment_direction(points, index)
 
 
+# A vertex turning more than this is a drawn CORNER, not hand jitter. Measured
+# across every guide in the test corpus: jitter and genuine curvature stay
+# under 15 deg per vertex (p99), the wildest hand wobble reaches 34 deg, and
+# deliberately drawn corners start at 113 deg. 45 deg sits in that gap with
+# margin on both sides. This flattening heuristic is the only signal a
+# POLYLINE guide offers; it cannot go lower, because flattening chords fold
+# genuine curvature into the measured turn.
+_SHARP_TURN_DEG = 45.0
+_SHARP_COS = math.cos(math.radians(_SHARP_TURN_DEG))
+
+# CURVE guides carry a better signal: the stroke fitter emits a corner as a
+# DELIBERATE tangent break at a segment joint (every other joint is G1 by
+# construction), and its own threshold is 55 - 35*(corner/100) deg - 37.5 at
+# the default pen, down to 20 at the slider max. All of those sit BELOW the
+# flattening heuristic's 45, so reading the exact one-sided tangents at each
+# joint is the lossless test: ~0 deg at a smooth joint, the full break angle
+# at a corner, no flattening wobble folded in. 10 deg clears numerical noise
+# by orders of magnitude and undercuts every fitter setting.
+_SHARP_JOINT_DEG = 10.0
+_SHARP_JOINT_COS = math.cos(math.radians(_SHARP_JOINT_DEG))
+
+
+def _cubic_is_line(seg):
+    """True when the control net lies on the chord (a line command in disguise)."""
+    (x0, y0), c1, c2, (x3, y3) = seg
+    dx, dy = x3 - x0, y3 - y0
+    length = math.hypot(dx, dy)
+    if length <= 1e-12:
+        return True
+    for cx, cy in (c1, c2):
+        if abs((cx - x0) * dy - (cy - y0) * dx) / length > 1e-9:
+            return False
+    return True
+
+
+def _sharp_vertex_arcs(points, arcs):
+    """Arc positions of vertices that turn more than _SHARP_TURN_DEG.
+
+    The map itself (`hv`) evaluates guide POSITIONS, so a drawn corner is a
+    hard kink in the displacement field and the real fold it causes sits
+    exactly on the corner's preimage. The orientation tests, however, read
+    window-smoothed tangents (see tangent_at), and a plain central difference
+    across a 113 deg corner smears the tangent jump into a ramp: the analytic
+    fold locus then lands where the RAMP crosses zero - measured 11 child px
+    away from where the artwork actually folds back, drifting with the row.
+    Recording the sharp vertices lets tangent_at stop its window at them, so
+    the smoothed tangent still de-noises jitter but jumps exactly where the
+    position field kinks.
+    """
+    out = []
+    for i in range(1, len(points) - 1):
+        ax = points[i][0] - points[i - 1][0]
+        ay = points[i][1] - points[i - 1][1]
+        bx = points[i + 1][0] - points[i][0]
+        by = points[i + 1][1] - points[i][1]
+        la = math.hypot(ax, ay)
+        lb = math.hypot(bx, by)
+        if la < 1e-9 or lb < 1e-9:
+            continue
+        if (ax * bx + ay * by) / (la * lb) < _SHARP_COS:
+            out.append(arcs[i])
+    return out
+
+
 def _segment_intersection(a1, a2, b1, b2):
     d1x = a2[0] - a1[0]
     d1y = a2[1] - a1[1]
@@ -607,6 +671,7 @@ class _Curve:
             # one (legacy asset, axis snapshot, absorbed guide) and the
             # crossing search then runs on both flattenings alike.
             self.flat_arcs = self.cum
+            self.sharp_arcs = _sharp_vertex_arcs(self.points, self.flat_arcs)
             return
 
         # --- curve mode ---
@@ -639,6 +704,33 @@ class _Curve:
                 t = k / count
                 self.points.append(_cubic_point((p0, c1, c2, p3), t))
                 self.flat_arcs.append(self.cum[index] + self._partial(index, t))
+        # Two sharp-vertex sources, merged. The flattening heuristic (45 deg)
+        # catches cusps INSIDE a degenerate control net. Joints get the exact
+        # test: the fitter emits corners as deliberate tangent breaks between
+        # segments, and comparing the two one-sided tangents reads the break
+        # angle losslessly - a 40 deg corner (default pen threshold 37.5) is
+        # invisible to the flattening heuristic but a real kink in hv(), and
+        # missing it re-opens the smeared-locus bug the clamp exists to fix.
+        # Line-line joints stay OUT of the exact test: an all-line command
+        # path is a polyline in disguise (a joint at every drawn vertex, hand
+        # jitter and all), and a 10 deg gate there would clamp the de-noising
+        # window at every wobble - the very shredding the window prevents.
+        # Those keep the 45 deg flattening rule; a joint touching a genuine
+        # cubic is fitter output, where a tangent break is deliberate.
+        flat_sharp = _sharp_vertex_arcs(self.points, self.flat_arcs)
+        joint_sharp = []
+        for index in range(len(self.segs) - 1):
+            if (_cubic_is_line(self.segs[index])
+                    and _cubic_is_line(self.segs[index + 1])):
+                continue
+            ax, ay = self._seg_dir(index, 1.0)
+            bx, by = self._seg_dir(index + 1, 0.0)
+            if ax * bx + ay * by < _SHARP_JOINT_COS:
+                joint_sharp.append(self.cum[index + 1])
+        self.sharp_arcs = []
+        for arc in sorted(flat_sharp + joint_sharp):
+            if not self.sharp_arcs or arc - self.sharp_arcs[-1] > 1e-6:
+                self.sharp_arcs.append(arc)
 
     @staticmethod
     def of(spec):
@@ -718,7 +810,34 @@ class _Curve:
         return self._seg_dir(index, t)
 
     def tangent_at(self, arc, window=0.0):
-        """Window-smoothed tangent; window 0 is the exact curve tangent."""
+        """Window-smoothed tangent; window 0 is the exact curve tangent.
+
+        The window never averages ACROSS a sharp corner: it is clamped to the
+        nearest sharp vertex on each side, degenerating to a one-sided
+        difference next to one. A one-sided chord still spans up to a full
+        window of samples, so jitter suppression survives; but the tangent now
+        JUMPS exactly at the corner, matching the kink the position field
+        (`hv`) actually has there. Without the clamp the smeared tangent put
+        the analytic fold locus 11 child px off the real fold-back
+        (see _sharp_vertex_arcs) - strokes visibly overshot the crease and
+        folded back beyond it.
+        """
+        if window > 0.0 and self.sharp_arcs:
+            lo, hi = arc - window, arc + window
+            index = bisect.bisect_left(self.sharp_arcs, arc)
+            if index > 0:
+                lo = max(lo, self.sharp_arcs[index - 1])
+            if index < len(self.sharp_arcs):
+                hi = min(hi, self.sharp_arcs[index])
+            if (lo, hi) != (arc - window, arc + window):
+                if hi - lo > 1e-9:
+                    before = self.point_at(lo)
+                    after = self.point_at(hi)
+                    dx, dy = after[0] - before[0], after[1] - before[1]
+                    length = math.hypot(dx, dy)
+                    if length > 1e-9:
+                        return (dx / length, dy / length)
+                return self.dir_at(arc)
         if not self.curved:
             return _tangent_at_arc(self.points, self.cum, arc, window)
         if window > 0.0:
@@ -837,7 +956,9 @@ class _Frame:
         # Continuity is not smoothness; zeroing the window here was measured
         # to reverse the joint-to-joint heading 17 times over 161 joints.
         # (The window only feeds orientation tests; the Newton solve keeps
-        # the exact tangents via jacobian/dir_at.)
+        # the exact tangents via jacobian/dir_at. And the window is CLAMPED at
+        # sharp corners - see _Curve.tangent_at - so de-noising cannot move a
+        # fold off the corner the artwork actually creases at.)
         self.h_window = max(2.0 * POLY_STEP, 0.03 * self.h_total)
         self.v_window = max(2.0 * POLY_STEP, 0.03 * self.v_total)
 
