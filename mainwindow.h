@@ -119,6 +119,9 @@ private:
     bool writeModelToFile(const AnimeSceneModel &model, const QString &fileName, const QString &dialogTitle);
     void updateWindowTitle();
     PaintOpenGLWidget *activePaintWidget() const;
+    // The remembered file of a given board, writable so Save can adopt one.
+    QString &filePathFor(const PaintOpenGLWidget *widget);
+    QString filePathFor(const PaintOpenGLWidget *widget) const;
     PaintOpenGLWidget *framePanelTarget() const;
     PaintOpenGLWidget *layerPanelTarget() const;
     PaintOpenGLWidget *assetPanelTarget() const;
@@ -159,7 +162,11 @@ private:
     int m_playbackFrameCount = 0;
     QPlainTextEdit *m_pythonDebugOutput = nullptr;
     QLineEdit *m_pythonDebugCommand = nullptr;
-    QString m_currentFilePath;
+    // One path PER BOARD. The main canvas and the texture board are separate
+    // documents (each PaintOpenGLWidget owns its model by value), so a single
+    // path would let a Save on one board overwrite the other board's file.
+    QString m_currentFilePath;        // the main canvas
+    QString m_childFilePath;          // the texture board
     QHash<PaintOpenGLWidget *, SelectionAttention> m_attentionByView;
     SelectionAttention m_pendingAttention;
     AttentionChange m_pendingAttentionChange = AttentionChange::FrameChange;

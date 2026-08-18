@@ -1791,3 +1791,36 @@ QVector<QLineF> AnimeSceneModel::fillBoundarySegments(int frame, int layerIndex)
     }
     return segments;
 }
+
+QRectF AnimeSceneModel::fillBoundaryBounds(int frame, int layerIndex) const
+{
+    // Deliberately a line-for-line twin of fillBoundarySegments' column filter:
+    // this rect bounds those segments, so the two must agree on which columns
+    // are walls. stroke.bounds is already padded by the stroke width.
+    QRectF bounds;
+    if (frame < 0) {
+        return bounds;
+    }
+
+    for (int columnIndex = 0; columnIndex < m_scene.xsheet.columns.size(); ++columnIndex) {
+        if (layerIndex >= 0 && columnIndex != layerIndex) {
+            continue;
+        }
+
+        const AnimeColumn &column = m_scene.xsheet.columns[columnIndex];
+        if (column.type == AnimeColumnType::Fill || !column.visible || column.internal) {
+            continue;
+        }
+
+        const AnimeCell cell = column.cellAt(frame);
+        const AnimeVectorImageModel *image = imageForCell(cell);
+        if (!image) {
+            continue;
+        }
+
+        for (const AnimeVectorStrokeNode &node : image->strokeNodes()) {
+            bounds = bounds.isNull() ? node.stroke.bounds : bounds.united(node.stroke.bounds);
+        }
+    }
+    return bounds;
+}

@@ -1322,7 +1322,14 @@ bool MainWindow::saveTextureViewAs()
     if (QFileInfo(fileName).suffix().isEmpty()) {
         fileName += QStringLiteral(".animean");
     }
-    return writeModelToFile(m_childPaintWidget->model(), fileName, QStringLiteral("Save Texture View"));
+    if (!writeModelToFile(m_childPaintWidget->model(), fileName,
+                          QStringLiteral("Save Texture View"))) {
+        return false;
+    }
+    m_childFilePath = fileName;   // the board now has a file of its own
+    updateWindowTitle();
+    setStatusText(QStringLiteral("Saved texture board: %1").arg(QFileInfo(fileName).fileName()));
+    return true;
 }
 
 bool MainWindow::writeModelToFile(const AnimeSceneModel &model, const QString &fileName, const QString &dialogTitle)
@@ -1344,7 +1351,9 @@ bool MainWindow::writeModelToFile(const AnimeSceneModel &model, const QString &f
         return false;
     }
 
-    setStatusText(QStringLiteral("Saved texture view: %1").arg(QFileInfo(fileName).fileName()));
+    // The caller reports what was saved: saveProjectTo names the board, and
+    // the texture menu item says so itself. A hardcoded line here would have
+    // claimed "texture view" for every main-canvas save.
     return true;
 }
 
@@ -1410,6 +1419,16 @@ bool MainWindow::exportTextureImage()
 PaintOpenGLWidget *MainWindow::activePaintWidget() const
 {
     return m_activePaintWidget ? m_activePaintWidget : m_paintWidget;
+}
+
+QString &MainWindow::filePathFor(const PaintOpenGLWidget *widget)
+{
+    return widget == m_childPaintWidget ? m_childFilePath : m_currentFilePath;
+}
+
+QString MainWindow::filePathFor(const PaintOpenGLWidget *widget) const
+{
+    return widget == m_childPaintWidget ? m_childFilePath : m_currentFilePath;
 }
 
 PaintOpenGLWidget *MainWindow::framePanelTarget() const
@@ -2371,22 +2390,32 @@ void MainWindow::openProject()
 
 bool MainWindow::saveProject()
 {
-    if (m_currentFilePath.isEmpty()) {
+    // Save what the user is looking at. The two boards are two documents, and
+    // this used to be hardwired to the main one: work done entirely on the
+    // texture board was saved as the untouched default main scene - a valid
+    // 950-byte file that reopens blank, which reads as "Save did not run".
+    const QString &path = filePathFor(activePaintWidget());
+    if (path.isEmpty()) {
         return saveProjectAs();
     }
-    return saveProjectTo(m_currentFilePath);
+    return saveProjectTo(path);
 }
 
 bool MainWindow::saveProjectAs()
 {
-    QString selectedFile = m_currentFilePath;
+    const PaintOpenGLWidget *target = activePaintWidget();
+    const bool isChild = target == m_childPaintWidget;
+    QString selectedFile = filePathFor(target);
     if (selectedFile.isEmpty()) {
-        selectedFile = QDir::home().filePath(QStringLiteral("untitled.animean"));
+        selectedFile = QDir::home().filePath(isChild ? QStringLiteral("texture.animean")
+                                                     : QStringLiteral("untitled.animean"));
     }
 
+    // The title names the board, so a Save As can never quietly write the
+    // document the user was not looking at.
     QString fileName = QFileDialog::getSaveFileName(
         this,
-        QStringLiteral("Save Project As"),
+        isChild ? QStringLiteral("Save Texture Board As") : QStringLiteral("Save Project As"),
         selectedFile,
         projectFilter());
     if (fileName.isEmpty()) {
@@ -2400,26 +2429,27 @@ bool MainWindow::saveProjectAs()
 
 bool MainWindow::saveProjectTo(const QString &fileName)
 {
-    QSaveFile file(fileName);
-    if (!file.open(QIODevice::WriteOnly)) {
-        QMessageBox::warning(this,
-                             QStringLiteral("Save Project"),
-                             QStringLiteral("Failed to write file:\n%1").arg(file.errorString()));
+    // The ACTIVE board's model, not m_paintWidget's - see saveProject. Writing
+    // is shared with the texture menu through writeModelToFile so both routes
+    // cannot drift apart.
+    PaintOpenGLWidget *target = activePaintWidget();
+    if (!target) {
+        return false;
+    }
+    const bool isChild = target == m_childPaintWidget;
+    const QString title = isChild ? QStringLiteral("Save Texture Board")
+                                  : QStringLiteral("Save Project");
+    if (!writeModelToFile(target->model(), fileName, title)) {
         return false;
     }
 
-    const QJsonDocument document(modelToJson(m_paintWidget->model()));
-    file.write(document.toJson(QJsonDocument::Indented));
-    if (!file.commit()) {
-        QMessageBox::warning(this,
-                             QStringLiteral("Save Project"),
-                             QStringLiteral("Failed to save file:\n%1").arg(file.errorString()));
-        return false;
-    }
-
-    m_currentFilePath = fileName;
+    // Each board remembers its OWN file, so a later Ctrl+S on one of them can
+    // never overwrite the other one's.
+    filePathFor(target) = fileName;
     updateWindowTitle();
-    setStatusText(QStringLiteral("Saved: %1").arg(QFileInfo(fileName).fileName()));
+    setStatusText(QStringLiteral("Saved %1: %2")
+                      .arg(isChild ? QStringLiteral("texture board") : QStringLiteral("project"),
+                           QFileInfo(fileName).fileName()));
     return true;
 }
 
@@ -2717,10 +2747,17 @@ void MainWindow::importClipStudioPaint(PaintOpenGLWidget *view)
 
 void MainWindow::updateWindowTitle()
 {
+    // The main canvas names the window; the texture board is announced beside
+    // it when it holds a file of its own, so it is never ambiguous which
+    // document a Save is about to write.
     const QString fileName = m_currentFilePath.isEmpty()
                                  ? QStringLiteral("Untitled")
                                  : QFileInfo(m_currentFilePath).fileName();
-    setWindowTitle(QStringLiteral("AnimeAn - %1").arg(fileName));
+    QString title = QStringLiteral("AnimeAn - %1").arg(fileName);
+    if (!m_childFilePath.isEmpty()) {
+        title += QStringLiteral(" [texture: %1]").arg(QFileInfo(m_childFilePath).fileName());
+    }
+    setWindowTitle(title);
 }
 
 void MainWindow::setStatusText(const QString &text)

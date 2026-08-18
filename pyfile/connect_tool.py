@@ -58,7 +58,9 @@ SHAPE_DELETE = 4
 
 HINT_COLORS = {1: (255, 200, 70, 255),    # endpoint / corner: amber diamond
                2: (130, 185, 255, 255),   # curvature apex: blue circle
-               3: (235, 235, 235, 255)}   # plain vertex / free point
+               3: (235, 235, 235, 255),   # plain vertex / free point
+               4: (150, 230, 170, 255),   # born on a span: green
+               5: (255, 140, 220, 255)}   # on the other stroke's extension: pink
 FIRST_COLOR = (255, 120, 40, 255)
 ACCEPT_COLOR = (60, 170, 90, 255)
 DELETE_COLOR = (205, 70, 70, 255)
@@ -169,6 +171,62 @@ def _build_candidates(scene, frame):
     return out
 
 
+def _build_segments(scene, frame):
+    """[(a, b, ref)] - every span a point can be BORN on.
+
+    A straight stroke is one lineTo, so its flattened polyline has exactly two
+    points and _classify offers nothing between them: there was no vertex to
+    connect to anywhere along a ruler line. Rather than densify the polyline
+    (which would quantise the join to a POLY_STEP lattice and invent hundreds
+    of fake vertices per hover), the spans are kept as spans and the point is
+    projected onto one at the cursor - continuous, and free.
+    """
+    out = []
+    structure = scene.get_structure()
+    for layer in structure["layers"]:
+        if not layer["visible"] or layer.get("locked") or layer["type"] == "fill":
+            continue
+        cell = scene.cell_to_dict(layer["index"], frame, True, POLY_STEP)
+        for index, stroke in enumerate(cell["image"]["strokes"]):
+            for poly_index, points in enumerate(_stroke_polylines(stroke)):
+                for i in range(len(points) - 1):
+                    out.append((points[i], points[i + 1],
+                                {"layer": layer["index"], "stroke": index,
+                                 "poly": poly_index, "seg": i}))
+    return out
+
+
+def _project(a, b, pos):
+    """(point, u) - `pos` dropped onto segment ab and clamped to it."""
+    abx, aby = b[0] - a[0], b[1] - a[1]
+    len2 = abx * abx + aby * aby
+    if len2 < 1e-12:
+        return a, 0.0
+    u = max(0.0, min(1.0, ((pos[0] - a[0]) * abx + (pos[1] - a[1]) * aby) / len2))
+    return (a[0] + abx * u, a[1] + aby * u), u
+
+
+def _ray_segment_hit(origin, direction, a, b):
+    """Where the ray from `origin` along `direction` crosses segment ab.
+
+    Returns (point, u, distance_along_ray) or None. The ray is one-sided: a
+    crossing BEHIND the first vertex is not where that stroke is heading, so
+    it is not an extension of it.
+    """
+    if direction is None:
+        return None
+    abx, aby = b[0] - a[0], b[1] - a[1]
+    denominator = direction[0] * aby - direction[1] * abx
+    if abs(denominator) < 1e-9:
+        return None   # parallel: no intersection to offer
+    wx, wy = a[0] - origin[0], a[1] - origin[1]
+    t = (wx * aby - wy * abx) / denominator          # along the ray
+    u = (wx * direction[1] - wy * direction[0]) / denominator
+    if t <= 0.0 or u < 0.0 or u > 1.0:
+        return None   # behind the vertex, or past the ends of this span
+    return (origin[0] + direction[0] * t, origin[1] + direction[1] * t), u, t
+
+
 def _candidates(session, scene, frame, fresh=False):
     """Every snappable vertex, as (snap_class, point, ref). Serializing the
     whole scene at hover rate was the cost problem, so hovers reuse a cached
@@ -178,8 +236,15 @@ def _candidates(session, scene, frame, fresh=False):
     if not fresh and cache is not None and cache["frame"] == frame:
         return cache["candidates"]
     candidates = _build_candidates(scene, frame)
-    session["snap_cache"] = {"frame": frame, "candidates": candidates}
+    session["snap_cache"] = {"frame": frame, "candidates": candidates,
+                             "segments": _build_segments(scene, frame)}
     return candidates
+
+
+def _segments(session, scene, frame, fresh=False):
+    """The span list from the same cache, built and invalidated together."""
+    _candidates(session, scene, frame, fresh)
+    return session["snap_cache"]["segments"]
 
 
 def _resolve(session, scene, frame, pos, fresh=False):
@@ -206,7 +271,48 @@ def _resolve(session, scene, frame, pos, fresh=False):
         if pool:
             return nearest(pool)
     pool = [c for c in candidates if _dist(c[1], pos) <= BRUSH_RADIUS]
-    return nearest(pool) if pool else None
+    if pool:
+        return nearest(pool)
+
+    # Nothing existing is close. Two ways to be born on a SPAN, tried in the
+    # order a user means them - both rank below every real vertex, because a
+    # span projection exists everywhere (including a hair from an endpoint)
+    # and would otherwise make the endpoint snap unreachable.
+    segments = _segments(session, scene, frame, fresh)
+
+    # (a) Where the FIRST vertex's stroke is heading. Once one end is armed,
+    #     the join the user almost always wants on a plain line is where that
+    #     stroke would meet it if it kept going - so that point wins over the
+    #     plain projection whenever the cursor is anywhere near it.
+    first = session.get("first")
+    if first is not None:
+        origin = first["point"]
+        direction = _pick_tangent(scene, frame, first, pos)
+        best = None
+        for a, b, ref in segments:
+            if ref["layer"] == first.get("layer") and ref["stroke"] == first.get("stroke"):
+                continue          # a stroke does not extend onto itself
+            hit = _ray_segment_hit(origin, direction, a, b)
+            if hit is None:
+                continue
+            point, u, _along = hit
+            d = _dist(point, pos)
+            if d <= BRUSH_RADIUS and (best is None or d < best[0]):
+                best = (d, {"point": point, "snap_class": 5, "free": False,
+                            "u": u, **ref})
+        if best is not None:
+            return best[1]
+
+    # (b) Plain projection onto the nearest span, so a ruler-straight stroke
+    #     offers a join anywhere along it rather than only at its two ends.
+    best = None
+    for a, b, ref in segments:
+        point, u = _project(a, b, pos)
+        d = _dist(point, pos)
+        if d <= BRUSH_RADIUS and (best is None or d < best[0]):
+            best = (d, {"point": point, "snap_class": 4, "free": False,
+                        "u": u, **ref})
+    return best[1] if best is not None else None
 
 
 # --- connection geometry -----------------------------------------------------
@@ -262,7 +368,18 @@ def _pick_tangent(scene, frame, pick, other_point):
     if not 0 <= pick.get("poly", 0) < len(polylines):
         return None
     points = polylines[pick.get("poly", 0)]
-    if not 0 <= pick["vertex"] < len(points):
+    if "seg" in pick:
+        # Born on a span: its own direction IS the tangent, signed toward the
+        # partner - the same rule _tangent applies to an interior vertex.
+        i = pick["seg"]
+        if not 0 <= i < len(points) - 1:
+            return None
+        d = _norm((points[i + 1][0] - points[i][0], points[i + 1][1] - points[i][1]))
+        if d is None:
+            return None
+        to_other = (other_point[0] - pick["point"][0], other_point[1] - pick["point"][1])
+        return d if d[0] * to_other[0] + d[1] * to_other[1] >= 0.0 else (-d[0], -d[1])
+    if not 0 <= pick.get("vertex", -1) < len(points):
         return None
     return _tangent(points, pick["vertex"], other_point)
 
@@ -346,8 +463,11 @@ def _push_handles(view, session):
     if hint is not None:
         # interactive=False: the hint sits UNDER the cursor, and a
         # hit-testable marker there swallowed the very click it advertised.
-        shape = SHAPE_DIAMOND if hint["snap_class"] == 1 else (
-            SHAPE_CIRCLE if hint["snap_class"] == 2 else SHAPE_ANCHOR)
+        # A point born on a span, and the extension crossing especially, are
+        # places the tool INVENTED rather than found - they get the diamond so
+        # they read as deliberate targets rather than as a stray plain vertex.
+        shape = SHAPE_DIAMOND if hint["snap_class"] in (1, 5) else (
+            SHAPE_CIRCLE if hint["snap_class"] in (2, 4) else SHAPE_ANCHOR)
         handles.append({"id": "connect:hint",
                         "x": hint["point"][0], "y": hint["point"][1],
                         "shape": shape, "interactive": False,

@@ -386,21 +386,36 @@ QRectF PaintOpenGLWidget::documentRect() const
 
 QRectF PaintOpenGLWidget::fillBoundsRect() const
 {
-    // The outer wall a bucket fill is clipped against, in DOCUMENT space.
-    // This used to be rect() - the widget - which was the same rectangle as
-    // the page only while the page WAS the widget. Now they are unrelated:
-    // with a page wider than the viewport, every click past the viewport's
-    // width was silently refused, and a region reaching past it was sliced
-    // off at the old widget edge and saved that way.
+    // What a bucket fill is clipped against, in DOCUMENT space - and it must
+    // come from the ARTWORK, never from the viewport.
+    //
+    // This rect is only ever a CLIP, never the wall it reads as. The tracer's
+    // wall is the ring of ink itself: computeVectorRegionFaces keeps only
+    // faces of positive signed area, so an open shape, or a click outside all
+    // ink, comes back empty however large this rect is. Taking it from the
+    // window therefore could not help a fill succeed - it could only cut one
+    // short. On the reference board it was literally the viewport, so the same
+    // click on the same drawing stored a region four times smaller at 2x zoom,
+    // and panning first froze a window-shaped rectangle of colour into the
+    // file. On the page-bounded board the page cut off anything drawn past its
+    // edge, which the artist can see and edit but could not fill.
+    //
+    // Unioned over ALL boundary layers regardless of the caller's scope: a
+    // superset of whatever fillAt or fill_tool finally traces, so the seed
+    // gate below can never refuse a click the tracer would have served.
+    QRectF bounds = m_model.fillBoundaryBounds(m_model.currentFrame(), -1);
     if (!m_unboundedCanvas) {
-        return documentRect();
+        // The page is a property of the document, not of the view, so it stays
+        // in the clip - this can only ever GROW what the bounded board allowed.
+        bounds = bounds.isNull() ? documentRect() : bounds.united(documentRect());
     }
-    // The reference board has no page, so the wall follows what is on screen,
-    // converted to document space (at zoom 1 with no pan this is the old
-    // widget rect, which is what the child board had before).
-    const QPointF topLeft = mapToDocument(QPointF(0.0, 0.0));
-    const QPointF bottomRight = mapToDocument(QPointF(width(), height()));
-    return QRectF(topLeft, bottomRight).normalized();
+    if (bounds.isNull()) {
+        return QRectF();   // no walls on this frame: there is nothing to fill
+    }
+    // Leave room for the halo that tucks a region under its own outline;
+    // clipping tight to the ink would shave it back off.
+    const qreal pad = AnimeVectorLogic::kVectorRegionOverpaintWidth;
+    return bounds.adjusted(-pad, -pad, pad, pad);
 }
 
 void PaintOpenGLWidget::modelReplaced()
@@ -2932,8 +2947,9 @@ bool PaintOpenGLWidget::fillAt(const QPointF &pos)
     if (!currentLayerAcceptsFill() || !editingAllowed()) {
         return false;
     }
-    // `pos` is in DOCUMENT space (mousePressEvent maps it), so it has to be
-    // tested against the page, not against the widget.
+    // `pos` is in DOCUMENT space (mousePressEvent maps it). The gate is the
+    // artwork's own extent, so what a click can reach does not depend on the
+    // window it was made through.
     if (!fillBoundsRect().contains(pos)) {
         return false;
     }
@@ -3051,7 +3067,7 @@ QVector<QLineF> PaintOpenGLWidget::fillGraphSegments(FillScope scope, int layerI
 QPainterPath PaintOpenGLWidget::vectorRegionPathAt(const QPointF &seed, FillScope scope, int layerIndex) const
 {
     // The produced region is clipped to this rect, so a widget rect here made
-    // a fill's SHAPE depend on the window size.
+    // a fill's SHAPE depend on the window size; it is the artwork's extent now.
     return AnimeVectorLogic::vectorRegionPathAt(seed, fillGraphSegments(scope, layerIndex),
                                                 fillBoundsRect().toAlignedRect());
 }

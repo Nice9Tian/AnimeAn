@@ -144,6 +144,11 @@ struct AnimeLiveFitState {
 };
 
 namespace AnimeVectorLogic {
+
+// How far a traced fill region is grown so it tucks UNDER the stroke that
+// walls it instead of leaving a hairline of paper showing. Anything that
+// clips a region has to leave this much room, which is why it is public.
+inline constexpr qreal kVectorRegionOverpaintWidth = 2.0;
 qreal epsilon();
 
 QVector<QPointF> filteredPoints(const QVector<QPointF> &points);

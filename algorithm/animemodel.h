@@ -358,6 +358,11 @@ public:
     // non-fill, non-internal columns at the given frame. layerIndex >= 0
     // restricts the walls to that single column.
     QVector<QLineF> fillBoundarySegments(int frame, int layerIndex = -1) const;
+    // The bounding rect of exactly those segments. A bucket fill is clipped
+    // against the ARTWORK, so the clip has to come from the same walls the
+    // trace runs on - a bound that disagreed with them would slice regions
+    // the tracer legitimately found.
+    QRectF fillBoundaryBounds(int frame, int layerIndex = -1) const;
 
 private:
     // normalizeLayerTree is logically const (it only reconciles bookkeeping),

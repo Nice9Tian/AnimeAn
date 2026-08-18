@@ -14,7 +14,8 @@
 
 namespace {
 constexpr qreal kEpsilon = 0.0001;
-constexpr qreal kVectorRegionOverpaintWidth = 2.0;
+// Lives in the header now: the fill clip has to leave room for this halo.
+using AnimeVectorLogic::kVectorRegionOverpaintWidth;
 constexpr qreal kGraphEpsilon = 0.001;
 // Fill-side dangling-tip heal radius: well above any junction residual a cut
 // can leave (fit tolerance), well below the distance at which two REAL line
