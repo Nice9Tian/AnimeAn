@@ -222,6 +222,10 @@ protected:
     void focusInEvent(QFocusEvent *event) override;
     // The brush ring belongs to the cursor, so it has to leave with it.
     void leaveEvent(QEvent *event) override;
+    // Rebuilds the pointer for the current tool: the pen wears a ring the
+    // size of the mark it makes, drawn INTO the cursor rather than onto the
+    // canvas so it cannot lag the pointer, and with no arrow beside it.
+    void updateBrushCursor();
 
 public:
     using VectorStroke = AnimeVectorStroke;
@@ -381,6 +385,13 @@ private:
     // whatever the canvas is magnified to. Converted per test through
     // algorithm/viewscale.h, the shared home of screen<->canvas conversion.
     static constexpr qreal kHoldStillRadiusScreenPx = 10.0;
+    // Past this the ring stops being a cursor and goes back on the canvas:
+    // window systems cap cursor bitmaps, and a clipped ring would lie about
+    // the width. Screen px, and the diameter, not the radius.
+    static constexpr int kMaxCursorRingPx = 128;
+    // True while the ring is too big to be a cursor: the pointer is blank
+    // and paintGL draws the ring instead.
+    bool m_penRingOnCanvas = false;
     qreal m_zoom = 1.0;
     QPointF m_panOffset;
     bool m_panning = false;

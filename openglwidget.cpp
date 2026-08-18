@@ -3,7 +3,9 @@
 #include <QLineF>
 #include <QGuiApplication>
 #include <QImage>
+#include <QCursor>
 #include <QPainter>
+#include <QPixmap>
 #include <QDebug>
 
 namespace {
@@ -492,6 +494,10 @@ void PaintOpenGLWidget::clampPan()
 
 void PaintOpenGLWidget::notifyViewTransformChanged()
 {
+    // The pen's ring is sized in SCREEN px, so a zoom resizes it. Every view
+    // change funnels through here, which makes this the one place to rebuild
+    // it from.
+    updateBrushCursor();
     emit viewTransformChanged();
 }
 
@@ -553,6 +559,63 @@ void PaintOpenGLWidget::resizeEvent(QResizeEvent *event)
     notifyViewTransformChanged();
 }
 
+void PaintOpenGLWidget::updateBrushCursor()
+{
+    // Only the pen wears a custom pointer. Every other tool keeps the arrow,
+    // including the erasers - their dashed ring is a different affordance and
+    // its radius is free to be far larger than a cursor bitmap may be.
+    if (m_tool != Tool::Pen) {
+        m_penRingOnCanvas = false;
+        unsetCursor();
+        return;
+    }
+
+    // The ring is the mark the pen will leave, so its screen size is the
+    // stroke width through the view transform - conversion from
+    // algorithm/viewscale.h, the shared home of screen<->canvas.
+    const qreal diameter = AnimeViewScale::toScreenLength(m_penWidth, m_zoom);
+
+    if (diameter > kMaxCursorRingPx) {
+        // Too big to hand to the window system. Blank the pointer and let
+        // paintGL draw the ring: the arrow still goes, which is the point.
+        m_penRingOnCanvas = true;
+        setCursor(Qt::BlankCursor);
+        return;
+    }
+    m_penRingOnCanvas = false;
+
+    // Leave room for the outline itself, and never go below a few pixels or
+    // there is nothing to aim with.
+    const qreal ringPen = 1.25;
+    const int side = std::max(9, int(std::ceil(diameter + ringPen * 2.0 + 2.0)));
+    const qreal dpr = devicePixelRatioF();
+    QPixmap pixmap(int(std::ceil(side * dpr)), int(std::ceil(side * dpr)));
+    pixmap.setDevicePixelRatio(dpr);
+    pixmap.fill(Qt::transparent);
+    {
+        QPainter painter(&pixmap);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        const QPointF centre(side * 0.5, side * 0.5);
+        const qreal radius = diameter * 0.5;
+        // Drawn twice: a light halo under a dark line, so the ring stays
+        // legible over black ink and over white paper alike.
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(QColor(255, 255, 255, 200), ringPen * 2.0));
+        painter.drawEllipse(centre, radius, radius);
+        painter.setPen(QPen(QColor(20, 20, 20, 230), ringPen));
+        painter.drawEllipse(centre, radius, radius);
+        // A dot at the hotspot: with a wide pen the ring alone leaves the
+        // exact point ambiguous, which is where the stroke actually starts.
+        if (diameter >= 12.0) {
+            painter.setPen(QPen(QColor(255, 255, 255, 200), 2.0));
+            painter.drawPoint(centre);
+            painter.setPen(QPen(QColor(20, 20, 20, 230), 1.0));
+            painter.drawPoint(centre);
+        }
+    }
+    setCursor(QCursor(pixmap, side / 2, side / 2));
+}
+
 void PaintOpenGLWidget::leaveEvent(QEvent *event)
 {
     // The brush ring is drawn at the last hovered point, and nothing used to
@@ -604,6 +667,7 @@ void PaintOpenGLWidget::setPenWidth(qreal width)
     }
 
     m_penWidth = width;
+    updateBrushCursor();   // the ring IS the width
     if (m_hasCurrentStroke) {
         updateCurrentStroke();
     }
@@ -977,6 +1041,7 @@ void PaintOpenGLWidget::setTool(Tool tool)
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
     m_hasLastMovePos = false;
+    updateBrushCursor();   // only the pen wears a ring; everything else the arrow
     update();
 }
 
@@ -1929,12 +1994,11 @@ void PaintOpenGLWidget::paintGL()
         painter.drawEllipse(m_hoverPos, m_eraserRadius, m_eraserRadius);
     }
 
-    // The pen gets a ring too, at the width it will actually lay down. Drawn
-    // in DOCUMENT units like the stroke itself, so it grows with the zoom and
-    // reads as "this much paper will be covered" rather than as a fixed
-    // screen decoration. A thin neutral outline: this is a cursor, and a ring
-    // as heavy as the ink would be mistaken for the ink.
-    if (m_tool == Tool::Pen && m_hasHoverPos) {
+    // The pen's ring is normally the CURSOR itself (updateBrushCursor), which
+    // cannot lag the pointer and needs no repaint. This is the fallback for
+    // when it grows past what a cursor bitmap may be: the pointer is blanked
+    // and the ring is drawn here instead, in document units like the ink.
+    if (m_tool == Tool::Pen && m_hasHoverPos && m_penRingOnCanvas) {
         const qreal radius = m_penWidth * 0.5;
         painter.setPen(QPen(QColor(40, 40, 40, 170),
                             AnimeVectorLogic::displayStrokeWidth(0.75, m_zoom)));
