@@ -72,13 +72,17 @@ V_LAYER_NAME = "V axis"
 GUIDE_LAYER_PROPERTY = "auto_mapped_guide"
 H_GUIDE_LAYER_PROPERTY = "auto_mapped_guide_h"
 V_GUIDE_LAYER_PROPERTY = "auto_mapped_guide_v"
+# The nearest-end anchor's snapshot: recorded next to the two axes so a run's
+# provenance is complete - re-expanding restores the stacking too.
+NEAREST_LAYER_PROPERTY = "auto_mapped_guide_nearest"
+NEAREST_LAYER_NAME = "Nearest Point"
 MAPPING_GROUP_NAME = "Auto Mapping"
 RESTORE_GUIDES_ACTION = "restore_mapping_guides"
 # Everything a run puts on the board. None of it may act as a wall for region
 # detection, and none of it may be picked up as pattern by the next run.
 MAPPING_OUTPUT_PROPERTIES = (MAPPED_PROPERTY, BACK_PROPERTY, SEAL_PROPERTY,
                              GUIDE_LAYER_PROPERTY, H_GUIDE_LAYER_PROPERTY,
-                             V_GUIDE_LAYER_PROPERTY)
+                             V_GUIDE_LAYER_PROPERTY, NEAREST_LAYER_PROPERTY)
 _FOLD = {"split": True, "seal": True, "back_color": (104, 112, 140, 255),
          # Qt::PenStyle for the crease strokes: 2 = DashLine. The crease is an
          # annotation of the fold, and a dashed line reads as annotation where
@@ -3668,6 +3672,33 @@ class _MappedOutput:
         self.layers.append(layer)
         return layer
 
+    def add_anchor_layer(self, position):
+        """Record the nearest-end anchor as its own layer: a small red ring.
+
+        Same contract as the axis snapshots: the marker is provenance the
+        restore can read back - Re-expand recovers the anchor's arc from the
+        ring's centre against the restored guides, so a stored run brings
+        its STACKING back too, not just its axes.
+        """
+        if position is None:
+            return []
+        layer = _create_mapped_layer(self.scene, self.row, NEAREST_LAYER_NAME)
+        if layer < 0:
+            return []
+        self._track_new_layer(layer)
+        image = self.scene.image_at(self.row, layer, True)
+        if image is None:
+            return []
+        radius = 5.0
+        ring = [(position[0] + radius * math.cos(2.0 * math.pi * k / 16),
+                 position[1] + radius * math.sin(2.0 * math.pi * k / 16))
+                for k in range(17)]
+        obj = self.animean.vectorlogic.make_stroke_object(
+            ring, NEAREST_HANDLE_COLOR, 1.5, image.stroke_count() + 1, False, False)
+        obj.property = NEAREST_LAYER_PROPERTY
+        image.add_stroke_object(obj)
+        return [layer]
+
     def add_guide_layers(self, h_guide, v_guide):
         """Draw the two MAIN guide axes into their own layers.
 
@@ -4178,6 +4209,17 @@ def _perform_mapping():
             # and the whole run collapses to a single panel row.
             guide_layers = out.add_guide_layers(main_assets.get(H_PROPERTY),
                                                 main_assets.get(V_PROPERTY))
+            anchor = getattr(map_point, "depth_anchor", None)
+            if anchor is None:
+                frame = map_point.main_frame
+                arc_h, arc_v = _nearest_arc()
+                anchor = (min(max(arc_h, -frame.h_arc), frame.h_total - frame.h_arc),
+                          min(max(arc_v, -frame.v_arc), frame.v_total - frame.v_arc))
+            anchor_layers = out.add_anchor_layer(map_point.main_frame.hv(*anchor))
+            if anchor_layers:
+                # The anchor layer went to index 0; every axis index recorded
+                # before it moved down one.
+                guide_layers = [index + 1 for index in guide_layers] + anchor_layers
             mapping_group = out.group_output(guide_layers)
     except Exception:
         # A half-filled layer without its own history commit would silently
@@ -4518,6 +4560,14 @@ def _guide_axes_in_layers(scene, frame, layer_indices):
             prop = stroke.get("property") or ""
             if prop == GUIDE_LAYER_PROPERTY:
                 prop = _legacy_guide_axis(stroke, name)
+            if prop == NEAREST_LAYER_PROPERTY and prop not in found:
+                # The anchor marker: its ring's centre is the stored position.
+                points = _stroke_points(stroke)
+                if points:
+                    cx = sum(p[0] for p in points) / len(points)
+                    cy = sum(p[1] for p in points) / len(points)
+                    found[prop] = ((cx, cy), 0.0, None)
+                continue
             if prop not in (H_GUIDE_LAYER_PROPERTY, V_GUIDE_LAYER_PROPERTY):
                 continue
             points = _stroke_points(stroke)
@@ -4541,8 +4591,9 @@ def _layer_menu_items(context):
         return []
     axes = _guide_axes_in_layers(scene, scene.current_frame(),
                                  context.get("members") or [])
-    if not axes:
-        return []
+    if not any(prop in axes for prop in (H_GUIDE_LAYER_PROPERTY,
+                                         V_GUIDE_LAYER_PROPERTY)):
+        return []  # an anchor marker alone restores nothing
     return [{
         "name": RESTORE_GUIDES_ACTION,
         "title": "Re-expand (restore these axes as the guides)",
@@ -4585,6 +4636,23 @@ def _layer_menu_action(message):
     if not restored:
         print("[auto_mapping] re-expand: nothing to restore.")
         return
+
+    # The anchor marker restores the STACKING the run used: its ring centre,
+    # solved against the just-restored guides, is the stored arc position.
+    # (run_center_line_tool auto-created a crossing anchor above; the marker
+    # overwrites it with the recorded one.)
+    marker = axes.get(NEAREST_LAYER_PROPERTY)
+    if marker and view == "main":
+        frame = _main_guide_frame()
+        if frame is not None:
+            point = marker[0]
+            l_h, l_v = frame.solve(point, 0.0, 0.0)
+            l_h = min(max(l_h, -frame.h_arc), frame.h_total - frame.h_arc)
+            l_v = min(max(l_v, -frame.v_arc), frame.v_total - frame.v_arc)
+            _assets_for("main")[NEAREST_PROPERTY] = {"arc": [l_h, l_v]}
+            _save_assets("main")
+            _push_nearest_handle()
+            restored.append("nearest point")
 
     try:
         _animean().ui.refresh()
@@ -4782,7 +4850,20 @@ def run_center_line_tool(view_name, property_value, points, width=3.0, commands=
         except Exception as error:
             print(f"[auto_mapping] guide commands rejected ({error}); "
                   "keeping the flattened polyline.")
-    _assets_for(view_name)[property_value] = item
+    assets = _assets_for(view_name)
+    assets[property_value] = item
+    # The moment BOTH main axes exist, the nearest-end anchor comes into
+    # being AT THE CROSSING (arc (0,0)) as a real asset - saved, undoable,
+    # and its red handle visible immediately - rather than materializing
+    # only when Auto Mapping first needs it.
+    if (view_name == "main"
+            and NEAREST_PROPERTY not in assets
+            and all(prop in assets for prop in GUIDE_PROPERTIES)
+            and _polylines_cross(assets[H_PROPERTY]["points"],
+                                 assets[V_PROPERTY]["points"])):
+        assets[NEAREST_PROPERTY] = {"arc": [0.0, 0.0]}
+        print("[auto_mapping] nearest point created at the crossing "
+              "(drag the red handle to restack fold layers).")
     _save_assets(view_name)
     _overlays_changed(view_name)
     return True
