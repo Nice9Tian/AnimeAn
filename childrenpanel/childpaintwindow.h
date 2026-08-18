@@ -37,9 +37,13 @@ public:
     void setChangableTimeline(bool enabled);
     void setChangableTexture(bool enabled);
     void setScriptButtons(const QVector<ScriptButtonDefinition> &definitions);
-    // The menu bar script menus are attached to (MainWindow owns the Python
-    // side, so it builds them; this just hands over the bar).
+    // The menu bar and the Setting menu script menus are attached to
+    // (MainWindow owns the Python side, so it builds them; this just hands
+    // over the places they go).
     QMenuBar *menuBar() const;
+    // Script menus become SUBMENUS of Setting rather than top-level menus:
+    // everything that configures this board hangs off one entry.
+    QMenu *settingMenu() const;
 
 signals:
     void changableTimelineToggled(bool enabled);
@@ -53,6 +57,7 @@ private:
 
     PaintOpenGLWidget *m_paintWidget = nullptr;
     QMenuBar *m_menuBar = nullptr;
+    QMenu *m_settingMenu = nullptr;
     QHBoxLayout *m_optionLayout = nullptr;
     QWidget *m_optionRow = nullptr;
     QVector<QPushButton *> m_scriptButtons;

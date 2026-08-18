@@ -26,7 +26,12 @@ ChildPaintWindow::ChildPaintWindow(QWidget *parent)
     // read as global.
     m_menuBar = new QMenuBar(panel);
 
+    // ONE entry holds everything that configures this board: the two
+    // Changable flags directly, then Background and the script-provided View
+    // as submenus. A menu bar of single-purpose top-level menus reads as a
+    // list of unrelated features; nesting says they are all one thing.
     QMenu *settingMenu = m_menuBar->addMenu(QStringLiteral("Setting"));
+    m_settingMenu = settingMenu;
     // Qt hides action tool tips in menus by default, so the explanations
     // below were written and then never shown.
     settingMenu->setToolTipsVisible(true);
@@ -55,7 +60,8 @@ ChildPaintWindow::ChildPaintWindow(QWidget *parent)
     m_paintWidget->setUnboundedCanvas(true);
     container->setMinimumSize(320, 240);
 
-    QMenu *backgroundMenu = m_menuBar->addMenu(QStringLiteral("Background"));
+    settingMenu->addSeparator();
+    QMenu *backgroundMenu = settingMenu->addMenu(QStringLiteral("Background"));
     QActionGroup *backgroundGroup = new QActionGroup(this);
     backgroundGroup->setExclusive(true);
     struct BackgroundEntry { const char *title; int mode; };
@@ -98,6 +104,11 @@ ChildPaintWindow::ChildPaintWindow(QWidget *parent)
 QMenuBar *ChildPaintWindow::menuBar() const
 {
     return m_menuBar;
+}
+
+QMenu *ChildPaintWindow::settingMenu() const
+{
+    return m_settingMenu;
 }
 
 void ChildPaintWindow::applyBackgroundMode(int mode)

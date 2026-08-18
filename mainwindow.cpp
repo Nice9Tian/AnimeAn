@@ -1074,8 +1074,8 @@ void MainWindow::attachChildScriptMenus()
     // rather than in ChildPaintWindow because MainWindow owns the Python side
     // (the interpreter, the dispatch, the panel resync); the window just
     // provides the bar.
-    QMenuBar *bar = m_childPaintWindow->menuBar();
-    if (!bar) {
+    QMenu *host = m_childPaintWindow->settingMenu();
+    if (!host) {
         return;
     }
     try {
@@ -1090,7 +1090,9 @@ void MainWindow::attachChildScriptMenus()
                 continue;
             }
             const QString title = object.value(QStringLiteral("title")).toString(name);
-            QMenu *menu = bar->addMenu(title);
+            // A SUBMENU of Setting, not a top-level menu: everything that
+            // configures this board lives under the one entry.
+            QMenu *menu = host->addMenu(title);
             PaintOpenGLWidget *owner = m_childPaintWidget;
             connect(menu, &QMenu::aboutToShow, this, [this, menu, name, owner]() {
                 rebuildScriptMenu(menu, name, QStringLiteral("child"), owner);
@@ -1197,7 +1199,19 @@ void MainWindow::populateChildViewButtons()
 
 void MainWindow::createTextureFileMenu()
 {
-    QMenu *textureMenu = menuBar()->addMenu(QStringLiteral("Texture View File"));
+    // On the TEXTURE board's own bar. These actions open, save and import the
+    // texture document; on the application bar they sat beside the main
+    // document's File menu and read as a second, competing File menu.
+    QMenuBar *bar = m_childPaintWindow ? m_childPaintWindow->menuBar() : menuBar();
+    QMenu *textureMenu = new QMenu(QStringLiteral("File"), bar);
+    // INSERTED before Setting, not appended: Setting is added in the child
+    // window's constructor, so appending would leave the bar reading
+    // "Setting | File".
+    if (m_childPaintWindow && m_childPaintWindow->settingMenu()) {
+        bar->insertMenu(m_childPaintWindow->settingMenu()->menuAction(), textureMenu);
+    } else {
+        bar->addMenu(textureMenu);
+    }
 
     QAction *importRasterAction = textureMenu->addAction(QStringLiteral("Import Raster into Texture View..."));
     connect(importRasterAction, &QAction::triggered, this, [this]() {
