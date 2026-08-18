@@ -37,9 +37,13 @@ import math
 
 import bezier
 import python_hooks
+import viewscale
 
-POLY_STEP = 4.0
-BRUSH_RADIUS = 12.0     # mirrors the C++ brush ring (m_eraserRadius)
+POLY_STEP = 4.0                 # canvas px
+BRUSH_RADIUS = 12.0     # CANVAS px: mirrors the C++ brush ring (m_eraserRadius),
+                        # which is drawn inside the zoom transform
+BUTTON_OFFSET_PX = 16.0 # SCREEN px: how far the accept/delete buttons sit from
+                        # the pending midpoint, and the release slop around them
 BACKTRACK = 5           # vertices to look back for a tangent
 REACH_LIMIT = 2.0       # future point may sit this many chord lengths out
 CORNER_DEG = 35.0
@@ -360,7 +364,9 @@ def _push_handles(view, session):
         a = pending["a"]["point"]
         b = pending["b"]["point"]
         mid = ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5)
-        offset = 16.0 / max(0.05, _STATE["last_zoom"])
+        # Screen px -> canvas via pyfile/viewscale.py, the shared wheel.
+        offset = viewscale.to_canvas_length(BUTTON_OFFSET_PX,
+                                            max(0.05, _STATE["last_zoom"]))
         buttons["connect:accept"] = (mid[0] - offset, mid[1] - offset)
         buttons["connect:delete"] = (mid[0] + offset, mid[1] - offset)
         handles.append({"id": "connect:accept",
@@ -575,7 +581,8 @@ def _handle_event(message):
         # pressed id wherever the mouse ends up, and dragging off a button
         # is the universal way to back out of a misclick.
         center = (session.get("buttons") or {}).get(handle)
-        if center is None or _dist(pos, center) > 16.0 / max(0.05, _STATE["last_zoom"]):
+        if center is None or _dist(pos, center) > viewscale.to_canvas_length(
+                BUTTON_OFFSET_PX, max(0.05, _STATE["last_zoom"])):
             return
         if handle == "connect:accept":
             _finalize(view, session)

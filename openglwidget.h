@@ -4,6 +4,7 @@
 #include "algorithm/animemodel.h"
 #include "algorithm/scenehistory.h"
 #include "algorithm/vectorlogic.h"
+#include "algorithm/viewscale.h"
 
 #include <QColor>
 #include <QElapsedTimer>
@@ -255,6 +256,15 @@ private:
     void sendPythonHandleMessage(const QString &phase, const QString &handleId, const QPointF &pos);
     void resetAxisSnap(Qt::KeyboardModifiers modifiers, const QPointF &anchor);
     QPointF applyAxisSnap(Qt::KeyboardModifiers modifiers, const QPointF &point, bool *retroChanged);
+    // "Hold still to draw straight": the still window is (re)armed at a
+    // document anchor, fires once, and collapses the stroke to a segment.
+    void armHoldStill(const QPointF &anchor);
+    void engageStraightLine();
+    // Straight mode owns the geometry outright - taken BY VALUE because it
+    // rewrites the point buffer the caller may have pointed into.
+    void updateStraightLine(QPointF tip);
+    // Latches the axis like applyAxisSnap does, so it mutates the snap state.
+    QPointF straightLineTip(Qt::KeyboardModifiers modifiers, const QPointF &cursor);
     void paintBackground(QPainter &painter, const QRectF &target) const;
     QPointF mapToDocument(const QPointF &screenPos) const;
     void clampPan();
@@ -347,6 +357,21 @@ private:
     QPointF m_axisSnapAnchor;
     int m_axisSnapAnchorIndex = 0;
     qreal m_axisSnapThreshold = 5.0;
+    // "Hold still to draw straight": while the pen is down, staying inside a
+    // small circle for kHoldStillMs reads as "I want a straight line, not this
+    // wobble" - the stroke collapses to one segment from its start to the
+    // cursor and tracks the cursor, unfitted, until release. A still pen sends
+    // no move events, so the wait needs a timer, not a poll.
+    QTimer *m_holdStillTimer = nullptr;
+    // Kept in DOCUMENT space: zooming mid-stroke would drift a screen anchor.
+    QPointF m_holdStillAnchor;
+    bool m_straightLineMode = false;
+    QPointF m_straightLineStart;
+    static constexpr int kHoldStillMs = 1500;
+    // SCREEN px: the hand holds still to within a few pixels of the display,
+    // whatever the canvas is magnified to. Converted per test through
+    // algorithm/viewscale.h, the shared home of screen<->canvas conversion.
+    static constexpr qreal kHoldStillRadiusScreenPx = 10.0;
     qreal m_zoom = 1.0;
     QPointF m_panOffset;
     bool m_panning = false;

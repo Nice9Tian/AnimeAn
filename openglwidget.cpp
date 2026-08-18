@@ -1,6 +1,7 @@
 #include "openglwidget.h"
 
 #include <QLineF>
+#include <QGuiApplication>
 #include <QImage>
 #include <QPainter>
 #include <QDebug>
@@ -368,7 +369,9 @@ bool PaintOpenGLWidget::unboundedCanvas() const
 
 QPointF PaintOpenGLWidget::mapToDocument(const QPointF &screenPos) const
 {
-    return (screenPos - m_panOffset) / m_zoom;
+    // The view transform lives in algorithm/viewscale.h - THE shared home of
+    // screen<->canvas conversion. Do not re-derive it here or anywhere else.
+    return AnimeViewScale::toDocument(screenPos, m_zoom, m_panOffset);
 }
 
 QRectF PaintOpenGLWidget::documentRect() const
@@ -474,7 +477,8 @@ void PaintOpenGLWidget::wheelEvent(QWheelEvent *event)
     const QPointF anchor = event->position();
     const QPointF docAnchor = mapToDocument(anchor);
     m_zoom = newZoom;
-    m_panOffset = anchor - docAnchor * m_zoom;
+    // Solve toScreen(docAnchor) == anchor for the pan (algorithm/viewscale.h).
+    m_panOffset = anchor - AnimeViewScale::toScreen(docAnchor, m_zoom, QPointF());
     clampPan();
     update();
     notifyViewTransformChanged();
@@ -983,7 +987,14 @@ QPointF PaintOpenGLWidget::applyAxisSnap(Qt::KeyboardModifiers modifiers, const 
     if (m_axisSnapState == AxisSnapState::Pending) {
         const qreal dx = std::abs(point.x() - m_axisSnapAnchor.x());
         const qreal dy = std::abs(point.y() - m_axisSnapAnchor.y());
-        if (std::max(dx, dy) < m_axisSnapThreshold) {
+        // The threshold is how far the HAND must travel before the direction
+        // is unambiguous, so it is SCREEN px, converted here through the
+        // shared wheel (algorithm/viewscale.h). Compared raw against these
+        // document deltas it used to mean 40 screen px of travel at 8x zoom
+        // and half a pixel at 0.1x - the lock armed instantly when zoomed out
+        // and felt stuck when zoomed in.
+        if (std::max(dx, dy)
+            < AnimeViewScale::toDocumentLength(m_axisSnapThreshold, m_zoom)) {
             return point;
         }
         m_axisSnapState = dx >= dy ? AxisSnapState::Horizontal : AxisSnapState::Vertical;
@@ -1007,6 +1018,109 @@ QPointF PaintOpenGLWidget::applyAxisSnap(Qt::KeyboardModifiers modifiers, const 
         return QPointF(m_axisSnapAnchor.x(), point.y());
     }
     return point;
+}
+
+void PaintOpenGLWidget::armHoldStill(const QPointF &anchor)
+{
+    m_holdStillAnchor = anchor;
+    if (!m_holdStillTimer) {
+        m_holdStillTimer = new QTimer(this);
+        m_holdStillTimer->setSingleShot(true);
+        connect(m_holdStillTimer, &QTimer::timeout, this,
+                [this]() { engageStraightLine(); });
+    }
+    // Restarted only when the pen LEAVES the circle. Restarting on every move
+    // would mean a hand that trembles - which is every hand - could never
+    // finish the wait, and trembling is precisely who this gesture is for.
+    m_holdStillTimer->start(kHoldStillMs);
+}
+
+void PaintOpenGLWidget::engageStraightLine()
+{
+    // The wait can outlive the stroke: a tool change, a frame change or an
+    // undo abandons it without stopping the timer.
+    if (!m_hasCurrentStroke || m_straightLineMode || m_points.isEmpty()) {
+        return;
+    }
+    m_straightLineMode = true;
+    m_straightLineStart = m_points.first();
+    // The incremental fitter's frozen prefix is a set of INDICES into
+    // m_points; collapsing the buffer invalidates every one of them, so the
+    // state is retired here. Straight mode never fits again - that is the
+    // point of it - and the release path skips the fit too.
+    m_liveFit = AnimeLiveFitState();
+    // An axis lock anchored mid-curve would pin the free end to a stale axis.
+    // The straight line carries its own lock, measured from its own start.
+    m_axisSnapState = AxisSnapState::Inactive;
+    // No stabilizer lag left to cover: the line ends exactly at the cursor.
+    m_hasRawPenPos = false;
+    updateStraightLine(straightLineTip(QGuiApplication::keyboardModifiers(),
+                                       m_hasHoverPos ? m_hoverPos : m_points.last()));
+}
+
+QPointF PaintOpenGLWidget::straightLineTip(Qt::KeyboardModifiers modifiers,
+                                           const QPointF &cursor)
+{
+    if (!(modifiers & (Qt::AltModifier | Qt::ShiftModifier))) {
+        m_axisSnapState = AxisSnapState::Inactive;
+        return cursor;
+    }
+    if (m_axisSnapState == AxisSnapState::Inactive) {
+        // The lock is measured from the segment's OWN origin. The curved path
+        // anchors at the last captured sample, but a straight line has no
+        // point history - its two ends are the whole stroke.
+        m_axisSnapAnchor = m_straightLineStart;
+        m_axisSnapAnchorIndex = 0;
+        m_axisSnapState = AxisSnapState::Pending;
+    }
+    if (m_axisSnapState == AxisSnapState::Pending) {
+        const qreal dx = std::abs(cursor.x() - m_straightLineStart.x());
+        const qreal dy = std::abs(cursor.y() - m_straightLineStart.y());
+        // Same screen-px threshold and the same LATCH as applyAxisSnap: once
+        // the direction is decided it is held until the modifier is released.
+        // Re-deciding per event made the line flip 90 degrees at mouse rate
+        // whenever the cursor wandered near the 45-degree diagonal.
+        if (std::max(dx, dy)
+            < AnimeViewScale::toDocumentLength(m_axisSnapThreshold, m_zoom)) {
+            return cursor;
+        }
+        m_axisSnapState = dx >= dy ? AxisSnapState::Horizontal : AxisSnapState::Vertical;
+    }
+    if (m_axisSnapState == AxisSnapState::Horizontal) {
+        return QPointF(cursor.x(), m_straightLineStart.y());
+    }
+    if (m_axisSnapState == AxisSnapState::Vertical) {
+        return QPointF(m_straightLineStart.x(), cursor.y());
+    }
+    return cursor;
+}
+
+void PaintOpenGLWidget::updateStraightLine(QPointF tip)
+{
+    if (!m_straightLineMode) {
+        return;
+    }
+    if (QLineF(m_straightLineStart, tip).length() <= 1e-9) {
+        // Nothing to collapse to yet (held still from the very first sample).
+        // Keeping the press's own dot avoids inventing a zero-length segment,
+        // a shape no other code path in the app produces.
+        return;
+    }
+    m_points.clear();
+    m_points.append(m_straightLineStart);
+    m_points.append(tip);
+    QPainterPath path(m_straightLineStart);
+    path.lineTo(tip);
+    m_currentStroke = AnimeVectorLogic::makeStrokeFromPath(
+        path, m_points, m_currentStroke.color, m_currentStroke.width, 0);
+    m_currentStroke.property = m_strokeProperty;
+    // Same throttled "update" contract the curved path honours, so a
+    // subscriber never runs at mouse rate.
+    if (!m_updateHookThrottle.isValid() || m_updateHookThrottle.elapsed() >= kUpdateHookIntervalMs) {
+        m_updateHookThrottle.start();
+        pythonHookSendMessage(QStringLiteral("update"));
+    }
+    update();
 }
 
 void PaintOpenGLWidget::setCurrentLayer(int layerIndex)
@@ -1335,8 +1449,9 @@ void PaintOpenGLWidget::paintEditHandles(QPainter &painter)
 {
     // SCREEN space: handles keep a constant size at any zoom, like every
     // vector editor's - a handle is a tool, not a mark on the paper.
+    // Conversion via algorithm/viewscale.h, the shared wheel.
     for (const EditHandle &handle : m_editHandles) {
-        const QPointF screen = handle.pos * m_zoom + m_panOffset;
+        const QPointF screen = AnimeViewScale::toScreen(handle.pos, m_zoom, m_panOffset);
         const qreal half = kEditHandleScreenPx * 0.5;
         painter.setPen(QPen(QColor(30, 30, 30, 230), 1.2));
         painter.setBrush(handle.color);
@@ -1388,7 +1503,10 @@ QString PaintOpenGLWidget::editHandleAt(const QPointF &screenPos) const
         if (!m_editHandles[i].interactive) {
             continue;
         }
-        const QPointF screen = m_editHandles[i].pos * m_zoom + m_panOffset;
+        // Same doc->screen mapping the painter used (algorithm/viewscale.h):
+        // the pick box must sit exactly where the handle was drawn.
+        const QPointF screen =
+            AnimeViewScale::toScreen(m_editHandles[i].pos, m_zoom, m_panOffset);
         const qreal hit = m_editHandles[i].shape >= 3
                               ? kEditHandleHitPx * kEditHandleButtonScale
                               : kEditHandleHitPx;
@@ -1711,8 +1829,10 @@ void PaintOpenGLWidget::paintGL()
     // pen by whatever lag compensation could not cancel; this line covers
     // that gap so the eye reads "the ink is at the tip" while the real
     // stroke settles in behind it. Never part of the document.
+    // Straight mode has no gap to cover - its end IS the cursor - so the
+    // preview would only draw a second line on top of the first.
     if (m_hasCurrentStroke && m_hasRawPenPos && !m_points.isEmpty()
-        && m_inputFilter.active()) {
+        && m_inputFilter.active() && !m_straightLineMode) {
         const QPointF tip = m_points.last();
         // Under an axis lock the ink is constrained to the axis; a preview
         // pointing at the free cursor would wag a wrong-direction tail off
@@ -2059,7 +2179,7 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
     // The fit's px budgets are SCREEN px (tremor, report rate and the eye
     // live there); capture the conversion once at pen-down so the whole
     // stroke - frozen prefix, tail and release - agrees on it.
-    m_liveFitPixelScale = 1.0 / std::max<qreal>(0.25, std::min<qreal>(16.0, m_zoom));
+    m_liveFitPixelScale = AnimeViewScale::pixelScale(m_zoom);
     // Realtime stabilization for this stroke: strength follows the smooth
     // slider. The filter is part of INPUT, not of fitting - the points the
     // stroke is built from are already the stabilized ones.
@@ -2072,6 +2192,10 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
     m_hasRawPenPos = true;
     appendPoint(pos);
     resetAxisSnap(event->modifiers(), pos);
+    // A fresh stroke is always curved; the hold-still window opens with it, so
+    // pressing and simply waiting is the shortest path to a straight line.
+    m_straightLineMode = false;
+    armHoldStill(pos);
     // Each stroke gets a fresh throttle window so its first "update" is
     // never swallowed by the previous stroke's timestamp.
     m_updateHookThrottle.invalidate();
@@ -2169,6 +2293,16 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
         return;
     }
 
+    if (m_straightLineMode) {
+        // Straight mode owns the geometry: no capture floor, no stabilizer,
+        // no fit. The user asked for a line, so the line ends exactly where
+        // the cursor is - lag compensation and tremor filtering would only
+        // put the endpoint somewhere they did not point at.
+        updateStraightLine(straightLineTip(event->modifiers(), m_hoverPos));
+        event->accept();
+        return;
+    }
+
     // Stabilize FIRST, snap SECOND: the axis snap is an exact constraint and
     // must win over the filter, not be smeared by it.
     m_rawPenPos = m_hoverPos;
@@ -2179,6 +2313,17 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
         mapToDocument(m_inputFilter.filter(event->position(), event->timestamp()));
     bool axisRetroChanged = false;
     const QPointF snappedPos = applyAxisSnap(event->modifiers(), stabilized, &axisRetroChanged);
+    // Has the hand left the still circle? Measured on the RAW cursor, since
+    // this asks about the hand, not about the ink the filter has settled on.
+    // The radius is SCREEN px converted through algorithm/viewscale.h (the
+    // shared home of screen<->canvas conversion): holding still means holding
+    // still on the display, at any magnification. The anchor is kept in
+    // document space so zooming mid-stroke cannot drag it out from under us.
+    if (QLineF(m_holdStillAnchor, m_hoverPos).length()
+        > AnimeViewScale::toDocumentLength(kHoldStillRadiusScreenPx, m_zoom)) {
+        armHoldStill(m_hoverPos);
+    }
+
     if (appendPoint(snappedPos) || axisRetroChanged) {
         updateCurrentStroke();
     } else {
@@ -2265,6 +2410,27 @@ void PaintOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
         return;
     }
 
+    if (m_straightLineMode) {
+        // The segment already IS the committed geometry; the release only
+        // pins its free end where the button came up. Like the curved path
+        // below, it follows the lock that governed the last MOVE rather than
+        // the live modifier state: letting go of Alt a moment before the
+        // button would otherwise commit a diagonal the preview never showed.
+        QPointF tip = mapToDocument(event->position());
+        if (m_axisSnapState == AxisSnapState::Horizontal) {
+            tip.setY(m_straightLineStart.y());
+        } else if (m_axisSnapState == AxisSnapState::Vertical) {
+            tip.setX(m_straightLineStart.x());
+        } else {
+            tip = straightLineTip(event->modifiers(), tip);
+        }
+        updateStraightLine(tip);
+        m_axisSnapState = AxisSnapState::Inactive;
+        finishCurrentStroke();
+        event->accept();
+        return;
+    }
+
     // The release point must follow the axis lock that governed the last move,
     // NOT the live modifier state: releasing Alt just before the button (with
     // no move in between) would otherwise append the raw cursor position and
@@ -2286,6 +2452,15 @@ void PaintOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
 void PaintOpenGLWidget::updateCurrentStroke()
 {
     if (!m_hasCurrentStroke) {
+        return;
+    }
+
+    // A straight-line stroke is never fitted - not even by a mid-stroke pen
+    // width change, which is the one caller that reaches here from outside the
+    // move handler. Rebuilding it through the fitter would hand the frozen-
+    // prefix machinery a buffer that straight mode rewrites wholesale.
+    if (m_straightLineMode) {
+        updateStraightLine(m_points.isEmpty() ? m_straightLineStart : m_points.last());
         return;
     }
 
@@ -2319,11 +2494,16 @@ void PaintOpenGLWidget::updateCurrentStroke()
 void PaintOpenGLWidget::finishCurrentStroke()
 {
     m_hasRawPenPos = false;
+    if (m_holdStillTimer) {
+        m_holdStillTimer->stop();   // no gesture may outlive its stroke
+    }
     // The definitive result over the final points - the SAME frozen prefix
     // the user watched being drawn, plus the final tail fit, so what was
     // shown is exactly what commits. Not via updateCurrentStroke: that one
-    // is throttled; this fit must never be skipped or stale.
-    if (!m_points.isEmpty()) {
+    // is throttled; this fit must never be skipped or stale. A straight-line
+    // stroke skips it outright: its geometry is already exact, and refitting
+    // is the very step the gesture exists to escape.
+    if (!m_straightLineMode && !m_points.isEmpty()) {
         AnimeStrokeFitSettings liveSettings = m_fitSettings;
         liveSettings.pixelScale = m_liveFitPixelScale;
         const QPainterPath live =
@@ -2354,6 +2534,7 @@ void PaintOpenGLWidget::finishCurrentStroke()
         }
     }
     m_hasCurrentStroke = false;
+    m_straightLineMode = false;
     m_points.clear();
     update();
 }
@@ -2980,8 +3161,10 @@ bool PaintOpenGLWidget::appendPoint(const QPointF &point)
     // distance: beyond 16x the capture gains nothing (points are bounded by
     // the event rate anyway), and below 1/4x a coarser capture would start
     // visibly faceting big sweeping strokes.
-    const qreal zoom = std::max<qreal>(0.25, std::min<qreal>(16.0, m_zoom));
-    if (QLineF(m_points.last(), point).length() >= m_minPointDistance / zoom) {
+    // Clamp range and conversion from algorithm/viewscale.h, the same one the
+    // fitter's budgets use - they were two hand-written copies of it.
+    if (QLineF(m_points.last(), point).length()
+        >= m_minPointDistance * AnimeViewScale::pixelScale(m_zoom)) {
         m_points.append(point);
         return true;
     }

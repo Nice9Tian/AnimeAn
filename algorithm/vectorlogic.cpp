@@ -1,6 +1,7 @@
 ﻿#include "vectorlogic.h"
 
 #include "beziersplit.h"
+#include "viewscale.h"
 
 #include <QMap>
 #include <QPainterPathStroker>
@@ -406,9 +407,11 @@ struct FitParams {
 
 // Document px per screen px, defensively clamped: zoom outside 1/4x..16x
 // gains nothing for the budgets (matches appendPoint's capture clamp).
+// The clamp range lives in the shared wheel, algorithm/viewscale.h, so this
+// and the two view-side conversions cannot drift apart.
 qreal fitPixelScale(const AnimeStrokeFitSettings &settings)
 {
-    return std::max<qreal>(1.0 / 16.0, std::min<qreal>(4.0, settings.pixelScale));
+    return AnimeViewScale::clampPixelScale(settings.pixelScale);
 }
 
 FitParams fitParamsFor(const AnimeStrokeFitSettings &settings)
@@ -1213,6 +1216,18 @@ QPainterPath AnimeVectorLogic::liveFitStrokePath(AnimeLiveFitState &state,
             || QLineF(points[state.frozenSamples], state.boundaryPoint).length() > 1e-9)) {
         state = AnimeLiveFitState();
     }
+    // The open-run and open-chord cursors index this same buffer, but they
+    // need no check of their own: both are only ever assigned frozenSamples,
+    // so they stay <= it, and the test above already retires the state
+    // whenever frozenSamples leaves the buffer. The run-slice write further
+    // down is additionally gated on runStartSample < frozenSamples.
+    //
+    // What this tripwire does NOT catch: a caller that rewrites samples
+    // BEFORE the boundary while leaving points[frozenSamples] where it was
+    // keeps a frozen prefix that no longer matches its samples. It is a
+    // single-sample identity test, not a checksum. Callers that rewrite the
+    // buffer wholesale (the pen's hold-still straight line) must retire the
+    // state themselves rather than rely on being noticed here.
 
     if (points.size() < 2) {
         state = AnimeLiveFitState();

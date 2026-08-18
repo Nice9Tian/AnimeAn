@@ -23,6 +23,7 @@ import math
 
 import bezier
 import python_hooks
+import viewscale
 
 POLY_STEP = 4.0
 
@@ -162,7 +163,11 @@ def _find_stroke(scene, frame, pos, zoom):
         cell = scene.cell_to_dict(layer["index"], frame, True, POLY_STEP)
         best = None
         for index, stroke in enumerate(cell["image"]["strokes"]):
-            tolerance = float(stroke.get("width", 3.0)) * 0.5 + 6.0 / zoom
+            # Two spaces in one sum, deliberately: half the stroke's own width
+            # is CANVAS (you grabbed the ink), plus 6 SCREEN px of slop (your
+            # aim is only so good), converted through pyfile/viewscale.py.
+            tolerance = (float(stroke.get("width", 3.0)) * 0.5
+                         + viewscale.to_canvas_length(6.0, zoom))
             for polyline in _stroke_polylines(stroke):
                 gap = _point_to_polyline(pos, polyline)
                 if gap <= tolerance and (best is None or gap < best[0]):
@@ -360,7 +365,9 @@ def _dominant_indices(points, zoom):
             candidates.append((salience[i], i))
     candidates.sort(reverse=True)
 
-    min_gap = perceptual_min_separation_px() / max(zoom or 1.0, 1e-6)
+    # A CSF period is a SCREEN length; viewscale is the shared home of that
+    # conversion (pyfile/viewscale.py, mirroring algorithm/viewscale.h).
+    min_gap = viewscale.to_canvas_length(perceptual_min_separation_px(), zoom)
     kept = [0, count - 1]
     for _, i in candidates:
         if all(abs(cum[i] - cum[j]) >= min_gap for j in kept):
