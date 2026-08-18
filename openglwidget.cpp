@@ -2064,7 +2064,10 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
     // slider. The filter is part of INPUT, not of fitting - the points the
     // stroke is built from are already the stabilized ones.
     m_inputFilter.configure(m_smoothValue / 100.0);
-    m_inputFilter.filter(pos, event->timestamp()); // seeds the state, returns pos
+    // The filter runs on SCREEN coordinates: its speed-adaptive cutoff is
+    // tuned in px/s of hand motion, which does not change with the zoom.
+    // Document-space filtering made the stabilizer zoom-dependent.
+    m_inputFilter.filter(event->position(), event->timestamp()); // seeds the state
     m_rawPenPos = pos;
     m_hasRawPenPos = true;
     appendPoint(pos);
@@ -2170,7 +2173,10 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
     // must win over the filter, not be smeared by it.
     m_rawPenPos = m_hoverPos;
     m_hasRawPenPos = true;
-    const QPointF stabilized = m_inputFilter.filter(m_hoverPos, event->timestamp());
+    // Stabilize in SCREEN space (hand speed is screen speed), then convert;
+    // pan and zoom are constant during a drag, so the mapping commutes.
+    const QPointF stabilized =
+        mapToDocument(m_inputFilter.filter(event->position(), event->timestamp()));
     bool axisRetroChanged = false;
     const QPointF snappedPos = applyAxisSnap(event->modifiers(), stabilized, &axisRetroChanged);
     if (appendPoint(snappedPos) || axisRetroChanged) {
@@ -2321,7 +2327,7 @@ void PaintOpenGLWidget::finishCurrentStroke()
         AnimeStrokeFitSettings liveSettings = m_fitSettings;
         liveSettings.pixelScale = m_liveFitPixelScale;
         const QPainterPath live =
-            AnimeVectorLogic::liveFitStrokePath(m_liveFit, m_points, liveSettings);
+            AnimeVectorLogic::liveFitStrokePath(m_liveFit, m_points, liveSettings, true);
         m_currentStroke = AnimeVectorLogic::makeStrokeFromPath(
             live, m_points, m_currentStroke.color, m_currentStroke.width, 0);
         m_currentStroke.property = m_strokeProperty;

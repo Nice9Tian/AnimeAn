@@ -154,9 +154,18 @@ QPainterPath fitStrokePath(const QVector<QPointF> &points,
 // release makes "what you saw while drawing" and "what you get" identical
 // by construction. The state belongs to one stroke gesture: value-reset it
 // on pen-down, then pass it to every call for that stroke.
+// `finalTail` false (while drawing): the tail is previewed as a denoised
+// POLYLINE - append-only beyond the smoothing kernel's reach, so only the
+// last few px at the pen tip move at all. Fitting the tail per frame made
+// the whole 40-88 screen px behind the pen wobble within the fit tolerance,
+// which slow zoomed-in detail work stared at for seconds at a time. true
+// (on release): the tail is fitted like everything else, so the committed
+// stroke is pure lines + curves; the settle is bounded by the fit tolerance
+// and happens once, at pen-up.
 QPainterPath liveFitStrokePath(struct AnimeLiveFitState &state,
                                const QVector<QPointF> &points,
-                               const AnimeStrokeFitSettings &settings = {});
+                               const AnimeStrokeFitSettings &settings = {},
+                               bool finalTail = false);
 AnimeVectorStroke makeStroke(const QVector<QPointF> &points,
                              const QColor &color,
                              qreal width,

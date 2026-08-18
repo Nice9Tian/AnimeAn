@@ -196,9 +196,10 @@ void AnimeOneEuroFilter::configure(qreal strength)
     //  - minCutoff: 5 Hz at the lightest setting down to 0.9 Hz at the
     //    heaviest. Below ~0.7 Hz the line starts feeling like a rope even
     //    with compensation; above ~6 Hz the filter stops doing anything.
-    //  - beta: how fast speed opens the filter. Speeds are px/s in document
-    //    space, so a deliberate 600 px/s sweep adds ~9 Hz to the cutoff and
-    //    effectively disables smoothing, which is the "fast = raw" rule.
+    //  - beta: how fast speed opens the filter. Speeds are px/s in SCREEN
+    //    space (the caller feeds screen coordinates: hand speed is screen
+    //    speed at any zoom), so a deliberate 600 px/s sweep adds ~9 Hz to
+    //    the cutoff and effectively disables smoothing - "fast = raw".
     //  - compensation: the share of the theoretical lag distance added back.
     //    Full strength at the heavy end, none at the light end where the lag
     //    is imperceptible anyway.
@@ -1075,7 +1076,8 @@ QPainterPath AnimeVectorLogic::fitStrokePath(const QVector<QPointF> &points,
 
 QPainterPath AnimeVectorLogic::liveFitStrokePath(AnimeLiveFitState &state,
                                                  const QVector<QPointF> &points,
-                                                 const AnimeStrokeFitSettings &settings)
+                                                 const AnimeStrokeFitSettings &settings,
+                                                 bool finalTail)
 {
     // Ink this far behind the pen can no longer be touched by anything the
     // pen does (double the widest smoothing kernel / tangent / corner
@@ -1310,9 +1312,77 @@ QPainterPath AnimeVectorLogic::liveFitStrokePath(AnimeLiveFitState &state,
     if (state.hasSeam && !tail.isEmpty()) {
         tail[0] = state.seamPoint;
     }
-    FitParams tailParams = params;
-    tailParams.forceCurved = (state.chordStartSample < 0 && state.frozenSamples > 0);
-    fitRun(dedupePoints(tail), tailParams, combined, entry, nullptr);
+    if (finalTail) {
+        FitParams tailParams = params;
+        tailParams.forceCurved = (state.chordStartSample < 0 && state.frozenSamples > 0);
+        fitRun(dedupePoints(tail), tailParams, combined, entry, nullptr);
+        return combined;
+    }
+
+    // While drawing, the tail is a denoised POLYLINE, not a fit: a per-frame
+    // least-squares re-solve made the whole tail wobble within tolerance,
+    // and zoomed-in detail work stares at exactly that region for seconds.
+    // The smoothing displacement is capped POINTWISE (the same budget the
+    // fit uses), which keeps the operator local: beyond the kernel's reach
+    // behind the pen every previewed point is final, so the only thing that
+    // moves on screen is the last few px under the pen tip.
+    const QVector<QPointF> deduped = dedupePoints(tail);
+    if (deduped.size() < 2) {
+        return combined;
+    }
+    qreal tailArcLength = 0.0;
+    for (int i = 1; i < deduped.size(); ++i) {
+        tailArcLength += QLineF(deduped[i - 1], deduped[i]).length();
+    }
+    const qreal spacing =
+        std::max<qreal>(0.25 * params.pixelScale, tailArcLength / (deduped.size() - 1));
+    const qreal sigmaSamples = std::min<qreal>(20.0, params.gaussianSigma / spacing);
+
+    // Corners are PINNED, exactly as the fit pins them (fitRun splits at
+    // corners and smooths per piece with the endpoints held). One smoothing
+    // pass across the whole tail rounded a just-drawn corner by up to the
+    // displacement cap for seconds, then snapped it sharp in a single frame
+    // when the bake reached it - a pop concentrated on the very feature the
+    // eye tracks. Split the tail at high-turn samples and smooth each run
+    // with its ends held instead.
+    const qreal cornerThreshold = params.cornerAngleDeg * (kTwoPi * 0.5) / 180.0;
+    QVector<int> pins;
+    pins.append(0);
+    for (int i = 2; i + 2 < deduped.size(); ++i) {
+        const QPointF in = deduped[i] - deduped[i - 2];
+        const QPointF out = deduped[i + 2] - deduped[i];
+        const qreal lenIn = std::hypot(in.x(), in.y());
+        const qreal lenOut = std::hypot(out.x(), out.y());
+        if (lenIn < 1e-9 || lenOut < 1e-9) {
+            continue;
+        }
+        const qreal turn = std::abs(std::atan2(crossZ(in, out), dotP(in, out)));
+        if (turn > cornerThreshold && i - pins.last() >= 2) {
+            pins.append(i);
+        }
+    }
+    pins.append(deduped.size() - 1);
+
+    QVector<QPointF> smooth;
+    for (int seg = 0; seg + 1 < pins.size(); ++seg) {
+        const int first = pins[seg];
+        const int last = pins[seg + 1];
+        const QVector<QPointF> run =
+            gaussianSmooth(deduped.mid(first, last - first + 1), sigmaSamples);
+        for (int i = (seg == 0 ? 0 : 1); i < run.size(); ++i) {
+            smooth.append(run[i]);
+        }
+    }
+    for (int i = 0; i < deduped.size(); ++i) {
+        const QPointF d = smooth[i] - deduped[i];
+        const qreal len = std::hypot(d.x(), d.y());
+        if (len > params.fitTolerance) {
+            smooth[i] = deduped[i] + d * (params.fitTolerance / len);
+        }
+    }
+    for (int i = 1; i < smooth.size(); ++i) {
+        combined.lineTo(smooth[i]);
+    }
     return combined;
 }
 
