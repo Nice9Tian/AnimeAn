@@ -117,6 +117,9 @@ private:
     bool saveTextureViewAs();
     bool exportTextureImage();
     bool writeModelToFile(const AnimeSceneModel &model, const QString &fileName, const QString &dialogTitle);
+    // Re-asks toolcontrol.py for the active extra tool's layout and applies
+    // it. A no-op when no extra tool is showing.
+    void refreshExtraToolOptions();
     void updateWindowTitle();
     PaintOpenGLWidget *activePaintWidget() const;
     // The remembered file of a given board, writable so Save can adopt one.
@@ -174,6 +177,12 @@ private:
     QPoint m_listPressPos;
     int m_toolSmoothValue = 50;   // stabilizer, mirrored by the panel slider
     class ToolOptPanel *m_toolOptPanel = nullptr;
+    // The extra tool whose options are on screen, so the panel can be rebuilt
+    // when something OUTSIDE it changes what those options should be (the
+    // Auto Mapping calculation mode lives in the menu bar, and it decides
+    // whether the RDP tolerance applies at all).
+    QString m_activeExtraTool;
+    QString m_activeExtraToolProperty;
     // PaintOpenGLWidget is only forward-declared here, so the tool travels as
     // its underlying int and the lambda casts it back.
     std::function<void(int)> m_reloadToolOptions;

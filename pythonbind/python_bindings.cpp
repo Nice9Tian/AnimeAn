@@ -29,6 +29,10 @@ namespace {
 std::vector<AnimeSceneModel *> g_uiScenes;
 AnimeSceneModel *g_currentUiScene = nullptr;
 std::function<void(bool frame, bool layer, bool asset, bool widget)> g_uiRefreshCallback;
+// Rebuilding the TOOL OPTIONS panel is its own thing: it is not scene state,
+// and it is needed when something OUTSIDE the panel changes what the panel
+// should offer (a mode that lives in the menu bar).
+std::function<void()> g_uiToolOptionsCallback;
 std::function<void(bool frozen)> g_uiFreezeCallback;
 std::function<void(const QString &view, const QVector<AnimeanOverlayItem> &items)> g_uiOverlayCallback;
 std::function<void(const QString &view, const QVector<AnimeanEditHandle> &handles)> g_uiEditHandleCallback;
@@ -996,6 +1000,16 @@ void clearAnimeanUiRefreshCallback()
     g_uiRefreshCallback = nullptr;
 }
 
+void registerAnimeanUiToolOptionsCallback(std::function<void()> callback)
+{
+    g_uiToolOptionsCallback = std::move(callback);
+}
+
+void clearAnimeanUiToolOptionsCallback()
+{
+    g_uiToolOptionsCallback = nullptr;
+}
+
 void registerAnimeanUiFreezeCallback(std::function<void(bool frozen)> callback)
 {
     g_uiFreezeCallback = std::move(callback);
@@ -1112,6 +1126,14 @@ void bindAnimeanPythonModule(py::module_ &m)
     py::module_ ui = m.def_submodule("ui", "Helpers for synchronizing the embedded AnimeAn user interface.");
     ui.def("refresh", []() {
         requestUiRefresh(true, true, true, true);
+    });
+    // Ask the tool options panel to re-read its layout from toolcontrol.py.
+    // A tool whose options depend on state kept OUTSIDE the panel calls this
+    // when that state changes, so the controls on screen stay true.
+    ui.def("refresh_tool_options", []() {
+        if (g_uiToolOptionsCallback) {
+            g_uiToolOptionsCallback();
+        }
     });
     ui.def("set_overlay",
            [](const std::string &view, py::sequence items) {

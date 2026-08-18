@@ -41,6 +41,8 @@ void registerAnimeanUiScene(AnimeSceneModel *model);
 void unregisterAnimeanUiScene(AnimeSceneModel *model);
 void registerAnimeanUiRefreshCallback(std::function<void(bool frame, bool layer, bool asset, bool widget)> callback);
 void clearAnimeanUiRefreshCallback();
+void registerAnimeanUiToolOptionsCallback(std::function<void()> callback);
+void clearAnimeanUiToolOptionsCallback();
 void registerAnimeanUiFreezeCallback(std::function<void(bool frozen)> callback);
 void clearAnimeanUiFreezeCallback();
 void registerAnimeanUiOverlayCallback(std::function<void(const QString &view, const QVector<AnimeanOverlayItem> &items)> callback);

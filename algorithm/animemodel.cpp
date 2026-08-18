@@ -1792,6 +1792,32 @@ QVector<QLineF> AnimeSceneModel::fillBoundarySegments(int frame, int layerIndex)
     return segments;
 }
 
+QRectF AnimeSceneModel::contentBounds(int frame) const
+{
+    // Deliberately NOT filtered by visibility or type: a hidden layer becomes
+    // visible again, and a fill layer is content too. Reachability that came
+    // and went with a checkbox would be worse than none.
+    QRectF bounds;
+    if (frame < 0) {
+        return bounds;
+    }
+    for (const AnimeColumn &column : m_scene.xsheet.columns) {
+        if (column.internal) {
+            continue;
+        }
+        const AnimeVectorImageModel *image = imageForCell(column.cellAt(frame));
+        if (!image) {
+            continue;
+        }
+        const QRectF cell = image->bounds();
+        if (cell.isNull()) {
+            continue;
+        }
+        bounds = bounds.isNull() ? cell : bounds.united(cell);
+    }
+    return bounds;
+}
+
 QRectF AnimeSceneModel::fillBoundaryBounds(int frame, int layerIndex) const
 {
     // Deliberately a line-for-line twin of fillBoundarySegments' column filter:

@@ -441,19 +441,50 @@ void PaintOpenGLWidget::setCanvasSize(const QSize &size)
     notifyViewTransformChanged();
 }
 
+QRectF PaintOpenGLWidget::reachableRect() const
+{
+    QRectF reach = documentRect();
+    const QRectF content = m_model.contentBounds(m_model.currentFrame());
+    if (!content.isNull()) {
+        reach = reach.isNull() ? content : reach.united(content);
+    }
+    if (reach.isNull()) {
+        return reach;
+    }
+    // Half a viewport of slack on every side, so ink at the very edge can be
+    // brought to the middle of the screen to work on rather than being pinned
+    // against the frame. Screen px -> document via algorithm/viewscale.h.
+    const qreal padX = AnimeViewScale::toDocumentLength(width() * 0.5, m_zoom);
+    const qreal padY = AnimeViewScale::toDocumentLength(height() * 0.5, m_zoom);
+    return reach.adjusted(-padX, -padY, padX, padY);
+}
+
 void PaintOpenGLWidget::clampPan()
 {
     if (m_unboundedCanvas) {
         return;
     }
 
-    const qreal docWidth = documentRect().width() * m_zoom;
-    const qreal docHeight = documentRect().height() * m_zoom;
+    // The travel limit follows the REACHABLE area (page + artwork + slack),
+    // not the page. Clamped to the page, zooming in walled the view inside
+    // the paper: anything drawn past its edge could not be scrolled to, so it
+    // could not be edited either.
+    const QRectF reach = reachableRect();
+    if (reach.isNull()) {
+        return;
+    }
+    // In screen space the reachable area spans [reach.left*zoom + pan,
+    // reach.right*zoom + pan]; the pan may move until that span's far edge
+    // meets the near edge of the viewport, and no further.
+    const qreal left = reach.left() * m_zoom;
+    const qreal right = reach.right() * m_zoom;
+    const qreal top = reach.top() * m_zoom;
+    const qreal bottom = reach.bottom() * m_zoom;
 
-    const qreal minX = std::min<qreal>(0.0, width() - docWidth);
-    const qreal maxX = std::max<qreal>(0.0, width() - docWidth);
-    const qreal minY = std::min<qreal>(0.0, height() - docHeight);
-    const qreal maxY = std::max<qreal>(0.0, height() - docHeight);
+    const qreal minX = std::min<qreal>(width() - right, -left);
+    const qreal maxX = std::max<qreal>(width() - right, -left);
+    const qreal minY = std::min<qreal>(height() - bottom, -top);
+    const qreal maxY = std::max<qreal>(height() - bottom, -top);
 
     m_panOffset.setX(std::min(maxX, std::max(minX, m_panOffset.x())));
     m_panOffset.setY(std::min(maxY, std::max(minY, m_panOffset.y())));

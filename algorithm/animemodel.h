@@ -363,6 +363,11 @@ public:
     // trace runs on - a bound that disagreed with them would slice regions
     // the tracer legitimately found.
     QRectF fillBoundaryBounds(int frame, int layerIndex = -1) const;
+    // Everything actually drawn on a frame, page or no page: the union of
+    // every cell's bounds across every column. What the VIEW must be able
+    // to reach is decided from this, not from the page - art drawn past
+    // the paper is still art, and unreachable art cannot be edited.
+    QRectF contentBounds(int frame) const;
 
 private:
     // normalizeLayerTree is logically const (it only reconciles bookkeeping),

@@ -372,6 +372,11 @@ MainWindow::MainWindow(QWidget *parent)
 #ifdef ANIMEAN_WITH_PYTHON
     registerAnimeanUiScene(&m_childPaintWidget->model());
     registerAnimeanUiScene(&m_paintWidget->model());
+    // A script can change what the tool options panel should show without
+    // touching the scene at all (the Auto Mapping calculation mode lives in
+    // the menu bar and decides whether RDP applies), so the rebuild is its
+    // own callback rather than a fifth flag on the scene refresh.
+    registerAnimeanUiToolOptionsCallback([this]() { refreshExtraToolOptions(); });
     registerAnimeanUiRefreshCallback([this](bool frame, bool layer, bool asset, bool widget) {
         PaintOpenGLWidget *view = activePaintWidget();
         SelectionAttention &attention = attentionFor(view);
@@ -722,6 +727,10 @@ void MainWindow::createHistoryDock()
     m_historyDock->setObjectName(QStringLiteral("HistoryDock"));
     m_historyDock->setWidget(m_historyPanel);
     addDockWidget(Qt::RightDockWidgetArea, m_historyDock);
+    // Hidden by default: undo/redo are on the keyboard, so the list is for
+    // the times you want to jump around history rather than everyday work.
+    // The View menu toggle brings it up.
+    m_historyDock->hide();
 
     m_undoAction = new QAction(QStringLiteral("Undo"), this);
     m_undoAction->setShortcut(QKeySequence::Undo);
@@ -1332,6 +1341,33 @@ bool MainWindow::saveTextureViewAs()
     return true;
 }
 
+void MainWindow::refreshExtraToolOptions()
+{
+    if (m_activeExtraTool.isEmpty() || !m_toolOptPanel) {
+        return;
+    }
+    QJsonObject extraLayout;
+#ifdef ANIMEAN_WITH_PYTHON
+    try {
+        py::dict state;
+        state["smooth"] = m_toolSmoothValue;
+        state["pen_width"] = m_toolPenWidth;
+        state["fill_scope"] = m_toolFillAllLayers ? "all" : "current";
+        const std::string json = py::module_::import("toolcontrol")
+                                     .attr("options_for_extra_tool_json")(m_activeExtraTool.toStdString(), state)
+                                     .cast<std::string>();
+        QJsonParseError parseError;
+        const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json), &parseError);
+        if (parseError.error == QJsonParseError::NoError && document.isObject()) {
+            extraLayout = document.object();
+        }
+    } catch (const py::error_already_set &error) {
+        setStatusText(QStringLiteral("toolcontrol.py error: %1").arg(QString::fromUtf8(error.what())));
+    }
+#endif
+    m_toolOptPanel->configureLayout(extraLayout);
+}
+
 bool MainWindow::writeModelToFile(const AnimeSceneModel &model, const QString &fileName, const QString &dialogTitle)
 {
     QSaveFile file(fileName);
@@ -1552,6 +1588,9 @@ void MainWindow::setupPythonDebugDock()
 
     m_pythonDebugDock->setWidget(panel);
     addDockWidget(Qt::BottomDockWidgetArea, m_pythonDebugDock);
+    // Hidden by default: a REPL against the running app is a developer
+    // surface, not part of drawing. The View menu toggle brings it up.
+    m_pythonDebugDock->hide();
 
     connect(runButton, &QPushButton::clicked, this, [this]() {
         runPythonDebugCommand(m_pythonDebugCommand->text());
@@ -2212,6 +2251,8 @@ void MainWindow::createToolDocks()
         }
         toolsPanel->setTool(tool);
         toolOptPanel->setTool(tool);
+        m_activeExtraTool.clear();   // a plain tool: nothing extra to rebuild
+        m_activeExtraToolProperty.clear();
         if (reloadOptions) {
             loadToolOptions(tool);
         }
@@ -2234,26 +2275,9 @@ void MainWindow::createToolDocks()
         }
         activePaintWidget()->sendPythonExtraToolMessage(tool.name, tool.property);
         toolOptPanel->setTool(baseTool);
-        QJsonObject extraLayout;
-#ifdef ANIMEAN_WITH_PYTHON
-        try {
-            py::dict state;
-            state["smooth"] = m_toolSmoothValue;
-            state["pen_width"] = m_toolPenWidth;
-            state["fill_scope"] = m_toolFillAllLayers ? "all" : "current";
-            const std::string json = py::module_::import("toolcontrol")
-                                         .attr("options_for_extra_tool_json")(tool.name.toStdString(), state)
-                                         .cast<std::string>();
-            QJsonParseError parseError;
-            const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json), &parseError);
-            if (parseError.error == QJsonParseError::NoError && document.isObject()) {
-                extraLayout = document.object();
-            }
-        } catch (const py::error_already_set &error) {
-            setStatusText(QStringLiteral("toolcontrol.py error: %1").arg(QString::fromUtf8(error.what())));
-        }
-#endif
-        toolOptPanel->configureLayout(extraLayout);
+        m_activeExtraTool = tool.name;
+        m_activeExtraToolProperty = tool.property;
+        refreshExtraToolOptions();
 #ifdef ANIMEAN_WITH_PYTHON
         if (!tool.handler.isEmpty()) {
             try {
@@ -2329,6 +2353,10 @@ void MainWindow::createListDocks()
     m_assetDock = new QDockWidget(QStringLiteral("Assets"), this);
     m_assetDock->setWidget(m_assetPanel);
     addDockWidget(Qt::RightDockWidgetArea, m_assetDock);
+    // Hidden by default: layers and frames are the everyday surfaces; the
+    // asset list is for reorganising what those cells point AT. The View
+    // menu toggle brings it up.
+    m_assetDock->hide();
 }
 
 void MainWindow::newProject()

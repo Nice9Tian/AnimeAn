@@ -248,19 +248,28 @@ def options_for_extra_tool(tool, state=None):
             rdp_tenths = int(round(auto_mapping.rdp_eps() * 10))
             split = "on" if auto_mapping.fold_split_enabled() else "off"
             seal = "on" if auto_mapping.fold_seal_enabled() else "off"
+            sampled = auto_mapping.curve_mode() in ("polyline", "spline")
         except Exception:
             rdp_tenths = 3
             split = "on"
             seal = "on"
-        controls = [
-            {
-                # RDP decimation exists in the sampled modes (spline/polyline)
-                # only; the bezier route transports handles instead. The mode
-                # moved to the menu bar, so this can no longer hide itself
-                # against it - the title says where it applies instead.
-                **_slider("rdp_eps", "RDP (x0.1px, sampled modes)", "rdp_eps",
-                          1, 20, rdp_tenths, 0),
-            },
+            sampled = False
+        controls = []
+        # RDP decimates the samples inserted between original points, so it
+        # exists in the SAMPLED modes (polyline/spline) only - the bezier route
+        # transports handles instead and has nothing to decimate. The mode is a
+        # menu-bar choice, outside this panel, so the control cannot hide itself
+        # against a sibling: the panel is simply rebuilt when the mode changes
+        # (auto_mapping calls ui.refresh_tool_options) and the slider is only
+        # emitted when it has meaning.
+        if sampled:
+            controls.append(
+                _slider("rdp_eps", "RDP (x0.1px)", "rdp_eps",
+                        1, 20, rdp_tenths, 0))
+        # Rows follow what was actually emitted: leaving the folds on rows 1
+        # and 2 would open the panel with an empty gap where the slider is not.
+        fold_row = len(controls)
+        controls += [
             # Refer Rect used to sit here. It moved onto each board's View
             # menu: it is a display choice about a BOARD, not a property of
             # the mapping tool, and a single shared checkbox could not answer
@@ -276,7 +285,7 @@ def options_for_extra_tool(tool, state=None):
                 "title": "Front/Back Split",
                 "hook": "fold_split",
                 "value": split,
-                "row": 1,
+                "row": fold_row,
                 "start_column": 0,
                 "end_column": 2,
             },
@@ -286,7 +295,7 @@ def options_for_extra_tool(tool, state=None):
                 "title": "Crease Line",
                 "hook": "fold_seal",
                 "value": seal,
-                "row": 2,
+                "row": fold_row + 1,
                 "start_column": 0,
                 "end_column": 2,
                 "visible_when": {"name": "fold_split", "values": ["on"]},

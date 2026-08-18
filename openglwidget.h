@@ -114,6 +114,13 @@ public:
     // The page, in document coordinates. Comes from the scene's canvas size,
     // NOT from the widget geometry.
     QRectF documentRect() const;
+    // The document area the view is allowed to travel over: the page UNIONED
+    // with whatever is drawn on this frame, plus a margin. The pan clamp and
+    // the scroll bars both take their range from this one definition - they
+    // used to derive it separately from the page alone, which pinned the view
+    // inside the paper and made anything drawn past its edge unreachable, and
+    // therefore uneditable, as soon as the canvas was zoomed in.
+    QRectF reachableRect() const;
     void setCanvasSize(const QSize &size);
     // Call after copy-assigning model(): the page may have changed with it.
     void modelReplaced();

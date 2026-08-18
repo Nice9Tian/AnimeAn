@@ -3633,6 +3633,14 @@ def _tool_option_changed(cell, stroke, message):
         if value in CURVE_MODES and _CURVE_MODE["value"] != value:
             _CURVE_MODE["value"] = value
             print(f"[auto_mapping] curve mode -> {value}")
+            # RDP only exists in the sampled modes, and the mode lives in the
+            # menu bar - outside the options panel - so the panel has to be
+            # told to re-read its layout or the slider would linger a step
+            # behind the mode it belongs to.
+            try:
+                _animean().ui.refresh_tool_options()
+            except Exception:
+                pass
         return
     if hook == "rdp_eps":
         try:
