@@ -394,7 +394,17 @@ struct FitParams {
     // live fitter makes that call itself at drawing scale and sets this to
     // suppress the slice-local chord test.
     bool forceCurved = false;
+    // Document px per screen px (see AnimeStrokeFitSettings::pixelScale);
+    // carried here so inner px constants convert consistently.
+    qreal pixelScale = 1.0;
 };
+
+// Document px per screen px, defensively clamped: zoom outside 1/4x..16x
+// gains nothing for the budgets (matches appendPoint's capture clamp).
+qreal fitPixelScale(const AnimeStrokeFitSettings &settings)
+{
+    return std::max<qreal>(1.0 / 16.0, std::min<qreal>(4.0, settings.pixelScale));
+}
 
 FitParams fitParamsFor(const AnimeStrokeFitSettings &settings)
 {
@@ -415,6 +425,17 @@ FitParams fitParamsFor(const AnimeStrokeFitSettings &settings)
     // both a steeper threshold and a longer window; they pull the same way.
     params.cornerAngleDeg = 55.0 - 35.0 * c;
     params.strideWindow = 8.0 - 4.0 * c;
+    // All px budgets above are SCREEN px: tremor, the device's report rate
+    // and what the eye can resolve do not change when the canvas is zoomed,
+    // so the document-space budgets must. At 8x zoom a document-px sigma
+    // over-smoothed 8x the visible detail; zoomed out it stopped denoising.
+    // Angle thresholds are scale-free and stay put.
+    const qreal scale = fitPixelScale(settings);
+    params.gaussianSigma *= scale;
+    params.lineTolerance *= scale;
+    params.fitTolerance *= scale;
+    params.strideWindow *= scale;
+    params.pixelScale = scale;
     return params;
 }
 
@@ -430,9 +451,12 @@ FitParams fitParamsFor(const AnimeStrokeFitSettings &settings)
 // fitPiece - scales down with the WHOLE stroke's arc (floored near the
 // tremor amplitude), so a small curved drawing cannot be deformed by a
 // long-stroke-sized allowance.
-qreal shortStrokeFitTolerance(qreal fitTolerance, qreal arc)
+qreal shortStrokeFitTolerance(qreal fitTolerance, qreal arc, qreal pixelScale)
 {
-    return std::max<qreal>(0.8, fitTolerance * std::min<qreal>(1.0, arc / 60.0));
+    // The reference length and the tremor floor are screen-sized quantities
+    // too (a "short stroke" is short ON SCREEN).
+    return std::max<qreal>(0.8 * pixelScale,
+                           fitTolerance * std::min<qreal>(1.0, arc / (60.0 * pixelScale)));
 }
 
 QVector<QPointF> dedupePoints(const QVector<QPointF> &points)
@@ -818,7 +842,8 @@ void fitPiece(const QVector<QPointF> &piece, const FitParams &params, QPainterPa
     for (int i = 1; i < piece.size(); ++i) {
         pieceArc += QLineF(piece[i - 1], piece[i]).length();
     }
-    const qreal meanSpacing = std::max<qreal>(0.25, pieceArc / (piece.size() - 1));
+    const qreal meanSpacing =
+        std::max<qreal>(0.25 * params.pixelScale, pieceArc / (piece.size() - 1));
     const FitParams &local = params;
 
     // Denoise, but never let it MOVE the drawing further than the fit is
@@ -971,7 +996,8 @@ void fitRun(const QVector<QPointF> &deduped, const FitParams &params, QPainterPa
         rawArc += QLineF(deduped[i - 1], deduped[i]).length();
     }
     const qreal captureSpacing = std::max<qreal>(0.05, rawArc / (deduped.size() - 1));
-    const qreal lightSigma = std::max<qreal>(0.5, std::min<qreal>(6.0, 1.6 / captureSpacing));
+    const qreal lightSigma = std::max<qreal>(
+        0.5, std::min<qreal>(6.0, 1.6 * params.pixelScale / captureSpacing));
     const QVector<QPointF> light = gaussianSmooth(deduped, lightSigma);
     const QVector<qreal> arc = arcLengths(light);
     const qreal cornerWindow = params.strideWindow;
@@ -1037,7 +1063,8 @@ QPainterPath AnimeVectorLogic::fitStrokePath(const QVector<QPointF> &points,
     for (int i = 1; i < deduped.size(); ++i) {
         rawArc += QLineF(deduped[i - 1], deduped[i]).length();
     }
-    params.fitTolerance = shortStrokeFitTolerance(params.fitTolerance, rawArc);
+    params.fitTolerance =
+        shortStrokeFitTolerance(params.fitTolerance, rawArc, params.pixelScale);
     fitRun(deduped, params, path);
     return path;
 }
@@ -1060,8 +1087,11 @@ QPainterPath AnimeVectorLogic::liveFitStrokePath(AnimeLiveFitState &state,
     // of it - the same unbounded-union test the offline fit's chord merging
     // uses. In CURVED mode chunks bake as Beziers regardless of their own
     // sagitta, seamed G1 by shared forced tangents.
-    constexpr qreal kFreezeMargin = 40.0;
-    constexpr qreal kFreezeChunk = 48.0;
+    // Screen px, like every other budget: what the pen can still influence
+    // is a hand-and-eye distance, not a canvas one.
+    const qreal liveScale = fitPixelScale(settings);
+    const qreal kFreezeMargin = 40.0 * liveScale;
+    const qreal kFreezeChunk = 48.0 * liveScale;
 
     // Retroactive edits of the prefix (axis snap rewriting captured points)
     // invalidate the frozen path: verify the boundary sample is still the
@@ -1082,7 +1112,8 @@ QPainterPath AnimeVectorLogic::liveFitStrokePath(AnimeLiveFitState &state,
         arc[i] = arc[i - 1] + QLineF(points[i - 1], points[i]).length();
     }
     FitParams params = fitParamsFor(settings);
-    params.fitTolerance = shortStrokeFitTolerance(params.fitTolerance, arc.last());
+    params.fitTolerance =
+        shortStrokeFitTolerance(params.fitTolerance, arc.last(), params.pixelScale);
 
     while (arc.last() - arc[state.frozenSamples] > kFreezeMargin + kFreezeChunk) {
         // The bake boundary is nudged to the FLATTEST sample of its window,
@@ -1175,7 +1206,7 @@ QPainterPath AnimeVectorLogic::liveFitStrokePath(AnimeLiveFitState &state,
             if (foldFree(state.frozenSamples, boundary)
                 && chordDeviation(points, state.chordStartSample, boundary)
                        <= params.lineTolerance * 1.25) {
-                if (pivot > 0.45) {
+                if (pivot > 0.45 * liveScale) {
                     // Still straight, but extending would move settled ink:
                     // close here and continue with a fresh collinear chord.
                     state.frozenPath.lineTo(state.seamPoint);

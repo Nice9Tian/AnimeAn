@@ -2051,6 +2051,10 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
 
     m_points.clear();
     m_liveFit = AnimeLiveFitState();   // fresh incremental-fit state per stroke
+    // The fit's px budgets are SCREEN px (tremor, report rate and the eye
+    // live there); capture the conversion once at pen-down so the whole
+    // stroke - frozen prefix, tail and release - agrees on it.
+    m_liveFitPixelScale = 1.0 / std::max<qreal>(0.25, std::min<qreal>(16.0, m_zoom));
     // Realtime stabilization for this stroke: strength follows the smooth
     // slider. The filter is part of INPUT, not of fitting - the points the
     // stroke is built from are already the stabilized ones.
@@ -2283,8 +2287,10 @@ void PaintOpenGLWidget::updateCurrentStroke()
     if (!m_liveFitThrottle.isValid() || m_liveFitThrottle.elapsed() >= kLiveFitIntervalMs
         || m_points.size() < 3) {
         m_liveFitThrottle.start();
+        AnimeStrokeFitSettings liveSettings = m_fitSettings;
+        liveSettings.pixelScale = m_liveFitPixelScale;
         const QPainterPath live =
-            AnimeVectorLogic::liveFitStrokePath(m_liveFit, m_points, m_fitSettings);
+            AnimeVectorLogic::liveFitStrokePath(m_liveFit, m_points, liveSettings);
         m_currentStroke = AnimeVectorLogic::makeStrokeFromPath(
             live, m_points, m_currentStroke.color, m_currentStroke.width, 0);
         m_currentStroke.property = m_strokeProperty;
@@ -2307,8 +2313,10 @@ void PaintOpenGLWidget::finishCurrentStroke()
     // shown is exactly what commits. Not via updateCurrentStroke: that one
     // is throttled; this fit must never be skipped or stale.
     if (!m_points.isEmpty()) {
+        AnimeStrokeFitSettings liveSettings = m_fitSettings;
+        liveSettings.pixelScale = m_liveFitPixelScale;
         const QPainterPath live =
-            AnimeVectorLogic::liveFitStrokePath(m_liveFit, m_points, m_fitSettings);
+            AnimeVectorLogic::liveFitStrokePath(m_liveFit, m_points, liveSettings);
         m_currentStroke = AnimeVectorLogic::makeStrokeFromPath(
             live, m_points, m_currentStroke.color, m_currentStroke.width, 0);
         m_currentStroke.property = m_strokeProperty;

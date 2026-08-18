@@ -340,6 +340,9 @@ private:
     // Incremental-fit state of the active stroke: the frozen prefix that is
     // never recomputed, so the already-drawn path cannot tremble.
     AnimeLiveFitState m_liveFit;
+    // Document px per screen px, captured at pen-down: the fit's budgets are
+    // screen-sized (tremor, report rate, the eye), converted once per stroke.
+    qreal m_liveFitPixelScale = 1.0;
     AxisSnapState m_axisSnapState = AxisSnapState::Inactive;
     QPointF m_axisSnapAnchor;
     int m_axisSnapAnchorIndex = 0;

@@ -95,6 +95,14 @@ struct AnimeStrokeFitSettings {
     // Low = only very sharp turns break the curve (rounder, fewer breaks);
     // high = gentle turns already count (crisper angles, more pieces).
     int corner = 50;
+    // Document px per SCREEN px at drawing time (1/zoom, clamped upstream).
+    // The hand, the device's report rate and the eye all live in SCREEN
+    // space - tremor amplitude, tangent windows and visible tolerances are
+    // screen-sized quantities - so every px budget in the fitter is defined
+    // in screen px and converted to document units with this factor. 1.0
+    // (the default) reproduces the un-zoomed behavior exactly. Last member
+    // on purpose: {simplify, corner} aggregate initializers stay valid.
+    qreal pixelScale = 1.0;
 };
 
 struct AnimeVectorRegionFace {
