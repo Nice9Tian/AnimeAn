@@ -3280,7 +3280,7 @@ def _ring_interior_point(ring):
     return (cx, cy)
 
 
-def _cut_ring_by_polyline(ring, cutter):
+def _cut_ring_by_polyline(ring, cutter, crossings_out=None):
     """Split a closed ring by an open polyline; returns the resulting rings.
 
     Crossings of the cutter with the ring boundary are collected exactly and
@@ -3356,6 +3356,12 @@ def _cut_ring_by_polyline(ring, cutter):
         mid = cutter_point((crossings[k][0] + crossings[k + 1][0]) * 0.5)
         if _point_in_ring(mid, ring):
             chords.append(cutter_slice(k, k + 1))
+            if crossings_out is not None:
+                # The chord's endpoints are where this ring genuinely changes
+                # side - a fill's equivalent of a stroke's cut, and the
+                # anchors the crease needs to span the fill's fold edge.
+                crossings_out.append(crossings[k][1])
+                crossings_out.append(crossings[k + 1][1])
 
     pieces = [list(ring)]
     for chord in chords:
@@ -3429,15 +3435,20 @@ def _split_ring_with_chord(ring, chord):
     return result if len(result) == 2 else None
 
 
-def _split_ring_by_fold(map_point, ring):
-    """[(sub_ring, side, interior_point)] after cutting by every crease."""
+def _split_ring_by_fold(map_point, ring, crossings_out=None):
+    """[(sub_ring, side, interior_point)] after cutting by every crease.
+
+    `crossings_out` collects the ring/crease crossing points (child space):
+    the fill's side-change positions, which the crease anchors on exactly
+    like it anchors on the strokes' cuts.
+    """
     if not _FOLD["split"]:
         return [(ring, _MappedOutput.FRONT, _ring_interior_point(ring))]
     pieces = [ring]
     for cutter in _child_cutters(map_point):
         cut = []
         for piece in pieces:
-            cut.extend(_cut_ring_by_polyline(piece, cutter))
+            cut.extend(_cut_ring_by_polyline(piece, cutter, crossings_out))
         pieces = cut
     out = []
     for piece in pieces:
@@ -3567,15 +3578,21 @@ def _emit_fills(animean, out, map_point, fills, child_area, main_area):
         # geometry so hole pieces can find the outer piece that contains them.
         outers = {}
         holes = []
+        fold_crossings = []
         for index, ring in enumerate(source_rings):
             for clipped in _clip_rings_to_area([ring], child_area):
-                for piece, side, rep in _split_ring_by_fold(map_point, clipped):
+                for piece, side, rep in _split_ring_by_fold(map_point, clipped,
+                                                            fold_crossings):
                     depth = _fold_depth(map_point, rep, side)
                     if is_hole[index]:
                         holes.append((depth, side, piece, rep))
                     else:
                         entry = {"child": piece, "rings": [piece], "holes": []}
                         outers.setdefault((depth, side), []).append(entry)
+        # A fill's fold-edge endpoints anchor the crease exactly like stroke
+        # cuts do: without them the crease stopped at the last STROKE cut and
+        # left the fill's own fold boundary without its terminator line.
+        out.cuts.extend(map_point(p) for p in fold_crossings)
         for depth, side, piece, rep in holes:
             for entry in outers.get((depth, side), ()):
                 if _point_in_ring(rep, entry["child"]):
@@ -3847,11 +3864,14 @@ class _MappedOutput:
         generic = bool(shift % 2)
         deep_first = sorted((d for d in self.depths if self.depths[d]), reverse=True)
         plan = [(self._layer_name(depth, generic), self.depths[depth], False)
-                for depth in deep_first if depth >= 1]
+                for depth in deep_first]
+        # The crease goes ON TOP. It used to sit between the back and the
+        # front, which worked while everything was line art - but a depth-0
+        # FILL is opaque right up to the fold edge (its boundary IS the
+        # crease), and painted above the seal it swallowed the crease's inner
+        # half, which read as the fold line being drawn in the wrong place.
         if self.seal_items:
             plan.append((SEAL_LAYER_NAME, self.seal_items, True))
-        if self.depths.get(0):
-            plan.append((self._layer_name(0, generic), self.depths[0], False))
         for name, items, seal in plan:
             layer = _create_mapped_layer(self.scene, self.row, name)
             if layer < 0:
