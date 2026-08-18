@@ -980,9 +980,16 @@ def _handle_event(message):
                     _enforce_chain_constraints(session["chain"])
             if _replace_stroke(view, session):
                 session["changed"] = True
-                session["geometry"]["commands"] = (
-                    _elements_to_commands(session["elements"]) if session["elements"] is not None else [])
-                if session["elements"] is None:
+                # Mirror what _replace_stroke just wrote. The artist chain
+                # branch used to record the STALE pre-drag elements here, so
+                # a zoom mid-drag rebuilt the chain from the old commands and
+                # the stroke visibly snapped back.
+                if _STATE["mode"] == "artist" and session.get("chain"):
+                    session["geometry"]["commands"] = _chain_commands(session["chain"])
+                elif session["elements"] is not None:
+                    session["geometry"]["commands"] = _elements_to_commands(session["elements"])
+                else:
+                    session["geometry"]["commands"] = []
                     session["geometry"]["points"] = list(session["points"])
         if phase == "release":
             if session.get("changed"):
