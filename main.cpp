@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 
 #include <QApplication>
+#include <QSurfaceFormat>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
@@ -37,6 +38,18 @@ static QString pythonStartupText()
 
 int main(int argc, char *argv[])
 {
+    // Multisampling for every GL surface in the app. QPainter's OpenGL engine
+    // leans on the framebuffer's samples for smooth path edges - with the
+    // default of 0 the paint views render visibly stair-stepped lines, which
+    // no render hint can fix from above. 8x supersamples each screen pixel
+    // and resolves (interpolates) the coverage, which is exactly the
+    // "sample finer than the screen, then blend" the aliasing calls for.
+    // MUST run before QApplication: QOpenGLWidget contexts are created from
+    // the default format, and drivers clamp the count to what they support.
+    QSurfaceFormat format = QSurfaceFormat::defaultFormat();
+    format.setSamples(8);
+    QSurfaceFormat::setDefaultFormat(format);
+
     QApplication app(argc, argv);
 
 #ifdef ANIMEAN_WITH_PYTHON

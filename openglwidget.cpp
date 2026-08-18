@@ -1556,6 +1556,7 @@ bool PaintOpenGLWidget::buildPlaybackCache(int frameCount, QString *error)
 
         QPainter painter(&image);
         painter.setRenderHint(QPainter::Antialiasing);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform);
         painter.translate(m_panOffset);
         painter.scale(m_zoom, m_zoom);
         if (!m_unboundedCanvas) {
@@ -1645,6 +1646,10 @@ void PaintOpenGLWidget::paintGL()
 {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
+    // Bilinear filtering for every image drawn under the zoom transform -
+    // raster layers and the playback cache. Without it a scaled image is
+    // sampled nearest-neighbour and pixelates the moment zoom leaves 1.0.
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
 
     if (m_playbackActive && m_playbackIndex >= 0 && m_playbackIndex < m_playbackFrames.size()) {
         // Always clear first: the widget can be larger than the cached frame
