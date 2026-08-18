@@ -104,6 +104,14 @@ AUTO_MAPPING2_TOOL = "auto_mapping_2"
 MAPPING_AREA_PROPERTY = "mapping_area"
 POLY_STEP = 4.0
 
+# The "nearest end" of the folded sheet: a red draggable handle on the main
+# board that decides the STACKING of fold layers. Depth of any point = number
+# of creases crossed between it and this anchor (in arc space); depth 0 paints
+# on top. Stored in the main view's assets as arc coordinates so it rides the
+# guides, defaulting to the crossing.
+NEAREST_PROPERTY = "fold_nearest"
+NEAREST_HANDLE_COLOR = (230, 45, 45, 255)
+
 GRID_COLOR = (255, 140, 0, 170)
 
 # How the mapped strokes' geometry is reconstructed after the warp. The warp
@@ -325,6 +333,10 @@ def _load_assets(view_name):
             polygons = [polygon for polygon in polygons if len(polygon) >= 3]
             if polygons:
                 assets[prop] = {"polygons": polygons}
+        elif prop == NEAREST_PROPERTY:
+            arc = item.get("arc") or []
+            if len(arc) >= 2:
+                assets[prop] = {"arc": [float(arc[0]), float(arc[1])]}
         elif prop in GUIDE_PROPERTIES:
             points = [(float(p[0]), float(p[1])) for p in item.get("points") or []]
             if len(points) >= 2:
@@ -2065,6 +2077,131 @@ def _overlays_changed(view_name):
     _push_overlay(view_name)
     if _OCCLUSION["enabled"] and view_name != "child":
         _push_overlay("child")
+    if view_name == "main":
+        _push_nearest_handle()
+
+
+def _main_guide_frame():
+    """The MAIN board's own frame (for the nearest-end handle), or None."""
+    assets = _assets_for("main")
+    if H_PROPERTY not in assets or V_PROPERTY not in assets:
+        return None
+    if (len(assets[H_PROPERTY].get("points") or []) < 2
+            or len(assets[V_PROPERTY].get("points") or []) < 2):
+        return None
+    try:
+        frame = _Frame(assets[H_PROPERTY], assets[V_PROPERTY])
+    except Exception:
+        return None
+    if frame.h_total <= 1e-6 or frame.v_total <= 1e-6:
+        return None
+    return frame
+
+
+def _nearest_arc():
+    """The nearest-end anchor in MAIN arc coordinates (crossing by default)."""
+    item = _assets_for("main").get(NEAREST_PROPERTY) or {}
+    arc = item.get("arc") or (0.0, 0.0)
+    return float(arc[0]), float(arc[1])
+
+
+_NEAREST_SHOWN = {"visible": False}
+
+
+def _push_nearest_handle():
+    """Show (or clear) the red nearest-end handle on the main board.
+
+    Shown whenever both main guides exist; sits ON the sheet at its stored
+    arc position, so redrawing a guide carries the anchor along. Note the
+    edit-handle channel is shared: an Arrow-edit session replaces the list
+    while it runs, and the handle returns on the next overlay refresh.
+    """
+    frame = _main_guide_frame()
+    try:
+        ui = _animean().ui
+        if frame is None:
+            if _NEAREST_SHOWN["visible"]:
+                ui.set_edit_handles("main", [])
+                _NEAREST_SHOWN["visible"] = False
+            return
+        arc_h, arc_v = _nearest_arc()
+        # A stored anchor can outlive the guides it was set on; clamp it back
+        # onto the sheet (point_at extrapolates linearly past the ends, which
+        # would float the handle off into empty space).
+        arc_h = min(max(arc_h, -frame.h_arc), frame.h_total - frame.h_arc)
+        arc_v = min(max(arc_v, -frame.v_arc), frame.v_total - frame.v_arc)
+        pos = frame.hv(arc_h, arc_v)
+        ui.set_edit_handles("main", [{
+            "id": NEAREST_PROPERTY,
+            "x": pos[0], "y": pos[1],
+            "shape": 1,                      # circle
+            "color": NEAREST_HANDLE_COLOR,
+            "interactive": True,
+        }])
+        _NEAREST_SHOWN["visible"] = True
+    except Exception as error:
+        print(f"[auto_mapping] nearest handle update failed: {error}")
+
+
+_NEAREST_DRAG = {"frame": None, "moved": False}
+
+
+def _nearest_handle_event(message):
+    """Drag the nearest-end anchor; it snaps onto the sheet (arc coords).
+
+    A press only GRABS (the handle accepts clicks up to 7 screen px off
+    centre, and applying the press position would teleport the anchor by
+    that offset); only actual movement re-solves, and only a drag that moved
+    commits history - a stray click must not truncate the redo tail.
+    """
+    if message.get("view") != "main":
+        return
+    phase = message.get("phase")
+    if phase == "cancel":
+        # Another tool released the handle channel (Arrow/Connect teardown
+        # sends a blanket cancel); reclaim our handle.
+        _NEAREST_DRAG["frame"] = None
+        _NEAREST_DRAG["moved"] = False
+        _push_nearest_handle()
+        return
+    if message.get("handle") != NEAREST_PROPERTY:
+        return
+    if phase == "press":
+        _NEAREST_DRAG["frame"] = _main_guide_frame()
+        _NEAREST_DRAG["moved"] = False
+        return
+    if phase not in ("move", "release"):
+        return
+    frame = _NEAREST_DRAG.get("frame") or _main_guide_frame()
+    if frame is None:
+        return
+    _NEAREST_DRAG["frame"] = frame  # guides cannot change mid-drag: build once
+    if phase == "move":
+        position = message.get("position") or {}
+        point = (float(position.get("x", 0.0)), float(position.get("y", 0.0)))
+        current = _nearest_arc()
+        l_h, l_v = frame.solve(point, current[0], current[1])
+        # Keep the anchor on the sheet the guides actually span.
+        l_h = min(max(l_h, -frame.h_arc), frame.h_total - frame.h_arc)
+        l_v = min(max(l_v, -frame.v_arc), frame.v_total - frame.v_arc)
+        _assets_for("main")[NEAREST_PROPERTY] = {"arc": [l_h, l_v]}
+        _NEAREST_DRAG["moved"] = True
+        _push_nearest_handle()
+        return
+    # release
+    moved = _NEAREST_DRAG["moved"]
+    _NEAREST_DRAG["frame"] = None
+    _NEAREST_DRAG["moved"] = False
+    if not moved:
+        return
+    _save_assets("main")
+    try:
+        _animean().ui.history_commit("Move Nearest Point", "main")
+    except Exception:
+        pass  # older builds without the history binding
+    l_h, l_v = _nearest_arc()
+    print(f"[auto_mapping] nearest point at arc ({l_h:.1f}, {l_v:.1f}); "
+          "the next Auto Mapping stacks fold layers from here.")
 
 
 def _detect_region(scene, view_name, frame, seed):
@@ -2952,25 +3089,519 @@ def _stroke_style(stroke, width_scale):
     return color_tuple, width
 
 
+# ---------------------------------------------------------------------------
+# fold depth (layer stacking from the nearest-end anchor) and fill topology
+# ---------------------------------------------------------------------------
+
+def _prepare_fold_context(map_point, h_range, v_range):
+    """Attach the depth machinery to the mapper, once per run.
+
+    Depth of a sheet point = number of creases crossed between it and the
+    nearest-end anchor, walked as a straight segment in ARC space (where the
+    loci are clean disjoint curves). Depth decides layer STACKING only;
+    front/back COLORING stays with _fold_sign, and a parity mismatch between
+    the two (a graze, a missed tangency) is settled in _fold_sign's favour by
+    bumping the depth one step - each crease crossed flips the face, so depth
+    parity and face must agree.
+    """
+    main = map_point.main_frame
+    anchor = _nearest_arc()
+    # Clamp a stale anchor (guides redrawn shorter since it was stored) onto
+    # the sheet, and FOLD IT INTO THE SWEEP WINDOW: crossings between the
+    # anchor and the artwork that fall outside the traced window would be
+    # silently missed, and the parity fix would then merge distinct fold
+    # layers instead of stacking them.
+    anchor = (min(max(anchor[0], -main.h_arc), main.h_total - main.h_arc),
+              min(max(anchor[1], -main.v_arc), main.v_total - main.v_arc))
+    pad = 4.0 * POLY_STEP
+    map_point.depth_curves = _crease_curves(
+        map_point,
+        (min(v_range[0], anchor[1]) - pad, max(v_range[1], anchor[1]) + pad),
+        (min(h_range[0], anchor[0]) - pad, max(h_range[1], anchor[0]) + pad))
+    map_point.depth_anchor = anchor
+    map_point.child_cutters = None  # built lazily by _child_cutters
+
+
+def _arc_of_point(map_point, point):
+    """A child point's MAIN arc coordinates (the space depth is counted in)."""
+    l_h, l_v = map_point.coords(point)
+    return (l_h * (map_point.h_scales[1] if l_h >= 0.0 else map_point.h_scales[0]),
+            l_v * (map_point.v_scales[1] if l_v >= 0.0 else map_point.v_scales[0]))
+
+
+def _fold_depth(map_point, point, side):
+    """Stacking depth of a child point (0 = nearest to the viewer)."""
+    curves = getattr(map_point, "depth_curves", None)
+    if not curves:
+        return 0 if side == _MappedOutput.FRONT else 1
+    anchor = map_point.depth_anchor
+    arc = _arc_of_point(map_point, point)
+    depth = 0
+    for curve in curves:
+        for a, b in zip(curve, curve[1:]):
+            hit = _segment_intersection(anchor, arc, a, b)
+            if hit is None:
+                continue
+            t, u = hit
+            # Half-open on both parameters so a crossing shared by two
+            # consecutive segments is counted once.
+            if 0.0 <= t < 1.0 and 0.0 <= u < 1.0:
+                depth += 1
+    if (depth % 2 == 0) != (side == _MappedOutput.FRONT):
+        depth += 1
+    return depth
+
+
+def _run_depth(map_point, run, side):
+    if not _FOLD["split"] or len(run) == 0:
+        return 0 if side == _MappedOutput.FRONT else 1
+    return _fold_depth(map_point, run[len(run) // 2], side)
+
+
+def _child_cutters(map_point):
+    """The crease loci as polylines in CHILD image space, for cutting fills.
+
+    The depth curves live in MAIN arc coordinates; dividing by the per-side
+    transfer scales gives child arcs, and the child frame's hv puts them on
+    the texture. In child space the loci are plain curves - the cusps are an
+    IMAGE-space phenomenon - so they are valid polygon cutters. Ends are
+    extended a little so a locus truncated by the sweep window still cuts
+    cleanly through a fill it grazes.
+    """
+    cutters = getattr(map_point, "child_cutters", None)
+    if cutters is not None:
+        return cutters
+    cutters = []
+    child = map_point.child_frame
+    h_scales, v_scales = map_point.h_scales, map_point.v_scales
+    for curve in getattr(map_point, "depth_curves", None) or []:
+        points = []
+        for arc_h, arc_v in curve:
+            c_h = arc_h / (h_scales[1] if arc_h >= 0.0 else h_scales[0])
+            c_v = arc_v / (v_scales[1] if arc_v >= 0.0 else v_scales[0])
+            points.append(child.hv(c_h, c_v))
+        if len(points) < 2:
+            continue
+        for end, other in ((0, 1), (-1, -2)):
+            dx = points[end][0] - points[other][0]
+            dy = points[end][1] - points[other][1]
+            length = math.hypot(dx, dy)
+            if length > 1e-9:
+                extended = (points[end][0] + dx / length * 8.0 * POLY_STEP,
+                            points[end][1] + dy / length * 8.0 * POLY_STEP)
+                if end == 0:
+                    points.insert(0, extended)
+                else:
+                    points.append(extended)
+        cutters.append(_densify(points))
+    map_point.child_cutters = cutters
+    return cutters
+
+
+def _point_in_ring(point, ring):
+    """Odd-even test against a closed ring (implicit closing edge)."""
+    inside = False
+    n = len(ring)
+    for i in range(n):
+        a = ring[i]
+        b = ring[(i + 1) % n]
+        if (a[1] > point[1]) != (b[1] > point[1]):
+            span = b[1] - a[1]
+            x = a[0] + (b[0] - a[0]) * (point[1] - a[1]) / span
+            if point[0] < x:
+                inside = not inside
+    return inside
+
+
+def _point_in_polygons(point, polygons):
+    """Odd-even over a polygon list (the mapping-area convention)."""
+    inside = False
+    for polygon in polygons or []:
+        if len(polygon) >= 3 and _point_in_ring(point, polygon):
+            inside = not inside
+    return inside
+
+
+def _ring_interior_point(ring):
+    """A point strictly inside the ring.
+
+    The centroid first; then edge midpoints nudged INWARD along the edge
+    normal (both signs tried). Plain vertex-pair midpoints were not enough:
+    on a densified ring the midpoint of two vertices spanning a locally
+    straight stretch lies exactly ON the boundary, and the fold side of such
+    a point is decided by rounding noise - after a crease cut, part of every
+    piece's boundary IS the crease.
+    """
+    n = len(ring)
+    cx = sum(p[0] for p in ring) / n
+    cy = sum(p[1] for p in ring) / n
+    if _point_in_ring((cx, cy), ring):
+        return (cx, cy)
+    stride = max(1, n // 12)
+    for i in range(0, n, stride):
+        a = ring[i]
+        b = ring[(i + 1) % n]
+        mx, my = (a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        length = math.hypot(dx, dy)
+        if length <= 1e-9:
+            continue
+        nx, ny = -dy / length, dx / length
+        for offset in (0.35, -0.35, 1.0, -1.0):
+            candidate = (mx + nx * offset, my + ny * offset)
+            if _point_in_ring(candidate, ring):
+                return candidate
+    return (cx, cy)
+
+
+def _cut_ring_by_polyline(ring, cutter):
+    """Split a closed ring by an open polyline; returns the resulting rings.
+
+    Crossings of the cutter with the ring boundary are collected exactly and
+    ordered ALONG THE CUTTER; each stretch of cutter between two consecutive
+    crossings whose midpoint lies inside the ring is a CHORD, and every chord
+    splits the ring piece containing its endpoints in two. Consecutive
+    stretches alternate inside/outside (each crossing is transversal), so
+    chords never share endpoints and never cross each other, which is what
+    lets them be applied one at a time.
+
+    A locus that dead-ends INSIDE the ring (a fold pair born within the fill)
+    contributes no chord and does not split - correct, since the region wraps
+    over such a fold without its boundary changing sides.
+    """
+    n = len(ring)
+    # Bounding-box gate: both operands are densified at POLY_STEP, so the
+    # naive all-pairs intersection scan grows with board size squared; most
+    # cutter segments are nowhere near the ring.
+    ring_x0 = min(p[0] for p in ring)
+    ring_x1 = max(p[0] for p in ring)
+    ring_y0 = min(p[1] for p in ring)
+    ring_y1 = max(p[1] for p in ring)
+    cut_x0 = min(p[0] for p in cutter)
+    cut_x1 = max(p[0] for p in cutter)
+    cut_y0 = min(p[1] for p in cutter)
+    cut_y1 = max(p[1] for p in cutter)
+    if (cut_x1 < ring_x0 or cut_x0 > ring_x1
+            or cut_y1 < ring_y0 or cut_y0 > ring_y1):
+        return [ring]
+    crossings = []
+    for j in range(len(cutter) - 1):
+        c0, c1 = cutter[j], cutter[j + 1]
+        if (max(c0[0], c1[0]) < ring_x0 or min(c0[0], c1[0]) > ring_x1
+                or max(c0[1], c1[1]) < ring_y0 or min(c0[1], c1[1]) > ring_y1):
+            continue
+        for i in range(n):
+            a, b = ring[i], ring[(i + 1) % n]
+            hit = _segment_intersection(a, b, c0, c1)
+            if hit is None:
+                continue
+            t, u = hit
+            if 0.0 <= t < 1.0 and 0.0 <= u < 1.0:
+                point = (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+                crossings.append((j + u, point))
+    if len(crossings) < 2:
+        return [ring]
+    crossings.sort(key=lambda entry: entry[0])
+    deduped = [crossings[0]]
+    for entry in crossings[1:]:
+        if entry[0] - deduped[-1][0] > 1e-9:
+            deduped.append(entry)
+    crossings = deduped
+    if len(crossings) < 2:
+        return [ring]
+
+    def cutter_point(position):
+        j = min(len(cutter) - 2, int(position))
+        u = position - j
+        a, b = cutter[j], cutter[j + 1]
+        return (a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u)
+
+    def cutter_slice(p0, p1):
+        points = [crossings[p0][1]]
+        j0 = int(crossings[p0][0])
+        j1 = int(crossings[p1][0])
+        for j in range(j0 + 1, j1 + 1):
+            points.append(cutter[j])
+        points.append(crossings[p1][1])
+        return points
+
+    chords = []
+    for k in range(len(crossings) - 1):
+        mid = cutter_point((crossings[k][0] + crossings[k + 1][0]) * 0.5)
+        if _point_in_ring(mid, ring):
+            chords.append(cutter_slice(k, k + 1))
+
+    pieces = [list(ring)]
+    for chord in chords:
+        for index, piece in enumerate(pieces):
+            split = _split_ring_with_chord(piece, chord)
+            if split is not None:
+                pieces[index:index + 1] = split
+                break
+    return pieces
+
+
+def _split_ring_with_chord(ring, chord):
+    """Split one ring by a chord whose ends lie on its boundary, or None."""
+    n = len(ring)
+
+    def locate(point):
+        best = None
+        for i in range(n):
+            a, b = ring[i], ring[(i + 1) % n]
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            length_sq = dx * dx + dy * dy
+            if length_sq <= 0.0:
+                continue
+            t = ((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / length_sq
+            t = min(1.0, max(0.0, t))
+            gx = point[0] - (a[0] + dx * t)
+            gy = point[1] - (a[1] + dy * t)
+            gap = gx * gx + gy * gy
+            if best is None or gap < best[0]:
+                best = (gap, i, t)
+        return best
+
+    start = locate(chord[0])
+    end = locate(chord[-1])
+    if start is None or end is None or start[0] > 0.25 or end[0] > 0.25:
+        return None
+
+    def boundary_path(a_edge, a_t, b_edge, b_t):
+        """Ring vertices strictly between (a_edge, a_t) and (b_edge, b_t),
+        walking forward; the chord endpoints themselves are appended by the
+        caller."""
+        if a_edge == b_edge and a_t <= b_t:
+            return []
+        points = []
+        edge = (a_edge + 1) % n
+        while True:
+            points.append(ring[edge])
+            if edge == b_edge:
+                return points
+            edge = (edge + 1) % n
+            if len(points) > n:
+                return points  # safety net; cannot loop past a full circle
+
+    _, e0, t0 = start
+    _, e1, t1 = end
+    interior = chord[1:-1]
+    side_a = [chord[0]] + boundary_path(e0, t0, e1, t1) + [chord[-1]] + list(reversed(interior))
+    side_b = [chord[-1]] + boundary_path(e1, t1, e0, t0) + [chord[0]] + list(interior)
+    result = []
+    for candidate in (side_a, side_b):
+        cleaned = [candidate[0]]
+        for point in candidate[1:]:
+            if math.hypot(point[0] - cleaned[-1][0], point[1] - cleaned[-1][1]) > 1e-9:
+                cleaned.append(point)
+        if (len(cleaned) >= 3
+                and math.hypot(cleaned[0][0] - cleaned[-1][0],
+                               cleaned[0][1] - cleaned[-1][1]) <= 1e-9):
+            cleaned.pop()
+        if len(cleaned) >= 3:
+            result.append(cleaned)
+    return result if len(result) == 2 else None
+
+
+def _split_ring_by_fold(map_point, ring):
+    """[(sub_ring, side, interior_point)] after cutting by every crease."""
+    if not _FOLD["split"]:
+        return [(ring, _MappedOutput.FRONT, _ring_interior_point(ring))]
+    pieces = [ring]
+    for cutter in _child_cutters(map_point):
+        cut = []
+        for piece in pieces:
+            cut.extend(_cut_ring_by_polyline(piece, cutter))
+        pieces = cut
+    out = []
+    for piece in pieces:
+        rep = _ring_interior_point(piece)
+        out.append((piece, _fold_sign(map_point, rep), rep))
+    return out
+
+
+def _grayscale(color):
+    """The lining shade of a fill: same luminance, no hue, same alpha."""
+    gray = int(round(0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2]))
+    gray = min(255, max(0, gray))
+    return (gray, gray, gray, color[3])
+
+
+def _clip_rings_to_area(rings, polygons):
+    """Cut rings along an area boundary and keep the inside pieces.
+
+    The area polygons double as CLOSED cutters for the same ring splitter the
+    creases use, then a parity test keeps the pieces inside. This gives fills
+    the same exact boundary cut the stroke emitters get from _clip_polyline -
+    an earlier whole-piece keep/drop test made a straddling fill either spill
+    past the area or vanish from it entirely.
+    """
+    if not polygons:
+        return list(rings)
+    kept = []
+    for ring in rings:
+        pieces = [ring]
+        for polygon in polygons:
+            if len(polygon) < 3:
+                continue
+            boundary = list(polygon) + [polygon[0]]
+            cut = []
+            for piece in pieces:
+                cut.extend(_cut_ring_by_polyline(piece, boundary))
+            pieces = cut
+        for piece in pieces:
+            if _point_in_polygons(_ring_interior_point(piece), polygons):
+                kept.append(piece)
+    return kept
+
+
+def _collect_pattern_fills(scene, frame):
+    """Fill regions on `frame` that are pattern content (not tool artifacts).
+
+    Collected BOTTOM LAYER FIRST (paintGL walks columns last-index-first, so
+    index 0 is the top): emission preserves this order inside each depth
+    layer, and Qt paints fill regions in list order, so overlapping fills
+    keep the stacking the artist set up on the texture board.
+    """
+    fills = []
+    structure = scene.get_structure()
+    if frame < 0 or frame >= structure["frame_count"]:
+        return fills
+    skip = (MAPPING_AREA_PROPERTY, *MAPPING_OUTPUT_PROPERTIES)
+    for layer in reversed(structure["layers"]):
+        if not layer["visible"]:
+            continue
+        cell = scene.cell_to_dict(layer["index"], frame, False)
+        for fill in cell["image"].get("fills") or []:
+            if (fill.get("property") or "") in skip:
+                continue
+            fills.append(fill)
+    return fills
+
+
+def _pattern_arc_ranges(map_point, pattern, fills):
+    """The MAIN-arc extent of everything about to be mapped, or None."""
+    h_low = h_high = v_low = v_high = None
+
+    def feed(point):
+        nonlocal h_low, h_high, v_low, v_high
+        arc_h, arc_v = _arc_of_point(map_point, point)
+        h_low = arc_h if h_low is None else min(h_low, arc_h)
+        h_high = arc_h if h_high is None else max(h_high, arc_h)
+        v_low = arc_v if v_low is None else min(v_low, arc_v)
+        v_high = arc_v if v_high is None else max(v_high, arc_v)
+
+    for stroke in pattern:
+        for poly in _stroke_polylines(stroke):
+            for point in poly:
+                feed(point)
+    for fill in fills:
+        for ring in _path_commands_to_polygons(fill.get("commands")):
+            for point in ring:
+                feed(point)
+    if h_low is None:
+        return None
+    return (h_low, h_high), (v_low, v_high)
+
+
+def _emit_fills(animean, out, map_point, fills, child_area, main_area):
+    """Map fill regions: cut by the creases, stack by depth, gray the backs.
+
+    Each source ring is cut into constant-side pieces along the crease loci
+    (in child space), every piece gets a stacking depth from the nearest-end
+    anchor, and the pieces regroup per (depth, side) into one output path so
+    holes keep working through the odd-even rule. Painter's algorithm does
+    the occlusion: deeper layers are created first, nearer ones paint over
+    them - no boolean subtraction anywhere.
+    """
+    added = 0
+    for fill in fills:
+        color = fill.get("color") or {}
+        base = (int(color.get("r", 0)), int(color.get("g", 0)),
+                int(color.get("b", 0)), int(color.get("a", 255)))
+        source_rings = []
+        for ring in _path_commands_to_polygons(fill.get("commands")):
+            if len(ring) >= 2 and _dist(ring[0], ring[-1]) <= 1e-9:
+                ring = ring[:-1]
+            if len(ring) < 3:
+                continue
+            source_rings.append(_densify(ring + [ring[0]])[:-1])
+        if not source_rings:
+            continue
+        # Which source rings are HOLES: odd-even nesting among the fill's own
+        # subpaths, judged in child space.
+        ring_reps = [_ring_interior_point(ring) for ring in source_rings]
+        is_hole = []
+        for index, ring in enumerate(source_rings):
+            level = sum(1 for j, other in enumerate(source_rings)
+                        if j != index and _point_in_ring(ring_reps[index], other))
+            is_hole.append(level % 2 == 1)
+
+        # (depth, side) -> [outer piece entries], each carrying its CHILD
+        # geometry so hole pieces can find the outer piece that contains them.
+        outers = {}
+        holes = []
+        for index, ring in enumerate(source_rings):
+            for clipped in _clip_rings_to_area([ring], child_area):
+                for piece, side, rep in _split_ring_by_fold(map_point, clipped):
+                    depth = _fold_depth(map_point, rep, side)
+                    if is_hole[index]:
+                        holes.append((depth, side, piece, rep))
+                    else:
+                        entry = {"child": piece, "rings": [piece], "holes": []}
+                        outers.setdefault((depth, side), []).append(entry)
+        for depth, side, piece, rep in holes:
+            for entry in outers.get((depth, side), ()):
+                if _point_in_ring(rep, entry["child"]):
+                    entry["holes"].append(piece)
+                    break
+
+        # Every OUTER piece becomes its own fill region (with its holes as
+        # extra odd-even subpaths). Same-group pieces are never merged into
+        # one path: two pieces of one group can overlap in the image (the
+        # warp is not injective), and odd-even would XOR the overlap into a
+        # transparent hole.
+        for (depth, side), entries in sorted(outers.items()):
+            shade = base if side == _MappedOutput.FRONT else _grayscale(base)
+            for entry in entries:
+                mapped = []
+                for child_ring in [entry["child"]] + entry["holes"]:
+                    image_ring = [map_point(p) for p in child_ring]
+                    mapped.extend(_clip_rings_to_area([image_ring], main_area))
+                if out.add_fill(side, depth, mapped, shade):
+                    added += 1
+    return added
+
+
 class _MappedOutput:
-    """Buffers emitted strokes per fold side, then flushes them into layers.
+    """Buffers emitted strokes and fills per STACKING DEPTH, then flushes
+    them into layers.
 
     Buffering (rather than writing straight into an image) keeps two things
-    simple: layers are created only for sides that actually got content - so
-    a run with no fold produces exactly one layer, as before - and they can
-    be created in z-order (front on top, crease, then back) regardless of
-    the order the strokes were generated in.
+    simple: layers are created only for depths that actually got content -
+    so a run with no fold produces exactly one layer, as before - and they
+    can be created in z-order regardless of generation order. Depth 0 (the
+    sheet layer holding the nearest-end anchor) lands on top, each further
+    depth below the previous, the crease between depth 0 and the rest.
+    Within one layer Qt paints fills before strokes: this depth's lines over
+    this depth's colors, and a NEARER depth's colors over both - the normal
+    cel stacking. KNOWN LIMIT: a fill the artist deliberately stacked ABOVE
+    line art on the texture board (an opaque correction patch dragged over
+    strokes) cannot be represented inside one depth layer, because the image
+    model paints all fills before all strokes; such a patch comes out under
+    the lines again.
     """
 
     FRONT, BACK, SEAL = 1, -1, 0
-    _NAMES = {FRONT: MAPPED_LAYER_NAME, BACK: BACK_LAYER_NAME, SEAL: SEAL_LAYER_NAME}
     _PROPERTIES = {FRONT: MAPPED_PROPERTY, BACK: BACK_PROPERTY, SEAL: SEAL_PROPERTY}
 
     def __init__(self, animean, scene, row):
         self.animean = animean
         self.scene = scene
         self.row = row
-        self.buffers = {self.FRONT: [], self.BACK: [], self.SEAL: []}
+        self.depths = {}         # depth -> [(kind, payload, color, width, side)]
+        self.seal_items = []
+        self.side_counts = {self.FRONT: 0, self.BACK: 0}
         self.layers = []
         # Where the emitters actually cut the artwork, in mapped space. The
         # crease anchors onto these, so they have to come from the geometry
@@ -2979,22 +3610,53 @@ class _MappedOutput:
         # stroke carries commands instead of polylines - a different curve.
         self.cuts = []
 
-    def add_polyline(self, side, points, color, width):
+    @staticmethod
+    def _layer_name(depth, generic=False):
+        if generic:
+            # The depth scale was renormalized by an ODD shift, so depth 0 no
+            # longer means "front face": parity-neutral names keep the panel
+            # from calling back-face content "mapped layer".
+            return f"{MAPPED_LAYER_NAME} depth {depth}"
+        if depth <= 0:
+            return MAPPED_LAYER_NAME
+        if depth == 1:
+            return BACK_LAYER_NAME
+        return f"{MAPPED_LAYER_NAME} depth {depth}"
+
+    def _bucket(self, side, depth):
+        if side == self.SEAL:
+            return self.seal_items
+        if depth is None:
+            depth = 0 if side == self.FRONT else 1
+        self.side_counts[side] = self.side_counts.get(side, 0) + 1
+        return self.depths.setdefault(max(0, int(depth)), [])
+
+    def add_polyline(self, side, points, color, width, depth=None):
         if len(points) < 2:
             return False
-        self.buffers[side].append(("polyline", points, color, width))
+        self._bucket(side, depth).append(("polyline", points, color, width, side))
         return True
 
-    def add_curved(self, side, commands, flat, color, width):
+    def add_curved(self, side, commands, flat, color, width, depth=None):
         if len(commands) < 2 or len(flat) < 2:
             return False
-        self.buffers[side].append(("curved", (commands, flat), color, width))
+        self._bucket(side, depth).append(("curved", (commands, flat), color, width, side))
+        return True
+
+    def add_fill(self, side, depth, rings, color):
+        rings = [ring for ring in rings if len(ring) >= 3]
+        if not rings:
+            return False
+        self._bucket(side, depth).append(("fill", rings, color, 0.0, side))
         return True
 
     def count(self, side=None):
         if side is None:
-            return sum(len(items) for items in self.buffers.values())
-        return len(self.buffers[side])
+            return (sum(len(items) for items in self.depths.values())
+                    + len(self.seal_items))
+        if side == self.SEAL:
+            return len(self.seal_items)
+        return self.side_counts.get(side, 0)
 
     def _track_new_layer(self, layer):
         """Record a freshly created layer; everything older shifted down one.
@@ -3081,36 +3743,67 @@ class _MappedOutput:
         except AttributeError:
             return 0  # older build without the grouping bindings
 
+    def _write_items(self, image, items, seal=False):
+        written = 0
+        for kind, payload, color, width, side in items:
+            if kind == "fill":
+                commands = []
+                for ring in payload:
+                    commands.append({"type": "move", "to": {"x": ring[0][0], "y": ring[0][1]}})
+                    for point in ring[1:]:
+                        commands.append({"type": "line", "to": {"x": point[0], "y": point[1]}})
+                    commands.append({"type": "line", "to": {"x": ring[0][0], "y": ring[0][1]}})
+                # based_on_all_layers=True: removeInvalidFillRegions deletes
+                # any region with no valid SOURCE layer, and a mapped fill is
+                # baked geometry with no source - without the flag the app
+                # silently erased every mapped fill on the next layer edit.
+                image.add_fill_region(commands, color, self._PROPERTIES[side],
+                                      None, -1, True)
+                written += 1
+                continue
+            if kind == "polyline":
+                obj = self.animean.vectorlogic.make_stroke_object(
+                    payload, color, width, image.stroke_count() + 1, False, False)
+            else:
+                commands, flat = payload
+                obj = self.animean.vectorlogic.make_stroke_object_from_path(
+                    commands, flat, color, width, image.stroke_count() + 1)
+            obj.property = self._PROPERTIES[side]
+            if seal:
+                obj.pen_style = _display_style("seal_style")
+            image.add_stroke_object(obj)
+            written += 1
+        return written
+
     def flush(self):
         """Create the needed layers bottom-up and write the buffers out."""
         added = 0
-        for side in (self.BACK, self.SEAL, self.FRONT):
-            items = self.buffers[side]
-            if not items:
-                continue
-            layer = _create_mapped_layer(self.scene, self.row, self._NAMES[side])
+        # Normalize so the nearest occupied depth is 0: an anchor parked in a
+        # region with no artwork would otherwise leave the top layer empty
+        # and hand the front content a "back" layer name.
+        occupied = [d for d in self.depths if self.depths[d]]
+        shift = min(occupied) if occupied and min(occupied) > 0 else 0
+        if shift:
+            self.depths = {d - shift: items for d, items in self.depths.items() if items}
+        generic = bool(shift % 2)
+        deep_first = sorted((d for d in self.depths if self.depths[d]), reverse=True)
+        plan = [(self._layer_name(depth, generic), self.depths[depth], False)
+                for depth in deep_first if depth >= 1]
+        if self.seal_items:
+            plan.append((SEAL_LAYER_NAME, self.seal_items, True))
+        if self.depths.get(0):
+            plan.append((self._layer_name(0, generic), self.depths[0], False))
+        for name, items, seal in plan:
+            layer = _create_mapped_layer(self.scene, self.row, name)
             if layer < 0:
-                print(f"[auto_mapping] could not create the '{self._NAMES[side]}'.")
+                print(f"[auto_mapping] could not create the '{name}'.")
                 continue
             self._track_new_layer(layer)
             image = self.scene.image_at(self.row, layer, True)
             if image is None:
-                print(f"[auto_mapping] '{self._NAMES[side]}' has no editable cell.")
+                print(f"[auto_mapping] '{name}' has no editable cell.")
                 continue
-            prop = self._PROPERTIES[side]
-            for kind, payload, color, width in items:
-                if kind == "polyline":
-                    obj = self.animean.vectorlogic.make_stroke_object(
-                        payload, color, width, image.stroke_count() + 1, False, False)
-                else:
-                    commands, flat = payload
-                    obj = self.animean.vectorlogic.make_stroke_object_from_path(
-                        commands, flat, color, width, image.stroke_count() + 1)
-                obj.property = prop
-                if side == self.SEAL:
-                    obj.pen_style = _display_style("seal_style")
-                image.add_stroke_object(obj)
-                added += 1
+            added += self._write_items(image, items, seal)
         return added
 
     def rollback(self):
@@ -3148,10 +3841,12 @@ def _emit_polyline_mode(animean, out, stroke, map_point, child_area, main_area, 
     for poly in _stroke_polylines(stroke):
         for piece in _clip_polyline(poly, child_area):
             for run, side in _fold_runs(map_point, piece, out.cuts):
+                depth = _run_depth(map_point, run, side)
                 flagged = _adaptive_map_polyline(map_point, run)
                 for clipped in _clip_flagged(flagged, main_area):
                     points = _decimate_between_anchors(clipped, eps)
-                    if out.add_polyline(side, points, _side_style(side, color_tuple), width):
+                    if out.add_polyline(side, points, _side_style(side, color_tuple),
+                                        width, depth):
                         added += 1
     return added
 
@@ -3167,12 +3862,13 @@ def _emit_spline_mode(animean, out, stroke, map_point, child_area, main_area, co
     for poly in _stroke_polylines(stroke):
         for piece in _clip_polyline(poly, child_area):
             for run, side in _fold_runs(map_point, piece, out.cuts):
+                depth = _run_depth(map_point, run, side)
                 flagged = _adaptive_map_polyline(map_point, run)
                 for clipped in _clip_flagged(flagged, main_area):
                     knots = _decimate_between_anchors(clipped, eps)
                     commands, flat = _cubics_to_commands(_catmull_rom_cubics(knots))
                     if out.add_curved(side, commands, flat,
-                                      _side_style(side, color_tuple), width):
+                                      _side_style(side, color_tuple), width, depth):
                         added += 1
     return added
 
@@ -3183,13 +3879,15 @@ def _emit_bezier_mode(animean, out, stroke, map_point, child_area, main_area, co
     for cubics in _commands_to_subpaths(stroke.get("commands")):
         for src_piece in _clip_cubics(cubics, child_area):
             for run, side in _fold_runs_cubic(map_point, src_piece, out.cuts):
+                depth = (_run_depth(map_point, [_cubic_point(run[len(run) // 2], 0.5)], side)
+                         if run else (0 if side == _MappedOutput.FRONT else 1))
                 out_cubics = []
                 for cub in run:
                     out_cubics.extend(_warp_cubic(map_point, cub))
                 for out_piece in _clip_cubics(out_cubics, main_area):
                     commands, flat = _cubics_to_commands(out_piece)
                     if out.add_curved(side, commands, flat,
-                                      _side_style(side, color_tuple), width):
+                                      _side_style(side, color_tuple), width, depth):
                         added += 1
     return added
 
@@ -3401,8 +4099,9 @@ def _perform_mapping():
         return False
 
     child_pattern = _collect_pattern_strokes(child, child_frame, want_commands=mode == "bezier")
-    if not child_pattern:
-        print("[auto_mapping] child_paint_view has no pattern strokes to map.")
+    child_fills_probe = _collect_pattern_fills(child, child_frame)
+    if not child_pattern and not child_fills_probe:
+        print("[auto_mapping] child_paint_view has no pattern strokes or fills to map.")
         return False
 
     crossings_ok = True
@@ -3443,10 +4142,20 @@ def _perform_mapping():
     child_area = (child_assets.get(MAPPING_AREA_PROPERTY) or {}).get("polygons")
     main_area = (main_assets.get(MAPPING_AREA_PROPERTY) or {}).get("polygons")
 
+    child_fills = child_fills_probe
+    if _FOLD["split"]:
+        ranges = _pattern_arc_ranges(map_point, child_pattern, child_fills)
+        if ranges is not None:
+            # Depth context: crease loci + the nearest-end anchor, so every
+            # run and fill piece can be stacked by how many folds separate it
+            # from the red handle.
+            _prepare_fold_context(map_point, ranges[0], ranges[1])
+
     out = _MappedOutput(animean, main, main_frame)
     emit = _EMITTERS[mode]
     generated = 0
     clipped_out = 0
+    mapped_fills = 0
     guide_layers = []
     mapping_group = 0
     try:
@@ -3457,6 +4166,9 @@ def _perform_mapping():
                               color_tuple, width)
             if generated == before:
                 clipped_out += 1
+        if child_fills:
+            mapped_fills = _emit_fills(animean, out, map_point, child_fills,
+                                       child_area, main_area)
         if _FOLD["split"] and _FOLD["seal"] and out.count(_MappedOutput.BACK):
             _emit_seals(animean, out, map_point, child_pattern, child_area,
                         main_area, width_scale)
@@ -3495,10 +4207,16 @@ def _perform_mapping():
                     f"'{GUIDE_GROUP_NAME}' subgroup holding the two axes")
     elif guide_layers:
         summary += "; the axes were recorded but this build cannot group layers"
+    if mapped_fills:
+        deepest = max((d for d in out.depths if out.depths[d]), default=0)
+        summary += f"; {mapped_fills} fill group(s) mapped"
+        if deepest >= 1:
+            summary += (f", stacked over {deepest + 1} depth layer(s) from the "
+                        "nearest point (red handle)")
     back_count = out.count(_MappedOutput.BACK)
     if back_count:
-        summary += (f"; {back_count} stroke(s) landed on the BACK of a fold "
-                    f"(det J < 0) and went to '{BACK_LAYER_NAME}'")
+        summary += (f"; {back_count} stroke/fill item(s) landed on the BACK of "
+                    f"a fold (det J < 0)")
     if mapper_info.get("mirrored"):
         summary += ", MIRRORED (opposite frame handedness)"
     if child_area:
@@ -4127,3 +4845,6 @@ python_hooks.register_settings(LINE_SETTINGS_NAME, _line_settings_layout)
 python_hooks.set_hook(_menu_action, menu=True)
 python_hooks.set_hook(_line_display_changed, option=True)
 python_hooks.set_hook(_layer_menu_action, layermenu=True)
+# The nearest-end anchor (red handle) reacts from startup: its drag events
+# arrive whenever the main guides exist, not only while a tool is armed.
+python_hooks.set_hook(_nearest_handle_event, handle=True)
