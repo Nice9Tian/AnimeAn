@@ -41,6 +41,7 @@ import bisect
 import heapq
 import json
 import math
+import re
 
 import bezier
 import python_hooks
@@ -3693,17 +3694,23 @@ class _MappedOutput:
         self.layers.append(layer)
         return layer
 
-    def add_anchor_layer(self, position):
+    def add_anchor_layer(self, position, arc):
         """Record the nearest-end anchor as its own layer: a small red ring.
 
         Same contract as the axis snapshots: the marker is provenance the
-        restore can read back - Re-expand recovers the anchor's arc from the
-        ring's centre against the restored guides, so a stored run brings
-        its STACKING back too, not just its axes.
+        restore can read back, so a stored run brings its STACKING back too,
+        not just its axes. The ring's centre alone is NOT enough to restore
+        from - hv is two-to-one across every crease, so a position on a
+        folded sheet has a preimage per flap and a geometric solve can land
+        on the wrong one, inverting the stacking. The ARC COORDINATES are
+        therefore written into the layer name (readable provenance in the
+        panel, exact restore for Re-expand); the ring's centre stays the
+        geometric fallback for a renamed layer.
         """
         if position is None:
             return []
-        layer = _create_mapped_layer(self.scene, self.row, NEAREST_LAYER_NAME)
+        name = f"{NEAREST_LAYER_NAME} ({arc[0]:.2f}, {arc[1]:.2f})"
+        layer = _create_mapped_layer(self.scene, self.row, name)
         if layer < 0:
             return []
         self._track_new_layer(layer)
@@ -4236,7 +4243,7 @@ def _perform_mapping():
                 arc_h, arc_v = _nearest_arc()
                 anchor = (min(max(arc_h, -frame.h_arc), frame.h_total - frame.h_arc),
                           min(max(arc_v, -frame.v_arc), frame.v_total - frame.v_arc))
-            anchor_layers = out.add_anchor_layer(map_point.main_frame.hv(*anchor))
+            anchor_layers = out.add_anchor_layer(map_point.main_frame.hv(*anchor), anchor)
             if anchor_layers:
                 # The anchor layer went to index 0; every axis index recorded
                 # before it moved down one.
@@ -4403,6 +4410,15 @@ def _overlay_removed(cell, stroke, message):
 
 def _history_restored(cell, stroke, message):
     """After undo/redo/jump/reset the scene's scriptData is authoritative."""
+    if (message.get("view") or "main") == "main":
+        # A mid-drag Ctrl+Z invalidates the frame cached at press: the
+        # restored guides may be entirely different, and solving against the
+        # stale frame wrote the anchor in the OLD arc space and then
+        # committed it on top of the state the user just undid. Dropping the
+        # drag state makes the next move rebuild from the restored assets,
+        # and the untouched `moved` flag stays honest for the release.
+        _NEAREST_DRAG["frame"] = None
+        _NEAREST_DRAG["moved"] = False
     _load_assets(message.get("view") or "main")
 
 
@@ -4587,12 +4603,23 @@ def _guide_axes_in_layers(scene, frame, layer_indices):
             if prop == GUIDE_LAYER_PROPERTY:
                 prop = _legacy_guide_axis(stroke, name)
             if prop == NEAREST_LAYER_PROPERTY and prop not in found:
-                # The anchor marker: its ring's centre is the stored position.
+                # The layer NAME carries the exact arc; the ring centre is
+                # the geometric fallback (renamed layer). The ring closes on
+                # a duplicated first vertex - averaging it twice biased the
+                # centre by radius/17 px, drifting the anchor a third of a
+                # pixel per map->re-expand cycle, always the same direction.
+                arc = None
+                match = re.search(r"\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)",
+                                  name or "")
+                if match:
+                    arc = (float(match.group(1)), float(match.group(2)))
                 points = _stroke_points(stroke)
+                if points and len(points) >= 2 and _dist(points[0], points[-1]) <= 1e-9:
+                    points = points[:-1]
                 if points:
                     cx = sum(p[0] for p in points) / len(points)
                     cy = sum(p[1] for p in points) / len(points)
-                    found[prop] = ((cx, cy), 0.0, None)
+                    found[prop] = ((cx, cy), 0.0, arc)
                 continue
             if prop not in (H_GUIDE_LAYER_PROPERTY, V_GUIDE_LAYER_PROPERTY):
                 continue
@@ -4671,10 +4698,15 @@ def _layer_menu_action(message):
     if marker and view == "main":
         frame = _main_guide_frame()
         if frame is not None:
-            point = marker[0]
-            l_h, l_v = frame.solve(point, 0.0, 0.0)
-            l_h = min(max(l_h, -frame.h_arc), frame.h_total - frame.h_arc)
-            l_v = min(max(l_v, -frame.v_arc), frame.v_total - frame.v_arc)
+            point, _width, arc = marker
+            if arc is None:
+                # Renamed layer: fall back to solving the ring's centre.
+                # CAVEAT: hv is two-to-one across a crease, so on a folded
+                # frame this can pick the other flap; the layer-name arc is
+                # the authoritative record precisely because of that.
+                arc = frame.solve(point, 0.0, 0.0)
+            l_h = min(max(arc[0], -frame.h_arc), frame.h_total - frame.h_arc)
+            l_v = min(max(arc[1], -frame.v_arc), frame.v_total - frame.v_arc)
             _assets_for("main")[NEAREST_PROPERTY] = {"arc": [l_h, l_v]}
             _save_assets("main")
             _push_nearest_handle()
