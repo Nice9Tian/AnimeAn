@@ -337,6 +337,9 @@ private:
     // (a per-event whole-stroke refit is quadratic in stroke length).
     QElapsedTimer m_liveFitThrottle;
     static constexpr qint64 kLiveFitIntervalMs = 16;
+    // Incremental-fit state of the active stroke: the frozen prefix that is
+    // never recomputed, so the already-drawn path cannot tremble.
+    AnimeLiveFitState m_liveFit;
     AxisSnapState m_axisSnapState = AxisSnapState::Inactive;
     QPointF m_axisSnapAnchor;
     int m_axisSnapAnchorIndex = 0;

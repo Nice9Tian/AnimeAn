@@ -2050,6 +2050,7 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
     }
 
     m_points.clear();
+    m_liveFit = AnimeLiveFitState();   // fresh incremental-fit state per stroke
     // Realtime stabilization for this stroke: strength follows the smooth
     // slider. The filter is part of INPUT, not of fitting - the points the
     // stroke is built from are already the stabilized ones.
@@ -2273,17 +2274,19 @@ void PaintOpenGLWidget::updateCurrentStroke()
         return;
     }
 
-    // Live preview runs the SAME hybrid fit the release will commit, so
-    // lifting the pen changes nothing on screen - the old raw-polyline
-    // preview made every release visibly jump to the fitted curve. The fit
-    // runs at display cadence, not event cadence: tablets deliver samples
-    // faster than frames, and a per-event whole-stroke refit made the total
-    // cost quadratic in stroke length. Between fits the preview lags the pen
-    // by at most one frame of ink; the release always fits the final points.
+    // Live preview shows the SAME curve the release will commit, built
+    // incrementally: ink far behind the pen is fitted once and frozen (a
+    // whole-stroke refit made the already-drawn path tremble under the
+    // pen), only the tail refits, and it does so at display cadence, not
+    // event cadence. Between fits the preview lags the pen by at most one
+    // frame of ink; the release always fits the final points.
     if (!m_liveFitThrottle.isValid() || m_liveFitThrottle.elapsed() >= kLiveFitIntervalMs
         || m_points.size() < 3) {
         m_liveFitThrottle.start();
-        m_currentStroke = makeStroke(m_points, m_currentStroke.color, m_currentStroke.width, 0, true, true);
+        const QPainterPath live =
+            AnimeVectorLogic::liveFitStrokePath(m_liveFit, m_points, m_fitSettings);
+        m_currentStroke = AnimeVectorLogic::makeStrokeFromPath(
+            live, m_points, m_currentStroke.color, m_currentStroke.width, 0);
         m_currentStroke.property = m_strokeProperty;
     }
     // "update" is a best-effort preview notification, throttled so a
@@ -2299,11 +2302,15 @@ void PaintOpenGLWidget::updateCurrentStroke()
 void PaintOpenGLWidget::finishCurrentStroke()
 {
     m_hasRawPenPos = false;
-    // The definitive fit over the final points. Not via updateCurrentStroke:
-    // that one is throttled (and fired a redundant "update" hook right
-    // before "linefinish"); this fit must never be skipped or stale.
+    // The definitive result over the final points - the SAME frozen prefix
+    // the user watched being drawn, plus the final tail fit, so what was
+    // shown is exactly what commits. Not via updateCurrentStroke: that one
+    // is throttled; this fit must never be skipped or stale.
     if (!m_points.isEmpty()) {
-        m_currentStroke = makeStroke(m_points, m_currentStroke.color, m_currentStroke.width);
+        const QPainterPath live =
+            AnimeVectorLogic::liveFitStrokePath(m_liveFit, m_points, m_fitSettings);
+        m_currentStroke = AnimeVectorLogic::makeStrokeFromPath(
+            live, m_points, m_currentStroke.color, m_currentStroke.width, 0);
         m_currentStroke.property = m_strokeProperty;
     }
     if (!m_currentStroke.points.isEmpty()) {

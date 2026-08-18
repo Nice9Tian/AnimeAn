@@ -102,6 +102,30 @@ struct AnimeVectorRegionFace {
     qreal signedArea = 0.0;
 };
 
+// State of one live-drawn stroke's incremental fit (see liveFitStrokePath):
+// the fitted-and-frozen prefix, and where its boundary sits. Value-reset on
+// pen-down.
+struct AnimeLiveFitState {
+    // Everything baked EXCEPT the trailing open chord of straight mode.
+    QPainterPath frozenPath;
+    int frozenSamples = 0;      // boundary sample index; also the tail's first
+    // >= 0: straight mode - an open chord runs from chordAnchor to the
+    // boundary seam, extended (never re-emitted) while the samples stay
+    // within line tolerance of it. The straight test spans the WHOLE run,
+    // so its scale is the drawing's, not the bake chunk's. -1: curved mode.
+    int chordStartSample = -1;
+    QPointF chordAnchor;        // where the open chord is pinned
+    // Where the frozen prefix currently ends. In straight mode this is a
+    // DENOISED endpoint (the offline fit chords the smoothed polyline too;
+    // raw tremor at the endpoint made the pivot cap slice a ruler-straight
+    // drag into many chords). The tail is pinned to it, so seams stay G0.
+    QPointF seamPoint;
+    bool hasSeam = false;
+    QPointF boundaryPoint;      // raw boundary sample - retro-edit guard
+    QPointF entryTangent;       // forward-travel unit tangent at the boundary
+    bool hasEntryTangent = false;
+};
+
 namespace AnimeVectorLogic {
 qreal epsilon();
 
@@ -114,6 +138,17 @@ QPainterPath makePolylinePath(const QVector<QPointF> &points);
 // every joint that is not a deliberate corner.
 QPainterPath fitStrokePath(const QVector<QPointF> &points,
                            const AnimeStrokeFitSettings &settings = {});
+// Incremental fitting for the LIVE stroke. Ink far enough behind the pen is
+// fitted once and FROZEN (its curve never recomputed - recomputation is what
+// made the already-drawn path tremble under the pen); only the tail refits
+// each frame, entering the frozen boundary with the same tangent the baked
+// side left with, so the seams stay G1. Committing the returned path on
+// release makes "what you saw while drawing" and "what you get" identical
+// by construction. The state belongs to one stroke gesture: value-reset it
+// on pen-down, then pass it to every call for that stroke.
+QPainterPath liveFitStrokePath(struct AnimeLiveFitState &state,
+                               const QVector<QPointF> &points,
+                               const AnimeStrokeFitSettings &settings = {});
 AnimeVectorStroke makeStroke(const QVector<QPointF> &points,
                              const QColor &color,
                              qreal width,

@@ -388,6 +388,12 @@ struct FitParams {
     qreal lineTolerance = 1.2;   // px; max chord deviation of a "straight" run
     qreal fitTolerance = 1.2;    // px; max Bezier fit error before splitting
     qreal inflectionNoise = 0.08; // min |normalized turn| to trust a sign
+    // Live baking only: the straight-vs-curved decision is NOT valid on a
+    // short slice (over a 24 px chunk the sagitta of any gentle curve is
+    // under lineTolerance, and whole curves froze as chord chains). The
+    // live fitter makes that call itself at drawing scale and sets this to
+    // suppress the slice-local chord test.
+    bool forceCurved = false;
 };
 
 FitParams fitParamsFor(const AnimeStrokeFitSettings &settings)
@@ -765,7 +771,12 @@ QVector<qreal> turnAngles(const QVector<QPointF> &pts, const QVector<qreal> &arc
 // One corner-free piece: smooth it (endpoints pinned, so a corner endpoint
 // stays exactly where it was detected), split at inflections, classify each
 // span straight/curved, emit chords and Beziers with G1 handoff inside.
-void fitPiece(const QVector<QPointF> &piece, const FitParams &params, QPainterPath &path)
+// `forcedEntry` / `forcedExit` (unit tangents, pointing along the direction
+// of travel) pin the piece's boundary tangents - the seams of the live
+// fitter's frozen prefix stay G1 because the baked side and the live side
+// are handed the SAME tangent.
+void fitPiece(const QVector<QPointF> &piece, const FitParams &params, QPainterPath &path,
+              const QPointF *forcedEntry = nullptr, const QPointF *forcedExit = nullptr)
 {
     if (piece.size() < 2) {
         return;
@@ -794,8 +805,8 @@ void fitPiece(const QVector<QPointF> &piece, const FitParams &params, QPainterPa
         if (best < 1e-6) {
             return; // every sample coincides: nothing drawable
         }
-        fitPiece(piece.mid(0, farthest + 1), params, path);
-        fitPiece(piece.mid(farthest), params, path);
+        fitPiece(piece.mid(0, farthest + 1), params, path, forcedEntry, nullptr);
+        fitPiece(piece.mid(farthest), params, path, nullptr, forcedExit);
         return;
     }
 
@@ -878,6 +889,10 @@ void fitPiece(const QVector<QPointF> &piece, const FitParams &params, QPainterPa
     // previous emission so every joint inside a piece stays G1.
     QPointF exitTangent;
     bool haveExitTangent = false;
+    if (forcedEntry) {
+        exitTangent = *forcedEntry;
+        haveExitTangent = true;
+    }
     int pendingLineStart = -1;
     auto flushLine = [&](int upTo) {
         if (pendingLineStart < 0) {
@@ -896,7 +911,7 @@ void fitPiece(const QVector<QPointF> &piece, const FitParams &params, QPainterPa
         if (last <= first) {
             continue;
         }
-        if (chordDeviation(pts, first, last) <= local.lineTolerance) {
+        if (!local.forceCurved && chordDeviation(pts, first, last) <= local.lineTolerance) {
             if (pendingLineStart >= 0
                 && chordDeviation(pts, pendingLineStart, last) <= local.lineTolerance) {
                 continue; // extends the pending chord; keep absorbing
@@ -910,7 +925,12 @@ void fitPiece(const QVector<QPointF> &piece, const FitParams &params, QPainterPa
         QPointF tHat1 = haveExitTangent
                             ? exitTangent
                             : strideTangent(pts, arc, std::min(first + 1, last), local.strideWindow);
-        const QPointF tHat2 = -strideTangent(pts, arc, std::max(last - 1, first), local.strideWindow);
+        // Schneider convention: an end tangent points INTO its segment, so a
+        // forced forward-travel exit tangent lands here negated.
+        const bool lastSpan = (span + 2 == boundaries.size());
+        const QPointF tHat2 = (forcedExit && lastSpan)
+                                  ? -*forcedExit
+                                  : -strideTangent(pts, arc, std::max(last - 1, first), local.strideWindow);
         fitCubicRecursive(pts, first, last, tHat1, tHat2, local.fitTolerance, 0, path);
         exitTangent = -tHat2;
         haveExitTangent = true;
@@ -920,25 +940,22 @@ void fitPiece(const QVector<QPointF> &piece, const FitParams &params, QPainterPa
 
 } // namespace
 
-QPainterPath AnimeVectorLogic::fitStrokePath(const QVector<QPointF> &points,
-                                             const AnimeStrokeFitSettings &settings)
+namespace {
+
+// The corner-detect + per-piece fitting pipeline over one deduped run,
+// APPENDED to `path` (whose current position must be the run's first
+// sample). Boundary tangents can be forced so the live fitter's frozen
+// seams stay G1.
+void fitRun(const QVector<QPointF> &deduped, const FitParams &params, QPainterPath &path,
+            const QPointF *forcedEntry = nullptr, const QPointF *forcedExit = nullptr)
 {
-    QPainterPath path;
-    const QVector<QPointF> deduped = dedupePoints(points);
-    if (deduped.isEmpty()) {
-        return path;
-    }
-    path.moveTo(deduped.first());
-    if (deduped.size() == 1) {
-        path.lineTo(deduped.first() + QPointF(0.01, 0.01));
-        return path;
+    if (deduped.size() < 2) {
+        return;
     }
     if (deduped.size() == 2) {
         path.lineTo(deduped.last());
-        return path;
+        return;
     }
-
-    FitParams params = fitParamsFor(settings);
 
     // CORNERS FIRST, on a lightly-smoothed copy. Running the full Gaussian
     // before corner detection was measured to round a 90-degree corner over
@@ -953,7 +970,6 @@ QPainterPath AnimeVectorLogic::fitStrokePath(const QVector<QPointF> &points,
     for (int i = 1; i < deduped.size(); ++i) {
         rawArc += QLineF(deduped[i - 1], deduped[i]).length();
     }
-    params.fitTolerance = shortStrokeFitTolerance(params.fitTolerance, rawArc);
     const qreal captureSpacing = std::max<qreal>(0.05, rawArc / (deduped.size() - 1));
     const qreal lightSigma = std::max<qreal>(0.5, std::min<qreal>(6.0, 1.6 / captureSpacing));
     const QVector<QPointF> light = gaussianSmooth(deduped, lightSigma);
@@ -994,9 +1010,275 @@ QPainterPath AnimeVectorLogic::fitStrokePath(const QVector<QPointF> &points,
         if (last <= first) {
             continue;
         }
-        fitPiece(deduped.mid(first, last - first + 1), params, path);
+        fitPiece(deduped.mid(first, last - first + 1), params, path,
+                 piece == 0 ? forcedEntry : nullptr,
+                 piece + 2 == corners.size() ? forcedExit : nullptr);
     }
+}
+
+} // namespace
+
+QPainterPath AnimeVectorLogic::fitStrokePath(const QVector<QPointF> &points,
+                                             const AnimeStrokeFitSettings &settings)
+{
+    QPainterPath path;
+    const QVector<QPointF> deduped = dedupePoints(points);
+    if (deduped.isEmpty()) {
+        return path;
+    }
+    path.moveTo(deduped.first());
+    if (deduped.size() == 1) {
+        path.lineTo(deduped.first() + QPointF(0.01, 0.01));
+        return path;
+    }
+
+    FitParams params = fitParamsFor(settings);
+    qreal rawArc = 0.0;
+    for (int i = 1; i < deduped.size(); ++i) {
+        rawArc += QLineF(deduped[i - 1], deduped[i]).length();
+    }
+    params.fitTolerance = shortStrokeFitTolerance(params.fitTolerance, rawArc);
+    fitRun(deduped, params, path);
     return path;
+}
+
+QPainterPath AnimeVectorLogic::liveFitStrokePath(AnimeLiveFitState &state,
+                                                 const QVector<QPointF> &points,
+                                                 const AnimeStrokeFitSettings &settings)
+{
+    // Ink this far behind the pen can no longer be touched by anything the
+    // pen does (double the widest smoothing kernel / tangent / corner
+    // window), so it is baked once and cut off from recomputation - the
+    // frozen prefix is bitwise stable, which is what stops the already-drawn
+    // path from trembling while the user keeps drawing.
+    //
+    // Baking is MODAL, because the straight-vs-curved decision is only valid
+    // at drawing scale - over one bake chunk the sagitta of any gentle curve
+    // is below line tolerance, and a chunk-local test froze whole arcs as
+    // chord chains with visible kinks. In STRAIGHT mode one open chord is
+    // EXTENDED (never re-emitted) while the whole run stays within tolerance
+    // of it - the same unbounded-union test the offline fit's chord merging
+    // uses. In CURVED mode chunks bake as Beziers regardless of their own
+    // sagitta, seamed G1 by shared forced tangents.
+    constexpr qreal kFreezeMargin = 40.0;
+    constexpr qreal kFreezeChunk = 48.0;
+
+    // Retroactive edits of the prefix (axis snap rewriting captured points)
+    // invalidate the frozen path: verify the boundary sample is still the
+    // one it was frozen against, and start over if not.
+    if (state.frozenSamples > 0
+        && (state.frozenSamples >= points.size()
+            || QLineF(points[state.frozenSamples], state.boundaryPoint).length() > 1e-9)) {
+        state = AnimeLiveFitState();
+    }
+
+    if (points.size() < 2) {
+        state = AnimeLiveFitState();
+        return fitStrokePath(points, settings);
+    }
+
+    QVector<qreal> arc(points.size(), 0.0);
+    for (int i = 1; i < points.size(); ++i) {
+        arc[i] = arc[i - 1] + QLineF(points[i - 1], points[i]).length();
+    }
+    FitParams params = fitParamsFor(settings);
+    params.fitTolerance = shortStrokeFitTolerance(params.fitTolerance, arc.last());
+
+    while (arc.last() - arc[state.frozenSamples] > kFreezeMargin + kFreezeChunk) {
+        // The bake boundary is nudged to the FLATTEST sample of its window,
+        // so a seam never sits on a corner (a forced tangent there would
+        // smear the turn).
+        const qreal target = arc.last() - kFreezeMargin;
+        int lo = state.frozenSamples + 1;
+        while (lo + 1 < points.size() - 1 && arc[lo] < target - kFreezeChunk * 0.5) {
+            ++lo;
+        }
+        int hi = lo;
+        while (hi + 1 < points.size() - 1 && arc[hi + 1] < target + kFreezeChunk * 0.5) {
+            ++hi;
+        }
+        int boundary = -1;
+        qreal flattest = std::numeric_limits<qreal>::max();
+        for (int i = lo; i <= hi; ++i) {
+            if (i <= state.frozenSamples || i + 1 >= points.size()) {
+                continue;
+            }
+            const QPointF in = points[i] - points[i - 1];
+            const QPointF out = points[i + 1] - points[i];
+            const qreal turnHere = std::abs(std::atan2(crossZ(in, out), dotP(in, out)));
+            if (turnHere < flattest) {
+                flattest = turnHere;
+                boundary = i;
+            }
+        }
+        if (boundary <= state.frozenSamples) {
+            break;   // no room to advance
+        }
+        if (state.frozenPath.elementCount() == 0) {
+            state.frozenPath.moveTo(points.first());
+        }
+
+        // A denoised endpoint for straight-mode seams: the offline fit
+        // chords the SMOOTHED polyline, and pinning seams to raw tremor made
+        // the pivot cap slice a ruler-straight drag into many chords.
+        const auto smoothedAt = [&points](int i) {
+            QPointF sum(0.0, 0.0);
+            int count = 0;
+            for (int k = std::max(0, i - 5); k <= std::min(int(points.size()) - 1, i + 5); ++k) {
+                sum += points[k];
+                ++count;
+            }
+            return sum / qreal(count);
+        };
+        // The polyline slice from the frozen boundary, pinned to the seam so
+        // every bake and tail fit starts exactly where the frozen path ends.
+        const auto sliceFrom = [&points, &state](int last) {
+            QVector<QPointF> out =
+                points.mid(state.frozenSamples, last - state.frozenSamples + 1);
+            if (state.hasSeam && !out.isEmpty()) {
+                out[0] = state.seamPoint;
+            }
+            return dedupePoints(out);
+        };
+        // A fold doubles back over its own ink with almost no PERPENDICULAR
+        // deviation, so chord tests are blind to it - the straight-line
+        // distance vs arc-length ratio is not (a retrace's chord is far
+        // shorter than its arc). Guards both chord extension and opening;
+        // failing it routes the chunk to the curved bake, whose corner
+        // detection splits the fold apex properly.
+        const auto foldFree = [&points, &arc](int from, int to) {
+            const qreal span = arc[to] - arc[from];
+            return span <= 1e-9
+                   || QLineF(points[from], points[to]).length() >= 0.9 * span;
+        };
+
+        if (state.chordStartSample >= 0) {
+            // STRAIGHT mode. Extend the open chord while the WHOLE run still
+            // passes the union test (with slack: the offline merge tests
+            // denoised samples, this one sees raw tremor) and keeps moving
+            // FORWARD. Extending pivots the chord around its anchor; the
+            // pivot is CAPPED - if the old seam would swing further than a
+            // fraction of a pixel, the chord closes there and a nearly
+            // collinear successor opens, so settled ink never visibly moves.
+            const QPointF newSeam = smoothedAt(boundary);
+            QPointF newDir = newSeam - state.chordAnchor;
+            const qreal newLen = std::hypot(newDir.x(), newDir.y());
+            qreal pivot = 0.0;
+            if (newLen > 1e-9) {
+                newDir /= newLen;
+                pivot = std::abs(crossZ(newDir, state.seamPoint - state.chordAnchor));
+            }
+            // The fold test is per CHUNK, not per run: over the whole run a
+            // short return leg is diluted below the ratio threshold and the
+            // apex of a retrace was swallowed proportionally to the run
+            // length (measured 18px on a 400px out-leg).
+            if (foldFree(state.frozenSamples, boundary)
+                && chordDeviation(points, state.chordStartSample, boundary)
+                       <= params.lineTolerance * 1.25) {
+                if (pivot > 0.45) {
+                    // Still straight, but extending would move settled ink:
+                    // close here and continue with a fresh collinear chord.
+                    state.frozenPath.lineTo(state.seamPoint);
+                    state.chordAnchor = state.seamPoint;
+                    state.chordStartSample = state.frozenSamples;
+                }
+                state.frozenSamples = boundary;
+                state.boundaryPoint = points[boundary];
+                state.seamPoint = newSeam;
+                state.hasSeam = true;
+                continue;   // the open chord is implicit, nothing re-emitted
+            }
+            // The run stopped being straight: close the chord where it last
+            // held and switch to curved baking for this chunk. The curve
+            // ENTERS along the chord's own direction, so the seam is G1 by
+            // construction rather than within tangent-estimation noise.
+            state.frozenPath.lineTo(state.seamPoint);
+            const QPointF closedDir = state.seamPoint - state.chordAnchor;
+            const qreal closedLen = std::hypot(closedDir.x(), closedDir.y());
+            state.entryTangent =
+                closedLen > 1e-9
+                    ? closedDir / closedLen
+                    : strideTangent(points, arc, state.frozenSamples, params.strideWindow);
+            state.hasEntryTangent = true;
+            state.chordStartSample = -1;
+        } else {
+            // CURVED (or initial) mode. Open a chord only when a LONG recent
+            // window is straight - a single chunk cannot tell a gentle curve
+            // from tremor (their deviations are the same size), two can. The
+            // window is allowed to look back PAST the frozen boundary: it is
+            // a classifier over the raw samples, and clamping it to the last
+            // bake made the decision depend on event cadence instead of the
+            // drawing. The chord must also leave along the frozen curve's
+            // exit tangent, or the seam would kink where the curve ends.
+            int probeStart = boundary;
+            while (probeStart > 0 && arc[boundary] - arc[probeStart - 1] < 2.0 * kFreezeChunk) {
+                --probeStart;
+            }
+            const bool enoughContext =
+                state.frozenSamples == 0
+                || arc[boundary] - arc[probeStart] >= 1.6 * kFreezeChunk;
+            const QPointF openDir = points[boundary] - points[state.frozenSamples];
+            const qreal openLen = std::hypot(openDir.x(), openDir.y());
+            const bool tangentAligned =
+                !state.hasEntryTangent
+                || (openLen > 1e-9
+                    && dotP(openDir / openLen, state.entryTangent)
+                           > std::cos(5.0 * (kTwoPi * 0.5) / 180.0));
+            if (enoughContext && tangentAligned
+                && foldFree(probeStart, boundary)
+                && chordDeviation(points, probeStart, boundary) <= params.lineTolerance) {
+                state.chordStartSample = state.frozenSamples;
+                state.chordAnchor = state.hasSeam ? state.seamPoint : points[state.frozenSamples];
+                state.frozenSamples = boundary;
+                state.boundaryPoint = points[boundary];
+                state.seamPoint = smoothedAt(boundary);
+                state.hasSeam = true;
+                continue;
+            }
+        }
+
+        // Curved bake of [frozenSamples .. boundary].
+        const QPointF tangent = strideTangent(points, arc, boundary, params.strideWindow);
+        FitParams bakeParams = params;
+        bakeParams.forceCurved = true;
+        fitRun(sliceFrom(boundary), bakeParams, state.frozenPath,
+               state.hasEntryTangent ? &state.entryTangent : nullptr, &tangent);
+        state.frozenSamples = boundary;
+        state.boundaryPoint = points[boundary];
+        state.seamPoint = points[boundary];
+        state.hasSeam = true;
+        state.entryTangent = tangent;
+        state.hasEntryTangent = true;
+    }
+
+    // The live tail, fitted onto a COPY of the frozen prefix (plus the open
+    // chord, which is preview-only until it closes). The tail inherits the
+    // current mode so curves do not render flat and then pop when baked.
+    QPainterPath combined = state.frozenPath;
+    if (combined.elementCount() == 0) {
+        combined.moveTo(points.first());
+    }
+    QPointF chordDirection;
+    const QPointF *entry = nullptr;
+    if (state.chordStartSample >= 0) {
+        combined.lineTo(state.seamPoint);
+        const QPointF d = state.seamPoint - state.chordAnchor;
+        const qreal len = std::hypot(d.x(), d.y());
+        if (len > 1e-9) {
+            chordDirection = d / len;
+            entry = &chordDirection;
+        }
+    } else if (state.hasEntryTangent) {
+        entry = &state.entryTangent;
+    }
+    QVector<QPointF> tail = points.mid(state.frozenSamples);
+    if (state.hasSeam && !tail.isEmpty()) {
+        tail[0] = state.seamPoint;
+    }
+    FitParams tailParams = params;
+    tailParams.forceCurved = (state.chordStartSample < 0 && state.frozenSamples > 0);
+    fitRun(dedupePoints(tail), tailParams, combined, entry, nullptr);
+    return combined;
 }
 
 AnimeVectorStroke AnimeVectorLogic::makeStroke(const QVector<QPointF> &points,
