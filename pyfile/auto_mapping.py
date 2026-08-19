@@ -7204,70 +7204,474 @@ def run_auto_mapping(name=AUTO_MAPPING2_TOOL, property_value=AUTO_MAPPING2_TOOL)
     return property_value
 
 
-class _Export3DSink:
-    """In-memory sink with _MappedOutput's emitter-facing surface: the
-    To 3D export re-runs the mapping emitters against it instead of
-    reading layers back out of the scene, so the 3D data is exactly what
-    Auto Mapping would draw - runs, fills, seals - each tagged with its
-    stacking depth."""
+def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
+                            grid_target=52, child_area=None):
+    """Isometric shape-from-template over the Third plane.
 
-    def __init__(self):
-        self.strokes = []   # (depth, side, points, color, width)
-        self.fills = []     # (depth, side, rings, color)
-        self.seals = []     # (depth, points, color, width)
-        self.cuts = []
-        self.side_counts = {_MappedOutput.FRONT: 0, _MappedOutput.BACK: 0}
+    THE MODEL (user specification): the Third Cartesian plane is the
+    OBJECT in its undeformed state - filled regions are the solid - and
+    MainView is a camera looking at the deformed object in the world
+    (camera fixed at (0,-100)). The mapping's JACOBIAN carries the
+    reconstruction: an isometrically bent sheet projects each unit
+    tangent with foreshortening cos(theta) along the bend direction, so
+    the SVD of J = dM/d(u,v) gives, pointwise,
+      - the local slope magnitude  |dz/ds| = sqrt(s0^2 - sigma_min^2)/s0
+        (s0 = the un-foreshortened scale, taken as the high quantile of
+        sigma_max over the solid - a developable sheet always has an
+        uncompressed direction),
+      - the slope DIRECTION (the singular vector of sigma_min - the
+        foreshortened axis is the one tilted away from the camera),
+      - the FACE via sign(det J): crossing a fold flips the sheet, and
+        with it the z-gradient - the parity is read straight off the
+        Jacobian, no crease bookkeeping needed.
+    Integrating that gradient field (least-squares Poisson, conjugate
+    gradients on the solid mask) yields z(u,v); world x/y are the
+    MainView image itself, so looking from the camera reproduces the
+    MainView picture exactly (weak-perspective lift).
+    Returns dict with vertices/faces/colors/strokes3d/bounds, or None.
+    """
+    warp = getattr(map_point, "warp", None)
 
-    def add_polyline(self, side, points, color, width, depth=None):
-        if len(points) < 2:
-            return False
-        pts = [(float(p[0]), float(p[1])) for p in points]
-        if side == _MappedOutput.SEAL:
-            self.seals.append((max(0, int(depth or 0)), pts, color, width))
+    def image_of_third(u, v):
+        z = warp.apply((u, v)) if warp is not None else (u, v)
+        return map_point.main_frame.hv(*map_point.scale_arcs(*z))
+
+    # The solid: fills' rings pulled to Third; strokes join the extent so
+    # linework outside the fills still gets a relief field to drape on.
+    # Containment testing decimates each ring to <=192 points and carries
+    # a bbox pre-filter: the raw rings arrive densified (thousands of
+    # points), and the un-filtered scan froze the UI for tens of seconds.
+    def decimate(ring, cap=192):
+        if len(ring) <= cap:
+            return ring
+        step = len(ring) / cap
+        return [ring[int(k * step)] for k in range(cap)]
+
+    rings_third = []
+    fill_colors = []
+    for fill in child_fills or []:
+        color = fill.get("color") or {}
+        rgba = (int(color.get("r", 0)), int(color.get("g", 0)),
+                int(color.get("b", 0)), int(color.get("a", 255)))
+        group = []
+        for source_ring in _path_commands_to_polygons(fill.get("commands")):
+            if len(source_ring) < 3:
+                continue
+            # Respect the child mapping area: the real mapping deletes
+            # what falls outside it, and the object must match.
+            for ring in _clip_rings_to_area([source_ring], child_area):
+                if len(ring) < 3:
+                    continue
+                third = decimate([tuple(map_point.coords(p)) for p in ring])
+                bbox = (min(p[0] for p in third), min(p[1] for p in third),
+                        max(p[0] for p in third), max(p[1] for p in third))
+                group.append((third, bbox))
+        if group:
+            rings_third.append(group)
+            fill_colors.append(rgba)
+    stroke_info = []
+    for stroke in child_pattern or []:
+        style_color, _w = _stroke_style(stroke, 1.0)
+        for poly in _stroke_polylines(stroke):
+            for piece in _clip_polyline(poly, child_area):
+                if len(piece) >= 2:
+                    stroke_info.append(
+                        ([tuple(map_point.coords(p)) for p in piece],
+                         style_color))
+    stroke_third = [poly for poly, _color in stroke_info]
+    solid_pts = [p for group in rings_third for ring, _b in group
+                 for p in ring]
+    if not solid_pts:
+        solid_pts = [p for poly in stroke_third for p in poly]
+    if not solid_pts:
+        return None
+    extent_pts = solid_pts + [p for poly in stroke_third for p in poly]
+    u0 = min(p[0] for p in extent_pts)
+    u1 = max(p[0] for p in extent_pts)
+    v0 = min(p[1] for p in extent_pts)
+    v1 = max(p[1] for p in extent_pts)
+    span = max(u1 - u0, v1 - v0, 1e-6)
+    pad = 0.02 * span
+    u0 -= pad; u1 += pad; v0 -= pad; v1 += pad
+    nx = max(8, int(round(grid_target * (u1 - u0) / span)))
+    ny = max(8, int(round(grid_target * (v1 - v0) / span)))
+    du = (u1 - u0) / nx
+    dv = (v1 - v0) / ny
+
+    def in_group(u, v, group):
+        hits = 0
+        for ring, (bx0, by0, bx1, by1) in group:
+            if bx0 <= u <= bx1 and by0 <= v <= by1 \
+                    and _point_in_ring((u, v), ring):
+                hits += 1
+        return hits % 2 == 1
+
+    def inside_solid(u, v):
+        if not rings_third:
             return True
-        if depth is None:
-            depth = 0 if side == _MappedOutput.FRONT else 1
-        self.side_counts[side] = self.side_counts.get(side, 0) + 1
-        self.strokes.append((max(0, int(depth)), side, pts, color, width))
-        return True
+        return any(in_group(u, v, group) for group in rings_third)
 
-    def add_curved(self, side, cubics, flat, color, width, depth=None):
-        return self.add_polyline(side, flat, color, width, depth)
+    def color_at(u, v):
+        # TOP fill wins: _collect_pattern_fills returns bottom-first
+        # (paintGL order), and the first hit used to hand overlapping
+        # fills the bottom colour.
+        for group, rgba in zip(reversed(rings_third),
+                               reversed(fill_colors)):
+            if in_group(u, v, group):
+                return rgba
+        return None
 
-    def add_fill(self, side, depth, rings, color):
-        rings = [[(float(p[0]), float(p[1])) for p in ring]
-                 for ring in rings if len(ring) >= 3]
-        if not rings:
-            return False
-        # Fills count toward the side tally like _MappedOutput's do: the
-        # seal pass is gated on count(BACK), and a document whose back
-        # face is reached only by fills must still get its creases.
-        self.side_counts[side] = self.side_counts.get(side, 0) + 1
-        self.fills.append((max(0, int(depth or 0)), side, rings, color))
-        return True
+    # Node grid: keep nodes whose neighbourhood touches the solid OR a
+    # stroke - linework outside the fills needs a relief field too, or it
+    # snapped flat to z=0 the moment it left the mask.
+    stroke_cells = set()
+    for poly in stroke_third:
+        cum = _cumulative_lengths(poly)
+        count = max(len(poly), int(cum[-1] / max(min(du, dv), 1e-6)) + 2)
+        for k in range(count):
+            p = _point_at_arc(poly, cum, cum[-1] * k / max(count - 1, 1))
+            stroke_cells.add((int((p[0] - u0) / du), int((p[1] - v0) / dv)))
 
-    def count(self, side=None):
-        if side is None:
-            return sum(self.side_counts.values())
-        return self.side_counts.get(side, 0)
+    node_index = {}
+    nodes = []
+    for j in range(ny + 1):
+        for i in range(nx + 1):
+            u = u0 + du * i
+            v = v0 + dv * j
+            near_stroke = any((i + a, j + b) in stroke_cells
+                              for a in (-1, 0) for b in (-1, 0))
+            if near_stroke or any(
+                    inside_solid(u + du * a * 0.5, v + dv * b * 0.5)
+                    for a in (-1, 0, 1) for b in (-1, 0, 1)):
+                node_index[(i, j)] = len(nodes)
+                nodes.append((i, j, u, v))
+    if len(nodes) < 4:
+        return None
+
+    # Jacobian, SVD-derived slope field and face sign per node.
+    h = 0.25 * min(du, dv)
+    jac = []
+    sigma_max_all = []
+    for _i, _j, u, v in nodes:
+        px = image_of_third(u + h, v)
+        mx = image_of_third(u - h, v)
+        py = image_of_third(u, v + h)
+        my = image_of_third(u, v - h)
+        a = (px[0] - mx[0]) / (2 * h)
+        c = (px[1] - mx[1]) / (2 * h)
+        b = (py[0] - my[0]) / (2 * h)
+        d = (py[1] - my[1]) / (2 * h)
+        jac.append((a, b, c, d))
+        ee = a * a + c * c
+        gg = b * b + d * d
+        ff = a * b + c * d
+        tr = ee + gg
+        det = ee * gg - ff * ff
+        disc = max(0.0, tr * tr * 0.25 - det)
+        s_max = math.sqrt(max(1e-12, tr * 0.5 + math.sqrt(disc)))
+        sigma_max_all.append(s_max)
+    # The un-foreshortened scale: the MEDIAN of sigma_max. Most of the
+    # sheet lies flat (sigma_max = sigma_min = s0); a high quantile got
+    # polluted by the fold band, where the WARP genuinely stretches the
+    # material (AM2 is not isometric inside a fold) - reading that
+    # stretch as "facing the camera" inflated every slope and tripled
+    # the relief. Where sigma exceeds s0 the excess is in-plane stretch,
+    # not tilt, and the point is treated as flat (cos = 1).
+    scale0 = sorted(sigma_max_all)[len(sigma_max_all) // 2]
+    scale0 = max(scale0, 1e-9)
+
+    grads = []
+    handed = []
+    for (a, b, c, d) in jac:
+        ee = a * a + c * c
+        gg = b * b + d * d
+        ff = a * b + c * d
+        tr = ee + gg
+        det2 = ee * gg - ff * ff
+        disc = max(0.0, tr * tr * 0.25 - det2)
+        s_min_sq = max(0.0, tr * 0.5 - math.sqrt(disc))
+        s_max_sq = max(1e-12, tr * 0.5 + math.sqrt(disc))
+        # TILT is sigma_min falling below the point's UN-TILTED scale:
+        #   cos(theta) = sigma_min / min(sigma_max, s0).
+        # The denominator choice carries three measured lessons at once:
+        # dividing by the global s0 alone misread every isotropic scale
+        # wobble as a full-magnitude slope in a rounding-determined
+        # direction (hand-jittered guides fabricated relief on a
+        # bit-exact identity map), dividing by sigma_max alone misread
+        # the fold band's ANISOTROPIC in-plane stretch (sigma_max 2.5,
+        # sigma_min 1 - the warp stretches material along the fold-back)
+        # as a steep tilt, and min(sigma_max, s0) keeps both flat while
+        # a genuine tilt (sigma_max ~ s0, sigma_min below) still reads
+        # its full angle. A 2% dead zone absorbs flattening noise.
+        cos_t = min(1.0, math.sqrt(s_min_sq) /
+                    max(min(math.sqrt(s_max_sq), scale0), 1e-9) / 0.98)
+        mag = math.sqrt(max(0.0, 1.0 - cos_t * cos_t))
+        # eigenvector of J^T J for the SMALL eigenvalue: foreshortened axis
+        lam = s_min_sq
+        vx, vy = (ff, lam - ee) if abs(ff) > 1e-12 else \
+            ((1.0, 0.0) if ee <= gg else (0.0, 1.0))
+        norm = math.hypot(vx, vy) or 1.0
+        grads.append((mag * vx / norm, mag * vy / norm))
+        handed.append(1.0 if (a * d - b * c) >= 0.0 else -1.0)
+    majority = 1.0 if sum(handed) >= 0 else -1.0
+
+    # Orient the (sign-ambiguous) eigenvectors coherently, then flip by
+    # face parity: crossing a fold reverses the physical slope.
+    oriented = [None] * len(nodes)
+    for k, (i, j, _u, _v) in enumerate(nodes):
+        best = None
+        for (di, dj) in ((-1, 0), (0, -1), (-1, -1), (1, -1)):
+            n = node_index.get((i + di, j + dj))
+            if n is not None and oriented[n] is not None:
+                best = oriented[n]
+                break
+        g = grads[k]
+        if best is not None and g[0] * best[0] + g[1] * best[1] < 0.0:
+            g = (-g[0], -g[1])
+        oriented[k] = g
+    # SIGN RECOVERY ACROSS TANGENCY LINES. Direction coherence alone can
+    # only reverse the slope where det J flips, but a crest or trough -
+    # the sheet momentarily facing the camera - reverses the physical
+    # slope with NO det flip, and integrating the unsigned field turned
+    # every wave into a monotone staircase of double the true relief
+    # (and broke mirror symmetry on a symmetric squeeze). The two
+    # branches are genuinely indistinguishable in the image (the metric
+    # sees only |grad z|), so the MINIMAL-RELIEF prior decides: sloped
+    # regions are segmented along the low-magnitude valleys (tangency
+    # lines), and ADJACENT regions get OPPOSITE signs over a spanning
+    # tree - a wave comes back as a wave, a symmetric squeeze as a
+    # symmetric bulge, never as a doubled-height staircase. (Per-node
+    # annealing was tried first: a chain of nodes must flip together,
+    # and single-site moves cannot cross that barrier.)
+    mags = [math.hypot(*g) for g in oriented]
+    positive = sorted(m for m in mags if m > 1e-6)
+    mag_hi = 0.35 * positive[len(positive) // 2] if positive else 0.0
+    labels = [-1] * len(nodes)
+    region_count = 0
+    for seed in range(len(nodes)):
+        if labels[seed] != -1 or mags[seed] <= mag_hi:
+            continue
+        queue = [seed]
+        labels[seed] = region_count
+        while queue:
+            k = queue.pop()
+            ki, kj = nodes[k][0], nodes[k][1]
+            for (di, dj) in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                n = node_index.get((ki + di, kj + dj))
+                if n is not None and labels[n] == -1 and mags[n] > mag_hi:
+                    labels[n] = region_count
+                    queue.append(n)
+        region_count += 1
+    region_sign = [1.0] * region_count
+    if region_count > 1:
+        # Adjacency across valleys: scan rows and columns; consecutive
+        # labelled stretches separated only by low-mag nodes are
+        # neighbours.
+        adjacency = {}
+        for axis in (0, 1):
+            majors = range(ny + 1) if axis == 0 else range(nx + 1)
+            minors = range(nx + 1) if axis == 0 else range(ny + 1)
+            for major in majors:
+                last_label = -1
+                gap = 0
+                for minor in minors:
+                    key = (minor, major) if axis == 0 else (major, minor)
+                    n = node_index.get(key)
+                    if n is None:
+                        last_label = -1
+                        continue
+                    lab = labels[n]
+                    if lab == -1:
+                        gap += 1
+                        continue
+                    if last_label != -1 and lab != last_label:
+                        pair = (min(last_label, lab), max(last_label, lab))
+                        adjacency[pair] = adjacency.get(pair, 0) + 1
+                    last_label = lab
+                    gap = 0
+        # Spanning propagation: neighbours alternate.
+        visited = [False] * region_count
+        for root in range(region_count):
+            if visited[root]:
+                continue
+            visited[root] = True
+            queue = [root]
+            while queue:
+                r = queue.pop()
+                for (p, q), _votes in adjacency.items():
+                    other = q if p == r else (p if q == r else None)
+                    if other is not None and not visited[other]:
+                        visited[other] = True
+                        region_sign[other] = -region_sign[r]
+                        queue.append(other)
+    signs = [region_sign[labels[k]] if labels[k] != -1 else 1.0
+             for k in range(len(nodes))]
+    # Valley nodes inherit the nearest labelled sign along their row so
+    # the near-zero band blends smoothly between the two regions.
+    for k in range(len(nodes)):
+        if labels[k] != -1:
+            continue
+        ki, kj = nodes[k][0], nodes[k][1]
+        for radius in range(1, 4):
+            found = None
+            for (di, dj) in ((radius, 0), (-radius, 0),
+                             (0, radius), (0, -radius)):
+                n = node_index.get((ki + di, kj + dj))
+                if n is not None and labels[n] != -1:
+                    found = signs[n]
+                    break
+            if found is not None:
+                signs[k] = found
+                break
+    target = [(oriented[k][0] * signs[k] * handed[k] * majority,
+               oriented[k][1] * signs[k] * handed[k] * majority)
+              for k in range(len(nodes))]
+
+    # Least-squares Poisson: minimize |grad z - target|^2 over the mask
+    # (pure-python conjugate gradients; the grid is ~2-3k nodes).
+    neigh = []
+    for i, j, _u, _v in nodes:
+        entry = []
+        for (di, dj, axis, sign) in ((1, 0, 0, 1.0), (-1, 0, 0, -1.0),
+                                     (0, 1, 1, 1.0), (0, -1, 1, -1.0)):
+            n = node_index.get((i + di, j + dj))
+            if n is not None:
+                entry.append((n, axis, sign))
+        neigh.append(entry)
+
+    def apply_lap(z):
+        out = [0.0] * len(z)
+        for k, entry in enumerate(neigh):
+            acc = 0.0
+            for n, _axis, _sign in entry:
+                acc += z[k] - z[n]
+            out[k] = acc
+        return out
+
+    rhs = [0.0] * len(nodes)
+    for k, entry in enumerate(neigh):
+        acc = 0.0
+        for n, axis, sign in entry:
+            step = du if axis == 0 else dv
+            tk = target[k][axis]
+            tn = target[n][axis]
+            acc += sign * 0.5 * (tk + tn) * step
+        rhs[k] = acc
+    z = [0.0] * len(nodes)
+    r = [rhs[k] - v for k, v in enumerate(apply_lap(z))]
+    mean_r = sum(r) / len(r)
+    r = [v - mean_r for v in r]      # Neumann null space
+    p = list(r)
+    rs_old = sum(v * v for v in r)
+    for _ in range(min(400, 4 * len(nodes))):
+        if rs_old < 1e-8:
+            break
+        ap = apply_lap(p)
+        denom = sum(pv * apv for pv, apv in zip(p, ap)) or 1e-12
+        alpha = rs_old / denom
+        z = [zv + alpha * pv for zv, pv in zip(z, p)]
+        r = [rv - alpha * apv for rv, apv in zip(r, ap)]
+        mean_r = sum(r) / len(r)
+        r = [v - mean_r for v in r]
+        rs_new = sum(v * v for v in r)
+        p = [rv + (rs_new / rs_old) * pv for rv, pv in zip(r, p)]
+        rs_old = rs_new
+    z_mean = sum(z) / len(z)
+    z = [(v - z_mean) * scale0 for v in z]   # into canvas units
+
+    # Mesh: canvas-space x/y (the camera reproduces MainView), lifted z.
+    # A boundary vertex sits just OUTSIDE the solid (kept by the
+    # neighbourhood test so faces reach the edge) - its colour comes from
+    # the nearest half-cell sample inside, or the silhouette ring renders
+    # as a grey fringe around every fill.
+    vertices = []
+    colors = []
+    for k, (_i, _j, u, v) in enumerate(nodes):
+        q = image_of_third(u, v)
+        vertices.append((q[0], q[1], z[k]))
+        rgba = color_at(u, v)
+        if rgba is None:
+            for a, b in ((0.5, 0.0), (-0.5, 0.0), (0.0, 0.5), (0.0, -0.5),
+                         (0.5, 0.5), (-0.5, 0.5), (0.5, -0.5), (-0.5, -0.5),
+                         (1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)):
+                rgba = color_at(u + du * a, v + dv * b)
+                if rgba is not None:
+                    break
+        colors.append(rgba if rgba is not None else (200, 200, 200, 255))
+    faces = []
+    for j in range(ny):
+        for i in range(nx):
+            corners = [node_index.get(t) for t in
+                       ((i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1))]
+            if any(c is None for c in corners):
+                continue
+            cell_u = u0 + du * (i + 0.5)
+            cell_v = v0 + dv * (j + 0.5)
+            if not inside_solid(cell_u, cell_v):
+                continue
+            faces.append((corners[0], corners[1], corners[2]))
+            faces.append((corners[0], corners[2], corners[3]))
+
+    # Strokes draped onto the surface (z interpolated off the grid).
+    def z_at(u, v):
+        fi = min(max((u - u0) / du, 0.0), nx - 1e-6)
+        fj = min(max((v - v0) / dv, 0.0), ny - 1e-6)
+        i = int(fi)
+        j = int(fj)
+        acc = 0.0
+        wsum = 0.0
+        for (ii, jj, wu, wv) in ((i, j, 1 - (fi - i), 1 - (fj - j)),
+                                 (i + 1, j, fi - i, 1 - (fj - j)),
+                                 (i, j + 1, 1 - (fi - i), fj - j),
+                                 (i + 1, j + 1, fi - i, fj - j)):
+            n = node_index.get((ii, jj))
+            if n is not None:
+                w = wu * wv
+                acc += w * z[n]
+                wsum += w
+        return acc / wsum if wsum > 1e-9 else 0.0
+
+    strokes3d = []
+    stroke_colors = []
+    for poly, style_color in stroke_info:
+        dense = poly
+        cum = _cumulative_lengths(poly)
+        if cum[-1] > 0:
+            # Density follows the surface grid but stays bounded: a tiny
+            # solid once made du/dv microscopic and a long stroke
+            # exploded into hundreds of thousands of points.
+            count = max(len(poly),
+                        min(int(cum[-1] / max(du, dv)) + 2,
+                            4 * len(poly) + 512))
+            dense = [_point_at_arc(poly, cum, cum[-1] * k / (count - 1))
+                     for k in range(count)]
+        pts = []
+        for (u, v) in dense:
+            q = image_of_third(u, v)
+            pts.append((q[0], q[1], z_at(u, v)))
+        if len(pts) >= 2:
+            strokes3d.append(pts)
+            stroke_colors.append([style_color[0], style_color[1],
+                                  style_color[2]])
+
+    return {"vertices": vertices, "faces": faces, "colors": colors,
+            "strokes": strokes3d, "stroke_colors": stroke_colors,
+            "scale0": scale0,
+            "uv": [(u, v) for _i, _j, u, v in nodes]}
 
 
 def run_to_3d():
-    """Menu entry: lift the current Auto Mapping result into 3D and open a
+    """Menu entry: reconstruct the mapped sheet's 3D shape and open a
     Three.js viewer for it.
 
-    The 2.5D model already carries everything a 3D lift needs: mapped
-    geometry in main-canvas x/y and a stacking depth per piece. Each depth
-    layer becomes a z plane (a constant camera matrix frames the stack;
-    the viewer's slider spreads the layers apart). The emitters are re-run
-    against an in-memory sink - the export IS the current auto-mapping
-    layers' content, independent of what the scene stores.
+    User specification: the Third Cartesian plane is the OBJECT MATRIX in
+    its undeformed state (filled regions are the solid), MainView is the
+    camera view of the deformed object (a constant camera, the
+    (0,-100)-style world placement), and the mapping's JACOBIAN recovers
+    the deformed object state - see _reconstruct_surface_3d.
     """
     child = _scene_model("child")
     main = _scene_model("main")
-    mode = curve_mode()
-    if mode not in _EMITTERS:
-        mode = DEFAULT_CURVE_MODE
     child_frame = max(child.current_frame(), 0)
     # Same preflight as a real run: guides may still live in layers on a
     # freshly loaded legacy document, and _mapper_from_assets carries the
@@ -7276,7 +7680,7 @@ def run_to_3d():
     _absorb_legacy_items("child", child, child_frame)
     _absorb_legacy_items("main", main, max(main.current_frame(), 0))
     child_pattern = _collect_pattern_strokes(child, child_frame,
-                                             want_commands=mode == "bezier")
+                                             want_commands=False)
     child_fills = _collect_pattern_fills(child, child_frame)
     if not child_pattern and not child_fills:
         print("[auto_mapping] To 3D: child_paint_view has nothing to map.")
@@ -7287,39 +7691,24 @@ def run_to_3d():
         return False
     for note in getattr(map_point, "additional_notes", ()):
         print(f"[auto_mapping] warning: {note}")
-    child_assets = _assets_for("child")
-    main_assets = _assets_for("main")
-    child_area = (child_assets.get(MAPPING_AREA_PROPERTY) or {}).get("polygons")
-    main_area = (main_assets.get(MAPPING_AREA_PROPERTY) or {}).get("polygons")
-    if _FOLD["split"]:
-        ranges = _pattern_arc_ranges(map_point, child_pattern, child_fills)
-        if ranges is not None:
-            _prepare_fold_context(map_point, ranges[0], ranges[1])
 
-    sink = _Export3DSink()
-    emit = _EMITTERS[mode]
-    for stroke in child_pattern:
-        color_tuple, width = _stroke_style(stroke, width_scale)
-        emit(None, sink, stroke, map_point, child_area, main_area,
-             color_tuple, width)
-    if child_fills:
-        _emit_fills(None, sink, map_point, child_fills, child_area, main_area)
-    if _FOLD["split"] and _FOLD["seal"] and sink.count(_MappedOutput.BACK):
-        _emit_seals(None, sink, map_point, child_pattern, child_area,
-                    main_area, width_scale)
-    if not sink.strokes and not sink.fills:
-        print("[auto_mapping] To 3D: nothing mapped to export.")
+    child_area = (_assets_for("child").get(MAPPING_AREA_PROPERTY)
+                  or {}).get("polygons")
+    surface = _reconstruct_surface_3d(map_point, child_fills, child_pattern,
+                                      child_area=child_area)
+    if surface is None or not surface["faces"]:
+        print("[auto_mapping] To 3D: no solid (filled) region to "
+              "reconstruct - fill the pattern on the child board first.")
         return False
 
     path = os.path.join(tempfile.gettempdir(),
                         f"animean_to3d_{int(time.time())}.html")
-    depths = sorted({d for d, *_ in sink.strokes}
-                    | {d for d, *_ in sink.fills}
-                    | {d for d, *_ in sink.seals})
-    _export_three_html(sink, path)
-    print(f"[auto_mapping] To 3D: exported {len(sink.strokes)} stroke run(s), "
-          f"{len(sink.fills)} fill piece(s), {len(sink.seals)} crease(s) "
-          f"across depth layers {depths} -> {path}")
+    _export_three_html(surface, path)
+    zs = [v[2] for v in surface["vertices"]]
+    print(f"[auto_mapping] To 3D: reconstructed the deformed sheet - "
+          f"{len(surface['vertices'])} vertices / {len(surface['faces'])} "
+          f"faces, {len(surface['strokes'])} draped stroke(s), relief "
+          f"span {max(zs) - min(zs):.1f} px -> {path}")
     try:
         os.startfile(path)
     except Exception as error:
@@ -7328,75 +7717,21 @@ def run_to_3d():
     return True
 
 
-def _group_rings_odd_even(rings):
-    """[[outer, hole, ...], ...]: odd-even subpath list -> per-outer groups.
-
-    Nesting is probed from each ring's own boundary (a first-edge
-    midpoint), never from an interior point - the centroid of an outer
-    ring can sit inside its own hole. An odd ring attaches to the
-    innermost even ring containing it."""
-    if len(rings) <= 1:
-        return [list(rings)]
-
-    def probe(ring):
-        a = ring[0]
-        b = ring[1 % len(ring)]
-        return ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5)
-
-    probes = [probe(ring) for ring in rings]
-    levels = []
-    for index in range(len(rings)):
-        levels.append(sum(1 for j, other in enumerate(rings)
-                          if j != index and _point_in_ring(probes[index],
-                                                          other)))
-    groups = []
-    owners = {}
-    for index, ring in enumerate(rings):
-        if levels[index] % 2 == 0:
-            owners[index] = len(groups)
-            groups.append([ring])
-    if not groups:
-        return [list(rings)]
-    for index, ring in enumerate(rings):
-        if levels[index] % 2 == 1:
-            best = None
-            for outer_index, group_index in owners.items():
-                if _point_in_ring(probes[index], rings[outer_index]):
-                    if best is None or levels[outer_index] > levels[best]:
-                        best = outer_index
-            if best is not None:
-                groups[owners[best]].append(ring)
-    return groups
-
-
-def _export_three_html(sink, path):
-    """Self-contained Three.js viewer: geometry embedded as JSON, orbit
-    controls (rotate / zoom / pan), a CONSTANT camera matrix for the
-    initial view, and a slider that spreads the depth layers apart."""
-    def css(color):
-        r, g, b, a = (list(color) + [255, 255, 255, 255])[:4]
-        return [r, g, b, a]
-
+def _export_three_html(surface, path):
+    """Self-contained Three.js viewer for the reconstructed sheet: the
+    triangulated solid with per-vertex fill colors, draped strokes, orbit
+    controls, a relief-scale slider, and the CONSTANT camera (the user's
+    (0,-100)-style world placement, expressed as a fixed matrix over the
+    normalized scene)."""
     data = {
-        "strokes": [{"d": d, "side": side, "pts": [[round(x, 2), round(y, 2)]
-                                                   for x, y in pts],
-                     "color": css(color), "width": round(float(width), 2)}
-                    for d, side, pts, color, width in sink.strokes],
-        # Three's Shape treats every ring after the first as a HOLE, but a
-        # fill piece clipped by the mapping area can arrive as SEVERAL
-        # disjoint outer pieces plus holes in one flat list (odd-even
-        # semantics). Regroup by boundary-probe nesting parity: each even
-        # ring becomes its own shape carrying the odd rings it contains.
-        "fills": [{"d": d, "side": side,
-                   "rings": [[[round(x, 2), round(y, 2)] for x, y in ring]
-                             for ring in group],
-                   "color": css(color)}
-                  for d, side, rings, color in sink.fills
-                  for group in _group_rings_odd_even(rings)],
-        "seals": [{"d": d, "pts": [[round(x, 2), round(y, 2)]
-                                   for x, y in pts],
-                   "color": css(color), "width": round(float(width), 2)}
-                  for d, pts, color, width in sink.seals],
+        "vertices": [[round(x, 2), round(y, 2), round(z, 2)]
+                     for x, y, z in surface["vertices"]],
+        "faces": [list(face) for face in surface["faces"]],
+        "colors": [[c[0], c[1], c[2]] for c in surface["colors"]],
+        "strokes": [[[round(x, 2), round(y, 2), round(z, 2)]
+                     for x, y, z in poly]
+                    for poly in surface["strokes"]],
+        "strokeColors": surface.get("stroke_colors") or [],
     }
     payload = json.dumps(data, separators=(",", ":")).replace("</", "<\\/")
     html = _TO3D_TEMPLATE.replace("__ANIMEAN_DATA__", payload)
@@ -7420,9 +7755,14 @@ _TO3D_TEMPLATE = r"""<!DOCTYPE html>
 </head>
 <body>
 <div id="ui">
-  <div><b>AnimeAn To 3D</b></div>
-  <div>Layer gap <input id="gap" type="range" min="0" max="300" value="60"></div>
-  <div style="opacity:.7">drag: rotate &middot; wheel: zoom &middot; right-drag: pan</div>
+  <div><b>AnimeAn To 3D</b> - reconstructed sheet</div>
+  <div>Relief scale <input id="relief" type="range" min="0" max="300"
+       value="100"></div>
+  <div><label><input id="flip" type="checkbox"> flip relief</label>
+       <label style="margin-left:12px"><input id="wire" type="checkbox">
+       wireframe</label></div>
+  <div style="opacity:.7">drag: rotate &middot; wheel: zoom &middot;
+       right-drag: pan</div>
 </div>
 <script type="importmap">
 {"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js",
@@ -7441,76 +7781,104 @@ renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(devicePixelRatio);
 document.body.appendChild(renderer.domElement);
 
-// Model bounds (canvas space, y down) -> normalized group (y up, unit-ish).
+// Normalize: canvas x/y (y flipped up), z = relief. The camera looks down
+// -z exactly like MainView does, so the initial view IS the MainView
+// picture; the constant matrix is the (0,-100)-style world placement.
 let minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
-const scanPts = p => { for (const [x, y] of p) {
+for (const [x, y] of DATA.vertices) {
   if (x < minX) minX = x; if (x > maxX) maxX = x;
-  if (y < minY) minY = y; if (y > maxY) maxY = y; } };
-DATA.strokes.forEach(s => scanPts(s.pts));
-DATA.fills.forEach(f => f.rings.forEach(scanPts));
-DATA.seals.forEach(s => scanPts(s.pts));
+  if (y < minY) minY = y; if (y > maxY) maxY = y;
+}
 const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
 const span = Math.max(maxX - minX, maxY - minY, 1);
-const S = 2 / span;                      // model -> ~[-1,1]
+const S = 2 / span;
+
 const group = new THREE.Group();
 scene.add(group);
 
-const layered = [];                       // objects whose z follows depth
-const rgba = c => new THREE.Color(c[0] / 255, c[1] / 255, c[2] / 255);
-const toV = ([x, y]) => new THREE.Vector3((x - cx) * S, (cy - y) * S, 0);
+const positions = new Float32Array(DATA.vertices.length * 3);
+const baseZ = new Float32Array(DATA.vertices.length);
+const colors = new Float32Array(DATA.vertices.length * 3);
+DATA.vertices.forEach(([x, y, z], i) => {
+  positions[3 * i] = (x - cx) * S;
+  positions[3 * i + 1] = (cy - y) * S;
+  positions[3 * i + 2] = z * S;
+  baseZ[i] = z * S;
+  const c = DATA.colors[i] || [200, 200, 200];
+  colors[3 * i] = c[0] / 255;
+  colors[3 * i + 1] = c[1] / 255;
+  colors[3 * i + 2] = c[2] / 255;
+});
+const geo = new THREE.BufferGeometry();
+geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+geo.setIndex(DATA.faces.flat());
+geo.computeVertexNormals();
+const mat = new THREE.MeshStandardMaterial({
+  vertexColors: true, side: THREE.DoubleSide, metalness: 0.0,
+  roughness: 0.85, flatShading: false });
+const mesh = new THREE.Mesh(geo, mat);
+group.add(mesh);
 
-for (const f of DATA.fills) {
-  const shape = new THREE.Shape(f.rings[0].map(([x, y]) =>
-      new THREE.Vector2((x - cx) * S, (cy - y) * S)));
-  for (const ring of f.rings.slice(1))
-    shape.holes.push(new THREE.Path(ring.map(([x, y]) =>
-        new THREE.Vector2((x - cx) * S, (cy - y) * S))));
-  const geo = new THREE.ShapeGeometry(shape);
-  const mat = new THREE.MeshBasicMaterial({
-    color: rgba(f.color), side: THREE.DoubleSide,
-    transparent: true, opacity: Math.max(0.35, (f.color[3] ?? 255) / 255 * 0.9),
-    depthWrite: false });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.userData.depth = f.d;
-  layered.push(mesh); group.add(mesh);
-}
-for (const s of DATA.strokes) {
-  const geo = new THREE.BufferGeometry().setFromPoints(s.pts.map(toV));
-  const line = new THREE.Line(geo,
-      new THREE.LineBasicMaterial({ color: rgba(s.color) }));
-  line.userData.depth = s.d;
-  layered.push(line); group.add(line);
-}
-for (const s of DATA.seals) {
-  const geo = new THREE.BufferGeometry().setFromPoints(s.pts.map(toV));
-  const line = new THREE.Line(geo, new THREE.LineDashedMaterial({
-      color: rgba(s.color), dashSize: 0.02, gapSize: 0.014 }));
-  line.computeLineDistances();
-  line.userData.depth = s.d;
-  layered.push(line); group.add(line);
-}
+const strokeObjs = [];
+DATA.strokes.forEach((poly, idx) => {
+  const pts = poly.map(([x, y, z]) =>
+      new THREE.Vector3((x - cx) * S, (cy - y) * S, z * S));
+  const g = new THREE.BufferGeometry().setFromPoints(pts);
+  const sc = DATA.strokeColors[idx] || [28, 30, 36];
+  const line = new THREE.Line(g, new THREE.LineBasicMaterial({
+      color: new THREE.Color(sc[0] / 255, sc[1] / 255, sc[2] / 255) }));
+  line.userData.baseZ = poly.map(p => p[2] * S);
+  strokeObjs.push(line);
+  group.add(line);
+});
 
-// depth 0 nearest the camera; deeper layers recede along -z
-function applyGap(px) {
-  const gap = px * S;
-  for (const obj of layered) obj.position.z = -obj.userData.depth * gap;
+function applyRelief(factor) {
+  const pos = geo.getAttribute('position');
+  for (let i = 0; i < baseZ.length; i++) pos.setZ(i, baseZ[i] * factor);
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  for (const line of strokeObjs) {
+    const p = line.geometry.getAttribute('position');
+    const bz = line.userData.baseZ;
+    for (let i = 0; i < bz.length; i++)
+      p.setZ(i, bz[i] * factor + 0.004);
+    p.needsUpdate = true;
+  }
 }
-applyGap(60);
-document.getElementById('gap').addEventListener('input',
-    e => applyGap(parseFloat(e.target.value)));
+let reliefValue = 1.0, flip = false;
+const update = () => applyRelief(reliefValue * (flip ? -1 : 1));
+document.getElementById('relief').addEventListener('input', e => {
+  reliefValue = parseFloat(e.target.value) / 100; update(); });
+document.getElementById('flip').addEventListener('change', e => {
+  flip = e.target.checked; update(); });
+update();   // apply the stroke lift NOW, or lines z-fight until touched
+document.getElementById('wire').addEventListener('change', e => {
+  mat.wireframe = e.target.checked; });
 
+scene.add(new THREE.AmbientLight(0xffffff, 0.75));
+const sun = new THREE.DirectionalLight(0xffffff, 1.1);
+sun.position.set(1.2, 1.8, 2.4);
+scene.add(sun);
 scene.add(new THREE.GridHelper(4, 20, 0xb9bfcc, 0xd4d8e2)
     .translateY(-1.4));
 
-const camera = new THREE.PerspectiveCamera(
-    45, innerWidth / innerHeight, 0.01, 100);
-// CONSTANT camera matrix (column-major), the fixed initial framing the
-// export promises: eye pulled back and above, looking at the origin.
+// ORTHOGRAPHIC camera: the reconstruction is a weak-perspective lift, so
+// only a parallel projection reproduces MainView exactly - a perspective
+// start violated the method's own premise (and the relief slider could
+// push the sheet through the near plane).
+const aspect0 = innerWidth / innerHeight;
+const camera = new THREE.OrthographicCamera(
+    -1.35 * aspect0, 1.35 * aspect0, 1.35, -1.35, -50, 50);
+// CONSTANT camera matrix: the (0,-100)-style placement - straight back
+// along the view axis, looking at the sheet exactly as MainView does
+// (world units are normalized; the distance is depth-irrelevant under
+// an orthographic projection).
 const CAMERA_MATRIX = new THREE.Matrix4().fromArray([
   1, 0, 0, 0,
-  0, 0.8480, 0.5299, 0,
-  0, -0.5299, 0.8480, 0,
-  0, -1.35, 2.30, 1]);
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  0, 0, 2.6, 1]);
 CAMERA_MATRIX.decompose(camera.position, camera.quaternion, camera.scale);
 
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -7518,7 +7886,9 @@ controls.enableDamping = true;
 controls.target.set(0, 0, 0);
 
 addEventListener('resize', () => {
-  camera.aspect = innerWidth / innerHeight;
+  const aspect = innerWidth / innerHeight;
+  camera.left = -1.35 * aspect;
+  camera.right = 1.35 * aspect;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
 });
