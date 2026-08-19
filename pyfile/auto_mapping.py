@@ -3092,6 +3092,10 @@ def overlay_items(view_name):
                 "width": width,
                 "pen_style": style,
                 "removable": True,
+                # Grabbable under any tool (C++ routes a draggable item's
+                # press through the same "handle" events an edit handle
+                # uses): placing an axis is a drag, not a redraw.
+                "draggable": True,
             })
             arrow = _direction_arrow_points(guide["points"], max(12.0, 3.5 * width))
             if arrow:
@@ -3112,6 +3116,7 @@ def overlay_items(view_name):
             # remove the PAIR (both boards) rather than guessing by geometry.
             "id": f"{ADDITIONAL_PROPERTY}:{_line_id(line, index)}",
             "points": line["points"],
+            "draggable": True,
             "color": _display_color("additional_color"),
             "width": float(_LINE_DISPLAY.get("additional_width", 2.5)),
             "pen_style": _display_style("additional_style"),
@@ -3157,10 +3162,16 @@ def _push_overlay(view_name):
 
 
 def _set_draw_color(color):
+    """Arm this tool's colour THROUGH the per-tool cache: setting it
+    directly repainted whatever tool came next (pyfile/tool_colors.py)."""
     try:
-        _animean().ui.set_draw_color(color)
+        import tool_colors
+        tool_colors.apply(color)
     except Exception:
-        pass
+        try:
+            _animean().ui.set_draw_color(color)
+        except Exception:
+            pass
 
 
 def _view_frame(view_name):
@@ -3380,6 +3391,110 @@ def _push_nearest_handle():
 
 
 _NEAREST_DRAG = {"frame": None, "moved": False, "offset": (0.0, 0.0)}
+
+
+# Guide/additional-line drags: where the line SITS is a placement, and a
+# placement is a drag. The overlay item carries "draggable", C++ reports the
+# press/move/release through the handle events, and the geometry is rewritten
+# here - the same route the nearest-end anchor already took.
+_GUIDE_DRAG = {}
+
+
+def _guide_drag_event(message):
+    overlay_id = str(message.get("handle") or "")
+    is_guide = overlay_id in GUIDE_PROPERTIES
+    is_additional = overlay_id.startswith(ADDITIONAL_PROPERTY + ":")
+    if not is_guide and not is_additional:
+        return
+    view = message.get("view") or "main"
+    phase = message.get("phase")
+    position = message.get("position") or {}
+    point = (float(position.get("x", 0.0)), float(position.get("y", 0.0)))
+    assets = _assets_for(view)
+
+    if phase == "press":
+        if is_guide:
+            item = assets.get(overlay_id)
+            points = list(item.get("points") or []) if item else []
+        else:
+            index, line = _additional_line_by_overlay_id(view, overlay_id)
+            points = list(line.get("points") or []) if line else []
+        if len(points) < 2:
+            return
+        _GUIDE_DRAG[view] = {"id": overlay_id, "origin": point,
+                             "points": [(float(x), float(y)) for x, y in points],
+                             "moved": False}
+        return
+
+    if phase not in ("move", "release"):
+        return
+    drag = _GUIDE_DRAG.get(view)
+    if drag is None or drag["id"] != overlay_id:
+        return
+    delta = (point[0] - drag["origin"][0], point[1] - drag["origin"][1])
+    if abs(delta[0]) > 1e-9 or abs(delta[1]) > 1e-9:
+        drag["moved"] = True
+    moved = [(x + delta[0], y + delta[1]) for x, y in drag["points"]]
+
+    if is_guide:
+        item = assets.get(overlay_id)
+        if item is None:
+            return
+        item["points"] = moved
+        # The stored Bezier commands describe the OLD position; dropping them
+        # keeps the guide honest as a polyline rather than drawing it in two
+        # places at once. A redraw restores the curve.
+        item.pop("commands", None)
+    else:
+        _index, line = _additional_line_by_overlay_id(view, overlay_id)
+        if line is None:
+            return
+        line["points"] = moved
+        # Its Third coordinates describe where it WAS.
+        line.pop("third", None)
+
+    if phase == "move":
+        _push_overlay(view)
+        _invalidate_grid_cache()
+        try:
+            _animean().ui.refresh()
+        except Exception:
+            pass
+        return
+
+    # release
+    _GUIDE_DRAG.pop(view, None)
+    if not drag["moved"]:
+        _push_overlay(view)
+        return
+    if is_guide:
+        # Third space IS the child arc plane, so a moved axis retires every
+        # additional line's stored coordinates on this board.
+        _invalidate_additional_thirds(view)
+    _save_assets(view)
+    _invalidate_grid_cache()
+    _push_overlay(view)
+    try:
+        animean = _animean()
+        animean.ui.refresh()
+        animean.ui.history_commit("Move Guide" if is_guide
+                                  else "Move Additional Line", view)
+    except Exception:
+        pass
+    print(f"[auto_mapping] {overlay_id} moved by "
+          f"({delta[0]:.1f}, {delta[1]:.1f})")
+
+
+def _additional_line_by_overlay_id(view, overlay_id):
+    try:
+        pair_id = int(overlay_id.split(":", 1)[1])
+    except (IndexError, ValueError):
+        return -1, None
+    lines = (_assets_for(view).get(ADDITIONAL_PROPERTY) or {}).get("lines") or []
+    for index, line in enumerate(lines):
+        if _line_id(line, index) == pair_id:
+            return index, line
+    return -1, None
 
 
 def _nearest_handle_event(message):
@@ -7305,7 +7420,11 @@ def _triangulate_quality(outer, holes, max_area, constraints=None):
     if hole_points:
         payload["holes"] = np.array(hole_points, dtype=float)
     try:
-        result = tri.triangulate(payload, f"pq20a{max_area:.4f}")
+        # q30: a 20-degree minimum angle still admits 1:3 slivers, and
+        # their interpolated normals rendered zigzag shading along every
+        # edge (user report). 30 degrees keeps triangles near-uniform
+        # and is still within Ruppert-termination territory.
+        result = tri.triangulate(payload, f"pq30a{max_area:.4f}")
         vertices = [tuple(p) for p in result["vertices"]]
         triangles = [tuple(int(i) for i in t) for t in result["triangles"]]
     except Exception as error:
@@ -8106,15 +8225,21 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
     colors = []
     faces = []
     vertex_uv = []
-    max_edge = 1.5 * max(du, dv)
+    # ONE target edge length everywhere. Boundary rings, crease
+    # constraints, stroke draping and the interior area bound all share
+    # it: a dense boundary against a coarse interior produced a ring of
+    # sliver fans along every edge and crease, and their interpolated
+    # normals shaded as zigzags (user report).
+    mesh_len = min(du, dv)
+    max_edge = 1.4 * mesh_len
     layer_lift = 0.05
 
     # Fold creases as INTERIOR mesh constraints: without them triangles
     # straddle the crease and its z kink renders as a sawtooth of
     # corners (user report). child_cutters_raw carries every crease -
     # frame folds and warp loci alike - in child space; pull to Third
-    # and resample to the boundary step.
-    crease_step = 0.5 * min(du, dv)
+    # and resample to the shared step.
+    crease_step = mesh_len
     crease_chains = []
     if getattr(map_point, "depth_curves", None):
         try:
@@ -8181,23 +8306,34 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
             # boundary point-for-point instead of cutting chords across
             # it. Fallback: earcut on RDP-simplified rings plus bisection
             # (degraded: chords and hairline seams possible).
-            step = 0.5 * min(du, dv)
-
             def dense_ring(points):
-                closed = list(points) + [points[0]]
-                cum = _cumulative_lengths(closed)
-                if cum[-1] <= step:
-                    return list(points)
-                count = max(len(points), int(cum[-1] / step) + 1)
-                return [_point_at_arc(closed, cum, cum[-1] * k / count)
-                        for k in range(count)]
+                # Corner-preserving: RDP drops only collinear clutter
+                # (0.15 px), then long SEGMENTS get interior points at
+                # the shared step. Uniform arc resampling replaced the
+                # ring's corners with chords, and strokes drawn along
+                # the true outline fell OUTSIDE the mesh (2 px gaps).
+                slim = _rdp_ring(points, 0.15)
+                out = []
+                closed = slim + [slim[0]]
+                for a, b in zip(closed, closed[1:]):
+                    out.append(a)
+                    seg = math.hypot(b[0] - a[0], b[1] - a[1])
+                    pieces = int(seg / mesh_len)
+                    for k in range(1, pieces):
+                        t = k * mesh_len / seg
+                        out.append((a[0] + (b[0] - a[0]) * t,
+                                    a[1] + (b[1] - a[1]) * t))
+                return out
 
             constraints = []
             for chain in crease_chains:
                 constraints.extend(clip_chain(chain, ring, holes))
+            # Equilateral area at the shared edge length, so interior
+            # triangles come out the same size as the boundary segments
+            # instead of 3-6x coarser (the sliver-fan source).
             quality = _triangulate_quality(dense_ring(ring),
                                            [dense_ring(h) for h in holes],
-                                           0.5 * max_edge * max_edge,
+                                           0.433 * mesh_len * mesh_len,
                                            constraints=constraints)
             if quality is not None:
                 flat_verts, tris = quality
@@ -8215,25 +8351,66 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
             faces.extend((base + a, base + b, base + c)
                          for a, b, c in tris)
 
+    # Drape strokes ON THE MESH ITSELF: a stroke point's z comes from
+    # barycentric interpolation over the triangle that contains it, so a
+    # line running along a fill edge lies exactly in the fill's surface
+    # (sampling the node-grid field instead left a z-chord gap wherever
+    # the boundary edge spanned curvature). Falls back to the grid field
+    # off the mesh.
+    tri_hash = {}
+    hash_cell = max(mesh_len, 1e-6)
+    for f_index, (a, b, c) in enumerate(faces):
+        us = [vertex_uv[a][0], vertex_uv[b][0], vertex_uv[c][0]]
+        vs = [vertex_uv[a][1], vertex_uv[b][1], vertex_uv[c][1]]
+        for gx in range(int(min(us) / hash_cell) - 1,
+                        int(max(us) / hash_cell) + 2):
+            for gy in range(int(min(vs) / hash_cell) - 1,
+                            int(max(vs) / hash_cell) + 2):
+                tri_hash.setdefault((gx, gy), []).append(f_index)
+
+    def z_on_mesh(u, v):
+        for f_index in tri_hash.get((int(u / hash_cell),
+                                     int(v / hash_cell)), ()):
+            a, b, c = faces[f_index]
+            ax, ay = vertex_uv[a]
+            bx, by = vertex_uv[b]
+            cx, cy = vertex_uv[c]
+            det = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
+            if abs(det) < 1e-12:
+                continue
+            w0 = ((by - cy) * (u - cx) + (cx - bx) * (v - cy)) / det
+            w1 = ((cy - ay) * (u - cx) + (ax - cx) * (v - cy)) / det
+            w2 = 1.0 - w0 - w1
+            # Loose tolerance: boundary-riding stroke points sit exactly
+            # on mesh edges and must still claim the adjacent face.
+            if w0 < -1e-3 or w1 < -1e-3 or w2 < -1e-3:
+                continue
+            return (w0 * vertices[a][2] + w1 * vertices[b][2]
+                    + w2 * vertices[c][2])
+        return None
+
     strokes3d = []
     stroke_colors = []
     for poly, style_color in stroke_info:
         dense = poly
         cum = _cumulative_lengths(poly)
         if cum[-1] > 0:
-            # Same arc step as the fill boundaries (dense_ring), so an
-            # outline stroke and the fill edge it runs along stay
-            # point-for-point aligned; bounded, because a tiny solid
-            # once made du/dv microscopic and a long stroke exploded.
+            # Fine draping step - decoupled from the mesh edge length,
+            # since z now comes off the mesh surface itself; bounded,
+            # because a tiny solid once made du/dv microscopic and a
+            # long stroke exploded.
             count = max(len(poly),
-                        min(int(cum[-1] / (0.5 * min(du, dv))) + 2,
+                        min(int(cum[-1] / (0.5 * mesh_len)) + 2,
                             4 * len(poly) + 2048))
             dense = [_point_at_arc(poly, cum, cum[-1] * k / (count - 1))
                      for k in range(count)]
         pts = []
         for (u, v) in dense:
             q = image_of_third(u, v)
-            pts.append((q[0], q[1], z_at(u, v)))
+            zz = z_on_mesh(u, v)
+            if zz is None:
+                zz = z_at(u, v)
+            pts.append((q[0], q[1], zz))
         if len(pts) >= 2:
             strokes3d.append(pts)
             stroke_colors.append([style_color[0], style_color[1],
@@ -8545,3 +8722,6 @@ python_hooks.set_hook(_layer_menu_action, layermenu=True)
 # The nearest-end anchor (red handle) reacts from startup: its drag events
 # arrive whenever the main guides exist, not only while a tool is armed.
 python_hooks.set_hook(_nearest_handle_event, handle=True)
+# Guides and additional lines are draggable overlays; their drag is reported
+# through the same handle events.
+python_hooks.set_hook(_guide_drag_event, handle=True)
