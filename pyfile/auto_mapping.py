@@ -1147,11 +1147,14 @@ class _AdditionalWarp:
     so they run along the normal of the line's START-TO-END CHORD. The warp
     therefore works entirely in the chord frame (o, u, n):
 
-      - the drawn pair's difference is reduced to a NORMAL profile
-        delta(s) = (M(s) - C(s)) . n over the chord parameter s
-        (deformation only along the chord normal, per the theorem);
+      - the drawn pair's difference is the FULL VECTOR profile
+        delta(s) = M(s) - C(s) over the chord parameter s, station-matched
+        by arc fraction. The geodesic theorem survives in the DECAY
+        direction (the chord normal n), not as a projection filter: a
+        normal-only profile provably cannot trace a C, whose arms
+        displace ALONG the chord;
       - the profile is TRANSLATION-SWEPT along n - every Third point at
-        chord parameter s displaces by w(|r - r_c(s)|/R) * delta(s) * n.
+        chord parameter s displaces by w(|r - r_c(s)|/R) * delta(s).
         The weight is centred on the DRAWN LINE (r_c(s) = the child line's
         own normal offset at s), not on the chord, so a bowed or hooked
         line receives its full correction on itself. No spine/ridge
@@ -1169,9 +1172,9 @@ class _AdditionalWarp:
     creases and stacking. The fold machinery stays consistent through
     det_sign() (multiplied into _orientation) and fold_loci() (the warp's
     own analytic crease curves, injected beside the frame loci with their
-    exact child geometry). Only the along-chord SHEAR is sanity-capped;
-    chord-reversing shapes are handled by SEGMENTATION in _prepare rather
-    than smoothed away. unapply() is exact outside folded bands (the
+    exact child geometry). Chord-reversing shapes are handled by
+    SEGMENTATION in _prepare rather than smoothed away, and nothing is
+    capped. unapply() is exact outside folded bands (the
     fixed-point rate is |dF/dr| < 1 there) and best-effort inside, where
     the inverse is genuinely multivalued - the consumers that must be
     exact there (cutters, crease probes) carry direct child geometry
