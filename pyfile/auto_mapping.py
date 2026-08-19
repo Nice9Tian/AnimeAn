@@ -1163,36 +1163,40 @@ class _AdditionalWarp:
         zero over R, so a line's influence ends smoothly in every
         direction.
 
-    Multiple lines sum. Each pair's displacement gradient is bounded with
-    the falloff's own weight-derivative peak charged (2x for quadratic),
-    per pair first (PAIR_MARGIN - an over-drawn line clamps itself) and
-    then globally (TOTAL_MARGIN), so the warp stays a contraction: it is
-    invertible by fixed point and creates no folds of its own - det of its
-    Jacobian stays positive, which the fold machinery's sign tests rely
-    on. Profiles are [1,2,1]-smoothed against chord-projection artifacts
-    before any of that is measured.
+    Multiple lines sum. The warp is ALLOWED to fold: a delta beyond the
+    fold threshold (R/gain) is the drawn line asking the surface to double
+    back, and that is how the tool produces occlusion - back faces,
+    creases and stacking. The fold machinery stays consistent through
+    det_sign() (multiplied into _orientation) and fold_loci() (the warp's
+    own analytic crease curves, injected beside the frame loci with their
+    exact child geometry). Only the along-chord SHEAR is sanity-capped;
+    chord-reversing shapes are handled by SEGMENTATION in _prepare rather
+    than smoothed away. unapply() is exact outside folded bands (the
+    fixed-point rate is |dF/dr| < 1 there) and best-effort inside, where
+    the inverse is genuinely multivalued - the consumers that must be
+    exact there (cutters, crease probes) carry direct child geometry
+    instead.
     """
 
     SAMPLES = 65
-    # Per-pair fold-safety margin and the global contraction budget. The
-    # fold bound must charge the falloff's own weight-derivative peak: for
-    # w = 1-x it is 1, for w = (1-x)^2 it is 2 AT x=0 - exactly on the line,
-    # where the profile peaks. The first version charged peak/R regardless
-    # and the quadratic falloff folded the warp at 25% of the declared
-    # envelope (det J measured -0.68 at the cap) - wrong face, wrong
-    # inverse, cutters 23 px off.
-    PAIR_MARGIN = 0.70
-    TOTAL_MARGIN = 0.85
+    # NOTHING here clamps the drawn intent any more. The normal derivative
+    # is free: |delta| beyond the fold threshold means the drawn line asks
+    # the surface to double back, and that FOLD is the point - it produces
+    # the occlusion relations, creases and stacking the tool exists for
+    # (the earlier fold-free contraction budget smoothed exactly that away,
+    # user report). The along-chord shear is free too: segmentation makes
+    # every segment chord-monotone, so steep profiles are drawn geometry,
+    # not projection junk (an earlier shear cap took 30% off a C's cap).
 
     def __init__(self, pairs, falloff="linear", radius_factor=0.5):
         self.falloff = falloff if falloff in ADDITIONAL_FALLOFFS else "linear"
         self.gain = 2.0 if self.falloff == "quadratic" else 1.0
         self.pairs = []
-        for child_third, main_third in pairs:
-            prepared = self._prepare(child_third, main_third, radius_factor)
-            if prepared is not None:
+        self._loci = None  # fold_loci memo; pairs are immutable after init
+        for group, (child_third, main_third) in enumerate(pairs):
+            for prepared in self._prepare(child_third, main_third, radius_factor):
+                prepared["group"] = group
                 self.pairs.append(prepared)
-        self._regularize()
 
     @staticmethod
     def _resample(points, count):
@@ -1231,118 +1235,293 @@ class _AdditionalWarp:
                       + [values[-1]])
         return values
 
-    def _prepare(self, child_third, main_third, radius_factor):
+    def _prepare(self, child_third, main_third, radius_factor, depth=0):
+        """One drawn pair -> a LIST of chord-monotone sweep segments.
+
+        The translation sweep needs the chord parameter to advance
+        monotonically along both sides. A C- or hook-shaped line reverses
+        it: its branches interleave under the chord projection, the merge
+        averages them, and the drawn shape came out SMOOTHED away (user
+        report, arc/chord 1.95). Where either side's chord parameter
+        reverses, the pair is SPLIT at the turning stations and each run
+        becomes its own sweep with its own chord frame - a C is three
+        sweeps, faithful to what was drawn, still spine-free.
+        """
         if len(child_third) < 2 or len(main_third) < 2:
-            return None
+            return []
         child_line = self._resample([tuple(p) for p in child_third], self.SAMPLES)
         main_line = self._resample([tuple(p) for p in main_third], self.SAMPLES)
         if child_line is None or main_line is None:
-            return None
+            return []
         # Station k pairs with station k, so the two sides must run the same
         # way; a reversed partner (a right-to-left redraw of the same shape)
-        # otherwise pairs fore against aft and fabricates a shear delta from
-        # identical geometry (measured 13.5 px). Chord dot decides.
-        m_chord = (main_line[-1][0] - main_line[0][0],
-                   main_line[-1][1] - main_line[0][1])
-        c_chord = (child_line[-1][0] - child_line[0][0],
-                   child_line[-1][1] - child_line[0][1])
-        if m_chord[0] * c_chord[0] + m_chord[1] * c_chord[1] < 0.0:
-            main_line = list(reversed(main_line))
+        # otherwise pairs fore against aft and fabricates a delta from
+        # identical geometry (measured 13.5 px). Chord dot decides - whole
+        # lines only: segments inherit the parent's correspondence and must
+        # never be re-flipped.
+        if depth == 0:
+            m_chord = (main_line[-1][0] - main_line[0][0],
+                       main_line[-1][1] - main_line[0][1])
+            c_chord = (child_line[-1][0] - child_line[0][0],
+                       child_line[-1][1] - child_line[0][1])
+            if m_chord[0] * c_chord[0] + m_chord[1] * c_chord[1] < 0.0:
+                main_line = list(reversed(main_line))
         arc_total = _cumulative_lengths([tuple(p) for p in child_third])[-1]
         origin = child_line[0]
         chord = (child_line[-1][0] - origin[0], child_line[-1][1] - origin[1])
         length = math.hypot(chord[0], chord[1])
         if length <= 1e-6:
-            return None  # a closed scribble has no chord frame
+            return []  # a closed scribble has no chord frame
         u = (chord[0] / length, chord[1] / length)
         n = (-u[1], u[0])
-        # Per chord station s: the child line's OWN normal offset r_c(s) and
-        # the pair's normal-only difference delta(s). The sweep is centred
-        # on the DRAWN line (weight measured from r_c), not on the chord: a
-        # bowed line's own points must receive the full delta - measured on
-        # the chord-centred version, a sagitta-50 bow received half its
-        # correction and a U-shaped line none at all.
+
+        # The profile is a function of the CHILD side's chord parameter, so
+        # only the child side must be chord-monotone; a C-shaped child line
+        # splits at its trend reversals into sub-sweeps. (The main side may
+        # curve freely - its shape rides in the vector profile.)
+        def reversal(points):
+            # First station where the chord parameter's TREND flips. Zero
+            # steps (the flat samples at an extremum) are skipped, not
+            # treated as breaks - an adjacency test missed every extremum
+            # that sampled onto a plateau.
+            s_values = [(p[0] - origin[0]) * u[0] + (p[1] - origin[1]) * u[1]
+                        for p in points]
+            trend = 0
+            for k in range(len(s_values) - 1):
+                step = s_values[k + 1] - s_values[k]
+                if abs(step) <= 1e-6:
+                    continue
+                sign = 1 if step > 0.0 else -1
+                if trend == 0:
+                    trend = sign
+                elif sign != trend:
+                    return k
+            return None
+
+        # The depth cap gates the SPLITTING, not the whole call: a capped
+        # sub-line falls through to the table build below and is emitted as
+        # one un-split best-effort sweep. Capping at the entry returned []
+        # for BOTH depth-5 halves, silently zeroing the whole remainder of
+        # any line with enough chord reversals (measured 55/120 stations
+        # dead on a 340-degree hook, the drawn tail doing nothing at all).
+        split = reversal(child_line) if depth <= 4 else None
+        if split is not None and 2 <= split <= len(child_line) - 3:
+            return (self._prepare(child_line[:split + 1], main_line[:split + 1],
+                                  radius_factor, depth + 1)
+                    + self._prepare(child_line[split:], main_line[split:],
+                                    radius_factor, depth + 1))
+        # Per chord station s: the child line's OWN normal offset r_c(s) -
+        # the sweep is centred on the DRAWN line, not on the chord - and
+        # the pair's FULL VECTOR difference delta(s) = M(s) - C(s). The
+        # first version projected delta onto n (deformation strictly along
+        # the chord normal), which can only produce graphs over the chord:
+        # a C-shaped ask, whose arms displace ALONG the chord, came out
+        # smoothed to nothing (user report). The geodesic story survives
+        # in the DECAY direction, which stays the chord normal.
         table = []
         for c, m in zip(child_line, main_line):
             s = (c[0] - origin[0]) * u[0] + (c[1] - origin[1]) * u[1]
             r_c = (c[0] - origin[0]) * n[0] + (c[1] - origin[1]) * n[1]
-            delta = (m[0] - c[0]) * n[0] + (m[1] - c[1]) * n[1]
-            table.append((s, delta, r_c))
+            table.append((s, m[0] - c[0], m[1] - c[1], r_c))
         table.sort(key=lambda entry: entry[0])
-        # Collapse near-coincident chord parameters (an S-shaped line
-        # projects two points onto one s; averaging keeps the profile a
-        # function, which the translation sweep requires).
+        # Collapse near-coincident chord parameters (sampling jitter at an
+        # extremum; averaging keeps the profile a function of s).
         merged = []
         span = max(table[-1][0] - table[0][0], 1e-6)
         epsilon = span / (4.0 * self.SAMPLES)
-        for s, delta, r_c in table:
+        for s, dx, dy, r_c in table:
             if merged and s - merged[-1][0] < epsilon:
-                prev_s, prev_d, prev_r, count = merged[-1]
+                prev_s, px, py, pr, count = merged[-1]
                 merged[-1] = (prev_s,
-                              (prev_d * count + delta) / (count + 1),
-                              (prev_r * count + r_c) / (count + 1),
+                              (px * count + dx) / (count + 1),
+                              (py * count + dy) / (count + 1),
+                              (pr * count + r_c) / (count + 1),
                               count + 1)
             else:
-                merged.append((s, delta, r_c, 1))
+                merged.append((s, dx, dy, r_c, 1))
         if len(merged) < 2:
-            return None
+            return []
         keys = [entry[0] for entry in merged]
-        deltas = self._smooth([entry[1] for entry in merged], keys, 1.0)
-        offsets = self._smooth([entry[2] for entry in merged], keys, 2.0)
+        # Light anti-spike smoothing only: segmentation removed the branch
+        # interleave that used to need heavy passes, and heavy smoothing
+        # was exactly what flattened the drawn shape out of the mapping.
+        delta_x = self._smooth([entry[1] for entry in merged], keys, 4.0)
+        delta_y = self._smooth([entry[2] for entry in merged], keys, 4.0)
+        offsets = self._smooth([entry[3] for entry in merged], keys, 4.0)
         # Reach follows the line's own ARC length, not its chord: a hooked
         # line has a tiny chord but a long presence on the surface.
         radius = max(radius_factor * max(length, arc_total), 1e-6)
-        return {"origin": origin, "u": u, "n": n, "radius": radius,
-                "keys": keys, "deltas": deltas, "offsets": offsets}
+        # The sweep centre's actual worst slope (smoothing is best-effort,
+        # so 4.0 is a target, not a bound) - _in_support pads with it.
+        offset_slope = max((abs(b - a) / max(k1 - k0, 1e-6)
+                            for a, b, k0, k1 in zip(offsets, offsets[1:],
+                                                    keys, keys[1:])),
+                           default=0.0)
+        return [{"origin": origin, "u": u, "n": n, "radius": radius,
+                 "keys": keys, "delta_x": delta_x, "delta_y": delta_y,
+                 "offsets": offsets, "offset_slope": offset_slope}]
 
-    def _pair_gradient(self, pair):
-        """Upper bound on this pair's displacement operator norm.
+    def jacobian(self, third, step=0.25):
+        """2x2 Jacobian of apply() by central differences."""
+        xp = self.displacement((third[0] + step, third[1]))
+        xm = self.displacement((third[0] - step, third[1]))
+        yp = self.displacement((third[0], third[1] + step))
+        ym = self.displacement((third[0], third[1] - step))
+        return (1.0 + (xp[0] - xm[0]) / (2.0 * step),
+                (yp[0] - ym[0]) / (2.0 * step),
+                (xp[1] - xm[1]) / (2.0 * step),
+                1.0 + (yp[1] - ym[1]) / (2.0 * step))
 
-        The displacement is F(s, r) * n with one fixed direction n, so the
-        Jacobian is rank one and its norm is exactly sqrt(F_s^2 + F_r^2).
-        F_r is bounded by gain*peak/R (gain = |w'|max of the falloff).
-        F_s collects three sources, each at full value - clamping any of
-        them was measured to admit folds at exactly the budget: the
-        interior profile slope, the END TAPER's own slope (up to peak/R,
-        omitted in the first version - two straight pairs meeting at 135
-        degrees then folded the map at a charged total of exactly 0.85),
-        and the sweep centre's drift through the weight derivative
-        (min(drift, 2) used to under-charge hairpins 10x).
-        """
-        radius = pair["radius"]
-        peak = max(abs(d) for d in pair["deltas"])
-        slope = max((abs(b - a) / max(k1 - k0, 1e-6)
-                     for a, b, k0, k1 in zip(pair["deltas"], pair["deltas"][1:],
-                                             pair["keys"], pair["keys"][1:])),
-                    default=0.0)
-        drift = max((abs(b - a) / max(k1 - k0, 1e-6)
-                     for a, b, k0, k1 in zip(pair["offsets"], pair["offsets"][1:],
-                                             pair["keys"], pair["keys"][1:])),
-                    default=0.0)
-        f_r = self.gain * peak / radius
-        f_s = (max(slope, peak / radius)
-               + self.gain * peak / radius * drift)
-        return math.hypot(f_r, f_s)
-
-    def _scale_pair(self, pair, factor):
-        pair["deltas"] = [d * factor for d in pair["deltas"]]
-
-    def _regularize(self):
-        # Per pair first: one over-drawn line must clamp ITSELF, not bleed
-        # its excess into every other line's budget.
+    def _in_support(self, third, pad):
+        """Can any pair move any point within `pad` of `third`? Exact when
+        False: the s test is padded by the taper reach plus pad, and the r
+        test by pad times (1 + the pair's ACTUAL worst sweep-centre slope,
+        stored at build - smoothing only targets 4.0), so displacement is
+        identically (0, 0) over the whole difference stencil."""
         for pair in self.pairs:
-            gradient = self._pair_gradient(pair)
-            if gradient > self.PAIR_MARGIN:
-                self._scale_pair(pair, self.PAIR_MARGIN / gradient)
-        total = sum(self._pair_gradient(pair) for pair in self.pairs)
-        if total > self.TOTAL_MARGIN:
-            factor = self.TOTAL_MARGIN / total
-            for pair in self.pairs:
-                self._scale_pair(pair, factor)
-            print("[auto_mapping] additional lines exceed the safe deformation "
-                  f"budget; scaled to x{factor:.2f} to keep the warp fold-free.")
+            rel = (third[0] - pair["origin"][0], third[1] - pair["origin"][1])
+            s = rel[0] * pair["u"][0] + rel[1] * pair["u"][1]
+            radius = pair["radius"]
+            if not (pair["keys"][0] - radius - pad
+                    <= s <= pair["keys"][-1] + radius + pad):
+                continue
+            _dx, _dy, r_c, _taper = self._sample(pair, s)
+            r = rel[0] * pair["n"][0] + rel[1] * pair["n"][1]
+            slack = pad * (1.5 + pair.get("offset_slope", 0.0))
+            if abs(r - r_c) < radius + slack:
+                return True
+        return False
 
-    def _sample(self, pair, s, values):
+    def det_sign(self, third):
+        """Sign of det D(apply) - the warp's own fold parity at a point.
+
+        Outside every pair's influence band the map is the identity over
+        the whole difference stencil, so the answer is 1 without touching
+        the Jacobian - ~96% of overlay and orientation probes on a real
+        document end there (measured; the unconditional version was a 5x
+        per-point regression)."""
+        if not self._in_support(third, 0.25):
+            return 1
+        a, b, c, d = self.jacobian(third)
+        return 1 if a * d - b * c >= 0.0 else -1
+
+    def fold_loci(self, samples=48):
+        """The warp's OWN fold loci as Third-space curves, traced
+        numerically: per pair band, det D(apply) sign changes are bisected
+        along the chord-normal direction and chained column-to-column by
+        nearest band coordinate. Numeric on purpose - the vector profile
+        and the group blending have no usable closed form, and tracing the
+        SAME det_sign field the pointwise orientation uses means loci and
+        cuts cannot disagree. Cost: ~4k det probes per pair (grid plus
+        bisections) and the det field sums every pair, so a segmented line
+        pays quadratically - hundreds of ms; memoized, so a mapping run
+        pays it once.
+
+        The bands of one line's segments (and of separate lines) overlap
+        while the det field is GLOBAL, so the same locus gets traced once
+        per band it lies in; the duplicates would double depth counts and
+        double-draw creases downstream. Dedupe in THIRD space - the
+        domain - because a folded sheet legitimately superimposes distinct
+        loci in the image (same rationale as _uncovered_runs' arc-space
+        coverage)."""
+        if self._loci is not None:
+            # Copies: _with_warp_loci registers curves by id() in
+            # map_point.warp_curve_child, so each call must hand out
+            # distinct list objects.
+            return [list(curve) for curve in self._loci]
+        traced = []
+        for pair in self.pairs:
+            origin, u, n = pair["origin"], pair["u"], pair["n"]
+            radius = pair["radius"]
+            span_lo = pair["keys"][0] - radius
+            span_hi = pair["keys"][-1] + radius
+
+            def third_at(s, r):
+                return (origin[0] + u[0] * s + n[0] * r,
+                        origin[1] + u[1] * s + n[1] * r)
+
+            # Chaining by nearest r under a slope gate. The old rule -
+            # append by array rank whenever the crossing COUNT matched -
+            # welded unrelated loci with long straight jumps through
+            # sign-constant territory whenever one locus left the band as
+            # another entered (measured a 240 px phantom "locus" wholly in
+            # det>0 ground), and shredded real loci into 2-point stubs on
+            # every count change (a third of the columns).
+            tol = max(4.0 * (span_hi - span_lo) / samples, 0.05 * radius)
+            open_curves = []  # [points, last_r]
+            for k in range(samples + 1):
+                s = span_lo + (span_hi - span_lo) * k / samples
+                _dx, _dy, r_c, _taper = self._sample(pair, s)
+                crossings = []
+                r_lo, r_hi = r_c - 1.25 * radius, r_c + 1.25 * radius
+                steps = 40
+                prev_sign = None
+                prev_r = None
+                for j in range(steps + 1):
+                    r = r_lo + (r_hi - r_lo) * j / steps
+                    sign = self.det_sign(third_at(s, r))
+                    if prev_sign is not None and sign != prev_sign:
+                        a, b = prev_r, r
+                        for _ in range(18):
+                            mid = (a + b) * 0.5
+                            if self.det_sign(third_at(s, mid)) == prev_sign:
+                                a = mid
+                            else:
+                                b = mid
+                        crossings.append((a + b) * 0.5)
+                    prev_sign = sign
+                    prev_r = r
+                taken = [False] * len(open_curves)
+                matches = []
+                for ci, crossing in enumerate(crossings):
+                    best = None
+                    for oi, (_points, last_r) in enumerate(open_curves):
+                        gap = abs(crossing - last_r)
+                        if gap <= tol and (best is None or gap < best[0]):
+                            if not taken[oi]:
+                                best = (gap, oi)
+                    matches.append(best[1] if best else None)
+                    if best:
+                        taken[best[1]] = True
+                survivors = []
+                for oi, (points, last_r) in enumerate(open_curves):
+                    if not taken[oi]:
+                        if len(points) >= 2:
+                            traced.append(points)
+                for ci, crossing in enumerate(crossings):
+                    oi = matches[ci]
+                    if oi is None:
+                        survivors.append([[third_at(s, crossing)], crossing])
+                    else:
+                        open_curves[oi][0].append(third_at(s, crossing))
+                        open_curves[oi][1] = crossing
+                        survivors.append(open_curves[oi])
+                open_curves = survivors
+            for points, _last_r in open_curves:
+                if len(points) >= 2:
+                    traced.append(points)
+        grid = _ArcGrid(4.0 * POLY_STEP)
+        curves = []
+        for curve in sorted(traced, key=len, reverse=True):
+            for run in _uncovered_runs(curve, grid, POLY_STEP):
+                if len(run) >= 2:
+                    curves.append(run)
+                    grid.add_curve(run)
+        self._loci = curves
+        return [list(curve) for curve in curves]
+
+    def _sample(self, pair, s):
+        """(delta_x, delta_y, r_c, taper) at chord parameter s.
+
+        The end taper is returned SEPARATELY, not multiplied into the
+        deltas: displacement() folds it into the WEIGHT so that a
+        tapered-out segment leaves the group's partition-of-unity
+        denominator at the same rate its contribution vanishes. Tapering
+        the delta alone let the weight drop out of the denominator
+        discontinuously at the taper edge - a C0 tear of up to half the
+        applied delta along a whole curve (measured 35 px on a C drawn on
+        the child board), which det_sign then reported as phantom folds.
+        """
         table_keys = pair["keys"]
         lo, hi = table_keys[0], table_keys[-1]
         taper = 1.0
@@ -1352,16 +1531,18 @@ class _AdditionalWarp:
         elif s > hi:
             taper = max(0.0, 1.0 - (s - hi) / pair["radius"])
             s = hi
-        if taper <= 0.0:
-            return 0.0, 0.0
         index = bisect.bisect_right(table_keys, s) - 1
         index = max(0, min(index, len(table_keys) - 2))
         s0, s1 = table_keys[index], table_keys[index + 1]
         t = 0.0 if s1 - s0 <= 1e-9 else (s - s0) / (s1 - s0)
-        d = values[index] + (values[index + 1] - values[index]) * t
-        offs = pair["offsets"]
-        r_c = offs[index] + (offs[index + 1] - offs[index]) * t
-        return d * taper, r_c
+
+        def lerp(values):
+            return values[index] + (values[index + 1] - values[index]) * t
+
+        return (lerp(pair["delta_x"]),
+                lerp(pair["delta_y"]),
+                lerp(pair["offsets"]),
+                taper)
 
     def _weight(self, x):
         if x >= 1.0:
@@ -1369,19 +1550,33 @@ class _AdditionalWarp:
         return (1.0 - x) ** 2 if self.falloff == "quadratic" else 1.0 - x
 
     def displacement(self, third):
-        dx = dy = 0.0
+        """Sum over LINES; within one line's segments a partition-of-unity
+        blend: adjacent segments of the same drawn line overlap near their
+        junction, and a plain sum double-counted the shared delta there
+        (measured 54 px off the drawn C). Where the weights sum below 1
+        the plain sum stands, so a single-segment line is untouched."""
+        totals = {}
         for pair in self.pairs:
             rel = (third[0] - pair["origin"][0], third[1] - pair["origin"][1])
             s = rel[0] * pair["u"][0] + rel[1] * pair["u"][1]
-            delta, r_c = self._sample(pair, s, pair["deltas"])
-            if not delta:
-                continue
+            delta_x, delta_y, r_c, taper = self._sample(pair, s)
             r = rel[0] * pair["n"][0] + rel[1] * pair["n"][1]
-            weight = self._weight(abs(r - r_c) / pair["radius"])
+            # The taper scales the WEIGHT, not the delta: numerator and
+            # denominator must vanish together or the normalizer tears.
+            weight = self._weight(abs(r - r_c) / pair["radius"]) * taper
             if weight <= 0.0:
                 continue
-            dx += weight * delta * pair["n"][0]
-            dy += weight * delta * pair["n"][1]
+            entry = totals.setdefault(pair.get("group", 0), [0.0, 0.0, 0.0])
+            entry[0] += weight * delta_x
+            entry[1] += weight * delta_y
+            entry[2] += weight
+        dx = dy = 0.0
+        for vx, vy, weight_sum in totals.values():
+            if weight_sum > 1.0:
+                vx /= weight_sum
+                vy /= weight_sum
+            dx += vx
+            dy += vy
         return dx, dy
 
     def apply(self, third):
@@ -1389,16 +1584,39 @@ class _AdditionalWarp:
         return (third[0] + dx, third[1] + dy)
 
     def unapply(self, third):
-        """Fixed-point inverse; converges because the gradient cap keeps the
-        displacement a contraction (rate <= 0.85, so up to ~60 rounds near
-        the cap; cheap - one profile lookup per pair per round)."""
+        """Fixed-point inverse. Exact outside folded bands (the iteration's
+        asymptotic rate is the spectral radius |dF/dr| < 1 there, whatever
+        the shear); inside a folded band the inverse is genuinely
+        multivalued and this returns a best-effort iterate - the consumers
+        that need exactness there (warp-locus cutters and probes) carry
+        direct child geometry instead."""
         x = third
-        for _ in range(60):
+        for it in range(60):
             dx, dy = self.displacement(x)
-            step = (third[0] - dx, third[1] - dy)
-            if math.hypot(step[0] - x[0], step[1] - x[1]) < 1e-9:
-                return step
-            x = step
+            rx = x[0] + dx - third[0]
+            ry = x[1] + dy - third[1]
+            res = math.hypot(rx, ry)
+            if res < 1e-9:
+                return x
+            fp = (third[0] - dx, third[1] - dy)
+            if it < 8:
+                x = fp
+                continue
+            # Newton polish: fixed-point stalls where the local gradient
+            # nears 1 (the fold threshold); the true Jacobian does not.
+            # Guarded: the field is piecewise, so a raw Newton step can
+            # catapult - keep it only if it beats the fixed-point residual.
+            jxx, jxy, jyx, jyy = self.jacobian(x, step=0.1)
+            det = jxx * jyy - jxy * jyx
+            if abs(det) < 1e-6:
+                x = fp
+                continue
+            cand = (x[0] - (jyy * rx - jxy * ry) / det,
+                    x[1] - (jxx * ry - jyx * rx) / det)
+            cdx, cdy = self.displacement(cand)
+            cres = math.hypot(cand[0] + cdx - third[0],
+                              cand[1] + cdy - third[1])
+            x = cand if cres < res else fp
         return x
 
 
@@ -2371,10 +2589,13 @@ def _occlusion_overlay_items():
         denominator = tcx * ncy - tcy * ncx
         if abs(denominator) < 1e-12:
             return 1  # folded child frame: no usable orientation, same as _orientation
+        warp_sign = 1
         if warp is not None and arc_h is not None:
             # The additional-line warp moves the fold field's child-space
             # preimage; the cached main tangents are unwarped, so re-fetch
-            # them at the warped arcs - the same route _orientation takes.
+            # them at the warped arcs - the same route _orientation takes,
+            # including the warp's own fold parity.
+            warp_sign = warp.det_sign((arc_h, arc_v))
             w_h, w_v = warp.apply((arc_h, arc_v))
             scale_h = mapper.h_scales[1] if w_h >= 0.0 else mapper.h_scales[0]
             scale_v = mapper.v_scales[1] if w_v >= 0.0 else mapper.v_scales[0]
@@ -2382,7 +2603,7 @@ def _occlusion_overlay_items():
                                           main.h_window)
             nmx, nmy = main.gv.tangent_at(main.v_arc + w_v * scale_v,
                                           main.v_window)
-        value = scale_h * scale_v * (tmx * nmy - tmy * nmx) / denominator
+        value = warp_sign * scale_h * scale_v * (tmx * nmy - tmy * nmx) / denominator
         raw = 1 if value > 0.0 else -1
         return 1 if raw == reference else -1
 
@@ -3072,16 +3293,18 @@ def _orientation(map_point, point):
     if abs(denominator) < 1e-12:
         return 0  # folded child frame: no usable orientation here
     # The additional-line warp sits between the child arcs and the main
-    # evaluation; its Jacobian determinant is kept positive by the gradient
-    # cap (_AdditionalWarp._regularize), so the SIGN below only needs the
-    # main tangents evaluated at the warped arcs.
+    # evaluation. Its own fold parity multiplies in: a strong additional
+    # line legitimately folds the map (that is how it creates occlusion),
+    # and det D(warp) carries that flip.
     warp = getattr(map_point, "warp", None)
+    warp_sign = 1
     if warp is not None:
+        warp_sign = warp.det_sign((l_h, l_v))
         l_h, l_v = warp.apply((l_h, l_v))
     scale_h = map_point.h_scales[1] if l_h >= 0.0 else map_point.h_scales[0]
     scale_v = map_point.v_scales[1] if l_v >= 0.0 else map_point.v_scales[0]
     (tmx, tmy), (nmx, nmy) = main.directions(l_h * scale_h, l_v * scale_v)
-    value = scale_h * scale_v * (tmx * nmy - tmy * nmx) / denominator
+    value = warp_sign * scale_h * scale_v * (tmx * nmy - tmy * nmx) / denominator
     return 1 if value > 0.0 else -1
 
 
@@ -3770,6 +3993,36 @@ def _crease_curves(map_point, v_range, h_range=None, samples=48, max_columns=600
                 for run in _uncovered_runs(curve, grid, tolerance):
                     pieces.append(run)
                     grid.add_curve(run)
+    def _with_warp_loci(curves):
+        """Append the additional-line warp's own fold loci - exact analytic
+        curves the frame sweeps are structurally blind to (they test main
+        tangents only). Their child-space geometry is registered by object
+        identity so _child_cutters can bypass the fixed-point unwarp,
+        which is unreliable exactly where the warp folds; the same
+        identity set exempts them from _curve_is_fold, whose probes go
+        through that unwarp."""
+        warp = getattr(map_point, "warp", None)
+        if warp is None:
+            return curves
+        child_frame = map_point.child_frame
+        ids = dict(getattr(map_point, "warp_curve_child", {}) or {})
+        # Pin every registered curve object: the registry accumulates
+        # across calls, and an id() of a garbage-collected list could be
+        # recycled by a NEW curve, silently resolving to the wrong child
+        # geometry. A held reference makes that impossible.
+        keep = list(getattr(map_point, "warp_curve_keep", []) or [])
+        for third_curve in warp.fold_loci():
+            arc_curve = [map_point.scale_arcs(*warp.apply(t))
+                         for t in third_curve]
+            if len(arc_curve) < 2:
+                continue
+            ids[id(arc_curve)] = [child_frame.hv(*t) for t in third_curve]
+            keep.append(arc_curve)
+            curves.append(arc_curve)
+        map_point.warp_curve_child = ids
+        map_point.warp_curve_keep = keep
+        return curves
+
     if not stitch:
         # The fill splitter wants the SET of loci, not paths: every curve a
         # single locus (injected corner lines arrive whole), so its ring
@@ -3778,10 +4031,12 @@ def _crease_curves(map_point, v_range, h_range=None, samples=48, max_columns=600
         # drawing and anchoring only - see _stitch_crease. Phantom curves
         # the field never flips across (_curve_is_fold) are dropped here so
         # they neither cut fills nor shift depth counts.
-        return [curve for curve in pieces
-                if len(curve) >= 2 and _curve_is_fold(map_point, curve)]
+        return _with_warp_loci(
+            [curve for curve in pieces
+             if len(curve) >= 2 and _curve_is_fold(map_point, curve)])
     stitched = _stitch_crease(pieces, 4.0 * POLY_STEP, boundaries)
-    return [curve for curve in stitched if len(curve) >= 2]
+    return _with_warp_loci(
+        [curve for curve in stitched if len(curve) >= 2])
 
 
 def _split_at_cusps(points):
@@ -4008,10 +4263,17 @@ def _child_cutters(map_point):
     h_scales, v_scales = map_point.h_scales, map_point.v_scales
     reach = 2.0 * (child.gh.total + child.gv.total)
     bare = []
+    direct = getattr(map_point, "warp_curve_child", {}) or {}
     for curve in getattr(map_point, "depth_curves", None) or []:
-        # Through _child_of_arcs so the additional-line warp's inverse is
-        # applied: a cutter must lie where the WARPED map actually folds.
-        points = [_child_of_arcs(map_point, arc_pair) for arc_pair in curve]
+        if id(curve) in direct:
+            # A warp fold locus carries its exact child geometry: the
+            # fixed-point unwarp is unreliable precisely where the warp
+            # folds, so it is bypassed.
+            points = list(direct[id(curve)])
+        else:
+            # Through _child_of_arcs so the additional-line warp's inverse
+            # is applied: a cutter must lie where the WARPED map folds.
+            points = [_child_of_arcs(map_point, arc_pair) for arc_pair in curve]
         if len(points) >= 2:
             bare.append(points)
     raw = [_densify(list(points)) for points in bare]
@@ -4952,24 +5214,35 @@ def _emit_seals(animean, out, map_point, pattern, child_area, main_area, width_s
 
     def _window_runs(curve):
         run = []
-        for arc, other in curve:
+        run_indices = []
+        for index, (arc, other) in enumerate(curve):
             if in_h[0] <= arc <= in_h[1] and in_v[0] <= other <= in_v[1]:
                 run.append((arc, other))
+                run_indices.append(index)
             else:
                 if len(run) >= 2:
-                    yield run
+                    yield run, run_indices
                 run = []
+                run_indices = []
         if len(run) >= 2:
-            yield run
+            yield run, run_indices
 
-    for whole in _crease_curves(map_point, (v_low - pad, v_high + pad),
-                                (h_low - pad, h_high + pad),
-                                corner_spans=((h_low, h_high), (v_low, v_high))):
-      for curve in _window_runs(whole):
-        # A stitched chain can carry a phantom stretch (the field never
-        # flips across it - see _curve_is_fold); judged per window run so a
-        # real stretch chained to a phantom one still draws.
-        if not _curve_is_fold(map_point, curve):
+    whole_curves = _crease_curves(map_point, (v_low - pad, v_high + pad),
+                                  (h_low - pad, h_high + pad),
+                                  corner_spans=((h_low, h_high), (v_low, v_high)))
+    # Read AFTER the call: _with_warp_loci publishes by REBINDING
+    # map_point.warp_curve_child to a new dict, so a pre-call snapshot
+    # never holds the ids of the curves this call just built - the whole
+    # exact-geometry bypass below was dead code with the snapshot first.
+    warp_child = getattr(map_point, "warp_curve_child", {}) or {}
+    for whole in whole_curves:
+      # A warp fold locus carries its exact child geometry and is verified
+      # by construction - the _curve_is_fold probes (and the depth probes
+      # below) go through the fixed-point unwarp, which is unreliable
+      # exactly where the warp folds.
+      whole_child = warp_child.get(id(whole))
+      for curve, curve_indices in _window_runs(whole):
+        if whole_child is None and not _curve_is_fold(map_point, curve):
             continue
         points = [main.hv(arc, other) for arc, other in curve]
         if len(points) < 2:
@@ -4979,6 +5252,8 @@ def _emit_seals(animean, out, map_point, pattern, child_area, main_area, width_s
         # cusp-splitting have reshaped the drawn geometry.
         branch_arcs = list(curve)
         branch_points = list(points)
+        branch_child = ([whole_child[i] for i in curve_indices]
+                        if whole_child is not None else None)
         branch_depths = {}
 
         def seal_depth_at(image_point):
@@ -4996,8 +5271,12 @@ def _emit_seals(animean, out, map_point, pattern, child_area, main_area, width_s
             if index in branch_depths:
                 return branch_depths[index]
             other = index + 1 if index + 1 < len(branch_arcs) else index - 1
-            pa = _child_of_arcs(map_point, branch_arcs[index])
-            pb = _child_of_arcs(map_point, branch_arcs[other])
+            if branch_child is not None:
+                pa = branch_child[index]
+                pb = branch_child[other]
+            else:
+                pa = _child_of_arcs(map_point, branch_arcs[index])
+                pb = _child_of_arcs(map_point, branch_arcs[other])
             dx, dy = pb[0] - pa[0], pb[1] - pa[1]
             length = math.hypot(dx, dy)
             depth = 0
