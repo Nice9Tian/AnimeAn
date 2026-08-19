@@ -493,7 +493,6 @@ _SHARP_COS = math.cos(math.radians(_SHARP_TURN_DEG))
 _SHARP_JOINT_DEG = 10.0
 _SHARP_JOINT_COS = math.cos(math.radians(_SHARP_JOINT_DEG))
 
-
 def _cubic_is_line(seg):
     """True when the control net lies on the chord (a line command in disguise)."""
     (x0, y0), c1, c2, (x3, y3) = seg
@@ -2992,6 +2991,20 @@ def _stitch_crease(pieces, tolerance, boundaries):
     for drawing. The one refusal: endpoints that both sit on the SAME sweep
     boundary (the locus continues outside the swept window) are edge
     truncations, not meetings.
+
+    Stitching serves DRAWING AND ANCHORING ONLY. At a junction of crossing
+    loci (corner lines over each other or over smooth branches) several
+    endpoints meet, the pairing is genuinely under-determined, and any
+    greedy choice can chain arms of different loci into one path. That is
+    harmless here - every piece is real locus geometry, the trim only needs
+    connectivity, and direction-based join guards were each measured to
+    break something real (a birth join at slopes near +/-1 on a cornerless
+    project; the corner-to-smooth T-continuation, cutting the drawn crease
+    from 197 to 113 px). The consumer that CANNOT tolerate chained paths -
+    the fill splitter, whose _cut_ring_by_polyline pairs crossings along
+    each cutter - takes the UNSTITCHED curve set instead (_crease_curves
+    stitch=False), where injected corner lines are whole and every curve is
+    a single locus.
     """
     pieces = {index: list(piece) for index, piece in enumerate(pieces) if piece}
 
@@ -3070,8 +3083,96 @@ def _stitch_crease(pieces, tolerance, boundaries):
     return list(pieces.values())
 
 
-def _crease_curves(map_point, v_range, h_range=None, samples=48, max_columns=600):
+def _corner_loci(map_point, v_range, h_range, step=POLY_STEP):
+    """Exact fold loci of guide CORNERS: constant-arc lines in arc space.
+
+    A sharp corner folds the map along the corner's preimage - a straight
+    line l_h = m_c (H corner) or l_v = m_c (V corner) in arc space, exactly
+    where the position field kinks. The sweeps do trace these lines, but as
+    the worst-conditioned geometry they meet: each line is parallel to one
+    sweep's walk (invisible), ill-conditioned for the other (a handful of
+    samples), and where corner lines cross each other or a smooth locus the
+    rank chaining breaks all arms apart - measured on a two-corner-H plus
+    one-corner-V project: the V line arrived as three fragments with a 40 px
+    hole at a junction, and the fill splitter downstream lost the whole back
+    band. There is nothing to trace: the line's position is known, and the
+    only computation is its EXTENT - the rows where the sign of T_h x T_v
+    actually differs across the corner (the row direction falls inside the
+    corner's wedge). Rows are tested with the same windowed tangents the
+    sweeps use, so these curves are drop-in members of the same pool - just
+    exact, complete, and continuous through every junction.
+    """
+    main = map_point.main_frame
+    curves = []
+
+    def lines(guide, zero, window, other_guide, other_zero, other_window,
+              span, rows, transpose):
+        for raw in guide.sharp_arcs:
+            m_c = raw - zero
+            if not (span[0] <= m_c <= span[1]):
+                continue
+            # One-sided WINDOWED tangents (the corner clamp makes tangent_at
+            # just beside the vertex exactly one-sided): _fold_sign classifies
+            # with these, so the line's extent must be judged with them too -
+            # exact tangents were measured to disagree on borderline rows and
+            # leave the extent 14 px short of where the field actually flips.
+            before = guide.tangent_at(max(0.0, raw - 1e-3), window)
+            after = guide.tangent_at(min(guide.total, raw + 1e-3), window)
+
+            def flips(row):
+                normal = other_guide.tangent_at(other_zero + row, other_window)
+                f_before = before[0] * normal[1] - before[1] * normal[0]
+                f_after = after[0] * normal[1] - after[1] * normal[0]
+                return (f_before > 0.0) != (f_after > 0.0)
+
+            def boundary(inside, outside):
+                for _ in range(24):
+                    mid = (inside + outside) * 0.5
+                    if flips(mid):
+                        inside = mid
+                    else:
+                        outside = mid
+                return inside
+
+            def emit(run):
+                if len(run) >= 2:
+                    curves.append([(r, m_c) if transpose else (m_c, r)
+                                   for r in run])
+
+            run = []
+            previous = None
+            row = rows[0]
+            while True:
+                if flips(row):
+                    if not run and previous is not None:
+                        run.append(boundary(row, previous))
+                    run.append(row)
+                else:
+                    if run:
+                        run.append(boundary(run[-1], row))
+                        emit(run)
+                        run = []
+                previous = row
+                if row >= rows[1]:
+                    break
+                row = min(rows[1], row + step)
+            emit(run)
+
+    lines(main.gh, main.h_arc, main.h_window, main.gv, main.v_arc,
+          main.v_window, h_range, v_range, False)
+    lines(main.gv, main.v_arc, main.v_window, main.gh, main.h_arc,
+          main.h_window, v_range, h_range, True)
+    return curves
+
+
+def _crease_curves(map_point, v_range, h_range=None, samples=48, max_columns=600,
+                   stitch=True):
     """The fold loci, traced from the FRAMES rather than from the strokes.
+
+    stitch=True returns loci joined into whole paths for drawing and
+    anchoring; stitch=False returns the raw deduped curve SET (each curve a
+    single locus) for the fill splitter and depth counting, where chained
+    paths would mis-pair ring crossings - see _stitch_crease.
 
     Both sweep directions run (see _crease_scan: one sweep is blind to loci
     parallel to its walk - a coiling V guide over a near-straight H guide
@@ -3108,11 +3209,22 @@ def _crease_curves(map_point, v_range, h_range=None, samples=48, max_columns=600
         tolerance = 2.5 * POLY_STEP
         grid = _ArcGrid(4.0 * POLY_STEP)
         pieces = []
-        for pool in (h_good, v_good, h_bad, v_bad):
+        # Corner lines first: they are exact and continuous through every
+        # junction, so the sweeps' fragmented versions of the same lines
+        # dedupe away against them instead of the other way round.
+        for pool in (_corner_loci(map_point, v_range, h_range),
+                     h_good, v_good, h_bad, v_bad):
             for curve in pool:
                 for run in _uncovered_runs(curve, grid, tolerance):
                     pieces.append(run)
                     grid.add_curve(run)
+    if not stitch:
+        # The fill splitter wants the SET of loci, not paths: every curve a
+        # single locus (injected corner lines arrive whole), so its ring
+        # crossings pair correctly along each cutter. Junction bridges and
+        # any chained arms the path-building below may produce are for
+        # drawing and anchoring only - see _stitch_crease.
+        return [curve for curve in pieces if len(curve) >= 2]
     stitched = _stitch_crease(pieces, 4.0 * POLY_STEP, boundaries)
     return [curve for curve in stitched if len(curve) >= 2]
 
@@ -3264,7 +3376,8 @@ def _prepare_fold_context(map_point, h_range, v_range):
     map_point.depth_curves = _crease_curves(
         map_point,
         (min(v_range[0], anchor[1]) - pad, max(v_range[1], anchor[1]) + pad),
-        (min(h_range[0], anchor[0]) - pad, max(h_range[1], anchor[0]) + pad))
+        (min(h_range[0], anchor[0]) - pad, max(h_range[1], anchor[0]) + pad),
+        stitch=False)
     map_point.depth_anchor = anchor
     map_point.child_cutters = None  # built lazily by _child_cutters
 
@@ -3311,37 +3424,63 @@ def _child_cutters(map_point):
     The depth curves live in MAIN arc coordinates; dividing by the per-side
     transfer scales gives child arcs, and the child frame's hv puts them on
     the texture. In child space the loci are plain curves - the cusps are an
-    IMAGE-space phenomenon - so they are valid polygon cutters. Ends are
-    extended a little so a locus truncated by the sweep window still cuts
-    cleanly through a fill it grazes.
+    IMAGE-space phenomenon - so they are valid polygon cutters.
+
+    The depth curves are the raw locus SET (stitch=False), so where loci
+    cross, a curve can END at the junction - INSIDE a fill. A cutter that
+    dead-ends inside a ring crosses it an odd number of times and cuts
+    nothing (see t_cutter), which was measured to collapse a three-depth
+    fill into one uncut piece. Ends are therefore extended STRAIGHT until
+    they leave everything the pattern can occupy: a cut along the extension
+    is harmless - the two sides have the same crossing parity against the
+    real loci, so they land at the same depth and colour - while a missing
+    cut loses whole occlusion bands. The pre-extension geometry is kept on
+    map_point.child_cutters_raw: crease anchors must come only from
+    crossings with REAL loci, never with an extension.
     """
     cutters = getattr(map_point, "child_cutters", None)
     if cutters is not None:
         return cutters
-    cutters = []
     child = map_point.child_frame
     h_scales, v_scales = map_point.h_scales, map_point.v_scales
+    reach = 2.0 * (child.gh.total + child.gv.total)
+    bare = []
     for curve in getattr(map_point, "depth_curves", None) or []:
         points = []
         for arc_h, arc_v in curve:
             c_h = arc_h / (h_scales[1] if arc_h >= 0.0 else h_scales[0])
             c_v = arc_v / (v_scales[1] if arc_v >= 0.0 else v_scales[0])
             points.append(child.hv(c_h, c_v))
-        if len(points) < 2:
-            continue
+        if len(points) >= 2:
+            bare.append(points)
+    raw = [_densify(list(points)) for points in bare]
+    cutters = []
+    for index, points in enumerate(bare):
+        points = list(points)
         for end, other in ((0, 1), (-1, -2)):
             dx = points[end][0] - points[other][0]
             dy = points[end][1] - points[other][1]
             length = math.hypot(dx, dy)
-            if length > 1e-9:
-                extended = (points[end][0] + dx / length * 8.0 * POLY_STEP,
-                            points[end][1] + dy / length * 8.0 * POLY_STEP)
-                if end == 0:
-                    points.insert(0, extended)
-                else:
-                    points.append(extended)
+            if length <= 1e-9:
+                continue
+            # Every end gets the full reach. Junction ends and dedupe splice
+            # ends dead-end INSIDE fills and shorter overhangs measurably
+            # under-cut (a depth-3 fill vanished at 32 px, and distance
+            # heuristics for "which ends are junctions" kept missing cases
+            # because arc-space gaps stretch unpredictably through the
+            # transfer scales). The cost is cosmetic only - extension
+            # crossings split same-depth pieces that render identically -
+            # and the bbox gate in _split_ring_by_fold keeps them off
+            # rings the real locus never approaches.
+            tip = points[end]
+            extended = (tip[0] + dx / length * reach, tip[1] + dy / length * reach)
+            if end == 0:
+                points.insert(0, extended)
+            else:
+                points.append(extended)
         cutters.append(_densify(points))
     map_point.child_cutters = cutters
+    map_point.child_cutters_raw = raw
     return cutters
 
 
@@ -3566,11 +3705,36 @@ def _split_ring_by_fold(map_point, ring, crossings_out=None):
     if not _FOLD["split"]:
         return [(ring, _MappedOutput.FRONT, _ring_interior_point(ring))]
     pieces = [ring]
-    for cutter in _child_cutters(map_point):
+    raw_crossings = [] if crossings_out is not None else None
+    cutters = _child_cutters(map_point)
+    raws = getattr(map_point, "child_cutters_raw", None) or [None] * len(cutters)
+    rx0 = min(p[0] for p in ring)
+    rx1 = max(p[0] for p in ring)
+    ry0 = min(p[1] for p in ring)
+    ry1 = max(p[1] for p in ring)
+    margin = 2.0 * POLY_STEP
+    for cutter, raw in zip(cutters, raws):
+        if raw is not None:
+            # Crossing a cutter's straight extension never changes the
+            # parity, so a cutter whose REAL geometry stays bbox-clear of
+            # this ring can only slice it cosmetically - skip it.
+            if (max(p[0] for p in raw) < rx0 - margin
+                    or min(p[0] for p in raw) > rx1 + margin
+                    or max(p[1] for p in raw) < ry0 - margin
+                    or min(p[1] for p in raw) > ry1 + margin):
+                continue
         cut = []
         for piece in pieces:
-            cut.extend(_cut_ring_by_polyline(piece, cutter, crossings_out))
+            cut.extend(_cut_ring_by_polyline(piece, cutter, raw_crossings))
         pieces = cut
+    if raw_crossings:
+        # Crossings with a cutter's straight EXTENSION are cutting aid, not
+        # fold geometry - only crossings on the real loci may anchor the
+        # crease (see _child_cutters).
+        real = getattr(map_point, "child_cutters_raw", None) or []
+        for q in raw_crossings:
+            if any(_polyline_arc_of(q, r)[0] <= 2.0 * POLY_STEP for r in real):
+                crossings_out.append(q)
     out = []
     for piece in pieces:
         rep = _ring_interior_point(piece)
