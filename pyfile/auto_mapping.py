@@ -7204,6 +7204,226 @@ def run_auto_mapping(name=AUTO_MAPPING2_TOOL, property_value=AUTO_MAPPING2_TOOL)
     return property_value
 
 
+def _signed_area(ring):
+    total = 0.0
+    for a, b in zip(ring, ring[1:] + ring[:1]):
+        total += a[0] * b[1] - b[0] * a[1]
+    return 0.5 * total
+
+
+def _segments_cross(a, b, c, d):
+    """Proper crossing of open segments ab and cd (shared endpoints ok)."""
+    d1 = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    d2 = (b[0] - a[0]) * (d[1] - a[1]) - (b[1] - a[1]) * (d[0] - a[0])
+    d3 = (d[0] - c[0]) * (a[1] - c[1]) - (d[1] - c[1]) * (a[0] - c[0])
+    d4 = (d[0] - c[0]) * (b[1] - c[1]) - (d[1] - c[1]) * (b[0] - c[0])
+    return d1 * d2 < 0.0 and d3 * d4 < 0.0
+
+
+def _triangulate_with_earcut(outer, holes):
+    """(vertices, triangles) via the mapbox_earcut LIBRARY, or None.
+
+    User directive: prefer real Python libraries over hand-rolled
+    algorithms - the embedded runtime is a full python312 with pip, the
+    repo bundles version-pinned wheels in pywheels/, and pydeps
+    self-installs them offline on first use.
+    """
+    import pydeps
+    earcut = pydeps.ensure("mapbox_earcut")
+    np = pydeps.ensure("numpy")
+    if earcut is None or np is None:
+        return None
+    rings = [list(outer)] + [list(hole) for hole in holes]
+    flat = [p for ring in rings for p in ring]
+    ends = []
+    total = 0
+    for ring in rings:
+        total += len(ring)
+        ends.append(total)
+    try:
+        array = np.array(flat, dtype=np.float64).reshape(-1, 2)
+        indices = earcut.triangulate_float64(array, ends)
+    except Exception as error:
+        print(f"[auto_mapping] earcut failed ({error}); using the "
+              "built-in triangulator")
+        return None
+    triangles = [(int(indices[i]), int(indices[i + 1]), int(indices[i + 2]))
+                 for i in range(0, len(indices), 3)]
+    if not triangles:
+        return None
+    return flat, triangles
+
+
+def _triangulate_polygon(outer, holes):
+    """(vertices, triangles) for a polygon with holes.
+
+    WHY TRIANGLES AT ALL (user question): GPUs rasterize triangles only -
+    there is no vector-topology rendering in WebGL, and SVG's vector fill
+    is flat 2D (no bent surface, no orbiting camera, no lighting).
+    Three.js's own ShapeGeometry earcuts too, but only for planar shapes;
+    our surface carries a z field, so we triangulate the outline
+    faithfully here and subdivide interiors to follow the bend.
+
+    Primary path: the mapbox_earcut library (bundled wheels, offline
+    self-install via pydeps). The pure-python ear clipper below stays as
+    the last-resort fallback for a runtime where even the bundled
+    install fails.
+    """
+    library = _triangulate_with_earcut(outer, holes)
+    if library is not None:
+        return library
+    outer = list(outer)
+    if _signed_area(outer) < 0.0:
+        outer.reverse()
+    chain = outer
+    for hole in sorted(holes,
+                       key=lambda h: -max(p[0] for p in h)):
+        hole = list(hole)
+        if _signed_area(hole) > 0.0:
+            hole.reverse()
+        m_index = max(range(len(hole)), key=lambda k: hole[k][0])
+        hole = hole[m_index:] + hole[:m_index]
+        m = hole[0]
+        # Bridge to a chain vertex visible from the hole's rightmost
+        # point: nearest first, fall back to anything unobstructed.
+        order = sorted(range(len(chain)),
+                       key=lambda k: (chain[k][0] - m[0]) ** 2
+                       + (chain[k][1] - m[1]) ** 2)
+        pick = None
+        for candidate in order:
+            p = chain[candidate]
+            blocked = False
+            for i in range(len(chain)):
+                a = chain[i]
+                b = chain[(i + 1) % len(chain)]
+                if a is p or b is p:
+                    continue
+                if _segments_cross(m, p, a, b):
+                    blocked = True
+                    break
+            if not blocked:
+                for i in range(1, len(hole)):
+                    a = hole[i]
+                    b = hole[(i + 1) % len(hole)]
+                    if _segments_cross(m, p, a, b):
+                        blocked = True
+                        break
+            if not blocked:
+                pick = candidate
+                break
+        if pick is None:
+            pick = order[0]
+        chain = (chain[:pick + 1] + hole + [hole[0]]
+                 + chain[pick:])
+
+    vertices = list(chain)
+    indices = list(range(len(vertices)))
+    triangles = []
+
+    def convex(i0, i1, i2):
+        a, b, c = vertices[i0], vertices[i1], vertices[i2]
+        return ((b[0] - a[0]) * (c[1] - a[1])
+                - (b[1] - a[1]) * (c[0] - a[0])) > 1e-12
+
+    def contains_other(i0, i1, i2):
+        a, b, c = vertices[i0], vertices[i1], vertices[i2]
+        for k in indices:
+            if k in (i0, i1, i2):
+                continue
+            p = vertices[k]
+            # The hole bridges DUPLICATE two vertices (the bridge runs
+            # there and back); a coincident copy is not an obstruction,
+            # but treating it as one starved the clipper of ears and the
+            # forced fallback filled every hole solid.
+            if p == a or p == b or p == c:
+                continue
+            d1 = (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
+            d2 = (c[0] - b[0]) * (p[1] - b[1]) - (c[1] - b[1]) * (p[0] - b[0])
+            d3 = (a[0] - c[0]) * (p[1] - c[1]) - (a[1] - c[1]) * (p[0] - c[0])
+            if d1 > 1e-9 and d2 > 1e-9 and d3 > 1e-9:
+                return True
+        return False
+
+    guard = 0
+    while len(indices) > 3 and guard < 4 * len(vertices):
+        guard += 1
+        clipped = False
+        n = len(indices)
+        for pos in range(n):
+            i0 = indices[(pos - 1) % n]
+            i1 = indices[pos]
+            i2 = indices[(pos + 1) % n]
+            if convex(i0, i1, i2) and not contains_other(i0, i1, i2):
+                triangles.append((i0, i1, i2))
+                indices.pop(pos)
+                clipped = True
+                break
+        if not clipped:
+            # numeric stalemate (collinear runs): drop the flattest corner
+            n = len(indices)
+            flattest = min(range(n), key=lambda pos: abs(
+                _signed_area([vertices[indices[(pos - 1) % n]],
+                              vertices[indices[pos]],
+                              vertices[indices[(pos + 1) % n]]])))
+            i0 = indices[(flattest - 1) % n]
+            i1 = indices[flattest]
+            i2 = indices[(flattest + 1) % n]
+            triangles.append((i0, i1, i2))
+            indices.pop(flattest)
+    if len(indices) == 3:
+        triangles.append(tuple(indices))
+    return vertices, triangles
+
+
+def _subdivide_mesh(vertices, triangles, max_edge):
+    """Longest-edge bisection until no edge exceeds max_edge; midpoints
+    are cached per edge so neighbouring triangles stay watertight."""
+    vertices = list(vertices)
+    max_sq = max_edge * max_edge
+    for _round in range(9):
+        midpoints = {}
+
+        def midpoint(i, j):
+            key = (i, j) if i < j else (j, i)
+            index = midpoints.get(key)
+            if index is None:
+                a, b = vertices[i], vertices[j]
+                vertices.append(((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5))
+                index = len(vertices) - 1
+                midpoints[key] = index
+            return index
+
+        out = []
+        changed = False
+        for (a, b, c) in triangles:
+            lengths = []
+            for i, j in ((a, b), (b, c), (c, a)):
+                dx = vertices[i][0] - vertices[j][0]
+                dy = vertices[i][1] - vertices[j][1]
+                lengths.append(dx * dx + dy * dy)
+            longest = max(range(3), key=lambda k: lengths[k])
+            if lengths[longest] <= max_sq:
+                out.append((a, b, c))
+                continue
+            changed = True
+            if longest == 0:
+                mid = midpoint(a, b)
+                out.append((a, mid, c))
+                out.append((mid, b, c))
+            elif longest == 1:
+                mid = midpoint(b, c)
+                out.append((b, mid, a))
+                out.append((mid, c, a))
+            else:
+                mid = midpoint(c, a)
+                out.append((c, mid, b))
+                out.append((mid, a, b))
+        triangles = out
+        if not changed:
+            break
+    return vertices, triangles
+
+
 def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
                             grid_target=52, child_area=None):
     """Isometric shape-from-template over the Third plane.
@@ -7579,40 +7799,8 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
     z_mean = sum(z) / len(z)
     z = [(v - z_mean) * scale0 for v in z]   # into canvas units
 
-    # Mesh: canvas-space x/y (the camera reproduces MainView), lifted z.
-    # A boundary vertex sits just OUTSIDE the solid (kept by the
-    # neighbourhood test so faces reach the edge) - its colour comes from
-    # the nearest half-cell sample inside, or the silhouette ring renders
-    # as a grey fringe around every fill.
-    vertices = []
-    colors = []
-    for k, (_i, _j, u, v) in enumerate(nodes):
-        q = image_of_third(u, v)
-        vertices.append((q[0], q[1], z[k]))
-        rgba = color_at(u, v)
-        if rgba is None:
-            for a, b in ((0.5, 0.0), (-0.5, 0.0), (0.0, 0.5), (0.0, -0.5),
-                         (0.5, 0.5), (-0.5, 0.5), (0.5, -0.5), (-0.5, -0.5),
-                         (1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)):
-                rgba = color_at(u + du * a, v + dv * b)
-                if rgba is not None:
-                    break
-        colors.append(rgba if rgba is not None else (200, 200, 200, 255))
-    faces = []
-    for j in range(ny):
-        for i in range(nx):
-            corners = [node_index.get(t) for t in
-                       ((i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1))]
-            if any(c is None for c in corners):
-                continue
-            cell_u = u0 + du * (i + 0.5)
-            cell_v = v0 + dv * (j + 0.5)
-            if not inside_solid(cell_u, cell_v):
-                continue
-            faces.append((corners[0], corners[1], corners[2]))
-            faces.append((corners[0], corners[2], corners[3]))
-
-    # Strokes draped onto the surface (z interpolated off the grid).
+    # Relief lookup off the node grid (bilinear); mesh vertices and
+    # draped strokes both read it.
     def z_at(u, v):
         fi = min(max((u - u0) / du, 0.0), nx - 1e-6)
         fj = min(max((v - v0) / dv, 0.0), ny - 1e-6)
@@ -7630,6 +7818,49 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
                 acc += w * z[n]
                 wsum += w
         return acc / wsum if wsum > 1e-9 else 0.0
+
+    # MESH: each fill triangulated FROM ITS OUTLINE (ear clipping with
+    # hole bridging, then longest-edge subdivision so the interior
+    # follows the bend) - the boundary is the artist's contour, not a
+    # grid staircase. Rings nest odd-even by boundary probes; fills stack
+    # bottom-to-top with a hair of z separation against z-fighting.
+    vertices = []
+    colors = []
+    faces = []
+    vertex_uv = []
+    max_edge = 1.5 * max(du, dv)
+    layer_lift = 0.05
+
+    def boundary_probe(ring):
+        a, b = ring[0], ring[1 % len(ring)]
+        return ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5)
+
+    for order, (group, rgba) in enumerate(zip(rings_third, fill_colors)):
+        rings = [ring for ring, _bbox in group]
+        levels = []
+        for index, ring in enumerate(rings):
+            probe = boundary_probe(ring)
+            levels.append(sum(1 for j, other in enumerate(rings)
+                              if j != index and _point_in_ring(probe, other)))
+        for index, ring in enumerate(rings):
+            if levels[index] % 2 != 0:
+                continue
+            holes = []
+            for j, other in enumerate(rings):
+                if j != index and levels[j] % 2 == 1 \
+                        and _point_in_ring(boundary_probe(other), ring):
+                    holes.append(other)
+            flat_verts, tris = _triangulate_polygon(ring, holes)
+            flat_verts, tris = _subdivide_mesh(flat_verts, tris, max_edge)
+            base = len(vertices)
+            for (u, v) in flat_verts:
+                q = image_of_third(u, v)
+                vertices.append((q[0], q[1], z_at(u, v)
+                                 + order * layer_lift))
+                colors.append(rgba)
+                vertex_uv.append((u, v))
+            faces.extend((base + a, base + b, base + c)
+                         for a, b, c in tris)
 
     strokes3d = []
     stroke_colors = []
@@ -7656,8 +7887,7 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
 
     return {"vertices": vertices, "faces": faces, "colors": colors,
             "strokes": strokes3d, "stroke_colors": stroke_colors,
-            "scale0": scale0,
-            "uv": [(u, v) for _i, _j, u, v in nodes]}
+            "scale0": scale0, "uv": vertex_uv}
 
 
 def run_to_3d():

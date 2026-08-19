@@ -588,7 +588,9 @@ $$c_1' = p_0' + D_{\mathbf h_1}\Phi_2(p_0),\qquad c_2' = p_3' + D_{\mathbf h_2}\
 - **切线（crest/trough）符号恢复**：det 不翻转的坡度过零（纸面瞬间正对相机的波峰/谷）在像里与"继续爬坡"**原则上不可分**（度量只见 $|\nabla z|$）——无符号积分曾把每个波变成双倍高度的单调阶梯、把对称挤压积成奇对称。取**最小浮雕先验**：按低幅度谷线把倾斜区分割成区域，生成树上相邻区域**反号**——正弦复原为正弦（corr 0.996）、对称挤压复原为对称鼓包。（逐点退火先试过：整链须同翻、单点移动跨不过势垒。）
 梯度场经最小二乘泊松积分（纯 Python 共轭梯度、Neumann 边界）得 $z(u,v)$、乘 $s_0$ 换回画布单位。网格顶点 $=(M_x, M_y, z)$（弱透视提升）：**沿 −z 平行投影恰好还原 MainView 画面**（查看器因此用**正交相机**——透视初始视图违背弱透视前提本身）。整体凹凸歧义原则上不可观测，查看器提供翻转开关。实测（经典折叠对 δ=150/R=100）：$s_0=1.014$、浮雕 89.4px 集中于折叠带（带内 81.2 vs 带外 **4.6**）、等距残差中位 **1.4%**（平板基线 22%；p90 高值属折叠带的真实 warp 拉伸，非误差）。
 
-实现：实体=child fills 经 `coords` 拉回 Third 的环组（odd-even），~52 格网格、逐节点 J/SVD/符号、CG 积分；strokes 加密后**披挂**到曲面（双线性取 z）。查看器（`_export_three_html`）：顶点色三角网格 + 法线光照（双面）、披挂线稿、**浮雕强度滑杆**、翻转/线框开关、常数 `CAMERA_MATRIX`、OrbitControls，写临时目录并自动打开。
+实现：实体=child fills 经 `coords` 拉回 Third 的环组（odd-even 嵌套、child mapping area 裁剪），~52 格节点网格算 z 场（J/SVD/符号/CG 积分）；渲染网格**按轮廓三角化**——GPU 只吃三角形（WebGL 无矢量拓扑渲染；SVG 矢量填充是平面 2D，给不了弯曲/环视/光照；Three 自己的 ShapeGeometry 也是 earcut 且仅平面）：主路径用 **mapbox_earcut 库**（用户方针：优先加载 Python 库而非自写算法）做带洞三角化 + 最长边二分细分让内部跟随弯曲，边界与画师轮廓的实测偏差 **0.000px**（此前均匀网格的阶梯边界即用户所指"可笑的填充"）；纯 Python ear clipping 保留为库彻底不可用时的兜底。strokes 加密后按自身颜色**披挂**到曲面。查看器：顶点色三角网格 + 法线光照（双面）、**正交**常数相机、浮雕滑杆、翻转/线框开关、OrbitControls。
+
+**第三方库基建**（用户方针：将来 Python 侧全面使用各种库，接口提前打通）：嵌入运行时是**完整版 python312**（含 site-packages 与 pip，`PYTHONHOME`=exe 旁 `python312\`，build 无本地副本时回落 `tools\python312`）。仓库 `pywheels\` 存**版本钉死的 wheel**（`requirements.txt` 同目录），`sync_pyfiles.ps1` 把它复制到每个部署位；`pyfile\pydeps.py` 的 `ensure("模块名")` 在**首次使用**时自愈安装——先 `pip --no-index --find-links pywheels`（**离线成立**，实测卸库后从本地 wheel 恢复），无匹配 wheel 才走网络，全部失败返回 None 由调用方降级。新增依赖的流程：`pip download -d pywheels --only-binary :all: <包>`（cp312/win_amd64）+ 更新 requirements.txt + 三环境安装 + 提交 wheel。
 
 ---
 

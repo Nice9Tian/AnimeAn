@@ -56,6 +56,29 @@ foreach ($dest in $destinations) {
 
 Write-Host ("{0} file(s) updated across {1} deployment(s)." -f $updated, $destinations.Count)
 
+# --- bundled wheels ----------------------------------------------------------
+# pywheels\ holds the version-pinned wheels for the embedded runtime's
+# third-party libraries (see pyfile\pydeps.py). Copy it beside every exe so a
+# fresh or OFFLINE machine can self-install on first use.
+$wheelSrc = Join-Path $root "pywheels"
+if (Test-Path $wheelSrc) {
+    foreach ($dest in $destinations) {
+        $wheelDst = Join-Path $dest "pywheels"
+        New-Item -ItemType Directory -Force $wheelDst | Out-Null
+        foreach ($wheel in Get-ChildItem $wheelSrc -File) {
+            $target = Join-Path $wheelDst $wheel.Name
+            $copy = -not (Test-Path $target)
+            if (-not $copy) {
+                $copy = (Get-FileHash $wheel.FullName).Hash -ne (Get-FileHash $target).Hash
+            }
+            if ($copy) {
+                Copy-Item $wheel.FullName $target -Force
+                Write-Host ("wheels:  {0} -> {1}" -f $wheel.Name, $wheelDst)
+            }
+        }
+    }
+}
+
 # --- stale-binary warning ----------------------------------------------------
 # Scripts are only half the picture: a .py fix cannot show up in an AnimeAn.exe
 # that predates the C++ it depends on, and a stale exe next to fresh scripts is
