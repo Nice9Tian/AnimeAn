@@ -128,7 +128,12 @@ NEAREST_HANDLE_COLOR = (230, 45, 45, 255)
 ADDITIONAL_PROPERTY = "additional_line"
 ADDITIONAL_COLOR = (255, 105, 180, 255)
 ADDITIONAL_FALLOFFS = ("linear", "quadratic")
-_ADDITIONAL = {"falloff": "linear", "radius_factor": 0.5}
+_ADDITIONAL = {"falloff": "linear", "radius_factor": 0.5,
+               # The C-strategy's face labels (convex side stacks in
+               # front). Cuts at the deformation vertices always apply;
+               # this switch only silences the stacking evidence, so the
+               # two halves of the feature stay separately bisectable.
+               "face_stacking": True}
 
 
 def additional_falloff():
@@ -1215,6 +1220,400 @@ def _slice_third_by_canvas_fraction(points, third, f_lo, f_hi):
     return out if len(out) >= 2 else []
 
 
+def _slice_points_by_canvas_fraction(points, f_lo, f_hi):
+    """The canvas polyline restricted to its own arc-fraction window.
+
+    The points mirror of _slice_third_by_canvas_fraction, with the SAME
+    inner-index rule, so a clipped line's points and thirds stay
+    index-parallel - the C-strategy plan below addresses both lists by
+    one fractional index and silently drifting counts would misplace
+    every cut."""
+    c_cum = _cumulative_lengths(points)
+    if c_cum[-1] <= 1e-9:
+        return []
+    lo = c_cum[-1] * f_lo
+    hi = c_cum[-1] * f_hi
+    inner = [i for i, c in enumerate(c_cum) if lo < c < hi]
+    out = ([_point_at_arc(points, c_cum, lo)]
+           + [tuple(points[i]) for i in inner]
+           + [_point_at_arc(points, c_cum, hi)])
+    return out if len(out) >= 2 else []
+
+
+def _canvas_index_of_fraction(points, f):
+    """Fractional index into a polyline at canvas arc fraction `f`.
+
+    A cut must be staging-invariant: __init__ pushes the child side
+    through the standing chain point by point (index-preserving), so a
+    fractional INDEX still names the same material afterwards while an
+    arc fraction no longer does."""
+    cum = _cumulative_lengths(points)
+    total = cum[-1]
+    if total <= 1e-9:
+        return 0.0
+    arc = total * min(max(f, 0.0), 1.0)
+    i = min(max(bisect.bisect_right(cum, arc) - 1, 0), len(points) - 2)
+    span = cum[i + 1] - cum[i]
+    return i + (0.0 if span <= 1e-9 else (arc - cum[i]) / span)
+
+
+def _slice_at_index(seq, lo, hi):
+    """seq restricted to the fractional-index window [lo, hi]:
+    interpolated boundary points plus the strictly interior originals."""
+    def at(f):
+        i = min(max(int(f), 0), len(seq) - 2)
+        t = min(max(f - i, 0.0), 1.0)
+        a, b = seq[i], seq[i + 1]
+        return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+
+    inner = [tuple(seq[i]) for i in range(int(math.ceil(lo)),
+                                          int(math.floor(hi)) + 1)
+             if lo < float(i) < hi]
+    return [at(lo)] + inner + [at(hi)]
+
+
+def _prominent_turns(values, tol):
+    """Interior trend reversals of a 1-D profile with topographic
+    prominence >= tol, as [(index, prominence), ...] in index order.
+
+    Zero steps are skipped, not treated as breaks (the plateau lesson
+    from reversal(): an extremum that samples onto a flat run must not
+    hide), and the reported index is the plateau midpoint. Prominence is
+    the smaller excursion of the reversal's two sides - endpoint-relative
+    tests are masked by one tall endpoint (a J-shaped stroke), while
+    topographic prominence rejects tremor and keeps real turns."""
+    count = len(values)
+    if count < 3:
+        return []
+    chain = [0]
+    trend = 0
+    last_end = 0
+    for k in range(count - 1):
+        step = values[k + 1] - values[k]
+        if abs(step) <= 1e-9:
+            continue
+        sign = 1 if step > 0.0 else -1
+        if trend == 0:
+            trend = sign
+        elif sign != trend:
+            chain.append((last_end + k) // 2)
+            trend = sign
+        last_end = k + 1
+    chain.append(count - 1)
+    if len(chain) < 3:
+        return []
+    # Prune the weakest leg until every leg clears tol: an interior leg
+    # removes its max-min pair together (they cancel), a boundary leg
+    # removes only its interior end.
+    while len(chain) > 2:
+        amps = [abs(values[chain[i + 1]] - values[chain[i]])
+                for i in range(len(chain) - 1)]
+        weakest = min(range(len(amps)), key=lambda i: amps[i])
+        if amps[weakest] >= tol:
+            break
+        if weakest == 0:
+            del chain[1]
+        elif weakest == len(amps) - 1:
+            del chain[-2]
+        else:
+            del chain[weakest:weakest + 2]
+    turns = []
+    for pos in range(1, len(chain) - 1):
+        prom = min(abs(values[chain[pos]] - values[chain[pos - 1]]),
+                   abs(values[chain[pos + 1]] - values[chain[pos]]))
+        turns.append((chain[pos], prom))
+    return turns
+
+
+def _c_shape_vertices(points):
+    """Box detection on one drawn polyline -> the deformation vertices.
+
+    The four bbox edge points are checked against the drawn endpoints;
+    when every edge belongs to the endpoints the current algorithm
+    stands (None). Otherwise the C-strategy picks the axis whose two
+    edge points' connecting line is closer in angle to the endpoint
+    chord (undirected), and returns ALL of that axis's prominent turns
+    as canvas arc fractions, ascending - two for a C, more for a coil.
+
+    Eligibility is double-gated: the axis needs >= 2 prominent interior
+    trend reversals (the double tangency that gives a C-shaped H/V guide
+    its two fold loci) AND both of its bbox edge points must be interior
+    - an interior wiggle on a monotone rise has two reversals, but its
+    box extremes are still the endpoints and the spec's box test says
+    the endpoints own that stroke."""
+    if len(points) < 4:
+        return None
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    width = max(xs) - min(xs)
+    height = max(ys) - min(ys)
+    if max(width, height) <= 4.0 * POLY_STEP:
+        return None  # a dot
+    cum = _cumulative_lengths(points)
+    total = cum[-1]
+    if total <= 1e-6:
+        return None
+    span = math.hypot(points[-1][0] - points[0][0],
+                      points[-1][1] - points[0][1])
+    if span <= max(4.0 * POLY_STEP, 0.05 * total):
+        return None  # near-closed: no chord frame exists downstream either
+    tol = max(2.0 * POLY_STEP, 0.03 * max(width, height))
+    chord_angle = math.atan2(points[-1][1] - points[0][1],
+                             points[-1][0] - points[0][0])
+    candidates = []
+    for order, (axis, values) in enumerate((("y", ys), ("x", xs))):
+        turns = _prominent_turns(values, tol)
+        if len(turns) < 2:
+            continue
+        if (max(values) - max(values[0], values[-1]) <= tol
+                or min(values[0], values[-1]) - min(values) <= tol):
+            continue  # a box edge still belongs to an endpoint
+        hi_turn = max(turns, key=lambda t: values[t[0]])
+        lo_turn = min(turns, key=lambda t: values[t[0]])
+        a = points[hi_turn[0]]
+        b = points[lo_turn[0]]
+        pair_angle = math.atan2(b[1] - a[1], b[0] - a[0])
+        delta = (pair_angle - chord_angle) % math.pi
+        delta = min(delta, math.pi - delta)
+        # Total ordering: angle, then arc separation, then extreme
+        # distance, then a fixed axis order - a plan that flips between
+        # builds would restack fills between two runs of the same scene.
+        sep = abs(cum[hi_turn[0]] - cum[lo_turn[0]]) / total
+        dist = math.hypot(a[0] - b[0], a[1] - b[1])
+        candidates.append((delta, -sep, -dist, order, turns))
+    if not candidates:
+        return None
+    candidates.sort()
+    turns = candidates[0][4]
+    picked = []
+    for index, prom in sorted(turns):
+        frac = cum[index] / total
+        if frac < 0.05 or frac > 0.95:
+            continue
+        if picked and frac - picked[-1][0] < 0.10:
+            # A sliver piece is the very defect the cuts remove; keep
+            # the more prominent of the colliding pair.
+            if prom > picked[-1][1]:
+                picked[-1] = (frac, prom)
+            continue
+        picked.append((frac, prom))
+    if len(picked) < 2:
+        return None
+    return [frac for frac, _prom in picked]
+
+
+def _main_protruding_axes(frame):
+    """The MAIN frame's protruding-side axis lines, in MAIN canvas.
+
+    The crossing splits each guide into two half-axes; a half whose own
+    bow clears the frame's tremor window protrudes. Zero to four of them
+    - the spec's own parenthetical says the answer need not be one."""
+    out = []
+    samples = 33
+    for guide, cross_arc, total in ((frame.gh, frame.h_arc, frame.h_total),
+                                    (frame.gv, frame.v_arc, frame.v_total)):
+        for lo, hi in ((0.0, cross_arc), (cross_arc, total)):
+            if hi - lo <= 4.0 * POLY_STEP:
+                continue
+            half = [guide.point_at(lo + (hi - lo) * k / (samples - 1))
+                    for k in range(samples)]
+            ax, ay = half[0]
+            bx, by = half[-1]
+            chord = math.hypot(bx - ax, by - ay)
+            if chord <= 1e-6:
+                continue
+            nx, ny = -(by - ay) / chord, (bx - ax) / chord
+            bow = max(((p[0] - ax) * nx + (p[1] - ay) * ny for p in half),
+                      key=abs)
+            if abs(bow) <= max(2.0 * POLY_STEP, 0.03 * (hi - lo)):
+                continue
+            out.append({"points": half,
+                        "weight": abs(bow) - max(2.0 * POLY_STEP,
+                                                 0.03 * (hi - lo))})
+    return out
+
+
+def _c_shape_plan(child_points, child_third, main_points, main_third,
+                  main_frame, to_main_canvas, anchor_third, radius_factor):
+    """The C-strategy plan for one additional pair, or None.
+
+    Box detection runs on the MAIN board's polyline first (the spec's
+    letter); a main line that is the synthesized straight chord carries
+    no shape and its edge points are its endpoints by construction, so
+    the child board's polyline is read next - whichever side carries the
+    bend supplies the vertices. Cuts are carried as ALIGNED Third arc
+    fractions (the station-pairing currency) and converted through each
+    side's own Third cumulative lengths - see the inline comment.
+
+    faces[k] labels ALIGNED piece k: +1 convex (front), -1 concave
+    (back), 0 no label. Front is chosen by an authority ladder - the
+    red handle when it sits inside a piece's own band (direct user
+    evidence; near/far authority stays with the handle per the To 3D
+    rule), else the bowing main guides (the protruding-side axes), else
+    NOTHING: the grouping still applies, the stacking stays bit-exact
+    ("never guess a stacking the drawing does not imply")."""
+    for pts in (main_points, child_points):
+        fracs = _c_shape_vertices(pts)
+        if fracs is not None:
+            bent_main = pts is main_points
+            break
+    else:
+        return None
+    # ALIGNED THIRD-ARC-FRACTION CURRENCY. _prepare stations the two
+    # sides against each other by each side's OWN Third arc fraction
+    # (station k of one resampled side pairs with station k of the
+    # other), after chord-aligning the main side's direction. A cut must
+    # therefore be carried as a Third arc fraction in the ALIGNED (child
+    # stored) direction and converted through each side's own Third
+    # cumulative lengths. The first version carried raw CANVAS fractions
+    # per stored side: an anti-directional partner re-paired mirrored
+    # material (measured 219.8 px drift on a redraw the legacy path
+    # holds at 0.0), and on differing frames the canvas fraction named
+    # a different station than the pairing uses.
+    m_chord = (main_third[-1][0] - main_third[0][0],
+               main_third[-1][1] - main_third[0][1])
+    c_chord = (child_third[-1][0] - child_third[0][0],
+               child_third[-1][1] - child_third[0][1])
+    aligned = m_chord[0] * c_chord[0] + m_chord[1] * c_chord[1] >= 0.0
+    bent_points = main_points if bent_main else child_points
+    bent_third = main_third if bent_main else child_third
+    t_bent = _cumulative_lengths([tuple(p) for p in bent_third])
+    if t_bent[-1] <= 1e-9:
+        return None
+
+    def bent_third_fraction(f):
+        # canvas fraction -> fractional index (points and thirds are
+        # index-parallel) -> the bent side's Third arc fraction
+        idx = _canvas_index_of_fraction(bent_points, f)
+        i = min(max(int(idx), 0), len(bent_third) - 2)
+        t = min(max(idx - i, 0.0), 1.0)
+        arc = t_bent[i] + (t_bent[i + 1] - t_bent[i]) * t
+        return arc / t_bent[-1]
+
+    g_bent = [bent_third_fraction(f) for f in fracs]
+    if bent_main and not aligned:
+        g_aligned = [1.0 - g for g in reversed(g_bent)]
+    else:
+        g_aligned = list(g_bent)
+    g_main = (list(g_aligned) if aligned
+              else [1.0 - g for g in reversed(g_aligned)])
+
+    def index_at_third_fraction(third, fraction):
+        cum = _cumulative_lengths([tuple(p) for p in third])
+        if cum[-1] <= 1e-9:
+            return 0.0
+        arc = cum[-1] * min(max(fraction, 0.0), 1.0)
+        i = min(max(bisect.bisect_right(cum, arc) - 1, 0), len(third) - 2)
+        span = cum[i + 1] - cum[i]
+        return i + (0.0 if span <= 1e-9 else (arc - cum[i]) / span)
+
+    cuts_child = [index_at_third_fraction(child_third, g) for g in g_aligned]
+    cuts_main = [index_at_third_fraction(main_third, g) for g in g_main]
+    pieces = len(fracs) + 1
+
+    def piece_ranges(bounds, count):
+        out = []
+        for k in range(pieces):
+            lo = max(int(math.ceil(bounds[k])), 0)
+            hi = min(int(math.floor(bounds[k + 1])), count - 1)
+            out.append((lo, hi))
+        return out
+
+    # Everything below indexes pieces in the ALIGNED (child stored)
+    # order - the order _prepare consumes faces in. A bent main side
+    # that is anti-aligned has its stored piece k at aligned position
+    # pieces-1-k; scoring in stored order flipped every label on even
+    # piece counts (measured full face inversion on a 4-piece zigzag).
+    faces = [0] * pieces
+    why = "no front evidence"
+    front_class = None
+    if _ADDITIONAL.get("face_stacking", True):
+        # (a) the red handle inside the band: the class it lands in IS
+        # the convex side, decided before any heuristic can disagree.
+        # The band test is PER PIECE - each piece's real field radius is
+        # radius_factor * max(piece chord, piece arc); the whole-line
+        # radius accepted a handle sitting where the field is
+        # identically zero (measured 137.6 px out vs real bands of
+        # 35/127/35).
+        if anchor_third is not None:
+            child_total = _cumulative_lengths(
+                [tuple(p) for p in child_third])[-1]
+            main_total = _cumulative_lengths(
+                [tuple(p) for p in main_third])[-1]
+            g_bounds = [0.0] + g_aligned + [1.0]
+            ranges = piece_ranges([0.0] + cuts_child
+                                  + [len(child_third) - 1.0],
+                                  len(child_third))
+            best = None
+            for k, (lo, hi) in enumerate(ranges):
+                if hi - lo < 1:
+                    continue
+                piece = [tuple(child_third[i]) for i in range(lo, hi + 1)]
+                d = _polyline_arc_of(anchor_third, piece)[0]
+                span = g_bounds[k + 1] - g_bounds[k]
+                arc_k = span * max(child_total, main_total)
+                chord_k = math.hypot(piece[-1][0] - piece[0][0],
+                                     piece[-1][1] - piece[0][1])
+                radius_k = radius_factor * max(chord_k, arc_k)
+                if d < radius_k and (best is None or d < best[0]):
+                    best = (d, k)
+            if best is not None:
+                front_class = best[1] % 2
+                why = "the red handle (it sits on that side)"
+        # (b) the user's rule: the convex side is closer to the MAIN
+        # frame's protruding-side axes. Distances in MAIN canvas px -
+        # the bow only exists there.
+        if front_class is None:
+            axes = _main_protruding_axes(main_frame)
+            if axes:
+                if bent_main:
+                    canvas = main_points
+                    bounds = ([0.0]
+                              + [_canvas_index_of_fraction(main_points, f)
+                                 for f in fracs]
+                              + [len(main_points) - 1.0])
+                else:
+                    canvas = [to_main_canvas(t) for t in child_third]
+                    bounds = [0.0] + cuts_child + [len(child_third) - 1.0]
+                ranges = piece_ranges(bounds, len(canvas))
+
+                def median(sample):
+                    ordered = sorted(sample)
+                    mid = len(ordered) // 2
+                    if len(ordered) % 2:
+                        return ordered[mid]
+                    return 0.5 * (ordered[mid - 1] + ordered[mid])
+
+                score = 0.0
+                scale = 0.0
+                for axis in axes:
+                    dists = {0: [], 1: []}
+                    for k, (lo, hi) in enumerate(ranges):
+                        # stored piece k of an anti-aligned bent main
+                        # sits at aligned position pieces-1-k
+                        k_al = (pieces - 1 - k
+                                if bent_main and not aligned else k)
+                        for i in range(lo, hi + 1):
+                            dists[k_al % 2].append(
+                                _polyline_arc_of(canvas[i],
+                                                 axis["points"])[0])
+                    if not dists[0] or not dists[1]:
+                        continue
+                    d0 = median(dists[0])
+                    d1 = median(dists[1])
+                    score += axis["weight"] * (d1 - d0)
+                    scale += axis["weight"] * (d1 + d0)
+                if scale > 1e-9 and abs(score) >= 0.02 * scale:
+                    front_class = 0 if score > 0.0 else 1
+                    why = "the bowing main guide"
+    else:
+        why = "face stacking disabled"
+    if front_class is not None:
+        faces = [1 if k % 2 == front_class else -1 for k in range(pieces)]
+    return {"cuts_child": cuts_child, "cuts_main": cuts_main,
+            "faces": faces, "why": why}
+
+
 class _AdditionalWarp:
     """The influence field of the additional (pink) refinement lines.
 
@@ -1296,11 +1695,14 @@ class _AdditionalWarp:
         self.stages = []  # one entry per drawn line, in drawing order
         self.pairs = []   # flat view of every stage's segments
         self._loci = None  # fold_loci memo; stages are immutable after init
-        for stage_index, (child_third, main_third) in enumerate(pairs):
+        for stage_index, entry in enumerate(pairs):
+            child_third, main_third = entry[0], entry[1]
+            plan = entry[2] if len(entry) > 2 else None  # 2-tuples still work
             if len(child_third) < 2 or len(main_third) < 2:
                 continue
             staged_child = [self.apply(tuple(p)) for p in child_third]
-            segments = self._prepare(staged_child, main_third, radius_factor)
+            segments = self._prepare(staged_child, main_third, radius_factor,
+                                     plan=plan)
             if not segments:
                 continue
             peak = 0.0
@@ -1336,6 +1738,9 @@ class _AdditionalWarp:
                 segment["prefix_pad"] = pad
             self.stages.append(segments)
             self.pairs.extend(segments)
+        self.has_faces = any(
+            s.get("face") or any((s.get("face_spans") or ((), ()))[1])
+            for s in self.pairs)
 
     @staticmethod
     def _band_bbox(segment, extra):
@@ -1397,7 +1802,8 @@ class _AdditionalWarp:
                       + [values[-1]])
         return values
 
-    def _prepare(self, child_third, main_third, radius_factor, depth=0):
+    def _prepare(self, child_third, main_third, radius_factor, depth=0,
+                 plan=None, face=0):
         """One drawn pair -> a LIST of chord-monotone sweep segments.
 
         The translation sweep needs the chord parameter to advance
@@ -1408,9 +1814,102 @@ class _AdditionalWarp:
         reverses, the pair is SPLIT at the turning stations and each run
         becomes its own sweep with its own chord frame - a C is three
         sweeps, faithful to what was drawn, still spine-free.
+
+        With a C-strategy `plan` the primary cuts happen FIRST, at the
+        drawn line's own deformation vertices (box detection), and each
+        piece carries its face label (+1 convex/front, -1 concave/back,
+        0 unlabelled) into its segment dicts; the trend-reversal
+        recursion still runs inside each piece, for chord-monotonicity
+        only - those residual cuts never change the label. The old
+        first-reversal recursion alone peeled a left-recursive sliver
+        cascade off a deep C (measured radii 40.5/18.3/11.0/5.2 on a
+        symmetric 270-degree C, with fold loci traced outside the shape
+        entirely).
         """
         if len(child_third) < 2 or len(main_third) < 2:
             return []
+        if depth == 0 and plan is not None:
+            # Direction alignment must settle BEFORE the planned cuts -
+            # the plan states its main-side indices in stored stroke
+            # order. Resampling preserves endpoints, so this chord dot
+            # is the same one the unplanned path computes below.
+            m_chord = (main_third[-1][0] - main_third[0][0],
+                       main_third[-1][1] - main_third[0][1])
+            c_chord = (child_third[-1][0] - child_third[0][0],
+                       child_third[-1][1] - child_third[0][1])
+            main_line = [tuple(p) for p in main_third]
+            cuts_main = list(plan["cuts_main"])
+            if m_chord[0] * c_chord[0] + m_chord[1] * c_chord[1] < 0.0:
+                main_line = list(reversed(main_line))
+                last = len(main_line) - 1.0
+                cuts_main = [last - c for c in reversed(cuts_main)]
+            faces = plan.get("faces") or []
+            # The cuts exist for the CHILD side's chord-monotonicity
+            # (the profile is a function of the child chord parameter).
+            # A monotone child - a main-drawn C over its straight
+            # synthesized chord - already traces the drawn shape
+            # VERBATIM in one sweep; cutting it into partition-of-unity
+            # pieces measurably degraded that tracing (review finding).
+            # It keeps the single sweep, and the face labels ride as
+            # chord-parameter windows on the segment instead.
+            length = math.hypot(c_chord[0], c_chord[1])
+            monotone = length > 1e-6
+            if monotone:
+                u0 = (c_chord[0] / length, c_chord[1] / length)
+                trend = 0
+                s_prev = 0.0
+                for p in child_third:
+                    s_here = ((p[0] - child_third[0][0]) * u0[0]
+                              + (p[1] - child_third[0][1]) * u0[1])
+                    step = s_here - s_prev
+                    s_prev = s_here
+                    if abs(step) <= 1e-6:
+                        continue
+                    sign = 1 if step > 0.0 else -1
+                    if trend == 0:
+                        trend = sign
+                    elif sign != trend:
+                        monotone = False
+                        break
+            if monotone:
+                segments = self._prepare(child_third, main_line,
+                                         radius_factor, depth + 1)
+                if any(faces):
+                    for segment in segments:
+                        s_cuts = []
+                        for cut in plan["cuts_child"]:
+                            i = min(max(int(cut), 0), len(child_third) - 2)
+                            t = min(max(cut - i, 0.0), 1.0)
+                            p = (child_third[i][0]
+                                 + (child_third[i + 1][0]
+                                    - child_third[i][0]) * t,
+                                 child_third[i][1]
+                                 + (child_third[i + 1][1]
+                                    - child_third[i][1]) * t)
+                            s_cuts.append(
+                                (p[0] - segment["origin"][0])
+                                * segment["u"][0]
+                                + (p[1] - segment["origin"][1])
+                                * segment["u"][1])
+                        s_cuts.sort()
+                        segment["face_spans"] = (s_cuts, list(faces))
+                return segments
+            bounds_c = ([0.0] + list(plan["cuts_child"])
+                        + [len(child_third) - 1.0])
+            bounds_m = [0.0] + cuts_main + [len(main_line) - 1.0]
+            out = []
+            for k in range(len(bounds_c) - 1):
+                if (bounds_c[k + 1] - bounds_c[k] < 1e-6
+                        or bounds_m[k + 1] - bounds_m[k] < 1e-6):
+                    continue
+                out += self._prepare(
+                    _slice_at_index(child_third, bounds_c[k],
+                                    bounds_c[k + 1]),
+                    _slice_at_index(main_line, bounds_m[k],
+                                    bounds_m[k + 1]),
+                    radius_factor, depth + 1,
+                    face=faces[k] if k < len(faces) else 0)
+            return out
         child_line = self._resample([tuple(p) for p in child_third], self.SAMPLES)
         main_line = self._resample([tuple(p) for p in main_third], self.SAMPLES)
         if child_line is None or main_line is None:
@@ -1476,9 +1975,9 @@ class _AdditionalWarp:
         split = reversal(child_line) if depth <= 4 else None
         if split is not None and 2 <= split <= len(child_line) - 3:
             return (self._prepare(child_line[:split + 1], main_line[:split + 1],
-                                  radius_factor, depth + 1)
+                                  radius_factor, depth + 1, face=face)
                     + self._prepare(child_line[split:], main_line[split:],
-                                    radius_factor, depth + 1))
+                                    radius_factor, depth + 1, face=face))
         # Per chord station s: the child line's OWN normal offset r_c(s) -
         # the sweep is centred on the DRAWN line, not on the chord - and
         # the pair's FULL VECTOR difference delta(s) = M(s) - C(s). The
@@ -1569,7 +2068,7 @@ class _AdditionalWarp:
                  "keys": keys, "delta_x": delta_x, "delta_y": delta_y,
                  "offsets": offsets, "offset_slope": offset_slope,
                  "blur_levels": blur_levels, "blur_step": step_med,
-                 "blur_rc_span": rc_span}]
+                 "blur_rc_span": rc_span, "face": face}]
 
     def jacobian(self, third, step=0.25):
         """2x2 Jacobian of apply() by the CHAIN RULE: the product of
@@ -1612,6 +2111,49 @@ class _AdditionalWarp:
             if abs(r - r_c) < radius + slack:
                 return True
         return False
+
+    def face_at(self, third):
+        """+1 convex (front) / -1 concave (back) / 0 unlabelled, at a
+        BASE Third point.
+
+        Weighted by the SAME falloff the field uses, so the label fades
+        continuously across a group boundary instead of stepping. Same
+        base-space approximation as _in_support and det_sign on
+        multi-stage documents: the label only picks the direction of a
+        stacking bump that is already happening, so a fringe mislabel
+        degrades to the old unconditional guess, never to a new failure
+        mode."""
+        if not getattr(self, "has_faces", False) \
+                or not self._in_support(third, 0.0):
+            return 0
+        # Per-CLASS MAX weight, not a signed sum: a sum lets the class
+        # with more pieces win by count - a deep C's two concave arms
+        # outvoted its single convex belly at points the belly clearly
+        # owns (measured inversion), flipping the stacking bump.
+        best = {1: 0.0, -1: 0.0}
+        for pair in self.pairs:
+            label = pair.get("face")
+            spans = pair.get("face_spans")
+            if not label and not spans:
+                continue
+            rel = (third[0] - pair["origin"][0],
+                   third[1] - pair["origin"][1])
+            s = rel[0] * pair["u"][0] + rel[1] * pair["u"][1]
+            _dx, _dy, r_c, taper = self._sample(pair, s)
+            r = rel[0] * pair["n"][0] + rel[1] * pair["n"][1]
+            weight = self._weight(abs(r - r_c) / pair["radius"]) * taper
+            if weight <= 0.0:
+                continue
+            if not label:
+                bounds, labels = spans
+                k = bisect.bisect_right(bounds, s)
+                label = labels[k] if k < len(labels) else labels[-1]
+                if not label:
+                    continue
+            best[label] = max(best[label], weight)
+        if best[1] > best[-1] + 1e-9:
+            return 1
+        return -1 if best[-1] > best[1] + 1e-9 else 0
 
     def det_sign(self, third):
         """Sign of det D(apply) - the warp's own fold parity at a point.
@@ -2146,6 +2688,27 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
     warp = None
     additional_notes = []
     if additional_pairs:
+        # The red handle's pre-warp Third position, for the C-strategy's
+        # first authority rung. Only a handle the user actually placed
+        # counts as evidence - _nearest_arc's crossing default is a
+        # fallback, not an opinion about front and back.
+        anchor_third = None
+        anchor_item = _assets_for("main").get(NEAREST_PROPERTY) or {}
+        if anchor_item.get("arc") is not None:
+            a = _nearest_arc()
+            # run_center_line_tool auto-creates this asset AT THE
+            # CROSSING the moment both guides exist, so exact (0,0) is
+            # indistinguishable from a handle nobody touched - and a
+            # handle AT the crossing adds nothing the crossing-is-front
+            # premise does not already say. Only a moved handle counts.
+            if abs(a[0]) > 1e-6 or abs(a[1]) > 1e-6:
+                a = (min(max(a[0], -main.h_arc), main.h_total - main.h_arc),
+                     min(max(a[1], -main.v_arc), main.v_total - main.v_arc))
+                anchor_third = unscale_arcs(*a)
+
+        def to_main_canvas(t):
+            return main.hv(*scale_arcs(*t))
+
         thirds = []
         for line_index, (child_item, main_item) in enumerate(additional_pairs):
             child_item = child_item or {}
@@ -2186,6 +2749,14 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
                     child_points, child_third, f_lo, f_hi)
                 main_third = _slice_third_by_canvas_fraction(
                     main_points, main_third, f_lo, f_hi)
+                # The points travel with the thirds (same window, same
+                # inner-index rule) so the C-strategy below still
+                # addresses both lists by one fractional index; a stroke
+                # whose bend was clipped away is simply no longer a C.
+                child_points = _slice_points_by_canvas_fraction(
+                    child_points, f_lo, f_hi)
+                main_points = _slice_points_by_canvas_fraction(
+                    main_points, f_lo, f_hi)
                 additional_notes.append(
                     f"additional line {line_index + 1} crosses a fold edge "
                     f"of its frame; only its longest continuous stretch "
@@ -2193,7 +2764,20 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
                     "shapes the mapping")
             if len(child_third) < 2 or len(main_third) < 2:
                 continue
-            thirds.append((child_third, main_third))
+            plan = None
+            if (len(child_points) == len(child_third)
+                    and len(main_points) == len(main_third)):
+                plan = _c_shape_plan(child_points, child_third,
+                                     main_points, main_third,
+                                     main, to_main_canvas, anchor_third,
+                                     _ADDITIONAL["radius_factor"])
+            if plan is not None:
+                additional_notes.append(
+                    f"additional line {line_index + 1} reads as a C "
+                    f"({len(plan['cuts_child'])} deformation vertices; "
+                    + (f"front side by {plan['why']})"
+                       if any(plan["faces"]) else f"{plan['why']})"))
+            thirds.append((child_third, main_third, plan))
         if thirds:
             candidate = _AdditionalWarp(thirds, _ADDITIONAL["falloff"],
                                         _ADDITIONAL["radius_factor"])
@@ -4787,6 +5371,11 @@ def _fold_depth(map_point, point, side):
     point_third = None
     arc = None
     depth = 0
+    face = 0
+    warp = getattr(map_point, "warp", None)
+    if warp is not None and getattr(warp, "has_faces", False):
+        point_third = map_point.coords(point)
+        face = warp.face_at(point_third)
     for curve in curves:
         native = warp_third.get(id(curve)) if warp_third else None
         if native is not None and anchor_third is not None:
@@ -4815,7 +5404,16 @@ def _fold_depth(map_point, point, side):
             if 0.0 <= t < 1.0 and 0.0 <= u < 1.0:
                 depth += 1
     if (depth % 2 == 0) != (side == _MappedOutput.FRONT):
-        depth += 1
+        # A parity mismatch means one crossing was miscounted; +1 assumes
+        # a MISSED crease (deeper), -1 a SPURIOUS one (a graze counted
+        # twice). Both are physical. A C-strategy convex label is the
+        # evidence that picks: the convex (front) side resolves TOWARD
+        # the viewer. The red handle keeps its authority - it still sets
+        # the anchor and supplies the count, and wherever count and
+        # colour already agree this branch is never reached. Either
+        # direction moves depth by exactly 1, so parity (and with it the
+        # count/colour consistency) is preserved by construction.
+        depth = depth - 1 if (face > 0 and depth > 0) else depth + 1
     return depth
 
 
