@@ -1166,10 +1166,15 @@ class _AdditionalWarp:
         zero over R, so a line's influence ends smoothly in every
         direction.
 
-    Multiple lines sum. The warp is ALLOWED to fold: a delta beyond the
-    fold threshold (R/gain) is the drawn line asking the surface to double
-    back, and that is how the tool produces occlusion - back faces,
-    creases and stacking. The fold machinery stays consistent through
+    Multiple lines COMPOSE in drawing order: each line is one STAGE whose
+    chord frame, geodesics and profile live in the rendering the earlier
+    stages already produce (the user's sequencing rule - addition 2 is
+    computed on addition 1's space). Lines whose bands never meet behave
+    exactly like an independent sum; where they meet, later refines
+    earlier instead of acting on a base-space ghost of it. The warp is
+    ALLOWED to fold: a delta beyond the fold threshold (R/gain) is the
+    drawn line asking the surface to double back, and that is how the
+    tool produces occlusion - back faces, creases and stacking. The fold machinery stays consistent through
     det_sign() (multiplied into _orientation) and fold_loci() (the warp's
     own analytic crease curves, injected beside the frame loci with their
     exact child geometry). Chord-reversing shapes are handled by
@@ -1192,14 +1197,84 @@ class _AdditionalWarp:
     # not projection junk (an earlier shear cap took 30% off a C's cap).
 
     def __init__(self, pairs, falloff="linear", radius_factor=0.5):
+        """`pairs` must arrive in DRAWING ORDER - each line becomes one
+        STAGE and the stages COMPOSE: line k's chord frame, geodesics and
+        profile are computed in the space the earlier lines already
+        produced (the Rendering after stages 1..k-1), per the user's
+        sequencing rule. The child-side thirds arrive in BASE Third
+        coordinates and are pushed forward through the chain built so
+        far; the main-side thirds are frame arcs unscaled, which is
+        already the rendering-space coordinate at draw time (the frame
+        inverse never involves the warp). Composition replaced the flat
+        sum of all lines: summing evaluated every line's field in base
+        coordinates, so a line drawn on top of a standing warp had its
+        ask displaced by exactly that warp's shift."""
         self.falloff = falloff if falloff in ADDITIONAL_FALLOFFS else "linear"
         self.gain = 2.0 if self.falloff == "quadratic" else 1.0
-        self.pairs = []
-        self._loci = None  # fold_loci memo; pairs are immutable after init
-        for group, (child_third, main_third) in enumerate(pairs):
-            for prepared in self._prepare(child_third, main_third, radius_factor):
-                prepared["group"] = group
-                self.pairs.append(prepared)
+        self.stages = []  # one entry per drawn line, in drawing order
+        self.pairs = []   # flat view of every stage's segments
+        self._loci = None  # fold_loci memo; stages are immutable after init
+        for stage_index, (child_third, main_third) in enumerate(pairs):
+            staged_child = [self.apply(tuple(p)) for p in child_third]
+            segments = self._prepare(staged_child, main_third, radius_factor)
+            if not segments:
+                continue
+            peak = 0.0
+            for segment in segments:
+                segment["group"] = stage_index
+                peak = max(peak, max(math.hypot(dx, dy)
+                                     for dx, dy in zip(segment["delta_x"],
+                                                       segment["delta_y"])))
+            for segment in segments:
+                segment["peak"] = peak
+                # How far the chain below this stage can displace a base
+                # point INSIDE this segment's scan window - the fold-locus
+                # scan widens by this bound. Proximity-GATED, not a blind
+                # running sum: an earlier stage whose reach cannot touch
+                # the window leaves it identity, so it contributes nothing
+                # (the blind sum tripled fold_loci cost and starved short
+                # later bands below their own probe density, silently
+                # losing their loci). Gating is inductive: the window is
+                # inflated by the pad accumulated so far, which bounds
+                # where the partial chain can have moved a window point
+                # by the time the candidate stage acts on it.
+                pad = 0.0
+                box = self._band_bbox(segment, 0.0)
+                for prior in self.stages:
+                    reach = (prior[0]["peak"]
+                             + max(p["prefix_pad"] for p in prior))
+                    grown = (box[0] - pad, box[1] - pad,
+                             box[2] + pad, box[3] + pad)
+                    if any(self._boxes_touch(
+                            self._band_bbox(p, reach), grown)
+                           for p in prior):
+                        pad += prior[0]["peak"]
+                segment["prefix_pad"] = pad
+            self.stages.append(segments)
+            self.pairs.extend(segments)
+
+    @staticmethod
+    def _band_bbox(segment, extra):
+        """Axis-aligned bounds of one segment's influence band (its own
+        input space), inflated by `extra` on every side."""
+        origin, u, n = segment["origin"], segment["u"], segment["n"]
+        radius = segment["radius"]
+        s_lo = segment["keys"][0] - radius
+        s_hi = segment["keys"][-1] + radius
+        r_lo = min(segment["offsets"]) - 1.25 * radius
+        r_hi = max(segment["offsets"]) + 1.25 * radius
+        xs = []
+        ys = []
+        for s in (s_lo, s_hi):
+            for r in (r_lo, r_hi):
+                xs.append(origin[0] + u[0] * s + n[0] * r)
+                ys.append(origin[1] + u[1] * s + n[1] * r)
+        return (min(xs) - extra, min(ys) - extra,
+                max(xs) + extra, max(ys) + extra)
+
+    @staticmethod
+    def _boxes_touch(a, b):
+        return not (a[2] < b[0] or b[2] < a[0] or a[3] < b[1] or b[3] < a[1])
 
     @staticmethod
     def _resample(points, count):
@@ -1365,15 +1440,25 @@ class _AdditionalWarp:
                  "offsets": offsets, "offset_slope": offset_slope}]
 
     def jacobian(self, third, step=0.25):
-        """2x2 Jacobian of apply() by central differences."""
-        xp = self.displacement((third[0] + step, third[1]))
-        xm = self.displacement((third[0] - step, third[1]))
-        yp = self.displacement((third[0], third[1] + step))
-        ym = self.displacement((third[0], third[1] - step))
-        return (1.0 + (xp[0] - xm[0]) / (2.0 * step),
-                (yp[0] - ym[0]) / (2.0 * step),
-                (xp[1] - xm[1]) / (2.0 * step),
-                1.0 + (yp[1] - ym[1]) / (2.0 * step))
+        """2x2 Jacobian of apply() by the CHAIN RULE: the product of
+        per-stage central-difference Jacobians, each taken at that
+        stage's own input point with a step calibrated to that stage's
+        radius. Differencing the whole composite in base coordinates
+        amplified the probe step by the earlier stages' gradients and
+        straddled a later stage's band - measured 2.85% of probes
+        reporting phantom folds (det<0 where the converged determinant
+        is strongly positive) at an earlier-stage gradient of 20, and
+        the chain-rule form drops that to 0 with the same eval count."""
+        z = (third[0], third[1])
+        jac = (1.0, 0.0, 0.0, 1.0)
+        for segments in self.stages:
+            h = min(step, 0.25 * min(s["radius"] for s in segments))
+            a, b, c, d = self._stage_jacobian(segments, z, h)
+            jac = (a * jac[0] + b * jac[2], a * jac[1] + b * jac[3],
+                   c * jac[0] + d * jac[2], c * jac[1] + d * jac[3])
+            dx, dy = self._stage_displacement(segments, z)
+            z = (z[0] + dx, z[1] + dy)
+        return jac
 
     def _in_support(self, third, pad):
         """Can any pair move any point within `pad` of `third`? Exact when
@@ -1426,7 +1511,15 @@ class _AdditionalWarp:
         double-draw creases downstream. Dedupe in THIRD space - the
         domain - because a folded sheet legitimately superimposes distinct
         loci in the image (same rationale as _uncovered_runs' arc-space
-        coverage)."""
+        coverage).
+
+        A later STAGE's band is expressed in its own input space, but the
+        scan runs over base Third coordinates: the base preimage of the
+        band is the band displaced by at most prefix_pad - the summed
+        peaks of the earlier stages that can actually REACH the window
+        (proximity-gated at build) - so the scan window widens by that
+        bound while the probe counts scale to keep the unpadded step
+        size."""
         if self._loci is not None:
             # Copies: _with_warp_loci registers curves by id() in
             # map_point.warp_curve_child, so each call must hand out
@@ -1436,8 +1529,18 @@ class _AdditionalWarp:
         for pair in self.pairs:
             origin, u, n = pair["origin"], pair["u"], pair["n"]
             radius = pair["radius"]
-            span_lo = pair["keys"][0] - radius
-            span_hi = pair["keys"][-1] + radius
+            pad = pair.get("prefix_pad", 0.0)
+            span_lo = pair["keys"][0] - radius - pad
+            span_hi = pair["keys"][-1] + radius + pad
+            base_span = max(pair["keys"][-1] - pair["keys"][0] + 2.0 * radius,
+                            1e-6)
+            # The pad widens the window; the probe count follows so the
+            # step size inside the segment's own band NEVER coarsens (a
+            # 120 cap once starved a short later band below 2 columns and
+            # silently lost its locus; the proximity gate keeps pads - and
+            # so these counts - small unless stages genuinely overlap).
+            columns = min(400, max(samples, int(math.ceil(
+                samples * (span_hi - span_lo) / base_span))))
 
             def third_at(s, r):
                 return (origin[0] + u[0] * s + n[0] * r,
@@ -1450,14 +1553,21 @@ class _AdditionalWarp:
             # another entered (measured a 240 px phantom "locus" wholly in
             # det>0 ground), and shredded real loci into 2-point stubs on
             # every count change (a third of the columns).
-            tol = max(4.0 * (span_hi - span_lo) / samples, 0.05 * radius)
+            # The chaining gate follows the segment's OWN feature scale
+            # (core step, not the padded span): a pad-inflated tol once
+            # exceeded the separation between a short segment's two real
+            # loci - exactly the weld this gate exists to prevent.
+            tol = min(max(4.0 * base_span / samples, 0.05 * radius),
+                      0.5 * radius)
             open_curves = []  # [points, last_r]
-            for k in range(samples + 1):
-                s = span_lo + (span_hi - span_lo) * k / samples
+            for k in range(columns + 1):
+                s = span_lo + (span_hi - span_lo) * k / columns
                 _dx, _dy, r_c, _taper = self._sample(pair, s)
                 crossings = []
-                r_lo, r_hi = r_c - 1.25 * radius, r_c + 1.25 * radius
-                steps = 40
+                r_lo = r_c - 1.25 * radius - pad
+                r_hi = r_c + 1.25 * radius + pad
+                steps = min(400, max(40, int(math.ceil(
+                    40.0 * (r_hi - r_lo) / (2.5 * radius)))))
                 prev_sign = None
                 prev_r = None
                 for j in range(steps + 1):
@@ -1552,14 +1662,15 @@ class _AdditionalWarp:
             return 0.0
         return (1.0 - x) ** 2 if self.falloff == "quadratic" else 1.0 - x
 
-    def displacement(self, third):
-        """Sum over LINES; within one line's segments a partition-of-unity
-        blend: adjacent segments of the same drawn line overlap near their
-        junction, and a plain sum double-counted the shared delta there
-        (measured 54 px off the drawn C). Where the weights sum below 1
-        the plain sum stands, so a single-segment line is untouched."""
-        totals = {}
-        for pair in self.pairs:
+    def _stage_displacement(self, segments, third):
+        """ONE stage's field at `third` (the stage's own input space): a
+        partition-of-unity blend of that drawn line's chord-monotone
+        segments - adjacent segments overlap near their junction, and a
+        plain sum double-counted the shared delta there (measured 54 px
+        off the drawn C). Where the weights sum below 1 the plain sum
+        stands, so a single-segment line is untouched."""
+        vx = vy = weight_sum = 0.0
+        for pair in segments:
             rel = (third[0] - pair["origin"][0], third[1] - pair["origin"][1])
             s = rel[0] * pair["u"][0] + rel[1] * pair["u"][1]
             delta_x, delta_y, r_c, taper = self._sample(pair, s)
@@ -1569,38 +1680,54 @@ class _AdditionalWarp:
             weight = self._weight(abs(r - r_c) / pair["radius"]) * taper
             if weight <= 0.0:
                 continue
-            entry = totals.setdefault(pair.get("group", 0), [0.0, 0.0, 0.0])
-            entry[0] += weight * delta_x
-            entry[1] += weight * delta_y
-            entry[2] += weight
-        dx = dy = 0.0
-        for vx, vy, weight_sum in totals.values():
-            if weight_sum > 1.0:
-                vx /= weight_sum
-                vy /= weight_sum
-            dx += vx
-            dy += vy
-        return dx, dy
+            vx += weight * delta_x
+            vy += weight * delta_y
+            weight_sum += weight
+        if weight_sum > 1.0:
+            vx /= weight_sum
+            vy /= weight_sum
+        return vx, vy
 
     def apply(self, third):
-        dx, dy = self.displacement(third)
-        return (third[0] + dx, third[1] + dy)
+        """The COMPOSITE: stages in drawing order, each evaluated at the
+        point the earlier stages already produced. Lines whose bands do
+        not meet behave exactly like the old flat sum (each acts where
+        the others are identity); where they meet, a later line refines
+        the earlier line's rendering instead of a base-space copy of it."""
+        z = (third[0], third[1])
+        for segments in self.stages:
+            dx, dy = self._stage_displacement(segments, z)
+            if dx != 0.0 or dy != 0.0:
+                z = (z[0] + dx, z[1] + dy)
+        return z
 
-    def unapply(self, third):
-        """Fixed-point inverse. Exact outside folded bands (the iteration's
-        asymptotic rate is the spectral radius |dF/dr| < 1 there, whatever
-        the shear); inside a folded band the inverse is genuinely
-        multivalued and this returns a best-effort iterate - the consumers
-        that need exactness there (warp-locus cutters and probes) carry
-        direct child geometry instead."""
-        x = third
-        for it in range(60):
-            dx, dy = self.displacement(x)
+    def displacement(self, third):
+        z = self.apply(third)
+        return (z[0] - third[0], z[1] - third[1])
+
+    def _stage_jacobian(self, segments, third, step):
+        xp = self._stage_displacement(segments, (third[0] + step, third[1]))
+        xm = self._stage_displacement(segments, (third[0] - step, third[1]))
+        yp = self._stage_displacement(segments, (third[0], third[1] + step))
+        ym = self._stage_displacement(segments, (third[0], third[1] - step))
+        return (1.0 + (xp[0] - xm[0]) / (2.0 * step),
+                (yp[0] - ym[0]) / (2.0 * step),
+                (xp[1] - xm[1]) / (2.0 * step),
+                1.0 + (yp[1] - ym[1]) / (2.0 * step))
+
+    def _stage_iterate(self, segments, third, seed, iterations):
+        x = seed
+        best = None
+        newton_h = min(0.1, 0.25 * min(s["radius"] for s in segments))
+        for it in range(iterations):
+            dx, dy = self._stage_displacement(segments, x)
             rx = x[0] + dx - third[0]
             ry = x[1] + dy - third[1]
             res = math.hypot(rx, ry)
+            if best is None or res < best[0]:
+                best = (res, x)
             if res < 1e-9:
-                return x
+                return best
             fp = (third[0] - dx, third[1] - dy)
             if it < 8:
                 x = fp
@@ -1609,18 +1736,59 @@ class _AdditionalWarp:
             # nears 1 (the fold threshold); the true Jacobian does not.
             # Guarded: the field is piecewise, so a raw Newton step can
             # catapult - keep it only if it beats the fixed-point residual.
-            jxx, jxy, jyx, jyy = self.jacobian(x, step=0.1)
+            jxx, jxy, jyx, jyy = self._stage_jacobian(segments, x, newton_h)
             det = jxx * jyy - jxy * jyx
             if abs(det) < 1e-6:
                 x = fp
                 continue
             cand = (x[0] - (jyy * rx - jxy * ry) / det,
                     x[1] - (jxx * ry - jyx * rx) / det)
-            cdx, cdy = self.displacement(cand)
+            cdx, cdy = self._stage_displacement(segments, cand)
             cres = math.hypot(cand[0] + cdx - third[0],
                               cand[1] + cdy - third[1])
             x = cand if cres < res else fp
-        return x
+        return best
+
+    def _stage_unapply(self, segments, third):
+        best = self._stage_iterate(segments, third, third, 60)
+        if best[0] < 1e-6:
+            return best[1]
+        # Near a fold apex the fixed point oscillates around the target
+        # and the guarded Newton never beats it, so the plain iteration
+        # can return a NON-preimage whose residual then reads as drawn
+        # deformation downstream (a straight synced line became a
+        # full-strength deformer). A true preimage exists (the folded
+        # sheet's image covers the band) - restart from seeds offset by
+        # fractions of each segment's local ask and keep the best.
+        for pair in segments:
+            rel = (third[0] - pair["origin"][0], third[1] - pair["origin"][1])
+            s = rel[0] * pair["u"][0] + rel[1] * pair["u"][1]
+            delta_x, delta_y, _r_c, taper = self._sample(pair, s)
+            if abs(delta_x) < 1e-9 and abs(delta_y) < 1e-9:
+                continue
+            for fraction in (0.5, 1.0, 1.5):
+                seed = (third[0] - fraction * delta_x,
+                        third[1] - fraction * delta_y)
+                candidate = self._stage_iterate(segments, third, seed, 30)
+                if candidate[0] < best[0]:
+                    best = candidate
+                if best[0] < 1e-6:
+                    return best[1]
+        return best[1]
+
+    def unapply(self, third):
+        """Inverse of the composite: stages inverted in REVERSE drawing
+        order, each by fixed-point iteration with a guarded Newton
+        polish on that single stage's field. Exact outside folded bands
+        (each stage's iteration rate is its own |dF/dr| < 1 there);
+        inside a folded band the inverse is genuinely multivalued and
+        this returns a best-effort branch - the consumers that need
+        exactness there (warp-locus cutters and probes) carry direct
+        child geometry instead."""
+        z = third
+        for segments in reversed(self.stages):
+            z = self._stage_unapply(segments, z)
+        return z
 
 
 def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None,
@@ -1767,13 +1935,18 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
                 arc_v / (v_scale_pos if arc_v >= 0.0 else v_scale_neg))
 
     # The additional (pink) lines' influence field, built in Third space
-    # from each pair's two boards. A line's STORED Third polyline is
-    # authoritative when present: on a folded frame the inverse solve is
-    # branch-ambiguous, and re-deriving a synced partner through it was
-    # measured to fabricate a 278 px delta on a pair the user never edited.
-    # Solving happens only for legacy assets that carry no coordinates.
-    # None when there are no pairs - and then every code path below is
-    # arithmetic-identical to the warp-free mapper.
+    # from each pair's two boards. `additional_pairs` arrives in DRAWING
+    # ORDER and the warp stages COMPOSE in that order - each later line
+    # is computed in the rendering the earlier ones produce (child-side
+    # thirds are base coordinates, pushed forward inside _AdditionalWarp;
+    # main-side thirds are frame arcs unscaled, already rendering-space).
+    # A line's STORED Third polyline is authoritative when present: on a
+    # folded frame the inverse solve is branch-ambiguous, and re-deriving
+    # a synced partner through it was measured to fabricate a 278 px
+    # delta on a pair the user never edited. Solving happens only for
+    # legacy assets that carry no coordinates. None when there are no
+    # pairs - and then every code path below is arithmetic-identical to
+    # the warp-free mapper.
     warp = None
     if additional_pairs:
         thirds = []
@@ -6313,7 +6486,8 @@ def _line_id(line, index):
 
 
 def _additional_pairs():
-    """The (child, main) additional-line pairs, matched BY IDENTITY.
+    """The (child, main) additional-line pairs, matched BY IDENTITY and
+    returned in DRAWING ORDER.
 
     Positional zip was measured to re-pair surviving lines after a one-board
     undo desynced the lists - marrying unrelated guides into a fabricated
@@ -6322,6 +6496,12 @@ def _additional_pairs():
     ignored with a note, never re-matched. Legacy assets without ids fall
     back to their list position, which reproduces the old pairing exactly
     for in-step boards.
+
+    ORDER MATTERS now: the warp stages COMPOSE, each later line computed
+    in the rendering the earlier ones produce. Ids are allocated max+1 at
+    creation and a redraw keeps its line's id, so ascending id IS the
+    drawing order - stable across deletion, save/load and legacy stamping
+    (position order approximates creation order there).
     """
     child_lines = (_assets_for("child").get(ADDITIONAL_PROPERTY) or {}).get("lines") or []
     main_lines = (_assets_for("main").get(ADDITIONAL_PROPERTY) or {}).get("lines") or []
@@ -6336,7 +6516,8 @@ def _additional_pairs():
     main_map = by_id(main_lines)
     pairs = []
     orphans = 0
-    for key, child_line in child_map.items():
+    for key in sorted(child_map):
+        child_line = child_map[key]
         main_line = main_map.get(key)
         if main_line is None:
             orphans += 1
@@ -6473,15 +6654,19 @@ def run_additional_line_tool(view_name, points, width=2.5, commands=None):
     Drawing NEAR an existing additional line on this board REPLACES that
     line (redraw-to-edit, the H/V convention) and leaves its partner on the
     other board untouched - the pair's Third-space difference is what
-    drives the warp. Drawing elsewhere APPENDS a new pair whose partner is
-    the drawn line's CHORD (its straightened Third form), so the line's own
-    bend takes effect immediately: on the main board a curved line bends
-    the rendering of the straight child region onto itself, on the child
-    board a curved texture feature renders straightened. A straight line is
-    a neutral marker either way, and the partner is never synthesized
-    through the warped mapping (that re-encoded the standing deformation)
-    nor re-derived by inverse solves at build time (branch-ambiguous on
-    folded frames) - both sides carry authoritative third coordinates.
+    drives the warp. Drawing elsewhere APPENDS a new pair - the LAST stage
+    of the composition chain - whose partner is the drawn line's CHORD in
+    the RENDERING the standing lines already produce: a child-drawn line
+    is pushed through the chain and straightened there, a main-drawn
+    line's frame arcs already ARE that rendering and its child anchor
+    pulls back through the chain (best-effort inside a fold band, with a
+    loud note). The line's own bend takes effect immediately either way.
+    NEUTRALITY is judged in the rendering: a straight main-drawn line asks
+    for nothing; a straight child-drawn line inside a standing warp band
+    asks to FLATTEN that band - that is the composition rule, not a leak.
+    What stays banned is re-deriving a STORED third by inverse solves at
+    build time (branch-ambiguous on folded frames) - both sides carry
+    authoritative third coordinates from the moment they are made.
     Pairs share an id; the partner write is committed to the OTHER board's
     history too, so a one-board undo cannot silently orphan it.
     """
@@ -6522,25 +6707,63 @@ def run_additional_line_tool(view_name, points, width=2.5, commands=None):
         # form. Per the geodesic argument the chord IS the line's shape on
         # the flattened surface, so the line's own bend relative to it is
         # the deformation, and drawing a curved line takes effect
-        # IMMEDIATELY (a straight line is a neutral marker). The first
-        # version mirrored the drawn line verbatim (delta == 0), and the
-        # tool appeared to do nothing until the partner was edited.
+        # IMMEDIATELY. The first version mirrored the drawn line verbatim
+        # (delta == 0), and the tool appeared to do nothing until the
+        # partner was edited.
+        #
+        # STAGES COMPOSE: this new line is the LAST stage, so its chord
+        # and geodesics live in the RENDERING the standing lines already
+        # produce - the chord is taken after pushing a child-drawn line
+        # through the standing chain, and a main-drawn line's frame arcs
+        # already ARE that rendering space (the frame inverse never
+        # involves the warp). The synced partner's stored coordinates
+        # keep each board's own convention (child stores base Third,
+        # main stores rendering), so the child-side chord pulls back
+        # through the chain - best-effort inside a fold band, where the
+        # preimage is genuinely multivalued. Under the old flat-sum
+        # model going through the warp RE-ENCODED the standing
+        # deformation (a measured doubling); under composition NOT going
+        # through it is what mis-anchors - a partner synthesized in base
+        # coordinates landed displaced by exactly the standing warp's
+        # shift when drawn over a warped region.
+        chain = None
+        if lines_here or lines_other:  # the new item is not appended yet
+            full, _chain_why = _mapper_from_assets()
+            chain = getattr(full, "warp", None) if full is not None else None
         third = [tuple(t) for t in item["third"]]
-        cum = _cumulative_lengths(third)
+        staged = ([chain.apply(t) for t in third]
+                  if chain is not None and view_name == "child" else third)
+        cum = _cumulative_lengths(staged)
         total = cum[-1] or 1.0
-        head, tail = third[0], third[-1]
+        head, tail = staged[0], staged[-1]
         chord_third = [(head[0] + (tail[0] - head[0]) * (cum[i] / total),
                         head[1] + (tail[1] - head[1]) * (cum[i] / total))
-                       for i in range(len(third))]
+                       for i in range(len(staged))]
         if view_name == "child":
             display = [base.main_frame.hv(*base.scale_arcs(*t))
                        for t in chord_third]
+            partner_third = chord_third
         else:
-            display = [base.child_frame.hv(*t) for t in chord_third]
+            partner_third = ([chain.unapply(t) for t in chord_third]
+                             if chain is not None else chord_third)
+            if chain is not None:
+                # A failed pullback must never become geometry silently:
+                # the build derives this stage's delta from the partner's
+                # pushed-forward position, so any solver residual here
+                # reads as DRAWN deformation downstream.
+                worst = max(math.hypot(*(a - b for a, b in
+                                         zip(chain.apply(p), t)))
+                            for p, t in zip(partner_third, chord_third))
+                if worst > 0.5:
+                    print(f"[auto_mapping] warning: the new line crosses a "
+                          f"fold band of an earlier additional line - its "
+                          f"child-side anchor is approximate there "
+                          f"({worst:.1f} px off one branch).")
+            display = [base.child_frame.hv(*t) for t in partner_third]
         lines_here.append(item)
         lines_other.append({"points": display, "width": float(width),
                             "id": new_id,
-                            "third": [list(t) for t in chord_third]})
+                            "third": [list(t) for t in partner_third]})
         _save_assets(other)
         _overlays_changed(other)
         try:
