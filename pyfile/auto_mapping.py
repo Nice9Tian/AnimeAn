@@ -3083,7 +3083,7 @@ def _stitch_crease(pieces, tolerance, boundaries):
     return list(pieces.values())
 
 
-def _corner_loci(map_point, v_range, h_range, step=POLY_STEP):
+def _corner_loci(map_point, v_range, h_range, spans=None, step=POLY_STEP):
     """Exact fold loci of guide CORNERS: constant-arc lines in arc space.
 
     A sharp corner folds the map along the corner's preimage - a straight
@@ -3104,6 +3104,14 @@ def _corner_loci(map_point, v_range, h_range, step=POLY_STEP):
     """
     main = map_point.main_frame
     curves = []
+    # The line POSITION gate uses the artwork's true arc extent (`spans`,
+    # unpadded), not the padded scan window: a fold at an arc no material
+    # reaches folds nothing - injecting it drew a 140 px dashed crease
+    # across visually flat artwork (the corner sat 2.5 px from the guide
+    # end, its line 14 px beyond the pattern, inside the pad). The ROW
+    # ranges stay padded: along the line, branch tips still need room to
+    # reach their anchors (6.1).
+    h_span, v_span = spans if spans is not None else (h_range, v_range)
 
     def lines(guide, zero, window, other_guide, other_zero, other_window,
               span, rows, transpose):
@@ -3159,20 +3167,69 @@ def _corner_loci(map_point, v_range, h_range, step=POLY_STEP):
             emit(run)
 
     lines(main.gh, main.h_arc, main.h_window, main.gv, main.v_arc,
-          main.v_window, h_range, v_range, False)
+          main.v_window, h_span, v_range, False)
     lines(main.gv, main.v_arc, main.v_window, main.gh, main.h_arc,
-          main.h_window, v_range, h_range, True)
+          main.h_window, v_span, h_range, True)
     return curves
 
 
+def _curve_is_fold(map_point, curve, probe=POLY_STEP, samples=5):
+    """Does the field actually CHANGE SIDE across this traced curve?
+
+    The sweeps trace zeros of the analytic factor per row, but near a corner
+    row the windowed tangent swings so fast that isolated per-row zeros
+    chain into a long near-horizontal "curve" spanning the guide - while the
+    field on either side never flips: at most a fold PAIR thinner than the
+    probe hides inside (measured ~1.5 arc px - visually nothing, and the
+    pointwise splitters already treat it as parity-neutral). Such a phantom
+    still collected anchors from fill-edge crossings and drew a 140 px
+    dashed crease across visually flat artwork, and its cutter shifted
+    depth counts by a parity-neutral +2. Probing _fold_sign one step to
+    each side at a few spots along the curve separates real creases (any
+    sample flips - even near a birth point the arms part beyond the probe
+    somewhere mid-branch) from phantoms (no sample flips anywhere).
+    """
+    h_scales, v_scales = map_point.h_scales, map_point.v_scales
+    child = map_point.child_frame
+
+    def at(a_h, a_v):
+        return child.hv(a_h / (h_scales[1] if a_h >= 0.0 else h_scales[0]),
+                        a_v / (v_scales[1] if a_v >= 0.0 else v_scales[0]))
+
+    count = len(curve)
+    if count < 2:
+        return False
+    tested = 0
+    for k in range(samples):
+        index = max(0, min(count - 2, int((k + 0.5) * (count - 1) / samples)))
+        pa = at(*curve[index])
+        pb = at(*curve[index + 1])
+        dx, dy = pb[0] - pa[0], pb[1] - pa[1]
+        length = math.hypot(dx, dy)
+        if length <= 1e-9:
+            continue
+        nx, ny = -dy / length, dx / length
+        mid = ((pa[0] + pb[0]) * 0.5, (pa[1] + pb[1]) * 0.5)
+        tested += 1
+        if (_fold_sign(map_point, (mid[0] + nx * probe, mid[1] + ny * probe))
+                != _fold_sign(map_point, (mid[0] - nx * probe, mid[1] - ny * probe))):
+            return True
+    return tested == 0  # nothing to judge: keep, as before this filter
+
+
 def _crease_curves(map_point, v_range, h_range=None, samples=48, max_columns=600,
-                   stitch=True):
+                   stitch=True, corner_spans=None):
     """The fold loci, traced from the FRAMES rather than from the strokes.
 
     stitch=True returns loci joined into whole paths for drawing and
     anchoring; stitch=False returns the raw deduped curve SET (each curve a
     single locus) for the fill splitter and depth counting, where chained
     paths would mis-pair ring crossings - see _stitch_crease.
+
+    corner_spans carries the artwork's UNPADDED (h, v) arc extents for the
+    corner-line position gate (_corner_loci): the ranges themselves arrive
+    padded so branch tips can reach their anchors, but a corner line at an
+    arc no material reaches must not be injected at all.
 
     Both sweep directions run (see _crease_scan: one sweep is blind to loci
     parallel to its walk - a coiling V guide over a near-straight H guide
@@ -3212,7 +3269,7 @@ def _crease_curves(map_point, v_range, h_range=None, samples=48, max_columns=600
         # Corner lines first: they are exact and continuous through every
         # junction, so the sweeps' fragmented versions of the same lines
         # dedupe away against them instead of the other way round.
-        for pool in (_corner_loci(map_point, v_range, h_range),
+        for pool in (_corner_loci(map_point, v_range, h_range, corner_spans),
                      h_good, v_good, h_bad, v_bad):
             for curve in pool:
                 for run in _uncovered_runs(curve, grid, tolerance):
@@ -3223,8 +3280,11 @@ def _crease_curves(map_point, v_range, h_range=None, samples=48, max_columns=600
         # single locus (injected corner lines arrive whole), so its ring
         # crossings pair correctly along each cutter. Junction bridges and
         # any chained arms the path-building below may produce are for
-        # drawing and anchoring only - see _stitch_crease.
-        return [curve for curve in pieces if len(curve) >= 2]
+        # drawing and anchoring only - see _stitch_crease. Phantom curves
+        # the field never flips across (_curve_is_fold) are dropped here so
+        # they neither cut fills nor shift depth counts.
+        return [curve for curve in pieces
+                if len(curve) >= 2 and _curve_is_fold(map_point, curve)]
     stitched = _stitch_crease(pieces, 4.0 * POLY_STEP, boundaries)
     return [curve for curve in stitched if len(curve) >= 2]
 
@@ -3377,7 +3437,7 @@ def _prepare_fold_context(map_point, h_range, v_range):
         map_point,
         (min(v_range[0], anchor[1]) - pad, max(v_range[1], anchor[1]) + pad),
         (min(h_range[0], anchor[0]) - pad, max(h_range[1], anchor[0]) + pad),
-        stitch=False)
+        stitch=False, corner_spans=(h_range, v_range))
     map_point.depth_anchor = anchor
     map_point.child_cutters = None  # built lazily by _child_cutters
 
@@ -4358,8 +4418,44 @@ def _emit_seals(animean, out, map_point, pattern, child_area, main_area, width_s
     # at the pattern's arc extent needs the rows just beyond it to give the
     # branch tip room to reach the cut.
     pad = 4.0 * POLY_STEP
-    for curve in _crease_curves(map_point, (v_low - pad, v_high + pad),
-                                (h_low - pad, h_high + pad)):
+    # A traced curve can hold stretches OUTSIDE the artwork's arc extent: the
+    # padded window traces them (branch tips need the room) and stitching can
+    # chain a material stretch to an immaterial one. Nothing folds where no
+    # material reaches - yet anchoring alone no longer excludes such
+    # stretches: in a heavy-compression zone the image of a cut from a
+    # NEIGHBOURING locus lands within the trim tolerance of the immaterial
+    # stretch's image and anchors it (measured: a 140 px dashed crease across
+    # visually flat artwork, on a corner line 14 px beyond the pattern's arc
+    # extent - the cuts anchoring it belonged to a locus 14+ arc px away).
+    # So clip in ARC space, where compression cannot confuse neighbours,
+    # keeping each inside run as its own branch - splitting, never bridging,
+    # so the old clip-and-join hazard (a straight seam across the dropped
+    # middle) cannot return. The margin is the anchor tolerance: a cut ON
+    # the extent boundary keeps a reachable tip.
+    in_h = (h_low - tolerance, h_high + tolerance)
+    in_v = (v_low - tolerance, v_high + tolerance)
+
+    def _window_runs(curve):
+        run = []
+        for arc, other in curve:
+            if in_h[0] <= arc <= in_h[1] and in_v[0] <= other <= in_v[1]:
+                run.append((arc, other))
+            else:
+                if len(run) >= 2:
+                    yield run
+                run = []
+        if len(run) >= 2:
+            yield run
+
+    for whole in _crease_curves(map_point, (v_low - pad, v_high + pad),
+                                (h_low - pad, h_high + pad),
+                                corner_spans=((h_low, h_high), (v_low, v_high))):
+      for curve in _window_runs(whole):
+        # A stitched chain can carry a phantom stretch (the field never
+        # flips across it - see _curve_is_fold); judged per window run so a
+        # real stretch chained to a phantom one still draws.
+        if not _curve_is_fold(map_point, curve):
+            continue
         points = [main.hv(arc, other) for arc, other in curve]
         if len(points) < 2:
             continue
