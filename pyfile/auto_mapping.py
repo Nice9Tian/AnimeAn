@@ -7577,17 +7577,17 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
                 exact = [tuple(map_point.coords(p)) for p in ring]
                 # TWO resolutions with two jobs: containment probes use a
                 # decimated copy (bbox-gated, cheap), but TRIANGULATION
-                # gets a geometry-true RDP pass - the count cap turned
-                # curves into chords and the fill boundary visibly parted
-                # from the outline stroke drawn over the same path.
-                fine = _rdp_ring(exact, 0.6)
+                # keeps the EXACT ring - the boundary must be the same
+                # geometry the outline strokes drape along, or the two
+                # part with sawtooth gaps (user report; an RDP pass here
+                # chorded curves the strokes still followed).
                 coarse = decimate(exact)
                 bbox = (min(p[0] for p in coarse),
                         min(p[1] for p in coarse),
                         max(p[0] for p in coarse),
                         max(p[1] for p in coarse))
                 group.append((coarse, bbox))
-                group_fine.append(fine)
+                group_fine.append(exact)
         if group:
             rings_third.append(group)
             rings_fine.append(group_fine)
@@ -7812,7 +7812,9 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
                         adjacency[pair] = adjacency.get(pair, 0) + 1
                     last_label = lab
                     gap = 0
-        # Spanning propagation: neighbours alternate.
+        # Spanning propagation: neighbours alternate (minimal-relief
+        # prior; the DEPTH-anchored orientation below overrides it
+        # wherever the 2D pipeline has an opinion).
         visited = [False] * region_count
         for root in range(region_count):
             if visited[root]:
@@ -7827,6 +7829,54 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
                         visited[other] = True
                         region_sign[other] = -region_sign[r]
                         queue.append(other)
+
+    # THE RED HANDLE DECIDES NEAR AND FAR. The 2D pipeline stacks its
+    # layers by _fold_depth from the nearest-point anchor, and the 3D
+    # object must occlude the same way (user report: they disagreed -
+    # the sign priors above are geometry-blind). Each node gets the 2D
+    # stacking depth of its child point; each sloped region is then
+    # oriented so walking UP its slope walks toward SMALLER depth
+    # (nearer the camera = larger z).
+    node_depth = [None] * len(nodes)
+    if getattr(map_point, "depth_curves", None):
+        child_frame_local = map_point.child_frame
+        for k, (_i, _j, u, v) in enumerate(nodes):
+            child_pt = child_frame_local.hv(u, v)
+            try:
+                side = _fold_sign(map_point, child_pt)
+                node_depth[k] = _fold_depth(map_point, child_pt, side)
+            except Exception:
+                node_depth[k] = None
+        for region in range(region_count):
+            score = 0.0
+            votes = 0
+            for k in range(len(nodes)):
+                if labels[k] != region:
+                    continue
+                g = oriented[k]
+                length = math.hypot(*g)
+                if length < 1e-9:
+                    continue
+                gx = g[0] * region_sign[region] * handed[k] * majority \
+                    / length
+                gy = g[1] * region_sign[region] * handed[k] * majority \
+                    / length
+                ki, kj = nodes[k][0], nodes[k][1]
+                ahead = node_index.get((ki + int(round(gx * 2)),
+                                        kj + int(round(gy * 2))))
+                behind = node_index.get((ki - int(round(gx * 2)),
+                                         kj - int(round(gy * 2))))
+                if ahead is None or behind is None:
+                    continue
+                da = node_depth[ahead]
+                db = node_depth[behind]
+                if da is None or db is None or da == db:
+                    continue
+                # +grad points toward larger z; depth must SHRINK there.
+                score += db - da
+                votes += 1
+            if votes and score < 0.0:
+                region_sign[region] = -region_sign[region]
     signs = [region_sign[labels[k]] if labels[k] != -1 else 1.0
              for k in range(len(nodes))]
     # Valley nodes inherit the nearest labelled sign along their row so
@@ -7901,6 +7951,17 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
         rs_old = rs_new
     z_mean = sum(z) / len(z)
     z = [(v - z_mean) * scale0 for v in z]   # into canvas units
+    # Global concavity: the per-region orientation fixes RELATIVE signs;
+    # the remaining all-or-nothing flip is settled the same way - deeper
+    # 2D stacking must sit farther from the camera (smaller z).
+    known = [(zv, node_depth[k]) for k, zv in enumerate(z)
+             if node_depth[k] is not None]
+    if known:
+        za = sum(v for v, _d in known) / len(known)
+        da = sum(d for _v, d in known) / len(known)
+        covariance = sum((v - za) * (d - da) for v, d in known)
+        if covariance > 0.0:
+            z = [-v for v in z]
 
     # Relief lookup off the node grid (bilinear); mesh vertices and
     # draped strokes both read it.
@@ -7955,14 +8016,31 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
                     holes.append(other)
             # Primary: constrained-Delaunay quality mesh (library) - the
             # area bound does the interior refinement, so no separate
-            # subdivision and no T-junction seams. Fallback: earcut plus
-            # bisection (degraded: hairline seams possible).
-            quality = _triangulate_quality(ring, holes,
+            # subdivision and no T-junction seams. The boundary rings are
+            # densified to the SAME arc step the strokes drape at, so an
+            # outline drawn along the fill edge lands on the mesh
+            # boundary point-for-point instead of cutting chords across
+            # it. Fallback: earcut on RDP-simplified rings plus bisection
+            # (degraded: chords and hairline seams possible).
+            step = 0.5 * min(du, dv)
+
+            def dense_ring(points):
+                closed = list(points) + [points[0]]
+                cum = _cumulative_lengths(closed)
+                if cum[-1] <= step:
+                    return list(points)
+                count = max(len(points), int(cum[-1] / step) + 1)
+                return [_point_at_arc(closed, cum, cum[-1] * k / count)
+                        for k in range(count)]
+
+            quality = _triangulate_quality(dense_ring(ring),
+                                           [dense_ring(h) for h in holes],
                                            0.5 * max_edge * max_edge)
             if quality is not None:
                 flat_verts, tris = quality
             else:
-                flat_verts, tris = _triangulate_polygon(ring, holes)
+                flat_verts, tris = _triangulate_polygon(
+                    _rdp_ring(ring, 0.6), [_rdp_ring(h, 0.6) for h in holes])
                 flat_verts, tris = _subdivide_mesh(flat_verts, tris, max_edge)
             base = len(vertices)
             for (u, v) in flat_verts:
@@ -7980,12 +8058,13 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
         dense = poly
         cum = _cumulative_lengths(poly)
         if cum[-1] > 0:
-            # Density follows the surface grid but stays bounded: a tiny
-            # solid once made du/dv microscopic and a long stroke
-            # exploded into hundreds of thousands of points.
+            # Same arc step as the fill boundaries (dense_ring), so an
+            # outline stroke and the fill edge it runs along stay
+            # point-for-point aligned; bounded, because a tiny solid
+            # once made du/dv microscopic and a long stroke exploded.
             count = max(len(poly),
-                        min(int(cum[-1] / max(du, dv)) + 2,
-                            4 * len(poly) + 512))
+                        min(int(cum[-1] / (0.5 * min(du, dv))) + 2,
+                            4 * len(poly) + 2048))
             dense = [_point_at_arc(poly, cum, cum[-1] * k / (count - 1))
                      for k in range(count)]
         pts = []
@@ -8033,6 +8112,14 @@ def run_to_3d():
         return False
     for note in getattr(map_point, "additional_notes", ()):
         print(f"[auto_mapping] warning: {note}")
+    # The 2D pipeline's occlusion is the AUTHORITY on near/far: the red
+    # nearest-point handle anchors _fold_depth, and the reconstruction
+    # orients its slopes so the 3D stacking matches what the 2D render
+    # shows (without it, the sign prior guessed and could disagree).
+    if _FOLD["split"]:
+        ranges = _pattern_arc_ranges(map_point, child_pattern, child_fills)
+        if ranges is not None:
+            _prepare_fold_context(map_point, ranges[0], ranges[1])
 
     child_area = (_assets_for("child").get(MAPPING_AREA_PROPERTY)
                   or {}).get("polygons")
