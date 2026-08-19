@@ -7220,6 +7220,93 @@ def _segments_cross(a, b, c, d):
     return d1 * d2 < 0.0 and d3 * d4 < 0.0
 
 
+def _rdp_ring(ring, epsilon):
+    """Douglas-Peucker on a closed ring: geometry-true simplification.
+
+    A COUNT cap (keep every Nth point) turned curved stretches into long
+    chords, and the fill boundary visibly parted from the outline stroke
+    drawn over the same path (user report). A geometric tolerance keeps
+    every deviation below sub-pixel instead."""
+    if len(ring) <= 4:
+        return list(ring)
+
+    def simplify(points):
+        if len(points) < 3:
+            return list(points)
+        a, b = points[0], points[-1]
+        span = math.hypot(b[0] - a[0], b[1] - a[1])
+        worst = -1.0
+        index = 0
+        for k in range(1, len(points) - 1):
+            p = points[k]
+            if span < 1e-9:
+                d = math.hypot(p[0] - a[0], p[1] - a[1])
+            else:
+                d = abs((b[0] - a[0]) * (a[1] - p[1])
+                        - (a[0] - p[0]) * (b[1] - a[1])) / span
+            if d > worst:
+                worst = d
+                index = k
+        if worst <= epsilon:
+            return [points[0], points[-1]]
+        left = simplify(points[:index + 1])
+        right = simplify(points[index:])
+        return left[:-1] + right
+
+    # Split at the two farthest-apart vertices so the closed ring gets two
+    # open runs (DP needs anchored endpoints).
+    far = max(range(len(ring)), key=lambda k: (ring[k][0] - ring[0][0]) ** 2
+              + (ring[k][1] - ring[0][1]) ** 2)
+    first = simplify(ring[:far + 1])
+    second = simplify(ring[far:] + [ring[0]])
+    out = first[:-1] + second[:-1]
+    return out if len(out) >= 3 else list(ring)
+
+
+def _triangulate_quality(outer, holes, max_area):
+    """(vertices, triangles) via the `triangle` LIBRARY (Shewchuk):
+    constrained Delaunay with a quality bound and a max triangle area.
+
+    This is the primary mesher: the boundary is an exact constraint, and
+    interior refinement comes from the SAME triangulation - no separate
+    subdivision pass, so there are no T-junctions and no hairline seams
+    between triangles (the longest-edge bisection stand-in split an edge
+    on one side but not always its neighbour's, and the cracks showed).
+    Returns None when the library is unavailable or rejects the input
+    (e.g. a self-intersecting artist ring) - callers fall back to earcut.
+    """
+    import pydeps
+    tri = pydeps.ensure("triangle")
+    np = pydeps.ensure("numpy")
+    if tri is None or np is None:
+        return None
+    rings = [list(outer)] + [list(hole) for hole in holes]
+    points = []
+    segments = []
+    for ring in rings:
+        base = len(points)
+        count = len(ring)
+        points.extend(ring)
+        segments.extend([[base + k, base + (k + 1) % count]
+                         for k in range(count)])
+    payload = {"vertices": np.array(points, dtype=float),
+               "segments": np.array(segments, dtype=int)}
+    hole_points = [_ring_interior_point(hole) for hole in holes]
+    if hole_points:
+        payload["holes"] = np.array(hole_points, dtype=float)
+    try:
+        result = tri.triangulate(payload, f"pq20a{max_area:.4f}")
+        vertices = [tuple(p) for p in result["vertices"]]
+        triangles = [tuple(int(i) for i in t) for t in result["triangles"]]
+    except Exception as error:
+        print(f"[auto_mapping] triangle library rejected a ring ({error}); "
+              "falling back to earcut")
+        return None
+    if not triangles:
+        return None
+    return vertices, triangles
+
+
 def _triangulate_with_earcut(outer, holes):
     """(vertices, triangles) via the mapbox_earcut LIBRARY, or None.
 
@@ -7468,13 +7555,18 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
         return [ring[int(k * step)] for k in range(cap)]
 
     rings_third = []
+    rings_fine = []
     fill_colors = []
     for fill in child_fills or []:
         color = fill.get("color") or {}
         rgba = (int(color.get("r", 0)), int(color.get("g", 0)),
                 int(color.get("b", 0)), int(color.get("a", 255)))
         group = []
+        group_fine = []
         for source_ring in _path_commands_to_polygons(fill.get("commands")):
+            if len(source_ring) >= 2 \
+                    and _dist(source_ring[0], source_ring[-1]) <= 1e-9:
+                source_ring = source_ring[:-1]  # drop the closing duplicate
             if len(source_ring) < 3:
                 continue
             # Respect the child mapping area: the real mapping deletes
@@ -7482,12 +7574,23 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
             for ring in _clip_rings_to_area([source_ring], child_area):
                 if len(ring) < 3:
                     continue
-                third = decimate([tuple(map_point.coords(p)) for p in ring])
-                bbox = (min(p[0] for p in third), min(p[1] for p in third),
-                        max(p[0] for p in third), max(p[1] for p in third))
-                group.append((third, bbox))
+                exact = [tuple(map_point.coords(p)) for p in ring]
+                # TWO resolutions with two jobs: containment probes use a
+                # decimated copy (bbox-gated, cheap), but TRIANGULATION
+                # gets a geometry-true RDP pass - the count cap turned
+                # curves into chords and the fill boundary visibly parted
+                # from the outline stroke drawn over the same path.
+                fine = _rdp_ring(exact, 0.6)
+                coarse = decimate(exact)
+                bbox = (min(p[0] for p in coarse),
+                        min(p[1] for p in coarse),
+                        max(p[0] for p in coarse),
+                        max(p[1] for p in coarse))
+                group.append((coarse, bbox))
+                group_fine.append(fine)
         if group:
             rings_third.append(group)
+            rings_fine.append(group_fine)
             fill_colors.append(rgba)
     stroke_info = []
     for stroke in child_pattern or []:
@@ -7835,8 +7938,8 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
         a, b = ring[0], ring[1 % len(ring)]
         return ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5)
 
-    for order, (group, rgba) in enumerate(zip(rings_third, fill_colors)):
-        rings = [ring for ring, _bbox in group]
+    for order, (group_fine, rgba) in enumerate(zip(rings_fine, fill_colors)):
+        rings = group_fine
         levels = []
         for index, ring in enumerate(rings):
             probe = boundary_probe(ring)
@@ -7850,8 +7953,17 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
                 if j != index and levels[j] % 2 == 1 \
                         and _point_in_ring(boundary_probe(other), ring):
                     holes.append(other)
-            flat_verts, tris = _triangulate_polygon(ring, holes)
-            flat_verts, tris = _subdivide_mesh(flat_verts, tris, max_edge)
+            # Primary: constrained-Delaunay quality mesh (library) - the
+            # area bound does the interior refinement, so no separate
+            # subdivision and no T-junction seams. Fallback: earcut plus
+            # bisection (degraded: hairline seams possible).
+            quality = _triangulate_quality(ring, holes,
+                                           0.5 * max_edge * max_edge)
+            if quality is not None:
+                flat_verts, tris = quality
+            else:
+                flat_verts, tris = _triangulate_polygon(ring, holes)
+                flat_verts, tris = _subdivide_mesh(flat_verts, tris, max_edge)
             base = len(vertices)
             for (u, v) in flat_verts:
                 q = image_of_third(u, v)
