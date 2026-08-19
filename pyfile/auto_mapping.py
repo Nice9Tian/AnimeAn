@@ -41,7 +41,10 @@ import bisect
 import heapq
 import json
 import math
+import os
 import re
+import tempfile
+import time
 
 import bezier
 import python_hooks
@@ -1140,6 +1143,78 @@ def _transfer_scales(child_raw, child_total, main_side):
             (1.0 - w_pos) * base_neg + w_pos * base_pos)
 
 
+def _branch_window(points, third):
+    """Canvas-arc-fraction window (f_lo, f_hi) of the longest
+    branch-continuous stretch of a line's Third lift, or None when no
+    usable stretch exists.
+
+    On a FOLDED frame the inverse solve is branch-ambiguous, and a line
+    drawn ACROSS a fold edge has no continuous Third lift at all -
+    canvas points 3.85 px apart landed 399 px apart in Third
+    (ADD_TOPO_ERROR), and interpolating a profile across that jump
+    fabricated a displacement field that folded clean ground into phantom
+    layers. Detection compares each step's Third/canvas STRETCH RATIO to
+    the line's own overall ratio (the Third parameterization legitimately
+    stretches severalfold on curved guides, so no absolute Third scale
+    works, and a Third-median test was blind to 2-3 point polylines - a
+    straight drag flattens to exactly 2 points). Windows are measured in
+    CANVAS arc fractions: a jump inflates the THIRD arc (one 399 px step
+    was 80% of it), and jump-inflated fractions named different physical
+    stretches on the pair's two sides - the clip then fabricated the very
+    field it exists to prevent.
+    """
+    if len(points) < 2 or len(third) != len(points):
+        return None
+    c_cum = _cumulative_lengths(points)
+    if c_cum[-1] <= 1e-6:
+        return None
+    t_cum = _cumulative_lengths(third)
+    overall = t_cum[-1] / c_cum[-1]
+    if len(points) == 2:
+        # A single step IS the overall ratio - only an absolute runaway
+        # betrays a jump (normal Third stretch stays single-digit even on
+        # strongly curved guides; a branch jump multiplies it wholesale).
+        return (0.0, 1.0) if overall <= 40.0 else None
+    limit = max(6.0 * max(overall, 1.0), 15.0)
+    best = (0.0, None)
+    run_start = 0
+    count = len(points) - 1
+    for index in range(count + 1):
+        jump = False
+        if index < count:
+            c_step = max(c_cum[index + 1] - c_cum[index], 0.75)
+            t_step = t_cum[index + 1] - t_cum[index]
+            jump = t_step > limit * c_step
+        if index == count or jump:
+            if index > run_start:
+                length = c_cum[index] - c_cum[run_start]
+                if length > best[0]:
+                    best = (length, (c_cum[run_start] / c_cum[-1],
+                                     c_cum[index] / c_cum[-1]))
+            run_start = index + 1
+    return best[1]
+
+
+def _slice_third_by_canvas_fraction(points, third, f_lo, f_hi):
+    """The Third polyline restricted to a canvas-arc-fraction window."""
+    c_cum = _cumulative_lengths(points)
+    t_cum = _cumulative_lengths(third)
+    lo = c_cum[-1] * f_lo
+    hi = c_cum[-1] * f_hi
+
+    def third_at(canvas_arc):
+        index = bisect.bisect_right(c_cum, canvas_arc) - 1
+        index = max(0, min(index, len(points) - 2))
+        span = c_cum[index + 1] - c_cum[index]
+        t = 0.0 if span <= 1e-9 else (canvas_arc - c_cum[index]) / span
+        return _point_at_arc(third, t_cum,
+                             t_cum[index] + (t_cum[index + 1] - t_cum[index]) * t)
+
+    inner = [i for i, c in enumerate(c_cum) if lo < c < hi]
+    out = [third_at(lo)] + [tuple(third[i]) for i in inner] + [third_at(hi)]
+    return out if len(out) >= 2 else []
+
+
 class _AdditionalWarp:
     """The influence field of the additional (pink) refinement lines.
 
@@ -1222,6 +1297,8 @@ class _AdditionalWarp:
         self.pairs = []   # flat view of every stage's segments
         self._loci = None  # fold_loci memo; stages are immutable after init
         for stage_index, (child_third, main_third) in enumerate(pairs):
+            if len(child_third) < 2 or len(main_third) < 2:
+                continue
             staged_child = [self.apply(tuple(p)) for p in child_third]
             segments = self._prepare(staged_child, main_third, radius_factor)
             if not segments:
@@ -1436,6 +1513,45 @@ class _AdditionalWarp:
         # Reach follows the line's own ARC length, not its chord: a hooked
         # line has a tiny chord but a long presence on the surface.
         radius = max(radius_factor * max(length, arc_total), 1e-6)
+        # MULTISCALE SWEEP: the profile tables get a box-blur pyramid, and
+        # sampling picks the level whose smoothing length matches the
+        # probe's normal distance from the drawn line. A translation sweep
+        # carries the profile VERBATIM across the whole band, so a
+        # high-frequency line (a 427-degree coil, ADD_TOPO_ERROR) printed
+        # its oscillation onto flat ground 200+ px away and folded it into
+        # eight phantom-yet-real creases; physically, distance smooths -
+        # far ground feels only the line's average ask (the heat-kernel
+        # picture of the geodesic influence). On the line itself blur is
+        # zero and every existing behavior is bit-identical.
+        step_med = max((keys[-1] - keys[0]) / max(len(keys) - 1, 1), 1e-6)
+
+        def box(values, half):
+            prefix = [0.0]
+            for v in values:
+                prefix.append(prefix[-1] + v)
+            out = []
+            n = len(values)
+            for i in range(n):
+                lo = max(0, i - half)
+                hi = min(n - 1, i + half)
+                out.append((prefix[hi + 1] - prefix[lo]) / (hi - lo + 1))
+            return out
+
+        # Half-widths 1,2,4,...: the first level is a light touch, so the
+        # exact->blurred onset transition carries a SMALL profile change
+        # over its ramp (a coarse first level compressed the whole change
+        # into a thin shell around the line whose normal gradient itself
+        # read as a fold).
+        blur_levels = [(delta_x, delta_y, offsets)]
+        for k in range(7):
+            half = 2 ** k
+            prev = blur_levels[-1]
+            blur_levels.append(tuple(box(v, half) for v in prev))
+        # How far the blurred sweep centre can drift from the exact one -
+        # the support early-out pads by it, or det_sign would short-cut
+        # inside a band whose live centre moved past the raw slack.
+        rc_span = max((max(abs(a - b) for a, b in zip(level[2], offsets))
+                       for level in blur_levels[1:]), default=0.0)
         # The sweep centre's actual worst slope (smoothing is best-effort,
         # so 4.0 is a target, not a bound) - _in_support pads with it.
         offset_slope = max((abs(b - a) / max(k1 - k0, 1e-6)
@@ -1444,7 +1560,9 @@ class _AdditionalWarp:
                            default=0.0)
         return [{"origin": origin, "u": u, "n": n, "radius": radius,
                  "keys": keys, "delta_x": delta_x, "delta_y": delta_y,
-                 "offsets": offsets, "offset_slope": offset_slope}]
+                 "offsets": offsets, "offset_slope": offset_slope,
+                 "blur_levels": blur_levels, "blur_step": step_med,
+                 "blur_rc_span": rc_span}]
 
     def jacobian(self, third, step=0.25):
         """2x2 Jacobian of apply() by the CHAIN RULE: the product of
@@ -1482,7 +1600,8 @@ class _AdditionalWarp:
                 continue
             _dx, _dy, r_c, _taper = self._sample(pair, s)
             r = rel[0] * pair["n"][0] + rel[1] * pair["n"][1]
-            slack = pad * (1.5 + pair.get("offset_slope", 0.0))
+            slack = (pad * (1.5 + pair.get("offset_slope", 0.0))
+                     + pair.get("blur_rc_span", 0.0))
             if abs(r - r_c) < radius + slack:
                 return True
         return False
@@ -1567,13 +1686,20 @@ class _AdditionalWarp:
             tol = min(max(4.0 * base_span / samples, 0.05 * radius),
                       0.5 * radius)
 
+            # Row resolution must resolve the blur ramp's normal feature
+            # scale, not just the radius: the multiscale field varies
+            # along the normal at the blur-step scale, and rows coarser
+            # than that reported back faces with no traceable locus.
+            row_step = min(2.5 * radius / 40.0,
+                           4.0 * pair.get("blur_step", radius))
+
             def run_sweep(col_lo, col_hi, col_count, row_bounds, point_at):
                 open_curves = []  # [points, last_row]
                 for k in range(col_count + 1):
                     col = col_lo + (col_hi - col_lo) * k / col_count
                     row_lo, row_hi = row_bounds(col)
                     steps = min(400, max(40, int(math.ceil(
-                        40.0 * (row_hi - row_lo) / (2.5 * radius)))))
+                        (row_hi - row_lo) / max(row_step, 1e-6)))))
                     crossings = []
                     prev_sign = None
                     prev_row = None
@@ -1653,7 +1779,7 @@ class _AdditionalWarp:
         self._loci = curves
         return [list(curve) for curve in curves]
 
-    def _sample(self, pair, s):
+    def _sample(self, pair, s, blur=0.0):
         """(delta_x, delta_y, r_c, taper) at chord parameter s.
 
         The end taper is returned SEPARATELY, not multiplied into the
@@ -1664,6 +1790,13 @@ class _AdditionalWarp:
         discontinuously at the taper edge - a C0 tear of up to half the
         applied delta along a whole curve (measured 35 px on a C drawn on
         the child board), which det_sign then reported as phantom folds.
+
+        `blur` = the probe's normal distance from the drawn line: the
+        profile is read from the box-blur pyramid level whose smoothing
+        length matches it (interpolated BETWEEN levels - a level switch
+        would itself be a seam), so far ground feels only the line's
+        smoothed ask and a high-frequency coil no longer folds flat
+        ground hundreds of px away. blur=0 reads the exact tables.
         """
         table_keys = pair["keys"]
         lo, hi = table_keys[0], table_keys[-1]
@@ -1679,12 +1812,33 @@ class _AdditionalWarp:
         s0, s1 = table_keys[index], table_keys[index + 1]
         t = 0.0 if s1 - s0 <= 1e-9 else (s - s0) / (s1 - s0)
 
-        def lerp(values):
-            return values[index] + (values[index + 1] - values[index]) * t
+        levels = pair.get("blur_levels")
+        if levels is None or blur <= 4.0 * pair.get("blur_step", 0.0):
+            def lerp(values):
+                return values[index] + (values[index + 1] - values[index]) * t
 
-        return (lerp(pair["delta_x"]),
-                lerp(pair["delta_y"]),
-                lerp(pair["offsets"]),
+            return (lerp(pair["delta_x"]),
+                    lerp(pair["delta_y"]),
+                    lerp(pair["offsets"]),
+                    taper)
+        # Window length ~ the normal distance itself, and the ramp starts
+        # gently (onset at 4 steps, one level per octave): wavelengths
+        # longer than the distance survive - a plain bow keeps most of its
+        # far reach - while the level-to-level change stays small enough
+        # that the ramp's own normal gradient cannot read as a fold.
+        level = max(0.0, math.log2(blur / pair["blur_step"]) - 2.0)
+        k0 = min(int(level), len(levels) - 1)
+        k1 = min(k0 + 1, len(levels) - 1)
+        frac = min(max(level - k0, 0.0), 1.0) if k1 > k0 else 0.0
+
+        def lerp2(low, high):
+            a = low[index] + (low[index + 1] - low[index]) * t
+            b = high[index] + (high[index + 1] - high[index]) * t
+            return a + (b - a) * frac
+
+        return (lerp2(levels[k0][0], levels[k1][0]),
+                lerp2(levels[k0][1], levels[k1][1]),
+                lerp2(levels[k0][2], levels[k1][2]),
                 taper)
 
     def _weight(self, x):
@@ -1705,6 +1859,11 @@ class _AdditionalWarp:
             s = rel[0] * pair["u"][0] + rel[1] * pair["u"][1]
             delta_x, delta_y, r_c, taper = self._sample(pair, s)
             r = rel[0] * pair["n"][0] + rel[1] * pair["n"][1]
+            blur = abs(r - r_c)
+            if blur > 4.0 * pair.get("blur_step", 0.0):
+                # Far from the line the profile is read blurred; the
+                # first (exact) sample only located the sweep centre.
+                delta_x, delta_y, r_c, taper = self._sample(pair, s, blur)
             # The taper scales the WEIGHT, not the delta: numerator and
             # denominator must vanish together or the normalizer tears.
             weight = self._weight(abs(r - r_c) / pair["radius"]) * taper
@@ -1978,9 +2137,10 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
     # pairs - and then every code path below is arithmetic-identical to
     # the warp-free mapper.
     warp = None
+    additional_notes = []
     if additional_pairs:
         thirds = []
-        for child_item, main_item in additional_pairs:
+        for line_index, (child_item, main_item) in enumerate(additional_pairs):
             child_item = child_item or {}
             main_item = main_item or {}
             child_points = [tuple(p) for p in child_item.get("points") or []]
@@ -1993,6 +2153,39 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
             main_third = [tuple(t) for t in main_item.get("third") or []]
             if len(main_third) != len(main_points):
                 main_third = [unscale_arcs(*main_coords(p)) for p in main_points]
+            # BRANCH-CONTINUITY CLIP: a line drawn across a fold edge of
+            # its frame has no continuous Third lift - the solve jumps
+            # branches mid-line and cross-branch deltas are meaningless.
+            # Keep the window (canvas arc fractions, jump-proof and
+            # commensurate across the two boards) where BOTH sides are
+            # continuous; drop the rest, loudly.
+            windows = [_branch_window(child_points, child_third),
+                       _branch_window(main_points, main_third)]
+            if any(w is None for w in windows):
+                additional_notes.append(
+                    f"additional line {line_index + 1} has no continuous "
+                    "Third lift (it crosses a fold edge of its frame) - "
+                    "it cannot shape the mapping and was skipped")
+                continue
+            f_lo = max(w[0] for w in windows)
+            f_hi = min(w[1] for w in windows)
+            if f_lo > 1e-9 or f_hi < 1.0 - 1e-9:
+                if f_hi - f_lo < 1e-6:
+                    additional_notes.append(
+                        f"additional line {line_index + 1} crosses fold "
+                        "edges everywhere - it was skipped")
+                    continue
+                child_third = _slice_third_by_canvas_fraction(
+                    child_points, child_third, f_lo, f_hi)
+                main_third = _slice_third_by_canvas_fraction(
+                    main_points, main_third, f_lo, f_hi)
+                additional_notes.append(
+                    f"additional line {line_index + 1} crosses a fold edge "
+                    f"of its frame; only its longest continuous stretch "
+                    f"({100.0 * (f_hi - f_lo):.0f}% of the drawn length) "
+                    "shapes the mapping")
+            if len(child_third) < 2 or len(main_third) < 2:
+                continue
             thirds.append((child_third, main_third))
         if thirds:
             candidate = _AdditionalWarp(thirds, _ADDITIONAL["falloff"],
@@ -2028,6 +2221,7 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
     map_point.unscale_arcs = unscale_arcs
     map_point.inverse = inverse_point
     map_point.warp = warp
+    map_point.additional_notes = additional_notes
     map_point.child_frame = child
     map_point.main_frame = main
     map_point.h_scales = (h_scale_neg, h_scale_pos)
@@ -5761,6 +5955,8 @@ def _perform_mapping():
     if map_point is None:
         print(f"[auto_mapping] cannot build mapping: {width_scale}")
         return False
+    for note in getattr(map_point, "additional_notes", ()):
+        print(f"[auto_mapping] warning: {note}")
     if getattr(map_point, "warp", None) is not None:
         print(f"[auto_mapping] {len(map_point.warp.pairs)} additional line "
               f"pair(s) shaping the mapping ({_ADDITIONAL['falloff']} falloff).")
@@ -6454,6 +6650,8 @@ def _menu_items():
              {"name": "falloff_quadratic", "title": "Quadratic", "kind": "radio",
               "checked": _ADDITIONAL["falloff"] == "quadratic"},
          ]},
+        {"kind": "separator"},
+        {"name": "to_3d", "title": "To 3D"},
     ]
 
 
@@ -6527,6 +6725,12 @@ def _menu_action(message):
     if message.get("menu") != MENU_NAME:
         return
     name = message.get("name") or ""
+    if name == "to_3d":
+        try:
+            run_to_3d()
+        except Exception as error:
+            print(f"[auto_mapping] To 3D failed: {error}")
+        return
     if name.startswith("falloff_"):
         falloff = name[len("falloff_"):]
         if falloff in ADDITIONAL_FALLOFFS and _ADDITIONAL["falloff"] != falloff:
@@ -6953,6 +7157,12 @@ def run_additional_line_tool(view_name, points, width=2.5, commands=None):
               "redraw either side to adjust.")
     _save_assets(view_name)
     _overlays_changed(view_name)
+    # Immediate feedback when the fresh line (or any standing one) crosses
+    # a fold edge and gets clipped or skipped - a silently degraded line
+    # reads as "the tool ignored me".
+    check, _why = _mapper_from_assets()
+    for note in getattr(check, "additional_notes", ()) if check else ():
+        print(f"[auto_mapping] warning: {note}")
     return True
 
 
@@ -6992,6 +7202,335 @@ def run_auto_mapping(name=AUTO_MAPPING2_TOOL, property_value=AUTO_MAPPING2_TOOL)
         return property_value
     _run()
     return property_value
+
+
+class _Export3DSink:
+    """In-memory sink with _MappedOutput's emitter-facing surface: the
+    To 3D export re-runs the mapping emitters against it instead of
+    reading layers back out of the scene, so the 3D data is exactly what
+    Auto Mapping would draw - runs, fills, seals - each tagged with its
+    stacking depth."""
+
+    def __init__(self):
+        self.strokes = []   # (depth, side, points, color, width)
+        self.fills = []     # (depth, side, rings, color)
+        self.seals = []     # (depth, points, color, width)
+        self.cuts = []
+        self.side_counts = {_MappedOutput.FRONT: 0, _MappedOutput.BACK: 0}
+
+    def add_polyline(self, side, points, color, width, depth=None):
+        if len(points) < 2:
+            return False
+        pts = [(float(p[0]), float(p[1])) for p in points]
+        if side == _MappedOutput.SEAL:
+            self.seals.append((max(0, int(depth or 0)), pts, color, width))
+            return True
+        if depth is None:
+            depth = 0 if side == _MappedOutput.FRONT else 1
+        self.side_counts[side] = self.side_counts.get(side, 0) + 1
+        self.strokes.append((max(0, int(depth)), side, pts, color, width))
+        return True
+
+    def add_curved(self, side, cubics, flat, color, width, depth=None):
+        return self.add_polyline(side, flat, color, width, depth)
+
+    def add_fill(self, side, depth, rings, color):
+        rings = [[(float(p[0]), float(p[1])) for p in ring]
+                 for ring in rings if len(ring) >= 3]
+        if not rings:
+            return False
+        # Fills count toward the side tally like _MappedOutput's do: the
+        # seal pass is gated on count(BACK), and a document whose back
+        # face is reached only by fills must still get its creases.
+        self.side_counts[side] = self.side_counts.get(side, 0) + 1
+        self.fills.append((max(0, int(depth or 0)), side, rings, color))
+        return True
+
+    def count(self, side=None):
+        if side is None:
+            return sum(self.side_counts.values())
+        return self.side_counts.get(side, 0)
+
+
+def run_to_3d():
+    """Menu entry: lift the current Auto Mapping result into 3D and open a
+    Three.js viewer for it.
+
+    The 2.5D model already carries everything a 3D lift needs: mapped
+    geometry in main-canvas x/y and a stacking depth per piece. Each depth
+    layer becomes a z plane (a constant camera matrix frames the stack;
+    the viewer's slider spreads the layers apart). The emitters are re-run
+    against an in-memory sink - the export IS the current auto-mapping
+    layers' content, independent of what the scene stores.
+    """
+    child = _scene_model("child")
+    main = _scene_model("main")
+    mode = curve_mode()
+    if mode not in _EMITTERS:
+        mode = DEFAULT_CURVE_MODE
+    child_frame = max(child.current_frame(), 0)
+    # Same preflight as a real run: guides may still live in layers on a
+    # freshly loaded legacy document, and _mapper_from_assets carries the
+    # missing-guide AND crossing checks (a guessed origin from
+    # non-crossing guides exports unbounded garbage).
+    _absorb_legacy_items("child", child, child_frame)
+    _absorb_legacy_items("main", main, max(main.current_frame(), 0))
+    child_pattern = _collect_pattern_strokes(child, child_frame,
+                                             want_commands=mode == "bezier")
+    child_fills = _collect_pattern_fills(child, child_frame)
+    if not child_pattern and not child_fills:
+        print("[auto_mapping] To 3D: child_paint_view has nothing to map.")
+        return False
+    map_point, width_scale = _mapper_from_assets()
+    if map_point is None:
+        print(f"[auto_mapping] To 3D: cannot build mapping: {width_scale}")
+        return False
+    for note in getattr(map_point, "additional_notes", ()):
+        print(f"[auto_mapping] warning: {note}")
+    child_assets = _assets_for("child")
+    main_assets = _assets_for("main")
+    child_area = (child_assets.get(MAPPING_AREA_PROPERTY) or {}).get("polygons")
+    main_area = (main_assets.get(MAPPING_AREA_PROPERTY) or {}).get("polygons")
+    if _FOLD["split"]:
+        ranges = _pattern_arc_ranges(map_point, child_pattern, child_fills)
+        if ranges is not None:
+            _prepare_fold_context(map_point, ranges[0], ranges[1])
+
+    sink = _Export3DSink()
+    emit = _EMITTERS[mode]
+    for stroke in child_pattern:
+        color_tuple, width = _stroke_style(stroke, width_scale)
+        emit(None, sink, stroke, map_point, child_area, main_area,
+             color_tuple, width)
+    if child_fills:
+        _emit_fills(None, sink, map_point, child_fills, child_area, main_area)
+    if _FOLD["split"] and _FOLD["seal"] and sink.count(_MappedOutput.BACK):
+        _emit_seals(None, sink, map_point, child_pattern, child_area,
+                    main_area, width_scale)
+    if not sink.strokes and not sink.fills:
+        print("[auto_mapping] To 3D: nothing mapped to export.")
+        return False
+
+    path = os.path.join(tempfile.gettempdir(),
+                        f"animean_to3d_{int(time.time())}.html")
+    depths = sorted({d for d, *_ in sink.strokes}
+                    | {d for d, *_ in sink.fills}
+                    | {d for d, *_ in sink.seals})
+    _export_three_html(sink, path)
+    print(f"[auto_mapping] To 3D: exported {len(sink.strokes)} stroke run(s), "
+          f"{len(sink.fills)} fill piece(s), {len(sink.seals)} crease(s) "
+          f"across depth layers {depths} -> {path}")
+    try:
+        os.startfile(path)
+    except Exception as error:
+        print(f"[auto_mapping] To 3D: could not open the browser ({error}); "
+              "open the file above manually.")
+    return True
+
+
+def _group_rings_odd_even(rings):
+    """[[outer, hole, ...], ...]: odd-even subpath list -> per-outer groups.
+
+    Nesting is probed from each ring's own boundary (a first-edge
+    midpoint), never from an interior point - the centroid of an outer
+    ring can sit inside its own hole. An odd ring attaches to the
+    innermost even ring containing it."""
+    if len(rings) <= 1:
+        return [list(rings)]
+
+    def probe(ring):
+        a = ring[0]
+        b = ring[1 % len(ring)]
+        return ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5)
+
+    probes = [probe(ring) for ring in rings]
+    levels = []
+    for index in range(len(rings)):
+        levels.append(sum(1 for j, other in enumerate(rings)
+                          if j != index and _point_in_ring(probes[index],
+                                                          other)))
+    groups = []
+    owners = {}
+    for index, ring in enumerate(rings):
+        if levels[index] % 2 == 0:
+            owners[index] = len(groups)
+            groups.append([ring])
+    if not groups:
+        return [list(rings)]
+    for index, ring in enumerate(rings):
+        if levels[index] % 2 == 1:
+            best = None
+            for outer_index, group_index in owners.items():
+                if _point_in_ring(probes[index], rings[outer_index]):
+                    if best is None or levels[outer_index] > levels[best]:
+                        best = outer_index
+            if best is not None:
+                groups[owners[best]].append(ring)
+    return groups
+
+
+def _export_three_html(sink, path):
+    """Self-contained Three.js viewer: geometry embedded as JSON, orbit
+    controls (rotate / zoom / pan), a CONSTANT camera matrix for the
+    initial view, and a slider that spreads the depth layers apart."""
+    def css(color):
+        r, g, b, a = (list(color) + [255, 255, 255, 255])[:4]
+        return [r, g, b, a]
+
+    data = {
+        "strokes": [{"d": d, "side": side, "pts": [[round(x, 2), round(y, 2)]
+                                                   for x, y in pts],
+                     "color": css(color), "width": round(float(width), 2)}
+                    for d, side, pts, color, width in sink.strokes],
+        # Three's Shape treats every ring after the first as a HOLE, but a
+        # fill piece clipped by the mapping area can arrive as SEVERAL
+        # disjoint outer pieces plus holes in one flat list (odd-even
+        # semantics). Regroup by boundary-probe nesting parity: each even
+        # ring becomes its own shape carrying the odd rings it contains.
+        "fills": [{"d": d, "side": side,
+                   "rings": [[[round(x, 2), round(y, 2)] for x, y in ring]
+                             for ring in group],
+                   "color": css(color)}
+                  for d, side, rings, color in sink.fills
+                  for group in _group_rings_odd_even(rings)],
+        "seals": [{"d": d, "pts": [[round(x, 2), round(y, 2)]
+                                   for x, y in pts],
+                   "color": css(color), "width": round(float(width), 2)}
+                  for d, pts, color, width in sink.seals],
+    }
+    payload = json.dumps(data, separators=(",", ":")).replace("</", "<\\/")
+    html = _TO3D_TEMPLATE.replace("__ANIMEAN_DATA__", payload)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(html)
+
+
+_TO3D_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AnimeAn To 3D</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #eef0f4; }
+  #ui { position: fixed; top: 10px; left: 10px; color: #23262e;
+        font: 13px/1.5 system-ui, sans-serif; background: rgba(255,255,255,.85);
+        padding: 10px 14px; border-radius: 8px; user-select: none;
+        box-shadow: 0 2px 8px rgba(30,34,44,.18); }
+  #ui input[type=range] { width: 180px; vertical-align: middle; }
+</style>
+</head>
+<body>
+<div id="ui">
+  <div><b>AnimeAn To 3D</b></div>
+  <div>Layer gap <input id="gap" type="range" min="0" max="300" value="60"></div>
+  <div style="opacity:.7">drag: rotate &middot; wheel: zoom &middot; right-drag: pan</div>
+</div>
+<script type="importmap">
+{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js",
+"three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const DATA = __ANIMEAN_DATA__;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xeef0f4);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(devicePixelRatio);
+document.body.appendChild(renderer.domElement);
+
+// Model bounds (canvas space, y down) -> normalized group (y up, unit-ish).
+let minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+const scanPts = p => { for (const [x, y] of p) {
+  if (x < minX) minX = x; if (x > maxX) maxX = x;
+  if (y < minY) minY = y; if (y > maxY) maxY = y; } };
+DATA.strokes.forEach(s => scanPts(s.pts));
+DATA.fills.forEach(f => f.rings.forEach(scanPts));
+DATA.seals.forEach(s => scanPts(s.pts));
+const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+const span = Math.max(maxX - minX, maxY - minY, 1);
+const S = 2 / span;                      // model -> ~[-1,1]
+const group = new THREE.Group();
+scene.add(group);
+
+const layered = [];                       // objects whose z follows depth
+const rgba = c => new THREE.Color(c[0] / 255, c[1] / 255, c[2] / 255);
+const toV = ([x, y]) => new THREE.Vector3((x - cx) * S, (cy - y) * S, 0);
+
+for (const f of DATA.fills) {
+  const shape = new THREE.Shape(f.rings[0].map(([x, y]) =>
+      new THREE.Vector2((x - cx) * S, (cy - y) * S)));
+  for (const ring of f.rings.slice(1))
+    shape.holes.push(new THREE.Path(ring.map(([x, y]) =>
+        new THREE.Vector2((x - cx) * S, (cy - y) * S))));
+  const geo = new THREE.ShapeGeometry(shape);
+  const mat = new THREE.MeshBasicMaterial({
+    color: rgba(f.color), side: THREE.DoubleSide,
+    transparent: true, opacity: Math.max(0.35, (f.color[3] ?? 255) / 255 * 0.9),
+    depthWrite: false });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.userData.depth = f.d;
+  layered.push(mesh); group.add(mesh);
+}
+for (const s of DATA.strokes) {
+  const geo = new THREE.BufferGeometry().setFromPoints(s.pts.map(toV));
+  const line = new THREE.Line(geo,
+      new THREE.LineBasicMaterial({ color: rgba(s.color) }));
+  line.userData.depth = s.d;
+  layered.push(line); group.add(line);
+}
+for (const s of DATA.seals) {
+  const geo = new THREE.BufferGeometry().setFromPoints(s.pts.map(toV));
+  const line = new THREE.Line(geo, new THREE.LineDashedMaterial({
+      color: rgba(s.color), dashSize: 0.02, gapSize: 0.014 }));
+  line.computeLineDistances();
+  line.userData.depth = s.d;
+  layered.push(line); group.add(line);
+}
+
+// depth 0 nearest the camera; deeper layers recede along -z
+function applyGap(px) {
+  const gap = px * S;
+  for (const obj of layered) obj.position.z = -obj.userData.depth * gap;
+}
+applyGap(60);
+document.getElementById('gap').addEventListener('input',
+    e => applyGap(parseFloat(e.target.value)));
+
+scene.add(new THREE.GridHelper(4, 20, 0xb9bfcc, 0xd4d8e2)
+    .translateY(-1.4));
+
+const camera = new THREE.PerspectiveCamera(
+    45, innerWidth / innerHeight, 0.01, 100);
+// CONSTANT camera matrix (column-major), the fixed initial framing the
+// export promises: eye pulled back and above, looking at the origin.
+const CAMERA_MATRIX = new THREE.Matrix4().fromArray([
+  1, 0, 0, 0,
+  0, 0.8480, 0.5299, 0,
+  0, -0.5299, 0.8480, 0,
+  0, -1.35, 2.30, 1]);
+CAMERA_MATRIX.decompose(camera.position, camera.quaternion, camera.scale);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.target.set(0, 0, 0);
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+(function tick() {
+  requestAnimationFrame(tick);
+  controls.update();
+  renderer.render(scene, camera);
+})();
+</script>
+</body>
+</html>
+"""
 
 
 # A View menu on each board. Both are named "view" and differ by HOST, which
