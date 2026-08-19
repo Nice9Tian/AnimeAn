@@ -6092,15 +6092,18 @@ def run_additional_line_tool(view_name, points, width=2.5, commands=None):
 
     Drawing NEAR an existing additional line on this board REPLACES that
     line (redraw-to-edit, the H/V convention) and leaves its partner on the
-    other board untouched - that difference is what drives the warp.
-    Drawing elsewhere APPENDS a new pair. The partner's THIRD coordinates
-    are copied from the drawn side verbatim, so a fresh pair's delta is
-    zero BY CONSTRUCTION - synthesizing it through the current warped
-    mapping was measured to re-encode the standing deformation and double
-    it. The partner's displayed points still come from the full current
-    mapping, so the pink line sits exactly where the mapping sends its
-    twin. Pairs share an id; the partner write is committed to the OTHER
-    board's history too, so a one-board undo cannot silently orphan it.
+    other board untouched - the pair's Third-space difference is what
+    drives the warp. Drawing elsewhere APPENDS a new pair whose partner is
+    the drawn line's CHORD (its straightened Third form), so the line's own
+    bend takes effect immediately: on the main board a curved line bends
+    the rendering of the straight child region onto itself, on the child
+    board a curved texture feature renders straightened. A straight line is
+    a neutral marker either way, and the partner is never synthesized
+    through the warped mapping (that re-encoded the standing deformation)
+    nor re-derived by inverse solves at build time (branch-ambiguous on
+    folded frames) - both sides carry authoritative third coordinates.
+    Pairs share an id; the partner write is committed to the OTHER board's
+    history too, so a one-board undo cannot silently orphan it.
     """
     cleaned = [(float(x), float(y)) for x, y in points or []]
     if len(cleaned) < 2:
@@ -6135,17 +6138,29 @@ def run_additional_line_tool(view_name, points, width=2.5, commands=None):
             default=-1)
         item["id"] = new_id
         item["third"] = _third_of_drawn(base, view_name, cleaned)
-        # The partner is displayed at its BASE-map position - the same
-        # frame its third describes. Displaying it through the warped
-        # mapping made points and third disagree by the standing warp, and
-        # the FIRST redraw of the partner then re-encoded that warp into
-        # the pair (measured: a 1 px nudge moved the mapping 9 px).
-        forward = base if view_name == "child" else base.inverse
-        display = [forward(p) for p in cleaned]
+        # The partner is the drawn line's CHORD - its straightened Third
+        # form. Per the geodesic argument the chord IS the line's shape on
+        # the flattened surface, so the line's own bend relative to it is
+        # the deformation, and drawing a curved line takes effect
+        # IMMEDIATELY (a straight line is a neutral marker). The first
+        # version mirrored the drawn line verbatim (delta == 0), and the
+        # tool appeared to do nothing until the partner was edited.
+        third = [tuple(t) for t in item["third"]]
+        cum = _cumulative_lengths(third)
+        total = cum[-1] or 1.0
+        head, tail = third[0], third[-1]
+        chord_third = [(head[0] + (tail[0] - head[0]) * (cum[i] / total),
+                        head[1] + (tail[1] - head[1]) * (cum[i] / total))
+                       for i in range(len(third))]
+        if view_name == "child":
+            display = [base.main_frame.hv(*base.scale_arcs(*t))
+                       for t in chord_third]
+        else:
+            display = [base.child_frame.hv(*t) for t in chord_third]
         lines_here.append(item)
         lines_other.append({"points": display, "width": float(width),
                             "id": new_id,
-                            "third": [list(t) for t in item["third"]]})
+                            "third": [list(t) for t in chord_third]})
         _save_assets(other)
         _overlays_changed(other)
         try:
@@ -6153,8 +6168,9 @@ def run_additional_line_tool(view_name, points, width=2.5, commands=None):
         except Exception:
             pass  # older builds without the history binding
         print(f"[auto_mapping] additional line (id {new_id}) set on the "
-              f"{view_name} board and mirrored onto the {other} board; edit "
-              "either side (redraw near it) to shape the mapping.")
+              f"{view_name} board; its straightened chord landed on the "
+              f"{other} board. The line's bend now shapes the mapping - "
+              "redraw either side to adjust.")
     _save_assets(view_name)
     _overlays_changed(view_name)
     return True
