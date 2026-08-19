@@ -28,6 +28,8 @@ QString fileNameForTool(PaintOpenGLWidget::Tool tool)
         return QStringLiteral("arrow.json");
     case PaintOpenGLWidget::Tool::Connect:
         return QStringLiteral("connect.json");
+    case PaintOpenGLWidget::Tool::Transfer:
+        return QStringLiteral("transfer.json");
     }
     return QStringLiteral("pen.json");
 }

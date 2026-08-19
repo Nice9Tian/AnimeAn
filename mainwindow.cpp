@@ -115,6 +115,8 @@ QString toolControlName(PaintOpenGLWidget::Tool tool)
         return QStringLiteral("arrow");
     case PaintOpenGLWidget::Tool::Connect:
         return QStringLiteral("connect");
+    case PaintOpenGLWidget::Tool::Transfer:
+        return QStringLiteral("transfer");
     }
     return QStringLiteral("pen");
 }
@@ -1226,19 +1228,23 @@ void MainWindow::createTextureFileMenu()
         bar->addMenu(textureMenu);
     }
 
-    QAction *importRasterAction = textureMenu->addAction(QStringLiteral("Import Raster into Texture View..."));
+    // One Import entry holding the formats, rather than three sibling lines
+    // competing with Open/Save for the eye - same shape as the main board's.
+    QMenu *importMenu = textureMenu->addMenu(QStringLiteral("Import"));
+
+    QAction *importRasterAction = importMenu->addAction(QStringLiteral("Raster..."));
     connect(importRasterAction, &QAction::triggered, this, [this]() {
         showTextureView();
         importRaster(m_childPaintWidget);
     });
 
-    QAction *importToonzAction = textureMenu->addAction(QStringLiteral("Import OpenToonz Lines into Texture View..."));
+    QAction *importToonzAction = importMenu->addAction(QStringLiteral("OpenToonz Lines..."));
     connect(importToonzAction, &QAction::triggered, this, [this]() {
         showTextureView();
         importOpenToonzLines(m_childPaintWidget);
     });
 
-    QAction *importClipAction = textureMenu->addAction(QStringLiteral("Import Clip Studio Paint into Texture View..."));
+    QAction *importClipAction = importMenu->addAction(QStringLiteral("Clip Studio Paint..."));
     connect(importClipAction, &QAction::triggered, this, [this]() {
         showTextureView();
         importClipStudioPaint(m_childPaintWidget);
@@ -2267,9 +2273,18 @@ void MainWindow::createToolDocks()
 
     connect(toolsPanel, &ToolsPanel::toolSelected, this, selectTool);
     connect(toolsPanel, &ToolsPanel::extraToolSelected, this, [this, toolOptPanel](const ToolsPanel::ExtraToolDefinition &tool) {
-        const PaintOpenGLWidget::Tool baseTool = tool.baseTool == QStringLiteral("fill")
-                                                     ? PaintOpenGLWidget::Tool::Fill
-                                                     : PaintOpenGLWidget::Tool::Pen;
+        // A script tool declares the BASE tool its canvas gestures mean.
+        // Auto Mapping asks for "arrow": it acts through its own overlay and
+        // handles, and leaving the pen armed under it let a stray click draw
+        // a stroke into the artwork.
+        static const QHash<QString, PaintOpenGLWidget::Tool> baseTools = {
+            {QStringLiteral("fill"), PaintOpenGLWidget::Tool::Fill},
+            {QStringLiteral("arrow"), PaintOpenGLWidget::Tool::Arrow},
+            {QStringLiteral("move"), PaintOpenGLWidget::Tool::Move},
+            {QStringLiteral("transfer"), PaintOpenGLWidget::Tool::Transfer},
+        };
+        const PaintOpenGLWidget::Tool baseTool =
+            baseTools.value(tool.baseTool, PaintOpenGLWidget::Tool::Pen);
         for (PaintOpenGLWidget *view : m_paintViews) {
             view->setTool(baseTool);
             view->setStrokeProperty(tool.property);
@@ -2292,19 +2307,16 @@ void MainWindow::createToolDocks()
     });
 
     connect(toolOptPanel, &ToolOptPanel::colorSelected, this, [this, applyTool](const QColor &color) {
-        if (activePaintWidget()->tool() == PaintOpenGLWidget::Tool::Fill) {
-            for (PaintOpenGLWidget *view : m_paintViews) {
-                view->setDrawingColor(color);
-            }
-            applyTool(PaintOpenGLWidget::Tool::Fill, false);
-            return;
-        }
-
+        // ARM FIRST, PAINT SECOND, in both branches. Arming announces the
+        // tool change and the colour policy (pyfile/tool_colors.py) answers
+        // it by restoring that tool's remembered colour - so applying the
+        // pick before the arm loses the pick to the restore.
+        const bool onFill = activePaintWidget()->tool() == PaintOpenGLWidget::Tool::Fill;
+        applyTool(onFill ? PaintOpenGLWidget::Tool::Fill
+                         : PaintOpenGLWidget::Tool::Pen, false);
         for (PaintOpenGLWidget *view : m_paintViews) {
-            view->setPenColor(color);
-            view->setStrokeProperty(QString());
+            view->setDrawingColor(color);
         }
-        applyTool(PaintOpenGLWidget::Tool::Pen, false);
     });
 
     connect(toolOptPanel, &ToolOptPanel::fillScopeSelected, this, [this](PaintOpenGLWidget::FillScope scope) {

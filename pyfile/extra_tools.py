@@ -46,6 +46,11 @@ def extra_tools():
             "title": "Auto Mapping",
             "property": auto_mapping.AUTO_MAPPING2_TOOL,
             "handler": "auto_mapping.run_auto_mapping",
+            # The canvas gestures of this tool are the ARROW's: it acts
+            # through its own overlay, guides and handles, and leaving the
+            # pen armed under it let a stray click draw into the artwork.
+            # The Arrow's default mode then makes the H/V axes draggable.
+            "base_tool": "arrow",
         },
         {
             "name": "fukusato_line",

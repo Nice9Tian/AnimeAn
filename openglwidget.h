@@ -37,7 +37,12 @@ public:
         // Bridge two snapped vertices with a new stroke. Pure mechanism here
         // (brush ring, hover/click forwarding, handle hints); the snapping
         // and the connection geometry live in pyfile/connect_tool.py.
-        Connect
+        Connect,
+        // Free transform. Same pure mechanism as Arrow/Connect: handles are
+        // rendered and hit-tested here and every press/drag is reported to
+        // Python; the box, its 8 handles, the scale/stretch/translate maths
+        // and the modifier constraints all live in pyfile/transfer_tool.py.
+        Transfer
     };
 
     enum class FillScope {
@@ -271,7 +276,15 @@ private:
     // "handle" hook event. Phases: "pick" (arrow click on no handle),
     // "press"/"move"/"release" (a handle drag), "view" (zoom changed while
     // handles are shown). Carries the document position and the current zoom.
-    void sendPythonHandleMessage(const QString &phase, const QString &handleId, const QPointF &pos);
+    // "handle" hook event; returns what Python CLAIMED, if anything. A
+    // "pick" (press on canvas, no handle under it) may answer with a grab
+    // id, and the gesture then runs as a drag under that id - the generic
+    // half of "drag the thing you just clicked" (Transfer's box body,
+    // Arrow's default-mode outline). Empty means the press was not claimed.
+    QString sendPythonHandleMessage(const QString &phase,
+                                    const QString &handleId,
+                                    const QPointF &pos,
+                                    Qt::KeyboardModifiers modifiers = Qt::NoModifier);
     void resetAxisSnap(Qt::KeyboardModifiers modifiers, const QPointF &anchor);
     QPointF applyAxisSnap(Qt::KeyboardModifiers modifiers, const QPointF &point, bool *retroChanged);
     // "Hold still to draw straight": the still window is (re)armed at a

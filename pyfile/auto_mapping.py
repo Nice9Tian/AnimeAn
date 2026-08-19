@@ -3473,7 +3473,11 @@ def _guide_drag_event(message):
         _invalidate_additional_thirds(view)
     _save_assets(view)
     _invalidate_grid_cache()
-    _push_overlay(view)
+    # BOTH boards: the mapping is a relation between them, so the other
+    # board's refer grid and occlusion tint describe the moved guide too and
+    # would otherwise keep drawing the old placement.
+    _push_overlay("main")
+    _push_overlay("child")
     try:
         animean = _animean()
         animean.ui.refresh()
@@ -6267,7 +6271,12 @@ def _capture_mapping_item(cell, stroke, message):
             _animean().ui.widget.refresh()
             return
         print(f"[auto_mapping] {ITEM_LABELS[prop]} set in {view} view (redraw replaces it)")
-        _set_draw_color((0, 0, 0, 255))
+        # NO colour reset here. It existed because there was one global
+        # drawing colour and the pen would otherwise inherit the guide's;
+        # with per-tool colours (pyfile/tool_colors.py) the pen keeps its own
+        # and this reset did active harm - it recorded BLACK against the
+        # guide tool, so the first axis drew blue and every one after it drew
+        # in the pen's colour (user report).
         _animean().ui.widget.refresh()
         return
 
@@ -6275,9 +6284,10 @@ def _capture_mapping_item(cell, stroke, message):
     # in the same history entry and is undone/redone together with it.
     _save_assets(view)
     _overlays_changed(view)
-    # The guide is captured; put the pen back to black so the next ordinary
-    # stroke is not accidentally drawn in the guide colour.
-    _set_draw_color((0, 0, 0, 255))
+    # The item is captured. The drawing colour is NOT reset: each tool now
+    # remembers its own (pyfile/tool_colors.py), so the pen gets its colour
+    # back when the pen is armed - and resetting here poisoned this tool's
+    # slot with black.
     _animean().ui.widget.refresh()
 
 
@@ -7800,8 +7810,14 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
     if len(nodes) < 4:
         return None
 
-    # Jacobian, SVD-derived slope field and face sign per node.
-    h = 0.25 * min(du, dv)
+    # Jacobian, SVD-derived slope field and face sign per node. The
+    # difference step spans a full grid step: the guides are POLY_STEP
+    # polylines, so hv()'s derivative is a staircase at ~4 px scale, and
+    # a quarter-cell probe read every tread as a slope change - the
+    # integrated surface came out with an unnatural depth-direction
+    # ripple (user report). A cell-scale step averages across treads;
+    # folds stay sharp because det's SIGN is unaffected by widening.
+    h = 0.6 * min(du, dv)
     jac = []
     sigma_max_all = []
     for _i, _j, u, v in nodes:
@@ -8054,6 +8070,26 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
     target = [(oriented[k][0] * signs[k] * handed[k] * majority,
                oriented[k][1] * signs[k] * handed[k] * majority)
               for k in range(len(nodes))]
+    # Smooth the slope field between SAME-FACE neighbours before
+    # integrating: the per-node SVD carries sampling noise from the
+    # polyline guides, and integrating the raw field produced an
+    # unnatural depth-direction ripple. Averaging never crosses a fold
+    # (handed flips there and the two sides genuinely oppose), so
+    # creases keep their kink while flat stretches actually flatten.
+    for _pass in range(2):
+        smoothed = list(target)
+        for k, (i, j, _u, _v) in enumerate(nodes):
+            acc_x = 2.0 * target[k][0]
+            acc_y = 2.0 * target[k][1]
+            weight = 2.0
+            for (di, dj) in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                n = node_index.get((i + di, j + dj))
+                if n is not None and handed[n] == handed[k]:
+                    acc_x += target[n][0]
+                    acc_y += target[n][1]
+                    weight += 1.0
+            smoothed[k] = (acc_x / weight, acc_y / weight)
+        target = smoothed
 
     # Least-squares Poisson: minimize |grad z - target|^2 over the mask
     # (pure-python conjugate gradients; the grid is ~2-3k nodes).
@@ -8177,6 +8213,9 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
                 z_ref[k] = -(node_depth[k] - d_mean) * gap
                 anchor_weight[k] = 0.35
         z = solve(anchor_weight, z_ref)
+        # (A boundary-band-only anchor was tried and rejected: freeing
+        # the class interiors let the integration balloon between the
+        # pinned band and the free middle - waviness rose 45%.)
         if os.environ.get("ANIMEAN_TO3D_DEBUG"):
             rate2, pair_total2 = stacking_violations(z)
             print(f"[to3d-debug] grounded pass: violations "
@@ -8196,9 +8235,13 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
         if covariance > 0.0:
             z = [-v for v in z]
 
-    # Relief lookup off the node grid (bilinear); mesh vertices and
-    # draped strokes both read it.
-    def z_at(u, v):
+    # Relief lookup off the node grid; mesh vertices and draped strokes
+    # both read it. CATMULL-ROM bicubic where the 4x4 neighbourhood is
+    # complete: the render mesh is finer than the solve grid, and
+    # bilinear z left a C1 crease along every grid line - a regular
+    # depth-direction ripple across the whole sheet (user report).
+    # Bilinear remains the fallback near mask edges.
+    def z_bilinear(u, v):
         fi = min(max((u - u0) / du, 0.0), nx - 1e-6)
         fj = min(max((v - v0) / dv, 0.0), ny - 1e-6)
         i = int(fi)
@@ -8215,6 +8258,31 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
                 acc += w * z[n]
                 wsum += w
         return acc / wsum if wsum > 1e-9 else 0.0
+
+    def spline4(p0, p1, p2, p3, t):
+        return 0.5 * ((2.0 * p1)
+                      + (-p0 + p2) * t
+                      + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t * t
+                      + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t * t * t)
+
+    def z_at(u, v):
+        fi = min(max((u - u0) / du, 0.0), nx - 1e-6)
+        fj = min(max((v - v0) / dv, 0.0), ny - 1e-6)
+        i = int(fi)
+        j = int(fj)
+        rows = []
+        for jj in (j - 1, j, j + 1, j + 2):
+            row = []
+            for ii in (i - 1, i, i + 1, i + 2):
+                n = node_index.get((ii, jj))
+                if n is None:
+                    return z_bilinear(u, v)
+                row.append(z[n])
+            rows.append(row)
+        tx = fi - i
+        ty = fj - j
+        col = [spline4(*row, tx) for row in rows]
+        return spline4(col[0], col[1], col[2], col[3], ty)
 
     # MESH: each fill triangulated FROM ITS OUTLINE (ear clipping with
     # hole bridging, then longest-edge subdivision so the interior

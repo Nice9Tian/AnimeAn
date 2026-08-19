@@ -23,12 +23,18 @@ ToolsPanel::ToolsPanel(QWidget *parent)
     m_connectButton->setCursor(ui->penButton->cursor());
     m_connectButton->setMinimumSize(ui->penButton->minimumSize());
     m_connectButton->setStyleSheet(ui->penButton->styleSheet());
+    m_transferButton = new QPushButton(QStringLiteral("Transfer"), this);
+    m_transferButton->setCheckable(true);
+    m_transferButton->setCursor(ui->penButton->cursor());
+    m_transferButton->setMinimumSize(ui->penButton->minimumSize());
+    m_transferButton->setStyleSheet(ui->penButton->styleSheet());
 
     m_layout->addWidget(m_arrowButton);
     m_layout->addWidget(ui->penButton);
     m_layout->addWidget(ui->moveButton);
     m_layout->addWidget(ui->eraserButton);
     m_layout->addWidget(ui->fillButton);
+    m_layout->addWidget(m_transferButton);
     m_layout->addWidget(m_connectButton);
     m_layout->addStretch();
 
@@ -45,6 +51,10 @@ ToolsPanel::ToolsPanel(QWidget *parent)
     connect(m_connectButton, &QPushButton::clicked, this, [this]() {
         setTool(PaintOpenGLWidget::Tool::Connect);
         emit toolSelected(PaintOpenGLWidget::Tool::Connect);
+    });
+    connect(m_transferButton, &QPushButton::clicked, this, [this]() {
+        setTool(PaintOpenGLWidget::Tool::Transfer);
+        emit toolSelected(PaintOpenGLWidget::Tool::Transfer);
     });
 
     connect(ui->penButton, &QPushButton::clicked, this, [this]() {
@@ -74,6 +84,7 @@ void ToolsPanel::setTool(PaintOpenGLWidget::Tool tool)
 {
     const QSignalBlocker arrowBlocker(m_arrowButton);
     const QSignalBlocker connectBlocker(m_connectButton);
+    const QSignalBlocker transferBlocker(m_transferButton);
     const QSignalBlocker penBlocker(ui->penButton);
     const QSignalBlocker moveBlocker(ui->moveButton);
     const QSignalBlocker eraserBlocker(ui->eraserButton);
@@ -81,6 +92,7 @@ void ToolsPanel::setTool(PaintOpenGLWidget::Tool tool)
 
     m_arrowButton->setChecked(tool == PaintOpenGLWidget::Tool::Arrow);
     m_connectButton->setChecked(tool == PaintOpenGLWidget::Tool::Connect);
+    m_transferButton->setChecked(tool == PaintOpenGLWidget::Tool::Transfer);
     ui->penButton->setChecked(tool == PaintOpenGLWidget::Tool::Pen);
     ui->moveButton->setChecked(tool == PaintOpenGLWidget::Tool::Move);
     ui->eraserButton->setChecked(tool == PaintOpenGLWidget::Tool::Eraser ||
@@ -115,12 +127,14 @@ void ToolsPanel::setExtraTools(const QVector<ExtraToolDefinition> &tools)
         connect(button, &QPushButton::clicked, this, [this, index]() {
             const QSignalBlocker arrowBlocker(m_arrowButton);
             const QSignalBlocker connectBlocker(m_connectButton);
+            const QSignalBlocker transferBlocker(m_transferButton);
             const QSignalBlocker penBlocker(ui->penButton);
             const QSignalBlocker moveBlocker(ui->moveButton);
             const QSignalBlocker eraserBlocker(ui->eraserButton);
             const QSignalBlocker fillBlocker(ui->fillButton);
             m_arrowButton->setChecked(false);
             m_connectButton->setChecked(false);
+            m_transferButton->setChecked(false);
             ui->penButton->setChecked(false);
             ui->moveButton->setChecked(false);
             ui->eraserButton->setChecked(false);

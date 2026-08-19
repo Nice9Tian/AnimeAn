@@ -32,6 +32,12 @@
         <addaction name="actionSave" />
         <addaction name="actionSaveAs" />
         <addaction name="separator" />
+        <addaction name="menuImport" />
+      </widget>
+      <widget class="QMenu" name="menuImport">
+        <property name="title">
+          <string>Import</string>
+        </property>
         <addaction name="actionimport_Raster" />
         <addaction name="actionImport_OpenToonz_Lines" />
         <addaction name="actionImport_Clip_Studio_Paint" />
@@ -76,17 +82,17 @@
     </action>
     <action name="actionimport_Raster">
       <property name="text">
-        <string>Import Raster...</string>
+        <string>Raster...</string>
       </property>
     </action>
     <action name="actionImport_OpenToonz_Lines">
       <property name="text">
-        <string>Import OpenToonz Lines...</string>
+        <string>OpenToonz Lines...</string>
       </property>
     </action>
     <action name="actionImport_Clip_Studio_Paint">
       <property name="text">
-        <string>Import Clip Studio Paint...</string>
+        <string>Clip Studio Paint...</string>
       </property>
     </action>
   </widget>

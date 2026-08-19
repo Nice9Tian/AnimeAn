@@ -123,7 +123,7 @@ def options_for_tool(tool, state=None):
             import edit_tool
             edit_mode = edit_tool.edit_mode()
         except Exception:
-            edit_mode = "artist"
+            edit_mode = "default"
         controls = [
             {
                 "name": "edit_mode",
@@ -135,6 +135,9 @@ def options_for_tool(tool, state=None):
                 "start_column": 0,
                 "end_column": 2,
                 "options": [
+                    # Default: click to outline an object, drag to move it -
+                    # the resting mode every drawing app opens with.
+                    {"title": "Default", "value": "default"},
                     {"title": "Artist", "value": "artist"},
                     {"title": "Debug", "value": "debug"},
                 ],
@@ -203,6 +206,27 @@ def options_for_tool(tool, state=None):
         ]
     elif tool == "move":
         controls = []
+    elif tool == "transfer":
+        # The box IS the interface, so the panel carries the one setting the
+        # box cannot express: whether a modifier locks the aspect ratio (the
+        # drawing-app default) or frees it. The panel has no label control,
+        # so the choice states the convention as it offers it.
+        controls = [
+            {
+                "name": "transfer_constrain",
+                "type": "list",
+                "title": "Alt / Ctrl / Shift",
+                "hook": "transfer_constrain",
+                "value": "on",
+                "row": 0,
+                "start_column": 0,
+                "end_column": 2,
+                "options": [
+                    {"title": "Keep ratio / lock axis", "value": "on"},
+                    {"title": "No constraint", "value": "off"},
+                ],
+            },
+        ]
     else:
         controls = [
             *_color_controls(),

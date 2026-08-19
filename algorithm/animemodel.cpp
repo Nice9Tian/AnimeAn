@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <climits>
 #include <functional>
+#include <cmath>
 
 namespace {
 int &nextSceneIntIdValue()
@@ -185,6 +186,77 @@ void AnimeVectorImageModel::translate(const QPointF &delta)
         }
         node.stroke.path.translate(delta);
         node.stroke.bounds.translate(delta);
+    }
+    rebuildBounds();
+}
+
+void AnimeVectorImageModel::transform(const QTransform &matrix)
+{
+    if (matrix.isIdentity()) {
+        return;
+    }
+
+    // Widths are a LENGTH, not a coordinate: they follow the transform's
+    // mean linear scale (sqrt of |det|), so a uniformly scaled drawing keeps
+    // its line weight in proportion and a pure translation leaves it alone.
+    const qreal determinant = std::abs(matrix.m11() * matrix.m22() - matrix.m12() * matrix.m21());
+    const qreal widthScale = determinant > 0.0 ? std::sqrt(determinant) : 1.0;
+
+    if (!m_raster.isEmpty()) {
+        // The raster's PLACEMENT and its SIZE both follow the matrix: mapping
+        // only the corner left a scaled layer with a full-size bitmap
+        // hanging off it, so the scale grips read as no-ops on a raster.
+        const QRectF mapped = matrix.mapRect(m_raster.bounds());
+        const QSize target(qMax(1, qRound(mapped.width())),
+                           qMax(1, qRound(mapped.height())));
+        if (target != m_raster.image.size() && !m_raster.image.isNull()) {
+            m_raster.image = m_raster.image.scaled(target, Qt::IgnoreAspectRatio,
+                                                   Qt::SmoothTransformation);
+        }
+        // A negative determinant is a mirror; the pixels have to flip with
+        // the box or the image reads back-to-front inside a correct frame.
+        const bool flipX = matrix.m11() < 0.0;
+        const bool flipY = matrix.m22() < 0.0;
+        if ((flipX || flipY) && !m_raster.image.isNull()) {
+            m_raster.image = m_raster.image.mirrored(flipX, flipY);
+        }
+        m_raster.topLeft = mapped.topLeft();
+    }
+    for (AnimeVectorFillRegion &fill : m_fills) {
+        fill.seedPoint = matrix.map(fill.seedPoint);
+        fill.path = matrix.map(fill.path);
+        fill.bounds = fill.path.boundingRect();
+    }
+    for (AnimeVectorStrokeNode &node : m_strokes) {
+        for (QPointF &point : node.stroke.points) {
+            point = matrix.map(point);
+        }
+        if (widthScale > 0.0 && !qFuzzyCompare(widthScale, qreal(1.0))) {
+            // Floored at a hair rather than at 0.1: the Transfer tool applies
+            // a drag as a chain of incremental matrices, and a saturating
+            // clamp is not invertible - shrinking and growing back left every
+            // stroke permanently fattened.
+            node.stroke.width = std::max(qreal(1e-4), node.stroke.width * widthScale);
+        }
+        node.stroke.path = matrix.map(node.stroke.path);
+        if (!node.stroke.path.isEmpty()) {
+            // PADDED by the stroke width, like every other producer of these
+            // bounds: they are the cull box for erase/delete/cut and for the
+            // fill-boundary extent, and an unpadded rect is EMPTY for an
+            // axis-aligned stroke - which made such a stroke uneraseable.
+            const qreal pad = node.stroke.width;
+            node.stroke.bounds = node.stroke.path.boundingRect()
+                                     .adjusted(-pad, -pad, pad, pad);
+        }
+        // Arc-length tables are geometry, so they scale with it; leaving them
+        // describing the pre-transform stroke made every arc-length consumer
+        // (splitting, sampling, the mapping) read a scaled stroke wrong.
+        if (widthScale > 0.0 && !qFuzzyCompare(widthScale, qreal(1.0))) {
+            for (qreal &length : node.stroke.lengths) {
+                length *= widthScale;
+            }
+            node.stroke.totalLength *= widthScale;
+        }
     }
     rebuildBounds();
 }

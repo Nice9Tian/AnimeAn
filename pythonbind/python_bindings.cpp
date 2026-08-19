@@ -5,6 +5,8 @@
 #include "python_bindings.h"
 
 #include "algorithm/animemodel.h"
+
+#include <QTransform>
 #include "algorithm/beziersplit.h"
 #include "algorithm/vectorlogic.h"
 
@@ -1515,6 +1517,21 @@ void bindAnimeanPythonModule(py::module_ &m)
         .def("bounds", [](const AnimeVectorImageModel &image) {
             return rectToTuple(image.bounds());
         })
+        // Affine transform of the whole image (strokes, fills, raster
+        // placement, stroke widths). The generic half of a free-transform
+        // tool: the matrix is decided in Python (pyfile/transfer_tool.py).
+        .def("transform",
+             [](AnimeVectorImageModel &image, double m11, double m12, double m21,
+                double m22, double dx, double dy) {
+                 image.transform(QTransform(m11, m12, m21, m22, dx, dy));
+             },
+             py::arg("m11"), py::arg("m12"), py::arg("m21"), py::arg("m22"),
+             py::arg("dx"), py::arg("dy"))
+        .def("translate",
+             [](AnimeVectorImageModel &image, double dx, double dy) {
+                 image.translate(QPointF(dx, dy));
+             },
+             py::arg("dx"), py::arg("dy"))
         .def("to_dict",
              [](const AnimeVectorImageModel &image, bool toPoly, double polyStep) {
                  return imageToDict(&image, toPoly, polyStep);

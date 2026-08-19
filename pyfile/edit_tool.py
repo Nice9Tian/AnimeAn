@@ -27,11 +27,15 @@ import viewscale
 
 POLY_STEP = 4.0
 
-MODES = ("artist", "debug")
+MODES = ("default", "artist", "debug")
 # last_zoom: option events carry no zoom, so a Debug->Artist switch would
 # otherwise rebuild with zoom 1.0 and show the wrong handle density until the
 # next wheel tick. Every handle event refreshes it.
-_STATE = {"mode": "artist", "last_zoom": 1.0}
+_STATE = {"mode": "default", "last_zoom": 1.0}
+# The Default mode's outline: colour and width are settings-window controls
+# (Arrow menu -> Outline Display Settings), so the highlight can be seen
+# against any artwork.
+_OUTLINE = {"outline_color": (255, 140, 40, 235), "outline_width": 2.0}
 
 # view name -> live edit session
 _SESSIONS = {}
@@ -283,32 +287,25 @@ def _flatten_elements(elements, step=POLY_STEP):
 # --- handle construction -----------------------------------------------------
 
 def _debug_handles(geometry):
-    """The stored topology, verbatim: real anchors, real controls, real arms."""
+    """EVERY VERTEX of the stored topology - and only vertices.
+
+    Debug is the "show me the points this stroke is really made of" view: one
+    handle per on-curve point, no Bezier control handles and no tangent arms
+    (user report: with the controls in, Debug looked no different from
+    Artist, since our own strokes ARE sparse cubic chains). Dragging one
+    still edits that exact stored point, arms and all - see _drag_debug.
+    """
     handles = []
     arms = []
     elements = _elements(geometry["commands"])
     if elements:
-        previous = None
         for i, (kind, pts) in enumerate(elements):
-            if kind == "move":
-                handles.append({"id": f"e{i}:p", "x": pts[0][0], "y": pts[0][1],
-                                "shape": SHAPE_ANCHOR, "color": ANCHOR_COLOR})
-                previous = pts[0]
-            elif kind == "line":
-                handles.append({"id": f"e{i}:p", "x": pts[0][0], "y": pts[0][1],
-                                "shape": SHAPE_ANCHOR, "color": ANCHOR_COLOR})
-                previous = pts[0]
-            elif kind == "cubic":
-                handles.append({"id": f"e{i}:c1", "x": pts[0][0], "y": pts[0][1],
-                                "shape": SHAPE_CONTROL, "color": CONTROL_COLOR})
-                handles.append({"id": f"e{i}:c2", "x": pts[1][0], "y": pts[1][1],
-                                "shape": SHAPE_CONTROL, "color": CONTROL_COLOR})
-                handles.append({"id": f"e{i}:p", "x": pts[2][0], "y": pts[2][1],
-                                "shape": SHAPE_ANCHOR, "color": ANCHOR_COLOR})
-                if previous is not None:
-                    arms.append([previous, pts[0]])
-                    arms.append([pts[1], pts[2]])
-                previous = pts[2]
+            end_slot = {"move": 0, "line": 0, "cubic": 2}.get(kind)
+            if end_slot is None:
+                continue
+            point = pts[end_slot]
+            handles.append({"id": f"e{i}:p", "x": point[0], "y": point[1],
+                            "shape": SHAPE_ANCHOR, "color": ANCHOR_COLOR})
         return handles, arms
 
     for k, point in enumerate(geometry["points"]):
@@ -741,6 +738,9 @@ def _clear(view):
 
 
 def _rebuild(view, session, zoom):
+    if session.get("mode") == "default":
+        _push_default(view, session)
+        return
     geometry = session["geometry"]
     if _STATE["mode"] == "debug":
         handles, arms = _debug_handles(geometry)
@@ -906,6 +906,257 @@ def _drag_chain(session, target, pos):
                             anchor[1] + direction[1] * length)
 
 
+# --- default mode: outline an object, drag it ---------------------------------
+# The Arrow's resting mode. A click OUTLINES whatever it lands on - a stroke
+# or a filled region - and dragging inside that outline translates it. No
+# handles, no geometry rewrite: this is the "grab the thing and move it" mode
+# every drawing app opens with, and it is what makes the mapping guides
+# (H/V axes, additional lines) draggable without arming a special tool.
+
+def _outline_color():
+    return tuple(_OUTLINE["outline_color"])
+
+
+def _find_fill(scene, frame, pos):
+    """Topmost fill region containing `pos`: (layer, index) or None."""
+    structure = scene.get_structure()
+    for layer in structure["layers"]:
+        if not layer["visible"] or layer.get("locked"):
+            continue
+        try:
+            image = scene.image_at(frame, layer["index"], False, "vector")
+        except Exception:
+            image = None
+        if image is None:
+            continue
+        try:
+            regions = list(image.fill_regions_info())
+        except Exception:
+            continue
+        for info in reversed(regions):
+            index = int(info.get("index", -1))
+            if index < 0:
+                continue
+            try:
+                if image.fill_region_contains(index, {"x": pos[0], "y": pos[1]}):
+                    return layer["index"], index
+            except Exception:
+                continue
+    return None
+
+
+def _fill_outline(commands):
+    """The fill's boundary as polylines. A fill dict carries only its path
+    COMMANDS (fillRegionToDict has no polylines key), so the outline is
+    flattened here - through the same element flattening the strokes use."""
+    rings = []
+    ring = []
+    for element in _elements(commands):
+        kind, pts = element
+        if kind == "move":
+            if len(ring) >= 3:
+                rings.append(ring)
+            ring = [pts[0]]
+        elif kind == "line":
+            ring.append(pts[0])
+        elif kind == "cubic":
+            start = ring[-1] if ring else pts[0]
+            ring.extend(_sample_cubic(start, pts[0], pts[1], pts[2])[1:])
+    if len(ring) >= 3:
+        rings.append(ring)
+    return rings
+
+
+def _fill_geometry(scene, frame, layer, index):
+    cell = scene.cell_to_dict(layer, frame, True, POLY_STEP)
+    fills = cell["image"].get("fills") or []
+    if index < 0 or index >= len(fills):
+        return None
+    fill = fills[index]
+    seed = fill.get("seed") or {}
+    commands = list(fill.get("commands") or [])
+    return {
+        "commands": commands,
+        "polylines": _fill_outline(commands),
+        "seed": (float(seed.get("x", 0.0)), float(seed.get("y", 0.0))),
+    }
+
+
+def _shift_commands(commands, delta):
+    """Path commands translated by `delta` - every point they carry."""
+    dx, dy = delta
+    out = []
+    for command in commands:
+        moved = dict(command)
+        for key in ("to", "control", "control1", "control2", "from"):
+            point = command.get(key)
+            if isinstance(point, dict) and "x" in point and "y" in point:
+                moved[key] = {"x": float(point["x"]) + dx,
+                              "y": float(point["y"]) + dy}
+        out.append(moved)
+    return out
+
+
+def _default_outline_items(session):
+    """The highlight: the object's own outline, drawn over itself."""
+    color = _outline_color()
+    width = float(_OUTLINE.get("outline_width", 2.0))
+    closed = session["kind"] == "fill"
+    items = []
+    for k, polyline in enumerate(session.get("outline") or []):
+        if len(polyline) < (3 if closed else 2):
+            continue
+        item = {"id": f"edit_outline{k}", "points": list(polyline),
+                "color": color, "width": width, "removable": False}
+        if closed:
+            item["closed"] = True
+        items.append(item)
+    return items
+
+
+def _push_default(view, session):
+    animean = _animean()
+    animean.ui.set_edit_handles(view, [])
+    try:
+        import auto_mapping
+        items = auto_mapping.overlay_items(view)
+    except Exception:
+        items = []
+    if session is not None:
+        items.extend(_default_outline_items(session))
+    animean.ui.set_overlay(view, items)
+
+
+def _pick_default(view, pos, zoom, message):
+    """Outline whatever is under the cursor and claim the drag."""
+    scene = _scene_model(view)
+    frame = max(scene.current_frame(), 0)
+    session = None
+    found = _find_stroke(scene, frame, pos, zoom)
+    if found is not None:
+        layer, index = found
+        geometry = _fetch(scene, frame, layer, index)
+        if geometry is not None:
+            cell = scene.cell_to_dict(layer, frame, True, POLY_STEP)
+            stroke = cell["image"]["strokes"][index]
+            session = {
+                "mode": "default", "kind": "stroke", "frame": frame,
+                "layer": layer, "index": index, "geometry": geometry,
+                "elements": _elements(geometry["commands"]) if geometry["commands"] else None,
+                "points": list(geometry["points"]),
+                "outline": _stroke_polylines(stroke),
+                "moved": False, "changed": False,
+            }
+    if session is None:
+        fill = _find_fill(scene, frame, pos)
+        if fill is not None:
+            layer, index = fill
+            geometry = _fill_geometry(scene, frame, layer, index)
+            if geometry is not None:
+                session = {
+                    "mode": "default", "kind": "fill", "frame": frame,
+                    "layer": layer, "index": index, "geometry": geometry,
+                    "outline": geometry["polylines"],
+                    "moved": False, "changed": False,
+                }
+    if session is None:
+        _clear(view)
+        return
+    session["press_pos"] = pos
+    session["applied"] = (0.0, 0.0)
+    _SESSIONS[view] = session
+    python_hooks.set_hook(_history_restored, historyrestore=True)
+    _push_default(view, session)
+    # Claim the gesture: this press becomes a drag, so click-and-move grabs
+    # the object in one motion, the way every drawing app does it.
+    message["grab"] = "default:body"
+
+
+def _translate_default(view, session, delta):
+    """Put the outlined object at press_pos + delta.
+
+    `delta` is measured from the PRESS, and what has already been applied is
+    subtracted, so a long drag never accumulates its own rounding and a drag
+    that returns to the start returns the object with it."""
+    animean = _animean()
+    scene = _scene_model(view)
+    dx = delta[0] - session["applied"][0]
+    dy = delta[1] - session["applied"][1]
+    if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+        return False
+    image = scene.image_at(session["frame"], session["layer"], True)
+    if image is None:
+        return False
+    if session["kind"] == "stroke":
+        geometry = session["geometry"]
+        if session.get("elements") is not None:
+            session["elements"] = [(kind, [(p[0] + dx, p[1] + dy) for p in pts])
+                                   for kind, pts in session["elements"]]
+            commands = _elements_to_commands(session["elements"])
+            flat = _flatten_elements(session["elements"])
+            if len(flat) < 2:
+                return False
+            piece = animean.vectorlogic.make_stroke_object_from_path(
+                commands, flat, geometry["color"], geometry["width"], geometry["id"])
+        else:
+            session["points"] = [(p[0] + dx, p[1] + dy) for p in session["points"]]
+            if len(session["points"]) < 2:
+                return False
+            piece = animean.vectorlogic.make_stroke_object(
+                session["points"], geometry["color"], geometry["width"],
+                geometry["id"], False, False)
+        piece.property = geometry["property"]
+        piece.pen_style = geometry["pen_style"]
+        if image.replace_stroke_with_pieces(session["index"], [piece]) <= 0:
+            return False
+    else:
+        geometry = session["geometry"]
+        geometry["commands"] = _shift_commands(geometry["commands"], (dx, dy))
+        seed = (geometry["seed"][0] + dx, geometry["seed"][1] + dy)
+        geometry["seed"] = seed
+        # path takes the command SEQUENCE itself (objectToPath iterates it);
+        # a {"commands": ...} wrapper raises TypeError.
+        if not image.set_fill_region(session["index"],
+                                     path=geometry["commands"],
+                                     seed={"x": seed[0], "y": seed[1]}):
+            return False
+    session["outline"] = [[(p[0] + dx, p[1] + dy) for p in poly]
+                          for poly in (session.get("outline") or [])]
+    session["applied"] = tuple(delta)
+    return True
+
+
+def _default_drag(view, session, phase, pos):
+    delta = (pos[0] - session["press_pos"][0], pos[1] - session["press_pos"][1])
+    if abs(delta[0]) > 1e-9 or abs(delta[1]) > 1e-9:
+        session["moved"] = True
+    if session.get("moved") and _translate_default(view, session, delta):
+        session["changed"] = True
+    _push_default(view, session)
+    _animean().ui.refresh()
+    if phase != "release":
+        return
+    if session.get("changed"):
+        try:
+            _animean().ui.history_commit(
+                "Move Fill" if session["kind"] == "fill" else "Move Stroke", view)
+        except Exception:
+            pass
+    session["moved"] = False
+    session["changed"] = False
+    session["press_pos"] = pos
+    session["applied"] = (0.0, 0.0)
+    if session["kind"] == "stroke":
+        refreshed = _fetch(_scene_model(view), session["frame"],
+                           session["layer"], session["index"])
+        if refreshed is None:
+            _clear(view)
+            return
+        session["geometry"] = refreshed
+        session["elements"] = _elements(refreshed["commands"]) if refreshed["commands"] else None
+        session["points"] = list(refreshed["points"])
+
+
 # --- hook handlers -----------------------------------------------------------
 
 def _handle_event(message):
@@ -923,7 +1174,23 @@ def _handle_event(message):
     pos = (float(pos_dict.get("x", 0.0)), float(pos_dict.get("y", 0.0)))
 
     if phase == "pick":
-        _pick(view, pos, zoom)
+        if message.get("property"):
+            # The Arrow is hosting a SCRIPT tool (Auto Mapping arms it): its
+            # canvas gestures belong to that tool's own overlay, not to the
+            # artwork underneath. Grabbing a stroke here relocated drawings
+            # while the user was aiming at a guide.
+            _clear(view)
+            return
+        if _STATE["mode"] == "default":
+            _pick_default(view, pos, zoom, message)
+        else:
+            _pick(view, pos, zoom)
+        return
+    if phase == "arm":
+        # Arming the Arrow shows nothing until something is picked; a stale
+        # session from the last time it was armed would outline an object
+        # the user is no longer pointing at.
+        _clear(view)
         return
     if phase == "cancel":
         # The view left the Arrow tool: its handles are gone, so the debug
@@ -938,6 +1205,12 @@ def _handle_event(message):
         return
 
     handle_id = message.get("handle") or ""
+    if session.get("mode") == "default":
+        # The default mode owns no handles: its only gesture is the body
+        # drag the pick claimed.
+        if phase in ("move", "release") and handle_id.startswith("default:"):
+            _default_drag(view, session, phase, pos)
+        return
     if phase == "press":
         # Between the pick and this press the model may have moved under us -
         # an undo, a redo, another tool. The index alone would then point at a
@@ -1114,6 +1387,33 @@ def _history_restored(message):
     session = _SESSIONS.get(view)
     if session is None:
         return
+    if session.get("mode") == "default":
+        # Undo/redo moved the object (or removed it): re-outline from the
+        # restored model rather than leaving a highlight floating.
+        if session["kind"] == "fill":
+            geometry = _fill_geometry(_scene_model(view), session["frame"],
+                                      session["layer"], session["index"])
+            if geometry is None:
+                _clear(view)
+                return
+            session["geometry"] = geometry
+            session["outline"] = geometry["polylines"]
+        else:
+            refreshed = _fetch(_scene_model(view), session["frame"],
+                               session["layer"], session["index"])
+            if refreshed is None:
+                _clear(view)
+                return
+            cell = _scene_model(view).cell_to_dict(session["layer"],
+                                                   session["frame"], True, POLY_STEP)
+            session["geometry"] = refreshed
+            session["elements"] = _elements(refreshed["commands"]) if refreshed["commands"] else None
+            session["points"] = list(refreshed["points"])
+            session["outline"] = _stroke_polylines(
+                cell["image"]["strokes"][session["index"]])
+        session["applied"] = (0.0, 0.0)
+        _push_default(view, session)
+        return
     try:
         refreshed = _fetch(_scene_model(view), session["frame"],
                            session["layer"], session["index"])
@@ -1133,13 +1433,96 @@ def _history_restored(message):
     _rebuild(view, session, _STATE["last_zoom"])
 
 
+OUTLINE_SETTINGS_NAME = "arrow_outline"
+ARROW_MENU_NAME = "arrow_tool"
+
+
+def _hex_color(rgba):
+    r, g, b, a = (list(rgba) + [255, 255, 255, 255])[:4]
+    return f"#{a:02x}{r:02x}{g:02x}{b:02x}"
+
+
+def _parse_hex_color(text):
+    text = str(text).strip().lstrip("#")
+    try:
+        if len(text) == 8:
+            a, r, g, b = (int(text[i:i + 2], 16) for i in (0, 2, 4, 6))
+            return (r, g, b, a)
+        if len(text) == 6:
+            r, g, b = (int(text[i:i + 2], 16) for i in (0, 2, 4))
+            return (r, g, b, 255)
+    except ValueError:
+        pass
+    return None
+
+
+def _outline_settings_layout():
+    """Menu bar -> Arrow -> Outline Display Settings."""
+    return {
+        "row_spacing": 8,
+        "column_spacing": 6,
+        "controls": [
+            {"name": "outline_color", "type": "color",
+             "title": "Selection outline colour", "hook": "arrow_outline",
+             "value": _hex_color(_OUTLINE["outline_color"]),
+             "row": 0, "start_column": 0, "end_column": 1},
+            {"name": "outline_width", "type": "slider",
+             "title": "Selection outline width", "hook": "arrow_outline",
+             "min": 1, "max": 12,
+             "value": int(round(float(_OUTLINE["outline_width"]))),
+             "row": 1, "start_column": 0, "end_column": 2},
+        ],
+    }
+
+
+def _arrow_menu_items():
+    return [
+        {"name": "outline_settings", "title": "Outline Display Settings...",
+         "kind": "settings", "settings": OUTLINE_SETTINGS_NAME},
+    ]
+
+
+def _outline_setting_changed(message):
+    if message.get("hook") != "arrow_outline":
+        return
+    name = message.get("name") or ""
+    value = message.get("value")
+    if name == "outline_color":
+        parsed = _parse_hex_color(value)
+        if parsed is None:
+            return
+        _OUTLINE["outline_color"] = parsed
+    elif name == "outline_width":
+        try:
+            _OUTLINE["outline_width"] = max(0.5, float(value))
+        except (TypeError, ValueError):
+            return
+    else:
+        return
+    for view, session in list(_SESSIONS.items()):
+        if session.get("mode") == "default":
+            _push_default(view, session)
+    print(f"[edit_tool] {name} -> {_OUTLINE[name]}")
+
+
 def _option_changed(message):
     if message.get("hook") != "edit_mode":
         return
     value = str(message.get("value", "")).lower()
     if value not in MODES or _STATE["mode"] == value:
         return
+    previous = _STATE["mode"]
     _STATE["mode"] = value
+    # A session built for one mode does not describe another: the default
+    # mode owns an outline and no handles, the others own handles and no
+    # outline. Rebuilding across that boundary left draggable handles over a
+    # default session (whose next release committed a no-op "Edit Stroke"),
+    # so a mode switch ENDS the session; the next click starts the right one.
+    if (previous == "default") != (value == "default"):
+        for view in list(_SESSIONS):
+            _clear(view)
+        print(f"[edit_tool] edit mode -> {value}")
+        return
     # Option events carry no zoom; the last handle event does.
     zoom = _STATE["last_zoom"]
     for view, session in list(_SESSIONS.items()):
@@ -1150,3 +1533,12 @@ def _option_changed(message):
 python_hooks.set_hook(_handle_event, handle=True)
 python_hooks.set_hook(_option_changed, option=True, tool="arrow")
 python_hooks.set_hook(_history_restored, historyrestore=True)
+# The outline colour is a menu-bar setting, registered at import so it exists
+# in a fresh session before the Arrow has ever been armed.
+python_hooks.register_menu({
+    "name": ARROW_MENU_NAME,
+    "title": "Arrow",
+    "items": _arrow_menu_items,
+})
+python_hooks.register_settings(OUTLINE_SETTINGS_NAME, _outline_settings_layout)
+python_hooks.set_hook(_outline_setting_changed, option=True)

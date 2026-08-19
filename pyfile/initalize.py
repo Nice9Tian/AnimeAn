@@ -10,6 +10,10 @@ BOOTSTRAP_MODULES = ("animean_python", "animemodel")
 PYTHON_FILE_MODULES = (
     "toolcontrol",
     "python_hooks",
+    # Imported early: it owns the per-tool drawing colour, and a tool armed
+    # before it loads would record nothing.
+    "tool_colors",
+    "transfer_tool",
     "hook_test",
     "extra_tools",
     "midline_tool",

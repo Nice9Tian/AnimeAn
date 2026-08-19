@@ -10,6 +10,7 @@
 #include <QRectF>
 #include <QSize>
 #include <QString>
+#include <QTransform>
 #include <QVector>
 
 struct AnimeVectorStroke {
@@ -78,6 +79,12 @@ public:
     void addStrokeNode(const AnimeVectorStrokeNode &node);
     void addFillRegion(const AnimeVectorFillRegion &fill);
     void translate(const QPointF &delta);
+    // Affine transform of everything in the image (strokes, fills,
+    // raster placement). The GENERIC half of the Transfer tool: what a
+    // drag on a box handle MEANS lives in pyfile/transfer_tool.py; this
+    // is only "apply this matrix". Stroke widths follow the mean scale
+    // so a scaled drawing keeps its line weight proportional.
+    void transform(const QTransform &matrix);
     void remapFillSourceLayersAfterDelete(int deletedLayerIndex);
     void remapFillSourceLayersAfterMove(int fromIndex, int toIndex);
     bool setFillRegionAt(int index, const AnimeVectorFillRegion &fill);

@@ -41,6 +41,7 @@ private:
     QVBoxLayout *m_layout = nullptr;
     QPushButton *m_arrowButton = nullptr;
     QPushButton *m_connectButton = nullptr;
+    QPushButton *m_transferButton = nullptr;
     QVector<QPushButton *> m_extraButtons;
     QVector<ExtraToolDefinition> m_extraTools;
 };

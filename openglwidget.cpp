@@ -54,6 +54,8 @@ QString toolName(PaintOpenGLWidget::Tool tool)
         return QStringLiteral("arrow");
     case PaintOpenGLWidget::Tool::Connect:
         return QStringLiteral("connect");
+    case PaintOpenGLWidget::Tool::Transfer:
+        return QStringLiteral("transfer");
     }
     return QStringLiteral("pen");
 }
@@ -649,13 +651,23 @@ void PaintOpenGLWidget::focusInEvent(QFocusEvent *event)
 
 void PaintOpenGLWidget::setPenColor(const QColor &color)
 {
-    m_penColor = color;
-    m_tool = Tool::Pen;
+    // Picking a colour in the tool panel means "draw with this": it arms the
+    // pen FIRST (which announces the tool change, so the colour policy in
+    // pyfile/tool_colors.py hands the pen its remembered colour) and applies
+    // the pick SECOND, so the pick wins over what was restored. Assigning
+    // m_tool directly skipped the announcement and left the policy stale.
+    setTool(Tool::Pen);
+    setDrawingColor(color);
 }
 
 void PaintOpenGLWidget::setDrawingColor(const QColor &color)
 {
+    // Pure mechanism: "draw with this colour". WHICH colour each tool gets
+    // is policy and lives in pyfile/tool_colors.py - the per-tool cache was
+    // briefly kept here and moved out on the house rule that generic
+    // mechanisms are C++ and tool behaviour is Python.
     m_penColor = color;
+    updateBrushCursor();
 }
 
 void PaintOpenGLWidget::setPenWidth(qreal width)
@@ -676,8 +688,15 @@ void PaintOpenGLWidget::setPenWidth(qreal width)
 
 void PaintOpenGLWidget::setStrokeProperty(const QString &property)
 {
+    const bool changed = m_strokeProperty != property;
     m_strokeProperty = property;
     m_activePythonTool = property.isEmpty() ? QString() : QStringLiteral("extra");
+    if (changed) {
+        // The property is the script tool's identity, so a change of it is a
+        // change of armed tool - announced like setTool's, so the colour
+        // policy in Python sees both halves of "this tool is now armed".
+        sendPythonHandleMessage(QStringLiteral("arm"), QString(), QPointF());
+    }
     if (m_hasCurrentStroke) {
         m_currentStroke.property = property;
     }
@@ -1023,7 +1042,8 @@ bool PaintOpenGLWidget::sendPythonFillRequestMessage(const QPointF &pos)
 
 void PaintOpenGLWidget::setTool(Tool tool)
 {
-    if ((m_tool == Tool::Arrow || m_tool == Tool::Connect) && tool != m_tool) {
+    if ((m_tool == Tool::Arrow || m_tool == Tool::Connect || m_tool == Tool::Transfer)
+        && tool != m_tool) {
         // Leaving a handle-owning tool (Arrow's edit points, Connect's snap
         // hints and its accept/delete buttons) dismisses its handles - and
         // TELLS Python, so anything it drew into the overlay goes with them
@@ -1040,6 +1060,11 @@ void PaintOpenGLWidget::setTool(Tool tool)
     // resets its own drag state, so no message is needed.
     m_activeOverlayDrag.clear();
     m_tool = tool;
+    // EVERY tool announces that it was armed. Scripts hang tool-scoped state
+    // off this: Transfer builds its box and its 8 grips, tool_colors.py hands
+    // the tool back the colour it was last used with (a script tool that
+    // paints itself pink must not repaint the pen).
+    sendPythonHandleMessage(QStringLiteral("arm"), QString(), QPointF());
     m_points.clear();
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
@@ -1664,11 +1689,14 @@ QString PaintOpenGLWidget::editHandleAt(const QPointF &screenPos) const
     return QString();
 }
 
-void PaintOpenGLWidget::sendPythonHandleMessage(const QString &phase, const QString &handleId, const QPointF &pos)
+QString PaintOpenGLWidget::sendPythonHandleMessage(const QString &phase,
+                                                  const QString &handleId,
+                                                  const QPointF &pos,
+                                                  Qt::KeyboardModifiers modifiers)
 {
 #ifdef ANIMEAN_WITH_PYTHON
     if (!animeanHookEventSubscribed(QStringLiteral("handle"))) {
-        return;
+        return QString();
     }
 
     const int frameRow = m_model.currentFrame();
@@ -1694,6 +1722,26 @@ void PaintOpenGLWidget::sendPythonHandleMessage(const QString &phase, const QStr
     message["delta"] = pointToPythonDict(QPointF());
     message["phase"] = phase.toStdString();
     message["handle"] = handleId.toStdString();
+    // The colour in force right now: the per-tool colour cache
+    // (pyfile/tool_colors.py) records it the first time a tool is armed, so
+    // a tool that never sets a colour of its own still keeps one instead of
+    // inheriting whatever the previous tool painted with.
+    py::dict currentColor;
+    currentColor["r"] = m_penColor.red();
+    currentColor["g"] = m_penColor.green();
+    currentColor["b"] = m_penColor.blue();
+    currentColor["a"] = m_penColor.alpha();
+    message["color"] = currentColor;
+    // Modifier keys ride along so a tool can constrain its own gesture the
+    // way the pen constrains a stroke (aspect-locked scaling, axis-locked
+    // translation). Any of Alt/Ctrl/Shift reads as "constrain" - which one
+    // is a house convention, so the flags travel separately too.
+    py::dict keys;
+    keys["shift"] = bool(modifiers & Qt::ShiftModifier);
+    keys["ctrl"] = bool(modifiers & Qt::ControlModifier);
+    keys["alt"] = bool(modifiers & Qt::AltModifier);
+    keys["constrain"] = bool(modifiers & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier));
+    message["modifiers"] = keys;
     // The perceptual key-point filter is zoom-dependent (the eye resolves a
     // fixed angular period, which maps through the zoom to document space).
     message["zoom"] = m_zoom;
@@ -1702,10 +1750,26 @@ void PaintOpenGLWidget::sendPythonHandleMessage(const QString &phase, const QStr
     if (!isQuietHookOutput(output)) {
         emit pythonDebugMessage(output);
     }
+
+    // A "pick" may CLAIM the gesture: Python answers with the id of the
+    // thing it grabbed, and this press becomes a drag under that id.
+    try {
+        if (message.contains(py::str("grab"))) {
+            const std::string grabbed = message[py::str("grab")].cast<std::string>();
+            if (!grabbed.empty()) {
+                return QString::fromStdString(grabbed);
+            }
+        }
+    } catch (const py::error_already_set &) {
+    } catch (const py::cast_error &) {
+    }
+    return QString();
 #else
     Q_UNUSED(phase);
     Q_UNUSED(handleId);
+    Q_UNUSED(modifiers);
     Q_UNUSED(pos);
+    return QString();
 #endif
 }
 
@@ -2292,37 +2356,55 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
     // clamped in document space and at high zoom covers a large screen area,
     // so testing it first made handles under it ungrabbable - the click
     // deleted a guide instead of starting the drag the user aimed at.
-    if (m_tool == Tool::Arrow || m_tool == Tool::Connect) {
+    if (m_tool == Tool::Arrow || m_tool == Tool::Connect || m_tool == Tool::Transfer) {
         const QString handleId = editHandleAt(event->position());
         if (!handleId.isEmpty()) {
             m_activeHandleDrag = handleId;
-            sendPythonHandleMessage(QStringLiteral("press"), handleId, pos);
+            sendPythonHandleMessage(QStringLiteral("press"), handleId, pos, event->modifiers());
         } else if (removeOverlayItemAt(pos)) {
             // fallthrough handled: the badge consumed the click
+        } else if (!draggableOverlayItemAt(event->position()).isEmpty()) {
+            // Draggable overlay items are grabbable under EVERY tool, this
+            // branch included: Auto Mapping arms the Arrow, and its guides
+            // and nearest-point anchor are overlay items - routing this
+            // branch straight to "pick" made them undraggable under the one
+            // tool that owns them.
+            m_activeOverlayDrag = draggableOverlayItemAt(event->position());
+            sendPythonHandleMessage(QStringLiteral("press"), m_activeOverlayDrag, pos,
+                                    event->modifiers());
         } else {
-            sendPythonHandleMessage(QStringLiteral("pick"), QString(), pos);
+            // A pick that CLAIMS something (Transfer's box body, Arrow's
+            // default-mode outline) turns this press into a drag under the
+            // id Python answered with. Nothing claimed: it stays a click.
+            const QString grabbed = sendPythonHandleMessage(QStringLiteral("pick"), QString(),
+                                                            pos, event->modifiers());
+            if (!grabbed.isEmpty()) {
+                m_activeHandleDrag = grabbed;
+            }
         }
         event->accept();
         return;
     }
 
-    // Draggable overlay items (e.g. the mapping's nearest-point anchor) are
-    // grabbable under ANY tool, like the x badges are clickable under any
-    // tool. Tested before the badges: the badge rect covers a large screen
-    // area at high zoom and would swallow the grab.
+    // Same order for every other tool: the x badge is a small, deliberate
+    // target and wins the click it is under; anything else on a draggable
+    // item starts the drag. (The badge used to be tested second, which was
+    // safe while only the anchor was draggable - now that the guides are
+    // too, a badge sitting over a guide could never be clicked.)
+    if (removeOverlayItemAt(pos)) {
+        event->accept();
+        return;
+    }
+
     {
         const QString overlayId = draggableOverlayItemAt(event->position());
         if (!overlayId.isEmpty()) {
             m_activeOverlayDrag = overlayId;
-            sendPythonHandleMessage(QStringLiteral("press"), overlayId, pos);
+            sendPythonHandleMessage(QStringLiteral("press"), overlayId, pos,
+                                    event->modifiers());
             event->accept();
             return;
         }
-    }
-
-    if (removeOverlayItemAt(pos)) {
-        event->accept();
-        return;
     }
 
     if (m_tool == Tool::Fill) {
@@ -2448,15 +2530,17 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
     }
 
     if (!m_activeOverlayDrag.isEmpty()) {
-        sendPythonHandleMessage(QStringLiteral("move"), m_activeOverlayDrag, m_hoverPos);
+        sendPythonHandleMessage(QStringLiteral("move"), m_activeOverlayDrag, m_hoverPos,
+                                event->modifiers());
         update();
         event->accept();
         return;
     }
 
-    if (m_tool == Tool::Arrow || m_tool == Tool::Connect) {
+    if (m_tool == Tool::Arrow || m_tool == Tool::Connect || m_tool == Tool::Transfer) {
         if (!m_activeHandleDrag.isEmpty()) {
-            sendPythonHandleMessage(QStringLiteral("move"), m_activeHandleDrag, m_hoverPos);
+            sendPythonHandleMessage(QStringLiteral("move"), m_activeHandleDrag, m_hoverPos,
+                                    event->modifiers());
         }
         event->accept();
         return;
@@ -2572,12 +2656,12 @@ void PaintOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
         return;
     }
 
-    if (m_tool == Tool::Arrow || m_tool == Tool::Connect) {
+    if (m_tool == Tool::Arrow || m_tool == Tool::Connect || m_tool == Tool::Transfer) {
         if (!m_activeHandleDrag.isEmpty()) {
             const QString handleId = m_activeHandleDrag;
             m_activeHandleDrag.clear();
             sendPythonHandleMessage(QStringLiteral("release"), handleId,
-                                    mapToDocument(event->position()));
+                                    mapToDocument(event->position()), event->modifiers());
         }
         event->accept();
         return;

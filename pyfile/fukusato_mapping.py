@@ -1296,10 +1296,16 @@ def register_hooks():
 
 
 def _set_draw_color(color):
+    """Arm this tool's colour THROUGH the per-tool cache: setting it
+    directly repainted whatever tool came next (pyfile/tool_colors.py)."""
     try:
-        _animean().ui.set_draw_color(color)
+        import tool_colors
+        tool_colors.apply(color)
     except Exception:
-        pass
+        try:
+            _animean().ui.set_draw_color(color)
+        except Exception:
+            pass
 
 
 def activate_fukusato_line(name="fukusato_line", property_value=HANDLE_PROPERTY):
