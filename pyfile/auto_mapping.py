@@ -1428,7 +1428,14 @@ class _AdditionalWarp:
                        child_line[-1][1] - child_line[0][1])
             if m_chord[0] * c_chord[0] + m_chord[1] * c_chord[1] < 0.0:
                 main_line = list(reversed(main_line))
-        arc_total = _cumulative_lengths([tuple(p) for p in child_third])[-1]
+        # BOTH sides' arcs: the child side alone broke the main-drawn
+        # path, where the synthesized partner is the straight chord - a
+        # 340-degree drawn C carried 593 px of arc yet reached only its
+        # chord's worth (R = 17 px), the opposite of the "reach follows
+        # the line's own ARC length" rule stated at the radius below.
+        arc_total = max(
+            _cumulative_lengths([tuple(p) for p in child_third])[-1],
+            _cumulative_lengths([tuple(p) for p in main_third])[-1])
         origin = child_line[0]
         chord = (child_line[-1][0] - origin[0], child_line[-1][1] - origin[1])
         length = math.hypot(chord[0], chord[1])
