@@ -3173,6 +3173,15 @@ def _corner_loci(map_point, v_range, h_range, spans=None, step=POLY_STEP):
     return curves
 
 
+def _child_of_arcs(map_point, arcs):
+    """Child-space point of a MAIN-arc coordinate pair (loci live in main arcs)."""
+    a_h, a_v = arcs
+    h_scales, v_scales = map_point.h_scales, map_point.v_scales
+    return map_point.child_frame.hv(
+        a_h / (h_scales[1] if a_h >= 0.0 else h_scales[0]),
+        a_v / (v_scales[1] if a_v >= 0.0 else v_scales[0]))
+
+
 def _curve_is_fold(map_point, curve, probe=POLY_STEP, samples=5):
     """Does the field actually CHANGE SIDE across this traced curve?
 
@@ -3189,21 +3198,14 @@ def _curve_is_fold(map_point, curve, probe=POLY_STEP, samples=5):
     sample flips - even near a birth point the arms part beyond the probe
     somewhere mid-branch) from phantoms (no sample flips anywhere).
     """
-    h_scales, v_scales = map_point.h_scales, map_point.v_scales
-    child = map_point.child_frame
-
-    def at(a_h, a_v):
-        return child.hv(a_h / (h_scales[1] if a_h >= 0.0 else h_scales[0]),
-                        a_v / (v_scales[1] if a_v >= 0.0 else v_scales[0]))
-
     count = len(curve)
     if count < 2:
         return False
     tested = 0
     for k in range(samples):
         index = max(0, min(count - 2, int((k + 0.5) * (count - 1) / samples)))
-        pa = at(*curve[index])
-        pb = at(*curve[index + 1])
+        pa = _child_of_arcs(map_point, curve[index])
+        pb = _child_of_arcs(map_point, curve[index + 1])
         dx, dy = pb[0] - pa[0], pb[1] - pa[1]
         length = math.hypot(dx, dy)
         if length <= 1e-9:
@@ -3988,7 +3990,7 @@ class _MappedOutput:
         self.scene = scene
         self.row = row
         self.depths = {}         # depth -> [(kind, payload, color, width, side)]
-        self.seal_items = []
+        self.seal_depths = {}    # depth -> seal strokes, occluded like content
         self.side_counts = {self.FRONT: 0, self.BACK: 0}
         self.layers = []
         # Where the emitters actually cut the artwork, in mapped space. The
@@ -4013,7 +4015,7 @@ class _MappedOutput:
 
     def _bucket(self, side, depth):
         if side == self.SEAL:
-            return self.seal_items
+            return self.seal_depths.setdefault(max(0, int(depth or 0)), [])
         if depth is None:
             depth = 0 if side == self.FRONT else 1
         self.side_counts[side] = self.side_counts.get(side, 0) + 1
@@ -4039,11 +4041,12 @@ class _MappedOutput:
         return True
 
     def count(self, side=None):
+        seal_total = sum(len(items) for items in self.seal_depths.values())
         if side is None:
             return (sum(len(items) for items in self.depths.values())
-                    + len(self.seal_items))
+                    + seal_total)
         if side == self.SEAL:
-            return len(self.seal_items)
+            return seal_total
         return self.side_counts.get(side, 0)
 
     def _track_new_layer(self, layer):
@@ -4206,17 +4209,29 @@ class _MappedOutput:
         shift = min(occupied) if occupied and min(occupied) > 0 else 0
         if shift:
             self.depths = {d - shift: items for d, items in self.depths.items() if items}
+            self.seal_depths = {max(0, d - shift): items
+                                for d, items in self.seal_depths.items() if items}
         generic = bool(shift % 2)
-        deep_first = sorted((d for d in self.depths if self.depths[d]), reverse=True)
-        plan = [(self._layer_name(depth, generic), self.depths[depth], False)
-                for depth in deep_first]
-        # The crease goes ON TOP. It used to sit between the back and the
-        # front, which worked while everything was line art - but a depth-0
-        # FILL is opaque right up to the fold edge (its boundary IS the
-        # crease), and painted above the seal it swallowed the crease's inner
-        # half, which read as the fold line being drawn in the wrong place.
-        if self.seal_items:
-            plan.append((SEAL_LAYER_NAME, self.seal_items, True))
+        # Each depth's crease layer sits DIRECTLY ABOVE its content layer:
+        # above it, because a depth-0 fill is opaque right up to the fold
+        # edge (its boundary IS the crease) and painted over the seal it
+        # swallowed the crease's inner half; but BELOW every nearer depth,
+        # because a crease under a covering flap is occluded artwork like
+        # anything else - drawn blanket-on-top it poked out of the covering
+        # colour (user report). Layers are created bottom-up, so within one
+        # depth the order is content first, crease second.
+        deep_first = sorted(set(d for d in self.depths if self.depths[d])
+                            | set(d for d in self.seal_depths if self.seal_depths[d]),
+                            reverse=True)
+        plan = []
+        for depth in deep_first:
+            if self.depths.get(depth):
+                plan.append((self._layer_name(depth, generic),
+                             self.depths[depth], False))
+            if self.seal_depths.get(depth):
+                name = (SEAL_LAYER_NAME if depth == 0 and not generic
+                        else f"{SEAL_LAYER_NAME} depth {depth}")
+                plan.append((name, self.seal_depths[depth], True))
         for name, items, seal in plan:
             layer = _create_mapped_layer(self.scene, self.row, name)
             if layer < 0:
@@ -4459,6 +4474,44 @@ def _emit_seals(animean, out, map_point, pattern, child_area, main_area, width_s
         points = [main.hv(arc, other) for arc, other in curve]
         if len(points) < 2:
             continue
+        # Keep the pre-trim image polyline and its 1:1 arc correspondence:
+        # the crease's DEPTH is read back through them after trimming and
+        # cusp-splitting have reshaped the drawn geometry.
+        branch_arcs = list(curve)
+        branch_points = list(points)
+        branch_depths = {}
+
+        def seal_depth_at(image_point):
+            """Depth of the crease at this drawn vertex: the nearer of the
+            two flaps meeting at the fold (probed one step to each side in
+            child space). Deeper flaps' creases are occluded by everything
+            nearer, exactly like the flaps themselves."""
+            best = None
+            for index, q in enumerate(branch_points):
+                d2 = ((q[0] - image_point[0]) ** 2
+                      + (q[1] - image_point[1]) ** 2)
+                if best is None or d2 < best[0]:
+                    best = (d2, index)
+            index = best[1]
+            if index in branch_depths:
+                return branch_depths[index]
+            other = index + 1 if index + 1 < len(branch_arcs) else index - 1
+            pa = _child_of_arcs(map_point, branch_arcs[index])
+            pb = _child_of_arcs(map_point, branch_arcs[other])
+            dx, dy = pb[0] - pa[0], pb[1] - pa[1]
+            length = math.hypot(dx, dy)
+            depth = 0
+            if length > 1e-9:
+                nx, ny = -dy / length, dx / length
+                sides = []
+                for direction in (1.0, -1.0):
+                    p = (pa[0] + nx * POLY_STEP * direction,
+                         pa[1] + ny * POLY_STEP * direction)
+                    sides.append(_fold_depth(map_point, p,
+                                             _fold_sign(map_point, p)))
+                depth = max(0, min(sides))
+            branch_depths[index] = depth
+            return depth
         # Anchor the WHOLE branch before cutting it up. A cusp is a feature of
         # one continuous fold, not a break in it, so a cut past the cusp still
         # vouches for the stretch leading up to it; anchoring the two arms
@@ -4504,7 +4557,21 @@ def _emit_seals(animean, out, map_point, pattern, child_area, main_area, width_s
             del arms[0]
         for run in arms:
             for piece in _clip_polyline(run, main_area):
-                out.add_polyline(_MappedOutput.SEAL, piece, color, width)
+                if len(piece) < 2:
+                    continue
+                # Split where the crease's depth changes (it slides under a
+                # nearer flap at locus crossings); consecutive sub-pieces
+                # share the transition vertex so the crease stays gapless.
+                depth_of = [seal_depth_at(p) for p in piece]
+                start = 0
+                for index in range(1, len(piece)):
+                    if depth_of[index] != depth_of[start]:
+                        out.add_polyline(_MappedOutput.SEAL,
+                                         piece[start:index + 1], color, width,
+                                         depth_of[start])
+                        start = index
+                out.add_polyline(_MappedOutput.SEAL, piece[start:], color,
+                                 width, depth_of[start])
 
 
 def _fold_runs_cubic(map_point, cubics, cuts=None):
