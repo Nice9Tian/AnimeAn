@@ -183,6 +183,13 @@ def rdp_eps():
 # itself, the main shows its image under the mapper, and wanting one is no
 # reason to be shown the other.
 _REFER_RECT = {"child": False, "main": False}
+# Refer-rect grid density: iso-lines per axis over [-1, 1]. 5 is the
+# historical look; finer settings are the debugging view the user asked
+# for - reading a multi-line warp's topology needs more iso-lines than a
+# placement check does. Sample density per iso-line scales with it so a
+# fine grid stays smooth through folds.
+GRID_DIVISION_CHOICES = (5, 9, 17, 33)
+_GRID = {"divisions": 5}
 # Grid polylines are O(n^2) in guide points to build (intersection searches):
 # cache per view, invalidated whenever the guides change.
 _GRID_CACHE = {"child": None, "main": None}
@@ -1546,7 +1553,7 @@ class _AdditionalWarp:
                 return (origin[0] + u[0] * s + n[0] * r,
                         origin[1] + u[1] * s + n[1] * r)
 
-            # Chaining by nearest r under a slope gate. The old rule -
+            # Chaining by nearest row under a slope gate. The old rule -
             # append by array rank whenever the crossing COUNT matched -
             # welded unrelated loci with long straight jumps through
             # sign-constant territory whenever one locus left the band as
@@ -1559,60 +1566,83 @@ class _AdditionalWarp:
             # loci - exactly the weld this gate exists to prevent.
             tol = min(max(4.0 * base_span / samples, 0.05 * radius),
                       0.5 * radius)
-            open_curves = []  # [points, last_r]
-            for k in range(columns + 1):
-                s = span_lo + (span_hi - span_lo) * k / columns
+
+            def run_sweep(col_lo, col_hi, col_count, row_bounds, point_at):
+                open_curves = []  # [points, last_row]
+                for k in range(col_count + 1):
+                    col = col_lo + (col_hi - col_lo) * k / col_count
+                    row_lo, row_hi = row_bounds(col)
+                    steps = min(400, max(40, int(math.ceil(
+                        40.0 * (row_hi - row_lo) / (2.5 * radius)))))
+                    crossings = []
+                    prev_sign = None
+                    prev_row = None
+                    for j in range(steps + 1):
+                        row = row_lo + (row_hi - row_lo) * j / steps
+                        sign = self.det_sign(point_at(col, row))
+                        if prev_sign is not None and sign != prev_sign:
+                            a, b = prev_row, row
+                            for _ in range(18):
+                                mid = (a + b) * 0.5
+                                if self.det_sign(point_at(col, mid)) == prev_sign:
+                                    a = mid
+                                else:
+                                    b = mid
+                            crossings.append((a + b) * 0.5)
+                        prev_sign = sign
+                        prev_row = row
+                    taken = [False] * len(open_curves)
+                    matches = []
+                    for ci, crossing in enumerate(crossings):
+                        best = None
+                        for oi, (_points, last_row) in enumerate(open_curves):
+                            gap = abs(crossing - last_row)
+                            if gap <= tol and (best is None or gap < best[0]):
+                                if not taken[oi]:
+                                    best = (gap, oi)
+                        matches.append(best[1] if best else None)
+                        if best:
+                            taken[best[1]] = True
+                    survivors = []
+                    for oi, (points, _last_row) in enumerate(open_curves):
+                        if not taken[oi]:
+                            if len(points) >= 2:
+                                traced.append(points)
+                    for ci, crossing in enumerate(crossings):
+                        oi = matches[ci]
+                        if oi is None:
+                            survivors.append([[point_at(col, crossing)],
+                                              crossing])
+                        else:
+                            open_curves[oi][0].append(point_at(col, crossing))
+                            open_curves[oi][1] = crossing
+                            survivors.append(open_curves[oi])
+                    open_curves = survivors
+                for points, _last_row in open_curves:
+                    if len(points) >= 2:
+                        traced.append(points)
+
+            # TWO sweep directions, like the frame creases' h/v sweeps: a
+            # locus stretch running ALONG the scan columns is invisible to
+            # that sweep - the single s-sweep missed the near-vertical
+            # stretches that close a fold band at its ends, leaving a
+            # depth/side boundary with no locus, no cutter and no crease
+            # (measured: a parity step 9.7 px from every cutter). The
+            # orthogonal sweep traces them; the Third-space dedupe merges
+            # the overlap.
+            def s_rows(s):
                 _dx, _dy, r_c, _taper = self._sample(pair, s)
-                crossings = []
-                r_lo = r_c - 1.25 * radius - pad
-                r_hi = r_c + 1.25 * radius + pad
-                steps = min(400, max(40, int(math.ceil(
-                    40.0 * (r_hi - r_lo) / (2.5 * radius)))))
-                prev_sign = None
-                prev_r = None
-                for j in range(steps + 1):
-                    r = r_lo + (r_hi - r_lo) * j / steps
-                    sign = self.det_sign(third_at(s, r))
-                    if prev_sign is not None and sign != prev_sign:
-                        a, b = prev_r, r
-                        for _ in range(18):
-                            mid = (a + b) * 0.5
-                            if self.det_sign(third_at(s, mid)) == prev_sign:
-                                a = mid
-                            else:
-                                b = mid
-                        crossings.append((a + b) * 0.5)
-                    prev_sign = sign
-                    prev_r = r
-                taken = [False] * len(open_curves)
-                matches = []
-                for ci, crossing in enumerate(crossings):
-                    best = None
-                    for oi, (_points, last_r) in enumerate(open_curves):
-                        gap = abs(crossing - last_r)
-                        if gap <= tol and (best is None or gap < best[0]):
-                            if not taken[oi]:
-                                best = (gap, oi)
-                    matches.append(best[1] if best else None)
-                    if best:
-                        taken[best[1]] = True
-                survivors = []
-                for oi, (points, last_r) in enumerate(open_curves):
-                    if not taken[oi]:
-                        if len(points) >= 2:
-                            traced.append(points)
-                for ci, crossing in enumerate(crossings):
-                    oi = matches[ci]
-                    if oi is None:
-                        survivors.append([[third_at(s, crossing)], crossing])
-                    else:
-                        open_curves[oi][0].append(third_at(s, crossing))
-                        open_curves[oi][1] = crossing
-                        survivors.append(open_curves[oi])
-                open_curves = survivors
-            for points, _last_r in open_curves:
-                if len(points) >= 2:
-                    traced.append(points)
+                return (r_c - 1.25 * radius - pad, r_c + 1.25 * radius + pad)
+
+            run_sweep(span_lo, span_hi, columns, s_rows,
+                      lambda s, r: third_at(s, r))
+            r_all_lo = min(pair["offsets"]) - 1.25 * radius - pad
+            r_all_hi = max(pair["offsets"]) + 1.25 * radius + pad
+            r_columns = min(400, max(samples, int(math.ceil(
+                samples * (r_all_hi - r_all_lo) / (2.5 * radius)))))
+            run_sweep(r_all_lo, r_all_hi, r_columns,
+                      lambda _r: (span_lo, span_hi),
+                      lambda r, s: third_at(s, r))
         grid = _ArcGrid(4.0 * POLY_STEP)
         curves = []
         for curve in sorted(traced, key=len, reverse=True):
@@ -3006,8 +3036,10 @@ def _grid_overlay_items(view_name):
         return cached
 
     items = []
-    levels = (-1.0, -0.5, 0.0, 0.5, 1.0)
-    samples = [i / 24.0 * 2.0 - 1.0 for i in range(25)]
+    divisions = max(2, int(_GRID.get("divisions", 5)))
+    levels = [i / (divisions - 1) * 2.0 - 1.0 for i in range(divisions)]
+    count = 6 * (divisions - 1) + 1   # divisions=5 -> 25, the historical density
+    samples = [i / (count - 1) * 2.0 - 1.0 for i in range(count)]
 
     # The MAIN board's grid shows the RENDERING mapping when it exists: the
     # child frame's lattice pushed through the full mapper, additional-line
@@ -4182,6 +4214,7 @@ def _crease_curves(map_point, v_range, h_range=None, samples=48, max_columns=600
             return curves
         child_frame = map_point.child_frame
         ids = dict(getattr(map_point, "warp_curve_child", {}) or {})
+        thirds = dict(getattr(map_point, "warp_curve_third", {}) or {})
         # Pin every registered curve object: the registry accumulates
         # across calls, and an id() of a garbage-collected list could be
         # recycled by a NEW curve, silently resolving to the wrong child
@@ -4193,9 +4226,22 @@ def _crease_curves(map_point, v_range, h_range=None, samples=48, max_columns=600
             if len(arc_curve) < 2:
                 continue
             ids[id(arc_curve)] = [child_frame.hv(*t) for t in third_curve]
+            # The NATIVE Third geometry rides along: depth rays must count
+            # warp loci in base Third - their unfolding space - because in
+            # arc space the warp has already folded, so a warp locus there
+            # is a fold EDGE image whose two sides are NOT different
+            # sheets (counting it in arc space lifted an untouched far
+            # region to depth 2 on add_s_error). No extension: fold_loci's
+            # two sweep directions close a band's boundary at its ends, so
+            # the ray count is the topological winding against a closed
+            # boundary - extending each piece to infinity instead stacked
+            # spurious crossings and blew the S-line document up to depth
+            # 7 on ground the map covers twice.
+            thirds[id(arc_curve)] = [tuple(t) for t in third_curve]
             keep.append(arc_curve)
             curves.append(arc_curve)
         map_point.warp_curve_child = ids
+        map_point.warp_curve_third = thirds
         map_point.warp_curve_keep = keep
         return curves
 
@@ -4365,7 +4411,22 @@ def _prepare_fold_context(map_point, h_range, v_range):
         (min(h_range[0], anchor[0]) - pad, max(h_range[1], anchor[0]) + pad),
         stitch=False, corner_spans=(h_range, v_range))
     map_point.depth_anchor = anchor
-    map_point.child_cutters = None  # built lazily by _child_cutters
+    warp = getattr(map_point, "warp", None)
+    if warp is not None:
+        # The anchor's BASE Third position, for counting warp loci in
+        # their own unfolding space. The anchor normally sits outside
+        # every pink line's band, where unapply is the exact identity;
+        # inside a fold band it is best-effort like every other consumer.
+        map_point.depth_anchor_third = warp.unapply(
+            map_point.unscale_arcs(*anchor))
+    else:
+        map_point.depth_anchor_third = None
+    map_point.child_cutters = None
+    # Build the cutters NOW, not lazily: for warp loci this also swaps the
+    # depth-ray Third geometry to the extended cutter's coords preimage,
+    # and the first depth query (stroke runs come before fills) must
+    # already see the aligned geometry.
+    _child_cutters(map_point)
 
 
 def _arc_of_point(map_point, point):
@@ -4384,16 +4445,48 @@ def _arc_of_point(map_point, point):
 
 
 def _fold_depth(map_point, point, side):
-    """Stacking depth of a child point (0 = nearest to the viewer)."""
+    """Stacking depth of a child point (0 = nearest to the viewer).
+
+    Each crease is counted in ITS OWN unfolding space - the space where
+    crossing it really is stepping onto another sheet. Frame creases
+    unfold in main-arc space (hv is single-valued there), and their count
+    applies uniformly to every warp sheet stacked at an arc position.
+    Warp creases unfold in BASE Third space - by the time the arcs exist
+    the warp has already folded, so a warp locus in arc space is a fold
+    edge IMAGE whose two sides are the same sheet; counting it there
+    lifted a physically single-sheet region to depth 2 (add_s_error).
+    """
     curves = getattr(map_point, "depth_curves", None)
     if not curves:
         return 0 if side == _MappedOutput.FRONT else 1
     anchor = map_point.depth_anchor
-    arc = _arc_of_point(map_point, point)
+    warp_third = getattr(map_point, "warp_curve_third", {}) or {}
+    anchor_third = getattr(map_point, "depth_anchor_third", None)
+    # One frame solve, shared by both rays; the arc ray is derived (and
+    # the warp applied) only if a frame curve actually needs it.
+    point_third = None
+    arc = None
     depth = 0
     for curve in curves:
-        for a, b in zip(curve, curve[1:]):
-            hit = _segment_intersection(anchor, arc, a, b)
+        native = warp_third.get(id(curve)) if warp_third else None
+        if native is not None and anchor_third is not None:
+            if point_third is None:
+                point_third = map_point.coords(point)
+            ray_a, ray_b = anchor_third, point_third
+            segments = zip(native, native[1:])
+        else:
+            if arc is None:
+                if point_third is None:
+                    point_third = map_point.coords(point)
+                z = point_third
+                warp = getattr(map_point, "warp", None)
+                if warp is not None:
+                    z = warp.apply(z)
+                arc = map_point.scale_arcs(*z)
+            ray_a, ray_b = anchor, arc
+            segments = zip(curve, curve[1:])
+        for a, b in segments:
+            hit = _segment_intersection(ray_a, ray_b, a, b)
             if hit is None:
                 continue
             t, u = hit
@@ -4694,8 +4787,17 @@ def _split_ring_with_chord(ring, chord):
     return result if len(result) == 2 else None
 
 
-def _split_ring_by_fold(map_point, ring, crossings_out=None):
+def _split_ring_by_fold(map_point, ring, crossings_out=None, gate_bbox=None):
     """[(sub_ring, side, interior_point)] after cutting by every crease.
+
+    `gate_bbox` overrides the cosmetic-cut skip gate's bounds. Rings that
+    must end up with CONSISTENT partitions - a fill's outer and its holes -
+    must gate against the SAME bounds (the fill's union bbox): gating each
+    ring by its own bbox let an extension slice the outer while skipping
+    the hole (whose bbox missed the cutter's real geometry), so the whole
+    hole straddled two outer pieces, attached to only one, and the other
+    rendered solid over what the artist cut out (measured: a crescent of
+    phantom fill on add_fill_error).
 
     `crossings_out` collects the ring/crease crossing points (child space):
     the fill's side-change positions, which the crease anchors on exactly
@@ -4707,16 +4809,19 @@ def _split_ring_by_fold(map_point, ring, crossings_out=None):
     raw_crossings = [] if crossings_out is not None else None
     cutters = _child_cutters(map_point)
     raws = getattr(map_point, "child_cutters_raw", None) or [None] * len(cutters)
-    rx0 = min(p[0] for p in ring)
-    rx1 = max(p[0] for p in ring)
-    ry0 = min(p[1] for p in ring)
-    ry1 = max(p[1] for p in ring)
+    if gate_bbox is None:
+        rx0 = min(p[0] for p in ring)
+        rx1 = max(p[0] for p in ring)
+        ry0 = min(p[1] for p in ring)
+        ry1 = max(p[1] for p in ring)
+    else:
+        rx0, ry0, rx1, ry1 = gate_bbox
     margin = 2.0 * POLY_STEP
     for cutter, raw in zip(cutters, raws):
         if raw is not None:
             # Crossing a cutter's straight extension never changes the
             # parity, so a cutter whose REAL geometry stays bbox-clear of
-            # this ring can only slice it cosmetically - skip it.
+            # the gate bounds can only slice cosmetically - skip it.
             if (max(p[0] for p in raw) < rx0 - margin
                     or min(p[0] for p in raw) > rx1 + margin
                     or max(p[1] for p in raw) < ry0 - margin
@@ -4850,38 +4955,84 @@ def _emit_fills(animean, out, map_point, fills, child_area, main_area):
         if not source_rings:
             continue
         # Which source rings are HOLES: odd-even nesting among the fill's own
-        # subpaths, judged in child space.
-        ring_reps = [_ring_interior_point(ring) for ring in source_rings]
-        is_hole = []
-        for index, ring in enumerate(source_rings):
-            level = sum(1 for j, other in enumerate(source_rings)
-                        if j != index and _point_in_ring(ring_reps[index], other))
-            is_hole.append(level % 2 == 1)
+        # subpaths, judged in child space. The nesting probe must sit ON the
+        # ring's OWN boundary - an interior point (the centroid) of an
+        # annulus's outer ring lies inside the ring's own hole, which scored
+        # the outer as nested level 1 and dropped the WHOLE fill (a centred
+        # donut/eye/letter-O emitted zero regions, silently). A boundary
+        # vertex is never inside a subpath nested within its own ring; the
+        # median over a few spread vertices shrugs off a vertex that grazes
+        # another ring's edge.
+        def nesting_level(index):
+            ring = source_rings[index]
+            count = min(5, len(ring))
+            levels = sorted(
+                sum(1 for j, other in enumerate(source_rings)
+                    if j != index
+                    and _point_in_ring(ring[(k * len(ring)) // count], other))
+                for k in range(count))
+            return levels[len(levels) // 2]
+
+        ring_levels = [nesting_level(index) for index in range(len(source_rings))]
+        is_hole = [level % 2 == 1 for level in ring_levels]
 
         # (depth, side) -> [outer piece entries], each carrying its CHILD
-        # geometry so hole pieces can find the outer piece that contains them.
+        # geometry so hole pieces can find the outer piece that contains
+        # them. Outer and hole rings split against the SAME gate bounds
+        # (the fill's union bbox) so their partitions are consistent - a
+        # hole that skipped a cutter the outer took straddled two outer
+        # pieces and could attach to only one.
+        fill_bbox = (min(p[0] for ring in source_rings for p in ring),
+                     min(p[1] for ring in source_rings for p in ring),
+                     max(p[0] for ring in source_rings for p in ring),
+                     max(p[1] for ring in source_rings for p in ring))
         outers = {}
         holes = []
         fold_crossings = []
         for index, ring in enumerate(source_rings):
             for clipped in _clip_rings_to_area([ring], child_area):
-                for piece, side, rep in _split_ring_by_fold(map_point, clipped,
-                                                            fold_crossings):
-                    depth = _fold_depth(map_point, rep, side)
+                for piece, side, rep in _split_ring_by_fold(
+                        map_point, clipped, fold_crossings,
+                        gate_bbox=fill_bbox):
                     if is_hole[index]:
-                        holes.append((depth, side, piece, rep))
+                        # A hole's depth is its outer's - never probed.
+                        # Its attachment point must sit ON the hole's own
+                        # boundary: an interior point (the centroid) of a
+                        # hole ring lies inside any ISLAND nested within
+                        # it, and the innermost-outer rule then attached
+                        # the hole to that island (4-ring nest: the outer
+                        # lost its hole and painted the hole band solid).
+                        edge = ((piece[0][0] + piece[1][0]) * 0.5,
+                                (piece[0][1] + piece[1][1]) * 0.5) \
+                            if len(piece) >= 2 else piece[0]
+                        holes.append((piece, edge))
                     else:
-                        entry = {"child": piece, "rings": [piece], "holes": []}
+                        depth = _fold_depth(map_point, rep, side)
+                        entry = {"child": piece, "rings": [piece],
+                                 "holes": [], "level": ring_levels[index]}
                         outers.setdefault((depth, side), []).append(entry)
         # A fill's fold-edge endpoints anchor the crease exactly like stroke
         # cuts do: without them the crease stopped at the last STROKE cut and
         # left the fill's own fold boundary without its terminator line.
         out.cuts.extend(map_point(p) for p in fold_crossings)
-        for depth, side, piece, rep in holes:
-            for entry in outers.get((depth, side), ()):
-                if _point_in_ring(rep, entry["child"]):
-                    entry["holes"].append(piece)
-                    break
+        # Attach holes by CHILD-space containment alone: with consistent
+        # partitions a hole piece lies inside at least one outer piece and
+        # shares the INNERMOST one's depth and side - re-deriving them from
+        # the hole's own probe made attachment hostage to probe noise
+        # beside a crease, and an unattached hole silently rendered as
+        # solid fill. Innermost (deepest nesting level) matters for
+        # level-2+ subpaths: an island's hole is contained by the level-0
+        # outer too, and first-match attached it there, painting the
+        # island's hole solid.
+        for piece, rep in holes:
+            best = None
+            for entries in outers.values():
+                for entry in entries:
+                    if _point_in_ring(rep, entry["child"]):
+                        if best is None or entry["level"] > best["level"]:
+                            best = entry
+            if best is not None:
+                best["holes"].append(piece)
 
         # Every OUTER piece becomes its own fill region (with its holes as
         # extra odd-even subpaths). Same-group pieces are never merged into
@@ -6018,6 +6169,16 @@ def _view_menu_items(view_name):
     def build():
         items = [{"name": REFER_RECT_ITEM, "title": "Mapping Refer Rect",
                   "kind": "check", "checked": _REFER_RECT.get(view_name, False)}]
+        # Grid density lives with the grid it densifies. One shared value
+        # for both boards: the point of the fine setting is COMPARING the
+        # two boards' grids cell by cell, which needs them to agree.
+        items.append({
+            "name": "refer_rect_divisions", "title": "Refer Rect Divisions",
+            "kind": "submenu",
+            "items": [{"name": f"grid_div_{n}", "title": f"{n} x {n}",
+                       "kind": "radio",
+                       "checked": _GRID["divisions"] == n}
+                      for n in GRID_DIVISION_CHOICES]})
         if view_name == "child":
             items.append({"name": OCCLUSION_BUTTON, "title": "Occluded Areas",
                           "kind": "check", "checked": _OCCLUSION["enabled"]})
@@ -6039,6 +6200,22 @@ def _view_menu_action(message):
         _push_overlay(view)
         print(f"[auto_mapping] refer rect grid on {view} "
               f"{'ON' if checked else 'OFF'}")
+        return
+    if name.startswith("grid_div_"):
+        try:
+            divisions = int(name[len("grid_div_"):])
+        except ValueError:
+            return
+        if divisions not in GRID_DIVISION_CHOICES \
+                or _GRID["divisions"] == divisions:
+            return
+        _GRID["divisions"] = divisions
+        _invalidate_grid_cache()
+        for board in ("child", "main"):
+            if _REFER_RECT.get(board):
+                _push_overlay(board)
+        print(f"[auto_mapping] refer rect grid -> {divisions} x {divisions} "
+              "iso-lines")
         return
     if name == OCCLUSION_BUTTON:
         _set_occlusion(checked)
