@@ -7841,6 +7841,12 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
     if getattr(map_point, "depth_curves", None):
         child_frame_local = map_point.child_frame
         for k, (_i, _j, u, v) in enumerate(nodes):
+            # Only SOLID nodes carry stacking evidence: the grid extends
+            # past the fills to drape strokes, and those overhang nodes
+            # (no gradient information, drifting z) once diluted the
+            # depth-class means until the ordering check misfired.
+            if not inside_solid(u, v):
+                continue
             child_pt = child_frame_local.hv(u, v)
             try:
                 side = _fold_sign(map_point, child_pt)
@@ -7862,19 +7868,39 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
                 gy = g[1] * region_sign[region] * handed[k] * majority \
                     / length
                 ki, kj = nodes[k][0], nodes[k][1]
-                ahead = node_index.get((ki + int(round(gx * 2)),
-                                        kj + int(round(gy * 2))))
-                behind = node_index.get((ki - int(round(gx * 2)),
-                                         kj - int(round(gy * 2))))
-                if ahead is None or behind is None:
+                d_here = node_depth[k]
+                if d_here is None:
                     continue
-                da = node_depth[ahead]
-                db = node_depth[behind]
-                if da is None or db is None or da == db:
+
+                def first_other_depth(sx, sy):
+                    # Walk until the stacking CHANGES: a frame fold's
+                    # depth step lives across a narrow crease, and a
+                    # fixed two-cell probe often landed short of it.
+                    for radius in range(1, 7):
+                        n = node_index.get((ki + int(round(sx * radius)),
+                                            kj + int(round(sy * radius))))
+                        if n is None:
+                            return None
+                        dn = node_depth[n]
+                        if dn is not None and dn != d_here:
+                            return dn
+                    return None
+
+                da = first_other_depth(gx, gy)
+                db = first_other_depth(-gx, -gy)
+                if da is None and db is None:
                     continue
                 # +grad points toward larger z; depth must SHRINK there.
-                score += db - da
-                votes += 1
+                if da is not None:
+                    score += d_here - da
+                    votes += 1
+                if db is not None:
+                    score += db - d_here
+                    votes += 1
+            if os.environ.get("ANIMEAN_TO3D_DEBUG"):
+                print(f"[to3d-debug] region {region}: votes {votes} "
+                      f"score {score:+.1f} sign {region_sign[region]:+.0f}"
+                      f"{' -> FLIP' if votes and score < 0.0 else ''}")
             if votes and score < 0.0:
                 region_sign[region] = -region_sign[region]
     signs = [region_sign[labels[k]] if labels[k] != -1 else 1.0
@@ -7912,43 +7938,106 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
                 entry.append((n, axis, sign))
         neigh.append(entry)
 
-    def apply_lap(z):
-        out = [0.0] * len(z)
-        for k, entry in enumerate(neigh):
-            acc = 0.0
-            for n, _axis, _sign in entry:
-                acc += z[k] - z[n]
-            out[k] = acc
-        return out
-
-    rhs = [0.0] * len(nodes)
+    rhs_grad = [0.0] * len(nodes)
     for k, entry in enumerate(neigh):
         acc = 0.0
         for n, axis, sign in entry:
             step = du if axis == 0 else dv
             tk = target[k][axis]
             tn = target[n][axis]
-            acc += sign * 0.5 * (tk + tn) * step
-        rhs[k] = acc
-    z = [0.0] * len(nodes)
-    r = [rhs[k] - v for k, v in enumerate(apply_lap(z))]
-    mean_r = sum(r) / len(r)
-    r = [v - mean_r for v in r]      # Neumann null space
-    p = list(r)
-    rs_old = sum(v * v for v in r)
-    for _ in range(min(400, 4 * len(nodes))):
-        if rs_old < 1e-8:
-            break
-        ap = apply_lap(p)
-        denom = sum(pv * apv for pv, apv in zip(p, ap)) or 1e-12
-        alpha = rs_old / denom
-        z = [zv + alpha * pv for zv, pv in zip(z, p)]
-        r = [rv - alpha * apv for rv, apv in zip(r, ap)]
-        mean_r = sum(r) / len(r)
-        r = [v - mean_r for v in r]
-        rs_new = sum(v * v for v in r)
-        p = [rv + (rs_new / rs_old) * pv for rv, pv in zip(r, p)]
-        rs_old = rs_new
+            # NEGATED divergence so that grad z == +target: the earlier
+            # sign made z the NEGATIVE integral (harmless while a global
+            # flip absorbed it, but the depth votes assume walking up
+            # +target walks up z - with the old sign the votes flipped
+            # regions exactly backwards).
+            acc -= sign * 0.5 * (tk + tn) * step
+        rhs_grad[k] = acc
+
+    def solve(anchor_weight, z_ref):
+        def apply_A(z):
+            out = [0.0] * len(z)
+            for k, entry in enumerate(neigh):
+                acc = anchor_weight[k] * z[k] if anchor_weight else 0.0
+                for n, _axis, _sign in entry:
+                    acc += z[k] - z[n]
+                out[k] = acc
+            return out
+
+        grounded = bool(anchor_weight) and any(anchor_weight)
+        rhs = list(rhs_grad)
+        if grounded:
+            for k in range(len(rhs)):
+                rhs[k] += anchor_weight[k] * z_ref[k]
+        z = [0.0] * len(nodes)
+        r = [rhs[k] - v for k, v in enumerate(apply_A(z))]
+        if not grounded:
+            mean_r = sum(r) / len(r)
+            r = [v - mean_r for v in r]      # Neumann null space
+        p = list(r)
+        rs_old = sum(v * v for v in r)
+        for _ in range(min(400, 4 * len(nodes))):
+            if rs_old < 1e-8:
+                break
+            ap = apply_A(p)
+            denom = sum(pv * apv for pv, apv in zip(p, ap)) or 1e-12
+            alpha = rs_old / denom
+            z = [zv + alpha * pv for zv, pv in zip(z, p)]
+            r = [rv - alpha * apv for rv, apv in zip(r, ap)]
+            if not grounded:
+                mean_r = sum(r) / len(r)
+                r = [v - mean_r for v in r]
+            rs_new = sum(v * v for v in r)
+            p = [rv + (rs_new / rs_old) * pv for rv, pv in zip(r, p)]
+            rs_old = rs_new
+        return z
+
+    # PASS 1: pure isometric integration - the shape.
+    z = solve(None, None)
+    # PASS 2, only on disagreement: ground the layers on the 2D stacking.
+    # When pass 1 already stacks every depth class in the red-handle
+    # order, the pure isometric answer stands untouched. When it does
+    # not (integration cannot see the offset across a fold, and on frame
+    # folds it drifted into the wrong order - the user's report), a WEAK
+    # anchor (lambda 0.2 against a Laplacian diagonal of ~4) pulls each
+    # node toward its layer's reference height: 2D occlusion wins over
+    # isometric purity, locally the shape stays gradient-driven. The gap
+    # unit comes from pass 1's own relief.
+    depths_known = sorted({d for d in node_depth if d is not None})
+    ordered = True
+    if len(depths_known) >= 2:
+        means = {}
+        for k, zv in enumerate(z):
+            d = node_depth[k]
+            if d is not None:
+                means.setdefault(d, []).append(zv)
+        for shallow, deep in zip(depths_known, depths_known[1:]):
+            if sum(means[shallow]) / len(means[shallow]) \
+                    <= sum(means[deep]) / len(means[deep]):
+                ordered = False
+                break
+    if os.environ.get("ANIMEAN_TO3D_DEBUG") and len(depths_known) >= 2:
+        means_dbg = {}
+        for k, zv in enumerate(z):
+            if node_depth[k] is not None:
+                means_dbg.setdefault(node_depth[k], []).append(zv)
+        print("[to3d-debug] pass1 depth means: "
+              + ", ".join(f"d{d}={sum(v)/len(v):.1f}"
+                          for d, v in sorted(means_dbg.items()))
+              + f"; ordered={ordered}")
+    if len(depths_known) >= 2 and not ordered:
+        zs_sorted = sorted(z)
+        low = zs_sorted[int(0.05 * (len(z) - 1))]
+        high = zs_sorted[int(0.95 * (len(z) - 1))]
+        gap = max((high - low) / (depths_known[-1] - depths_known[0] + 1),
+                  4.0 * max(du, dv))
+        d_mean = sum(depths_known) / len(depths_known)
+        z_ref = [0.0] * len(nodes)
+        anchor_weight = [0.0] * len(nodes)
+        for k in range(len(nodes)):
+            if node_depth[k] is not None:
+                z_ref[k] = -(node_depth[k] - d_mean) * gap
+                anchor_weight[k] = 0.2
+        z = solve(anchor_weight, z_ref)
     z_mean = sum(z) / len(z)
     z = [(v - z_mean) * scale0 for v in z]   # into canvas units
     # Global concavity: the per-region orientation fixes RELATIVE signs;
@@ -8190,6 +8279,8 @@ _TO3D_TEMPLATE = r"""<!DOCTYPE html>
   <div><label><input id="flip" type="checkbox"> flip relief</label>
        <label style="margin-left:12px"><input id="wire" type="checkbox">
        wireframe</label></div>
+  <div><button id="homecam" type="button" style="margin-top:4px">
+       original camera</button></div>
   <div style="opacity:.7">drag: rotate &middot; wheel: zoom &middot;
        right-drag: pan</div>
 </div>
@@ -8313,6 +8404,20 @@ CAMERA_MATRIX.decompose(camera.position, camera.quaternion, camera.scale);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.target.set(0, 0, 0);
+// "original camera": restore the constant initial framing (the MainView
+// angle) after any amount of orbiting.
+const HOME = { position: camera.position.clone(),
+               quaternion: camera.quaternion.clone(),
+               zoom: camera.zoom,
+               target: controls.target.clone() };
+document.getElementById('homecam').addEventListener('click', () => {
+  camera.position.copy(HOME.position);
+  camera.quaternion.copy(HOME.quaternion);
+  camera.zoom = HOME.zoom;
+  camera.updateProjectionMatrix();
+  controls.target.copy(HOME.target);
+  controls.update();
+});
 
 addEventListener('resize', () => {
   const aspect = innerWidth / innerHeight;
