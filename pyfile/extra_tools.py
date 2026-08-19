@@ -32,6 +32,12 @@ def extra_tools():
             "handler": "auto_mapping.activate_mapping_area_tool",
         },
         {
+            "name": "additional_line",
+            "title": "Additional Line",
+            "property": auto_mapping.ADDITIONAL_PROPERTY,
+            "handler": "auto_mapping.activate_additional_line_tool",
+        },
+        {
             # THE automapping (Coons interpolation, formerly "Auto Mapping 2").
             # The internal name/property keep the historical "_2" suffix so
             # old sessions keep their meaning; the retired spine-rotation

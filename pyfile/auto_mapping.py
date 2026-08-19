@@ -117,6 +117,20 @@ POLY_STEP = 4.0
 NEAREST_PROPERTY = "fold_nearest"
 NEAREST_HANDLE_COLOR = (230, 45, 45, 255)
 
+# "Additional line": a pink refinement guide drawn on either board on top of
+# the H/V axes. Each line exists as a PAIR (child version, main version) - the
+# side the user did not draw on is synthesized through the current mapping -
+# and the pair's difference drives a local warp of the mapping (see
+# _AdditionalWarp). Falloff shape and reach are tool options.
+ADDITIONAL_PROPERTY = "additional_line"
+ADDITIONAL_COLOR = (255, 105, 180, 255)
+ADDITIONAL_FALLOFFS = ("linear", "quadratic")
+_ADDITIONAL = {"falloff": "linear", "radius_factor": 0.5}
+
+
+def additional_falloff():
+    return _ADDITIONAL["falloff"]
+
 GRID_COLOR = (255, 140, 0, 170)
 
 # How the mapped strokes' geometry is reconstructed after the warp. The warp
@@ -221,6 +235,10 @@ _LINE_DISPLAY = {
     # previews which parts of the texture land there.
     "back_color": (104, 112, 140, 255),
     "occlusion_alpha": 70,
+    # Additional (refinement) lines: pink, on both boards.
+    "additional_color": ADDITIONAL_COLOR,
+    "additional_width": 2.5,
+    "additional_style": 1,
 }
 
 
@@ -243,6 +261,7 @@ ITEM_LABELS = {
     V_PROPERTY: "V center line",
     MAPPING_AREA_PROPERTY: "mapping area",
     NEAREST_PROPERTY: "nearest point",
+    ADDITIONAL_PROPERTY: "additional line",
 }
 
 # view name -> {property -> item}; guide item: {"points": [...], "width": w},
@@ -343,6 +362,42 @@ def _load_assets(view_name):
             arc = item.get("arc") or []
             if len(arc) >= 2:
                 assets[prop] = {"arc": [float(arc[0]), float(arc[1])]}
+        elif prop == ADDITIONAL_PROPERTY:
+            lines = []
+            for line in item.get("lines") or []:
+                points = [(float(p[0]), float(p[1]))
+                          for p in line.get("points") or []]
+                loaded = {"points": points, "width": float(line.get("width", 2.5))}
+                if "id" in line:
+                    try:
+                        loaded["id"] = int(line["id"])
+                    except (TypeError, ValueError):
+                        pass
+                if len(points) < 2:
+                    # Keep the slot (with its id): legacy pairs match the
+                    # other board by position, and dropping one here would
+                    # shift every later pair.
+                    loaded["points"] = []
+                    lines.append(loaded)
+                    continue
+                if line.get("commands"):
+                    loaded["commands"] = line["commands"]
+                third = [[float(t[0]), float(t[1])]
+                         for t in line.get("third") or [] if len(t) >= 2]
+                # The stored Third polyline is only authoritative while it
+                # still matches the drawn points one to one.
+                if len(third) == len(points):
+                    loaded["third"] = third
+                lines.append(loaded)
+            # Legacy assets carry no ids; stamp positional ones NOW, on both
+            # boards alike, so identity survives later deletes. Left
+            # implicit, a delete renumbered the id-less half of a pair out
+            # from under its partner (measured: the surviving pair died and
+            # its +20 px correction went to 0).
+            for index, line in enumerate(lines):
+                line.setdefault("id", index)
+            if lines:
+                assets[prop] = {"lines": lines}
         elif prop in GUIDE_PROPERTIES:
             points = [(float(p[0]), float(p[1])) for p in item.get("points") or []]
             if len(points) >= 2:
@@ -1078,7 +1133,277 @@ def _transfer_scales(child_raw, child_total, main_side):
             (1.0 - w_pos) * base_neg + w_pos * base_pos)
 
 
-def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None):
+class _AdditionalWarp:
+    """The influence field of the additional (pink) refinement lines.
+
+    THIRD SPACE. The child frame's arc coordinates (l_h, l_v) already form a
+    standard Cartesian plane in which both guide axes are straight - the
+    flattened view of the surface. Child->Third is `coords`, Main->Third is
+    the main frame's arcs divided by the per-side transfer scales, so both
+    boards' additional lines land in ONE shared plane.
+
+    A line drawn to hug the surface has the surface's geodesics crossing it
+    ORTHOGONALLY; in the flattened Third plane those geodesics are straight,
+    so they run along the normal of the line's START-TO-END CHORD. The warp
+    therefore works entirely in the chord frame (o, u, n):
+
+      - the drawn pair's difference is reduced to a NORMAL profile
+        delta(s) = (M(s) - C(s)) . n over the chord parameter s
+        (deformation only along the chord normal, per the theorem);
+      - the profile is TRANSLATION-SWEPT along n - every Third point at
+        chord parameter s displaces by w(|r - r_c(s)|/R) * delta(s) * n.
+        The weight is centred on the DRAWN LINE (r_c(s) = the child line's
+        own normal offset at s), not on the chord, so a bowed or hooked
+        line receives its full correction on itself. No spine/ridge
+        coordinates anywhere: the sweep direction stays one constant
+        vector per line, only the falloff centre rides the curve.
+      - w is the falloff (tool option): linear 1-x or quadratic (1-x)^2,
+        reaching zero at R = radius_factor * max(chord, arc length).
+        Beyond the chord's parameter span the profile tapers linearly to
+        zero over R, so a line's influence ends smoothly in every
+        direction.
+
+    Multiple lines sum. Each pair's displacement gradient is bounded with
+    the falloff's own weight-derivative peak charged (2x for quadratic),
+    per pair first (PAIR_MARGIN - an over-drawn line clamps itself) and
+    then globally (TOTAL_MARGIN), so the warp stays a contraction: it is
+    invertible by fixed point and creates no folds of its own - det of its
+    Jacobian stays positive, which the fold machinery's sign tests rely
+    on. Profiles are [1,2,1]-smoothed against chord-projection artifacts
+    before any of that is measured.
+    """
+
+    SAMPLES = 65
+    # Per-pair fold-safety margin and the global contraction budget. The
+    # fold bound must charge the falloff's own weight-derivative peak: for
+    # w = 1-x it is 1, for w = (1-x)^2 it is 2 AT x=0 - exactly on the line,
+    # where the profile peaks. The first version charged peak/R regardless
+    # and the quadratic falloff folded the warp at 25% of the declared
+    # envelope (det J measured -0.68 at the cap) - wrong face, wrong
+    # inverse, cutters 23 px off.
+    PAIR_MARGIN = 0.70
+    TOTAL_MARGIN = 0.85
+
+    def __init__(self, pairs, falloff="linear", radius_factor=0.5):
+        self.falloff = falloff if falloff in ADDITIONAL_FALLOFFS else "linear"
+        self.gain = 2.0 if self.falloff == "quadratic" else 1.0
+        self.pairs = []
+        for child_third, main_third in pairs:
+            prepared = self._prepare(child_third, main_third, radius_factor)
+            if prepared is not None:
+                self.pairs.append(prepared)
+        self._regularize()
+
+    @staticmethod
+    def _resample(points, count):
+        cum = _cumulative_lengths(points)
+        total = cum[-1]
+        if total <= 1e-9:
+            return None
+        return [_point_at_arc(points, cum, total * k / (count - 1))
+                for k in range(count)]
+
+    @staticmethod
+    def _smooth(values, keys, limit):
+        """[1,2,1]-smooth until the worst LOCAL slope |dv/ds| fits `limit`.
+
+        The chord projection of a hooked or S-shaped line interleaves its
+        branches, manufacturing steep steps that are projection artifacts,
+        not drawn geometry - measured 900x slope inflation on a 250-degree
+        hook, which then consumed the whole deformation budget and gutted
+        every OTHER line's correction. The slope is measured against the
+        LOCAL key gap - the same quantity the gradient budget later
+        charges; an average-spacing version left a 5x gap between what was
+        smoothed and what was billed. Smoothing is best-effort (a monotone
+        ramp is a [1,2,1] fixed point); whatever slope remains is charged
+        at full value by _pair_gradient, never assumed away.
+        """
+        for _ in range(64):
+            worst = max((abs(b - a) / max(k1 - k0, 1e-6)
+                         for a, b, k0, k1 in zip(values, values[1:],
+                                                 keys, keys[1:])),
+                        default=0.0)
+            if worst <= limit:
+                break
+            values = ([values[0]]
+                      + [(values[i - 1] + 2.0 * values[i] + values[i + 1]) * 0.25
+                         for i in range(1, len(values) - 1)]
+                      + [values[-1]])
+        return values
+
+    def _prepare(self, child_third, main_third, radius_factor):
+        if len(child_third) < 2 or len(main_third) < 2:
+            return None
+        child_line = self._resample([tuple(p) for p in child_third], self.SAMPLES)
+        main_line = self._resample([tuple(p) for p in main_third], self.SAMPLES)
+        if child_line is None or main_line is None:
+            return None
+        # Station k pairs with station k, so the two sides must run the same
+        # way; a reversed partner (a right-to-left redraw of the same shape)
+        # otherwise pairs fore against aft and fabricates a shear delta from
+        # identical geometry (measured 13.5 px). Chord dot decides.
+        m_chord = (main_line[-1][0] - main_line[0][0],
+                   main_line[-1][1] - main_line[0][1])
+        c_chord = (child_line[-1][0] - child_line[0][0],
+                   child_line[-1][1] - child_line[0][1])
+        if m_chord[0] * c_chord[0] + m_chord[1] * c_chord[1] < 0.0:
+            main_line = list(reversed(main_line))
+        arc_total = _cumulative_lengths([tuple(p) for p in child_third])[-1]
+        origin = child_line[0]
+        chord = (child_line[-1][0] - origin[0], child_line[-1][1] - origin[1])
+        length = math.hypot(chord[0], chord[1])
+        if length <= 1e-6:
+            return None  # a closed scribble has no chord frame
+        u = (chord[0] / length, chord[1] / length)
+        n = (-u[1], u[0])
+        # Per chord station s: the child line's OWN normal offset r_c(s) and
+        # the pair's normal-only difference delta(s). The sweep is centred
+        # on the DRAWN line (weight measured from r_c), not on the chord: a
+        # bowed line's own points must receive the full delta - measured on
+        # the chord-centred version, a sagitta-50 bow received half its
+        # correction and a U-shaped line none at all.
+        table = []
+        for c, m in zip(child_line, main_line):
+            s = (c[0] - origin[0]) * u[0] + (c[1] - origin[1]) * u[1]
+            r_c = (c[0] - origin[0]) * n[0] + (c[1] - origin[1]) * n[1]
+            delta = (m[0] - c[0]) * n[0] + (m[1] - c[1]) * n[1]
+            table.append((s, delta, r_c))
+        table.sort(key=lambda entry: entry[0])
+        # Collapse near-coincident chord parameters (an S-shaped line
+        # projects two points onto one s; averaging keeps the profile a
+        # function, which the translation sweep requires).
+        merged = []
+        span = max(table[-1][0] - table[0][0], 1e-6)
+        epsilon = span / (4.0 * self.SAMPLES)
+        for s, delta, r_c in table:
+            if merged and s - merged[-1][0] < epsilon:
+                prev_s, prev_d, prev_r, count = merged[-1]
+                merged[-1] = (prev_s,
+                              (prev_d * count + delta) / (count + 1),
+                              (prev_r * count + r_c) / (count + 1),
+                              count + 1)
+            else:
+                merged.append((s, delta, r_c, 1))
+        if len(merged) < 2:
+            return None
+        keys = [entry[0] for entry in merged]
+        deltas = self._smooth([entry[1] for entry in merged], keys, 1.0)
+        offsets = self._smooth([entry[2] for entry in merged], keys, 2.0)
+        # Reach follows the line's own ARC length, not its chord: a hooked
+        # line has a tiny chord but a long presence on the surface.
+        radius = max(radius_factor * max(length, arc_total), 1e-6)
+        return {"origin": origin, "u": u, "n": n, "radius": radius,
+                "keys": keys, "deltas": deltas, "offsets": offsets}
+
+    def _pair_gradient(self, pair):
+        """Upper bound on this pair's displacement operator norm.
+
+        The displacement is F(s, r) * n with one fixed direction n, so the
+        Jacobian is rank one and its norm is exactly sqrt(F_s^2 + F_r^2).
+        F_r is bounded by gain*peak/R (gain = |w'|max of the falloff).
+        F_s collects three sources, each at full value - clamping any of
+        them was measured to admit folds at exactly the budget: the
+        interior profile slope, the END TAPER's own slope (up to peak/R,
+        omitted in the first version - two straight pairs meeting at 135
+        degrees then folded the map at a charged total of exactly 0.85),
+        and the sweep centre's drift through the weight derivative
+        (min(drift, 2) used to under-charge hairpins 10x).
+        """
+        radius = pair["radius"]
+        peak = max(abs(d) for d in pair["deltas"])
+        slope = max((abs(b - a) / max(k1 - k0, 1e-6)
+                     for a, b, k0, k1 in zip(pair["deltas"], pair["deltas"][1:],
+                                             pair["keys"], pair["keys"][1:])),
+                    default=0.0)
+        drift = max((abs(b - a) / max(k1 - k0, 1e-6)
+                     for a, b, k0, k1 in zip(pair["offsets"], pair["offsets"][1:],
+                                             pair["keys"], pair["keys"][1:])),
+                    default=0.0)
+        f_r = self.gain * peak / radius
+        f_s = (max(slope, peak / radius)
+               + self.gain * peak / radius * drift)
+        return math.hypot(f_r, f_s)
+
+    def _scale_pair(self, pair, factor):
+        pair["deltas"] = [d * factor for d in pair["deltas"]]
+
+    def _regularize(self):
+        # Per pair first: one over-drawn line must clamp ITSELF, not bleed
+        # its excess into every other line's budget.
+        for pair in self.pairs:
+            gradient = self._pair_gradient(pair)
+            if gradient > self.PAIR_MARGIN:
+                self._scale_pair(pair, self.PAIR_MARGIN / gradient)
+        total = sum(self._pair_gradient(pair) for pair in self.pairs)
+        if total > self.TOTAL_MARGIN:
+            factor = self.TOTAL_MARGIN / total
+            for pair in self.pairs:
+                self._scale_pair(pair, factor)
+            print("[auto_mapping] additional lines exceed the safe deformation "
+                  f"budget; scaled to x{factor:.2f} to keep the warp fold-free.")
+
+    def _sample(self, pair, s, values):
+        table_keys = pair["keys"]
+        lo, hi = table_keys[0], table_keys[-1]
+        taper = 1.0
+        if s < lo:
+            taper = max(0.0, 1.0 - (lo - s) / pair["radius"])
+            s = lo
+        elif s > hi:
+            taper = max(0.0, 1.0 - (s - hi) / pair["radius"])
+            s = hi
+        if taper <= 0.0:
+            return 0.0, 0.0
+        index = bisect.bisect_right(table_keys, s) - 1
+        index = max(0, min(index, len(table_keys) - 2))
+        s0, s1 = table_keys[index], table_keys[index + 1]
+        t = 0.0 if s1 - s0 <= 1e-9 else (s - s0) / (s1 - s0)
+        d = values[index] + (values[index + 1] - values[index]) * t
+        offs = pair["offsets"]
+        r_c = offs[index] + (offs[index + 1] - offs[index]) * t
+        return d * taper, r_c
+
+    def _weight(self, x):
+        if x >= 1.0:
+            return 0.0
+        return (1.0 - x) ** 2 if self.falloff == "quadratic" else 1.0 - x
+
+    def displacement(self, third):
+        dx = dy = 0.0
+        for pair in self.pairs:
+            rel = (third[0] - pair["origin"][0], third[1] - pair["origin"][1])
+            s = rel[0] * pair["u"][0] + rel[1] * pair["u"][1]
+            delta, r_c = self._sample(pair, s, pair["deltas"])
+            if not delta:
+                continue
+            r = rel[0] * pair["n"][0] + rel[1] * pair["n"][1]
+            weight = self._weight(abs(r - r_c) / pair["radius"])
+            if weight <= 0.0:
+                continue
+            dx += weight * delta * pair["n"][0]
+            dy += weight * delta * pair["n"][1]
+        return dx, dy
+
+    def apply(self, third):
+        dx, dy = self.displacement(third)
+        return (third[0] + dx, third[1] + dy)
+
+    def unapply(self, third):
+        """Fixed-point inverse; converges because the gradient cap keeps the
+        displacement a contraction (rate <= 0.85, so up to ~60 rounds near
+        the cap; cheap - one profile lookup per pair per round)."""
+        x = third
+        for _ in range(60):
+            dx, dy = self.displacement(x)
+            step = (third[0] - dx, third[1] - dy)
+            if math.hypot(step[0] - x[0], step[1] - x[1]) < 1e-9:
+                return step
+            x = step
+        return x
+
+
+def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None,
+                 additional_pairs=None):
     """Build point mapper from the child frame to the main frame.
 
     Each guide spec is a bare point list (polyline guide - chord arithmetic,
@@ -1169,32 +1494,116 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
         main_cross = main_cross_h[0] * main_cross_v[1] - main_cross_h[1] * main_cross_v[0]
         info["mirrored"] = (child_cross > 0.0) != (main_cross > 0.0)
 
-    def coords(point):
+    def coords(point, seed=None):
         """A point's arc-length coordinates in the child frame.
 
         Seeded with the cheap chord-basis estimate, which is exact for
         straight child guides - that is why the whole mapper reduces to the
-        previous implementation there.
+        previous implementation there. An explicit `seed` (child arcs)
+        overrides it: on a FOLDED frame the solve is branch-ambiguous, and
+        the caller may know which preimage it means (additional-line
+        redraws seed from the replaced line's stored coordinates).
         """
+        if seed is not None:
+            return child.solve(point, seed[0], seed[1])
         dx = point[0] - child.origin[0]
         dy = point[1] - child.origin[1]
         guess_h = (dx * ev[1] - dy * ev[0]) / det * 0.5 * child_h_chord
         guess_v = (eh[0] * dy - eh[1] * dx) / det * 0.5 * child_v_chord
         return child.solve(point, guess_h, guess_v)
 
+    # The MAIN frame's inverse, mirror of coords: needed to carry points
+    # drawn on the main board (additional lines) into Third space.
+    m_eh = ((main_h_points[-1][0] - main_h_points[0][0]) * 0.5,
+            (main_h_points[-1][1] - main_h_points[0][1]) * 0.5)
+    m_ev = ((main_v_points[-1][0] - main_v_points[0][0]) * 0.5,
+            (main_v_points[-1][1] - main_v_points[0][1]) * 0.5)
+    m_det = m_eh[0] * m_ev[1] - m_eh[1] * m_ev[0]
+    m_h_chord = max(2.0 * math.hypot(m_eh[0], m_eh[1]), 1e-6)
+    m_v_chord = max(2.0 * math.hypot(m_ev[0], m_ev[1]), 1e-6)
+
+    def main_coords(point, seed=None):
+        if seed is not None:
+            return main.solve(point, seed[0], seed[1])
+        dx = point[0] - main.origin[0]
+        dy = point[1] - main.origin[1]
+        if abs(m_det) > 1e-9:
+            guess_h = (dx * m_ev[1] - dy * m_ev[0]) / m_det * 0.5 * m_h_chord
+            guess_v = (m_eh[0] * dy - m_eh[1] * dx) / m_det * 0.5 * m_v_chord
+        else:
+            guess_h = guess_v = 0.0
+        return main.solve(point, guess_h, guess_v)
+
+    def scale_arcs(l_h, l_v):
+        """Third (child-arc) coordinates -> main arcs."""
+        return (l_h * (h_scale_pos if l_h >= 0.0 else h_scale_neg),
+                l_v * (v_scale_pos if l_v >= 0.0 else v_scale_neg))
+
+    def unscale_arcs(arc_h, arc_v):
+        """Main arcs -> Third (child-arc) coordinates; scales are positive,
+        so the per-side selection is sign-consistent both ways."""
+        return (arc_h / (h_scale_pos if arc_h >= 0.0 else h_scale_neg),
+                arc_v / (v_scale_pos if arc_v >= 0.0 else v_scale_neg))
+
+    # The additional (pink) lines' influence field, built in Third space
+    # from each pair's two boards. A line's STORED Third polyline is
+    # authoritative when present: on a folded frame the inverse solve is
+    # branch-ambiguous, and re-deriving a synced partner through it was
+    # measured to fabricate a 278 px delta on a pair the user never edited.
+    # Solving happens only for legacy assets that carry no coordinates.
+    # None when there are no pairs - and then every code path below is
+    # arithmetic-identical to the warp-free mapper.
+    warp = None
+    if additional_pairs:
+        thirds = []
+        for child_item, main_item in additional_pairs:
+            child_item = child_item or {}
+            main_item = main_item or {}
+            child_points = [tuple(p) for p in child_item.get("points") or []]
+            main_points = [tuple(p) for p in main_item.get("points") or []]
+            if len(child_points) < 2 or len(main_points) < 2:
+                continue
+            child_third = [tuple(t) for t in child_item.get("third") or []]
+            if len(child_third) != len(child_points):
+                child_third = [coords(p) for p in child_points]
+            main_third = [tuple(t) for t in main_item.get("third") or []]
+            if len(main_third) != len(main_points):
+                main_third = [unscale_arcs(*main_coords(p)) for p in main_points]
+            thirds.append((child_third, main_third))
+        if thirds:
+            candidate = _AdditionalWarp(thirds, _ADDITIONAL["falloff"],
+                                        _ADDITIONAL["radius_factor"])
+            warp = candidate if candidate.pairs else None
+
     def map_point(point):
         l_h, l_v = coords(point)
         rebuilt = child.hv(l_h, l_v)
+        if warp is not None:
+            l_h, l_v = warp.apply((l_h, l_v))
         image = main.hv(l_h * (h_scale_pos if l_h >= 0.0 else h_scale_neg),
                         l_v * (v_scale_pos if l_v >= 0.0 else v_scale_neg))
         return (image[0] + point[0] - rebuilt[0],
                 image[1] + point[1] - rebuilt[1])
+
+    def inverse_point(point):
+        """Main-board point -> child-board point through the full mapping
+        (frame inverse, then the warp's fixed-point inverse). Exact wherever
+        both frame solves converge; used to sync additional lines."""
+        third = unscale_arcs(*main_coords(point))
+        if warp is not None:
+            third = warp.unapply(third)
+        return child.hv(*third)
 
     # Arc lengths on both sides now, so a curved child guide scales widths by
     # its real length rather than by its chord.
     width_scale = math.sqrt((main.h_total / child.h_total) * (main.v_total / child.v_total))
 
     map_point.coords = coords
+    map_point.main_coords = main_coords
+    map_point.scale_arcs = scale_arcs
+    map_point.unscale_arcs = unscale_arcs
+    map_point.inverse = inverse_point
+    map_point.warp = warp
     map_point.child_frame = child
     map_point.main_frame = main
     map_point.h_scales = (h_scale_neg, h_scale_pos)
@@ -1887,7 +2296,11 @@ def _current_mapper():
         return None, "the main center lines do not cross"
     mapper, _ = build_mapper(
         child_assets[H_PROPERTY], child_assets[V_PROPERTY],
-        main_assets[H_PROPERTY], main_assets[V_PROPERTY])
+        main_assets[H_PROPERTY], main_assets[V_PROPERTY],
+        # The preview must show the mapping the RUN will use - with the
+        # additional-line pairs. Without them the face-down bands sat at
+        # the unwarped position (measured 6-7% of the domain mis-tinted).
+        additional_pairs=_additional_pairs())
     if mapper is None:
         return None, "the mapper refuses these guides"
     return mapper, ""
@@ -1950,12 +2363,25 @@ def _occlusion_overlay_items():
                 child.gv.tangent_at(child.v_arc + arc_v, child.v_window),
                 main.gv.tangent_at(main.v_arc + arc_v * scale, main.v_window))
 
-    def fold_sign(h_cache, v_cache):
+    warp = getattr(mapper, "warp", None)
+
+    def fold_sign(h_cache, v_cache, arc_h=None, arc_v=None):
         scale_h, (tcx, tcy), (tmx, tmy) = h_cache
         scale_v, (ncx, ncy), (nmx, nmy) = v_cache
         denominator = tcx * ncy - tcy * ncx
         if abs(denominator) < 1e-12:
             return 1  # folded child frame: no usable orientation, same as _orientation
+        if warp is not None and arc_h is not None:
+            # The additional-line warp moves the fold field's child-space
+            # preimage; the cached main tangents are unwarped, so re-fetch
+            # them at the warped arcs - the same route _orientation takes.
+            w_h, w_v = warp.apply((arc_h, arc_v))
+            scale_h = mapper.h_scales[1] if w_h >= 0.0 else mapper.h_scales[0]
+            scale_v = mapper.v_scales[1] if w_v >= 0.0 else mapper.v_scales[0]
+            tmx, tmy = main.gh.tangent_at(main.h_arc + w_h * scale_h,
+                                          main.h_window)
+            nmx, nmy = main.gv.tangent_at(main.v_arc + w_v * scale_v,
+                                          main.v_window)
         value = scale_h * scale_v * (tmx * nmy - tmy * nmx) / denominator
         raw = 1 if value > 0.0 else -1
         return 1 if raw == reference else -1
@@ -1967,10 +2393,12 @@ def _occlusion_overlay_items():
         v_cache = tangents_v(arc_v)
 
         def sign_at(arc_h):
-            return fold_sign(tangents_h(arc_h), v_cache)
+            return fold_sign(tangents_h(arc_h), v_cache, arc_h, arc_v)
 
         # cell-centred signs from the cached column tangents
-        signs = [fold_sign(h_cache, v_cache) for h_cache in columns]
+        signs = [fold_sign(h_cache, v_cache,
+                           h_lo + (index + 0.5) * col_step, arc_v)
+                 for index, h_cache in enumerate(columns)]
         runs = []
         start = h_lo if signs[0] < 0 else None
         for index in range(cols - 1):
@@ -2055,6 +2483,19 @@ def overlay_items(view_name):
                     # would make a short mark nearly invisible.
                     "removable": False,
                 })
+    for index, line in enumerate((assets.get(ADDITIONAL_PROPERTY) or {}).get("lines") or []):
+        if len(line.get("points") or []) < 2:
+            continue
+        items.append({
+            # The pair id rides in the overlay id so removing one line can
+            # remove the PAIR (both boards) rather than guessing by geometry.
+            "id": f"{ADDITIONAL_PROPERTY}:{_line_id(line, index)}",
+            "points": line["points"],
+            "color": _display_color("additional_color"),
+            "width": float(_LINE_DISPLAY.get("additional_width", 2.5)),
+            "pen_style": _display_style("additional_style"),
+            "removable": True,
+        })
     area = assets.get(MAPPING_AREA_PROPERTY)
     if area:
         for polygon in area.get("polygons") or []:
@@ -2593,6 +3034,13 @@ def _orientation(map_point, point):
     denominator = tcx * ncy - tcy * ncx
     if abs(denominator) < 1e-12:
         return 0  # folded child frame: no usable orientation here
+    # The additional-line warp sits between the child arcs and the main
+    # evaluation; its Jacobian determinant is kept positive by the gradient
+    # cap (_AdditionalWarp._regularize), so the SIGN below only needs the
+    # main tangents evaluated at the warped arcs.
+    warp = getattr(map_point, "warp", None)
+    if warp is not None:
+        l_h, l_v = warp.apply((l_h, l_v))
     scale_h = map_point.h_scales[1] if l_h >= 0.0 else map_point.h_scales[0]
     scale_v = map_point.v_scales[1] if l_v >= 0.0 else map_point.v_scales[0]
     (tmx, tmy), (nmx, nmy) = main.directions(l_h * scale_h, l_v * scale_v)
@@ -3174,12 +3622,20 @@ def _corner_loci(map_point, v_range, h_range, spans=None, step=POLY_STEP):
 
 
 def _child_of_arcs(map_point, arcs):
-    """Child-space point of a MAIN-arc coordinate pair (loci live in main arcs)."""
+    """Child-space point of a MAIN-arc coordinate pair (loci live in main arcs).
+
+    The inverse route of _arc_of_point: unscale, then UNWARP (additional
+    lines), then the child frame - so loci probes and cutters land on the
+    same child points the forward map folds at.
+    """
     a_h, a_v = arcs
     h_scales, v_scales = map_point.h_scales, map_point.v_scales
-    return map_point.child_frame.hv(
-        a_h / (h_scales[1] if a_h >= 0.0 else h_scales[0]),
-        a_v / (v_scales[1] if a_v >= 0.0 else v_scales[0]))
+    third = (a_h / (h_scales[1] if a_h >= 0.0 else h_scales[0]),
+             a_v / (v_scales[1] if a_v >= 0.0 else v_scales[0]))
+    warp = getattr(map_point, "warp", None)
+    if warp is not None:
+        third = warp.unapply(third)
+    return map_point.child_frame.hv(*third)
 
 
 def _curve_is_fold(map_point, curve, probe=POLY_STEP, samples=5):
@@ -3445,8 +3901,16 @@ def _prepare_fold_context(map_point, h_range, v_range):
 
 
 def _arc_of_point(map_point, point):
-    """A child point's MAIN arc coordinates (the space depth is counted in)."""
+    """A child point's MAIN arc coordinates (the space depth is counted in).
+
+    Routed through the additional-line warp: depth counting, the loci and
+    the cutters must all live in the SAME arc space the map evaluates in,
+    or cuts drift off creases (the positional-consistency rule).
+    """
     l_h, l_v = map_point.coords(point)
+    warp = getattr(map_point, "warp", None)
+    if warp is not None:
+        l_h, l_v = warp.apply((l_h, l_v))
     return (l_h * (map_point.h_scales[1] if l_h >= 0.0 else map_point.h_scales[0]),
             l_v * (map_point.v_scales[1] if l_v >= 0.0 else map_point.v_scales[0]))
 
@@ -3508,11 +3972,9 @@ def _child_cutters(map_point):
     reach = 2.0 * (child.gh.total + child.gv.total)
     bare = []
     for curve in getattr(map_point, "depth_curves", None) or []:
-        points = []
-        for arc_h, arc_v in curve:
-            c_h = arc_h / (h_scales[1] if arc_h >= 0.0 else h_scales[0])
-            c_v = arc_v / (v_scales[1] if arc_v >= 0.0 else v_scales[0])
-            points.append(child.hv(c_h, c_v))
+        # Through _child_of_arcs so the additional-line warp's inverse is
+        # applied: a cutter must lie where the WARPED map actually folds.
+        points = [_child_of_arcs(map_point, arc_pair) for arc_pair in curve]
         if len(points) >= 2:
             bare.append(points)
     raw = [_densify(list(points)) for points in bare]
@@ -4387,11 +4849,12 @@ def _emit_seals(animean, out, map_point, pattern, child_area, main_area, width_s
         for poly in _stroke_polylines(stroke):
             for piece in _clip_polyline(poly, child_area):
                 for point in piece:
-                    l_h, l_v = map_point.coords(point)
-                    arc_h = l_h * (map_point.h_scales[1] if l_h >= 0.0
-                                   else map_point.h_scales[0])
-                    arc_v = l_v * (map_point.v_scales[1] if l_v >= 0.0
-                                   else map_point.v_scales[0])
+                    # Through _arc_of_point, NOT inline scaling: with an
+                    # additional-line warp the artwork's true main-arc extent
+                    # differs from the unwarped one (measured 52 arc px), and
+                    # the crease windows below must agree with the depth
+                    # pass's space or anchored loci get windowed out.
+                    arc_h, arc_v = _arc_of_point(map_point, point)
                     h_low = arc_h if h_low is None else min(h_low, arc_h)
                     h_high = arc_h if h_high is None else max(h_high, arc_h)
                     v_low = arc_v if v_low is None else min(v_low, arc_v)
@@ -4643,16 +5106,21 @@ def _perform_mapping():
         return False
 
     mapper_info = {}
+    additional = _additional_pairs()
     map_point, width_scale = build_mapper(
         child_assets[H_PROPERTY],
         child_assets[V_PROPERTY],
         main_assets[H_PROPERTY],
         main_assets[V_PROPERTY],
         mapper_info,
+        additional_pairs=additional,
     )
     if map_point is None:
         print(f"[auto_mapping] cannot build mapping: {width_scale}")
         return False
+    if getattr(map_point, "warp", None) is not None:
+        print(f"[auto_mapping] {len(map_point.warp.pairs)} additional line "
+              f"pair(s) shaping the mapping ({_ADDITIONAL['falloff']} falloff).")
     worst_mismatch = max(mapper_info.get("h_scale_mismatch", 1.0),
                          mapper_info.get("v_scale_mismatch", 1.0))
     if worst_mismatch > 1.5:
@@ -4781,7 +5249,8 @@ def _run():
 def _capture_mapping_item(cell, stroke, message):
     """Move a freshly drawn guide/area click out of the model into the dict."""
     prop = message.get("property")
-    if prop not in (H_PROPERTY, V_PROPERTY, MAPPING_AREA_PROPERTY):
+    if prop not in (H_PROPERTY, V_PROPERTY, MAPPING_AREA_PROPERTY,
+                    ADDITIONAL_PROPERTY):
         return
     view = message.get("view") or "main"
     row = cell.get("row")
@@ -4830,6 +5299,12 @@ def _capture_mapping_item(cell, stroke, message):
             return
         assets[MAPPING_AREA_PROPERTY] = {"polygons": polygons}
         print(f"[auto_mapping] mapping area set in {view} view (click 'x' to remove)")
+    elif prop == ADDITIONAL_PROPERTY:
+        # Saves and refreshes both boards itself (the pair lives on both).
+        if not run_additional_line_tool(view, points, width, commands):
+            message["cancel_history"] = True
+        _animean().ui.widget.refresh()
+        return
     else:
         # Same entry point Re-expand uses; it saves and refreshes the overlays
         # itself, which is why the shared tail below only runs for the area.
@@ -4858,6 +5333,36 @@ def _overlay_removed(cell, stroke, message):
     if not item_id:
         return
     view = message.get("view") or "main"
+    if item_id.startswith(ADDITIONAL_PROPERTY + ":"):
+        # Additional lines exist as PAIRS - removing one on either board
+        # removes the pair (matched by id) on both, and each board's write
+        # is committed to ITS OWN history: a one-board commit left the
+        # other board's live scriptData ahead of its snapshot, and the next
+        # undo silently half-applied.
+        try:
+            pair_id = int(item_id.split(":", 1)[1])
+        except ValueError:
+            return
+        for name in ("child", "main"):
+            lines = (_assets_for(name).get(ADDITIONAL_PROPERTY) or {}).get("lines")
+            if not lines:
+                continue
+            for index, line in enumerate(lines):
+                if _line_id(line, index) == pair_id:
+                    del lines[index]
+                    break
+            else:
+                continue
+            if not lines:
+                del _assets_for(name)[ADDITIONAL_PROPERTY]
+            _save_assets(name)
+            _overlays_changed(name)
+            try:
+                _animean().ui.history_commit("Remove additional line", name)
+            except Exception:
+                pass
+        print(f"[auto_mapping] additional line (id {pair_id}) removed (both boards)")
+        return
     assets = _assets_for(view)
     if item_id in assets:
         del assets[item_id]
@@ -5211,6 +5716,14 @@ def _menu_items():
              {"name": "mode_polyline", "title": "Polyline", "kind": "radio",
               "checked": mode == "polyline"},
          ]},
+        {"name": "additional_falloff", "title": "Additional Line Falloff",
+         "kind": "submenu",
+         "items": [
+             {"name": "falloff_linear", "title": "Linear", "kind": "radio",
+              "checked": _ADDITIONAL["falloff"] == "linear"},
+             {"name": "falloff_quadratic", "title": "Quadratic", "kind": "radio",
+              "checked": _ADDITIONAL["falloff"] == "quadratic"},
+         ]},
     ]
 
 
@@ -5284,6 +5797,17 @@ def _menu_action(message):
     if message.get("menu") != MENU_NAME:
         return
     name = message.get("name") or ""
+    if name.startswith("falloff_"):
+        falloff = name[len("falloff_"):]
+        if falloff in ADDITIONAL_FALLOFFS and _ADDITIONAL["falloff"] != falloff:
+            _ADDITIONAL["falloff"] = falloff
+            # The occlusion preview bakes the warp, so its cache is stale now.
+            _invalidate_grid_cache()
+            _push_overlay("child")
+            _push_overlay("main")
+            print(f"[auto_mapping] additional line falloff -> {falloff} "
+                  "(applies on the next run)")
+        return
     if not name.startswith("mode_"):
         return
     mode = name[len("mode_"):]
@@ -5377,7 +5901,12 @@ def run_center_line_tool(view_name, property_value, points, width=3.0, commands=
             print(f"[auto_mapping] guide commands rejected ({error}); "
                   "keeping the flattened polyline.")
     assets = _assets_for(view_name)
+    replacing = property_value in assets
     assets[property_value] = item
+    if replacing:
+        # An edited guide changes the frame the additional lines' stored
+        # coordinates live in; they must re-derive from their drawn points.
+        _invalidate_additional_thirds(view_name)
     # The moment BOTH main axes exist, the nearest-end anchor comes into
     # being AT THE CROSSING (arc (0,0)) as a real asset - saved, undoable,
     # and its red handle visible immediately - rather than materializing
@@ -5393,6 +5922,253 @@ def run_center_line_tool(view_name, property_value, points, width=3.0, commands=
     _save_assets(view_name)
     _overlays_changed(view_name)
     return True
+
+
+def _line_id(line, index):
+    """A line's pair identity: its stored id, or its index for legacy assets."""
+    try:
+        return int(line["id"])
+    except (KeyError, TypeError, ValueError):
+        return index
+
+
+def _additional_pairs():
+    """The (child, main) additional-line pairs, matched BY IDENTITY.
+
+    Positional zip was measured to re-pair surviving lines after a one-board
+    undo desynced the lists - marrying unrelated guides into a fabricated
+    120 px deformation. Each line carries an id shared with its partner;
+    ids missing on one board (an undone half of a pair) are ORPHANS and are
+    ignored with a note, never re-matched. Legacy assets without ids fall
+    back to their list position, which reproduces the old pairing exactly
+    for in-step boards.
+    """
+    child_lines = (_assets_for("child").get(ADDITIONAL_PROPERTY) or {}).get("lines") or []
+    main_lines = (_assets_for("main").get(ADDITIONAL_PROPERTY) or {}).get("lines") or []
+
+    def by_id(lines):
+        table = {}
+        for index, line in enumerate(lines):
+            table.setdefault(_line_id(line, index), line)
+        return table
+
+    child_map = by_id(child_lines)
+    main_map = by_id(main_lines)
+    pairs = []
+    orphans = 0
+    for key, child_line in child_map.items():
+        main_line = main_map.get(key)
+        if main_line is None:
+            orphans += 1
+            continue
+        if (len(child_line.get("points") or []) >= 2
+                and len(main_line.get("points") or []) >= 2):
+            pairs.append((child_line, main_line))
+    orphans += sum(1 for key in main_map if key not in child_map)
+    if orphans:
+        print(f"[auto_mapping] {orphans} unpaired additional line(s) ignored "
+              "(an undo may have split a pair - remove the stray line with "
+              "its x to clean up).")
+    return pairs or None
+
+
+def _mapper_from_assets(additional=True):
+    """The current mapper straight from both boards' assets, or (None, why)."""
+    specs = {}
+    for view in ("child", "main"):
+        assets = _assets_for(view)
+        for prop in GUIDE_PROPERTIES:
+            item = assets.get(prop)
+            if not item or len(item.get("points") or []) < 2:
+                return None, f"draw the H and V center lines on the {view} board first"
+            specs[(view, prop)] = item
+        if not _polylines_cross(assets[H_PROPERTY]["points"],
+                                assets[V_PROPERTY]["points"]):
+            return None, f"the H and V center lines on the {view} board do not cross"
+    return build_mapper(specs[("child", H_PROPERTY)], specs[("child", V_PROPERTY)],
+                        specs[("main", H_PROPERTY)], specs[("main", V_PROPERTY)],
+                        additional_pairs=_additional_pairs() if additional else None)
+
+
+def _nearest_additional_index(lines, points):
+    """The stored line the new stroke REDRAWS, or None if it is a new one.
+
+    Matching is by mean distance of the new stroke's points to each stored
+    polyline - the H/V redraw-replaces convention, made index-aware because
+    additional lines are many. The threshold follows the STORED line's own
+    length (the first version scaled it with the NEW stroke, so one long
+    stroke could swallow a deliberately distinct neighbour 180 px away),
+    and an ambiguous match - the runner-up nearly as close as the winner -
+    APPENDS instead: appending a redundant line is one x-click to undo,
+    silently mangling an existing pair is not.
+    """
+    step = max(1, len(points) // 16)
+    probes = points[::step]
+    candidates = []
+    new_arc = _cumulative_lengths(points)[-1]
+    for index, line in enumerate(lines):
+        stored = line.get("points") or []
+        if len(stored) < 2:
+            continue
+        mean = sum(_polyline_arc_of(p, stored)[0] for p in probes) / len(probes)
+        # Capped absolutely and by the NEW stroke's own scale: a 2000 px
+        # shaped line must not swallow an obviously separate 120 px line
+        # 280 px away (measured - the shaped line was silently destroyed).
+        threshold = max(20.0, min(0.15 * _cumulative_lengths(stored)[-1],
+                                  0.5 * new_arc, 100.0))
+        if mean <= threshold:
+            candidates.append((mean, index))
+    if not candidates:
+        return None
+    candidates.sort()
+    if len(candidates) > 1 and candidates[0][0] > 0.5 * candidates[1][0]:
+        return None
+    return candidates[0][1]
+
+
+def _third_of_drawn(base, view_name, points, previous_third=None,
+                    previous_points=None):
+    """Third-space coordinates of a freshly drawn line, one per point.
+
+    On a folded frame the inverse solves are branch-ambiguous; a REDRAW
+    seeds each point's solve from the replaced line's stored coordinates at
+    the matching arc fraction, so the edit stays on the branch the pair
+    already lived on. A redraw in the opposite stroke direction samples the
+    seeds reversed, matched by which end of the OLD line the new stroke
+    starts nearest to.
+    """
+    seeds = [None] * len(points)
+    if previous_third and len(previous_third) >= 2:
+        prev = [tuple(t) for t in previous_third]
+        reverse = False
+        if previous_points and len(previous_points) >= 2:
+            head, tail = previous_points[0], previous_points[-1]
+            start = points[0]
+            reverse = (math.hypot(start[0] - tail[0], start[1] - tail[1])
+                       < math.hypot(start[0] - head[0], start[1] - head[1]))
+        if reverse:
+            prev = list(reversed(prev))
+        prev_cum = _cumulative_lengths(prev)
+        cum = _cumulative_lengths(points)
+        total = cum[-1] or 1.0
+        for index in range(len(points)):
+            third_seed = _point_at_arc(prev, prev_cum,
+                                       prev_cum[-1] * cum[index] / total)
+            seeds[index] = (third_seed if view_name == "child"
+                            else base.scale_arcs(*third_seed))
+    if view_name == "child":
+        return [list(base.coords(p, seeds[i])) for i, p in enumerate(points)]
+    return [list(base.unscale_arcs(*base.main_coords(p, seeds[i])))
+            for i, p in enumerate(points)]
+
+
+def _invalidate_additional_thirds(view_name):
+    """Drop stored Third coordinates made stale by a guide edit.
+
+    Third space IS the child frame's arc plane: a child-guide edit
+    redefines it wholesale, and a main-guide edit re-parameterizes the
+    main-board lines' relation to their canvas points. The drawn pink
+    points stay put (they are what the user sees); coordinates re-derive
+    from them on the next build. Without this the stored third kept
+    describing the RETIRED frame - measured: a 40 px guide nudge slid the
+    correction 40 px off the line that defines it.
+    """
+    dropped = 0
+    boards = ("child", "main") if view_name == "child" else ("main",)
+    for name in boards:
+        lines = (_assets_for(name).get(ADDITIONAL_PROPERTY) or {}).get("lines") or []
+        for line in lines:
+            if line.pop("third", None) is not None:
+                dropped += 1
+        if dropped:
+            _save_assets(name)
+    if dropped:
+        print("[auto_mapping] the guide edit re-anchors the additional lines: "
+              "their coordinates re-derive from the drawn points on the next run.")
+
+
+def run_additional_line_tool(view_name, points, width=2.5, commands=None):
+    """Install one additional (pink) refinement line. Entry of the tool.
+
+    Drawing NEAR an existing additional line on this board REPLACES that
+    line (redraw-to-edit, the H/V convention) and leaves its partner on the
+    other board untouched - that difference is what drives the warp.
+    Drawing elsewhere APPENDS a new pair. The partner's THIRD coordinates
+    are copied from the drawn side verbatim, so a fresh pair's delta is
+    zero BY CONSTRUCTION - synthesizing it through the current warped
+    mapping was measured to re-encode the standing deformation and double
+    it. The partner's displayed points still come from the full current
+    mapping, so the pink line sits exactly where the mapping sends its
+    twin. Pairs share an id; the partner write is committed to the OTHER
+    board's history too, so a one-board undo cannot silently orphan it.
+    """
+    cleaned = [(float(x), float(y)) for x, y in points or []]
+    if len(cleaned) < 2:
+        print("[auto_mapping] an additional line needs at least two points.")
+        return False
+    other = "main" if view_name == "child" else "child"
+    base, why = _mapper_from_assets(additional=False)
+    if base is None:
+        print(f"[auto_mapping] additional line refused: {why}.")
+        return False
+
+    item = {"points": cleaned, "width": float(width)}
+    if commands:
+        item["commands"] = commands
+    assets_here = _assets_for(view_name)
+    lines_here = assets_here.setdefault(ADDITIONAL_PROPERTY, {"lines": []})["lines"]
+    replaced = _nearest_additional_index(lines_here, cleaned)
+    if replaced is not None:
+        old = lines_here[replaced]
+        item["id"] = _line_id(old, replaced)
+        item["third"] = _third_of_drawn(base, view_name, cleaned,
+                                        old.get("third"), old.get("points"))
+        lines_here[replaced] = item
+        print(f"[auto_mapping] additional line {replaced + 1} redrawn on the "
+              f"{view_name} board; run Auto Mapping to apply the deformation.")
+    else:
+        lines_other = _assets_for(other).setdefault(
+            ADDITIONAL_PROPERTY, {"lines": []})["lines"]
+        new_id = 1 + max(
+            (_line_id(line, index)
+             for index, line in enumerate(lines_here + lines_other)),
+            default=-1)
+        item["id"] = new_id
+        item["third"] = _third_of_drawn(base, view_name, cleaned)
+        # The partner is displayed at its BASE-map position - the same
+        # frame its third describes. Displaying it through the warped
+        # mapping made points and third disagree by the standing warp, and
+        # the FIRST redraw of the partner then re-encoded that warp into
+        # the pair (measured: a 1 px nudge moved the mapping 9 px).
+        forward = base if view_name == "child" else base.inverse
+        display = [forward(p) for p in cleaned]
+        lines_here.append(item)
+        lines_other.append({"points": display, "width": float(width),
+                            "id": new_id,
+                            "third": [list(t) for t in item["third"]]})
+        _save_assets(other)
+        _overlays_changed(other)
+        try:
+            _animean().ui.history_commit("Additional line pair", other)
+        except Exception:
+            pass  # older builds without the history binding
+        print(f"[auto_mapping] additional line (id {new_id}) set on the "
+              f"{view_name} board and mirrored onto the {other} board; edit "
+              "either side (redraw near it) to shape the mapping.")
+    _save_assets(view_name)
+    _overlays_changed(view_name)
+    return True
+
+
+def activate_additional_line_tool(name="additional_line",
+                                  property_value=ADDITIONAL_PROPERTY):
+    register_hooks()
+    _set_draw_color(ADDITIONAL_COLOR)
+    print("[auto_mapping] additional line active: draw a refinement line on "
+          "either board (needs H/V center lines on both). Redraw near a line "
+          "to edit it; its pair on the other board stays, and the difference "
+          "bends the mapping.")
+    return property_value
 
 
 def activate_center_line_tool(name="h_center_line", property_value=H_PROPERTY):
@@ -5437,7 +6213,8 @@ for _host in ("main", "child"):
 python_hooks.set_hook(_view_menu_action, menu=True)
 # The texture board can be locked against accidental edits; these are the
 # tools that still work while it is.
-python_hooks.register_protected_properties("child", [H_PROPERTY, V_PROPERTY])
+python_hooks.register_protected_properties("child", [H_PROPERTY, V_PROPERTY,
+                                                     ADDITIONAL_PROPERTY])
 # The layer-panel context menu has the same requirement: right-clicking a
 # mapping group must work in a fresh session, before any tool is armed.
 python_hooks.register_menu_provider(_layer_menu_items)
