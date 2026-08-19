@@ -2590,13 +2590,15 @@ def _grid_overlay_items(view_name):
     """Refer-rect grid: the 3x3 anchor lattice (crossing, 4 guide endpoints,
     4 quadrant corners) with quarter-step iso-lines, for ONE board.
 
-    Each board draws ITS OWN frame from ITS OWN axes. The main board's grid
-    used to be the child frame pushed through the mapper, which made it a
-    picture of the mapping rather than of the board - and coupled the two:
-    with no axes on the texture, the main board could not show a grid even
-    though it had a perfectly good pair of its own. Comparing the two grids
-    by eye still reads a wrong mapping, and the numeric check for that lives
-    in the anchor tests rather than in an overlay.
+    The CHILD board draws its own frame from its own axes - a pure picture
+    of the source coordinate system. The MAIN board draws the RENDERING
+    mapping whenever the full mapper can be built (user request: the grid
+    must reflect the additional lines' influence): the child lattice pushed
+    through the mapper, warp included, so it bends where a pink line shapes
+    the mapping and comparing the two boards' grids reads the whole mapping
+    by eye. Only when the mapper is unavailable - the normal state while a
+    setup is half drawn - does the main board fall back to its own frame,
+    so a reference rectangle stays available either way.
 
     A board with no axes, or with axes that do not cross, has no frame and so
     draws nothing - there is no rectangle to refer to."""
@@ -2606,23 +2608,55 @@ def _grid_overlay_items(view_name):
     if cached is not None:
         return cached
 
-    # This board's own axes, and nothing else. Asking for the grid on one
-    # board must not depend on what has been drawn on the other: half-drawn
-    # setups are the normal state while a mapping is being built, and that is
-    # exactly when a reference rectangle earns its keep.
-    assets = _assets_for(view_name)
-    if H_PROPERTY not in assets or V_PROPERTY not in assets:
-        return []
-    if not _polylines_cross(assets[H_PROPERTY]["points"],
-                            assets[V_PROPERTY]["points"]):
-        return []
-    frame = _view_frame(view_name)
-    if frame is None:
-        return []
-
     items = []
     levels = (-1.0, -0.5, 0.0, 0.5, 1.0)
     samples = [i / 24.0 * 2.0 - 1.0 for i in range(25)]
+
+    # The MAIN board's grid shows the RENDERING mapping when it exists: the
+    # child frame's lattice pushed through the full mapper, additional-line
+    # warp included - so the grid visibly bends where a pink line shapes
+    # the mapping (user request). Comparing it with the child board's own
+    # grid reads the whole mapping by eye. Without a full mapper (the
+    # normal state while a setup is half drawn) the board falls back to its
+    # own frame below, so the reference rectangle stays available.
+    if view_name == "main":
+        mapper, _note = _current_mapper()
+        if mapper is not None:
+            child_frame = mapper.child_frame
+            for level in levels:
+                iso_u = [mapper(_frame_point(child_frame, level, s))
+                         for s in samples]
+                iso_v = [mapper(_frame_point(child_frame, s, level))
+                         for s in samples]
+                for points in (iso_u, iso_v):
+                    items.append({
+                        "id": "refer_rect_grid",
+                        "points": points,
+                        "color": GRID_COLOR,
+                        "width": 1.0,
+                        "removable": False,
+                    })
+            _GRID_CACHE[view_name] = items
+            return items
+
+    # This board's own axes, and nothing else: a half-drawn setup still
+    # deserves a reference rectangle. Failure paths CACHE their empty
+    # result too - overlay_items runs per mouse move during drags, and an
+    # uncached miss re-entered _current_mapper (two O(n*m) crossing scans)
+    # every time.
+    assets = _assets_for(view_name)
+    if H_PROPERTY not in assets or V_PROPERTY not in assets:
+        _GRID_CACHE[view_name] = []
+        return []
+    if not _polylines_cross(assets[H_PROPERTY]["points"],
+                            assets[V_PROPERTY]["points"]):
+        _GRID_CACHE[view_name] = []
+        return []
+    frame = _view_frame(view_name)
+    if frame is None:
+        _GRID_CACHE[view_name] = []
+        return []
+
     for level in levels:
         iso_u = [_frame_point(frame, level, s) for s in samples]
         iso_v = [_frame_point(frame, s, level) for s in samples]
@@ -2642,14 +2676,17 @@ def _overlays_changed(view_name):
     """Assets changed in view_name: refresh its overlay, and any OTHER view
     whose display genuinely depends on those assets.
 
-    The refer grid no longer qualifies - each board builds its own from its
-    own axes, so a change here cannot move the grid there. The occlusion tint
-    still does: it is drawn on the texture but computed from the MAIN guides,
-    so a main-side edit has to re-push the child overlay."""
+    The occlusion tint is drawn on the texture but computed from the MAIN
+    guides, so a main-side edit re-pushes the child overlay. The MAIN refer
+    grid renders the full mapping (child lattice through the warp), so a
+    child-side edit re-pushes the main overlay. The CHILD grid stays a pure
+    function of the child's own axes."""
     _invalidate_grid_cache()
     _push_overlay(view_name)
     if _OCCLUSION["enabled"] and view_name != "child":
         _push_overlay("child")
+    if _REFER_RECT.get("main") and view_name != "main":
+        _push_overlay("main")
 
 
 def _main_guide_frame():
@@ -5343,15 +5380,20 @@ def _overlay_removed(cell, stroke, message):
             pair_id = int(item_id.split(":", 1)[1])
         except ValueError:
             return
+        removed_points = None
+        missed = []
         for name in ("child", "main"):
             lines = (_assets_for(name).get(ADDITIONAL_PROPERTY) or {}).get("lines")
             if not lines:
                 continue
             for index, line in enumerate(lines):
                 if _line_id(line, index) == pair_id:
+                    if name == view:
+                        removed_points = line.get("points") or None
                     del lines[index]
                     break
             else:
+                missed.append(name)
                 continue
             if not lines:
                 del _assets_for(name)[ADDITIONAL_PROPERTY]
@@ -5361,7 +5403,63 @@ def _overlay_removed(cell, stroke, message):
                 _animean().ui.history_commit("Remove additional line", name)
             except Exception:
                 pass
-        print(f"[auto_mapping] additional line (id {pair_id}) removed (both boards)")
+        # Legacy projects can hold pairs whose ids disagree across boards
+        # (created before ids existed, or through a since-fixed desync). The
+        # id lookup then removes one half and the other board visibly keeps
+        # its pink line - fall back to GEOMETRY, guarded twice (each guard's
+        # absence was demonstrated to delete a HEALTHY pair's half):
+        # only candidates that are THEMSELVES unpaired by id are eligible
+        # (a genuine orphan's neighbours are all paired), and matching is by
+        # CHORD ENDPOINTS - the two halves of a pair share one Third chord
+        # by construction, so their endpoints coincide regardless of the
+        # bend the pair encodes (a nearest-polyline match rejected the true
+        # partner as soon as the bend exceeded the redraw threshold).
+        for name in missed:
+            lines = (_assets_for(name).get(ADDITIONAL_PROPERTY) or {}).get("lines")
+            if not lines or not removed_points:
+                continue
+            mapper, _why = _mapper_from_assets(additional=False)
+            if mapper is None:
+                continue
+            forward = mapper if view == "child" else mapper.inverse
+            head = forward(removed_points[0])
+            tail = forward(removed_points[-1])
+            view_ids = {
+                _line_id(line, index) for index, line in enumerate(
+                    (_assets_for(view).get(ADDITIONAL_PROPERTY) or {}).get("lines") or [])}
+            candidates = []
+            for index, line in enumerate(lines):
+                stored = line.get("points") or []
+                if len(stored) < 2 or _line_id(line, index) in view_ids:
+                    continue  # paired lines are never fallback targets
+                ends = (stored[0], stored[-1])
+                direct = max(math.hypot(head[0] - ends[0][0], head[1] - ends[0][1]),
+                             math.hypot(tail[0] - ends[1][0], tail[1] - ends[1][1]))
+                flipped = max(math.hypot(head[0] - ends[1][0], head[1] - ends[1][1]),
+                              math.hypot(tail[0] - ends[0][0], tail[1] - ends[0][1]))
+                gap = min(direct, flipped)
+                chord = math.hypot(ends[1][0] - ends[0][0], ends[1][1] - ends[0][1])
+                if gap <= max(30.0, 0.35 * chord):
+                    candidates.append((gap, index))
+            candidates.sort()
+            if (not candidates
+                    or (len(candidates) > 1
+                        and candidates[0][0] > 0.5 * candidates[1][0])):
+                print(f"[auto_mapping] the removed line's partner on the {name} "
+                      "board could not be identified - remove its pink line "
+                      "there with its own x.")
+                continue
+            partner = candidates[0][1]
+            del lines[partner]
+            if not lines:
+                del _assets_for(name)[ADDITIONAL_PROPERTY]
+            _save_assets(name)
+            _overlays_changed(name)
+            try:
+                _animean().ui.history_commit("Remove additional line", name)
+            except Exception:
+                pass
+        print(f"[auto_mapping] additional line (id {pair_id}) removed")
         return
     assets = _assets_for(view)
     if item_id in assets:
