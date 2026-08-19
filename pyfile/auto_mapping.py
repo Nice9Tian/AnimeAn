@@ -7263,7 +7263,7 @@ def _rdp_ring(ring, epsilon):
     return out if len(out) >= 3 else list(ring)
 
 
-def _triangulate_quality(outer, holes, max_area):
+def _triangulate_quality(outer, holes, max_area, constraints=None):
     """(vertices, triangles) via the `triangle` LIBRARY (Shewchuk):
     constrained Delaunay with a quality bound and a max triangle area.
 
@@ -7289,6 +7289,16 @@ def _triangulate_quality(outer, holes, max_area):
         points.extend(ring)
         segments.extend([[base + k, base + (k + 1) % count]
                          for k in range(count)])
+    # Interior CONSTRAINT polylines (fold creases): the mesh edges align
+    # with them, so the z kink at a crease is a clean ridge instead of a
+    # sawtooth of triangles straddling it (user report). Open chains.
+    for chain in constraints or []:
+        if len(chain) < 2:
+            continue
+        base = len(points)
+        points.extend(chain)
+        segments.extend([[base + k, base + k + 1]
+                         for k in range(len(chain) - 1)])
     payload = {"vertices": np.array(points, dtype=float),
                "segments": np.array(segments, dtype=int)}
     hole_points = [_ring_interior_point(hole) for hole in holes]
@@ -8003,27 +8013,37 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
     # isometric purity, locally the shape stays gradient-driven. The gap
     # unit comes from pass 1's own relief.
     depths_known = sorted({d for d in node_depth if d is not None})
+
+    def stacking_violations(field):
+        """Fraction of NEIGHBOURING node pairs with different 2D depths
+        whose z-order contradicts the stacking. Class means once passed
+        while whole neighbourhoods interleaved - exactly what the eye
+        sees at a fold edge - so the check is local, where occlusion is
+        actually felt."""
+        bad = 0
+        total = 0
+        for k, entry in enumerate(neigh):
+            dk = node_depth[k]
+            if dk is None:
+                continue
+            for n, _axis, _sign in entry:
+                if n <= k:
+                    continue
+                dn = node_depth[n]
+                if dn is None or dn == dk:
+                    continue
+                total += 1
+                if (field[k] - field[n]) * (dn - dk) < 0.0:
+                    bad += 1
+        return ((bad / total) if total else 0.0), total
+
     ordered = True
     if len(depths_known) >= 2:
-        means = {}
-        for k, zv in enumerate(z):
-            d = node_depth[k]
-            if d is not None:
-                means.setdefault(d, []).append(zv)
-        for shallow, deep in zip(depths_known, depths_known[1:]):
-            if sum(means[shallow]) / len(means[shallow]) \
-                    <= sum(means[deep]) / len(means[deep]):
-                ordered = False
-                break
-    if os.environ.get("ANIMEAN_TO3D_DEBUG") and len(depths_known) >= 2:
-        means_dbg = {}
-        for k, zv in enumerate(z):
-            if node_depth[k] is not None:
-                means_dbg.setdefault(node_depth[k], []).append(zv)
-        print("[to3d-debug] pass1 depth means: "
-              + ", ".join(f"d{d}={sum(v)/len(v):.1f}"
-                          for d, v in sorted(means_dbg.items()))
-              + f"; ordered={ordered}")
+        rate, pair_total = stacking_violations(z)
+        ordered = pair_total == 0 or rate < 0.15
+        if os.environ.get("ANIMEAN_TO3D_DEBUG"):
+            print(f"[to3d-debug] pass1 neighbour stacking violations: "
+                  f"{100.0 * rate:.1f}% of {pair_total} pairs")
     if len(depths_known) >= 2 and not ordered:
         zs_sorted = sorted(z)
         low = zs_sorted[int(0.05 * (len(z) - 1))]
@@ -8036,8 +8056,13 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
         for k in range(len(nodes)):
             if node_depth[k] is not None:
                 z_ref[k] = -(node_depth[k] - d_mean) * gap
-                anchor_weight[k] = 0.2
+                anchor_weight[k] = 0.35
         z = solve(anchor_weight, z_ref)
+        if os.environ.get("ANIMEAN_TO3D_DEBUG"):
+            rate2, pair_total2 = stacking_violations(z)
+            print(f"[to3d-debug] grounded pass: violations "
+                  f"{100.0 * rate2:.1f}% of {pair_total2} pairs, "
+                  f"gap {gap:.1f}")
     z_mean = sum(z) / len(z)
     z = [(v - z_mean) * scale0 for v in z]   # into canvas units
     # Global concavity: the per-region orientation fixes RELATIVE signs;
@@ -8084,6 +8109,51 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
     max_edge = 1.5 * max(du, dv)
     layer_lift = 0.05
 
+    # Fold creases as INTERIOR mesh constraints: without them triangles
+    # straddle the crease and its z kink renders as a sawtooth of
+    # corners (user report). child_cutters_raw carries every crease -
+    # frame folds and warp loci alike - in child space; pull to Third
+    # and resample to the boundary step.
+    crease_step = 0.5 * min(du, dv)
+    crease_chains = []
+    if getattr(map_point, "depth_curves", None):
+        try:
+            _child_cutters(map_point)
+        except Exception:
+            pass
+        for raw in getattr(map_point, "child_cutters_raw", None) or []:
+            chain = [tuple(map_point.coords(p)) for p in raw]
+            cum = _cumulative_lengths(chain)
+            if cum[-1] < 2.0 * crease_step:
+                continue
+            count = max(2, int(cum[-1] / crease_step))
+            crease_chains.append(
+                [_point_at_arc(chain, cum, cum[-1] * k / count)
+                 for k in range(count + 1)])
+
+    def clip_chain(chain, ring, holes):
+        runs = []
+        run = []
+        for p in chain:
+            inside = _point_in_ring(p, ring) \
+                and not any(_point_in_ring(p, hole) for hole in holes)
+            if inside:
+                run.append(p)
+            else:
+                if len(run) >= 2:
+                    runs.append(run)
+                run = []
+        if len(run) >= 2:
+            runs.append(run)
+        out = []
+        for r in runs:
+            # shrink the ends one sample: a constraint endpoint touching
+            # the boundary polygon is a degenerate PSLG for the mesher
+            trimmed = r[1:-1] if len(r) > 3 else r
+            if len(trimmed) >= 2:
+                out.append(trimmed)
+        return out
+
     def boundary_probe(ring):
         a, b = ring[0], ring[1 % len(ring)]
         return ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5)
@@ -8122,9 +8192,13 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
                 return [_point_at_arc(closed, cum, cum[-1] * k / count)
                         for k in range(count)]
 
+            constraints = []
+            for chain in crease_chains:
+                constraints.extend(clip_chain(chain, ring, holes))
             quality = _triangulate_quality(dense_ring(ring),
                                            [dense_ring(h) for h in holes],
-                                           0.5 * max_edge * max_edge)
+                                           0.5 * max_edge * max_edge,
+                                           constraints=constraints)
             if quality is not None:
                 flat_verts, tris = quality
             else:
