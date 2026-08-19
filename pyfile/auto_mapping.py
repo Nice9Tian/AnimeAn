@@ -7811,13 +7811,13 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
         return None
 
     # Jacobian, SVD-derived slope field and face sign per node. The
-    # difference step spans a full grid step: the guides are POLY_STEP
-    # polylines, so hv()'s derivative is a staircase at ~4 px scale, and
-    # a quarter-cell probe read every tread as a slope change - the
-    # integrated surface came out with an unnatural depth-direction
-    # ripple (user report). A cell-scale step averages across treads;
-    # folds stay sharp because det's SIGN is unaffected by widening.
-    h = 0.6 * min(du, dv)
+    # Quarter-cell probe. Widening to 0.6 cells (to average the hv()
+    # POLY_STEP staircase treads) was tried and rolled back: every
+    # crease-adjacent node's stencil then straddled the fold and blended
+    # both sides' Jacobians - wrong-face nodes at creases rose 2-4x,
+    # each feeding a full-amplitude inverted slope into the Poisson RHS,
+    # while the waviness metric moved barely 1%.
+    h = 0.25 * min(du, dv)
     jac = []
     sigma_max_all = []
     for _i, _j, u, v in nodes:
@@ -8236,11 +8236,40 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
             z = [-v for v in z]
 
     # Relief lookup off the node grid; mesh vertices and draped strokes
-    # both read it. CATMULL-ROM bicubic where the 4x4 neighbourhood is
-    # complete: the render mesh is finer than the solve grid, and
-    # bilinear z left a C1 crease along every grid line - a regular
-    # depth-direction ripple across the whole sheet (user report).
-    # Bilinear remains the fallback near mask edges.
+    # both read it. CATMULL-ROM bicubic: the render mesh is finer than
+    # the solve grid, and bilinear z left a C1 crease along every grid
+    # line - a regular depth-direction ripple across the whole sheet
+    # (user report). The solved field is first padded with a 2-ring
+    # halo of linearly extrapolated nodes so the 4x4 window is complete
+    # everywhere inside the solid: without the halo z_at hard-switched
+    # to bilinear along a ring ~1 cell inside every outline, and the
+    # two interpolants disagree by 1/8 of the local second difference
+    # at the switch - a rim line around each fill baked into the mesh.
+    # Halo nodes only support interpolation, never the solve or stats;
+    # with linearly extrapolated ends Catmull-Rom degenerates to linear,
+    # so the halo cells blend continuously into the old bilinear look.
+    zmap = {}
+    for key, n in node_index.items():
+        zmap[key] = z[n]
+    for _ring in range(2):
+        fresh = {}
+        for (i, j) in list(zmap.keys()):
+            for (di, dj) in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                spot = (i + di, j + dj)
+                if spot in zmap or spot in fresh:
+                    continue
+                est = 0.0
+                cnt = 0
+                for (ei, ej) in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    n1 = zmap.get((spot[0] - ei, spot[1] - ej))
+                    n2 = zmap.get((spot[0] - 2 * ei, spot[1] - 2 * ej))
+                    if n1 is not None and n2 is not None:
+                        est += 2.0 * n1 - n2
+                        cnt += 1
+                if cnt:
+                    fresh[spot] = est / cnt
+        zmap.update(fresh)
+
     def z_bilinear(u, v):
         fi = min(max((u - u0) / du, 0.0), nx - 1e-6)
         fj = min(max((v - v0) / dv, 0.0), ny - 1e-6)
@@ -8274,10 +8303,10 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
         for jj in (j - 1, j, j + 1, j + 2):
             row = []
             for ii in (i - 1, i, i + 1, i + 2):
-                n = node_index.get((ii, jj))
-                if n is None:
+                zv = zmap.get((ii, jj))
+                if zv is None:
                     return z_bilinear(u, v)
-                row.append(z[n])
+                row.append(zv)
             rows.append(row)
         tx = fi - i
         ty = fj - j
