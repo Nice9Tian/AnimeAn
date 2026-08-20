@@ -6997,6 +6997,12 @@ def _overlay_removed(cell, stroke, message):
     if item_id in assets:
         del assets[item_id]
         label = ITEM_LABELS.get(item_id, item_id)
+        if item_id in GUIDE_PROPERTIES:
+            # The frame these coordinates lived in is gone; whatever
+            # guide arrives next is a different frame, and the redraw
+            # entry can no longer tell (the asset it would have
+            # replaced was just deleted here).
+            _invalidate_additional_thirds(view)
         _save_assets(view)
         try:
             _animean().ui.history_commit(f"Remove {label}", view)
@@ -7565,12 +7571,16 @@ def run_center_line_tool(view_name, property_value, points, width=3.0, commands=
             print(f"[auto_mapping] guide commands rejected ({error}); "
                   "keeping the flattened polyline.")
     assets = _assets_for(view_name)
-    replacing = property_value in assets
     assets[property_value] = item
-    if replacing:
-        # An edited guide changes the frame the additional lines' stored
-        # coordinates live in; they must re-derive from their drawn points.
-        _invalidate_additional_thirds(view_name)
+    # Installing a guide changes the frame the additional lines' stored
+    # coordinates live in; they must re-derive from their drawn points.
+    # UNCONDITIONALLY: gating this on "replacing" missed the
+    # delete-then-redraw workflow - the x removed the guide asset first,
+    # so the redraw saw no predecessor, skipped the invalidation, and
+    # the stale thirds kept describing the retired frame (the user
+    # report: the additional deformation never recomputed). With no
+    # additional lines it is a no-op.
+    _invalidate_additional_thirds(view_name)
     # The moment BOTH main axes exist, the nearest-end anchor comes into
     # being AT THE CROSSING (arc (0,0)) as a real asset - saved, undoable,
     # and its red handle visible immediately - rather than materializing
@@ -7749,11 +7759,25 @@ def _invalidate_additional_thirds(view_name):
     boards = ("child", "main") if view_name == "child" else ("main",)
     for name in boards:
         lines = (_assets_for(name).get(ADDITIONAL_PROPERTY) or {}).get("lines") or []
+        here = 0
         for line in lines:
             if line.pop("third", None) is not None:
-                dropped += 1
-        if dropped:
+                here += 1
+        if here:
             _save_assets(name)
+            if name != view_name:
+                # This write lands on the OTHER board: commit its
+                # history too, or its live state sits ahead of its own
+                # snapshot and a History-panel jump resurrects the
+                # stale third - the very staleness being retired here.
+                # (The pair-removal branch commits per board for the
+                # same reason.)
+                try:
+                    _animean().ui.history_commit(
+                        "Retire additional-line coordinates", name)
+                except Exception:
+                    pass
+        dropped += here
     if dropped:
         print("[auto_mapping] the guide edit re-anchors the additional lines: "
               "their coordinates re-derive from the drawn points on the next run.")
@@ -7948,6 +7972,52 @@ def _segments_cross(a, b, c, d):
     d3 = (d[0] - c[0]) * (a[1] - c[1]) - (d[1] - c[1]) * (a[0] - c[0])
     d4 = (d[0] - c[0]) * (b[1] - c[1]) - (d[1] - c[1]) * (b[0] - c[0])
     return d1 * d2 < 0.0 and d3 * d4 < 0.0
+
+
+def _rdp_polyline3d(points, tol):
+    """Ramer-Douglas-Peucker on an OPEN 3D polyline, iterative.
+
+    The transfer grid drapes at solid-scale density across the whole
+    refer rect, so a tiny drawing in a huge frame pinned every iso-line
+    at the sample cap - measured 20k-135k redundant points, a 2.2-9.2x
+    HTML blowup, while a 0.25 px tolerance keeps under 1% of them. The
+    dense pass still runs first (draping must SEE the relief); this
+    keeps only what the eye can."""
+    if len(points) <= 2:
+        return list(points)
+    keep = [False] * len(points)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(points) - 1)]
+    while stack:
+        lo, hi = stack.pop()
+        ax, ay, az = points[lo]
+        dx = points[hi][0] - ax
+        dy = points[hi][1] - ay
+        dz = points[hi][2] - az
+        norm2 = dx * dx + dy * dy + dz * dz
+        worst = -1.0
+        pick = None
+        for k in range(lo + 1, hi):
+            rx = points[k][0] - ax
+            ry = points[k][1] - ay
+            rz = points[k][2] - az
+            if norm2 <= 1e-12:
+                d2 = rx * rx + ry * ry + rz * rz
+            else:
+                t = (rx * dx + ry * dy + rz * dz) / norm2
+                t = min(max(t, 0.0), 1.0)
+                ex = rx - t * dx
+                ey = ry - t * dy
+                ez = rz - t * dz
+                d2 = ex * ex + ey * ey + ez * ez
+            if d2 > worst:
+                worst = d2
+                pick = k
+        if pick is not None and worst > tol * tol:
+            keep[pick] = True
+            stack.append((lo, pick))
+            stack.append((pick, hi))
+    return [p for p, kept in zip(points, keep) if kept]
 
 
 def _rdp_ring(ring, epsilon):
@@ -8874,6 +8944,26 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
                 if cnt:
                     fresh[spot] = est / cnt
         zmap.update(fresh)
+    # Fill the REST of the clamp rectangle by nearest-occupied BFS: the
+    # transfer grid runs the whole refer rect, and beyond the halo the
+    # empty-cell fallback returned exactly 0.0 - measured 46-70% of grid
+    # samples flat at zero with ~95 px cliffs ringing the artwork
+    # (review). With the fill, far field reads as a flat continuation
+    # of the boundary relief. Mesh vertices and draped strokes never
+    # sample outside the solid's own cells (measured), so this is
+    # far-field-only support.
+    frontier = list(zmap.keys())
+    while frontier:
+        grown = []
+        for (i, j) in frontier:
+            zv = zmap[(i, j)]
+            for (di, dj) in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                spot = (i + di, j + dj)
+                if (-1 <= spot[0] <= nx + 1 and -1 <= spot[1] <= ny + 1
+                        and spot not in zmap):
+                    zmap[spot] = zv
+                    grown.append(spot)
+        frontier = grown
 
     def z_bilinear(u, v):
         fi = min(max((u - u0) / du, 0.0), nx - 1e-6)
@@ -9118,9 +9208,46 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
             stroke_colors.append([style_color[0], style_color[1],
                                   style_color[2]])
 
+    # TRANSFER GRID: the refer-rect lattice draped on the sheet (the
+    # viewer's Transfer Grid button shows the whole deformed reference
+    # frame). The lattice lives in Third space directly - (du, dv) =
+    # the normalized levels times the frame's side extents, the same
+    # lattice _grid_overlay_items draws in 2D - and each iso-line
+    # drapes exactly like a stroke: z off the mesh surface first, the
+    # relief field beyond it.
+    grid3d = []
+    child_frame = map_point.child_frame
+    divisions = max(2, int(_GRID.get("divisions", 5)))
+    grid_levels = [i / (divisions - 1) * 2.0 - 1.0 for i in range(divisions)]
+
+    def third_of_hat(u_hat, v_hat):
+        return (u_hat * (child_frame.h_side[1] if u_hat >= 0.0
+                         else child_frame.h_side[0]),
+                v_hat * (child_frame.v_side[1] if v_hat >= 0.0
+                         else child_frame.v_side[0]))
+
+    for level in grid_levels:
+        for iso in ([third_of_hat(level, -1.0), third_of_hat(level, 1.0)],
+                    [third_of_hat(-1.0, level), third_of_hat(1.0, level)]):
+            cum = _cumulative_lengths(iso)
+            if cum[-1] <= 1e-6:
+                continue
+            count = min(int(cum[-1] / (0.5 * mesh_len)) + 2, 2048)
+            pts = []
+            for k in range(count):
+                u, v = _point_at_arc(iso, cum, cum[-1] * k / (count - 1))
+                q = image_of_third(u, v)
+                zz = z_on_mesh(u, v)
+                if zz is None:
+                    zz = z_at(u, v)
+                pts.append((q[0], q[1], zz))
+            pts = _rdp_polyline3d(pts, 0.25)
+            if len(pts) >= 2:
+                grid3d.append(pts)
+
     return {"vertices": vertices, "faces": faces, "colors": colors,
             "strokes": strokes3d, "stroke_colors": stroke_colors,
-            "scale0": scale0, "uv": vertex_uv}
+            "scale0": scale0, "uv": vertex_uv, "grid": grid3d}
 
 
 def run_to_3d():
@@ -9203,6 +9330,9 @@ def _export_three_html(surface, path):
                      for x, y, z in poly]
                     for poly in surface["strokes"]],
         "strokeColors": surface.get("stroke_colors") or [],
+        "grid": [[[round(x, 2), round(y, 2), round(z, 2)]
+                  for x, y, z in poly]
+                 for poly in surface.get("grid") or []],
     }
     payload = json.dumps(data, separators=(",", ":")).replace("</", "<\\/")
     html = _TO3D_TEMPLATE.replace("__ANIMEAN_DATA__", payload)
@@ -9233,7 +9363,9 @@ _TO3D_TEMPLATE = r"""<!DOCTYPE html>
        <label style="margin-left:12px"><input id="wire" type="checkbox">
        wireframe</label></div>
   <div><button id="homecam" type="button" style="margin-top:4px">
-       original camera</button></div>
+       original camera</button>
+       <button id="transfergrid" type="button" style="margin-top:4px">
+       Transfer Grid</button></div>
   <div style="opacity:.7">drag: rotate &middot; wheel: zoom &middot;
        right-drag: pan</div>
 </div>
@@ -9293,7 +9425,7 @@ const mat = new THREE.MeshStandardMaterial({
 const mesh = new THREE.Mesh(geo, mat);
 group.add(mesh);
 
-const strokeObjs = [];
+const lineObjs = [];
 DATA.strokes.forEach((poly, idx) => {
   const pts = poly.map(([x, y, z]) =>
       new THREE.Vector3((x - cx) * S, (cy - y) * S, z * S));
@@ -9302,8 +9434,27 @@ DATA.strokes.forEach((poly, idx) => {
   const line = new THREE.Line(g, new THREE.LineBasicMaterial({
       color: new THREE.Color(sc[0] / 255, sc[1] / 255, sc[2] / 255) }));
   line.userData.baseZ = poly.map(p => p[2] * S);
-  strokeObjs.push(line);
+  line.userData.lift = 0.004;
+  lineObjs.push(line);
   group.add(line);
+});
+
+// Transfer Grid: the deformed reference frame (refer rect) draped on
+// the sheet - hidden until its button is pressed. The grid sits a hair
+// BELOW the strokes so linework stays legible over it.
+const gridGroup = new THREE.Group();
+gridGroup.visible = false;
+group.add(gridGroup);
+(DATA.grid || []).forEach(poly => {
+  const pts = poly.map(([x, y, z]) =>
+      new THREE.Vector3((x - cx) * S, (cy - y) * S, z * S));
+  const g = new THREE.BufferGeometry().setFromPoints(pts);
+  const line = new THREE.Line(g, new THREE.LineBasicMaterial({
+      color: 0xff8c00, transparent: true, opacity: 0.85 }));
+  line.userData.baseZ = poly.map(p => p[2] * S);
+  line.userData.lift = 0.003;
+  lineObjs.push(line);
+  gridGroup.add(line);
 });
 
 function applyRelief(factor) {
@@ -9311,11 +9462,12 @@ function applyRelief(factor) {
   for (let i = 0; i < baseZ.length; i++) pos.setZ(i, baseZ[i] * factor);
   pos.needsUpdate = true;
   geo.computeVertexNormals();
-  for (const line of strokeObjs) {
+  for (const line of lineObjs) {
     const p = line.geometry.getAttribute('position');
     const bz = line.userData.baseZ;
+    const lift = line.userData.lift;
     for (let i = 0; i < bz.length; i++)
-      p.setZ(i, bz[i] * factor + 0.004);
+      p.setZ(i, bz[i] * factor + lift);
     p.needsUpdate = true;
   }
 }
@@ -9328,6 +9480,11 @@ document.getElementById('flip').addEventListener('change', e => {
 update();   // apply the stroke lift NOW, or lines z-fight until touched
 document.getElementById('wire').addEventListener('change', e => {
   mat.wireframe = e.target.checked; });
+const gridBtn = document.getElementById('transfergrid');
+gridBtn.addEventListener('click', () => {
+  gridGroup.visible = !gridGroup.visible;
+  gridBtn.style.fontWeight = gridGroup.visible ? 'bold' : 'normal';
+});
 
 scene.add(new THREE.AmbientLight(0xffffff, 0.75));
 const sun = new THREE.DirectionalLight(0xffffff, 1.1);
