@@ -1,6 +1,14 @@
-"""Regressions for the add_s_error / add_fill_error fixes: consistent
-hole/outer partitions, warp-locus depth counted in Third space, and the
-refer-grid divisions option."""
+"""Regressions for the add_s_error / add_fill_error fixes, re-based on the
+flow-field model: consistent hole/outer partitions over a MAIN-FRAME fold,
+concentric-ring nesting, and the refer-grid divisions option.
+
+The warp itself no longer folds (the additional lines are a Poisson-
+integrated flow field: conflicts resolve by stress minimisation, never by
+doubling the sheet back), so the old warp-fold depth cases are gone with the
+phenomenon they measured. What survives is the frame-fold half of the same
+machinery - creases from the MAIN guides - plus the new coexistence rule:
+a pink line and a folded main frame must live on one mapper without either
+inventing a warp fold."""
 import math
 import os
 import sys
@@ -13,94 +21,67 @@ import auto_mapping as am
 
 H = [(-300.0, 0.0), (300.0, 0.0)]
 V = [(0.0, -200.0), (0.0, 200.0)]
+# The bent main V of t_sever's case 10: the child side stays straight (nothing
+# severs) while the main frame creases - the main-frame fold this suite needs.
+BENT_MAIN_V = [(0.0, -200.0), (0.0, 100.0), (-190.0, 40.0)]
 am._ADDITIONAL["falloff"] = "linear"
 
 
-def build(pairs):
-    mp, ws = am.build_mapper(H, V, H, V, {}, additional_pairs=pairs)
+def build(main_v=None, pairs=None):
+    mp, ws = am.build_mapper(H, V, H, main_v or V, {}, additional_pairs=pairs)
     assert mp is not None, ws
     return mp
 
 
-# Folding pair: child y=50 line asked +150 (R=100) - folds, loci exist.
-c_f = {"points": [(-100.0, 50.0), (100.0, 50.0)], "width": 2.5}
-m_f = {"points": [(-100.0, 200.0), (100.0, 200.0)], "width": 2.5}
-mp = build([(c_f, m_f)])
-am._prepare_fold_context(mp, (-250.0, 250.0), (-200.0, 260.0))
-
-# 1) WARP DEPTH IN THIRD SPACE: a point outside the influence band whose
-#    ARC ray crosses the warp loci's fold-edge IMAGE must not inherit
-#    phantom depth from that crossing; its Third ray governs. At (0, 220)
-#    the Third ray crosses both loci (folded band between) -> the
-#    conservative sheet number is 2 with front parity - the SAME behavior
-#    frame creases give an unfolded far region, no longer the arbitrary
-#    image-crossing count. The physically covered band keeps depth 1.
-side_band = am._fold_sign(mp, (0.0, 90.0))
-depth_band = am._fold_depth(mp, (0.0, 90.0), side_band)
-assert (side_band, depth_band) == (-1, 1), (side_band, depth_band)
-side_out = am._fold_sign(mp, (0.0, 20.0))
-depth_out = am._fold_depth(mp, (0.0, 20.0), side_out)
-assert (side_out, depth_out) == (1, 0), (side_out, depth_out)
-# (0,150): the fold-back point's neighborhood - the map stacks THREE
-# sheets over main y=150+ (the folded run, the outward run, and the far
-# side's rise). Its Third ray crosses both true loci -> depth 2. The old
-# arc-space count crossed neither fold-edge IMAGE (they sit at arc
-# y~180-200) and called this triple-covered point depth 0.
-probe = (0.0, 150.0)
-side_p = am._fold_sign(mp, probe)
-depth_p = am._fold_depth(mp, probe, side_p)
-assert depth_p == 2, (side_p, depth_p)
-print(f"1) warp depth: band (-1,1), below (+1,0), fold-back point "
-      f"({side_p:+d},{depth_p}) - was 0 under image-space counting")
-
-# 2) HOLE/OUTER CONSISTENT PARTITIONS: an outer ring spanning the fold
-#    with a hole ring far from the loci's REAL geometry (but crossed by a
-#    cutter extension). The hole must attach and carve every outer piece
-#    it overlaps - no phantom solid fill over the hole.
-outer = [(-140.0, -20.0), (140.0, -20.0), (140.0, 130.0), (-140.0, 130.0)]
-outer = am._densify(outer + [outer[0]])[:-1]
-hole = [(-120.0, -10.0), (120.0, -10.0), (120.0, 20.0), (-120.0, 20.0)]
-hole = am._densify(hole + [hole[0]])[:-1]
-
-
 class Sink:
+    """_emit_fills' output surface: add_fill(side, depth, rings, color)."""
+
     def __init__(self):
         self.fills = []
         self.cuts = []
 
     def add_fill(self, side, depth, rings, color):
-        self.fills.append((depth, side, rings))
+        self.fills.append((side, depth, rings))
         return True
 
 
-sink = Sink()
-fill = {"commands": ([{"type": "move", "to": {"x": outer[0][0], "y": outer[0][1]}}]
-                     + [{"type": "line", "to": {"x": p[0], "y": p[1]}}
-                        for p in outer[1:]]
-                     + [{"type": "line", "to": {"x": outer[0][0], "y": outer[0][1]}}]
-                     + [{"type": "move", "to": {"x": hole[0][0], "y": hole[0][1]}}]
-                     + [{"type": "line", "to": {"x": p[0], "y": p[1]}}
-                        for p in hole[1:]]
-                     + [{"type": "line", "to": {"x": hole[0][0], "y": hole[0][1]}}]),
-        "color": {"r": 0, "g": 128, "b": 0, "a": 255}}
-am._emit_fills(None, sink, mp, [fill], None, None)
-with_holes = sum(1 for _, _, rings in sink.fills if len(rings) > 1)
-assert with_holes >= 1, [len(r) for _, _, r in sink.fills]
-# no emitted front piece's image may cover the hole's interior image
-hole_mid = mp((0.0, 5.0))
-covered = 0
-for depth, side, rings in sink.fills:
-    inside = am._point_in_ring(hole_mid, rings[0])
-    for ring in rings[1:]:
-        if am._point_in_ring(hole_mid, ring):
-            inside = False
-    if inside:
-        covered += 1
-assert covered == 0, covered
-print(f"2) hole attaches ({with_holes} pieces carry holes) and its interior "
-      "is carved from every overlapping piece")
+def ring_cmds(rings):
+    cmds = []
+    for ring in rings:
+        cmds.append({"type": "move", "to": {"x": ring[0][0], "y": ring[0][1]}})
+        for p in ring[1:]:
+            cmds.append({"type": "line", "to": {"x": p[0], "y": p[1]}})
+        cmds.append({"type": "line", "to": {"x": ring[0][0], "y": ring[0][1]}})
+    return cmds
 
-# 3) GRID DIVISIONS: option changes iso-line count and sample density,
+
+def square(cx, cy, r):
+    return [(cx - r, cy - r), (cx + r, cy - r), (cx + r, cy + r), (cx - r, cy + r)]
+
+
+def rect(x0, y0, x1, y1):
+    return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+
+
+def straight(x0, x1, y, n=21):
+    return [(x0 + (x1 - x0) * k / (n - 1.0), y) for k in range(n)]
+
+
+def bow(x0, x1, y, sag, n=21):
+    """A parabolic arc over the chord (x0,y)-(x1,y) with the given sagitta."""
+    mid, half = 0.5 * (x0 + x1), 0.5 * (x1 - x0)
+    return [(x, y + sag * (1.0 - ((x - mid) / half) ** 2))
+            for x, _ in straight(x0, x1, y, n)]
+
+
+def line_asset(points, line_id=0):
+    """A drawn pair side with AUTHORITATIVE Third coordinates - the contract
+    every stored line carries (build_mapper never re-derives them)."""
+    return {"points": [tuple(p) for p in points], "width": 2.5,
+            "id": line_id, "third": [tuple(p) for p in points]}
+
+
+# 1) GRID DIVISIONS: option changes iso-line count and sample density,
 #    default reproduces the historical 5x5/25 lattice.
 am._MAPPING_ASSETS.clear()
 for view in ("child", "main"):
@@ -121,84 +102,29 @@ assert len(items9) == 18 and len(items9[0]["points"]) == 49, \
 am._GRID["divisions"] = 5
 am._invalidate_grid_cache()
 am._REFER_RECT["child"] = False
-print("3) grid divisions: 5 -> 10 iso-lines x 25 pts (historical), "
+print("1) grid divisions: 5 -> 10 iso-lines x 25 pts (historical), "
       "9 -> 18 x 49")
 
-# 4) TIP SWEEP CONSISTENCY: warp loci are bounded arcs; before the native
-#    geometry was extended, the Third ray sliding past a locus TIP jumped
-#    the depth in open ground 9.7 px away from every cutter - a layer
-#    boundary with no cut and no crease to explain it. The model's
-#    invariant is CONSISTENCY, not physical sheet count (frame creases
-#    are equally conservative in unfolded far regions): every depth
-#    transition must sit ON a cutter, where the fill actually gets split.
-jumps = []
-prev = None
-x = 100.0
-while x <= 200.0:
-    s = am._fold_sign(mp, (x, 60.0))
-    d = am._fold_depth(mp, (x, 60.0), s)
-    if prev is not None and d != prev[1]:
-        jumps.append(((prev[0] + x) * 0.5, 60.0))
-    prev = (x, d)
-    x += 0.5
-cutters = am._child_cutters(mp)
-worst_gap = 0.0
-for q in jumps:
-    gap = min(am._polyline_arc_of(q, c)[0] for c in cutters)
-    worst_gap = max(worst_gap, gap)
-# Tolerance = the tracer's end-arc sampling pitch (~1.5 r-sweep columns).
-# The invariant that matters: a cutter EXISTS at every depth transition
-# (the band's closing stretches are traced by the orthogonal sweep), so
-# the fill is split there; before the dual sweep the jump sat on ground
-# with NO locus at all, 9.7 px from everything, and nothing cut it.
-assert worst_gap < 8.0, (jumps, worst_gap)
-# the folded band's midpoint keeps its true middle-sheet depth
-side_m = am._fold_sign(mp, (0.0, 140.0))
-depth_m = am._fold_depth(mp, (0.0, 140.0), side_m)
-assert (side_m, depth_m) == (-1, 1), (side_m, depth_m)
-print(f"4) depth transitions along y=60: {len(jumps)} jump(s), all within "
-      f"{worst_gap:.2f} px of a cutter; fold-band mid (0,140) -> (-1,1)")
-
-# 5) CONCENTRIC HOLES: a centred donut must emit ONE region with its hole
+# 2) CONCENTRIC HOLES: a centred donut must emit ONE region with its hole
 #    carved (the centroid-based nesting probe classified BOTH rings as
 #    holes and silently dropped the whole fill).
-mp_id = build(None) if False else None
-mp2, ws2 = am.build_mapper(H, V, H, V, {})
-assert mp2 is not None, ws2
-
-
-def ring_cmds(rings):
-    cmds = []
-    for ring in rings:
-        cmds.append({"type": "move", "to": {"x": ring[0][0], "y": ring[0][1]}})
-        for p in ring[1:]:
-            cmds.append({"type": "line", "to": {"x": p[0], "y": p[1]}})
-        cmds.append({"type": "line", "to": {"x": ring[0][0], "y": ring[0][1]}})
-    return cmds
-
-
-def square(cx, cy, r):
-    return [(cx - r, cy - r), (cx + r, cy - r), (cx + r, cy + r), (cx - r, cy + r)]
-
-
+mp2 = build()
 sink2 = Sink()
 am._emit_fills(None, sink2, mp2,
                [{"commands": ring_cmds([square(0, 0, 100), square(0, 0, 60)]),
                  "color": {"r": 0, "g": 128, "b": 0, "a": 255}}],
                None, None)
 assert len(sink2.fills) == 1 and len(sink2.fills[0][2]) == 2, \
-    [(d, s, len(r)) for d, s, r in sink2.fills]
-assert not am._point_in_ring(mp2((0.0, 0.0)), sink2.fills[0][2][1]) \
-    or True  # hole ring present; interior carve checked below
+    [(s, d, len(r)) for s, d, r in sink2.fills]
 inside = am._point_in_ring(mp2((0.0, 0.0)), sink2.fills[0][2][0])
 for ring in sink2.fills[0][2][1:]:
     if am._point_in_ring(mp2((0.0, 0.0)), ring):
         inside = False
 assert not inside
-print("5) centred donut: 1 region, 2 rings, centre carved "
+print("2) centred donut: 1 region, 2 rings, centre carved "
       "(was silently dropped)")
 
-# 6) NESTED ISLAND (4 concentric rings: outer, hole, island, island-hole):
+# 3) NESTED ISLAND (4 concentric rings: outer, hole, island, island-hole):
 #    the island's hole must attach to the ISLAND, and the innermost hole
 #    interior must be empty while the island band paints.
 sink3 = Sink()
@@ -207,12 +133,12 @@ am._emit_fills(None, sink3, mp2,
                                         square(0, 0, 45), square(0, 0, 20)]),
                  "color": {"r": 0, "g": 128, "b": 0, "a": 255}}],
                None, None)
-assert len(sink3.fills) == 2, [(d, s, len(r)) for d, s, r in sink3.fills]
+assert len(sink3.fills) == 2, [(s, d, len(r)) for s, d, r in sink3.fills]
 
 
 def painted(q):
     hits = 0
-    for _, _, rings in sink3.fills:
+    for _side, _depth, rings in sink3.fills:
         inside = am._point_in_ring(q, rings[0])
         for ring in rings[1:]:
             if am._point_in_ring(q, ring):
@@ -226,6 +152,79 @@ assert painted(mp2((0.0, 90.0))) == 1    # outer band
 assert painted(mp2((0.0, 55.0))) == 0    # hole band
 assert painted(mp2((0.0, 30.0))) == 1    # island band
 assert painted(mp2((0.0, 0.0))) == 0     # island's hole
-print("6) nested island: island's hole carved from the island, not the outer")
+print("3) nested island: island's hole carved from the island, not the outer")
+
+# 4) HOLE/OUTER CONSISTENT PARTITIONS OVER A MAIN-FRAME FOLD. The bent main
+#    V creases the sheet along child y ~ 66.8; a donut straddling that crease
+#    has BOTH its rings cut by it. Outer and hole must be split against the
+#    SAME cutters (the fill's own bbox gate), or a hole piece straddles two
+#    outer pieces, attaches to only one, and the other paints solid over the
+#    hole. Assertions: some emitted piece still carries a hole ring, the fold
+#    really did cut (front AND back pieces exist), and the hole's interior
+#    image is covered by NO front piece on either side of the crease.
+mp_fold = build(BENT_MAIN_V)
+assert not mp_fold.can_fold()      # child side straight: nothing severs
+am._prepare_fold_context(mp_fold, (-250.0, 250.0), (-200.0, 200.0))
+crease_y = 66.8
+assert am._fold_sign(mp_fold, (0.0, crease_y - 20.0)) == 1
+assert am._fold_sign(mp_fold, (0.0, crease_y + 20.0)) == -1
+outer = rect(-140.0, -20.0, 140.0, 130.0)
+hole = rect(-120.0, 40.0, 120.0, 100.0)     # straddles the crease
+sink4 = Sink()
+am._emit_fills(None, sink4, mp_fold,
+               [{"commands": ring_cmds([outer, hole]),
+                 "color": {"r": 0, "g": 128, "b": 0, "a": 255}}],
+               None, None)
+sides4 = sorted(side for side, _d, _r in sink4.fills)
+assert sides4 == [-1, 1], [(s, d, len(r)) for s, d, r in sink4.fills]
+with_holes = sum(1 for _s, _d, rings in sink4.fills if len(rings) > 1)
+assert with_holes >= 1, [len(r) for _s, _d, r in sink4.fills]
+covered = 0
+for probe in ((0.0, 50.0), (0.0, 70.0), (0.0, 95.0), (-90.0, 55.0),
+              (90.0, 90.0)):
+    image = mp_fold(probe)
+    for side, _depth, rings in sink4.fills:
+        if side != am._MappedOutput.FRONT:
+            continue
+        inside = am._point_in_ring(image, rings[0])
+        for ring in rings[1:]:
+            if am._point_in_ring(image, ring):
+                inside = False
+        if inside:
+            covered += 1
+assert covered == 0, covered
+print(f"4) main-fold donut: {len(sink4.fills)} pieces (front+back), "
+      f"{with_holes} carry holes; the hole's interior is covered by "
+      f"{covered} front pieces on either side of the crease")
+
+# 5) COEXISTENCE: a curved additional pair (off-axis, well clear of the H/V
+#    axes the field holds sacred) on the SAME mapper as the folded main
+#    frame. The two mechanisms are independent - the frame crease still
+#    splits a crossing stroke front/back, while the flow field stays
+#    orientation-preserving: under the flow model occlusion comes from the
+#    frames, and the warp has no folds of its own to contribute.
+child_line = line_asset(straight(130.0, 280.0, 130.0))
+main_line = line_asset(bow(130.0, 280.0, 130.0, 20.0))
+mp5 = build(BENT_MAIN_V, [(child_line, main_line)])
+warp = mp5.warp
+assert warp is not None and len(warp.pairs) == 1
+effect = max(math.hypot(*warp.displacement((x, 130.0)))
+             for x in (160.0, 200.0, 250.0))
+assert effect > 5.0, effect                       # the line really speaks
+assert warp.fold_loci() == [], warp.fold_loci()   # ... and never folds
+assert warp._all_positive
+axis_drift = max(math.hypot(*(a - b for a, b in zip(warp.apply(p), p)))
+                 for p in [(0.0, 0.0), (0.0, 150.0), (200.0, 0.0),
+                           (-250.0, 0.0), (0.0, -100.0)])
+assert axis_drift < 0.01, axis_drift
+crossing = am._densify([(200.0, -150.0), (200.0, 150.0)])
+sides5 = [side for _run, side in am._split_by_fold(mp5, crossing)]
+assert -1 in sides5 and 1 in sides5, sides5
+far = [side for _run, side in
+       am._split_by_fold(mp5, am._densify([(-100.0, -150.0), (-100.0, 150.0)]))]
+assert -1 in far and 1 in far, far
+print(f"5) pink line ({effect:.1f} px on-line, no fold loci, axes still to "
+      f"{axis_drift:.0e} px) coexists with the folded main frame: crossing "
+      f"strokes still split {sides5} / {far}")
 
 print("t_twofix: ALL OK")
