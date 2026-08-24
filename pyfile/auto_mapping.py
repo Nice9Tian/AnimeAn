@@ -2693,14 +2693,28 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
                          - _hand_h[1] * _hand_v[0]) >= 0.0 else -1.0
 
     def _lift(point, seed=None):
-        """Newton lift Child -> Third, with the achieved residual."""
+        """Newton lift Child -> Third, with the achieved residual.
+
+        On an UNFOLDABLE frame (can_fold() False) hv_child is a
+        homeomorphism, so a residual above _SEVER_RESIDUAL is a numeric
+        plateau, not a missing preimage - retry once from the stalled
+        iterate, which reaches it in practice. The retry lives HERE so
+        every consumer of the lift (map_point, coords, third_of - and
+        through them the 3D drape and additional-line sync) sees the same
+        coordinate; patching only map_point left main_of_third(coords(p))
+        disagreeing with map_point(p) on exactly the plateau points.
+        Foldable frames never retry: there a high residual means severed
+        ground and the stall IS the verdict."""
         if seed is not None:
             return child.solve_full(point, seed[0], seed[1])
         dx = point[0] - child.origin[0]
         dy = point[1] - child.origin[1]
         guess_h = (dx * ev[1] - dy * ev[0]) / det * 0.5 * child_h_chord
         guess_v = (eh[0] * dy - eh[1] * dx) / det * 0.5 * child_v_chord
-        return child.solve_full(point, guess_h, guess_v)
+        l_h, l_v, residual = child.solve_full(point, guess_h, guess_v)
+        if residual > _SEVER_RESIDUAL and not can_fold():
+            l_h, l_v, residual = child.solve_full(point, l_h, l_v)
+        return l_h, l_v, residual
 
     def coords(point, seed=None):
         """A point's arc-length coordinates in the child frame (= Third).
@@ -2905,20 +2919,18 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
         guides) has nobody to drop it - and emitting the stalled iterate
         verbatim was measured to drift an identity mapping by 113 px where
         the residual formula was bit-exact. The preimage does exist there
-        (hv_child is a homeomorphism above the gate): retry from the
-        stalled iterate, which reaches it in practice, and absorb whatever
-        residual remains with the exact identity-preserving correction.
-        Foldable frames never take this branch - there a high residual
-        means severed ground, and the fudge is exactly what this pipeline
-        removed."""
+        (hv_child is a homeomorphism above the gate): _lift retries from
+        the stalled iterate (shared with every other consumer), and if a
+        residual still remains this one place absorbs it with the exact
+        identity-preserving correction. Foldable frames never take this
+        branch - there a high residual means severed ground, and the fudge
+        is exactly what this pipeline removed."""
         l_h, l_v, residual = _lift(point)
         if residual > _SEVER_RESIDUAL and not can_fold():
-            l_h, l_v, residual = _lift(point, (l_h, l_v))
-            if residual > _SEVER_RESIDUAL:
-                rebuilt = child.hv(l_h, l_v)
-                image = main_of_third((l_h, l_v))
-                return (image[0] + point[0] - rebuilt[0],
-                        image[1] + point[1] - rebuilt[1])
+            rebuilt = child.hv(l_h, l_v)
+            image = main_of_third((l_h, l_v))
+            return (image[0] + point[0] - rebuilt[0],
+                    image[1] + point[1] - rebuilt[1])
         return main_of_third((l_h, l_v))
 
     _fold_gate = {}
@@ -4009,17 +4021,21 @@ def _frame_point(frame, u_hat, v_hat):
 
 def _sever_edge_image(mapper, valid_p, valid_lift, invalid_p):
     """The main-canvas image of the seam point between a valid and an
-    invalid grid sample: bisect the child-space segment on the validity
-    verdict (seeded from the valid side, so Newton cannot snap onto a far
-    branch) and project the valid-side lift. The reference grid's island
-    edges then land ON the fold line like the strokes' cuts do, instead of
-    at whatever sample happened to fall nearest (measured 42 px median /
-    79 px max error at the default density)."""
+    invalid grid sample: bisect the child-space segment on the SAME
+    default-seeded verdict the strokes' severing consults, and project the
+    valid-side lift. The reference grid's island edges then land ON the
+    strokes' cuts, instead of at whatever sample happened to fall nearest
+    (measured 42 px median / 79 px max error at the default density).
+    Never seed the probes from the valid side: a warm-started solve tracks
+    the local sheet straight across a DIVERGENCE gap (the lift there still
+    exists for the far branch), reads every midpoint as valid, and the
+    bisection collapses onto the invalid sample - the very error this
+    helper exists to remove."""
     lo, lift = valid_p, valid_lift
     hi = invalid_p
     for _ in range(20):
         mid = ((lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5)
-        l_h, l_v, ok = mapper.third_of(mid, seed=lift)
+        l_h, l_v, ok = mapper.third_of(mid)
         if ok:
             lo, lift = mid, (l_h, l_v)
         else:
@@ -5045,15 +5061,21 @@ def _cubic_tail_polyline(cubics, span=4.0 * POLY_STEP):
     PARAMETER span, not geometry), and a probe confined to it defeated
     _third_end_tangent's walk-inward guard - the sliver's ill-conditioned
     direction set the trend. Earlier cubics feed the probe until there is
-    real ground to measure. The last point stays the cut itself."""
+    real ground to measure. The last point stays the cut itself. Sampling
+    is confined to the TAIL of each cubic (parameter range covering ~span
+    of hull) at POLY_STEP resolution - a flat per-cubic cap once made the
+    probe spacing hull/8 on a long end cubic, coarsening both the trend
+    and _island_end_anchor's one-step pullback to tens of px."""
     points = []
     total = 0.0
     for cub in reversed(cubics):
         hull = max(bezier.hull_length(cub), 1e-9)
-        count = max(1, min(8, int(math.ceil(hull / POLY_STEP))))
-        seg = [_cubic_point(cub, k / count) for k in range(count + 1)]
+        t0 = max(0.0, 1.0 - min(1.0, (span - total) / hull))
+        count = max(2, min(16, int(math.ceil((1.0 - t0) * hull / POLY_STEP))))
+        seg = [_cubic_point(cub, t0 + (1.0 - t0) * k / count)
+               for k in range(count + 1)]
         points = seg[:-1] + points if points else seg
-        total += hull
+        total += (1.0 - t0) * hull
         if total >= span:
             break
     return points
@@ -5063,16 +5085,18 @@ def _cubic_head_polyline(cubics, span=4.0 * POLY_STEP):
     """A short child polyline probing an island's START trend (bezier mode).
 
     The head twin of _cubic_tail_polyline: walks forward over the island's
-    first cubics until `span` of child ground backs the probe. The first
-    point stays the cut itself."""
+    first cubics until `span` of child ground backs the probe, sampling
+    each cubic's HEAD range at POLY_STEP resolution. The first point stays
+    the cut itself."""
     points = []
     total = 0.0
     for cub in cubics:
         hull = max(bezier.hull_length(cub), 1e-9)
-        count = max(1, min(8, int(math.ceil(hull / POLY_STEP))))
-        seg = [_cubic_point(cub, k / count) for k in range(count + 1)]
+        t1 = min(1.0, (span - total) / hull)
+        count = max(2, min(16, int(math.ceil(t1 * hull / POLY_STEP))))
+        seg = [_cubic_point(cub, t1 * k / count) for k in range(count + 1)]
         points = points + seg[1:] if points else seg
-        total += hull
+        total += t1 * hull
         if total >= span:
             break
     return points
@@ -6099,18 +6123,26 @@ def _cutter_polylines(bare, reach):
     cutters = []
     for points in bare:
         points = list(points)
-        for end, other in ((0, 1), (-1, -2)):
-            dx = points[end][0] - points[other][0]
-            dy = points[end][1] - points[other][1]
-            length = math.hypot(dx, dy)
-            if length <= 1e-9:
-                continue
-            tip = points[end]
-            extended = (tip[0] + dx / length * reach, tip[1] + dy / length * reach)
-            if end == 0:
-                points.insert(0, extended)
-            else:
-                points.append(extended)
+        closed = (len(points) >= 3
+                  and math.hypot(points[0][0] - points[-1][0],
+                                 points[0][1] - points[-1][1]) <= 1e-6)
+        if not closed:
+            # A CLOSED locus (a bounded severed island's contour) needs no
+            # extension - it already crosses any straddling ring an even
+            # number of times. Bolting two reach-long rays onto its seam
+            # vertex grew multi-thousand-px spikes out of small islands.
+            for end, other in ((0, 1), (-1, -2)):
+                dx = points[end][0] - points[other][0]
+                dy = points[end][1] - points[other][1]
+                length = math.hypot(dx, dy)
+                if length <= 1e-9:
+                    continue
+                tip = points[end]
+                extended = (tip[0] + dx / length * reach, tip[1] + dy / length * reach)
+                if end == 0:
+                    points.insert(0, extended)
+                else:
+                    points.append(extended)
         cutters.append(_densify(points))
     return cutters, raw
 
@@ -6351,6 +6383,15 @@ def _sever_cutters(map_point, grid_n=64):
     cutters, raw = _cutter_polylines(bare, reach)
     map_point.sever_cutter_polys = cutters
     map_point.sever_cutter_raw = raw
+    # The skip gate must see the EXTENDED geometry: a sever extension is a
+    # real (straight-continued) validity boundary, not the crease system's
+    # parity-neutral cutting aid - gating on the window-clamped raw let a
+    # fill beyond the marched window skip the cutter and be kept or wiped
+    # whole by the vote while the strokes over the same ground were cut.
+    map_point.sever_cutter_bounds = [
+        (min(p[0] for p in cutter), min(p[1] for p in cutter),
+         max(p[0] for p in cutter), max(p[1] for p in cutter))
+        for cutter in cutters]
     return cutters
 
 
@@ -6566,27 +6607,44 @@ def _split_ring_with_chord(ring, chord):
 
 
 def _ring_on_valid_ground(map_point, ring, samples=9):
-    """Is this ring piece on computable ground? A VOTE over spread boundary
-    vertices, never one interior probe.
+    """Is this ring piece on computable ground? A VOTE over spread samples
+    nudged just INSIDE the boundary, never one interior probe.
 
-    The ring's own boundary is painted ground (an outer's outline, the rim
-    a hole is cut against), while an interior point of a donut's outer ring
-    is the HOLE - ground the fill does not even own. A single interior
-    probe was measured to (a) drop a hole ring whose centre sat in shadow,
-    painting the cut-out solid, (b) delete a whole donut over one isolated
-    Newton-residual speckle at the shared centre, and (c) discard a piece
-    spanning severed and lit ground wholesale. Boundary samples vote the
-    piece's real footprint; vertices that sit ON a seam chord after a cut
-    split their voice both ways and the majority still reads the original
-    outline. Ties keep the piece - fills err on the side of drawing.
+    A single interior probe was measured to (a) drop a hole ring whose
+    centre sat in shadow, painting the cut-out solid, (b) delete a whole
+    donut over one isolated Newton-residual speckle at the shared centre,
+    and (c) discard a piece spanning severed and lit ground wholesale (an
+    interior point of a donut's outer ring is the HOLE - ground the fill
+    does not even own). Raw boundary VERTICES are not usable either: after
+    a cut, one whole edge of the piece is the seam chord, whose densified
+    vertices all sit on the same side of the numeric boundary and out-vote
+    the piece's real outline both ways. So each sample is an edge midpoint
+    nudged 0.35 px inward (_ring_interior_point's proven trick) - a point
+    just inside the piece is the piece's OWN ground: off the seam by
+    construction, adjacent to the outline everywhere else. Ties keep the
+    piece - fills err on the side of drawing.
     """
     n = len(ring)
     if n == 0:
         return False
-    count = min(samples, n)
     third_of = map_point.third_of
-    votes = sum(1 if third_of(ring[(k * n) // count])[2] else -1
-                for k in range(count))
+    count = min(samples, n)
+    votes = 0
+    for k in range(count):
+        i = (k * n) // count
+        a = ring[i]
+        b = ring[(i + 1) % n]
+        probe = ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5)
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        length = math.hypot(dx, dy)
+        if length > 1e-9:
+            nx, ny = -dy / length, dx / length
+            for offset in (0.35, -0.35):
+                candidate = (probe[0] + nx * offset, probe[1] + ny * offset)
+                if _point_in_ring(candidate, ring):
+                    probe = candidate
+                    break
+        votes += 1 if third_of(probe)[2] else -1
     return votes >= 0
 
 
@@ -6607,14 +6665,16 @@ def _sever_ring(map_point, ring, gate_bbox=None):
     margin = 2.0 * POLY_STEP
     pieces = [ring]
     sever_cutters = _sever_cutters(map_point)
-    sever_raws = (getattr(map_point, "sever_cutter_raw", None)
-                  or [None] * len(sever_cutters))
-    for cutter, raw in zip(sever_cutters, sever_raws):
-        if raw is not None:
-            if (max(p[0] for p in raw) < rx0 - margin
-                    or min(p[0] for p in raw) > rx1 + margin
-                    or max(p[1] for p in raw) < ry0 - margin
-                    or min(p[1] for p in raw) > ry1 + margin):
+    bounds = (getattr(map_point, "sever_cutter_bounds", None)
+              or [None] * len(sever_cutters))
+    for cutter, box in zip(sever_cutters, bounds):
+        if box is not None:
+            # Gate on the EXTENDED cutter's bounds (see _sever_cutters):
+            # unlike a crease extension, a sever extension is a real
+            # validity boundary and must reach rings beyond the window.
+            bx0, by0, bx1, by1 = box
+            if (bx1 < rx0 - margin or bx0 > rx1 + margin
+                    or by1 < ry0 - margin or by0 > ry1 + margin):
                 continue
         cut = []
         for piece in pieces:
@@ -7329,8 +7389,13 @@ def _classified_cubic_parts(map_point, cub, classify, snap_true=False):
     and bisecting - legitimate because the classification is piecewise
     constant, so a change between two probes brackets exactly one cell
     boundary. snap_true places each cut at the bracket end on the True
-    side (see _classified_runs): a severed island's end cubic must stop on
-    ground that still has a lift.
+    side (see _classified_runs), and the parts then carry the SCAN
+    REGION's verdict rather than a midpoint re-probe: when the boundary
+    sits a fraction of a pixel inside t=0 or t=1, the outermost part's
+    midpoint lands on the far side of the cut and the sliver was judged
+    True while its outer endpoint - the island's terminal point, the
+    bridge's anchor - had no lift (fuzzed: 4 of 385 severed cubics leaked
+    an invalid endpoint through the midpoint probe).
     """
     net = bezier.hull_length(cub)
     probes = max(4, min(96, int(math.ceil(net / POLY_STEP))))
@@ -7338,6 +7403,7 @@ def _classified_cubic_parts(map_point, cub, classify, snap_true=False):
     marks = [classify(_cubic_point(cub, t)) for t in ts]
 
     cuts = []
+    verdicts = [marks[0]]
     for k in range(1, len(ts)):
         if marks[k] == marks[k - 1]:
             continue
@@ -7352,14 +7418,16 @@ def _classified_cubic_parts(map_point, cub, classify, snap_true=False):
             cuts.append(lo if marks[k - 1] else hi)
         else:
             cuts.append((lo + hi) * 0.5)
+        verdicts.append(marks[k])
 
     bounds = [0.0] + cuts + [1.0]
     parts = []
-    for t0, t1 in zip(bounds, bounds[1:]):
+    for region, (t0, t1) in enumerate(zip(bounds, bounds[1:])):
         if t1 - t0 <= 1e-9:
             continue
-        parts.append((_split_cubic(cub, t0, t1),
-                      classify(_cubic_point(cub, (t0 + t1) * 0.5))))
+        verdict = (verdicts[region] if snap_true
+                   else classify(_cubic_point(cub, (t0 + t1) * 0.5)))
+        parts.append((_split_cubic(cub, t0, t1), verdict))
     return parts
 
 
@@ -9449,12 +9517,23 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
                 int(color.get("b", 0)), int(color.get("a", 255)))
         group = []
         group_fine = []
+        source_rings = []
         for source_ring in _path_commands_to_polygons(fill.get("commands")):
             if len(source_ring) >= 2 \
                     and _dist(source_ring[0], source_ring[-1]) <= 1e-9:
                 source_ring = source_ring[:-1]  # drop the closing duplicate
-            if len(source_ring) < 3:
-                continue
+            if len(source_ring) >= 3:
+                source_rings.append(source_ring)
+        # One shared gate bbox per fill, exactly like _emit_fills: outer
+        # and holes must take the same cutters or their partitions diverge
+        # and a hole ring skips a cut its outer took.
+        fill_bbox = None
+        if source_rings:
+            fill_bbox = (min(p[0] for r in source_rings for p in r),
+                         min(p[1] for r in source_rings for p in r),
+                         max(p[0] for r in source_rings for p in r),
+                         max(p[1] for r in source_rings for p in r))
+        for source_ring in source_rings:
             # Respect the child mapping area: the real mapping deletes
             # what falls outside it, and the object must match. SEVERING
             # matches too (_sever_ring): the 2D pipeline is the authority
@@ -9462,7 +9541,8 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
             # solid from stalled branch-jumped iterates - geometry piled
             # up at fabricated Third positions the render had deleted.
             for clipped in _clip_rings_to_area([source_ring], child_area):
-                for ring in _sever_ring(map_point, clipped):
+                for ring in _sever_ring(map_point, clipped,
+                                        gate_bbox=fill_bbox):
                     if len(ring) < 3:
                         continue
                     exact = [tuple(map_point.coords(p)) for p in ring]

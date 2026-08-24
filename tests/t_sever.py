@@ -182,20 +182,63 @@ for pts in (am._densify([(-200.0, 30.0), (350.0, 30.0)]), poly):
 print("11) sever cuts land on the valid side; vertex changes bisect across")
 
 # 12) An UNFOLDABLE frame keeps the identity even where the chord-seed
-#     Newton plateaus (near-parallel guides, ground far outside the frame):
-#     retry from the iterate, then the exact residual correction - never
-#     the raw stalled iterate (measured 113 px drift before the fix).
-bow = [(-300.0 + 600.0 * k / 50.0, 15.0 * math.sin(math.pi * k / 50.0))
-       for k in range(51)]
-tilt = math.radians(6.0)
-v6 = [(-math.sin(tilt) * 500.0, -math.cos(tilt) * 500.0),
-      (math.sin(tilt) * 500.0, math.cos(tilt) * 500.0)]
-mp4 = build(bow, v6, bow, v6)
+#     Newton plateaus: retry from the stalled iterate (in _lift, shared by
+#     every consumer), then the exact residual correction. Plateaus only
+#     happen on CURVE guides (polyline guides converge in finitely many
+#     steps), so the frame is a curve-mode bow crossed by a nearly
+#     parallel V (7 deg) - the test PROVES the plateau exists by replaying
+#     the raw chord-seed solve, then demands identity anyway (pre-fix the
+#     same probes drifted 68.5 / 8.7 px).
+
+
+def _xy(p):
+    return {"x": p[0], "y": p[1]}
+
+
+bow_spec = {"points": am._densify([(-300.0, 0.0), (0.0, 15.0), (300.0, 0.0)]),
+            "width": 3.0,
+            "commands": [{"type": "move", "to": _xy((-300.0, 0.0))},
+                         {"type": "cubic",
+                          "control1": _xy((-100.0, 20.0)),
+                          "control2": _xy((100.0, 20.0)),
+                          "to": _xy((300.0, 0.0))}]}
+tilt = math.radians(7.0)
+v7 = [(-500.0 * math.cos(tilt), -500.0 * math.sin(tilt)),
+      (500.0 * math.cos(tilt), 500.0 * math.sin(tilt))]
+mp4 = build(bow_spec, v7, bow_spec, v7)
 assert not mp4.can_fold()
-for y in (625.0, 650.0, 700.0, 800.0):
-    q = mp4((180.0, y))
-    assert math.hypot(q[0] - 180.0, q[1] - y) <= 1e-6, (y, q)
-print("12) unfoldable-frame plateau absorbed: identity holds off-frame")
+
+
+def _chord_seed_residual(child, h_pts, v_pts, p):
+    """Replay build_mapper's chord-basis seed and report the RAW solve's
+    residual - the plateau the fallback must absorb."""
+    eh = ((h_pts[-1][0] - h_pts[0][0]) * 0.5, (h_pts[-1][1] - h_pts[0][1]) * 0.5)
+    ev = ((v_pts[-1][0] - v_pts[0][0]) * 0.5, (v_pts[-1][1] - v_pts[0][1]) * 0.5)
+    det = eh[0] * ev[1] - eh[1] * ev[0]
+    ch = max(2.0 * math.hypot(*eh), 1e-6)
+    cv = max(2.0 * math.hypot(*ev), 1e-6)
+    dx, dy = p[0] - child.origin[0], p[1] - child.origin[1]
+    gh = (dx * ev[1] - dy * ev[0]) / det * 0.5 * ch
+    gv = (eh[0] * dy - eh[1] * dx) / det * 0.5 * cv
+    return child.solve_full(p, gh, gv)[2]
+
+
+probes = [(-600.0, 800.0), (0.0, 800.0), (180.0, 650.0), (400.0, 400.0)]
+stalled = [p for p in probes
+           if _chord_seed_residual(mp4.child_frame, bow_spec["points"], v7, p)
+           > am._SEVER_RESIDUAL]
+assert stalled, "the frame must actually produce a Newton plateau"
+worst12 = 0.0
+for p in probes:
+    q = mp4(p)
+    worst12 = max(worst12, math.hypot(q[0] - p[0], q[1] - p[1]))
+    assert math.hypot(q[0] - p[0], q[1] - p[1]) <= 1e-6, (p, q)
+    # _lift's retry serves coords too, so every consumer agrees:
+    l_h, l_v = mp4.coords(p)
+    r = mp4.main_of_third((l_h, l_v))
+    assert math.hypot(r[0] - p[0], r[1] - p[1]) <= 1e-6, (p, r)
+print(f"12) unfoldable-frame plateau absorbed: {len(stalled)} stalled "
+      f"probe(s), identity within {worst12:.1e} px")
 
 # 13) Fills and strokes agree on where the pattern ends: the sever cutters
 #     are marched from the SAME verdict field the strokes consult, so a
