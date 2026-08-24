@@ -9143,11 +9143,8 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
 
     for order, (group_fine, rgba) in enumerate(zip(rings_fine, fill_colors)):
         rings = group_fine
-        levels = []
-        for index, ring in enumerate(rings):
-            probe = boundary_probe(ring)
-            levels.append(sum(1 for j, other in enumerate(rings)
-                              if j != index and _point_in_ring(probe, other)))
+        levels = [_ring_nesting_level(rings, index)
+                  for index in range(len(rings))]
         for index, ring in enumerate(rings):
             if levels[index] % 2 != 0:
                 continue
