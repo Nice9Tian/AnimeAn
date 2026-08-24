@@ -12,14 +12,16 @@ from __future__ import annotations
 
 import math
 
+import auto_mapping as _shared
 import pydeps
 
 _EPS = 1e-8
 
-
-def signed_area(ring):
-    return 0.5 * sum(a[0] * b[1] - b[0] * a[1]
-                     for a, b in zip(ring, ring[1:] + ring[:1]))
+# One home for the polygon predicates (see auto_mapping's docstrings for the
+# boundary cases they were hardened against). Re-exported under the names this
+# package always used.
+signed_area = _shared._signed_area
+point_in_ring = _shared._point_in_ring
 
 
 def clean_ring(points):
@@ -34,64 +36,26 @@ def clean_ring(points):
     return out
 
 
-def point_in_ring(point, ring):
-    x, y = point
-    inside = False
-    for a, b in zip(ring, ring[1:] + ring[:1]):
-        if ((a[1] > y) != (b[1] > y)):
-            cross = (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1]) + a[0]
-            if x < cross:
-                inside = not inside
-    return inside
-
-
 def point_in_region(point, outer, holes=()):
     return point_in_ring(point, outer) and not any(point_in_ring(point, h) for h in holes)
 
 
-def _segment_crossing_t(a, b, c, d):
-    ax, ay = a
-    bx, by = b
-    cx, cy = c
-    dx, dy = d
-    rx, ry = bx - ax, by - ay
-    sx, sy = dx - cx, dy - cy
-    den = rx * sy - ry * sx
-    if abs(den) <= _EPS:
-        return None
-    qx, qy = cx - ax, cy - ay
-    t = (qx * sy - qy * sx) / den
-    u = (qx * ry - qy * rx) / den
-    if -_EPS <= t <= 1.0 + _EPS and -_EPS <= u <= 1.0 + _EPS:
-        return min(1.0, max(0.0, t))
-    return None
-
-
 def clip_polyline_to_region(polyline, outer, holes=()):
-    """Return segment pairs from ``polyline`` whose midpoint is in the garment."""
-    boundaries = [outer] + list(holes)
+    """Return segment pairs from ``polyline`` whose midpoint is in the garment.
+
+    The crossing/run machinery is auto_mapping's exact segment clipper: one
+    2x2 solve per boundary edge and one midpoint parity test per run. For an
+    outer ring with strictly interior, disjoint holes the odd-even parity over
+    [outer]+holes equals "inside outer and outside every hole".
+    """
+    boundaries = [list(outer)] + [list(hole) for hole in holes]
     pieces = []
     for a, b in zip(polyline, polyline[1:]):
-        ts = [0.0, 1.0]
-        for ring in boundaries:
-            for c, d in zip(ring, ring[1:] + ring[:1]):
-                t = _segment_crossing_t(a, b, c, d)
-                if t is not None:
-                    ts.append(t)
-        ts = sorted(set(round(t, 12) for t in ts))
-        for t0, t1 in zip(ts, ts[1:]):
-            if t1 - t0 <= _EPS:
+        for t0, t1, inside in _shared._clip_runs(a, b, boundaries):
+            if not inside:
                 continue
-            mid = (0.5 * (t0 + t1))
-            probe = (a[0] + (b[0] - a[0]) * mid,
-                     a[1] + (b[1] - a[1]) * mid)
-            if not point_in_region(probe, outer, holes):
-                continue
-            p0 = (a[0] + (b[0] - a[0]) * t0,
-                  a[1] + (b[1] - a[1]) * t0)
-            p1 = (a[0] + (b[0] - a[0]) * t1,
-                  a[1] + (b[1] - a[1]) * t1)
-            pieces.append((p0, p1))
+            pieces.append(((a[0] + (b[0] - a[0]) * t0, a[1] + (b[1] - a[1]) * t0),
+                           (a[0] + (b[0] - a[0]) * t1, a[1] + (b[1] - a[1]) * t1)))
     return pieces
 
 
@@ -114,36 +78,25 @@ def _hole_seed(ring):
         except Exception:
             pass
 
-    # Last-resort geometric probes for a runtime where the bundled library
-    # could not be loaded.
-    # Triangle accepts any interior seed.  Probe from every edge midpoint a
-    # tiny distance toward the arithmetic centre; one succeeds for ordinary
-    # simple polygons, including strongly concave ones.
-    centre = (sum(p[0] for p in ring) / len(ring),
-              sum(p[1] for p in ring) / len(ring))
-    if point_in_ring(centre, ring):
-        return centre
-    for a, b in zip(ring, ring[1:] + ring[:1]):
-        mid = ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5)
-        for amount in (1e-4, 1e-3, 1e-2, 0.05):
-            p = (mid[0] + (centre[0] - mid[0]) * amount,
-                 mid[1] + (centre[1] - mid[1]) * amount)
-            if point_in_ring(p, ring):
-                return p
-    return ring[0]
+    # Fallback for a runtime where the bundled wheel could not be loaded:
+    # auto_mapping's interior-point prober (centroid, then edge midpoints
+    # nudged inward along the edge normal - hardened against densified rings
+    # whose naive midpoints sit exactly ON the boundary).
+    return _shared._ring_interior_point(ring)
 
 
 class GarmentMesh:
-    def __init__(self, points, triangles, cut_edges=(), boundary_vertices=(),
-                 base_uv=None, outer=None, holes=()):
+    def __init__(self, points, triangles, base_uv=None, outer=None, holes=()):
+        # The crease topology lives entirely in the duplicated vertex fans
+        # (see _split_cut_vertex_fans); the mesh carries no separate cut-edge
+        # record because nothing consults one.
         self.P = [tuple(map(float, p)) for p in points]
         self.tris = [list(map(int, tri)) for tri in triangles]
-        self.cut_edges = {frozenset(map(int, edge)) for edge in cut_edges}
-        self.boundary_vertices = {int(v) for v in boundary_vertices}
         self.base_uv = ([tuple(map(float, p)) for p in base_uv]
                         if base_uv is not None else list(self.P))
         self.outer = clean_ring(outer) if outer else []
         self.holes = [clean_ring(h) for h in holes]
+        self._adj = None
         self._build_index()
 
     @classmethod
@@ -214,23 +167,7 @@ class GarmentMesh:
 
         points, tris, base_uv = _split_cut_vertex_fans(
             points, tris, cut_edges, boundary_vertices)
-        return cls(points, tris, (), boundary_vertices, base_uv,
-                   outer=outer, holes=holes)
-
-    @classmethod
-    def from_dict(cls, data):
-        return cls(data["vertices"], data["triangles"],
-                   base_uv=data.get("base_uv"), outer=data.get("outer"),
-                   holes=data.get("holes") or [])
-
-    def to_dict(self):
-        return {
-            "vertices": [list(p) for p in self.P],
-            "triangles": [list(t) for t in self.tris],
-            "base_uv": [list(p) for p in self.base_uv],
-            "outer": [list(p) for p in self.outer],
-            "holes": [[list(p) for p in h] for h in self.holes],
-        }
+        return cls(points, tris, base_uv=base_uv, outer=outer, holes=holes)
 
     def contains(self, x, y):
         return (point_in_region((x, y), self.outer, self.holes)
@@ -286,13 +223,6 @@ class GarmentMesh:
                 best = (low, tuple(tri), bary)
         return (best[1], best[2]) if best and best[0] >= -1e-5 else None
 
-    def tri_of(self, x, y):
-        located = self.locate(x, y)
-        if located is None:
-            return -1
-        target = tuple(located[0])
-        return next((i for i, tri in enumerate(self.tris) if tuple(tri) == target), -1)
-
     def uv_at(self, point, uv=None):
         located = self.locate(point[0], point[1])
         if located is None:
@@ -303,15 +233,19 @@ class GarmentMesh:
                 sum(w * field[v][1] for v, w in zip(vertices, bary)))
 
     def edge_graph(self):
-        adj = [dict() for _ in self.P]
-        for tri in self.tris:
-            for a, b in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
-                distance = math.hypot(self.P[a][0] - self.P[b][0],
-                                      self.P[a][1] - self.P[b][1])
-                previous = adj[a].get(b)
-                if previous is None or distance < previous:
-                    adj[a][b] = adj[b][a] = distance
-        return adj
+        # Derived purely from P/tris, which never change after construction -
+        # memoized because weight previews ask for it on every refresh.
+        if self._adj is None:
+            adj = [dict() for _ in self.P]
+            for tri in self.tris:
+                for a, b in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
+                    distance = math.hypot(self.P[a][0] - self.P[b][0],
+                                          self.P[a][1] - self.P[b][1])
+                    previous = adj[a].get(b)
+                    if previous is None or distance < previous:
+                        adj[a][b] = adj[b][a] = distance
+            self._adj = adj
+        return self._adj
 
     def tri_neighbours(self):
         by_edge = {}

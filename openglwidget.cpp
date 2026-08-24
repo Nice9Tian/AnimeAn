@@ -201,8 +201,42 @@ void PaintOpenGLWidget::resetHistory(const QString &label)
     m_history.reset(label, m_model);
     // Scene content was (re)established outside the history flow (startup,
     // project open): let scripts re-sync any state they keep in scriptData.
+    // That re-sync covers the frame too, so it becomes the notified baseline
+    // instead of triggering a redundant framechange right afterwards.
+    m_pythonNotifiedFrame = m_model.currentFrame();
     pythonHookSendMessage(QStringLiteral("historyrestore"));
     emit historyChanged();
+}
+
+void PaintOpenGLWidget::cancelActiveOverlayDrag()
+{
+    // A context change (tool, stroke property, frame) invalidates an
+    // in-flight overlay drag transaction: tell the owning tool to restore
+    // its persisted baseline. One home for the teardown - the call sites
+    // differ only in when they fire, never in how.
+    if (m_activeOverlayDrag.isEmpty()) {
+        return;
+    }
+    const QString overlayId = m_activeOverlayDrag;
+    m_activeOverlayDrag.clear();
+    sendPythonHandleMessage(QStringLiteral("cancel"), overlayId, QPointF());
+}
+
+void PaintOpenGLWidget::notifyFrameChangedIfNeeded()
+{
+    // The frame lives on the model, and several paths mutate it without
+    // going through setCurrentFrame first: ui.set_current writes the model
+    // and the attention re-sync only calls setCurrentFrame with the already
+    // current value, so a "previous frame" read from the model itself never
+    // differs. Comparing against the widget's own last-notified frame makes
+    // the notification correct no matter who moved the frame.
+    const int frame = m_model.currentFrame();
+    if (frame == m_pythonNotifiedFrame) {
+        return;
+    }
+    cancelActiveOverlayDrag();
+    m_pythonNotifiedFrame = frame;
+    pythonHookSendMessage(QStringLiteral("framechange"));
 }
 
 bool PaintOpenGLWidget::undoHistory()
@@ -223,8 +257,12 @@ bool PaintOpenGLWidget::goToHistory(int index)
 
     // historyrestore makes the restored Python state authoritative; do not
     // let the mouse release from an interrupted pre-restore overlay drag be
-    // dispatched into that new state.
+    // dispatched into that new state. Deliberately a silent clear, not
+    // cancelActiveOverlayDrag(): a cancel would mutate the very state the
+    // restore just made authoritative. The restore also covers the frame,
+    // so it becomes the notified baseline.
     m_activeOverlayDrag.clear();
+    m_pythonNotifiedFrame = m_model.currentFrame();
     m_points.clear();
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
@@ -680,13 +718,11 @@ void PaintOpenGLWidget::setPenWidth(qreal width)
 
 void PaintOpenGLWidget::setStrokeProperty(const QString &property)
 {
-    if (!m_activeOverlayDrag.isEmpty() && property != m_strokeProperty) {
+    if (property != m_strokeProperty) {
         // Extra tools commonly share Tool::Pen, so their actual identity
         // change is visible here rather than in setTool(). Cancel while the
         // old property is still installed for an accurate hook message.
-        const QString overlayId = m_activeOverlayDrag;
-        m_activeOverlayDrag.clear();
-        sendPythonHandleMessage(QStringLiteral("cancel"), overlayId, QPointF());
+        cancelActiveOverlayDrag();
     }
     m_strokeProperty = property;
     m_activePythonTool = property.isEmpty() ? QString() : QStringLiteral("extra");
@@ -1035,13 +1071,11 @@ bool PaintOpenGLWidget::sendPythonFillRequestMessage(const QPointF &pos)
 
 void PaintOpenGLWidget::setTool(Tool tool)
 {
-    if (!m_activeOverlayDrag.isEmpty() && tool != m_tool) {
+    if (tool != m_tool) {
         // Overlay moves are previewed in Python before release. Tell the
         // owning tool to restore its persisted baseline when a tool switch
         // interrupts that transaction.
-        const QString overlayId = m_activeOverlayDrag;
-        m_activeOverlayDrag.clear();
-        sendPythonHandleMessage(QStringLiteral("cancel"), overlayId, QPointF());
+        cancelActiveOverlayDrag();
     }
     if ((m_tool == Tool::Arrow || m_tool == Tool::Connect) && tool != m_tool) {
         // Leaving a handle-owning tool (Arrow's edit points, Connect's snap
@@ -1283,22 +1317,17 @@ void PaintOpenGLWidget::setCurrentLayer(int layerIndex)
 
 void PaintOpenGLWidget::setCurrentFrame(int frameIndex)
 {
-    const int previousFrame = m_model.currentFrame();
-    if (!m_activeOverlayDrag.isEmpty() && frameIndex != previousFrame) {
+    if (frameIndex != m_model.currentFrame()) {
         // Cancel while the old frame is still current so Python can restore
         // the state against which the drag began.
-        const QString overlayId = m_activeOverlayDrag;
-        m_activeOverlayDrag.clear();
-        sendPythonHandleMessage(QStringLiteral("cancel"), overlayId, QPointF());
+        cancelActiveOverlayDrag();
     }
     m_model.setCurrentFrame(frameIndex);
     m_points.clear();
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
     m_hasLastMovePos = false;
-    if (m_model.currentFrame() != previousFrame) {
-        pythonHookSendMessage(QStringLiteral("framechange"));
-    }
+    notifyFrameChangedIfNeeded();
     update();
 }
 
@@ -2112,10 +2141,9 @@ void PaintOpenGLWidget::paintOverlayItems(QPainter &painter)
                     }
                     handle.extent |= path.boundingRect();
                     if (handle.anchorIsExtent) {
-                        handle.rect = overlayHandleRect(handle.extent.topRight());
-                        if (handle.accept) {
-                            handle.rect.translate(-kOverlayHandleSize - 4.0, 0.0);
-                        }
+                        handle.rect = overlayHandleRect(handle.extent.topRight(),
+                                                        handle.accept ? 1 : 0,
+                                                        item.confirmable ? 2 : 1);
                     }
                 }
                 continue;
@@ -2132,10 +2160,9 @@ void PaintOpenGLWidget::paintOverlayItems(QPainter &painter)
                 handle.anchorIsExtent = item.closed || item.confirmable;
                 handle.rect = overlayHandleRect(handle.anchorIsExtent
                                                     ? handle.extent.topRight()
-                                                    : item.points.last());
-                if (accept) {
-                    handle.rect.translate(-kOverlayHandleSize - 4.0, 0.0);
-                }
+                                                    : item.points.last(),
+                                                accept ? 1 : 0,
+                                                item.confirmable ? 2 : 1);
                 m_overlayHandles.append(handle);
             };
             if (item.removable) {
@@ -2168,10 +2195,12 @@ void PaintOpenGLWidget::paintOverlayItems(QPainter &painter)
     }
 }
 
-QRectF PaintOpenGLWidget::overlayHandleRect(const QPointF &anchor) const
+QRectF PaintOpenGLWidget::overlayHandleRect(const QPointF &anchor, int slot, int slotCount) const
 {
-    // Just above and to the right of the anchor.
-    QRectF handleRect(anchor.x() + 4.0,
+    // Just above and to the right of the anchor; slot 1 (the check badge)
+    // sits one step to the left of slot 0 (the x badge).
+    const qreal slotStep = kOverlayHandleSize + 4.0;
+    QRectF handleRect(anchor.x() + 4.0 - slot * slotStep,
                       anchor.y() - kOverlayHandleSize - 4.0,
                       kOverlayHandleSize,
                       kOverlayHandleSize);
@@ -2179,13 +2208,20 @@ QRectF PaintOpenGLWidget::overlayHandleRect(const QPointF &anchor) const
     // must be clamped against the visible viewport expressed in document
     // space (at zoom 1 on a bounded view this equals the old widget-pixel
     // clamp). Off-view items keep a reachable badge at the viewport edge.
+    // The slot offset is part of the UNCLAMPED layout and the clamp bounds
+    // shift per slot, so a badge pair pinned to either edge stays side by
+    // side and fully visible - clamping first and offsetting afterwards
+    // pushed a left-edge check badge outside the viewport, leaving the
+    // pending transaction cancellable but never confirmable.
     const QPointF docTopLeft = mapToDocument(QPointF(0.0, 0.0));
     const QPointF docBottomRight = mapToDocument(QPointF(width(), height()));
-    if (handleRect.right() > docBottomRight.x() - 2.0) {
-        handleRect.moveRight(docBottomRight.x() - 2.0);
+    const qreal maxRight = docBottomRight.x() - 2.0 - slot * slotStep;
+    const qreal minLeft = docTopLeft.x() + 2.0 + (slotCount - 1 - slot) * slotStep;
+    if (handleRect.right() > maxRight) {
+        handleRect.moveRight(maxRight);
     }
-    if (handleRect.left() < docTopLeft.x() + 2.0) {
-        handleRect.moveLeft(docTopLeft.x() + 2.0);
+    if (handleRect.left() < minLeft) {
+        handleRect.moveLeft(minLeft);
     }
     if (handleRect.top() < docTopLeft.y() + 2.0) {
         handleRect.moveTop(docTopLeft.y() + 2.0);
@@ -2355,13 +2391,18 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
         if (!handleId.isEmpty()) {
             m_activeHandleDrag = handleId;
             sendPythonHandleMessage(QStringLiteral("press"), handleId, pos);
-        } else if (overlayActionItemAt(pos)) {
-            // fallthrough handled: the badge consumed the click
         } else {
+            // Same precedence as the any-tool path below: the draggable body
+            // before the badges. overlayActionItemAt is not a predicate - a
+            // hit immediately fires accept/remove - and its clamped rect
+            // covers a large screen area at high zoom, so testing it first
+            // committed or deleted the guide the user meant to drag.
             const QString overlayId = draggableOverlayItemAt(event->position());
             if (!overlayId.isEmpty()) {
                 m_activeOverlayDrag = overlayId;
                 sendPythonHandleMessage(QStringLiteral("press"), overlayId, pos);
+            } else if (overlayActionItemAt(pos)) {
+                // fallthrough handled: the badge consumed the click
             } else {
                 sendPythonHandleMessage(QStringLiteral("pick"), QString(), pos);
             }
@@ -2512,7 +2553,15 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
     }
 
     if (!m_activeOverlayDrag.isEmpty()) {
-        sendPythonHandleMessage(QStringLiteral("move"), m_activeOverlayDrag, m_hoverPos);
+        // Throttled like the other pointer-rate hooks: the owning tool
+        // re-renders its overlays on every message, which must not run at
+        // mouse rate. The release in mouseReleaseEvent always goes through,
+        // so the final position is never lost to the throttle.
+        if (!m_overlayDragHookThrottle.isValid()
+            || m_overlayDragHookThrottle.elapsed() >= kUpdateHookIntervalMs) {
+            m_overlayDragHookThrottle.restart();
+            sendPythonHandleMessage(QStringLiteral("move"), m_activeOverlayDrag, m_hoverPos);
+        }
         update();
         event->accept();
         return;

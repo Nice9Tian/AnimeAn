@@ -23,8 +23,3 @@ def set_items(view, owner, values):
     else:
         layers.pop(str(owner), None)
     _animean().ui.set_overlay(view, items(view))
-
-
-def clear_owner(owner):
-    for view in tuple(_LAYERS):
-        set_items(view, owner, [])

@@ -30,10 +30,20 @@ POLY_STEP = 2.0
 GUIDE_COLOR = (230, 60, 190, 255)
 PENDING_COLOR = (255, 70, 180, 255)
 _OWNER = "fukusato_mapping"
+_GUIDE_ID_PREFIX = "fukusato-guide:"
 _VIEW = {"weight_preview": False, "topology": False}
 _CACHE = {"key": None, "mesh": None}
+# The last fully computed heat/topology overlay items. While a guide is being
+# dragged only the guide polylines change, so these are reused verbatim and
+# the expensive preview pipeline runs again on release.
+_PREVIEW = {"main": [], "child": []}
 _DRAG = {"id": None, "origin": None, "points": None, "moved": False,
          "was_accepted": False}
+
+
+def _reset_drag():
+    _DRAG.update(id=None, origin=None, points=None, moved=False,
+                 was_accepted=False)
 
 _EXCLUDED = {
     HANDLE_PROPERTY, crease_line_tool.PROPERTY,
@@ -87,19 +97,11 @@ def _pending(state, frame):
 
 
 def _guide_id(guide):
-    return f"fukusato-guide:{int(guide['id'])}"
+    return f"{_GUIDE_ID_PREFIX}{int(guide['id'])}"
 
 
-def _stroke_points(stroke):
-    result = []
-    for polyline in stroke.get("polylines") or []:
-        points = [(float(p["x"]), float(p["y"])) for p in polyline]
-        if len(points) >= 2:
-            result.extend(points if not result else points[1:])
-    if not result:
-        result = [(float(p["x"]), float(p["y"]))
-                  for p in stroke.get("raw_points") or []]
-    return result
+# One home for turning a captured stroke dict into a point list.
+_stroke_points = crease_line_tool._stroke_points
 
 
 def _guide_seed(guide):
@@ -136,6 +138,12 @@ def _same_garment_region(first_seed, second_seed, frame):
 
 
 def _mesh_for(state, frame, guide=None, force=False):
+    if not force and _DRAG.get("id") is not None and _CACHE["mesh"] is not None:
+        # Mid-drag the scene's strokes cannot change, so the mesh cannot
+        # either. Region detection (the expensive part, and an input to the
+        # cache key itself) is skipped entirely instead of being re-paid on
+        # every pointer event.
+        return _CACHE["mesh"]
     guides = _frame_guides(state, frame)
     guide = guide or (guides[-1] if guides else None)
     if guide is None:
@@ -172,10 +180,15 @@ def _creases_changed():
 
 
 def _solution_uv(state, frame, mesh):
+    # A stored solution is valid for exactly one mesh identity. The identity
+    # string from _mesh_for covers frame, silhouette, holes, creases and grid,
+    # so a one-string compare replaces both the persisted whole-mesh blob and
+    # the elementwise deep-compare it used to require.
     solution = state["solutions"].get(str(frame)) or {}
-    stored_mesh = solution.get("mesh")
     uv = solution.get("uv")
-    if stored_mesh == mesh.to_dict() and uv and len(uv) == len(mesh.P):
+    key = solution.get("key")
+    if (key and key == _CACHE["key"] and mesh is _CACHE["mesh"]
+            and uv and len(uv) == len(mesh.P)):
         return [tuple(map(float, point)) for point in uv]
     return list(mesh.base_uv)
 
@@ -375,26 +388,38 @@ def _emit_fills(image, fills, index):
     return added_pieces
 
 
-def _owned_output_layers(scene, frame):
+def _output_layers(scene, frame, keep_index=None):
+    """Fukusato output layers holding output at `frame`.
+
+    Ownership is the layer NAME the tool stamps on every layer it creates -
+    never content sniffing, which would also claim a user's duplicate of a
+    mapped result. The per-frame content check keeps an output layer that
+    serves a DIFFERENT frame alive across a re-accept here.
+    """
     owned = []
     for layer in scene.get_structure()["layers"]:
-        cell = scene.cell_to_dict(layer["index"], frame, False, POLY_STEP)
-        strokes = cell["image"]["strokes"]
-        fills = cell["image"].get("fills") or []
-        allowed = (core.MAPPED_PROPERTY, core.BACK_PROPERTY)
-        if ((strokes or fills)
-                and all((stroke.get("property") or "") in allowed for stroke in strokes)
-                and all((fill.get("property") or "") in allowed for fill in fills)):
-            owned.append(layer["index"])
+        index = int(layer["index"])
+        if (index == keep_index or layer.get("internal")
+                or layer.get("name") != core.MAPPED_LAYER_NAME):
+            continue
+        image = scene.cell_to_dict(index, frame, False, POLY_STEP)["image"]
+        if image["strokes"] or image.get("fills"):
+            owned.append(index)
     return owned
 
 
-def _shifted_old_layers(old_layers, new_layer):
-    """Old layer indices after inserting `new_layer`, in safe delete order."""
-    # _create_mapped_layer moves the new layer to zero when possible. If that
-    # move fails, it returns the append index and existing layers do not shift.
-    offset = 1 if new_layer == 0 else 0
-    return sorted((index + offset for index in old_layers), reverse=True)
+def _discard_output_layers(scene, frame, keep_index=None):
+    """Delete the frame's output layers one at a time, re-reading the layer
+    structure after every delete so index shifts can never reach the wrong
+    layer. Returns keep_index's position after the deletions."""
+    while True:
+        targets = _output_layers(scene, frame, keep_index)
+        if not targets:
+            return keep_index
+        target = targets[0]
+        core._discard_mapped_layer(scene, target)
+        if keep_index is not None and target < keep_index:
+            keep_index -= 1
 
 
 def _emit(mesh, uv, frame):
@@ -406,7 +431,6 @@ def _emit(mesh, uv, frame):
     fills = _collect_pattern_fills(child, child_frame)
     if not pattern and not fills:
         raise RuntimeError("ChildView has no texture strokes or fills to map")
-    old_layers = _owned_output_layers(main, frame)
     layer = core._create_mapped_layer(main)
     if layer < 0:
         raise RuntimeError("could not create the Fukusato output layer")
@@ -444,8 +468,9 @@ def _emit(mesh, uv, frame):
         core._discard_mapped_layer(main, layer)
         raise RuntimeError("no texture content lies under the garment UV footprint")
 
-    for old in _shifted_old_layers(old_layers, layer):
-        core._discard_mapped_layer(main, old)
+    # Only after the new output emitted successfully: replace this frame's
+    # previous output layers (identified by name, see _output_layers).
+    _discard_output_layers(main, frame, keep_index=layer)
     return added, width_scale
 
 
@@ -557,34 +582,45 @@ def _guide_items(state, frame):
     return result
 
 
-def refresh_overlays(state_override=None):
+def refresh_overlays(state_override=None, light=False):
+    """Rebuild this tool's overlays.
+
+    ``light`` is the guide-drag path: the expensive heat/topology preview is
+    reused from the last full refresh (its weights are momentarily stale, by
+    design) and only the guide polylines are rebuilt. The full pipeline runs
+    again on release/accept/option changes.
+    """
     try:
         main = _scene_model("main")
         frame = max(main.current_frame(), 0)
         state = state_override or _state(main)
         guides = _frame_guides(state, frame)
-        main_items = []
-        child_items = []
-        mesh = None
-        if guides and (_VIEW["weight_preview"] or _VIEW["topology"]):
-            try:
-                mesh = _mesh_for(state, frame, guides[-1])
-            except Exception as error:
-                print(f"[fukusato] preview unavailable: {error}")
-        if mesh is not None:
-            uv = _solution_uv(state, frame, mesh)
-            if _VIEW["weight_preview"]:
-                pending = _pending(state, frame)
-                if pending is not None:
-                    values = _weight_values(mesh, pending)
-                    main_items.extend(_heat_items(mesh, mesh.P, values, "fk-main"))
-                    child_items.extend(_heat_items(mesh, uv, values, "fk-child"))
-            if _VIEW["topology"]:
-                main_items.extend(_topology_items(mesh, mesh.P, "fk-main"))
-                child_items.extend(_topology_items(mesh, uv, "fk-child"))
+        if not light:
+            preview_main = []
+            preview_child = []
+            mesh = None
+            if guides and (_VIEW["weight_preview"] or _VIEW["topology"]):
+                try:
+                    mesh = _mesh_for(state, frame, guides[-1])
+                except Exception as error:
+                    print(f"[fukusato] preview unavailable: {error}")
+            if mesh is not None:
+                uv = _solution_uv(state, frame, mesh)
+                if _VIEW["weight_preview"]:
+                    pending = _pending(state, frame)
+                    if pending is not None:
+                        values = _weight_values(mesh, pending)
+                        preview_main.extend(_heat_items(mesh, mesh.P, values, "fk-main"))
+                        preview_child.extend(_heat_items(mesh, uv, values, "fk-child"))
+                if _VIEW["topology"]:
+                    preview_main.extend(_topology_items(mesh, mesh.P, "fk-main"))
+                    preview_child.extend(_topology_items(mesh, uv, "fk-child"))
+            _PREVIEW["main"] = preview_main
+            _PREVIEW["child"] = preview_child
+            overlay_stack.set_items("child", _OWNER, preview_child)
+        main_items = list(_PREVIEW["main"])
         main_items.extend(_guide_items(state, frame))
         overlay_stack.set_items("main", _OWNER, main_items)
-        overlay_stack.set_items("child", _OWNER, child_items)
     except Exception as error:
         print(f"[fukusato] overlay update failed: {error}")
 
@@ -653,7 +689,7 @@ def _capture_guide(cell, stroke, message):
 
 
 def _find_guide(state, handle_id):
-    if not str(handle_id).startswith("fukusato-guide:"):
+    if not str(handle_id).startswith(_GUIDE_ID_PREFIX):
         return None
     try:
         guide_id = int(str(handle_id).split(":", 1)[1])
@@ -664,19 +700,26 @@ def _find_guide(state, handle_id):
 
 
 def _drag_guide(message):
+    # This hook receives EVERY handle event (hover, view, pick, other tools'
+    # overlay drags). Reject foreign events before touching scriptData: the
+    # _state parse is a full-document json.loads and must not run per pointer
+    # event for gestures that are not ours.
     if message.get("view") != "main":
         return
-    scene = _scene_model("main")
-    state = _state(scene)
     phase = message.get("phase")
     if phase == "cancel":
         # Move previews are transient. Cancelling a mouse gesture restores the
         # last persisted pending/accepted state; the x badge remains the
         # explicit way to cancel an already-persisted guide edit transaction.
-        _DRAG.update(id=None, origin=None, points=None, moved=False,
-                     was_accepted=False)
+        if _DRAG["id"] is None:
+            return          # some other owner's gesture was cancelled
+        _reset_drag()
         refresh_overlays()
         return
+    if not str(message.get("handle") or "").startswith(_GUIDE_ID_PREFIX):
+        return
+    scene = _scene_model("main")
+    state = _state(scene)
     guide = _find_guide(state, message.get("handle"))
     if guide is None:
         return
@@ -700,7 +743,7 @@ def _drag_guide(message):
             guide["rollback_after"] = [list(p) for p in _DRAG["points"]]
             guide["accepted"] = False
         _DRAG["moved"] = True
-        refresh_overlays(state)
+        refresh_overlays(state, light=True)
         return
     dx = point[0] - _DRAG["origin"][0]
     dy = point[1] - _DRAG["origin"][1]
@@ -711,8 +754,7 @@ def _drag_guide(message):
         if was_accepted:
             guide["rollback_after"] = [list(p) for p in _DRAG["points"]]
             guide["accepted"] = False
-    _DRAG.update(id=None, origin=None, points=None, moved=False,
-                 was_accepted=False)
+    _reset_drag()
     if moved:
         _save(scene, state)
         try:
@@ -733,8 +775,7 @@ def _remove_guide(scene, state, guide):
         if was_accepted and accepted:
             _apply_guides(scene, state, frame, commit_history=False)
         elif was_accepted:
-            for layer in sorted(_owned_output_layers(scene, frame), reverse=True):
-                core._discard_mapped_layer(scene, layer)
+            _discard_output_layers(scene, frame)
             state["solutions"].pop(str(frame), None)
             _save(scene, state)
         else:
@@ -766,8 +807,12 @@ def _apply_guides(scene, state, frame, commit_history=True):
             f"guide(s) {ids} belong to another garment region; use one region per frame")
     uv = _solve_uv(mesh, guides)
     added, width_scale = _emit(mesh, uv, frame)
+    # The mesh's identity string stands in for the mesh itself: it is enough
+    # to decide whether this UV field still matches a freshly built mesh, and
+    # it keeps scriptData (which every history snapshot and save carries) at
+    # kilobytes instead of a full vertex/triangle dump per frame.
     state["solutions"][str(frame)] = {
-        "mesh": mesh.to_dict(), "uv": [list(point) for point in uv],
+        "key": _CACHE["key"], "uv": [list(point) for point in uv],
     }
     _save(scene, state)
     _animean().ui.refresh()
@@ -823,8 +868,7 @@ def _overlay_action(cell, stroke, message):
 
 
 def _history_restored(cell, stroke, message):
-    _DRAG.update(id=None, origin=None, points=None, moved=False,
-                 was_accepted=False)
+    _reset_drag()
     invalidate_mesh()
     refresh_overlays()
 
@@ -832,15 +876,14 @@ def _history_restored(cell, stroke, message):
 def _frame_changed(cell, stroke, message):
     if message.get("view") != "main":
         return
-    _DRAG.update(id=None, origin=None, points=None, moved=False,
-                 was_accepted=False)
+    _reset_drag()
     invalidate_mesh()
     refresh_overlays()
 
 
 def _option_changed(cell, stroke, message):
     hook = str(message.get("hook") or "")
-    if not hook.startswith("fk_") or hook == "fk_rerun":
+    if not hook.startswith("fk_"):
         return
     try:
         core._apply_option(hook, message.get("value"))

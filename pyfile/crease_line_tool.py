@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 
+import fukusato_mapping as core
 import overlay_stack
 import python_hooks
 import script_store
@@ -29,14 +30,7 @@ def _animean():
 
 
 def _scene_model():
-    import __main__
-    model = getattr(__main__, "main_model", None)
-    if model is not None:
-        return model
-    for info in _animean().get_scene():
-        if info.get("sceneName") == "main_paint_view":
-            return info["scene"]
-    raise RuntimeError("main_paint_view is not registered")
+    return core._scene_model("main")
 
 
 def _state(scene=None):
@@ -121,9 +115,8 @@ def _capture(cell, stroke, message):
             row, layer, index = cell.get("row"), cell.get("layer"), stroke.get("index")
             if all(value is not None and int(value) >= 0 for value in (row, layer, index)):
                 try:
-                    core_scene = next(info["scene"] for info in _animean().get_scene()
-                                      if info.get("sceneName") == "child_paint_view")
-                    core_scene.remove_stroke(row, layer, index)
+                    wrong_scene = core._scene_model(message.get("view") or "child")
+                    wrong_scene.remove_stroke(row, layer, index)
                     _animean().ui.widget.refresh()
                 except Exception:
                     pass

@@ -261,9 +261,18 @@ private:
     // changed it has settled.
     void schedulePlaybackCacheRefresh();
     void paintOverlayItems(QPainter &painter);
-    // Badge just above-right of `anchor`, clamped into view.
-    QRectF overlayHandleRect(const QPointF &anchor) const;
+    // Badge just above-right of `anchor`, clamped into view. `slot` counts
+    // leftwards from the x badge (1 = the check badge); `slotCount` is how
+    // many badges the id carries, so an edge clamp keeps the pair side by
+    // side instead of stacking or pushing one off-screen.
+    QRectF overlayHandleRect(const QPointF &anchor, int slot = 0, int slotCount = 1) const;
     bool overlayActionItemAt(const QPointF &pos);
+    // Clears m_activeOverlayDrag and sends the owning tool a "cancel" so it
+    // restores its persisted baseline. Safe to call with no drag in flight.
+    void cancelActiveOverlayDrag();
+    // Emits "framechange" when the model's frame moved past the last frame
+    // Python was told about - regardless of who moved it.
+    void notifyFrameChangedIfNeeded();
     // Topmost draggable overlay item within grab range of the screen position.
     QString draggableOverlayItemAt(const QPointF &screenPos) const;
     void sendOverlayActionMessage(const QString &overlayId, const QString &action);
@@ -408,6 +417,14 @@ private:
     // Id of the draggable OVERLAY item being dragged (any tool), empty when
     // none. Routed through the same "handle" hook events as edit handles.
     QString m_activeOverlayDrag;
+    // Overlay-drag "move" messages share the pointer-rate throttle cadence:
+    // the owning tool re-renders overlays per message.
+    QElapsedTimer m_overlayDragHookThrottle;
+    // The frame Python was last told about via "framechange". The frame lives
+    // on the model and can be mutated behind the widget's back (ui.set_current,
+    // addFrame, project load), so the notification baseline must be the
+    // widget's own, not a value re-read from the model.
+    int m_pythonNotifiedFrame = -1;
     bool m_unboundedCanvas = false;
     BackgroundMode m_backgroundMode = BackgroundMode::White;
     bool m_contentEditable = true;

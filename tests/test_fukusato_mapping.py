@@ -133,6 +133,23 @@ class EmissionTests(unittest.TestCase):
         self.assertTrue(all(len(points) == 1 for points, _back in runs))
         self.assertEqual(sum(1 for _points, back in runs if back), 2)
 
+    def test_crease_edge_span_emits_single_ink(self):
+        # Two triangles meet along y=0 GEOMETRICALLY but share no vertex ids
+        # (a crease: the fan vertices are duplicated). A texture line running
+        # exactly on that edge is claimed by both sides with byte-identical
+        # panel images; exactly one copy may be emitted. Folded sheets with
+        # different images are covered by the overlapping-sheets test above.
+        mesh = GarmentMesh(
+            [(0, 0), (10, 0), (0, 10), (0, 0), (10, 0), (10, -10)],
+            [(0, 1, 2), (4, 3, 5)])
+        runs = mapping.emit_pattern(
+            mesh, mesh.P, [(2.0, 0.0), (8.0, 0.0)], mesh.tri_neighbours())
+        self.assertEqual(len(runs), 1)
+        points, back = runs[0]
+        self.assertFalse(back)
+        self.assertAlmostEqual(points[0][1], 0.0)
+        self.assertAlmostEqual(points[-1][1], 0.0)
+
     def test_discontinuous_panel_images_are_not_chained(self):
         class Index:
             entries = [
@@ -226,9 +243,15 @@ class PaperPipelineTests(unittest.TestCase):
 
 
 class StateTests(unittest.TestCase):
-    def test_legacy_rectangular_workflow_is_not_armed_on_import(self):
-        functions = [hook["function"] for hook in python_hooks._HOOKS]
-        self.assertNotIn(mapping._fukusato_button, functions)
+    def test_legacy_rectangular_workflow_is_removed(self):
+        # The former two-board entry points are gone entirely: nothing may
+        # re-arm a second handle subscriber on the workflow's properties.
+        for name in ("perform_mapping", "_run", "self_test", "_fukusato_button",
+                     "_handle_released", "register_hooks",
+                     "activate_fukusato_line", "activate_fukusato_cut",
+                     "run_fukusato_mapping", "_SESSION"):
+            self.assertFalse(hasattr(mapping, name), name)
+        self.assertNotIn("rerun", mapping.options())
 
     def test_namespaced_state_preserves_other_tools(self):
         class Scene:
@@ -266,9 +289,45 @@ class StateTests(unittest.TestCase):
         result = mapping._collect(Scene(), 0)
         self.assertEqual([entry["points"][0][0] for entry in result], [1.0, 0.0])
 
-    def test_output_layer_deletion_accounts_for_failed_move_to_top(self):
-        self.assertEqual(workflow._shifted_old_layers([0, 2, 5], 0), [6, 3, 1])
-        self.assertEqual(workflow._shifted_old_layers([0, 2, 5], 7), [5, 2, 0])
+    def test_output_layers_are_identified_by_name_not_content(self):
+        class LayerScene:
+            def __init__(self):
+                self.layers = [
+                    {"name": "fukusato layer", "internal": False, "content": True},
+                    {"name": "fukusato layer", "internal": False, "content": False},
+                    {"name": "fukusato layer", "internal": False, "content": True},
+                    {"name": "cloth ref", "internal": False, "content": True},
+                    {"name": "fukusato layer", "internal": True, "content": True},
+                ]
+                self.keep = self.layers[2]
+
+            def get_structure(self):
+                return {"layers": [
+                    {"index": i, "name": layer["name"], "internal": layer["internal"]}
+                    for i, layer in enumerate(self.layers)]}
+
+            def cell_to_dict(self, index, _frame, _poly, _step):
+                strokes = ([{"property": "fukusato_mapped"}]
+                           if self.layers[index]["content"] else [])
+                return {"image": {"strokes": strokes, "fills": []}}
+
+            def delete_layer(self, index):
+                del self.layers[index]
+
+            def remap_fill_source_layers_after_delete(self, index):
+                pass
+
+        scene = LayerScene()
+        kept = workflow._discard_output_layers(scene, 0, keep_index=2)
+        # Only the OLD output layer with content at this frame was deleted.
+        # Survivors: the new layer (keep_index, shifted down by the delete),
+        # the output layer serving another frame, the user's own layer whose
+        # content merely looks mapped, and the internal layer.
+        self.assertEqual(kept, 1)
+        self.assertIs(scene.layers[kept], scene.keep)
+        self.assertEqual(
+            [layer["name"] for layer in scene.layers],
+            ["fukusato layer", "fukusato layer", "cloth ref", "fukusato layer"])
 
     def test_fukusato_drag_preview_is_transient_until_release(self):
         class Scene:

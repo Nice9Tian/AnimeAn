@@ -1,5 +1,7 @@
 # Fukusato Mapping：面向服装线稿的交互式矢量纹理映射
 
+**适用版本**：`pyfile/fukusato_workflow.py` / `pyfile/fukusato_mesh.py` / `pyfile/fukusato_mapping.py`（feature/fukusato-paper 分支评审修订版，2026-08-24 验证）
+
 本文档以技术论文的形式说明 AnimeAn 中 Fukusato Mapping 的问题定义、关联研究、方法、实现边界与验证方式。目标论文为 Fukusato 等人的 *Interactive texture editing for garment line drawings* [1]。本文中的“论文方法”专指原论文提出的 UV 编辑框架；“本实现”专指当前仓库的可执行实现。两者存在的工程差异在第 6 节单独列出。
 
 ## 摘要
@@ -447,13 +449,13 @@ $$
 - 拓扑浏览的唯一边输出；
 - 画笔样式、跨层绘制顺序和输出层索引维护；
 - Fukusato 拖动预览仅在释放时提交，AutoMapping 锚点在取消时恢复；
-- 旧矩形工作流不会在导入时被误激活；
+- 旧矩形工作流入口已彻底移除（`Mesh` 仅作为发射核心的测试夹具保留）；
 - Fukusato 命名空间不会覆盖其他工具状态。
 
-运行方式：
+运行方式（默认发现模式同时会通过 `tests/test_legacy_suites.py` 带起仓库原有的全部 `t_*.py` 回归脚本）：
 
 ```powershell
-python -m unittest discover -s tests -p test_fukusato_mapping.py
+python -m unittest discover -s tests
 ```
 
 ### 8.2 已知限制

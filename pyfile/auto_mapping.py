@@ -86,9 +86,14 @@ MAPPING_GROUP_NAME = "Auto Mapping"
 RESTORE_GUIDES_ACTION = "restore_mapping_guides"
 # Everything a run puts on the board. None of it may act as a wall for region
 # detection, and none of it may be picked up as pattern by the next run.
+# The Fukusato workflow routes its region detection through _detect_region
+# too, so its output properties (literals: importing fukusato_mapping here
+# would be a cycle) must be excluded for exactly the same reason - otherwise
+# the first accepted mapping walls off every later re-detection.
 MAPPING_OUTPUT_PROPERTIES = (MAPPED_PROPERTY, BACK_PROPERTY, SEAL_PROPERTY,
                              GUIDE_LAYER_PROPERTY, H_GUIDE_LAYER_PROPERTY,
-                             V_GUIDE_LAYER_PROPERTY, NEAREST_LAYER_PROPERTY)
+                             V_GUIDE_LAYER_PROPERTY, NEAREST_LAYER_PROPERTY,
+                             "fukusato_mapped", "fukusato_mapped_back")
 _FOLD = {"split": True, "seal": True, "back_color": (104, 112, 140, 255),
          # Qt::PenStyle for the crease strokes: 2 = DashLine. The crease is an
          # annotation of the fold, and a dashed line reads as annotation where
@@ -354,13 +359,9 @@ def _load_assets(view_name):
         scene = _scene_model(view_name)
     except Exception:
         return
-    raw = scene.script_data()
-    data = {}
-    if raw:
-        try:
-            data = json.loads(raw).get("mapping_assets") or {}
-        except Exception:
-            data = {}
+    data = script_store.read(scene, "mapping_assets") or {}
+    if not isinstance(data, dict):
+        data = {}
 
     assets = {}
     for prop, item in data.items():
@@ -4818,6 +4819,24 @@ def _point_in_polygons(point, polygons):
     return inside
 
 
+def _ring_nesting_level(rings, index):
+    """Median odd-even nesting depth of rings[index] among the other rings.
+
+    A boundary vertex is never inside a subpath nested within its own ring;
+    the median over a few spread vertices shrugs off a vertex that grazes
+    another ring's edge. (Shared by _emit_fills and the Fukusato fill
+    triangulation - the donut/letter-O fix must live in one place.)
+    """
+    ring = rings[index]
+    count = min(5, len(ring))
+    levels = sorted(
+        sum(1 for j, other in enumerate(rings)
+            if j != index
+            and _point_in_ring(ring[(k * len(ring)) // count], other))
+        for k in range(count))
+    return levels[len(levels) // 2]
+
+
 def _ring_interior_point(ring):
     """A point strictly inside the ring.
 
@@ -5181,17 +5200,8 @@ def _emit_fills(animean, out, map_point, fills, child_area, main_area):
         # vertex is never inside a subpath nested within its own ring; the
         # median over a few spread vertices shrugs off a vertex that grazes
         # another ring's edge.
-        def nesting_level(index):
-            ring = source_rings[index]
-            count = min(5, len(ring))
-            levels = sorted(
-                sum(1 for j, other in enumerate(source_rings)
-                    if j != index
-                    and _point_in_ring(ring[(k * len(ring)) // count], other))
-                for k in range(count))
-            return levels[len(levels) // 2]
-
-        ring_levels = [nesting_level(index) for index in range(len(source_rings))]
+        ring_levels = [_ring_nesting_level(source_rings, index)
+                       for index in range(len(source_rings))]
         is_hole = [level % 2 == 1 for level in ring_levels]
 
         # (depth, side) -> [outer piece entries], each carrying its CHILD
