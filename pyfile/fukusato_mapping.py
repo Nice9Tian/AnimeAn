@@ -4,6 +4,11 @@ garment line drawings", Computer Animation and Virtual Worlds 33(6):e2117,
 
 THE PAPER'S PIPELINE, AND WHERE EACH PIECE LIVES HERE
 -----------------------------------------------------
+The active paper-facing UI and garment-mesh pipeline live in
+``fukusato_workflow.py`` and ``fukusato_mesh.py``.  This module owns the MLS,
+geodesic-weight and exact-emission core; its older two-board entry points stay
+available for project/script compatibility and for the headless sanity tests.
+
 The paper edits the UV COORDINATES of a garment line drawing on the modeling
 panel. Concretely (Sec. 3):
 
@@ -28,40 +33,33 @@ panel. Concretely (Sec. 3):
       linearly blended with the Euclidean distance by alpha (Sec. 4.2):
           w_i = (1-alpha) w_i^g + alpha w_i^e.
 
-In AnimeAn:
+In AnimeAn's active workflow:
 
-  main_paint_view  = the MODELING PANEL. The garment drawing, the crease cut
-                     lines ("Fukusato Cut"), the AFTER handles and the mapped
-                     output all live here. The mesh is triangulated OVER THIS
-                     BOARD and cut here - exactly the paper's domain.
-  child_paint_view = the TEXTURE / UV SPACE. The pattern strokes live here,
-                     and the BEFORE handles are placed here.
+  main_paint_view  = the MODELING PANEL. The garment drawing, separately
+                     authored crease cuts, curve/point handles and mapped
+                     output all live here. ``fukusato_mesh.GarmentMesh`` is a
+                     constrained Delaunay triangulation of the detected
+                     garment silhouette (including holes), and duplicates the
+                     local triangle fans along exact crease constraints.
+  child_paint_view = the TEXTURE / UV SPACE. Pattern strokes live here; the
+                     same mesh and current UV field are shown by Weight Preview
+                     and Triangle Topology overlays.
 
-  The initial UV assignment is the PLANE PROJECTION the paper names: every
-  panel point's UV is its own coordinate. Under that identity field the
-  paper's two handle states collapse to something drawable without a
-  drag-and-drop gesture:
+  The initial UV assignment is the PLANE PROJECTION explicitly allowed by the
+  paper: every panel vertex starts at its own 2D coordinate. The user draws a
+  point or curve handle on MAIN, then drags that overlay from its BEFORE state
+  to its AFTER state. Both states are projected barycentrically through the
+  garment mesh. A check/x pair is the transaction boundary: the deformation
+  and output replacement happen only on check; x discards the pending handle
+  (or rolls an edit of an accepted handle back).
 
-    -  the BEFORE handle's UV projection p_i(t) equals its panel position, so
-       drawing the handle in the CHILD board (the UV space) at the texture
-       feature to grab IS p_i(t) - the paper's own "place/edit the curve
-       handles on the UV space" function (Sec. 3, last sentence);
-    -  the AFTER handle v'_i(t) is drawn on MAIN; its UV projection q_i(t)
-       through the identity field is again its position.
+  A single click is a POINT handle and a drawn stroke is a CURVE handle. Curve
+  samples are uniformly spaced by arc length as required by Sec. 4.1. Multiple
+  accepted handles form one MLS solve, and editing an accepted handle creates
+  another pending transaction rather than changing the artwork immediately.
 
-  Pairs match BY DRAW ORDER: child stroke k is the before state of main
-  stroke k. A pair drawn identically in both boards is an anchor. A single
-  click (dot stroke) is a POINT handle, a drawn curve is a CURVE handle -
-  both of Sec. 4.1's handle kinds. Handle samples falling outside the mesh
-  are ignored after a warning, as the paper's implementation does (Sec. 6.3).
-
-  Editing mode (Sec. 4.1): the Arrow tool's edit handles double as the
-  paper's drag-and-drop. After a first successful run, releasing an edit
-  drag re-runs the mapping and REPLACES the previous output layer, so
-  dragging an after-handle behaves like the paper's real-time editing loop.
-
-EMISSION (how "deformed UV coordinates" become strokes)
--------------------------------------------------------
+EMISSION (how "deformed UV coordinates" become vector artwork)
+----------------------------------------------------------------
 The paper renders a raster texture: every panel point x shows the texture at
 UV(x). The vector analogue emitted here: for every mesh triangle, its three
 deformed UVs span a triangle in texture space; the pattern strokes clipped
@@ -76,12 +74,14 @@ orientation (det J < 0, texture seen from the back at a fold-over) carry
 property "fukusato_mapped_back" instead, so scripts can restyle or hide the
 back side; geometry is unchanged.
 
-DELIBERATE SUBSTITUTIONS (documented like the paper's own deferrals)
---------------------------------------------------------------------
-  * Geodesic distances use multi-source Dijkstra over the mesh edge graph
-    (with both cell diagonals, halving the sqrt(2) grid-metric anisotropy),
-    not the heat method [28]. Monotone and cut-aware, which is all the
-    weight blend needs.
+``fukusato_workflow`` applies the same triangle-by-triangle affine map to
+odd-even vector fills after triangulating their outlines and nested holes.
+
+IMPLEMENTATION CHOICES (documented like the paper's own deferrals)
+------------------------------------------------------------------
+  * Geodesic distances use multi-source Dijkstra over the constrained
+    triangle edge graph, not the heat method [28]. They are monotone,
+    silhouette-aware and cannot cross a duplicated crease fan.
   * Handle curves are the artist's own pen strokes, not kappa-Curves [26]
     through clicked points. The handle's shape never enters the deformation
     algebra - only its sample positions do (the paper says the same of its
@@ -90,21 +90,15 @@ DELIBERATE SUBSTITUTIONS (documented like the paper's own deferrals)
     also names plane projection; only plane projection is implemented, so
     "before" handles are exact UV positions rather than barycentric
     projections through a non-trivial field.
-  * The paper is a live drag loop; here each run recomputes from the strokes
-    present (one-shot). A sequence of paper edits composes successive MLS
-    solves; re-running composes them into a single solve from the original
-    state. The editing-mode re-run above narrows the gap in practice.
-  * The mesh is a RECTANGLE over the content's bounding box, not a
-    triangulation of the garment silhouette. The paper's models are garment
-    meshes, so its geodesics also feel the garment BOUNDARY (going around a
-    U-shaped sleeve is far); here only explicitly drawn crease cuts obstruct
-    the geodesic - the silhouette does not. Draw a crease along a boundary
-    that should block influence.
   * Stroke width is scaled by a single global magnification estimate (total
     panel edge length over total UV edge length). Rigid gives ~1 by
     construction; similarity makes the width follow the requested scale. The
     true magnification varies per triangle; a per-piece width is not
     attempted.
+
+The legacy grid-mesh/two-board functions later in this module remain only for
+old scripts. The toolbar entry is routed through ``fukusato_workflow`` and does
+not use that compatibility path.
 """
 
 import heapq
@@ -742,24 +736,40 @@ def emit_pattern(mesh, uv, pattern_polyline, neighbours, index=None):
                 continue
             pieces.append((k, span[0], span[1], entry[1], entry))
     pieces.sort(key=lambda piece: (piece[0], piece[1], piece[2]))
-    # A span lying exactly ON a shared triangle edge is claimed by both
-    # triangles; the affine maps agree on the edge, so either copy is the
-    # same geometry - drop the duplicate rather than emitting double ink.
-    deduped_pieces = []
-    for piece in pieces:
-        if deduped_pieces:
-            prev = deduped_pieces[-1]
-            if (piece[0] == prev[0]
-                    and abs(piece[1] - prev[1]) <= 1e-9
-                    and abs(piece[2] - prev[2]) <= 1e-9):
-                continue
-        deduped_pieces.append(piece)
-    pieces = deduped_pieces
 
     def seg_point(k, t):
         a = pattern_polyline[k]
         b = pattern_polyline[k + 1]
         return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+
+    # A span lying exactly ON a shared triangle edge is claimed by both
+    # triangles; the affine maps agree on the edge, so either copy is the
+    # same geometry - drop that duplicate rather than emitting double ink.
+    # Equal t ranges alone are NOT enough: two folded sheets may legitimately
+    # overlap the same UV span and both images must survive.
+    deduped_pieces = []
+    for piece in pieces:
+        if deduped_pieces:
+            prev = deduped_pieces[-1]
+            same_span = (piece[0] == prev[0]
+                    and abs(piece[1] - prev[1]) <= 1e-9
+                    and abs(piece[2] - prev[2]) <= 1e-9)
+            adjacent = piece[3] in neighbours[prev[3]]
+            if same_span and adjacent:
+                source0 = seg_point(piece[0], piece[1])
+                source1 = seg_point(piece[0], piece[2])
+                mapped = []
+                for claim in (prev, piece):
+                    entry = claim[4]
+                    mapped.append((
+                        _affine_uv_to_panel(source0, entry[2], entry[3], entry[4]),
+                        _affine_uv_to_panel(source1, entry[2], entry[3], entry[4]),
+                    ))
+                if (math.dist(mapped[0][0], mapped[1][0]) <= 1e-9
+                        and math.dist(mapped[0][1], mapped[1][1]) <= 1e-9):
+                    continue
+        deduped_pieces.append(piece)
+    pieces = deduped_pieces
 
     runs = []
     open_runs = []                 # [points, tri, back, end_seg, end_t]
@@ -1332,4 +1342,6 @@ def run_fukusato_mapping(name=FUKUSATO_TOOL, property_value=FUKUSATO_TOOL):
     return property_value
 
 
-register_hooks()
+# Compatibility entry points register these legacy hooks only when an old
+# script calls them explicitly. Importing the numerical core must not arm the
+# former rectangular-grid workflow alongside fukusato_workflow.py.

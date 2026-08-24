@@ -48,6 +48,8 @@ import time
 
 import bezier
 import python_hooks
+import overlay_stack
+import script_store
 
 H_PROPERTY = "h_center_line"
 V_PROPERTY = "v_center_line"
@@ -343,7 +345,7 @@ def _save_assets(view_name):
         scene = _scene_model(view_name)
     except Exception:
         return
-    scene.set_script_data(json.dumps({"mapping_assets": _assets_for(view_name)}))
+    script_store.write(scene, "mapping_assets", _assets_for(view_name))
 
 
 def _load_assets(view_name):
@@ -3151,7 +3153,7 @@ def overlay_items(view_name):
 def _push_overlay(view_name):
     """Send this view's mapping assets to the generic C++ overlay display."""
     try:
-        _animean().ui.set_overlay(view_name, overlay_items(view_name))
+        overlay_stack.set_items(view_name, "auto_mapping", overlay_items(view_name))
     except Exception as error:
         print(f"[auto_mapping] overlay update failed: {error}")
 
@@ -7329,7 +7331,8 @@ def _triangulate_with_earcut(outer, holes):
         ends.append(total)
     try:
         array = np.array(flat, dtype=np.float64).reshape(-1, 2)
-        indices = earcut.triangulate_float64(array, ends)
+        ring_ends = np.asarray(ends, dtype=np.uint32)
+        indices = earcut.triangulate_float64(array, ring_ends)
     except Exception as error:
         print(f"[auto_mapping] earcut failed ({error}); using the "
               "built-in triangulator")

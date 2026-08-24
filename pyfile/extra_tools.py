@@ -2,7 +2,8 @@ import importlib
 import json
 
 import auto_mapping
-import fukusato_mapping
+import crease_line_tool
+import fukusato_workflow
 
 
 def extra_tools():
@@ -49,21 +50,21 @@ def extra_tools():
         },
         {
             "name": "fukusato_line",
-            "title": "Fukusato Line",
-            "property": fukusato_mapping.HANDLE_PROPERTY,
-            "handler": "fukusato_mapping.activate_fukusato_line",
+            "title": "Fukusato Guide / 引导线",
+            "property": fukusato_workflow.HANDLE_PROPERTY,
+            "handler": "fukusato_workflow.activate_handle_tool",
         },
         {
             "name": "fukusato_cut",
-            "title": "Fukusato Cut",
-            "property": fukusato_mapping.CUT_PROPERTY,
-            "handler": "fukusato_mapping.activate_fukusato_cut",
+            "title": "Crease Line / 折角线",
+            "property": crease_line_tool.PROPERTY,
+            "handler": "crease_line_tool.activate_crease_line",
         },
         {
             "name": "fukusato_guide_mapping",
             "title": "Fukusato Mapping",
-            "property": fukusato_mapping.FUKUSATO_TOOL,
-            "handler": "fukusato_mapping.run_fukusato_mapping",
+            "property": fukusato_workflow.RUN_TOOL,
+            "handler": "fukusato_workflow.run_mapping",
         },
     ]
 
@@ -73,7 +74,8 @@ def tools_json():
     # registered unconditionally, which put a print + debug-pane append on
     # every pen move; enable it explicitly with hook_test.enable_verbose().
     auto_mapping.register_hooks()
-    fukusato_mapping.register_hooks()
+    crease_line_tool.register_hooks()
+    fukusato_workflow.register_hooks()
     return json.dumps(extra_tools(), ensure_ascii=False)
 
 

@@ -5,8 +5,8 @@ free to use real libraries instead of hand-rolled algorithms (user
 directive). This module makes that survive a fresh or offline machine:
 
 - `pywheels/` in the repository holds version-pinned wheels
-  (requirements.txt beside them); sync_pyfiles.ps1 copies the folder
-  next to every deployed exe.
+  (requirements.txt beside them); CMake's deploy target and
+  sync_pyfiles.ps1 copy the folder next to every deployed exe.
 - `ensure(*modules)` self-installs anything missing on FIRST USE, from
   the bundled wheels (`pip --no-index --find-links pywheels`), falling
   back to the network only if no bundled wheel matches. It runs pip in

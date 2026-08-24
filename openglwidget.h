@@ -67,6 +67,7 @@ public:
         // Qt::PenStyle as an int, same convention as AnimeVectorStroke.
         int penStyle = 1;
         bool removable = true;
+        bool confirmable = false;
         // A draggable item reports press/move/release through the "handle"
         // hook events with its id, like an edit handle; Python owns meaning.
         bool draggable = false;
@@ -245,6 +246,7 @@ private:
         // follows it (closed items) or an end point (open ones).
         QRectF extent;
         bool anchorIsExtent = false;
+        bool accept = false;
     };
 
     enum class AxisSnapState {
@@ -259,12 +261,12 @@ private:
     // changed it has settled.
     void schedulePlaybackCacheRefresh();
     void paintOverlayItems(QPainter &painter);
-    // Badge just above-right of `anchor` (an item's end point), clamped into view.
+    // Badge just above-right of `anchor`, clamped into view.
     QRectF overlayHandleRect(const QPointF &anchor) const;
-    bool removeOverlayItemAt(const QPointF &pos);
+    bool overlayActionItemAt(const QPointF &pos);
     // Topmost draggable overlay item within grab range of the screen position.
     QString draggableOverlayItemAt(const QPointF &screenPos) const;
-    void sendOverlayRemoveMessage(const QString &overlayId);
+    void sendOverlayActionMessage(const QString &overlayId, const QString &action);
     void paintEditHandles(QPainter &painter);
     // Topmost handle whose SCREEN-space box contains the screen position.
     QString editHandleAt(const QPointF &screenPos) const;

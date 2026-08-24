@@ -21,6 +21,8 @@ The C++ side is a pure mechanism (render dots, hit-test, report drags as
 """
 import math
 
+import overlay_stack
+
 import bezier
 import python_hooks
 import viewscale
@@ -716,15 +718,11 @@ def _push(view, handles, arms):
         session["handles_by_id"] = {h["id"]: (h["x"], h["y"]) for h in handles}
     animean = _animean()
     animean.ui.set_edit_handles(view, handles)
-    try:
-        import auto_mapping
-        items = auto_mapping.overlay_items(view)
-    except Exception:
-        items = []
+    items = []
     for arm in arms:
         items.append({"id": "edit_arm", "points": arm, "color": ARM_COLOR,
                       "width": 1.0, "removable": False})
-    animean.ui.set_overlay(view, items)
+    overlay_stack.set_items(view, "edit_tool", items)
 
 
 def _clear(view):
@@ -733,11 +731,7 @@ def _clear(view):
         return
     animean = _animean()
     animean.ui.set_edit_handles(view, [])
-    try:
-        import auto_mapping
-        animean.ui.set_overlay(view, auto_mapping.overlay_items(view))
-    except Exception:
-        animean.ui.set_overlay(view, [])
+    overlay_stack.set_items(view, "edit_tool", [])
 
 
 def _rebuild(view, session, zoom):

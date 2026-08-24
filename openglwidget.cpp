@@ -1266,11 +1266,15 @@ void PaintOpenGLWidget::setCurrentLayer(int layerIndex)
 
 void PaintOpenGLWidget::setCurrentFrame(int frameIndex)
 {
+    const int previousFrame = m_model.currentFrame();
     m_model.setCurrentFrame(frameIndex);
     m_points.clear();
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
     m_hasLastMovePos = false;
+    if (m_model.currentFrame() != previousFrame) {
+        pythonHookSendMessage(QStringLiteral("framechange"));
+    }
     update();
 }
 
@@ -2065,13 +2069,11 @@ void PaintOpenGLWidget::paintOverlayItems(QPainter &painter)
                             overlayStyle, Qt::RoundCap, Qt::RoundJoin));
         painter.drawPath(path);
 
-        if (item.removable) {
-            // ONE badge per id, not per item. A badge means "remove the thing
-            // called <id>", and an id can legitimately arrive as several
-            // items: a mapping area detected around a shape with a hole comes
-            // back as one polygon per subpath, and every one of them was
-            // getting its own x - several badges that all did the same thing.
-            // Later parts only widen the extent the single badge sits on.
+        if (item.removable || item.confirmable) {
+            // ONE badge set per id, not per item. An id can legitimately
+            // arrive as several items: a mapping area detected around a shape
+            // with a hole comes back as one polygon per subpath. Later parts
+            // only widen the extent that this id's x/check set sits on.
             int existing = -1;
             for (int i = 0; i < m_overlayHandles.size(); ++i) {
                 if (m_overlayHandles[i].id == item.id) {
@@ -2080,27 +2082,44 @@ void PaintOpenGLWidget::paintOverlayItems(QPainter &painter)
                 }
             }
             if (existing >= 0) {
-                m_overlayHandles[existing].extent |= path.boundingRect();
-                if (m_overlayHandles[existing].anchorIsExtent) {
-                    m_overlayHandles[existing].rect =
-                        overlayHandleRect(m_overlayHandles[existing].extent.topRight());
+                for (OverlayHandle &handle : m_overlayHandles) {
+                    if (handle.id != item.id) {
+                        continue;
+                    }
+                    handle.extent |= path.boundingRect();
+                    if (handle.anchorIsExtent) {
+                        handle.rect = overlayHandleRect(handle.extent.topRight());
+                        if (handle.accept) {
+                            handle.rect.translate(-kOverlayHandleSize - 4.0, 0.0);
+                        }
+                    }
                 }
                 continue;
             }
-            OverlayHandle handle;
-            handle.id = item.id;
-            handle.badgeColor = item.strokeColor;
-            handle.extent = path.boundingRect();
-            // Anchored on the item's END POINT, not on its bounding box. For a
-            // roughly horizontal guide the box's top-right corner happens to
-            // sit near the end and the badge looked right; for a vertical one
-            // it is the START of the line instead, which is why the green V
-            // guide carried its x at the wrong end. A CLOSED item (the mapping
-            // area) has no meaningful end, so it keeps the box corner.
-            handle.anchorIsExtent = item.closed;
-            handle.rect = overlayHandleRect(item.closed ? handle.extent.topRight()
-                                                        : item.points.last());
-            m_overlayHandles.append(handle);
+            const auto appendHandle = [&](bool accept) {
+                OverlayHandle handle;
+                handle.id = item.id;
+                handle.badgeColor = item.strokeColor;
+                handle.extent = path.boundingRect();
+                handle.accept = accept;
+                // A pending guide asks for its check/x pair in the upper-right
+                // corner. Ordinary open removable guides retain their old
+                // end-point badge position.
+                handle.anchorIsExtent = item.closed || item.confirmable;
+                handle.rect = overlayHandleRect(handle.anchorIsExtent
+                                                    ? handle.extent.topRight()
+                                                    : item.points.last());
+                if (accept) {
+                    handle.rect.translate(-kOverlayHandleSize - 4.0, 0.0);
+                }
+                m_overlayHandles.append(handle);
+            };
+            if (item.removable) {
+                appendHandle(false);
+            }
+            if (item.confirmable) {
+                appendHandle(true);
+            }
         }
     }
 
@@ -2113,8 +2132,15 @@ void PaintOpenGLWidget::paintOverlayItems(QPainter &painter)
 
         const QRectF inner = handle.rect.adjusted(4.0, 4.0, -4.0, -4.0);
         painter.setPen(QPen(Qt::white, 1.8, Qt::SolidLine, Qt::RoundCap));
-        painter.drawLine(inner.topLeft(), inner.bottomRight());
-        painter.drawLine(inner.topRight(), inner.bottomLeft());
+        if (handle.accept) {
+            painter.drawLine(QPointF(inner.left(), inner.center().y()),
+                             QPointF(inner.center().x() - 1.0, inner.bottom()));
+            painter.drawLine(QPointF(inner.center().x() - 1.0, inner.bottom()),
+                             inner.topRight());
+        } else {
+            painter.drawLine(inner.topLeft(), inner.bottomRight());
+            painter.drawLine(inner.topRight(), inner.bottomLeft());
+        }
     }
 }
 
@@ -2146,15 +2172,17 @@ QRectF PaintOpenGLWidget::overlayHandleRect(const QPointF &anchor) const
     return handleRect;
 }
 
-bool PaintOpenGLWidget::removeOverlayItemAt(const QPointF &pos)
+bool PaintOpenGLWidget::overlayActionItemAt(const QPointF &pos)
 {
     for (int i = m_overlayHandles.size() - 1; i >= 0; --i) {
-        const OverlayHandle handle = m_overlayHandles[i];
+        const OverlayHandle &handle = m_overlayHandles[i];
         if (!handle.rect.contains(pos)) {
             continue;
         }
 
-        sendOverlayRemoveMessage(handle.id);
+        sendOverlayActionMessage(handle.id,
+                                 handle.accept ? QStringLiteral("accept")
+                                               : QStringLiteral("remove"));
         return true;
     }
     return false;
@@ -2196,10 +2224,14 @@ QString PaintOpenGLWidget::draggableOverlayItemAt(const QPointF &screenPos) cons
     return QString();
 }
 
-void PaintOpenGLWidget::sendOverlayRemoveMessage(const QString &overlayId)
+void PaintOpenGLWidget::sendOverlayActionMessage(const QString &overlayId,
+                                                 const QString &action)
 {
 #ifdef ANIMEAN_WITH_PYTHON
-    if (!animeanHookEventSubscribed(QStringLiteral("overlayremove"))) {
+    const QString eventName = action == QStringLiteral("accept")
+                                  ? QStringLiteral("overlayaction")
+                                  : QStringLiteral("overlayremove");
+    if (!animeanHookEventSubscribed(eventName)) {
         return;
     }
     const int row = m_model.currentFrame();
@@ -2214,9 +2246,10 @@ void PaintOpenGLWidget::sendOverlayRemoveMessage(const QString &overlayId)
 
     py::dict overlayInfo;
     overlayInfo["id"] = overlayId.toStdString();
+    overlayInfo["action"] = action.toStdString();
 
     py::dict message;
-    message["event"] = "overlayremove";
+    message["event"] = eventName.toStdString();
     message["view"] = m_viewName.toStdString();
     message["tool"] = (m_activePythonTool.isEmpty() ? toolName(m_tool) : m_activePythonTool).toStdString();
     message["base_tool"] = toolName(m_tool).toStdString();
@@ -2233,6 +2266,7 @@ void PaintOpenGLWidget::sendOverlayRemoveMessage(const QString &overlayId)
     }
 #else
     Q_UNUSED(overlayId);
+    Q_UNUSED(action);
 #endif
 }
 
@@ -2297,10 +2331,16 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
         if (!handleId.isEmpty()) {
             m_activeHandleDrag = handleId;
             sendPythonHandleMessage(QStringLiteral("press"), handleId, pos);
-        } else if (removeOverlayItemAt(pos)) {
+        } else if (overlayActionItemAt(pos)) {
             // fallthrough handled: the badge consumed the click
         } else {
-            sendPythonHandleMessage(QStringLiteral("pick"), QString(), pos);
+            const QString overlayId = draggableOverlayItemAt(event->position());
+            if (!overlayId.isEmpty()) {
+                m_activeOverlayDrag = overlayId;
+                sendPythonHandleMessage(QStringLiteral("press"), overlayId, pos);
+            } else {
+                sendPythonHandleMessage(QStringLiteral("pick"), QString(), pos);
+            }
         }
         event->accept();
         return;
@@ -2320,7 +2360,7 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
         }
     }
 
-    if (removeOverlayItemAt(pos)) {
+    if (overlayActionItemAt(pos)) {
         event->accept();
         return;
     }
