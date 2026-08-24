@@ -8252,21 +8252,17 @@ def _capture_mapping_item(cell, stroke, message):
               "keeping the flattened guide.")
     scene.remove_stroke(row, layer, index)
 
-    if _UNIT_META and _ACTIVE_UNIT["id"] is None:
-        # Unit mode with nothing focused: a drawn guide would land in the
-        # hidden legacy scratch and "disappear". Give it a home instead -
-        # the muscle-memory workflow (draw first, organise later) keeps
-        # working, it just creates the automapping layer implicitly. This
-        # runs strictly AFTER the stroke has been read and removed:
-        # _create_unit inserts a main column at index 0, which shifts every
-        # layer index and would turn the cached cell["layer"] stale.
-        if _create_unit() is None:
-            print("[auto_mapping] focus an automapping layer first "
-                  "(right-click the layer panel to create one).")
-            message["cancel_history"] = True
-            _animean().ui.widget.refresh()
-            return
-        print("[auto_mapping] created a new automapping layer for this guide.")
+    if _ACTIVE_UNIT["id"] is None:
+        # Units are the default for new work: a guide drawn with no unit
+        # focused creates one implicitly (adopting anything already in the
+        # legacy scratch), so drawing axes flows straight into the live
+        # workflow. This runs strictly AFTER the stroke has been read and
+        # removed: _create_unit inserts a main column at index 0, which
+        # shifts every layer index and would turn the cached cell["layer"]
+        # stale. On a build without group tags the creation fails and the
+        # capture simply continues into the legacy scratch, as before.
+        if _create_unit() is not None:
+            print("[auto_mapping] created a new automapping layer for this guide.")
 
     assets = _assets_for(view)
     if prop == MAPPING_AREA_PROPERTY:
@@ -8465,6 +8461,12 @@ def _history_restored(cell, stroke, message):
 def _auto_mapping_button(cell, stroke, message):
     global _last_run_handled
     _last_run_handled = True
+    if _ACTIVE_UNIT["id"] is None:
+        # The manual run also lives in a unit now: create one on the fly,
+        # adopting whatever guides the user already drew into the legacy
+        # scratch. On an old build this fails gracefully into the legacy
+        # run path.
+        _create_unit()
     _run()
 
 
@@ -8950,8 +8952,16 @@ def _create_unit(view="main", commit=True):
         "primary": primary_id,
         "members": {str(primary_id): {"role": "front", "depth": 0}},
     }
-    _UNIT_ASSETS.setdefault("main", {})[uid] = {}
-    _UNIT_ASSETS.setdefault("child", {})[uid] = {}
+    for adopt_view in ("main", "child"):
+        # Guides/areas/additional lines drawn BEFORE any unit existed live
+        # in the legacy scratch; the first unit adopts them so "draw axes,
+        # then run" flows straight into the unit workflow instead of
+        # leaving the axes stranded in the hidden legacy set.
+        scratch = _MAPPING_ASSETS.get(adopt_view) or {}
+        _UNIT_ASSETS.setdefault(adopt_view, {})[uid] = (
+            _sanitize_assets(scratch) if scratch else {})
+        if scratch:
+            _MAPPING_ASSETS[adopt_view] = {}
     _save_units("main")
     _save_units("child")
     animean = _animean()

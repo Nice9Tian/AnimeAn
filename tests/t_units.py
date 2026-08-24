@@ -599,4 +599,37 @@ assets15 = am._UNIT_ASSETS["child"][new_uid]
 assert assets15[am.H_PROPERTY]["points"] == [tuple(p) for p in H]
 print("15) capture reads/removes the stroke before the auto-created unit shifts indices")
 
+# 16) UNITS BY DEFAULT: guides drawn before any unit existed migrate into
+#     the implicitly created unit (capture and run-button flows).
+scenes, fake = fresh_world()
+main = scenes["main"]
+child = scenes["child"]
+am._MAPPING_ASSETS["main"] = {am.H_PROPERTY: {"points": list(H), "width": 3.0},
+                              am.V_PROPERTY: {"points": list(V), "width": 3.0}}
+runs16 = []
+real_run16 = am._run
+am._run = lambda: runs16.append(1)
+try:
+    am._auto_mapping_button(None, None, {})
+finally:
+    am._run = real_run16
+uid16 = am._ACTIVE_UNIT["id"]
+assert uid16 and uid16 in am._UNIT_META      # button created a unit
+assert runs16
+adopted16 = am._UNIT_ASSETS["main"][uid16]
+assert adopted16[am.H_PROPERTY]["points"] == [tuple(p) for p in H]
+assert not am._MAPPING_ASSETS["main"]        # scratch adopted, not copied
+# a guide capture with no unit at all also creates one:
+scenes, fake = fresh_world()
+child = scenes["child"]
+cl = child.add_layer()
+child.pattern[child.layer_id_at(cl)] = [stroke(H, prop=am.H_PROPERTY)]
+child.remove_stroke = lambda *a: None
+am._capture_mapping_item({"row": 0, "layer": cl, "asset": 0, "frame_id": 1},
+                         {"index": 0},
+                         {"property": am.H_PROPERTY, "view": "child",
+                          "event": "linefinish", "tool": "extra"})
+assert am._ACTIVE_UNIT["id"] is not None
+print("16) units by default: button and capture auto-create + adopt scratch")
+
 print("t_units: ALL OK")
