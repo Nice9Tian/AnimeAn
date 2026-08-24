@@ -161,8 +161,24 @@ class FakeScene:
         ids = [self.layer_id_at(i) for i in layers if self.layer_id_at(i)]
         gid = self._next_gid
         self._next_gid += 1
-        self.groups[gid] = {"name": name, "tag": "", "layer_ids": ids}
+        self.groups[gid] = {"name": name, "tag": "", "layer_ids": ids,
+                            "collapsed": bool(collapsed)}
         return gid
+
+    def set_layer_group_name(self, gid, name):
+        if gid in self.groups:
+            self.groups[gid]["name"] = name
+            return True
+        return False
+
+    def set_layer_group_collapsed(self, gid, collapsed):
+        if gid in self.groups:
+            self.groups[gid]["collapsed"] = bool(collapsed)
+            return True
+        return False
+
+    def layer_group_collapsed(self, gid):
+        return self.groups.get(gid, {}).get("collapsed", False)
 
     def set_layer_group_tag(self, gid, tag):
         if gid in self.groups:
@@ -302,6 +318,8 @@ assert uid is not None and uid in am._UNIT_META
 main = scenes["main"]
 gid = int(uid)
 assert main.layer_group_tag(gid) == am.UNIT_TAG
+assert main.groups[gid]["name"] == am.UNIT_LAYER_TITLE
+assert main.layer_group_collapsed(gid)   # one collapsed row in the panel
 assert am._ACTIVE_UNIT["id"] == uid
 primary = am._UNIT_META[uid]["primary"]
 assert main.layer_index_for_id(primary) == main.current_layer()
@@ -469,5 +487,51 @@ assert am._assets_for("main") is am._MAPPING_ASSETS["main"]
 items = am.overlay_items("main")
 assert any(item["id"] == am.H_PROPERTY for item in items)
 print("11) legacy mode intact: scratch assets, always-on overlays")
+
+# 12) CONVERT: a pre-refactor nested "Auto Mapping" group becomes a unit -
+#     snapshots feed the config, members classify by name, snapshot layers
+#     die, and the group collapses into the one-row look.
+scenes, fake = fresh_world()
+main = scenes["main"]
+
+
+def _legacy_stroke(points, prop, width=3.0, color=(0, 0, 255)):
+    return {"property": prop, "width": width,
+            "color": {"r": color[0], "g": color[1], "b": color[2], "a": 255},
+            "polylines": [[{"x": x, "y": y} for x, y in points]]}
+
+
+legacy_members = []
+for name, prop, pts in (
+        ("mapped layer", "", [(0.0, 0.0), (10.0, 0.0)]),
+        ("mapped layer back", "", [(0.0, 5.0), (10.0, 5.0)]),
+        ("mapped layer crease", "", [(0.0, 9.0), (10.0, 9.0)]),
+        ("H axis", am.H_GUIDE_LAYER_PROPERTY, H),
+        ("V axis", am.V_GUIDE_LAYER_PROPERTY, V)):
+    index = main.add_layer()
+    main.set_layer_name(index, name)
+    legacy_members.append(index)
+    if prop:
+        main.pattern[main.layer_id_at(index)] = [_legacy_stroke(pts, prop)]
+legacy_gid = main.create_layer_group("Auto Mapping", legacy_members, [], False)
+
+entries = am._layer_menu_items({"view": "main", "kind": "group",
+                                "group": legacy_gid, "tag": ""})
+assert any(e.get("name") == am.CONVERT_UNIT_ACTION for e in entries)
+uid12 = am._convert_group_to_unit(main, legacy_gid, list(legacy_members))
+assert uid12 == str(legacy_gid) and uid12 in am._UNIT_META
+assert main.layer_group_tag(legacy_gid) == am.UNIT_TAG
+assert main.layer_group_collapsed(legacy_gid)
+assert main.groups[legacy_gid]["name"] == am.UNIT_LAYER_TITLE
+assets12 = am._UNIT_ASSETS["main"][uid12]
+assert assets12[am.H_PROPERTY]["points"] == [tuple(p) for p in H]
+assert assets12[am.V_PROPERTY]["points"] == [tuple(p) for p in V]
+names_left = [main.layer_name(i) for i in range(main.layer_count())]
+assert not any(n.startswith("H axis") or n.startswith("V axis")
+               for n in names_left)
+roles12 = {info["role"] for info in am._UNIT_META[uid12]["members"].values()}
+assert roles12 == {"front", "back", "seal"}
+assert am._ACTIVE_UNIT["id"] == uid12
+print("12) legacy group converted: config adopted, snapshots retired")
 
 print("t_units: ALL OK")

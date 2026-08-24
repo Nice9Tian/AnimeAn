@@ -521,6 +521,7 @@ NEW_UNIT_ACTION = "new_automapping_layer"
 NEW_LINE_LAYER_ACTION = "new_line_layer"
 NEW_FILL_LAYER_ACTION = "new_fill_layer"
 DUPLICATE_UNIT_ACTION = "duplicate_automapping_layer"
+CONVERT_UNIT_ACTION = "convert_to_automapping_layer"
 
 _UNIT_SETTING_DEFAULTS = {
     "show_h": True,          # H axis overlay (both boards)
@@ -8609,6 +8610,98 @@ def _report_occlusion():
               f"guide rectangle lands face-down (tinted).")
 
 
+def _legacy_guide_axis(stroke, layer_name):
+    """Which axis an OLD snapshot stroke is, when both shared one property.
+
+    By COLOUR, not by layer name. The name looks like the obvious key and is
+    the wrong one: _create_mapped_layer routes every name through
+    uniqueLayerName, which drifts a taken name to "H axis1", "H axis2", ... -
+    so only the very first run in a document ever owns the bare "H axis", and
+    keying on it silently lost every later run's snapshot. The colour is
+    exact: the old code picked it from the loop's intended name before the
+    model renamed anything, so blue IS the H axis and green IS the V axis.
+    The name is kept as a last resort, matched as a prefix.
+    """
+    color = stroke.get("color") or {}
+    try:
+        rgb = (int(color.get("r", -1)), int(color.get("g", -1)), int(color.get("b", -1)))
+    except (TypeError, ValueError):
+        rgb = (-1, -1, -1)
+    if rgb == H_COLOR[:3]:
+        return H_GUIDE_LAYER_PROPERTY
+    if rgb == V_COLOR[:3]:
+        return V_GUIDE_LAYER_PROPERTY
+    if layer_name.startswith(H_LAYER_NAME):
+        return H_GUIDE_LAYER_PROPERTY
+    if layer_name.startswith(V_LAYER_NAME):
+        return V_GUIDE_LAYER_PROPERTY
+    return ""
+
+
+def _guide_axes_in_layers(scene, frame, layer_indices):
+    """{property -> (points, width, commands)} for the axis snapshots on
+    these layers.
+
+    Identified by the stroke property, so a renamed layer still restores
+    correctly; the layer name is only consulted for snapshots written before
+    the two axes carried separate properties. `commands` is the snapshot
+    stroke's real path (None on snapshots from before guides kept curves) -
+    the restore hands it back to run_center_line_tool so a curve guide
+    round-trips as a curve.
+    """
+    found = {}
+    for index in layer_indices:
+        if index is None or index < 0:
+            continue
+        try:
+            cell = scene.cell_to_dict(index, frame, True, POLY_STEP)
+        except Exception:
+            continue
+        raw_strokes = []
+        try:
+            raw_strokes = scene.cell_to_dict(index, frame, False)["image"]["strokes"]
+        except Exception:
+            pass
+        name = ""
+        try:
+            name = scene.layer_name(index)
+        except Exception:
+            pass
+        for position, stroke in enumerate(cell["image"]["strokes"]):
+            prop = stroke.get("property") or ""
+            if prop == GUIDE_LAYER_PROPERTY:
+                prop = _legacy_guide_axis(stroke, name)
+            if prop == NEAREST_LAYER_PROPERTY and prop not in found:
+                # The layer NAME carries the exact arc; the ring centre is
+                # the geometric fallback (renamed layer). The ring closes on
+                # a duplicated first vertex - averaging it twice biased the
+                # centre by radius/17 px, drifting the anchor a third of a
+                # pixel per map->re-expand cycle, always the same direction.
+                arc = None
+                match = re.search(r"\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)",
+                                  name or "")
+                if match:
+                    arc = (float(match.group(1)), float(match.group(2)))
+                points = _stroke_points(stroke)
+                if points and len(points) >= 2 and _dist(points[0], points[-1]) <= 1e-9:
+                    points = points[:-1]
+                if points:
+                    cx = sum(p[0] for p in points) / len(points)
+                    cy = sum(p[1] for p in points) / len(points)
+                    found[prop] = ((cx, cy), 0.0, arc)
+                continue
+            if prop not in (H_GUIDE_LAYER_PROPERTY, V_GUIDE_LAYER_PROPERTY):
+                continue
+            points = _stroke_points(stroke)
+            if len(points) < 2 or prop in found:
+                continue
+            commands = None
+            if position < len(raw_strokes):
+                commands = raw_strokes[position].get("commands") or None
+            found[prop] = (points, float(stroke.get("width", 3.0)), commands)
+    return found
+
+
 def _install_unit_output(scene, out, uid, meta):
     """Adopt this run's layers into the unit group and retire the previous
     output IN PLACE.
@@ -8731,7 +8824,9 @@ def _create_unit(view="main", commit=True):
         print("[auto_mapping] could not create the unit's layer.")
         return None
     try:
-        gid = scene.create_layer_group(MAPPING_GROUP_NAME, [layer], [], False)
+        # Collapsed and named like a layer: the unit reads as ONE row in the
+        # panel (clicking it focuses its first member), not a nested tree.
+        gid = scene.create_layer_group(UNIT_LAYER_TITLE, [layer], [], True)
     except AttributeError:
         gid = 0
     if not gid:
@@ -8803,6 +8898,119 @@ def _duplicate_unit(source_uid):
     return uid
 
 
+def _convert_group_to_unit(scene, gid, member_indices):
+    """Adopt a legacy 'Auto Mapping' group as a mapping unit.
+
+    Pre-unit runs left nested groups: output layers plus a collapsed H/V
+    subgroup of axis-snapshot layers. Conversion tags the group, absorbs a
+    CONFIG for it - the live legacy scratch guides when present, else the
+    group's own axis snapshots - classifies the output members by name into
+    front/back/seal roles, deletes the snapshot layers the config replaces,
+    and collapses the group into the one-row automapping-layer look. The
+    document runs in unit mode from here on.
+    """
+    try:
+        if scene.layer_group_tag(gid) == UNIT_TAG:
+            return str(gid)
+        if not scene.set_layer_group_tag(gid, UNIT_TAG):
+            return None
+    except AttributeError:
+        print("[auto_mapping] this build cannot tag layer groups.")
+        return None
+    uid = str(gid)
+    frame = max(scene.current_frame(), 0)
+
+    # Config: the live scratch guides first (they are what the user sees and
+    # drags today); the group's own snapshots fill whatever is missing.
+    main_assets = dict(_MAPPING_ASSETS.get("main") or {})
+    child_assets = dict(_MAPPING_ASSETS.get("child") or {})
+    snapshots = _guide_axes_in_layers(scene, frame, member_indices)
+    for prop, target in ((H_GUIDE_LAYER_PROPERTY, H_PROPERTY),
+                         (V_GUIDE_LAYER_PROPERTY, V_PROPERTY)):
+        if target in main_assets or prop not in snapshots:
+            continue
+        points, width, commands = snapshots[prop]
+        item = {"points": [tuple(p) for p in points], "width": width}
+        if commands:
+            item["commands"] = commands
+        main_assets[target] = item
+    marker = snapshots.get(NEAREST_LAYER_PROPERTY)
+    if NEAREST_PROPERTY not in main_assets and marker and marker[2]:
+        main_assets[NEAREST_PROPERTY] = {"arc": [float(marker[2][0]),
+                                                 float(marker[2][1])]}
+
+    # Output members classified by name (the only record legacy runs kept);
+    # snapshot layers are dropped - their information lives in the config now.
+    members = {}
+    primary_id = 0
+    drop_ids = []
+    for index in member_indices or []:
+        if index is None or index < 0:
+            continue
+        lid = scene.layer_id_at(index)
+        if not lid:
+            continue
+        try:
+            name = scene.layer_name(index) or ""
+        except Exception:
+            name = ""
+        if (name.startswith(H_LAYER_NAME) or name.startswith(V_LAYER_NAME)
+                or name.startswith(NEAREST_LAYER_NAME)):
+            drop_ids.append(lid)
+            continue
+        if name.startswith(SEAL_LAYER_NAME):
+            role = "seal"
+        elif name.startswith(BACK_LAYER_NAME) or " depth " in name:
+            role = "back"
+        else:
+            role = "front"
+        members[str(lid)] = {"role": role,
+                             "depth": 0 if role == "front" else 1}
+        if role == "front" and not primary_id:
+            primary_id = lid
+    if not primary_id and members:
+        primary_id = int(next(iter(members)))
+
+    _UNIT_META[uid] = {"settings": dict(_UNIT_SETTING_DEFAULTS),
+                       "primary": primary_id,
+                       "members": members}
+    _UNIT_ASSETS.setdefault("main", {})[uid] = _sanitize_assets(main_assets)
+    _UNIT_ASSETS.setdefault("child", {})[uid] = _sanitize_assets(child_assets)
+
+    for lid in drop_ids:
+        index = scene.layer_index_for_id(lid)
+        if index >= 0:
+            _discard_mapped_layer(scene, index)
+    try:
+        scene.set_layer_group_name(gid, UNIT_LAYER_TITLE)
+        scene.set_layer_group_collapsed(gid, True)
+    except AttributeError:
+        pass
+    _save_units("main")
+    _save_units("child")
+    if primary_id:
+        index = scene.layer_index_for_id(primary_id)
+        if index >= 0:
+            try:
+                scene.set_current_layer(index)
+            except Exception:
+                pass
+    _activate_unit(uid)
+    try:
+        animean = _animean()
+        animean.ui.refresh()
+        animean.ui.history_commit("Convert to Auto-Mapping Layer", "main")
+    except Exception:
+        pass
+    have_guides = all(p in main_assets for p in GUIDE_PROPERTIES)
+    print(f"[auto_mapping] group {gid} converted to an automapping layer "
+          f"({len(members)} member(s); "
+          + ("guides adopted" if have_guides
+             else "guides incomplete - draw the missing axes while focused")
+          + ").")
+    return uid
+
+
 def _create_plain_layer(view, fill=False):
     """New Line Layer / New Fill Layer from the panel's context menu."""
     try:
@@ -8871,6 +9079,13 @@ def _layer_menu_items(context):
         items.append({"name": DUPLICATE_UNIT_ACTION,
                       "title": f"Duplicate {UNIT_LAYER_TITLE}"})
         items.append({"kind": "separator", "name": "-"})
+    elif (context.get("kind") == "group" and view == "main"
+          and context.get("tag") != UNIT_TAG):
+        # A pre-refactor "Auto Mapping" group (or any hand-made group the
+        # user wants to promote): one click migrates it to a unit.
+        items.append({"name": CONVERT_UNIT_ACTION,
+                      "title": f"Convert to {UNIT_LAYER_TITLE}"})
+        items.append({"kind": "separator", "name": "-"})
     if view == "main":
         items.append({"name": NEW_UNIT_ACTION,
                       "title": f"New {UNIT_LAYER_TITLE}"})
@@ -8900,6 +9115,17 @@ def _layer_menu_action(message):
         uid = _unit_from_menu_message(scene, message)
         if uid:
             _duplicate_unit(uid)
+        return
+    if action == CONVERT_UNIT_ACTION:
+        gid = int(message.get("group") or 0)
+        if gid <= 0:
+            return
+        try:
+            scene = _scene_model("main")
+        except Exception as error:
+            print(f"[auto_mapping] conversion skipped: {error}")
+            return
+        _convert_group_to_unit(scene, gid, message.get("members") or [])
         return
 
 
