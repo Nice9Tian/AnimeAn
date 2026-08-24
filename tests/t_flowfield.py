@@ -240,15 +240,45 @@ print("13) neutral and halo-muted lines leave notes")
 #     pen-lift noise): reversing the partner's point order changes nothing.
 loop_c = [(150.0 + 40.0 * math.cos(2 * math.pi * k / 24.0),
            120.0 + 40.0 * math.sin(2 * math.pi * k / 24.0))
-          for k in range(23)]
+          for k in range(24)]
 loop_m = [(150.0 + 46.0 * math.cos(2 * math.pi * k / 24.0),
            120.0 + 34.0 * math.sin(2 * math.pi * k / 24.0))
-          for k in range(23)]
+          for k in range(24)]
 mp12 = build([(line_asset(loop_c), line_asset(loop_m))])
 mp13 = build([(line_asset(loop_c), line_asset(list(reversed(loop_m))))])
 drift = max(math.hypot(*(c - d for c, d in zip(mp12(p), mp13(p))))
             for p in [(150.0, 120.0), (190.0, 120.0), (150.0, 160.0)])
 assert drift < 1.0, drift
 print("14) near-closed pair alignment is point-order-proof")
+
+# 15) MAPPER CACHE: same content -> same object; ANY mapping-shaping edit
+#     (guide points, line geometry, stored third, falloff) -> rebuild.
+am._MAPPING_ASSETS.clear()
+for view in ("child", "main"):
+    am._MAPPING_ASSETS[view] = {
+        am.H_PROPERTY: {"points": [list(p) for p in H], "width": 3.0},
+        am.V_PROPERTY: {"points": [list(p) for p in V], "width": 3.0},
+        am.ADDITIONAL_PROPERTY: {"lines": [
+            {"points": [[60.0, 120.0], [260.0, 120.0]], "width": 3.0,
+             "id": 0, "third": [[60.0, 120.0], [260.0, 120.0]]}
+            if view == "child" else
+            {"points": [[60.0, 120.0], [242.0, 205.0]], "width": 3.0,
+             "id": 0, "third": [[60.0, 120.0], [242.0, 205.0]]}]},
+    }
+am._MAPPER_CACHE["key"] = None
+m_a, _ = am._current_mapper()
+m_b, _ = am._current_mapper()
+assert m_a is not None and m_b is m_a
+am._MAPPING_ASSETS["child"][am.H_PROPERTY]["points"][0][1] = 4.0
+m_c, _ = am._current_mapper()
+assert m_c is not m_a                      # guide edit rebuilds
+am._MAPPING_ASSETS["main"][am.ADDITIONAL_PROPERTY]["lines"][0][
+    "third"][1][1] = 190.0
+m_d, _ = am._current_mapper()
+assert m_d is not m_c                      # stored-third edit rebuilds
+am._MAPPING_ASSETS.clear()
+am._MAPPER_CACHE["key"] = None
+am._MAPPER_CACHE["mapper"] = None
+print("15) mapper cache: content-keyed reuse, edits rebuild")
 
 print("t_flowfield: ALL OK")

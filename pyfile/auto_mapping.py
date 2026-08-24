@@ -1623,8 +1623,12 @@ class _FlowFieldWarp:
         self._loci = None
         self._grid = None
         self._tent = None
-        for index, entry in enumerate(pairs):
+        for position, entry in enumerate(pairs):
             child_third, main_third = entry[0], entry[1]
+            # The DRAWN line number rides along when the caller provides
+            # it: build_mapper drops pairs on the way here, so a local
+            # enumerate would misnumber every note after a dropped line.
+            index = entry[2] if len(entry) > 2 else position
             if len(child_third) < 2 or len(main_third) < 2:
                 continue
             line = self._prepare([tuple(p) for p in child_third],
@@ -1744,12 +1748,18 @@ class _FlowFieldWarp:
         overrun of a 200 px line). The fade span is >= 2T, so the slope
         stays above -0.75 and value + displacement remains monotone (the
         1-D inverse stays well-defined)."""
-        t, b, f0, f1 = side_pos if value >= 0.0 else side_neg
+        t, b, f0, f1, dead = side_pos if value >= 0.0 else side_neg
         if t == 0.0:
             return 0.0
         v = abs(value)
-        if v <= b:
-            disp = t * (v / b) ** self.STRETCH_ALPHA
+        if v <= dead:
+            # DEAD ZONE covering the pinned band: the rise must be exactly
+            # zero at the rows/columns pinned to U_base, or the axis
+            # between them interpolates half their tent displacement
+            # (measured 1.05 px of H-axis drift on a tiny frame).
+            disp = 0.0
+        elif v <= b:
+            disp = t * ((v - dead) / (b - dead)) ** self.STRETCH_ALPHA
         elif v <= f0:
             disp = t
         elif v >= f1:
@@ -1816,6 +1826,14 @@ class _FlowFieldWarp:
     def _build(self, frame_window):
         import pydeps
         np = pydeps.ensure("numpy")
+        if np is None:
+            # Degraded path like every other ensure() caller: the warp
+            # stays inert (apply == identity) instead of crashing the
+            # whole mapper build.
+            self.notes.append(
+                "additional lines need numpy for the flow-field solve "
+                "and it could not be provided - the lines are ignored")
+            return
 
         # Neutral lines (identity asks) stay out of the field entirely -
         # they are drawn markers awaiting an edit, not requests.
@@ -1842,9 +1860,12 @@ class _FlowFieldWarp:
         t_top = max(0.0, max(ys) - v_hi)
         zone_x = max(1e-6, self.AXIS_GUARD * (b_left + b_right))
         zone_y = max(1e-6, self.AXIS_GUARD * (b_bottom + b_top))
-        # Solve domain: the stretched window plus every band's radius, so a
-        # line's influence never presses against the Dirichlet boundary.
-        margin = max(line["radius"] for line in active)
+        # Solve domain: the stretched window plus 1.5x every band's radius
+        # - a band whose edge touched the Dirichlet boundary was clamped
+        # into a violent one-cell gradient there (a 138 px tear across the
+        # boundary seam on a small frame); the extra half radius lets the
+        # field decay before the clamp.
+        margin = 1.5 * max(line["radius"] for line in active)
         x0 = h_lo - t_left - margin
         x1 = h_hi + t_right + margin
         y0 = v_lo - t_bottom - margin
@@ -1859,21 +1880,32 @@ class _FlowFieldWarp:
         du = span_x / nx
         dv = span_y / ny
 
-        # Tent sides as (T, B, fade_start, fade_end): full translation
-        # holds exactly to the domain edge (the Dirichlet boundary carries
-        # it), then fades to zero over >= 2T so far ground is untouched
-        # and the profile stays monotone.
-        def tent_side(t, b, edge):
-            return (t, b, edge, edge + max(2.0 * t, 0.25 * b))
+        # Tent sides as (T, rise_end, fade_start, fade_end): full
+        # translation holds exactly to the domain edge (the Dirichlet
+        # boundary carries it), then fades to zero over >= 2T so far
+        # ground is untouched and the profile stays monotone. The rise
+        # spans at least six grid cells: on a tiny frame the (|t|/B)^2
+        # ramp fit between two nodes, the bilinear grid could not follow
+        # it (a 5-138 px tear against the exact outside tent) and the
+        # pinned rows a cell off-axis already carried 8 px of it (the
+        # measured 3.4 px H-axis drift).
+        def tent_side(t, b, edge, cell):
+            rise = max(b, 6.0 * cell)
+            if t > 0.0:
+                rise = min(rise, 0.9 * edge)
+            dead = min(2.0 * cell, 0.5 * rise)
+            return (t, rise, edge, edge + max(2.0 * t, 0.25 * b), dead)
 
         pad_x = 1.25 * du     # the pinned band is tent-free (see _tent_cross)
         pad_y = 1.25 * dv
-        self._tent = {"x": (tent_side(t_left, b_left, b_left + t_left + margin),
+        self._tent = {"x": (tent_side(t_left, b_left,
+                                      b_left + t_left + margin, du),
                             tent_side(t_right, b_right,
-                                      b_right + t_right + margin)),
+                                      b_right + t_right + margin, du)),
                       "y": (tent_side(t_bottom, b_bottom,
-                                      b_bottom + t_bottom + margin),
-                            tent_side(t_top, b_top, b_top + t_top + margin)),
+                                      b_bottom + t_bottom + margin, dv),
+                            tent_side(t_top, b_top,
+                                      b_top + t_top + margin, dv)),
                       "zx": zone_x, "zy": zone_y,
                       "px": pad_x, "py": pad_y}
 
@@ -2252,6 +2284,20 @@ class _FlowFieldWarp:
         if x is None:
             return self._tent_apply(third)
         y = self._bilinear(self._grid["uy"], third)
+        # EDGE BLEND: within three cells of the grid boundary the solved
+        # field hands over to the exact tent smoothly. The Dirichlet clamp
+        # leaves the correction D with a one-cell gradient at the edge,
+        # and a stroke crossing the seam was torn by up to 15 px on a
+        # small frame; the fringe is margin territory (no line's band
+        # reaches it), so the tent IS the intended field there.
+        grid = self._grid
+        fx = (third[0] - grid["x0"]) / grid["du"]
+        fy = (third[1] - grid["y0"]) / grid["dv"]
+        edge = min(fx, fy, grid["nx"] - fx, grid["ny"] - fy) / 3.0
+        if edge < 1.0:
+            s = self._smoothstep(edge)
+            tx, ty = self._tent_apply(third)
+            return (tx + (x - tx) * s, ty + (y - ty) * s)
         return (x, y)
 
     def displacement(self, third):
@@ -2357,7 +2403,10 @@ class _FlowFieldWarp:
         value = self._bilinear(self._grid["det"], third)
         if value is None:
             return 1
-        return 1 if value >= 0.0 else -1
+        # Same tolerance as _all_positive and the retreat: once one node
+        # genuinely folds, a graze in (-TOL, 0) elsewhere must not start
+        # reading as a second fold.
+        return 1 if value >= -self.DET_FOLD_TOL else -1
 
     def face_at(self, third):
         return 0
@@ -2380,14 +2429,20 @@ class _FlowFieldWarp:
                 t = va / (va - vb) if va != vb else 0.5
                 return (ax + (bx - ax) * t, ay + (by - ay) * t)
 
+            # March the det = -DET_FOLD_TOL level set: the same threshold
+            # _all_positive, the retreat and det_sign use, so a graze in
+            # (-TOL, 0) can neither flip a verdict nor grow a locus.
+            tol = self.DET_FOLD_TOL
             segments = []
             for i in range(nx):
                 for j in range(ny):
-                    corners = ((det[i][j], x0 + du * i, y0 + dv * j),
-                               (det[i + 1][j], x0 + du * (i + 1), y0 + dv * j),
-                               (det[i + 1][j + 1], x0 + du * (i + 1),
+                    corners = ((det[i][j] + tol, x0 + du * i, y0 + dv * j),
+                               (det[i + 1][j] + tol,
+                                x0 + du * (i + 1), y0 + dv * j),
+                               (det[i + 1][j + 1] + tol, x0 + du * (i + 1),
                                 y0 + dv * (j + 1)),
-                               (det[i][j + 1], x0 + du * i, y0 + dv * (j + 1)))
+                               (det[i][j + 1] + tol,
+                                x0 + du * i, y0 + dv * (j + 1)))
                     crossings = []
                     for a in range(4):
                         va, ax_, ay_ = corners[a]
@@ -2763,7 +2818,7 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
                     "shapes the mapping")
             if len(child_third) < 2 or len(main_third) < 2:
                 continue
-            thirds.append((child_third, main_third))
+            thirds.append((child_third, main_third, line_index))
         if thirds:
             candidate = _FlowFieldWarp(
                 thirds, _ADDITIONAL["falloff"],
@@ -3533,8 +3588,11 @@ def _mapper_fingerprint(child_assets, main_assets, pairs):
     for assets in (child_assets, main_assets):
         for prop in GUIDE_PROPERTIES:
             item = assets.get(prop) or {}
+            # commands by CONTENT: in curve mode the whole guide geometry
+            # is the commands - reducing them to a bool served a stale
+            # mapper when only the curve handles changed.
             parts.append((prop, tuple(map(tuple, item.get("points") or ())),
-                          bool(item.get("commands"))))
+                          repr(item.get("commands"))))
     for child_item, main_item in pairs or []:
         for item in (child_item, main_item):
             item = item or {}

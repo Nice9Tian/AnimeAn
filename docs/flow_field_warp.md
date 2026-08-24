@@ -65,10 +65,13 @@
 
 `_AdditionalWarp` 全类（链式 apply/unapply、扫掠表、模糊金字塔、prefix_pad、段化递归）、C 形策略全链（`_c_shape_plan`/`_c_shape_vertices`/`_prominent_turns`/`_main_protruding_axes`/`_slice_at_index`/`_canvas_index_of_fraction`）、红手柄 face 权威、`face_spans`/`face_at` 语义、`_ADDITIONAL["face_stacking"]`、`_slice_points_by_canvas_fraction`。测试side：`t_addfold.py`/`t_cshape.py`/`t_reviewfix.py` 删除（断言旧机制本体），`t_additional`/`t_compose`/`t_twofix` 按新语义重写（产品契约重述），`t_third_invalidate`/`t_removal` 原样存活。
 
+**终门修复（第三轮）**：帐篷上升段含**死区**（钉扎带内位移严格为零——上升在钉扎行上非零时轴线插值出 1-3px 漂移）且至少跨 6 格（微型版心的陡上升曾让双线性网格跟不上精确帐篷）；域 margin 提高到 1.5×半径（带缘压住 Dirichlet 边界曾在小版心上撕出 138px 的缝）；`apply` 在网格边界内 3 格边缘带向精确帐篷 smoothstep 交接（实测缝 <0.001px）；det 阈值贯通 `det_sign`/`fold_loci`；缓存指纹含 commands 内容；无 numpy 时优雅降级（警示 note、warp 惰性）。**缓存的诚实说明**：内容指纹只消除同内容重复构建（同帧两次调用、刷新重绘）；导线拖拽每帧内容都变，仍付一次完整求解（~160-220ms/帧）——异步预览留作后续。
+
 ## 6. 已知取舍
 
 1. **平移惰性**：想"平移"纹理的用户需画弯线/转向线（流向差才是语言）——范式代价，规格原文"不再产生绝对的位移差"；
 2. **尾部非紧支撑**：谐波衰减 + 轴线钉扎 + Dirichlet 界，实测远地 <1px，但不是数学零；
 3. **近轴让权**（§3）；
 4. **非可积请求部分顺从**：孤立旋转线实测 ~23°/25°（助推后），紧贴轴线时更低；
-5. **网格分辨率**：96 格双线性；亚格结构不可表达；`det` 口袋以节点分辨率报告。
+5. **网格分辨率**：96 格双线性（短轴下限 48）；亚格结构不可表达；`det` 以单侧模板逐点最小报告（对双线性场是紧的）；
+6. **病态设定无顺从保证**：版心极小而线在其许多倍距离之外（如 30px 高的 V 架配 240px 外的 480px 长线）时，场仍保持单射、可逆、轴线不动，但线上流向的顺从质量无保证——宽版心上 12% 的轴线护罩也可能吞掉横穿轴线的长线的大段话语权。
