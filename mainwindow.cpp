@@ -1309,6 +1309,8 @@ void MainWindow::openTextureView()
     m_childPaintWidget->model().setIntId(2);
     m_childPaintWidget->modelReplaced();
     m_childPaintWidget->resetHistory(QStringLiteral("Open Texture View"));
+    m_childFilePath = fileName;
+    updateWindowTitle();
     showTextureView();
     updateAttention(m_childPaintWidget,
                     AttentionChange::FrameChange,
