@@ -18,9 +18,8 @@ can inspect and edit the C++ scene model and use vector geometry helpers.
 - `.anproj` is a complete AnimeAn project. It stores both the Main View and
   the Texture View, so **File > Save** always preserves the whole workspace.
 - `.textureview` stores only the Texture View and is managed through the
-  **Texture View File** menu for reuse across projects.
-- Legacy `.animean` scene files remain openable. Their next save uses the
-  corresponding new extension instead of overwriting the legacy file.
+  **Texture View File** menu (Open / Save / Save As) for reuse across
+  projects.
 
 ## Project Layout
 

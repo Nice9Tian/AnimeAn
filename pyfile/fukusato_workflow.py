@@ -38,12 +38,12 @@ _CACHE = {"key": None, "mesh": None}
 # the expensive preview pipeline runs again on release.
 _PREVIEW = {"main": [], "child": []}
 _DRAG = {"id": None, "origin": None, "points": None, "moved": False,
-         "was_accepted": False}
+         "was_accepted": False, "state": None}
 
 
 def _reset_drag():
     _DRAG.update(id=None, origin=None, points=None, moved=False,
-                 was_accepted=False)
+                 was_accepted=False, state=None)
 
 _EXCLUDED = {
     HANDLE_PROPERTY, crease_line_tool.PROPERTY,
@@ -174,8 +174,24 @@ def invalidate_mesh():
     _CACHE.update(key=None, mesh=None)
 
 
-def _creases_changed():
+def _creases_changed(reason="edit"):
     invalidate_mesh()
+    if reason == "edit":
+        # A crease is a first-class input to the deformation (it produces the
+        # tear). Editing one while the frame holds an accepted mapping re-runs
+        # the solve, the same policy _remove_guide applies - otherwise the
+        # emitted artwork keeps the old deformation while the preview snaps
+        # back to the undeformed layout with no cue. History restores skip
+        # this: the restored scene is authoritative and must not be mutated.
+        try:
+            scene = _scene_model("main")
+            state = _state(scene)
+            frame = max(scene.current_frame(), 0)
+            if any(bool(guide.get("accepted", False))
+                   for guide in _frame_guides(state, frame)):
+                _apply_guides(scene, state, frame, commit_history=False)
+        except Exception as error:
+            print(f"[fukusato] mapped output is stale after the crease change: {error}")
     refresh_overlays()
 
 
@@ -262,18 +278,10 @@ def _fill_triangles(fill):
     if not rings:
         return []
 
-    # A boundary sample cannot sit in one of the ring's own children. Taking
-    # the median over spread vertices also makes a touching/tangent vertex
-    # harmless. This is the same odd-even classification used by AutoMapping.
-    levels = []
-    for index, ring in enumerate(rings):
-        count = min(5, len(ring))
-        candidates = sorted(
-            sum(1 for other_index, other in enumerate(rings)
-                if other_index != index
-                and point_in_ring(ring[(sample * len(ring)) // count], other))
-            for sample in range(count))
-        levels.append(candidates[len(candidates) // 2])
+    # One home for the odd-even classification (median over spread boundary
+    # vertices) - the donut/letter-O fix lives in auto_mapping.
+    levels = [auto_mapping._ring_nesting_level(rings, index)
+              for index in range(len(rings))]
 
     components = [{"ring": ring, "level": levels[index], "holes": []}
                   for index, ring in enumerate(rings)
@@ -393,14 +401,18 @@ def _output_layers(scene, frame, keep_index=None):
 
     Ownership is the layer NAME the tool stamps on every layer it creates -
     never content sniffing, which would also claim a user's duplicate of a
-    mapped result. The per-frame content check keeps an output layer that
-    serves a DIFFERENT frame alive across a re-accept here.
+    mapped result. Matched as a PREFIX because setLayerName routes through
+    uniqueLayerName: while the previous output still exists, the new layer's
+    name drifts to "fukusato layer1", "fukusato layer2", ... (auto_mapping
+    documents the same hazard for its axis layers). The per-frame content
+    check keeps an output layer that serves a DIFFERENT frame alive across a
+    re-accept here.
     """
     owned = []
     for layer in scene.get_structure()["layers"]:
         index = int(layer["index"])
         if (index == keep_index or layer.get("internal")
-                or layer.get("name") != core.MAPPED_LAYER_NAME):
+                or not str(layer.get("name") or "").startswith(core.MAPPED_LAYER_NAME)):
             continue
         image = scene.cell_to_dict(index, frame, False, POLY_STEP)["image"]
         if image["strokes"] or image.get("fills"):
@@ -718,8 +730,19 @@ def _drag_guide(message):
         return
     if not str(message.get("handle") or "").startswith(_GUIDE_ID_PREFIX):
         return
+    if phase not in ("press", "move", "release"):
+        return
     scene = _scene_model("main")
-    state = _state(scene)
+    if phase == "press" or _DRAG.get("state") is None:
+        state = _state(scene)
+    else:
+        # Mid-gesture: reuse the document parsed at press. scriptData is a
+        # full-document json.loads that grows with every mapped frame's
+        # stored UV field - re-parsing byte-identical data per pointer event
+        # made dragging slower the more frames had been mapped. Anything that
+        # could rewrite scriptData mid-drag (history restore, frame change)
+        # resets _DRAG first.
+        state = _DRAG["state"]
     guide = _find_guide(state, message.get("handle"))
     if guide is None:
         return
@@ -731,7 +754,8 @@ def _drag_guide(message):
             return
         _DRAG.update(id=int(guide["id"]), origin=point,
                      points=[tuple(p) for p in guide.get("after") or []],
-                     moved=False, was_accepted=bool(guide.get("accepted")))
+                     moved=False, was_accepted=bool(guide.get("accepted")),
+                     state=state)
         return
     if int(guide["id"]) != _DRAG.get("id") or phase not in ("move", "release", "cancel"):
         return
@@ -890,7 +914,11 @@ def _option_changed(cell, stroke, message):
     except (TypeError, ValueError) as error:
         print(f"[fukusato] ignored bad option value for {hook}: {error}")
         return
-    invalidate_mesh()
+    # No invalidate_mesh() here: of the fk_ options only "grid" is a mesh
+    # input, and it is part of _mesh_for's cache key, so it invalidates
+    # itself. Sliders fire per intermediate value - throwing the mesh away on
+    # every alpha/beta/samples tick forced a full retriangulation per tick
+    # with a preview enabled.
     refresh_overlays()
 
 

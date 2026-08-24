@@ -314,7 +314,7 @@ void loadImageFromJson(AnimeVectorImageModel *image, const QJsonValue &value)
 
 QString projectOpenFilter()
 {
-    return QStringLiteral("AnimeAn Projects (*.anproj);;Legacy AnimeAn Files (*.animean);;All Files (*)");
+    return QStringLiteral("AnimeAn Projects (*.anproj);;All Files (*)");
 }
 
 QString projectSaveFilter()
@@ -324,7 +324,7 @@ QString projectSaveFilter()
 
 QString textureViewOpenFilter()
 {
-    return QStringLiteral("AnimeAn Texture Views (*.textureview);;Legacy AnimeAn Files (*.animean);;All Files (*)");
+    return QStringLiteral("AnimeAn Texture Views (*.textureview);;All Files (*)");
 }
 
 QString textureViewSaveFilter()
@@ -345,11 +345,10 @@ QString ensureFileExtension(const QString &fileName, const QString &extension)
         return fileName;
     }
 
-    // Replace extensions that AnimeAn owns. This makes migration from the
-    // former shared .animean suffix predictable instead of producing names
-    // such as drawing.animean.anproj.
-    if (suffix.compare(QStringLiteral("animean"), Qt::CaseInsensitive) == 0
-        || suffix.compare(QStringLiteral("anproj"), Qt::CaseInsensitive) == 0
+    // Replace extensions that AnimeAn owns, so saving one document type over
+    // a name carrying the other type's suffix produces drawing.anproj rather
+    // than drawing.textureview.anproj.
+    if (suffix.compare(QStringLiteral("anproj"), Qt::CaseInsensitive) == 0
         || suffix.compare(QStringLiteral("textureview"), Qt::CaseInsensitive) == 0) {
         return fileName.left(fileName.size() - suffix.size()) + extension;
     }
@@ -383,14 +382,6 @@ QString ensureProjectFileExtension(const QString &fileName)
 QString ensureTextureViewFileExtension(const QString &fileName)
 {
     return ensureFileExtension(fileName, QStringLiteral("textureview"));
-}
-
-QJsonObject modelToJson(const AnimeSceneModel &model)
-{
-    QJsonObject root = sceneToJson(model);
-    root[QStringLiteral("format")] = QStringLiteral("AnimeAn Project");
-    root[QStringLiteral("version")] = 1;
-    return root;
 }
 
 namespace {
@@ -520,26 +511,7 @@ QJsonObject sceneToJson(const AnimeSceneModel &model)
     root[QStringLiteral("assets")] = assets;
     return root;
 }
-}
 
-bool modelFromJson(const QJsonObject &root, AnimeSceneModel *model, QString *error)
-{
-    if (root.value(QStringLiteral("format")).toString() != QStringLiteral("AnimeAn Project")) {
-        if (error) {
-            *error = QStringLiteral("Unsupported project file.");
-        }
-        return false;
-    }
-    if (!sceneHasData(root)) {
-        if (error) {
-            *error = QStringLiteral("The file does not contain scene data.");
-        }
-        return false;
-    }
-    return sceneFromJson(root, model, error);
-}
-
-namespace {
 bool sceneFromJson(const QJsonObject &root, AnimeSceneModel *model, QString *error)
 {
     Q_UNUSED(error);
@@ -670,12 +642,8 @@ QJsonObject projectToJson(const AnimeSceneModel &mainModel, const AnimeSceneMode
 bool projectFromJson(const QJsonObject &root,
                      AnimeSceneModel *mainModel,
                      AnimeSceneModel *textureModel,
-                     QString *error,
-                     bool *textureLoaded)
+                     QString *error)
 {
-    if (textureLoaded) {
-        *textureLoaded = false;
-    }
     if (!mainModel || !textureModel) {
         if (error) {
             *error = QStringLiteral("Project destination is missing.");
@@ -683,15 +651,7 @@ bool projectFromJson(const QJsonObject &root,
         return false;
     }
 
-    const QString format = root.value(QStringLiteral("format")).toString();
-    if (format == QStringLiteral("AnimeAn Project")) {
-        // Version 1 (.animean) held one scene. Treat it as the main view and
-        // leave *textureModel untouched: the file says nothing about the
-        // texture board, so the board the user has open must survive the load.
-        return modelFromJson(root, mainModel, error);
-    }
-
-    if (format != QStringLiteral("AnimeAn Project 2")) {
+    if (root.value(QStringLiteral("format")).toString() != QStringLiteral("AnimeAn Project 2")) {
         if (error) {
             *error = QStringLiteral("Unsupported project file.");
         }
@@ -711,17 +671,28 @@ bool projectFromJson(const QJsonObject &root,
         }
         return false;
     }
+    // Guard each embedded payload exactly like a standalone document: a
+    // damaged bundle whose view lost its scene keys must be rejected, not
+    // loaded as a blank board that the next silent Ctrl+S writes back.
+    const QJsonObject mainObject = mainView.toObject();
+    const QJsonObject textureObject = textureView.toObject();
+    if (!sceneHasData(mainObject) || !sceneHasData(textureObject)) {
+        if (error) {
+            *error = QStringLiteral("The project file does not contain scene data.");
+        }
+        return false;
+    }
 
     AnimeSceneModel loadedMain;
     AnimeSceneModel loadedTexture;
     QString modelError;
-    if (!sceneFromJson(mainView.toObject(), &loadedMain, &modelError)) {
+    if (!sceneFromJson(mainObject, &loadedMain, &modelError)) {
         if (error) {
             *error = QStringLiteral("Invalid main view: %1").arg(modelError);
         }
         return false;
     }
-    if (!sceneFromJson(textureView.toObject(), &loadedTexture, &modelError)) {
+    if (!sceneFromJson(textureObject, &loadedTexture, &modelError)) {
         if (error) {
             *error = QStringLiteral("Invalid texture view: %1").arg(modelError);
         }
@@ -730,9 +701,6 @@ bool projectFromJson(const QJsonObject &root,
 
     *mainModel = loadedMain;
     *textureModel = loadedTexture;
-    if (textureLoaded) {
-        *textureLoaded = true;
-    }
     return true;
 }
 
@@ -768,12 +736,6 @@ bool textureViewFromJson(const QJsonObject &root, AnimeSceneModel *model, QStrin
             return false;
         }
         return sceneFromJson(root, model, error);
-    }
-
-    // A version-1 .animean could represent either board, because the old
-    // format did not distinguish them. Keep that import path during migration.
-    if (format == QStringLiteral("AnimeAn Project")) {
-        return modelFromJson(root, model, error);
     }
 
     if (error) {

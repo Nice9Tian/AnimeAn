@@ -2372,16 +2372,25 @@ bool PaintOpenGLWidget::pressOverlayOrBadge(const QPointF &screenPos,
     // high zoom, clamped over content at the viewport edge) swallow the grab
     // and fire accept/remove on the guide the user meant to move, while
     // draggable-first makes a low-zoom badge sitting on its own guide
-    // permanently unclickable. So the tie is broken in SCREEN space: the
-    // target the pointer is actually closer to wins.
+    // permanently unclickable. So the tie is broken by how deep INSIDE the
+    // drawn badge the pointer is (screen px): the inner half of the glyph is
+    // always a deliberate badge click, and on the outer fringe the badge
+    // only wins when the pointer is deeper into it than it is close to the
+    // draggable geometry. (Comparing against the badge's centre point
+    // instead handicapped the badge by up to half its size and left the
+    // glyph's line-facing strip dead at every zoom.)
     const int badgeIndex = overlayActionHandleAt(docPos);
     qreal dragDistance = 0.0;
     const QString overlayId = draggableOverlayItemAt(screenPos, &dragDistance);
     bool badgeWins = badgeIndex >= 0;
     if (badgeWins && !overlayId.isEmpty()) {
-        const QPointF badgeCentre = AnimeViewScale::toScreen(
-            m_overlayHandles[badgeIndex].rect.center(), m_zoom, m_panOffset);
-        badgeWins = QLineF(screenPos, badgeCentre).length() <= dragDistance;
+        const QRectF badgeRect = m_overlayHandles[badgeIndex].rect;
+        const qreal depthDoc = std::min(
+            std::min(docPos.x() - badgeRect.left(), badgeRect.right() - docPos.x()),
+            std::min(docPos.y() - badgeRect.top(), badgeRect.bottom() - docPos.y()));
+        const qreal depthScreen = depthDoc * m_zoom;
+        const qreal halfScreen = 0.5 * std::min(badgeRect.width(), badgeRect.height()) * m_zoom;
+        badgeWins = depthScreen >= 0.5 * halfScreen || depthScreen >= dragDistance;
     }
     if (badgeWins) {
         const OverlayHandle &handle = m_overlayHandles[badgeIndex];
@@ -2392,6 +2401,9 @@ bool PaintOpenGLWidget::pressOverlayOrBadge(const QPointF &screenPos,
     }
     if (!overlayId.isEmpty()) {
         m_activeOverlayDrag = overlayId;
+        // Each drag gets a fresh throttle window so its first "move" is never
+        // swallowed by the previous overlay drag's timestamp.
+        m_overlayDragHookThrottle.invalidate();
         sendPythonHandleMessage(QStringLiteral("press"), overlayId, docPos, modifiers);
         return true;
     }
@@ -2781,8 +2793,15 @@ void PaintOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
     if (!m_activeOverlayDrag.isEmpty()) {
         const QString overlayId = m_activeOverlayDrag;
         m_activeOverlayDrag.clear();
-        sendPythonHandleMessage(QStringLiteral("release"), overlayId,
-                                mapToDocument(event->position()));
+        const QPointF docPos = mapToDocument(event->position());
+        // One final, un-throttled move first: the throttle may have swallowed
+        // up to kUpdateHookIntervalMs of pointer travel, and not every owner
+        // recomputes from the release position - the committed state must be
+        // where the button actually came up.
+        sendPythonHandleMessage(QStringLiteral("move"), overlayId, docPos,
+                                event->modifiers());
+        sendPythonHandleMessage(QStringLiteral("release"), overlayId, docPos,
+                                event->modifiers());
         update();
         event->accept();
         return;

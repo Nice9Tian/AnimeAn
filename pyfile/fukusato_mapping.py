@@ -775,14 +775,18 @@ def emit_pattern(mesh, uv, pattern_polyline, neighbours, index=None):
     # sheets may legitimately overlap the same UV span with DIFFERENT panel
     # images, and both must survive - the image comparison below, not any
     # adjacency test, is what decides (adjacency would wrongly re-admit the
-    # crease-edge duplicate, whose triangles share no vertex ids).
+    # crease-edge duplicate, whose triangles share no vertex ids). Opposite
+    # ORIENTATIONS are never duplicates even when their images coincide: the
+    # back-facing copy is a separately-tagged object (BACK_PROPERTY) that the
+    # user styles or hides, exactly as the point-handle branch above keeps it.
     deduped_pieces = []
     for piece in pieces:
         if deduped_pieces:
             prev = deduped_pieces[-1]
             same_span = (piece[0] == prev[0]
                     and abs(piece[1] - prev[1]) <= 1e-9
-                    and abs(piece[2] - prev[2]) <= 1e-9)
+                    and abs(piece[2] - prev[2]) <= 1e-9
+                    and (prev[4][4] < 0.0) == (piece[4][4] < 0.0))
             if same_span:
                 source0 = seg_point(piece[0], piece[1])
                 source1 = seg_point(piece[0], piece[2])

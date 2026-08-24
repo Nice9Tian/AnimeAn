@@ -128,13 +128,53 @@ class GarmentMesh:
                 segments.append((ia, ib))
                 markers.append((int(marker),))
 
-        for ring in [outer] + holes:
-            for a, b in zip(ring, ring[1:] + ring[:1]):
-                add_segment(a, b, 1)
+        # Clip the creases FIRST: a crease drawn past the silhouette (the
+        # normal authoring gesture) is cut exactly AT the boundary, so its
+        # clipped endpoint lies in the interior of a ring edge. That point
+        # must become a vertex OF the edge in the PSLG: handing `triangle` a
+        # vertex that merely sits ON an unsplit segment sends its quality
+        # refinement into an endless encroachment loop (or a crash) with the
+        # GIL held - the whole app freezes.
+        ring_vertices = [p for ring in [outer] + holes for p in ring]
+
+        def snapped(point):
+            for vertex in ring_vertices:
+                if math.hypot(point[0] - vertex[0], point[1] - vertex[1]) <= 1e-6:
+                    return vertex
+            return point
+
+        crease_segments = []
         for crease_id, crease in enumerate(creases, 2):
             clean = [tuple(map(float, p)) for p in crease or []]
             for a, b in clip_polyline_to_region(clean, outer, holes):
-                add_segment(a, b, crease_id)
+                crease_segments.append((snapped(a), snapped(b), crease_id))
+        crease_endpoints = [p for a, b, _marker in crease_segments for p in (a, b)]
+
+        def interior_points_on(a, b):
+            ex, ey = b[0] - a[0], b[1] - a[1]
+            length_sq = ex * ex + ey * ey
+            if length_sq <= _EPS * _EPS:
+                return []
+            found = []
+            for endpoint in crease_endpoints:
+                t = ((endpoint[0] - a[0]) * ex + (endpoint[1] - a[1]) * ey) / length_sq
+                if t <= 1e-9 or t >= 1.0 - 1e-9:
+                    continue
+                px, py = a[0] + ex * t, a[1] + ey * t
+                if math.hypot(endpoint[0] - px, endpoint[1] - py) <= 1e-6:
+                    found.append((t, endpoint))
+            found.sort(key=lambda item: item[0])
+            return [point for _t, point in found]
+
+        for ring in [outer] + holes:
+            for a, b in zip(ring, ring[1:] + ring[:1]):
+                previous = a
+                for point in interior_points_on(a, b):
+                    add_segment(previous, point, 1)
+                    previous = point
+                add_segment(previous, b, 1)
+        for a, b, crease_id in crease_segments:
+            add_segment(a, b, crease_id)
 
         span = max(max(p[0] for p in outer) - min(p[0] for p in outer),
                    max(p[1] for p in outer) - min(p[1] for p in outer), 1.0)

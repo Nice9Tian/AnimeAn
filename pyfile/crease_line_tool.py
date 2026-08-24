@@ -53,10 +53,13 @@ def add_change_listener(function):
         _CHANGE_LISTENERS.append(function)
 
 
-def _notify_changed():
+def _notify_changed(reason="edit"):
+    # reason: "edit" = the user added/removed a crease (listeners may react
+    # by re-solving); "restore" = scriptData was restored wholesale (the
+    # restored scene is authoritative - listeners must only re-read).
     for function in tuple(_CHANGE_LISTENERS):
         try:
-            function()
+            function(reason)
         except Exception as error:
             print(f"[crease] change listener failed: {error}")
 
@@ -178,7 +181,7 @@ def _overlay_action(cell, stroke, message):
 
 def _history_restored(cell, stroke, message):
     refresh_overlay()
-    _notify_changed()
+    _notify_changed("restore")
 
 
 def _frame_changed(cell, stroke, message):

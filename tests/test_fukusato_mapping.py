@@ -74,6 +74,17 @@ class GarmentMeshTests(unittest.TestCase):
         mesh = GarmentMesh([], [])
         self.assertIsNone(mesh.locate(0, 0))
 
+    def test_crease_crossing_the_silhouette_triangulates(self):
+        # The clipped endpoint of a crease drawn past the garment edge lands
+        # in the INTERIOR of an outer-ring segment. The PSLG must split that
+        # segment there - an on-segment vertex without the split sends
+        # triangle's quality refinement into an infinite loop (app freeze).
+        mesh = GarmentMesh.triangulate(
+            [(0, 0), (100, 0), (100, 100), (0, 100)],
+            creases=[[(50, 50), (160, 61)]], max_area=80)
+        self.assertTrue(mesh.tris)
+        self.assertIsNotNone(mesh.locate(25, 25))
+
 
 class WeightTests(unittest.TestCase):
     def test_pure_geodesic_does_not_cross_disconnected_component(self):
@@ -149,6 +160,21 @@ class EmissionTests(unittest.TestCase):
         self.assertFalse(back)
         self.assertAlmostEqual(points[0][1], 0.0)
         self.assertAlmostEqual(points[-1][1], 0.0)
+
+    def test_folded_crease_span_keeps_the_back_copy(self):
+        # Fold the far fan so its UV triangle flips orientation. The two
+        # claims of the on-crease span now have identical panel images but
+        # OPPOSITE orientations - the back copy is a separately tagged object
+        # (BACK_PROPERTY) and must survive the duplicate-span test, exactly
+        # as the point-handle branch keeps it.
+        mesh = GarmentMesh(
+            [(0, 0), (10, 0), (0, 10), (0, 0), (10, 0), (10, -10)],
+            [(0, 1, 2), (4, 3, 5)])
+        uv = list(mesh.P)
+        uv[5] = (5.0, 5.0)
+        runs = mapping.emit_pattern(
+            mesh, uv, [(2.0, 0.0), (8.0, 0.0)], mesh.tri_neighbours())
+        self.assertEqual(sorted(back for _points, back in runs), [False, True])
 
     def test_discontinuous_panel_images_are_not_chained(self):
         class Index:
@@ -292,14 +318,19 @@ class StateTests(unittest.TestCase):
     def test_output_layers_are_identified_by_name_not_content(self):
         class LayerScene:
             def __init__(self):
+                # "fukusato layer1" is what setLayerName's uniquifier produces
+                # when the previous output still exists at creation time - it
+                # must be claimed too, or every accept from the third on
+                # would stack another full copy.
                 self.layers = [
                     {"name": "fukusato layer", "internal": False, "content": True},
+                    {"name": "fukusato layer1", "internal": False, "content": True},
                     {"name": "fukusato layer", "internal": False, "content": False},
-                    {"name": "fukusato layer", "internal": False, "content": True},
+                    {"name": "fukusato layer2", "internal": False, "content": True},
                     {"name": "cloth ref", "internal": False, "content": True},
                     {"name": "fukusato layer", "internal": True, "content": True},
                 ]
-                self.keep = self.layers[2]
+                self.keep = self.layers[3]
 
             def get_structure(self):
                 return {"layers": [
@@ -318,16 +349,17 @@ class StateTests(unittest.TestCase):
                 pass
 
         scene = LayerScene()
-        kept = workflow._discard_output_layers(scene, 0, keep_index=2)
-        # Only the OLD output layer with content at this frame was deleted.
-        # Survivors: the new layer (keep_index, shifted down by the delete),
-        # the output layer serving another frame, the user's own layer whose
-        # content merely looks mapped, and the internal layer.
+        kept = workflow._discard_output_layers(scene, 0, keep_index=3)
+        # The OLD output layers with content at this frame were deleted,
+        # drifted names included. Survivors: the new layer (keep_index,
+        # shifted down by the deletes), the output layer serving another
+        # frame, the user's own layer whose content merely looks mapped, and
+        # the internal layer.
         self.assertEqual(kept, 1)
         self.assertIs(scene.layers[kept], scene.keep)
         self.assertEqual(
             [layer["name"] for layer in scene.layers],
-            ["fukusato layer", "fukusato layer", "cloth ref", "fukusato layer"])
+            ["fukusato layer", "fukusato layer2", "cloth ref", "fukusato layer"])
 
     def test_fukusato_drag_preview_is_transient_until_release(self):
         class Scene:

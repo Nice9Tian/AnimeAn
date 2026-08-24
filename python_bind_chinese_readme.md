@@ -279,9 +279,8 @@ def activate_midline_tool(name="midline", property_value="midline"):
 - **File 菜单** 的 `Save` / `Save As` 始终保存完整 `.anproj` 工程，其中同时包含主画板和 texture view；保存内容不再随当前焦点变化。
 - **Texture View File 菜单**（新增顶层菜单，texture view = 子画板）用于操作子画板的文件：
   - `Import Raster / OpenToonz Lines / Clip Studio Paint into Texture View...`：把这三种格式导入到**子画板**（会先显示并激活子画板窗口）。
-  - `Open Texture View...` / `Save Texture View As...`：把子画板场景作为 `.textureview` 文件独立读写（与完整工程互不影响，便于复用同一套纹理图案）。
+  - `Open Texture View...` / `Save Texture View` / `Save Texture View As...`：把子画板场景作为 `.textureview` 文件独立读写（与完整工程互不影响，便于复用同一套纹理图案）。
   - `Export Texture View Image...`：把子画板当前画面导出为 PNG（抓取画布帧缓冲；若此时 overlay 引导线可见会一并出现在图里）。
-- 旧 `.animean` 文件仍可作为工程或 texture view 打开；再次保存时会迁移为 `.anproj` 或 `.textureview`，不会覆盖旧文件。
 
 内嵌 Python 全局变量（每次选择变化时同步）：
 

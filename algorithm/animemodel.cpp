@@ -1130,7 +1130,7 @@ void AnimeSceneModel::normalizeLayerTreeInternal()
     // fix the counter after) mints duplicates the moment a file mixes columns
     // that carry ids with columns that do not - which happens as soon as a
     // layer is added to a scene whose tree nobody has read since, because
-    // modelToJson writes column.id verbatim and that column still has 0.
+    // sceneToJson (projectio.cpp) writes column.id verbatim and that column still has 0.
     // A duplicate is not a cosmetic problem: the second column collapses into
     // the first in liveLayerIds, so it never gets a node, never appears in the
     // panel, and layerIdAt reports the wrong column's identity.

@@ -125,8 +125,13 @@ private:
     bool confirmDivergentOverwrite(const QString &requestedName,
                                    const QString &targetName,
                                    const QString &dialogTitle);
-    // Installs a loaded scene into a board: model, view identity, history
-    // reset, attention refresh, repaint.
+    // Loading a scene into a board is two-phase so multi-board loads can
+    // install every model BEFORE any activation fires python hooks that read
+    // the other board: install assigns the model and the view identity;
+    // activate runs modelReplaced, history reset, attention refresh, repaint.
+    void installLoadedModel(PaintOpenGLWidget *view, const AnimeSceneModel &model);
+    void activateLoadedModel(PaintOpenGLWidget *view, const QString &historyLabel);
+    // install + activate, for single-board loads.
     void adoptLoadedModel(PaintOpenGLWidget *view,
                           const AnimeSceneModel &model,
                           const QString &historyLabel);

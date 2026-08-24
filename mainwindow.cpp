@@ -1304,8 +1304,8 @@ void MainWindow::openTextureView()
 
     adoptLoadedModel(m_childPaintWidget, loadedModel, QStringLiteral("Open Texture View"));
     // Remember the file that was actually opened - never a rewritten name.
-    // Saving a legacy .animean goes through Save As (see saveTextureView), so
-    // the migration to .textureview always happens in a dialog.
+    // Saving under a foreign suffix goes through Save As (see
+    // saveTextureView), so the switch to .textureview is always a dialog.
     m_childFilePath = fileName;
     updateWindowTitle();
     showTextureView();
@@ -1315,8 +1315,9 @@ void MainWindow::openTextureView()
 bool MainWindow::saveTextureView()
 {
     // In-place save only for a board that already lives in a .textureview
-    // file; anything else (no file yet, or a legacy .animean source) routes
-    // through the dialog so the target is always explicitly confirmed.
+    // file; anything else (no file yet, or a foreign suffix opened through
+    // All Files) routes through the dialog so the target is always
+    // explicitly confirmed.
     if (m_childFilePath.isEmpty()
         || QFileInfo(m_childFilePath).suffix().compare(QStringLiteral("textureview"), Qt::CaseInsensitive) != 0) {
         return saveTextureViewAs();
@@ -1432,15 +1433,17 @@ bool MainWindow::confirmDivergentOverwrite(const QString &requestedName,
     return answer == QMessageBox::Yes;
 }
 
-void MainWindow::adoptLoadedModel(PaintOpenGLWidget *view,
-                                  const AnimeSceneModel &model,
-                                  const QString &historyLabel)
+void MainWindow::installLoadedModel(PaintOpenGLWidget *view, const AnimeSceneModel &model)
 {
     const bool isChild = view == m_childPaintWidget;
     view->model() = model;
     view->model().setTextId(isChild ? QStringLiteral("child_paint_view")
                                     : QStringLiteral("main_paint_view"));
     view->model().setIntId(isChild ? 2 : 1);
+}
+
+void MainWindow::activateLoadedModel(PaintOpenGLWidget *view, const QString &historyLabel)
+{
     view->modelReplaced();
     view->resetHistory(historyLabel);
     updateAttention(view,
@@ -1449,6 +1452,14 @@ void MainWindow::adoptLoadedModel(PaintOpenGLWidget *view,
                     view->model().currentLayer(),
                     view->model().currentAsset());
     view->update();
+}
+
+void MainWindow::adoptLoadedModel(PaintOpenGLWidget *view,
+                                  const AnimeSceneModel &model,
+                                  const QString &historyLabel)
+{
+    installLoadedModel(view, model);
+    activateLoadedModel(view, historyLabel);
 }
 
 bool MainWindow::writeJsonToFile(const QJsonObject &object,
@@ -2498,10 +2509,11 @@ bool MainWindow::saveProject()
 {
     // File > Save always means the complete project. Texture-only persistence
     // lives in the Texture View File menu and uses its own .textureview type.
-    // Only a native .anproj is a silent Ctrl+S target; a legacy .animean (or
-    // anything else) routes through Save As so the migration to .anproj is
-    // always an explicit, confirmed dialog - never a rewrite of a remembered
-    // path that could land on an unrelated file.
+    // Only a native .anproj is a silent Ctrl+S target; anything else (a file
+    // opened through the All Files filter under a foreign suffix) routes
+    // through Save As so the switch to .anproj is always an explicit,
+    // confirmed dialog - never a rewrite of a remembered path that could
+    // land on an unrelated file.
     if (m_currentFilePath.isEmpty()
         || QFileInfo(m_currentFilePath).suffix().compare(QStringLiteral("anproj"), Qt::CaseInsensitive) != 0) {
         return saveProjectAs();
@@ -2562,36 +2574,33 @@ bool MainWindow::loadProjectFrom(const QString &fileName)
     AnimeSceneModel loadedMainModel;
     AnimeSceneModel loadedTextureModel;
     QString error;
-    bool textureLoaded = false;
-    if (!projectFromJson(root, &loadedMainModel, &loadedTextureModel, &error, &textureLoaded)) {
+    if (!projectFromJson(root, &loadedMainModel, &loadedTextureModel, &error)) {
         QMessageBox::warning(this,
                              QStringLiteral("Open Project"),
                              error.isEmpty() ? QStringLiteral("Unsupported project file.") : error);
         return false;
     }
 
-    adoptLoadedModel(m_paintWidget, loadedMainModel, QStringLiteral("Open Project"));
-    if (textureLoaded) {
-        adoptLoadedModel(m_childPaintWidget, loadedTextureModel, QStringLiteral("Open Project"));
-        // The board now comes from the project bundle, not from a standalone
-        // .textureview file.
-        m_childFilePath.clear();
-    }
-    // A legacy .animean file describes only the main view: the texture board
-    // (and its file association) are deliberately left as they were.
+    // Both models are installed BEFORE either board activates: activation
+    // fires the historyrestore hook and republishes the python globals, and
+    // scripts reading the pair must never observe a half-swapped document
+    // (new main + previous project's texture board).
+    installLoadedModel(m_paintWidget, loadedMainModel);
+    installLoadedModel(m_childPaintWidget, loadedTextureModel);
+    activateLoadedModel(m_paintWidget, QStringLiteral("Open Project"));
+    activateLoadedModel(m_childPaintWidget, QStringLiteral("Open Project"));
+    // The board now comes from the project bundle, not from a standalone
+    // .textureview file.
+    m_childFilePath.clear();
 
     // Remember the file that was actually opened - never a rewritten name.
-    // Saving a legacy .animean goes through Save As (see saveProject), so the
-    // migration to .anproj always happens in a dialog.
+    // Saving under a foreign suffix goes through Save As (see saveProject).
     m_currentFilePath = fileName;
     updateWindowTitle();
     showMainPaintView();
     syncEmbeddedPythonState();
-    setStatusText(textureLoaded
-                      ? QStringLiteral("Opened project (main + texture): %1")
-                            .arg(QFileInfo(fileName).fileName())
-                      : QStringLiteral("Opened legacy project (main view only): %1")
-                            .arg(QFileInfo(fileName).fileName()));
+    setStatusText(QStringLiteral("Opened project (main + texture): %1")
+                      .arg(QFileInfo(fileName).fileName()));
     return true;
 }
 

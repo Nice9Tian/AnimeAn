@@ -4021,6 +4021,31 @@ def _guide_drag_event(message):
                              "moved": False}
         return
 
+    if phase == "cancel":
+        # A context change (tool/frame/property switch) abandons the drag:
+        # restore the persisted baseline the move previews mutated in place,
+        # exactly like _nearest_handle_event does for the anchor. Without
+        # this, the uncommitted placement would silently become the position
+        # the next mapping run uses.
+        drag = _GUIDE_DRAG.pop(view, None)
+        if drag is None or drag["id"] != overlay_id or not drag["moved"]:
+            return
+        if is_guide:
+            item = assets.get(overlay_id)
+            if item is not None:
+                item["points"] = [list(p) for p in drag["points"]]
+        else:
+            _index, line = _additional_line_by_overlay_id(view, overlay_id)
+            if line is not None:
+                line["points"] = [list(p) for p in drag["points"]]
+        _push_overlay(view)
+        _invalidate_grid_cache()
+        try:
+            _animean().ui.refresh()
+        except Exception:
+            pass
+        return
+
     if phase not in ("move", "release"):
         return
     drag = _GUIDE_DRAG.get(view)
@@ -7065,6 +7090,9 @@ def _history_restored(cell, stroke, message):
         _NEAREST_DRAG["had_original"] = False
         _NEAREST_DRAG["original_arc"] = None
         _NEAREST_DRAG["offset"] = (0.0, 0.0)
+    # Same reasoning for an in-flight guide/additional-line drag: the restore
+    # replaced the assets the gesture was mutating.
+    _GUIDE_DRAG.pop(message.get("view") or "main", None)
     _load_assets(message.get("view") or "main")
 
 
