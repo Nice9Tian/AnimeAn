@@ -3381,7 +3381,8 @@ def _push_nearest_handle():
     _push_overlay("main")
 
 
-_NEAREST_DRAG = {"frame": None, "moved": False, "offset": (0.0, 0.0)}
+_NEAREST_DRAG = {"frame": None, "moved": False, "offset": (0.0, 0.0),
+                 "had_original": False, "original_arc": None}
 
 
 def _nearest_handle_event(message):
@@ -3396,10 +3397,22 @@ def _nearest_handle_event(message):
         return
     phase = message.get("phase")
     if phase == "cancel":
-        # Arrow/Connect teardown; the anchor lives in the overlay now, so
-        # nothing to reclaim - just drop any half-finished drag state.
+        # Moving updates the in-memory overlay before release. A tool/frame
+        # switch must restore the persisted baseline instead of leaving an
+        # uncommitted anchor that the next mapping run would nevertheless use.
+        if _NEAREST_DRAG.get("moved"):
+            assets = _assets_for("main")
+            if _NEAREST_DRAG.get("had_original"):
+                assets[NEAREST_PROPERTY] = {
+                    "arc": list(_NEAREST_DRAG.get("original_arc") or (0.0, 0.0))}
+            else:
+                assets.pop(NEAREST_PROPERTY, None)
+            _push_nearest_handle()
         _NEAREST_DRAG["frame"] = None
         _NEAREST_DRAG["moved"] = False
+        _NEAREST_DRAG["had_original"] = False
+        _NEAREST_DRAG["original_arc"] = None
+        _NEAREST_DRAG["offset"] = (0.0, 0.0)
         return
     if message.get("handle") != NEAREST_PROPERTY:
         return
@@ -3407,6 +3420,12 @@ def _nearest_handle_event(message):
         frame = _main_guide_frame()
         _NEAREST_DRAG["frame"] = frame
         _NEAREST_DRAG["moved"] = False
+        original = _assets_for("main").get(NEAREST_PROPERTY)
+        original_arc = (original or {}).get("arc")
+        _NEAREST_DRAG["had_original"] = bool(original_arc and len(original_arc) >= 2)
+        _NEAREST_DRAG["original_arc"] = (
+            [float(original_arc[0]), float(original_arc[1])]
+            if _NEAREST_DRAG["had_original"] else None)
         # The handle accepts presses up to 7 screen px off centre; remember
         # the miss so the first move does not snap the anchor to the cursor.
         offset = (0.0, 0.0)
@@ -3441,6 +3460,9 @@ def _nearest_handle_event(message):
     moved = _NEAREST_DRAG["moved"]
     _NEAREST_DRAG["frame"] = None
     _NEAREST_DRAG["moved"] = False
+    _NEAREST_DRAG["had_original"] = False
+    _NEAREST_DRAG["original_arc"] = None
+    _NEAREST_DRAG["offset"] = (0.0, 0.0)
     if not moved:
         return
     _save_assets("main")
@@ -6289,11 +6311,14 @@ def _history_restored(cell, stroke, message):
         # A mid-drag Ctrl+Z invalidates the frame cached at press: the
         # restored guides may be entirely different, and solving against the
         # stale frame wrote the anchor in the OLD arc space and then
-        # committed it on top of the state the user just undid. Dropping the
-        # drag state makes the next move rebuild from the restored assets,
-        # and the untouched `moved` flag stays honest for the release.
+        # committed it on top of the state the user just undid. The restored
+        # script data is authoritative, so discard every part of the old
+        # gesture and let a later press build a fresh frame and baseline.
         _NEAREST_DRAG["frame"] = None
         _NEAREST_DRAG["moved"] = False
+        _NEAREST_DRAG["had_original"] = False
+        _NEAREST_DRAG["original_arc"] = None
+        _NEAREST_DRAG["offset"] = (0.0, 0.0)
     _load_assets(message.get("view") or "main")
 
 

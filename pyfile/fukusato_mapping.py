@@ -193,7 +193,14 @@ def _collect(scene, frame, wanted_property=None, exclude=()):
     structure = scene.get_structure()
     if frame < 0 or frame >= structure["frame_count"]:
         return out
-    for layer in structure["layers"]:
+    layers = structure["layers"]
+    # A mapped result is flattened into one output image. AnimeAn paints
+    # layer 0 last (on top), while strokes inside one image paint in append
+    # order, so pattern content has to be collected bottom-to-top. Handle
+    # pairing keeps the historical top-to-bottom order.
+    if wanted_property is None:
+        layers = reversed(layers)
+    for layer in layers:
         if not layer["visible"] or layer["type"] == "fill" or layer.get("internal"):
             continue
         cell = scene.cell_to_dict(layer["index"], frame, True, POLY_STEP)
@@ -578,11 +585,15 @@ def build_weights(mesh, adj, samples, alpha, beta, measures=None):
     of its arc length, so a sample from an N-sample curve weighs 1/N and a
     point handle's single sample weighs 1.
     """
+    if measures is not None and len(measures) != len(samples):
+        raise ValueError("measures must contain one value per handle sample")
     power = 2.0 * beta
     n_v = len(mesh.P)
     weights = [[0.0] * len(samples) for _ in range(n_v)]
     for k, s in enumerate(samples):
-        m = measures[k] if measures else 1.0
+        m = measures[k] if measures is not None else 1.0
+        if not math.isfinite(m) or m < 0.0:
+            raise ValueError("handle sample measures must be finite and non-negative")
         geo = geodesic_from(mesh, adj, s) if alpha < 1.0 else None
         for v in range(n_v):
             px, py = mesh.P[v]
@@ -595,21 +606,11 @@ def build_weights(mesh, adj, samples, alpha, beta, measures=None):
             wg = 0.0 if not math.isfinite(dg) else 1.0 / (max(dg, _EPS) ** power)
             weights[v][k] = m * ((1.0 - alpha) * wg + alpha * we)
 
-    # A region walled off from EVERY handle by closed cuts would keep weight
-    # zero and stay put; fall back to euclidean weights there so it follows
-    # the global fit instead of freezing.
-    stranded = 0
-    for v in range(n_v):
-        if sum(weights[v]) > 0.0:
-            continue
-        stranded += 1
-        px, py = mesh.P[v]
-        for k, s in enumerate(samples):
-            de = math.hypot(px - s[0], py - s[1])
-            weights[v][k] = 1.0 / (max(de, _EPS) ** power)
-    if stranded:
-        print(f"[fukusato] {stranded} vertex/vertices fully enclosed by cuts; "
-              "they fall back to euclidean weights")
+    # With alpha=0, a component topologically disconnected from every handle
+    # intentionally has an all-zero row. mls_deform then leaves that component
+    # unchanged. Substituting Euclidean weights here would silently cross the
+    # very crease barrier that the paper's geodesic weighting is meant to
+    # preserve; alpha>0 is the explicit control for allowing that influence.
     return weights
 
 
@@ -689,10 +690,18 @@ class _UvIndex:
         spans = [(e[0][2] - e[0][0]) + (e[0][3] - e[0][1]) for e in self.entries]
         self.cell = max(1e-6, sum(spans) / (2.0 * len(spans)))
         self.bins = {}
+        self.gx_min = self.gy_min = math.inf
+        self.gx_max = self.gy_max = -math.inf
         for entry in self.entries:
             bx0, by0, bx1, by1 = entry[0]
-            for gx in range(int((bx0 - self.x0) / self.cell), int((bx1 - self.x0) / self.cell) + 1):
-                for gy in range(int((by0 - self.y0) / self.cell), int((by1 - self.y0) / self.cell) + 1):
+            gx0 = math.floor((bx0 - self.x0) / self.cell)
+            gx1 = math.floor((bx1 - self.x0) / self.cell)
+            gy0 = math.floor((by0 - self.y0) / self.cell)
+            gy1 = math.floor((by1 - self.y0) / self.cell)
+            self.gx_min, self.gx_max = min(self.gx_min, gx0), max(self.gx_max, gx1)
+            self.gy_min, self.gy_max = min(self.gy_min, gy0), max(self.gy_max, gy1)
+            for gx in range(gx0, gx1 + 1):
+                for gy in range(gy0, gy1 + 1):
                     self.bins.setdefault((gx, gy), []).append(entry)
 
     def candidates(self, ax, ay, bx, by):
@@ -700,9 +709,15 @@ class _UvIndex:
             return
         x0, x1 = (ax, bx) if ax <= bx else (bx, ax)
         y0, y1 = (ay, by) if ay <= by else (by, ay)
+        gx0 = max(int(self.gx_min), math.floor((x0 - self.x0) / self.cell))
+        gx1 = min(int(self.gx_max), math.floor((x1 - self.x0) / self.cell))
+        gy0 = max(int(self.gy_min), math.floor((y0 - self.y0) / self.cell))
+        gy1 = min(int(self.gy_max), math.floor((y1 - self.y0) / self.cell))
+        if gx0 > gx1 or gy0 > gy1:
+            return
         seen = set()
-        for gx in range(int((x0 - self.x0) / self.cell), int((x1 - self.x0) / self.cell) + 1):
-            for gy in range(int((y0 - self.y0) / self.cell), int((y1 - self.y0) / self.cell) + 1):
+        for gx in range(gx0, gx1 + 1):
+            for gy in range(gy0, gy1 + 1):
                 for entry in self.bins.get((gx, gy), ()):
                     if entry[1] in seen:
                         continue
@@ -728,6 +743,33 @@ def emit_pattern(mesh, uv, pattern_polyline, neighbours, index=None):
     """
     if index is None:
         index = _UvIndex(mesh, uv)
+    if not pattern_polyline:
+        return []
+    if len(pattern_polyline) == 1:
+        point = pattern_polyline[0]
+        claims = []
+        for entry in index.candidates(point[0], point[1], point[0], point[1]):
+            _bounds, tri, corners_uv, corners_panel, area2 = entry
+            ua, ub, uc = corners_uv
+            bary = (
+                ((ub[0] - point[0]) * (uc[1] - point[1])
+                 - (ub[1] - point[1]) * (uc[0] - point[0])) / area2,
+                ((uc[0] - point[0]) * (ua[1] - point[1])
+                 - (uc[1] - point[1]) * (ua[0] - point[0])) / area2,
+            )
+            bary = bary + (1.0 - bary[0] - bary[1],)
+            if min(bary) < -1e-9:
+                continue
+            mapped = _affine_uv_to_panel(point, corners_uv, corners_panel, area2)
+            back = area2 < 0.0
+            # A point on a shared edge/vertex is claimed by several triangles
+            # of one sheet. Their affine images agree, so one dot is enough;
+            # overlapping UV sheets with different panel images still survive.
+            if any(other_back == back and math.dist(mapped, other_point) <= 1e-9
+                   for other_point, other_back, _other_tri in claims):
+                continue
+            claims.append((mapped, back, tri))
+        return [([mapped], back) for mapped, back, _tri in claims]
     pieces = []                    # (seg index, t0, t1, tri, entry)
     for k, (a, b) in enumerate(zip(pattern_polyline, pattern_polyline[1:])):
         for entry in index.candidates(a[0], a[1], b[0], b[1]):
@@ -793,7 +835,8 @@ def emit_pattern(mesh, uv, pattern_polyline, neighbours, index=None):
             # different sheet, not this run's continuation.
             if abs(gap) > 1e-9:
                 continue
-            if run[1] == tri or tri in neighbours[run[1]]:
+            continuous_image = math.dist(p0, run[0][-1]) <= 1e-8
+            if continuous_image and (run[1] == tri or tri in neighbours[run[1]]):
                 attached = run
                 break
         if attached is None:
@@ -877,9 +920,12 @@ def _find_layer_by_name(scene, name):
 
 def _stroke_style(stroke):
     color = stroke.get("color") or {}
+    pen_style = int(stroke.get("pen_style", 1))
+    if pen_style < 1 or pen_style > 5:
+        pen_style = 1
     return ((int(color.get("r", 0)), int(color.get("g", 0)),
              int(color.get("b", 0)), int(color.get("a", 255))),
-            max(0.5, float(stroke.get("width", 3.0))))
+            max(0.5, float(stroke.get("width", 3.0))), pen_style)
 
 
 # ---------------------------------------------------------------------------
@@ -1059,13 +1105,14 @@ def perform_mapping(replace=False):
     index = _UvIndex(mesh, uv)     # built once, shared by every stroke
     try:
         for entry in pattern:
-            color, width = _stroke_style(entry["stroke"])
+            color, width, pen_style = _stroke_style(entry["stroke"])
             for points, back in emit_pattern(mesh, uv, entry["points"], neighbours,
                                              index=index):
                 obj = animean.vectorlogic.make_stroke_object(
                     points, color, max(0.5, width * width_scale),
                     image.stroke_count() + 1, False, False)
                 obj.property = BACK_PROPERTY if back else MAPPED_PROPERTY
+                obj.pen_style = pen_style
                 image.add_stroke_object(obj)
                 added += 1
                 if back:

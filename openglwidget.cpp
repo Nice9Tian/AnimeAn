@@ -221,6 +221,10 @@ bool PaintOpenGLWidget::goToHistory(int index)
         return false;
     }
 
+    // historyrestore makes the restored Python state authoritative; do not
+    // let the mouse release from an interrupted pre-restore overlay drag be
+    // dispatched into that new state.
+    m_activeOverlayDrag.clear();
     m_points.clear();
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
@@ -676,6 +680,14 @@ void PaintOpenGLWidget::setPenWidth(qreal width)
 
 void PaintOpenGLWidget::setStrokeProperty(const QString &property)
 {
+    if (!m_activeOverlayDrag.isEmpty() && property != m_strokeProperty) {
+        // Extra tools commonly share Tool::Pen, so their actual identity
+        // change is visible here rather than in setTool(). Cancel while the
+        // old property is still installed for an accurate hook message.
+        const QString overlayId = m_activeOverlayDrag;
+        m_activeOverlayDrag.clear();
+        sendPythonHandleMessage(QStringLiteral("cancel"), overlayId, QPointF());
+    }
     m_strokeProperty = property;
     m_activePythonTool = property.isEmpty() ? QString() : QStringLiteral("extra");
     if (m_hasCurrentStroke) {
@@ -1023,6 +1035,14 @@ bool PaintOpenGLWidget::sendPythonFillRequestMessage(const QPointF &pos)
 
 void PaintOpenGLWidget::setTool(Tool tool)
 {
+    if (!m_activeOverlayDrag.isEmpty() && tool != m_tool) {
+        // Overlay moves are previewed in Python before release. Tell the
+        // owning tool to restore its persisted baseline when a tool switch
+        // interrupts that transaction.
+        const QString overlayId = m_activeOverlayDrag;
+        m_activeOverlayDrag.clear();
+        sendPythonHandleMessage(QStringLiteral("cancel"), overlayId, QPointF());
+    }
     if ((m_tool == Tool::Arrow || m_tool == Tool::Connect) && tool != m_tool) {
         // Leaving a handle-owning tool (Arrow's edit points, Connect's snap
         // hints and its accept/delete buttons) dismisses its handles - and
@@ -1036,9 +1056,6 @@ void PaintOpenGLWidget::setTool(Tool tool)
         m_editHandles.clear();
         m_activeHandleDrag.clear();
     }
-    // A tool switch mid-drag abandons an overlay drag; Python's next press
-    // resets its own drag state, so no message is needed.
-    m_activeOverlayDrag.clear();
     m_tool = tool;
     m_points.clear();
     m_hasCurrentStroke = false;
@@ -1267,6 +1284,13 @@ void PaintOpenGLWidget::setCurrentLayer(int layerIndex)
 void PaintOpenGLWidget::setCurrentFrame(int frameIndex)
 {
     const int previousFrame = m_model.currentFrame();
+    if (!m_activeOverlayDrag.isEmpty() && frameIndex != previousFrame) {
+        // Cancel while the old frame is still current so Python can restore
+        // the state against which the drag began.
+        const QString overlayId = m_activeOverlayDrag;
+        m_activeOverlayDrag.clear();
+        sendPythonHandleMessage(QStringLiteral("cancel"), overlayId, QPointF());
+    }
     m_model.setCurrentFrame(frameIndex);
     m_points.clear();
     m_hasCurrentStroke = false;

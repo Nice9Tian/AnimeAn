@@ -15,7 +15,8 @@ import math
 import auto_mapping
 import crease_line_tool
 import fukusato_mapping as core
-from fukusato_mesh import GarmentMesh, point_in_ring, signed_area
+from fukusato_mesh import (GarmentMesh, point_in_region, point_in_ring,
+                           signed_area)
 import overlay_stack
 import python_hooks
 import script_store
@@ -31,7 +32,8 @@ PENDING_COLOR = (255, 70, 180, 255)
 _OWNER = "fukusato_mapping"
 _VIEW = {"weight_preview": False, "topology": False}
 _CACHE = {"key": None, "mesh": None}
-_DRAG = {"id": None, "origin": None, "points": None, "moved": False}
+_DRAG = {"id": None, "origin": None, "points": None, "moved": False,
+         "was_accepted": False}
 
 _EXCLUDED = {
     HANDLE_PROPERTY, crease_line_tool.PROPERTY,
@@ -122,6 +124,15 @@ def _region_for(seed, frame):
         if point_in_ring(probe, outer) and not point_in_ring(seed, ring):
             holes.append(ring)
     return outer, holes
+
+
+def _same_garment_region(first_seed, second_seed, frame):
+    """Whether two seeds resolve to the same bucket-detected garment face."""
+    first_outer, first_holes = _region_for(first_seed, frame)
+    second_outer, second_holes = _region_for(second_seed, frame)
+    # Mutual containment rejects adjacent faces and nested-but-distinct faces.
+    return (point_in_region(second_seed, first_outer, first_holes)
+            and point_in_region(first_seed, second_outer, second_holes))
 
 
 def _mesh_for(state, frame, guide=None, force=False):
@@ -378,6 +389,14 @@ def _owned_output_layers(scene, frame):
     return owned
 
 
+def _shifted_old_layers(old_layers, new_layer):
+    """Old layer indices after inserting `new_layer`, in safe delete order."""
+    # _create_mapped_layer moves the new layer to zero when possible. If that
+    # move fails, it returns the append index and existing layers do not shift.
+    offset = 1 if new_layer == 0 else 0
+    return sorted((index + offset for index in old_layers), reverse=True)
+
+
 def _emit(mesh, uv, frame):
     animean = _animean()
     child = _scene_model("child")
@@ -408,13 +427,14 @@ def _emit(mesh, uv, frame):
     try:
         added += _emit_fills(image, fills, index)
         for entry in pattern:
-            color, width = core._stroke_style(entry["stroke"])
+            color, width, pen_style = core._stroke_style(entry["stroke"])
             for points, back in core.emit_pattern(mesh, uv, entry["points"],
                                                   neighbours, index=index):
                 obj = animean.vectorlogic.make_stroke_object(
                     points, color, max(0.5, width * width_scale),
                     image.stroke_count() + 1, False, False)
                 obj.property = core.BACK_PROPERTY if back else core.MAPPED_PROPERTY
+                obj.pen_style = pen_style
                 image.add_stroke_object(obj)
                 added += 1
     except Exception:
@@ -424,8 +444,7 @@ def _emit(mesh, uv, frame):
         core._discard_mapped_layer(main, layer)
         raise RuntimeError("no texture content lies under the garment UV footprint")
 
-    # The new layer was moved to zero, so every old index shifted by one.
-    for old in sorted((index + 1 for index in old_layers), reverse=True):
+    for old in _shifted_old_layers(old_layers, layer):
         core._discard_mapped_layer(main, old)
     return added, width_scale
 
@@ -603,6 +622,20 @@ def _capture_guide(cell, stroke, message):
         message["cancel_history"] = True
         _animean().ui.widget.refresh()
         return
+    seed = tuple(points[len(points) // 2])
+    try:
+        existing = _frame_guides(state, row)
+        if existing:
+            if not _same_garment_region(_guide_seed(existing[0]), seed, row):
+                raise RuntimeError(
+                    "all Fukusato guides on one frame must belong to the same garment region")
+        else:
+            _region_for(seed, row)  # validate the first guide immediately
+    except Exception as error:
+        message["cancel_history"] = True
+        _animean().ui.widget.refresh()
+        print(f"[fukusato] guide rejected: {error}")
+        return
     guide_id = state["next_id"]
     state["next_id"] += 1
     state["guides"].append({
@@ -636,14 +669,12 @@ def _drag_guide(message):
     scene = _scene_model("main")
     state = _state(scene)
     phase = message.get("phase")
-    if phase == "cancel" and _DRAG.get("id") is not None:
-        active = next((entry for entry in state["guides"]
-                       if int(entry.get("id", -1)) == _DRAG["id"]), None)
-        if active is not None and active.get("rollback_after") is not None:
-            active["after"] = active.pop("rollback_after")
-            active["accepted"] = True
-            _save(scene, state)
-        _DRAG.update(id=None, origin=None, points=None, moved=False)
+    if phase == "cancel":
+        # Move previews are transient. Cancelling a mouse gesture restores the
+        # last persisted pending/accepted state; the x badge remains the
+        # explicit way to cancel an already-persisted guide edit transaction.
+        _DRAG.update(id=None, origin=None, points=None, moved=False,
+                     was_accepted=False)
         refresh_overlays()
         return
     guide = _find_guide(state, message.get("handle"))
@@ -656,12 +687,8 @@ def _drag_guide(message):
             print("[fukusato] another guide is awaiting check/x.")
             return
         _DRAG.update(id=int(guide["id"]), origin=point,
-                     points=[tuple(p) for p in guide.get("after") or []], moved=False)
-        if guide.get("accepted"):
-            guide["rollback_after"] = [list(p) for p in guide.get("after") or []]
-            guide["accepted"] = False
-            _save(scene, state)
-            refresh_overlays()
+                     points=[tuple(p) for p in guide.get("after") or []],
+                     moved=False, was_accepted=bool(guide.get("accepted")))
         return
     if int(guide["id"]) != _DRAG.get("id") or phase not in ("move", "release", "cancel"):
         return
@@ -669,26 +696,29 @@ def _drag_guide(message):
         dx = point[0] - _DRAG["origin"][0]
         dy = point[1] - _DRAG["origin"][1]
         guide["after"] = [[p[0] + dx, p[1] + dy] for p in _DRAG["points"]]
+        if _DRAG["was_accepted"]:
+            guide["rollback_after"] = [list(p) for p in _DRAG["points"]]
+            guide["accepted"] = False
         _DRAG["moved"] = True
         refresh_overlays(state)
         return
-    moved = _DRAG["moved"]
+    dx = point[0] - _DRAG["origin"][0]
+    dy = point[1] - _DRAG["origin"][1]
+    moved = _DRAG["moved"] or math.hypot(dx, dy) > 1e-8
+    was_accepted = _DRAG["was_accepted"]
     if moved:
-        dx = point[0] - _DRAG["origin"][0]
-        dy = point[1] - _DRAG["origin"][1]
         guide["after"] = [[p[0] + dx, p[1] + dy] for p in _DRAG["points"]]
-    _DRAG.update(id=None, origin=None, points=None, moved=False)
+        if was_accepted:
+            guide["rollback_after"] = [list(p) for p in _DRAG["points"]]
+            guide["accepted"] = False
+    _DRAG.update(id=None, origin=None, points=None, moved=False,
+                 was_accepted=False)
     if moved:
         _save(scene, state)
         try:
             _animean().ui.history_commit("Move Fukusato Guide", "main")
         except Exception:
             pass
-        refresh_overlays()
-    elif guide.get("rollback_after") is not None:
-        guide["after"] = guide.pop("rollback_after")
-        guide["accepted"] = True
-        _save(scene, state)
         refresh_overlays()
 
 
@@ -727,7 +757,13 @@ def _apply_guides(scene, state, frame, commit_history=True):
               if bool(guide.get("accepted", False))]
     if not guides:
         raise RuntimeError("there are no accepted guides to apply")
-    mesh = _mesh_for(state, frame, guides[-1], force=True)
+    mesh = _mesh_for(state, frame, guides[0], force=True)
+    foreign = [guide for guide in guides
+               if not mesh.contains(*_guide_seed(guide))]
+    if foreign:
+        ids = ", ".join(str(guide.get("id", "?")) for guide in foreign)
+        raise RuntimeError(
+            f"guide(s) {ids} belong to another garment region; use one region per frame")
     uv = _solve_uv(mesh, guides)
     added, width_scale = _emit(mesh, uv, frame)
     state["solutions"][str(frame)] = {
@@ -760,6 +796,10 @@ def _overlay_action(cell, stroke, message):
             guide["accepted"] = True
             _save(scene, state)
             refresh_overlays()
+            try:
+                _animean().ui.history_commit("Cancel Fukusato Guide Edit", "main")
+            except Exception:
+                pass
             print(f"[fukusato] edit of guide {guide['id']} cancelled")
             return
         _remove_guide(scene, state, guide)
@@ -783,7 +823,8 @@ def _overlay_action(cell, stroke, message):
 
 
 def _history_restored(cell, stroke, message):
-    _DRAG.update(id=None, origin=None, points=None, moved=False)
+    _DRAG.update(id=None, origin=None, points=None, moved=False,
+                 was_accepted=False)
     invalidate_mesh()
     refresh_overlays()
 
@@ -791,7 +832,8 @@ def _history_restored(cell, stroke, message):
 def _frame_changed(cell, stroke, message):
     if message.get("view") != "main":
         return
-    _DRAG.update(id=None, origin=None, points=None, moved=False)
+    _DRAG.update(id=None, origin=None, points=None, moved=False,
+                 was_accepted=False)
     invalidate_mesh()
     refresh_overlays()
 

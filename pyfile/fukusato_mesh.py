@@ -152,7 +152,8 @@ class GarmentMesh:
         if triangle is None:
             raise RuntimeError("the bundled 'triangle' package is unavailable")
         outer = clean_ring(outer)
-        holes = [clean_ring(h) for h in holes if len(clean_ring(h)) >= 3]
+        cleaned_holes = [clean_ring(h) for h in holes]
+        holes = [hole for hole in cleaned_holes if len(hole) >= 3]
         if len(outer) < 3:
             raise ValueError("garment outline needs at least three points")
 
@@ -237,6 +238,7 @@ class GarmentMesh:
 
     def _build_index(self):
         if not self.tris:
+            self._x0 = self._y0 = 0.0
             self._bins = {}
             self._cell = 1.0
             return
