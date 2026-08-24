@@ -79,6 +79,7 @@ Python binding and ExtraTool documentation:
 
 - English design and API reference: `pybind_readme.md`
 - Chinese summary and development notes: `python_bind_chinese_readme.md`
+- Fukusato paper workflow and architecture: `docs/fukusato_mapping.md`
 - OpenToonz parser notes in English and Chinese: `opentoonz_tools/README.md`
 
 Minimal usage:

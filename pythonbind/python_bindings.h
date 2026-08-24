@@ -19,6 +19,9 @@ struct AnimeanOverlayItem {
     qreal width = 3.0;
     int penStyle = 1;
     bool removable = true;
+    // Draw a check badge beside the remove badge. Clicking it emits the
+    // generic "overlayaction" event with action="accept".
+    bool confirmable = false;
     // Dragging a draggable item routes through the "handle" hook events with
     // the item's id, exactly like an edit handle - pure mechanism; what the
     // drag MEANS lives in Python.

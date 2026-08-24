@@ -206,6 +206,24 @@ if(ANIMEAN_WITH_PYTHON)
             "${ANIMEAN_PYFILE_DIR}/fukusato_mapping.py"
             "$<TARGET_FILE_DIR:AnimeAn>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ANIMEAN_PYFILE_DIR}/script_store.py"
+            "$<TARGET_FILE_DIR:AnimeAn>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ANIMEAN_PYFILE_DIR}/pydeps.py"
+            "$<TARGET_FILE_DIR:AnimeAn>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ANIMEAN_PYFILE_DIR}/overlay_stack.py"
+            "$<TARGET_FILE_DIR:AnimeAn>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ANIMEAN_PYFILE_DIR}/fukusato_mesh.py"
+            "$<TARGET_FILE_DIR:AnimeAn>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ANIMEAN_PYFILE_DIR}/crease_line_tool.py"
+            "$<TARGET_FILE_DIR:AnimeAn>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ANIMEAN_PYFILE_DIR}/fukusato_workflow.py"
+            "$<TARGET_FILE_DIR:AnimeAn>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${ANIMEAN_PYFILE_DIR}/visibility_tool.py"
             "$<TARGET_FILE_DIR:AnimeAn>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -220,6 +238,9 @@ if(ANIMEAN_WITH_PYTHON)
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/childrenpanel/tool_controls"
             "$<TARGET_FILE_DIR:AnimeAn>/childrenpanel/tool_controls"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/pywheels"
+            "$<TARGET_FILE_DIR:AnimeAn>/pywheels"
     )
 endif()
 
@@ -305,6 +326,24 @@ if(WIN32 AND QT_VERSION_MAJOR EQUAL 6)
                 "${ANIMEAN_PYFILE_DIR}/fukusato_mapping.py"
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ANIMEAN_PYFILE_DIR}/script_store.py"
+                "${ANIMEAN_DEPLOY_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ANIMEAN_PYFILE_DIR}/pydeps.py"
+                "${ANIMEAN_DEPLOY_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ANIMEAN_PYFILE_DIR}/overlay_stack.py"
+                "${ANIMEAN_DEPLOY_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ANIMEAN_PYFILE_DIR}/fukusato_mesh.py"
+                "${ANIMEAN_DEPLOY_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ANIMEAN_PYFILE_DIR}/crease_line_tool.py"
+                "${ANIMEAN_DEPLOY_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ANIMEAN_PYFILE_DIR}/fukusato_workflow.py"
+                "${ANIMEAN_DEPLOY_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ANIMEAN_PYFILE_DIR}/visibility_tool.py"
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -319,6 +358,9 @@ if(WIN32 AND QT_VERSION_MAJOR EQUAL 6)
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${CMAKE_CURRENT_SOURCE_DIR}/childrenpanel/tool_controls"
                 "${ANIMEAN_DEPLOY_DIR}/childrenpanel/tool_controls"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/pywheels"
+                "${ANIMEAN_DEPLOY_DIR}/pywheels"
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${ANIMEAN_PYTHON_HOME}"
                 "${ANIMEAN_DEPLOY_DIR}/${ANIMEAN_PYTHON_DIR_NAME}"

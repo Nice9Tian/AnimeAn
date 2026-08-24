@@ -365,18 +365,6 @@ def options_for_extra_tool(tool, state=None):
             # fewer so influence follows arc length
             _slider("fk_samples", "Samples (longest)", "fk_samples", 2, 64,
                     int(opts["samples"]), 4),
-            {
-                # Paper Sec. 4.1 editing mode: releasing an Arrow-tool handle
-                # drag re-runs the mapping and replaces the previous output.
-                "name": "fk_rerun",
-                "type": "check",
-                "title": "Rerun On Edit",
-                "hook": "fk_rerun",
-                "value": "on" if opts.get("rerun", False) else "off",
-                "row": 5,
-                "start_column": 0,
-                "end_column": 2,
-            },
         ]
     else:
         controls = []

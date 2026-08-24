@@ -4,6 +4,12 @@ garment line drawings", Computer Animation and Virtual Worlds 33(6):e2117,
 
 THE PAPER'S PIPELINE, AND WHERE EACH PIECE LIVES HERE
 -----------------------------------------------------
+The active paper-facing UI and garment-mesh pipeline live in
+``fukusato_workflow.py`` and ``fukusato_mesh.py``.  This module owns the MLS,
+geodesic-weight and exact-emission core.  The former rectangular two-board
+workflow was removed; only the ``Mesh`` grid remains, as the emission core's
+headless test fixture.
+
 The paper edits the UV COORDINATES of a garment line drawing on the modeling
 panel. Concretely (Sec. 3):
 
@@ -28,40 +34,33 @@ panel. Concretely (Sec. 3):
       linearly blended with the Euclidean distance by alpha (Sec. 4.2):
           w_i = (1-alpha) w_i^g + alpha w_i^e.
 
-In AnimeAn:
+In AnimeAn's active workflow:
 
-  main_paint_view  = the MODELING PANEL. The garment drawing, the crease cut
-                     lines ("Fukusato Cut"), the AFTER handles and the mapped
-                     output all live here. The mesh is triangulated OVER THIS
-                     BOARD and cut here - exactly the paper's domain.
-  child_paint_view = the TEXTURE / UV SPACE. The pattern strokes live here,
-                     and the BEFORE handles are placed here.
+  main_paint_view  = the MODELING PANEL. The garment drawing, separately
+                     authored crease cuts, curve/point handles and mapped
+                     output all live here. ``fukusato_mesh.GarmentMesh`` is a
+                     constrained Delaunay triangulation of the detected
+                     garment silhouette (including holes), and duplicates the
+                     local triangle fans along exact crease constraints.
+  child_paint_view = the TEXTURE / UV SPACE. Pattern strokes live here; the
+                     same mesh and current UV field are shown by Weight Preview
+                     and Triangle Topology overlays.
 
-  The initial UV assignment is the PLANE PROJECTION the paper names: every
-  panel point's UV is its own coordinate. Under that identity field the
-  paper's two handle states collapse to something drawable without a
-  drag-and-drop gesture:
+  The initial UV assignment is the PLANE PROJECTION explicitly allowed by the
+  paper: every panel vertex starts at its own 2D coordinate. The user draws a
+  point or curve handle on MAIN, then drags that overlay from its BEFORE state
+  to its AFTER state. Both states are projected barycentrically through the
+  garment mesh. A check/x pair is the transaction boundary: the deformation
+  and output replacement happen only on check; x discards the pending handle
+  (or rolls an edit of an accepted handle back).
 
-    -  the BEFORE handle's UV projection p_i(t) equals its panel position, so
-       drawing the handle in the CHILD board (the UV space) at the texture
-       feature to grab IS p_i(t) - the paper's own "place/edit the curve
-       handles on the UV space" function (Sec. 3, last sentence);
-    -  the AFTER handle v'_i(t) is drawn on MAIN; its UV projection q_i(t)
-       through the identity field is again its position.
+  A single click is a POINT handle and a drawn stroke is a CURVE handle. Curve
+  samples are uniformly spaced by arc length as required by Sec. 4.1. Multiple
+  accepted handles form one MLS solve, and editing an accepted handle creates
+  another pending transaction rather than changing the artwork immediately.
 
-  Pairs match BY DRAW ORDER: child stroke k is the before state of main
-  stroke k. A pair drawn identically in both boards is an anchor. A single
-  click (dot stroke) is a POINT handle, a drawn curve is a CURVE handle -
-  both of Sec. 4.1's handle kinds. Handle samples falling outside the mesh
-  are ignored after a warning, as the paper's implementation does (Sec. 6.3).
-
-  Editing mode (Sec. 4.1): the Arrow tool's edit handles double as the
-  paper's drag-and-drop. After a first successful run, releasing an edit
-  drag re-runs the mapping and REPLACES the previous output layer, so
-  dragging an after-handle behaves like the paper's real-time editing loop.
-
-EMISSION (how "deformed UV coordinates" become strokes)
--------------------------------------------------------
+EMISSION (how "deformed UV coordinates" become vector artwork)
+----------------------------------------------------------------
 The paper renders a raster texture: every panel point x shows the texture at
 UV(x). The vector analogue emitted here: for every mesh triangle, its three
 deformed UVs span a triangle in texture space; the pattern strokes clipped
@@ -76,12 +75,14 @@ orientation (det J < 0, texture seen from the back at a fold-over) carry
 property "fukusato_mapped_back" instead, so scripts can restyle or hide the
 back side; geometry is unchanged.
 
-DELIBERATE SUBSTITUTIONS (documented like the paper's own deferrals)
---------------------------------------------------------------------
-  * Geodesic distances use multi-source Dijkstra over the mesh edge graph
-    (with both cell diagonals, halving the sqrt(2) grid-metric anisotropy),
-    not the heat method [28]. Monotone and cut-aware, which is all the
-    weight blend needs.
+``fukusato_workflow`` applies the same triangle-by-triangle affine map to
+odd-even vector fills after triangulating their outlines and nested holes.
+
+IMPLEMENTATION CHOICES (documented like the paper's own deferrals)
+------------------------------------------------------------------
+  * Geodesic distances use multi-source Dijkstra over the constrained
+    triangle edge graph, not the heat method [28]. They are monotone,
+    silhouette-aware and cannot cross a duplicated crease fan.
   * Handle curves are the artist's own pen strokes, not kappa-Curves [26]
     through clicked points. The handle's shape never enters the deformation
     algebra - only its sample positions do (the paper says the same of its
@@ -90,38 +91,25 @@ DELIBERATE SUBSTITUTIONS (documented like the paper's own deferrals)
     also names plane projection; only plane projection is implemented, so
     "before" handles are exact UV positions rather than barycentric
     projections through a non-trivial field.
-  * The paper is a live drag loop; here each run recomputes from the strokes
-    present (one-shot). A sequence of paper edits composes successive MLS
-    solves; re-running composes them into a single solve from the original
-    state. The editing-mode re-run above narrows the gap in practice.
-  * The mesh is a RECTANGLE over the content's bounding box, not a
-    triangulation of the garment silhouette. The paper's models are garment
-    meshes, so its geodesics also feel the garment BOUNDARY (going around a
-    U-shaped sleeve is far); here only explicitly drawn crease cuts obstruct
-    the geodesic - the silhouette does not. Draw a crease along a boundary
-    that should block influence.
   * Stroke width is scaled by a single global magnification estimate (total
     panel edge length over total UV edge length). Rigid gives ~1 by
     construction; similarity makes the width follow the requested scale. The
     true magnification varies per triangle; a per-piece width is not
     attempted.
+
+The toolbar entries are routed through ``fukusato_workflow``; this module has
+no hooks or entry points of its own.
 """
 
 import heapq
 import math
 
-import python_hooks
-
-HANDLE_PROPERTY = "fukusato_line"
-CUT_PROPERTY = "fukusato_cut"
 FUKUSATO_TOOL = "fukusato_guide_mapping"
 MAPPED_PROPERTY = "fukusato_mapped"
 BACK_PROPERTY = "fukusato_mapped_back"
 MAPPED_LAYER_NAME = "fukusato layer"
 
 POLY_STEP = 4.0
-HANDLE_COLOR = (230, 60, 190, 255)
-CUT_COLOR = (255, 140, 0, 255)
 
 # alpha  : Sec 4.2 blend. 0 = pure geodesic (cuts fully felt), 1 = Euclidean.
 # beta   : weight falloff exponent, w = 1/d^(2*beta) (Schaefer's form; the
@@ -131,20 +119,9 @@ CUT_COLOR = (255, 140, 0, 255)
 #          proportionally fewer (arc-length spacing), a dot gets one.
 # variant: "rigid" is the paper's shipped deformer (Sec. 7.2 names similarity
 #          as future work; it is provided as the planned switch).
-# rerun  : editing mode - re-run on an Arrow-tool handle-drag release.
-#          DEFAULT OFF: the re-run rebuilds the output layer, which shifts
-#          absolute layer indices while edit_tool's drag session still holds
-#          the old ones - dragging anything but a handle stroke could then
-#          write into the wrong layer. Turn it on when edits are limited to
-#          the handle strokes themselves.
 _OPTIONS = {"alpha": 0.0, "beta": 2.0, "grid": 32, "samples": 16,
-            "variant": "rigid", "rerun": False}
+            "variant": "rigid"}
 _EPS = 1e-6
-
-# Editing-mode session: name of the last output layer (replaced on re-run).
-_SESSION = {"ran": False, "layer_name": None}
-
-_last_run_handled = False
 
 
 def options():
@@ -199,7 +176,14 @@ def _collect(scene, frame, wanted_property=None, exclude=()):
     structure = scene.get_structure()
     if frame < 0 or frame >= structure["frame_count"]:
         return out
-    for layer in structure["layers"]:
+    layers = structure["layers"]
+    # A mapped result is flattened into one output image. AnimeAn paints
+    # layer 0 last (on top), while strokes inside one image paint in append
+    # order, so pattern content has to be collected bottom-to-top. Handle
+    # pairing keeps the historical top-to-bottom order.
+    if wanted_property is None:
+        layers = reversed(layers)
+    for layer in layers:
         if not layer["visible"] or layer["type"] == "fill" or layer.get("internal"):
             continue
         cell = scene.cell_to_dict(layer["index"], frame, True, POLY_STEP)
@@ -584,11 +568,15 @@ def build_weights(mesh, adj, samples, alpha, beta, measures=None):
     of its arc length, so a sample from an N-sample curve weighs 1/N and a
     point handle's single sample weighs 1.
     """
+    if measures is not None and len(measures) != len(samples):
+        raise ValueError("measures must contain one value per handle sample")
     power = 2.0 * beta
     n_v = len(mesh.P)
     weights = [[0.0] * len(samples) for _ in range(n_v)]
     for k, s in enumerate(samples):
-        m = measures[k] if measures else 1.0
+        m = measures[k] if measures is not None else 1.0
+        if not math.isfinite(m) or m < 0.0:
+            raise ValueError("handle sample measures must be finite and non-negative")
         geo = geodesic_from(mesh, adj, s) if alpha < 1.0 else None
         for v in range(n_v):
             px, py = mesh.P[v]
@@ -601,21 +589,11 @@ def build_weights(mesh, adj, samples, alpha, beta, measures=None):
             wg = 0.0 if not math.isfinite(dg) else 1.0 / (max(dg, _EPS) ** power)
             weights[v][k] = m * ((1.0 - alpha) * wg + alpha * we)
 
-    # A region walled off from EVERY handle by closed cuts would keep weight
-    # zero and stay put; fall back to euclidean weights there so it follows
-    # the global fit instead of freezing.
-    stranded = 0
-    for v in range(n_v):
-        if sum(weights[v]) > 0.0:
-            continue
-        stranded += 1
-        px, py = mesh.P[v]
-        for k, s in enumerate(samples):
-            de = math.hypot(px - s[0], py - s[1])
-            weights[v][k] = 1.0 / (max(de, _EPS) ** power)
-    if stranded:
-        print(f"[fukusato] {stranded} vertex/vertices fully enclosed by cuts; "
-              "they fall back to euclidean weights")
+    # With alpha=0, a component topologically disconnected from every handle
+    # intentionally has an all-zero row. mls_deform then leaves that component
+    # unchanged. Substituting Euclidean weights here would silently cross the
+    # very crease barrier that the paper's geodesic weighting is meant to
+    # preserve; alpha>0 is the explicit control for allowing that influence.
     return weights
 
 
@@ -695,10 +673,18 @@ class _UvIndex:
         spans = [(e[0][2] - e[0][0]) + (e[0][3] - e[0][1]) for e in self.entries]
         self.cell = max(1e-6, sum(spans) / (2.0 * len(spans)))
         self.bins = {}
+        self.gx_min = self.gy_min = math.inf
+        self.gx_max = self.gy_max = -math.inf
         for entry in self.entries:
             bx0, by0, bx1, by1 = entry[0]
-            for gx in range(int((bx0 - self.x0) / self.cell), int((bx1 - self.x0) / self.cell) + 1):
-                for gy in range(int((by0 - self.y0) / self.cell), int((by1 - self.y0) / self.cell) + 1):
+            gx0 = math.floor((bx0 - self.x0) / self.cell)
+            gx1 = math.floor((bx1 - self.x0) / self.cell)
+            gy0 = math.floor((by0 - self.y0) / self.cell)
+            gy1 = math.floor((by1 - self.y0) / self.cell)
+            self.gx_min, self.gx_max = min(self.gx_min, gx0), max(self.gx_max, gx1)
+            self.gy_min, self.gy_max = min(self.gy_min, gy0), max(self.gy_max, gy1)
+            for gx in range(gx0, gx1 + 1):
+                for gy in range(gy0, gy1 + 1):
                     self.bins.setdefault((gx, gy), []).append(entry)
 
     def candidates(self, ax, ay, bx, by):
@@ -706,9 +692,15 @@ class _UvIndex:
             return
         x0, x1 = (ax, bx) if ax <= bx else (bx, ax)
         y0, y1 = (ay, by) if ay <= by else (by, ay)
+        gx0 = max(int(self.gx_min), math.floor((x0 - self.x0) / self.cell))
+        gx1 = min(int(self.gx_max), math.floor((x1 - self.x0) / self.cell))
+        gy0 = max(int(self.gy_min), math.floor((y0 - self.y0) / self.cell))
+        gy1 = min(int(self.gy_max), math.floor((y1 - self.y0) / self.cell))
+        if gx0 > gx1 or gy0 > gy1:
+            return
         seen = set()
-        for gx in range(int((x0 - self.x0) / self.cell), int((x1 - self.x0) / self.cell) + 1):
-            for gy in range(int((y0 - self.y0) / self.cell), int((y1 - self.y0) / self.cell) + 1):
+        for gx in range(gx0, gx1 + 1):
+            for gy in range(gy0, gy1 + 1):
                 for entry in self.bins.get((gx, gy), ()):
                     if entry[1] in seen:
                         continue
@@ -734,6 +726,33 @@ def emit_pattern(mesh, uv, pattern_polyline, neighbours, index=None):
     """
     if index is None:
         index = _UvIndex(mesh, uv)
+    if not pattern_polyline:
+        return []
+    if len(pattern_polyline) == 1:
+        point = pattern_polyline[0]
+        claims = []
+        for entry in index.candidates(point[0], point[1], point[0], point[1]):
+            _bounds, tri, corners_uv, corners_panel, area2 = entry
+            ua, ub, uc = corners_uv
+            bary = (
+                ((ub[0] - point[0]) * (uc[1] - point[1])
+                 - (ub[1] - point[1]) * (uc[0] - point[0])) / area2,
+                ((uc[0] - point[0]) * (ua[1] - point[1])
+                 - (uc[1] - point[1]) * (ua[0] - point[0])) / area2,
+            )
+            bary = bary + (1.0 - bary[0] - bary[1],)
+            if min(bary) < -1e-9:
+                continue
+            mapped = _affine_uv_to_panel(point, corners_uv, corners_panel, area2)
+            back = area2 < 0.0
+            # A point on a shared edge/vertex is claimed by several triangles
+            # of one sheet. Their affine images agree, so one dot is enough;
+            # overlapping UV sheets with different panel images still survive.
+            if any(other_back == back and math.dist(mapped, other_point) <= 1e-9
+                   for other_point, other_back, _other_tri in claims):
+                continue
+            claims.append((mapped, back, tri))
+        return [([mapped], back) for mapped, back, _tri in claims]
     pieces = []                    # (seg index, t0, t1, tri, entry)
     for k, (a, b) in enumerate(zip(pattern_polyline, pattern_polyline[1:])):
         for entry in index.candidates(a[0], a[1], b[0], b[1]):
@@ -742,24 +761,43 @@ def emit_pattern(mesh, uv, pattern_polyline, neighbours, index=None):
                 continue
             pieces.append((k, span[0], span[1], entry[1], entry))
     pieces.sort(key=lambda piece: (piece[0], piece[1], piece[2]))
-    # A span lying exactly ON a shared triangle edge is claimed by both
-    # triangles; the affine maps agree on the edge, so either copy is the
-    # same geometry - drop the duplicate rather than emitting double ink.
-    deduped_pieces = []
-    for piece in pieces:
-        if deduped_pieces:
-            prev = deduped_pieces[-1]
-            if (piece[0] == prev[0]
-                    and abs(piece[1] - prev[1]) <= 1e-9
-                    and abs(piece[2] - prev[2]) <= 1e-9):
-                continue
-        deduped_pieces.append(piece)
-    pieces = deduped_pieces
 
     def seg_point(k, t):
         a = pattern_polyline[k]
         b = pattern_polyline[k + 1]
         return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+
+    # A span lying exactly ON a triangle edge can be claimed by two triangles
+    # whose affine images agree - a shared edge, and equally a CREASE edge,
+    # whose duplicated fan vertices carry identical panel coordinates. Either
+    # copy is the same geometry, so the duplicate is dropped rather than
+    # emitting double ink. Equal t ranges alone are NOT enough: two folded
+    # sheets may legitimately overlap the same UV span with DIFFERENT panel
+    # images, and both must survive - the image comparison below, not any
+    # adjacency test, is what decides (adjacency would wrongly re-admit the
+    # crease-edge duplicate, whose triangles share no vertex ids).
+    deduped_pieces = []
+    for piece in pieces:
+        if deduped_pieces:
+            prev = deduped_pieces[-1]
+            same_span = (piece[0] == prev[0]
+                    and abs(piece[1] - prev[1]) <= 1e-9
+                    and abs(piece[2] - prev[2]) <= 1e-9)
+            if same_span:
+                source0 = seg_point(piece[0], piece[1])
+                source1 = seg_point(piece[0], piece[2])
+                mapped = []
+                for claim in (prev, piece):
+                    entry = claim[4]
+                    mapped.append((
+                        _affine_uv_to_panel(source0, entry[2], entry[3], entry[4]),
+                        _affine_uv_to_panel(source1, entry[2], entry[3], entry[4]),
+                    ))
+                if (math.dist(mapped[0][0], mapped[1][0]) <= 1e-9
+                        and math.dist(mapped[0][1], mapped[1][1]) <= 1e-9):
+                    continue
+        deduped_pieces.append(piece)
+    pieces = deduped_pieces
 
     runs = []
     open_runs = []                 # [points, tri, back, end_seg, end_t]
@@ -783,7 +821,8 @@ def emit_pattern(mesh, uv, pattern_polyline, neighbours, index=None):
             # different sheet, not this run's continuation.
             if abs(gap) > 1e-9:
                 continue
-            if run[1] == tri or tri in neighbours[run[1]]:
+            continuous_image = math.dist(p0, run[0][-1]) <= 1e-8
+            if continuous_image and (run[1] == tri or tri in neighbours[run[1]]):
                 attached = run
                 break
         if attached is None:
@@ -855,417 +894,19 @@ def _discard_mapped_layer(scene, layer_index):
         print(f"[fukusato] could not roll back the empty layer: {error}")
 
 
-def _find_layer_by_name(scene, name):
-    if not name:
-        return -1
-    structure = scene.get_structure()
-    for layer in structure["layers"]:
-        if layer.get("name") == name:
-            return layer["index"]
-    return -1
-
-
 def _stroke_style(stroke):
     color = stroke.get("color") or {}
+    pen_style = int(stroke.get("pen_style", 1))
+    if pen_style < 1 or pen_style > 5:
+        pen_style = 1
     return ((int(color.get("r", 0)), int(color.get("g", 0)),
              int(color.get("b", 0)), int(color.get("a", 255))),
-            max(0.5, float(stroke.get("width", 3.0))))
+            max(0.5, float(stroke.get("width", 3.0))), pen_style)
 
 
 # ---------------------------------------------------------------------------
-# run
+# tool options (dispatched by fukusato_workflow._option_changed)
 # ---------------------------------------------------------------------------
-
-def _bounds(point_lists, margin_ratio=0.12, min_margin=32.0):
-    xs = [p[0] for pts in point_lists for p in pts]
-    ys = [p[1] for pts in point_lists for p in pts]
-    if not xs:
-        return None
-    x0, x1 = min(xs), max(xs)
-    y0, y1 = min(ys), max(ys)
-    span = max(x1 - x0, y1 - y0, 1.0)
-    m = max(min_margin, span * margin_ratio)
-    return x0 - m, y0 - m, x1 + m, y1 + m
-
-
-def perform_mapping(replace=False):
-    animean = _animean()
-    child = _scene_model("child")
-    main = _scene_model("main")
-    child_frame = max(child.current_frame(), 0)
-    main_frame = max(main.current_frame(), 0)
-
-    before_handles = _collect(child, child_frame, HANDLE_PROPERTY)
-    after_handles = _collect(main, main_frame, HANDLE_PROPERTY)
-    # The crease lines are part of the garment drawing, so they live on the
-    # panel (paper Sec. 3). Cuts drawn in child (the UV space) are accepted
-    # too: under plane projection both boards share coordinates, and a
-    # texture-space crease is the same set of points.
-    cuts = ([c["points"] for c in _collect(main, main_frame, CUT_PROPERTY)]
-            + [c["points"] for c in _collect(child, child_frame, CUT_PROPERTY)])
-    tool_properties = (HANDLE_PROPERTY, CUT_PROPERTY, MAPPED_PROPERTY,
-                       BACK_PROPERTY, FUKUSATO_TOOL,
-                       "auto_mapping", "auto_mapping_2", "auto_mapped",
-                       "auto_mapped_back", "auto_mapped_seal",
-                       "auto_mapped_guide", "auto_mapped_guide_h",
-                       "auto_mapped_guide_v",
-                       "h_center_line", "v_center_line", "mapping_area")
-    pattern = _collect(child, child_frame, None, exclude=tool_properties)
-
-    if not before_handles or not after_handles:
-        print("[fukusato] draw at least one handle pair: the BEFORE state in "
-              "child_paint_view (on the texture) and the AFTER state in "
-              "main_paint_view (on the garment). Pairs match BY ORDER; a dot "
-              "is a point handle, a stroke is a curve handle.")
-        return False
-    if len(before_handles) != len(after_handles):
-        print(f"[fukusato] handle count mismatch: child has {len(before_handles)}, "
-              f"main has {len(after_handles)}. Draw one after-state per before-state.")
-        return False
-    if not pattern:
-        print("[fukusato] child_paint_view has no pattern strokes to map.")
-        return False
-
-    alpha = float(_OPTIONS["alpha"])
-    beta = float(_OPTIONS["beta"])
-    variant = _OPTIONS["variant"]
-    per_handle = int(_OPTIONS["samples"])
-
-    # The modeling-panel mesh covers the garment content, the creases AND the
-    # texture pattern's UV extent (the identity plane projection makes the
-    # pattern's coordinates panel coordinates too). Handles deliberately do
-    # NOT grow the box: the paper ignores handles placed outside the drawing
-    # area after a warning (Sec. 6.3), and a box inflated by the handles
-    # themselves could never reject one.
-    garment = _collect(main, main_frame, None, exclude=tool_properties)
-    box_sources = ([g["points"] for g in garment]
-                   + [p["points"] for p in pattern] + cuts)
-    if not garment:
-        # No garment drawing on the panel yet: there is no "drawing area" to
-        # be outside of, so the handles define the working area instead of
-        # being rejected by it (Sec. 6.3's rejection presumes a drawing).
-        box_sources += [h["points"] for h in before_handles]
-        box_sources += [h["points"] for h in after_handles]
-    box = _bounds(box_sources)
-    mesh = Mesh(box[0], box[1], box[2], box[3], _OPTIONS["grid"])
-    duplicated = 0
-    for cut in cuts:
-        duplicated += mesh.apply_cut(cut)
-    print(f"[fukusato] panel mesh {mesh.n}x{mesh.n}, {len(cuts)} crease(s), "
-          f"{duplicated} vertex/vertices duplicated by the cut")
-
-    # Discretize Eq. (1): arc-length samples, count proportional to length,
-    # a point handle contributing exactly one control point.
-    longest = max(max(_length(h["points"]) for h in before_handles),
-                  max(_length(h["points"]) for h in after_handles), 1.0)
-    spacing = longest / max(1, per_handle - 1)
-    p_pts = []                     # BEFORE, in UV space  (paper's p_i(t))
-    q_pts = []                     # AFTER, projected UVs (paper's q_i(t))
-    measures = []                  # Eq. (1)'s dt: unit measure PER HANDLE
-    for k, (before, after) in enumerate(zip(before_handles, after_handles)):
-        arc = max(_length(before["points"]), _length(after["points"]))
-        count = 1 if arc < 1.0 else max(2, int(round(arc / spacing)) + 1)
-        pp = _resample(before["points"], count)
-        qq = _resample(after["points"], count)
-        kept_p = []
-        kept_q = []
-        dropped = 0
-        for p, q in zip(pp, qq):
-            # Paper Sec. 6.3: handles placed outside the drawing area cannot
-            # be projected and are ignored after a warning.
-            if mesh.contains(p[0], p[1]) and mesh.contains(q[0], q[1]):
-                kept_p.append(p)
-                kept_q.append(q)
-            else:
-                dropped += 1
-        p_pts.extend(kept_p)
-        q_pts.extend(kept_q)
-        # Each handle integrates over t in [0,1] regardless of its length, so
-        # its total measure is 1 split over its kept samples.
-        if kept_p:
-            measures.extend([1.0 / len(kept_p)] * len(kept_p))
-        drift = 0.0
-        for p, q in zip(pp, qq):
-            drift = max(drift, math.hypot(q[0] - p[0], q[1] - p[1]))
-        kind = "point" if count == 1 else "curve"
-        note = " (anchor)" if drift < 0.5 else ""
-        if dropped:
-            note += f", {dropped} sample(s) outside the drawing area ignored"
-        print(f"[fukusato] handle {k + 1} ({kind}): {len(kept_p)} sample(s), "
-              f"displacement {drift:.1f}px{note}")
-    if not p_pts:
-        print("[fukusato] every handle sample fell outside the drawing area; "
-              "nothing to do.")
-        return False
-
-    q_c = [complex(p[0], p[1]) for p in q_pts]
-    p_c = [complex(p[0], p[1]) for p in p_pts]
-
-    # Weights on the modeling panel (Sec. 4.2): geodesic on the CUT mesh
-    # blended with euclidean, seeded at the AFTER positions - the domain of
-    # Eq. (1)'s fit, which is what keeps f(q_i) = p_i (see build_weights).
-    adj = mesh.edge_graph()
-    weights = build_weights(mesh, adj, q_pts, alpha, beta, measures)
-
-    # Deform the UV field: plane-projection identity pulled through the
-    # BACKWARD map of Eq. (1)  (src = q = after, dst = p = before).
-    uv = []
-    for v, (x, y) in enumerate(mesh.P):
-        z = mls_deform(q_c, p_c, weights[v], complex(x, y), variant)
-        uv.append((z.real, z.imag))
-
-    # Stroke width follows the local texture magnification, which for the
-    # backward field is panel-length over uv-length.
-    num = den = 0.0
-    for tri in mesh.tris:
-        for a, b in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
-            num += math.hypot(mesh.P[a][0] - mesh.P[b][0], mesh.P[a][1] - mesh.P[b][1])
-            den += math.hypot(uv[a][0] - uv[b][0], uv[a][1] - uv[b][1])
-    width_scale = (num / den) if den > 0.0 else 1.0
-
-    neighbours = mesh.tri_neighbours()
-
-    # Editing mode: a re-run replaces its previous output layer - but only
-    # AFTER the new one emitted successfully, so a failing re-run never
-    # destroys the last good result. The old layer is located BY INDEX
-    # before the new one is created: locating it by name afterwards could
-    # find the new layer instead when the names collide.
-    old_layer = -1
-    if replace and _SESSION["layer_name"]:
-        old_layer = _find_layer_by_name(main, _SESSION["layer_name"])
-
-    layer = _create_mapped_layer(main)
-    if layer < 0:
-        print("[fukusato] could not create the output layer in main_paint_view.")
-        return False
-    image = main.image_at(main_frame, layer, True)
-    if image is None:
-        _discard_mapped_layer(main, layer)
-        print("[fukusato] the output layer has no editable cell.")
-        return False
-
-    added = 0
-    back_count = 0
-    index = _UvIndex(mesh, uv)     # built once, shared by every stroke
-    try:
-        for entry in pattern:
-            color, width = _stroke_style(entry["stroke"])
-            for points, back in emit_pattern(mesh, uv, entry["points"], neighbours,
-                                             index=index):
-                obj = animean.vectorlogic.make_stroke_object(
-                    points, color, max(0.5, width * width_scale),
-                    image.stroke_count() + 1, False, False)
-                obj.property = BACK_PROPERTY if back else MAPPED_PROPERTY
-                image.add_stroke_object(obj)
-                added += 1
-                if back:
-                    back_count += 1
-    except Exception:
-        _discard_mapped_layer(main, layer)
-        animean.ui.refresh()
-        raise
-
-    if added == 0:
-        _discard_mapped_layer(main, layer)
-        animean.ui.refresh()
-        print("[fukusato] nothing mapped: no pattern content lies under the "
-              "garment's UV footprint; the empty layer was discarded.")
-        return False
-
-    if old_layer >= 0:
-        # The new layer moved to index 0, shifting the old one down by one.
-        shifted = old_layer + 1 if layer == 0 else old_layer
-        if shifted != layer:
-            _discard_mapped_layer(main, shifted)
-
-    _SESSION["ran"] = True
-    _SESSION["layer_name"] = main.layer_name(layer)
-
-    animean.ui.refresh()
-    try:
-        animean.ui.history_commit("Fukusato Mapping", "main")
-    except Exception:
-        pass
-    summary = (f"[fukusato] {variant} MLS (alpha={alpha:.2f}, beta={beta:.1f}) mapped "
-               f"{added} stroke piece(s) into layer '{_SESSION['layer_name']}' "
-               f"(frame {main_frame + 1} of main_paint_view, width x{width_scale:.2f})")
-    if back_count:
-        summary += f"; {back_count} piece(s) face BACK across a fold ('{BACK_PROPERTY}')"
-    print(summary)
-    return True
-
-
-def _run(replace=False):
-    try:
-        perform_mapping(replace=replace)
-    except Exception as error:
-        import traceback
-        print(f"[fukusato] error: {error!r}\n{traceback.format_exc()}")
-
-
-# ---------------------------------------------------------------------------
-# self test (headless; reproduces the paper's own sanity experiments)
-# ---------------------------------------------------------------------------
-
-def self_test():
-    """Run from the Python Debug pane: fukusato_mapping.self_test()"""
-    print("===== fukusato_mapping self test =====")
-
-    # (1) rigid MLS reproduces a rigid motion exactly (deformer sanity)
-    th = 0.3
-    rot = complex(math.cos(th), math.sin(th))
-    shift = complex(50.0, -20.0)
-    center = complex(500.0, 500.0)
-    src = [complex(200, 200), complex(800, 200), complex(800, 800),
-           complex(200, 800), complex(500, 350)]
-    dst = [center + (p - center) * rot + shift for p in src]
-    worst = 0.0
-    for qx in range(100, 950, 90):
-        for qy in range(100, 950, 90):
-            q = complex(qx, qy)
-            w = [1.0 / max(abs(q - p), 1e-6) ** 4 for p in src]
-            got = mls_deform(src, dst, w, q, "rigid")
-            want = center + (q - center) * rot + shift
-            worst = max(worst, abs(got - want))
-    print(f"[1] rigid reproduction: max error {worst:.3e} px "
-          f"({'PASS' if worst < 1e-6 else 'FAIL'})")
-
-    # (2) the cut TEARS the field (paper E1): a handle below a crease drags
-    # the texture down; across the crease the jump must survive, past the
-    # crease's open end it must vanish.
-    mesh = Mesh(0.0, 0.0, 1000.0, 1000.0, 40)
-    dup = mesh.apply_cut([(180.0, 500.0), (740.0, 500.0)])
-    adj = mesh.edge_graph()
-    handle_before = [(450.0, 380.0)]
-    handle_after = [(450.0, 300.0)]          # dragged up by 80 px
-    anchors = [(60.0, 60.0), (940.0, 60.0), (940.0, 940.0), (60.0, 940.0)]
-    p_pts = handle_before + anchors
-    q_pts = handle_after + anchors
-    # Seeded at the AFTER positions - the domain of the backward fit.
-    weights = build_weights(mesh, adj, q_pts, 0.0, 2.0)
-    q_c = [complex(*p) for p in q_pts]
-    p_c = [complex(*p) for p in p_pts]
-    uv = []
-    for v, (x, y) in enumerate(mesh.P):
-        z = mls_deform(q_c, p_c, weights[v], complex(x, y), "rigid")
-        uv.append((z.real, z.imag))
-
-    def disp_at(x, y):
-        verts, bary = mesh.locate(x, y)
-        ux = sum(b * uv[v][0] for v, b in zip(verts, bary))
-        uy = sum(b * uv[v][1] for v, b in zip(verts, bary))
-        return math.hypot(ux - x, uy - y)
-
-    jump_across = abs(disp_at(450.0, 498.0) - disp_at(450.0, 502.0))
-    jump_beyond = abs(disp_at(880.0, 498.0) - disp_at(880.0, 502.0))
-    ratio = jump_across / max(jump_beyond, 1e-9)
-    print(f"[2] tear: {dup} vertices duplicated; UV jump across the crease "
-          f"{jump_across:.2f} px vs beyond its end {jump_beyond:.4f} px "
-          f"(x{ratio:.0f}) ({'PASS' if jump_across > 1.0 and jump_beyond < 0.2 else 'FAIL'})")
-
-    # (3) emission is exact and tears at the cut: a vertical texture line
-    # crossing the crease must come out as >= 2 strokes with a gap.
-    neighbours = mesh.tri_neighbours()
-    runs = emit_pattern(mesh, uv, [(450.0, 400.0), (450.0, 620.0)], neighbours)
-    fronts = [r for r in runs if not r[1]]
-    gap = 0.0
-    if len(fronts) >= 2:
-        a_end = fronts[0][0][-1]
-        b_start = fronts[1][0][0]
-        gap = math.hypot(a_end[0] - b_start[0], a_end[1] - b_start[1])
-    worst_aff = 0.0
-    for points, _back in runs:
-        for a, b in zip(points, points[1:]):
-            worst_aff = max(worst_aff, 0.0 if math.isfinite(a[0] + b[0]) else 1.0)
-    print(f"[3] emission: {len(runs)} piece(s) for a line crossing the crease, "
-          f"gap at the tear {gap:.2f} px "
-          f"({'PASS' if len(runs) >= 2 and gap > 0.5 else 'FAIL'})")
-
-    # (4) Fig. 10: asked for a uniform scale, the rigid deformer produces an
-    # UNEVEN distortion (that is the figure's point - "remains difficult to
-    # uniformly scale"), while similarity reproduces it exactly. Measured as
-    # the paper's reference experiment does: the spread of the texture area
-    # gain over a probe grid inside the scaled quad.
-    mesh2 = Mesh(0.0, 0.0, 1000.0, 1000.0, 24)
-    adj2 = mesh2.edge_graph()
-    c = (500.0, 500.0)
-    quad = [(300.0, 300.0), (700.0, 300.0), (700.0, 700.0), (300.0, 700.0)]
-    s = 1.5
-    grown = [(c[0] + (p[0] - c[0]) * s, c[1] + (p[1] - c[1]) * s) for p in quad]
-    w2 = build_weights(mesh2, adj2, quad, 1.0, 2.0)
-    results = {}
-    for variant in ("rigid", "similarity"):
-        # Backward: after = grown quad, before = original quad.
-        qc = [complex(*p) for p in grown]
-        pc = [complex(*p) for p in quad]
-        uv2 = []
-        for v, (x, y) in enumerate(mesh2.P):
-            z = mls_deform(qc, pc, w2[v], complex(x, y), variant)
-            uv2.append((z.real, z.imag))
-        gains = []
-        for gx in range(7):
-            for gy in range(7):
-                px = 360.0 + gx * 280.0 / 6.0
-                py = 360.0 + gy * 280.0 / 6.0
-                tri = mesh2.tri_of(px, py)
-                (ua, ub, uc_), (xa, xb, xc), area2 = _tri_geometry(mesh2, uv2, tri)
-                if abs(area2) < 1e-9:
-                    continue
-                panel2 = ((xb[0] - xa[0]) * (xc[1] - xa[1])
-                          - (xb[1] - xa[1]) * (xc[0] - xa[0]))
-                gains.append(panel2 / area2)
-        results[variant] = (min(gains), sum(gains) / len(gains), max(gains))
-    r = results["rigid"]
-    m = results["similarity"]
-    r_spread = r[2] / max(r[0], 1e-9) if r[0] > 0 else float("inf")
-    m_spread = m[2] / max(m[0], 1e-9)
-    ok = (m_spread < 1.05 and abs(m[1] - s * s) < 0.1 and
-          (r_spread > 1.5 or r_spread < 0.0))
-    print(f"[4] fig.10 uniform x{s} scale request, texture area gain over a "
-          f"7x7 probe grid:\n"
-          f"    rigid      min/mean/max = {r[0]:.3f}/{r[1]:.3f}/{r[2]:.3f} "
-          f"(spread x{r_spread:.2f} - uneven, the figure's point)\n"
-          f"    similarity min/mean/max = {m[0]:.3f}/{m[1]:.3f}/{m[2]:.3f} "
-          f"(uniform ~{s * s:.2f})\n"
-          f"    ({'PASS' if ok else 'FAIL'})")
-    print("===== done =====")
-
-
-# ---------------------------------------------------------------------------
-# hooks + tool handlers
-# ---------------------------------------------------------------------------
-
-def _fukusato_button(cell, stroke, message):
-    global _last_run_handled
-    _last_run_handled = True
-    _run()
-
-
-def _handle_released(cell, stroke, message):
-    """Editing mode (paper Sec. 4.1): after the first run, releasing an
-    Arrow-tool handle drag re-runs the mapping in place."""
-    if not _OPTIONS["rerun"] or not _SESSION["ran"]:
-        return
-    # Handle events are shared plumbing (the Connect tool's buttons release
-    # through the same pipeline); only the Arrow's drags mean an edit here.
-    if message.get("base_tool") != "arrow":
-        return
-    if message.get("phase") != "release":
-        return
-    _run(replace=True)
-
-
-def _tool_option_changed(cell, stroke, message):
-    hook = message.get("hook")
-    if not str(hook).startswith("fk_"):
-        return
-    try:
-        _apply_option(hook, message.get("value"))
-    except (TypeError, ValueError) as error:
-        # python_hooks.dispatch has no per-hook guard: an exception here would
-        # abort every later hook of the same event.
-        print(f"[fukusato] ignored bad option value for {hook}: {error}")
-
 
 def _apply_option(hook, value):
     if hook == "fk_alpha":
@@ -1284,58 +925,3 @@ def _apply_option(hook, value):
     elif hook == "fk_variant":
         _OPTIONS["variant"] = "similarity" if str(value).lower() == "similarity" else "rigid"
         print(f"[fukusato] MLS variant -> {_OPTIONS['variant']}")
-    elif hook == "fk_rerun":
-        _OPTIONS["rerun"] = str(value).lower() == "on"
-        print(f"[fukusato] editing-mode re-run {'ON' if _OPTIONS['rerun'] else 'OFF'}")
-
-
-def register_hooks():
-    python_hooks.set_hook(_fukusato_button, extra=True, tool=FUKUSATO_TOOL)
-    python_hooks.set_hook(_tool_option_changed, option=True, tool="extra")
-    python_hooks.set_hook(_handle_released, handle=True)
-
-
-def _set_draw_color(color):
-    """Arm this tool's colour THROUGH the per-tool cache: setting it
-    directly repainted whatever tool came next (pyfile/tool_colors.py)."""
-    try:
-        import tool_colors
-        tool_colors.apply(color)
-    except Exception:
-        try:
-            _animean().ui.set_draw_color(color)
-        except Exception:
-            pass
-
-
-def activate_fukusato_line(name="fukusato_line", property_value=HANDLE_PROPERTY):
-    register_hooks()
-    _set_draw_color(HANDLE_COLOR)
-    print("[fukusato] handle tool: draw (or dot) the BEFORE state on the "
-          "texture in child_paint_view and the AFTER state on the garment in "
-          "main_paint_view. Pairs match by order; identical pairs anchor.")
-    return property_value
-
-
-def activate_fukusato_cut(name="fukusato_cut", property_value=CUT_PROPERTY):
-    register_hooks()
-    _set_draw_color(CUT_COLOR)
-    print("[fukusato] crease tool: draw the fold on the garment in "
-          "main_paint_view. The panel mesh is cut and topologically "
-          "separated there, so texture influence and the mapped pattern "
-          "genuinely tear across it.")
-    return property_value
-
-
-def run_fukusato_mapping(name=FUKUSATO_TOOL, property_value=FUKUSATO_TOOL):
-    global _last_run_handled
-    register_hooks()
-    if _last_run_handled:
-        # the "extra" event hook already performed this click's mapping
-        _last_run_handled = False
-        return property_value
-    _run()
-    return property_value
-
-
-register_hooks()

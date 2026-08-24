@@ -154,14 +154,11 @@ def _push(view, box):
 
 def _push_overlay(view, box):
     """The box outline, drawn under the grips. Other scripts own overlay
-    items too, so ours are appended to whatever auto_mapping publishes -
-    replacing the list outright wiped the mapping guides off the board."""
-    animean = _animean()
-    try:
-        import auto_mapping
-        items = auto_mapping.overlay_items(view)
-    except Exception:
-        items = []
+    items too, so ours go through overlay_stack: this tool owns one slot of
+    the composed display list, and replacing the list outright (or hand-
+    merging auto_mapping's items) wiped every other owner's overlays."""
+    import overlay_stack
+    items = []
     if box is not None:
         x0, y0, x1, y1 = _normalised(box)
         items.append({
@@ -173,7 +170,7 @@ def _push_overlay(view, box):
             "pen_style": 2,      # dashed: a frame, not artwork
             "removable": False,
         })
-    animean.ui.set_overlay(view, items)
+    overlay_stack.set_items(view, "transfer_tool", items)
 
 
 def _refresh(view):

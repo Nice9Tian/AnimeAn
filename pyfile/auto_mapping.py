@@ -48,6 +48,8 @@ import time
 
 import bezier
 import python_hooks
+import overlay_stack
+import script_store
 
 H_PROPERTY = "h_center_line"
 V_PROPERTY = "v_center_line"
@@ -84,9 +86,14 @@ MAPPING_GROUP_NAME = "Auto Mapping"
 RESTORE_GUIDES_ACTION = "restore_mapping_guides"
 # Everything a run puts on the board. None of it may act as a wall for region
 # detection, and none of it may be picked up as pattern by the next run.
+# The Fukusato workflow routes its region detection through _detect_region
+# too, so its output properties (literals: importing fukusato_mapping here
+# would be a cycle) must be excluded for exactly the same reason - otherwise
+# the first accepted mapping walls off every later re-detection.
 MAPPING_OUTPUT_PROPERTIES = (MAPPED_PROPERTY, BACK_PROPERTY, SEAL_PROPERTY,
                              GUIDE_LAYER_PROPERTY, H_GUIDE_LAYER_PROPERTY,
-                             V_GUIDE_LAYER_PROPERTY, NEAREST_LAYER_PROPERTY)
+                             V_GUIDE_LAYER_PROPERTY, NEAREST_LAYER_PROPERTY,
+                             "fukusato_mapped", "fukusato_mapped_back")
 _FOLD = {"split": True, "seal": True, "back_color": (104, 112, 140, 255),
          # Qt::PenStyle for the crease strokes: 2 = DashLine. The crease is an
          # annotation of the fold, and a dashed line reads as annotation where
@@ -348,7 +355,7 @@ def _save_assets(view_name):
         scene = _scene_model(view_name)
     except Exception:
         return
-    scene.set_script_data(json.dumps({"mapping_assets": _assets_for(view_name)}))
+    script_store.write(scene, "mapping_assets", _assets_for(view_name))
 
 
 def _load_assets(view_name):
@@ -357,13 +364,9 @@ def _load_assets(view_name):
         scene = _scene_model(view_name)
     except Exception:
         return
-    raw = scene.script_data()
-    data = {}
-    if raw:
-        try:
-            data = json.loads(raw).get("mapping_assets") or {}
-        except Exception:
-            data = {}
+    data = script_store.read(scene, "mapping_assets") or {}
+    if not isinstance(data, dict):
+        data = {}
 
     assets = {}
     for prop, item in data.items():
@@ -3747,7 +3750,7 @@ def overlay_items(view_name):
 def _push_overlay(view_name):
     """Send this view's mapping assets to the generic C++ overlay display."""
     try:
-        _animean().ui.set_overlay(view_name, overlay_items(view_name))
+        overlay_stack.set_items(view_name, "auto_mapping", overlay_items(view_name))
     except Exception as error:
         print(f"[auto_mapping] overlay update failed: {error}")
 
@@ -3981,7 +3984,8 @@ def _push_nearest_handle():
     _push_overlay("main")
 
 
-_NEAREST_DRAG = {"frame": None, "moved": False, "offset": (0.0, 0.0)}
+_NEAREST_DRAG = {"frame": None, "moved": False, "offset": (0.0, 0.0),
+                 "had_original": False, "original_arc": None}
 
 
 # Guide/additional-line drags: where the line SITS is a placement, and a
@@ -4104,10 +4108,22 @@ def _nearest_handle_event(message):
         return
     phase = message.get("phase")
     if phase == "cancel":
-        # Arrow/Connect teardown; the anchor lives in the overlay now, so
-        # nothing to reclaim - just drop any half-finished drag state.
+        # Moving updates the in-memory overlay before release. A tool/frame
+        # switch must restore the persisted baseline instead of leaving an
+        # uncommitted anchor that the next mapping run would nevertheless use.
+        if _NEAREST_DRAG.get("moved"):
+            assets = _assets_for("main")
+            if _NEAREST_DRAG.get("had_original"):
+                assets[NEAREST_PROPERTY] = {
+                    "arc": list(_NEAREST_DRAG.get("original_arc") or (0.0, 0.0))}
+            else:
+                assets.pop(NEAREST_PROPERTY, None)
+            _push_nearest_handle()
         _NEAREST_DRAG["frame"] = None
         _NEAREST_DRAG["moved"] = False
+        _NEAREST_DRAG["had_original"] = False
+        _NEAREST_DRAG["original_arc"] = None
+        _NEAREST_DRAG["offset"] = (0.0, 0.0)
         return
     if message.get("handle") != NEAREST_PROPERTY:
         return
@@ -4115,6 +4131,12 @@ def _nearest_handle_event(message):
         frame = _main_guide_frame()
         _NEAREST_DRAG["frame"] = frame
         _NEAREST_DRAG["moved"] = False
+        original = _assets_for("main").get(NEAREST_PROPERTY)
+        original_arc = (original or {}).get("arc")
+        _NEAREST_DRAG["had_original"] = bool(original_arc and len(original_arc) >= 2)
+        _NEAREST_DRAG["original_arc"] = (
+            [float(original_arc[0]), float(original_arc[1])]
+            if _NEAREST_DRAG["had_original"] else None)
         # The handle accepts presses up to 7 screen px off centre; remember
         # the miss so the first move does not snap the anchor to the cursor.
         offset = (0.0, 0.0)
@@ -4149,6 +4171,9 @@ def _nearest_handle_event(message):
     moved = _NEAREST_DRAG["moved"]
     _NEAREST_DRAG["frame"] = None
     _NEAREST_DRAG["moved"] = False
+    _NEAREST_DRAG["had_original"] = False
+    _NEAREST_DRAG["original_arc"] = None
+    _NEAREST_DRAG["offset"] = (0.0, 0.0)
     if not moved:
         return
     _save_assets("main")
@@ -5518,6 +5543,24 @@ def _point_in_polygons(point, polygons):
     return inside
 
 
+def _ring_nesting_level(rings, index):
+    """Median odd-even nesting depth of rings[index] among the other rings.
+
+    A boundary vertex is never inside a subpath nested within its own ring;
+    the median over a few spread vertices shrugs off a vertex that grazes
+    another ring's edge. (Shared by _emit_fills and the Fukusato fill
+    triangulation - the donut/letter-O fix must live in one place.)
+    """
+    ring = rings[index]
+    count = min(5, len(ring))
+    levels = sorted(
+        sum(1 for j, other in enumerate(rings)
+            if j != index
+            and _point_in_ring(ring[(k * len(ring)) // count], other))
+        for k in range(count))
+    return levels[len(levels) // 2]
+
+
 def _ring_interior_point(ring):
     """A point strictly inside the ring.
 
@@ -5881,17 +5924,8 @@ def _emit_fills(animean, out, map_point, fills, child_area, main_area):
         # vertex is never inside a subpath nested within its own ring; the
         # median over a few spread vertices shrugs off a vertex that grazes
         # another ring's edge.
-        def nesting_level(index):
-            ring = source_rings[index]
-            count = min(5, len(ring))
-            levels = sorted(
-                sum(1 for j, other in enumerate(source_rings)
-                    if j != index
-                    and _point_in_ring(ring[(k * len(ring)) // count], other))
-                for k in range(count))
-            return levels[len(levels) // 2]
-
-        ring_levels = [nesting_level(index) for index in range(len(source_rings))]
+        ring_levels = [_ring_nesting_level(source_rings, index)
+                       for index in range(len(source_rings))]
         is_hole = [level % 2 == 1 for level in ring_levels]
 
         # (depth, side) -> [outer piece entries], each carrying its CHILD
@@ -7023,11 +7057,14 @@ def _history_restored(cell, stroke, message):
         # A mid-drag Ctrl+Z invalidates the frame cached at press: the
         # restored guides may be entirely different, and solving against the
         # stale frame wrote the anchor in the OLD arc space and then
-        # committed it on top of the state the user just undid. Dropping the
-        # drag state makes the next move rebuild from the restored assets,
-        # and the untouched `moved` flag stays honest for the release.
+        # committed it on top of the state the user just undid. The restored
+        # script data is authoritative, so discard every part of the old
+        # gesture and let a later press build a fresh frame and baseline.
         _NEAREST_DRAG["frame"] = None
         _NEAREST_DRAG["moved"] = False
+        _NEAREST_DRAG["had_original"] = False
+        _NEAREST_DRAG["original_arc"] = None
+        _NEAREST_DRAG["offset"] = (0.0, 0.0)
     _load_assets(message.get("view") or "main")
 
 
@@ -8143,7 +8180,8 @@ def _triangulate_with_earcut(outer, holes):
         ends.append(total)
     try:
         array = np.array(flat, dtype=np.float64).reshape(-1, 2)
-        indices = earcut.triangulate_float64(array, ends)
+        ring_ends = np.asarray(ends, dtype=np.uint32)
+        indices = earcut.triangulate_float64(array, ring_ends)
     except Exception as error:
         print(f"[auto_mapping] earcut failed ({error}); using the "
               "built-in triangulator")

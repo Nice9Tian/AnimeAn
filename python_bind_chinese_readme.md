@@ -77,7 +77,7 @@ animean_python.ui.set_overlay("main", [
 animean_python.ui.set_draw_color((40, 110, 255, 255))
 ```
 
-overlay 始终绘制在所有图层之上，不属于场景模型，也不会被保存。`removable=True` 的 overlay 会在其包围盒右上角显示 "x" 按钮，点击时 C++ 不做任何删除，只派发 `overlayremove` hook 事件（带 `overlay.id`），由脚本决定如何处理。
+overlay 始终绘制在所有图层之上，不属于场景模型，也不会被保存。`removable=True` 的 overlay 会显示 "x" 按钮，点击时 C++ 不做任何删除，只派发 `overlayremove` hook 事件（带 `overlay.id`），由脚本决定如何处理。`confirmable=True` 会在 x 左侧增加勾按钮，并派发 `overlayaction`（`overlay.action == "accept"`）；待确认的开放曲线会把这一对按钮放在包围盒右上角。
 
 脚本修改模型后，如果需要界面立刻更新，调用对应的 `ui.*.refresh()`。长时间同步计算可以用：
 
@@ -168,7 +168,7 @@ def activate_midline_tool(name="midline", property_value="midline"):
 
 ```python
 {
-    "event": "update" | "linefinish" | "erasefinish" | "deletefinish" | "fillfinish" | "movefinish" | "extra" | "option" | "overlayremove",
+    "event": "update" | "linefinish" | "erasefinish" | "deletefinish" | "fillfinish" | "movefinish" | "extra" | "option" | "overlayremove" | "overlayaction" | "framechange",
     "view": "main" | "child",
     "tool": "pen" | "move" | "eraser" | "delete_line" | "fill" | "extra",
     "base_tool": "pen" | "move" | "eraser" | "delete_line" | "fill",

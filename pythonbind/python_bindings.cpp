@@ -1171,6 +1171,9 @@ void bindAnimeanPythonModule(py::module_ &m)
                    if (hasKey(data, "removable")) {
                        item.removable = data["removable"].cast<bool>();
                    }
+                   if (hasKey(data, "confirmable")) {
+                       item.confirmable = data["confirmable"].cast<bool>();
+                   }
                    if (hasKey(data, "draggable")) {
                        item.draggable = data["draggable"].cast<bool>();
                    }

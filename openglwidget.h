@@ -72,6 +72,7 @@ public:
         // Qt::PenStyle as an int, same convention as AnimeVectorStroke.
         int penStyle = 1;
         bool removable = true;
+        bool confirmable = false;
         // A draggable item reports press/move/release through the "handle"
         // hook events with its id, like an edit handle; Python owns meaning.
         bool draggable = false;
@@ -250,6 +251,7 @@ private:
         // follows it (closed items) or an end point (open ones).
         QRectF extent;
         bool anchorIsExtent = false;
+        bool accept = false;
     };
 
     enum class AxisSnapState {
@@ -264,12 +266,32 @@ private:
     // changed it has settled.
     void schedulePlaybackCacheRefresh();
     void paintOverlayItems(QPainter &painter);
-    // Badge just above-right of `anchor` (an item's end point), clamped into view.
-    QRectF overlayHandleRect(const QPointF &anchor) const;
-    bool removeOverlayItemAt(const QPointF &pos);
+    // Badge just above-right of `anchor`, clamped into view. `slot` counts
+    // leftwards from the x badge (1 = the check badge); `slotCount` is how
+    // many badges the id carries, so an edge clamp keeps the pair side by
+    // side instead of stacking or pushing one off-screen.
+    QRectF overlayHandleRect(const QPointF &anchor, int slot = 0, int slotCount = 1) const;
+    bool overlayActionItemAt(const QPointF &pos);
+    // Topmost action badge containing the document position, or -1.
+    int overlayActionHandleAt(const QPointF &pos) const;
+    // Fires the action badge or starts the overlay drag under the press,
+    // arbitrating an overlapping badge/grab in screen space; returns whether
+    // the press was consumed.
+    bool pressOverlayOrBadge(const QPointF &screenPos,
+                             const QPointF &docPos,
+                             Qt::KeyboardModifiers modifiers);
+    // Clears m_activeOverlayDrag and sends the owning tool a "cancel" so it
+    // restores its persisted baseline. Safe to call with no drag in flight.
+    void cancelActiveOverlayDrag();
+    // Emits "framechange" when the model's frame moved past the last frame
+    // Python was told about - regardless of who moved it.
+    void notifyFrameChangedIfNeeded();
     // Topmost draggable overlay item within grab range of the screen position.
-    QString draggableOverlayItemAt(const QPointF &screenPos) const;
-    void sendOverlayRemoveMessage(const QString &overlayId);
+    // When it returns an id and screenDistance is given, screenDistance is
+    // the pointer's screen-space distance to that item's nearest segment.
+    QString draggableOverlayItemAt(const QPointF &screenPos,
+                                   qreal *screenDistance = nullptr) const;
+    void sendOverlayActionMessage(const QString &overlayId, const QString &action);
     void paintEditHandles(QPainter &painter);
     // Topmost handle whose SCREEN-space box contains the screen position.
     QString editHandleAt(const QPointF &screenPos) const;
@@ -419,6 +441,14 @@ private:
     // Id of the draggable OVERLAY item being dragged (any tool), empty when
     // none. Routed through the same "handle" hook events as edit handles.
     QString m_activeOverlayDrag;
+    // Overlay-drag "move" messages share the pointer-rate throttle cadence:
+    // the owning tool re-renders overlays per message.
+    QElapsedTimer m_overlayDragHookThrottle;
+    // The frame Python was last told about via "framechange". The frame lives
+    // on the model and can be mutated behind the widget's back (ui.set_current,
+    // addFrame, project load), so the notification baseline must be the
+    // widget's own, not a value re-read from the model.
+    int m_pythonNotifiedFrame = -1;
     bool m_unboundedCanvas = false;
     BackgroundMode m_backgroundMode = BackgroundMode::White;
     bool m_contentEditable = true;
