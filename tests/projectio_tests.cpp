@@ -49,7 +49,10 @@ int main(int argc, char *argv[])
     textureModel.setScriptData(QStringLiteral("{\"owner\":\"texture\"}"));
 
     const QJsonObject project = projectToJson(mainModel, textureModel);
-    check(project.value(QStringLiteral("format")).toString() == QStringLiteral("AnimeAn Project"),
+    // The bundled format must NOT reuse the v1 marker: pre-bundle builds
+    // validate only the format string and would open a bundle as a blank
+    // scene instead of rejecting it.
+    check(project.value(QStringLiteral("format")).toString() == QStringLiteral("AnimeAn Project 2"),
           "project format marker is wrong");
     check(project.value(QStringLiteral("version")).toInt() == 2,
           "project format version is wrong");
@@ -61,8 +64,10 @@ int main(int argc, char *argv[])
     AnimeSceneModel loadedMain;
     AnimeSceneModel loadedTexture;
     QString error;
-    check(projectFromJson(project, &loadedMain, &loadedTexture, &error),
+    bool textureLoaded = false;
+    check(projectFromJson(project, &loadedMain, &loadedTexture, &error, &textureLoaded),
           qPrintable(QStringLiteral("project round-trip failed: %1").arg(error)));
+    check(textureLoaded, "a v2 project did not report its texture view as loaded");
     checkModel(loadedMain,
                QStringLiteral("{\"owner\":\"main\"}"),
                QSize(1920, 1080),
@@ -97,8 +102,19 @@ int main(int argc, char *argv[])
 
     const QJsonObject legacy = modelToJson(mainModel);
     error.clear();
-    check(projectFromJson(legacy, &loadedMain, &loadedTexture, &error),
+    // A legacy file describes only the main view. The texture destination
+    // must come through untouched - a user's open texture board must survive
+    // a legacy open - and the flag must say so.
+    loadedTexture = textureModel;
+    textureLoaded = true;
+    check(projectFromJson(legacy, &loadedMain, &loadedTexture, &error, &textureLoaded),
           qPrintable(QStringLiteral("legacy project import failed: %1").arg(error)));
+    check(!textureLoaded, "a legacy project claimed to carry a texture view");
+    checkModel(loadedTexture,
+               QStringLiteral("{\"owner\":\"texture\"}"),
+               QSize(512, 512),
+               7,
+               QStringLiteral("Texture ink"));
     checkModel(loadedMain,
                QStringLiteral("{\"owner\":\"main\"}"),
                QSize(1920, 1080),
@@ -107,6 +123,23 @@ int main(int argc, char *argv[])
     error.clear();
     check(textureViewFromJson(legacy, &loadedTextureView, &error),
           qPrintable(QStringLiteral("legacy texture import failed: %1").arg(error)));
+
+    // A damaged file that kept its envelope but lost the scene data must be
+    // rejected: loading it as a blank scene and reporting success would
+    // invite a save that overwrites the original.
+    QJsonObject damaged;
+    damaged[QStringLiteral("format")] = QStringLiteral("AnimeAn Project");
+    error.clear();
+    check(!projectFromJson(damaged, &loadedMain, &loadedTexture, &error),
+          "a data-less legacy envelope was accepted as a project");
+    check(!modelFromJson(damaged, &loadedMain, &error),
+          "a data-less legacy envelope was accepted as a scene");
+
+    QJsonObject wrongVersion = project;
+    wrongVersion[QStringLiteral("version")] = QStringLiteral("2");
+    error.clear();
+    check(!projectFromJson(wrongVersion, &loadedMain, &loadedTexture, &error),
+          "a bundle with a non-numeric version was accepted");
 
     check(ensureProjectFileExtension(QStringLiteral("drawing")) == QStringLiteral("drawing.anproj"),
           "project extension was not appended");

@@ -115,9 +115,21 @@ private:
     void applyHistoryRestore(PaintOpenGLWidget *view);
     void showTextureView();
     void openTextureView();
+    bool saveTextureView();
     bool saveTextureViewAs();
     bool exportTextureImage();
     bool writeJsonToFile(const QJsonObject &object, const QString &fileName, const QString &dialogTitle);
+    bool readJsonFromFile(const QString &fileName, const QString &dialogTitle, QJsonObject *object);
+    // Asks before writing when the owned-extension rewrite moved the save
+    // target onto an existing file the dialog never confirmed.
+    bool confirmDivergentOverwrite(const QString &requestedName,
+                                   const QString &targetName,
+                                   const QString &dialogTitle);
+    // Installs a loaded scene into a board: model, view identity, history
+    // reset, attention refresh, repaint.
+    void adoptLoadedModel(PaintOpenGLWidget *view,
+                          const AnimeSceneModel &model,
+                          const QString &historyLabel);
     // Re-asks toolcontrol.py for the active extra tool's layout and applies
     // it. A no-op when no extra tool is showing.
     void refreshExtraToolOptions();
