@@ -154,17 +154,13 @@ NEAREST_HANDLE_COLOR = (230, 45, 45, 255)
 # "Additional line": a pink refinement guide drawn on either board on top of
 # the H/V axes. Each line exists as a PAIR (child version, main version) - the
 # side the user did not draw on is synthesized through the current mapping -
-# and the pair's difference drives a local warp of the mapping (see
-# _AdditionalWarp). Falloff shape and reach are tool options.
+# and the pair guides the texture's FLOW: all pairs blend into one target
+# gradient field that a Poisson solve integrates (see _FlowFieldWarp).
+# Falloff shape and reach are tool options.
 ADDITIONAL_PROPERTY = "additional_line"
 ADDITIONAL_COLOR = (255, 105, 180, 255)
 ADDITIONAL_FALLOFFS = ("linear", "quadratic")
-_ADDITIONAL = {"falloff": "linear", "radius_factor": 0.5,
-               # The C-strategy's face labels (convex side stacks in
-               # front). Cuts at the deformation vertices always apply;
-               # this switch only silences the stacking evidence, so the
-               # two halves of the feature stay separately bisectable.
-               "face_stacking": True}
+_ADDITIONAL = {"falloff": "linear", "radius_factor": 0.5}
 
 
 def additional_falloff():
@@ -1480,1313 +1476,793 @@ def _slice_third_by_canvas_fraction(points, third, f_lo, f_hi):
     return out if len(out) >= 2 else []
 
 
-def _slice_points_by_canvas_fraction(points, f_lo, f_hi):
-    """The canvas polyline restricted to its own arc-fraction window.
-
-    The points mirror of _slice_third_by_canvas_fraction, with the SAME
-    inner-index rule, so a clipped line's points and thirds stay
-    index-parallel - the C-strategy plan below addresses both lists by
-    one fractional index and silently drifting counts would misplace
-    every cut."""
-    c_cum = _cumulative_lengths(points)
-    if c_cum[-1] <= 1e-9:
-        return []
-    lo = c_cum[-1] * f_lo
-    hi = c_cum[-1] * f_hi
-    inner = [i for i, c in enumerate(c_cum) if lo < c < hi]
-    out = ([_point_at_arc(points, c_cum, lo)]
-           + [tuple(points[i]) for i in inner]
-           + [_point_at_arc(points, c_cum, hi)])
-    return out if len(out) >= 2 else []
-
-
-def _canvas_index_of_fraction(points, f):
-    """Fractional index into a polyline at canvas arc fraction `f`.
-
-    A cut must be staging-invariant: __init__ pushes the child side
-    through the standing chain point by point (index-preserving), so a
-    fractional INDEX still names the same material afterwards while an
-    arc fraction no longer does."""
+def _resample_fractions(points, count):
+    """`points` resampled to `count` stations at equal ARC FRACTIONS."""
     cum = _cumulative_lengths(points)
     total = cum[-1]
-    if total <= 1e-9:
-        return 0.0
-    arc = total * min(max(f, 0.0), 1.0)
-    i = min(max(bisect.bisect_right(cum, arc) - 1, 0), len(points) - 2)
-    span = cum[i + 1] - cum[i]
-    return i + (0.0 if span <= 1e-9 else (arc - cum[i]) / span)
+    if total <= 1e-12:
+        return [tuple(points[0])] * count
+    return [_point_at_arc(points, cum, total * k / (count - 1))
+            for k in range(count)]
 
 
-def _slice_at_index(seq, lo, hi):
-    """seq restricted to the fractional-index window [lo, hi]:
-    interpolated boundary points plus the strictly interior originals."""
-    def at(f):
-        i = min(max(int(f), 0), len(seq) - 2)
-        t = min(max(f - i, 0.0), 1.0)
-        a, b = seq[i], seq[i + 1]
-        return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+class _FlowFieldWarp:
+    """The influence field of the additional (pink) refinement lines, as a
+    GLOBAL flow field integrated by Poisson (user spec 2026-08-25).
 
-    inner = [tuple(seq[i]) for i in range(int(math.ceil(lo)),
-                                          int(math.floor(hi)) + 1)
-             if lo < float(i) < hi]
-    return [at(lo)] + inner + [at(hi)]
+    PARADIGM. The previous _AdditionalWarp treated each line as an absolute
+    displacement constraint and CHAINED the lines (stage k evaluated in the
+    rendering of stages 1..k-1). Chaining meant an earlier line's local
+    space compression locked away the ground a later line needed - the
+    measured gradient collapse the spec retires. Here a line no longer
+    pushes coordinates; it REORIENTS the texture flow: each pair yields a
+    per-station similarity J_k = tau_main / tau_child (rotation + scale as
+    one complex ratio, station-matched by arc fraction), every point blends
+    all lines' J_k by normal-distance decay into one target gradient field
+    G, and the final map U is the energy minimiser of |grad U - G|^2 - a
+    single Poisson solve, order-free, with conflicts resolved by least
+    internal stress instead of by drawing order.
 
+    THREE STAGES (the spec's pipeline):
+      I  PRE-STRETCH. Lines may overrun the frame's Third window (版心).
+         The tent field U_base translates each edge outward by the overrun
+         T with weight W(t) = min(1, (|t|/B)^ALPHA) - zero on the two axes
+         (the stable spine), full at the original edge - so the solve
+         domain encloses every line and the Dirichlet boundary is honest
+         ground, not a clamp through a line's band. U_base is SEPARABLE
+         per axis, so its exact inverse is two 1-D bisections.
+      II FLOW FIELD. G = (sum w_k J_k + w_amb grad(U_base)) /
+         (sum w_k + w_amb) with w_amb = max(0, 1 - sum w_k): inside a
+         band the lines own the field, outside it relaxes to the tent's
+         own gradient, and the blend is continuous at every band edge
+         (a bare sum/sum jumps from J_k to I where w_k reaches zero).
+         w_k is the existing falloff (linear / quadratic tool option) of
+         normal distance over R = radius_factor * max(chord, arc).
+      III POISSON. Solve lap(U) = div(G) on a regular grid over the
+         expanded window with U = U_base pinned on the boundary
+         (eliminated Dirichlet, solved as lap(D) = div(G) - lap(U_base)
+         for the homogeneous correction D = U - U_base), by conjugate
+         gradients on the 5-point Laplacian - numpy-vectorised, a few ms
+         at the default resolution, so the mapper can rebuild during
+         guide drags.
 
-def _prominent_turns(values, tol):
-    """Interior trend reversals of a 1-D profile with topographic
-    prominence >= tol, as [(index, prominence), ...] in index order.
-
-    Zero steps are skipped, not treated as breaks (the plateau lesson
-    from reversal(): an extremum that samples onto a flat run must not
-    hide), and the reported index is the plateau midpoint. Prominence is
-    the smaller excursion of the reversal's two sides - endpoint-relative
-    tests are masked by one tall endpoint (a J-shaped stroke), while
-    topographic prominence rejects tremor and keeps real turns."""
-    count = len(values)
-    if count < 3:
-        return []
-    chain = [0]
-    trend = 0
-    last_end = 0
-    for k in range(count - 1):
-        step = values[k + 1] - values[k]
-        if abs(step) <= 1e-9:
-            continue
-        sign = 1 if step > 0.0 else -1
-        if trend == 0:
-            trend = sign
-        elif sign != trend:
-            chain.append((last_end + k) // 2)
-            trend = sign
-        last_end = k + 1
-    chain.append(count - 1)
-    if len(chain) < 3:
-        return []
-    # Prune the weakest leg until every leg clears tol: an interior leg
-    # removes its max-min pair together (they cancel), a boundary leg
-    # removes only its interior end.
-    while len(chain) > 2:
-        amps = [abs(values[chain[i + 1]] - values[chain[i]])
-                for i in range(len(chain) - 1)]
-        weakest = min(range(len(amps)), key=lambda i: amps[i])
-        if amps[weakest] >= tol:
-            break
-        if weakest == 0:
-            del chain[1]
-        elif weakest == len(amps) - 1:
-            del chain[-2]
-        else:
-            del chain[weakest:weakest + 2]
-    turns = []
-    for pos in range(1, len(chain) - 1):
-        prom = min(abs(values[chain[pos]] - values[chain[pos - 1]]),
-                   abs(values[chain[pos + 1]] - values[chain[pos]]))
-        turns.append((chain[pos], prom))
-    return turns
-
-
-def _c_shape_vertices(points):
-    """Box detection on one drawn polyline -> the deformation vertices.
-
-    The four bbox edge points are checked against the drawn endpoints;
-    when every edge belongs to the endpoints the current algorithm
-    stands (None). Otherwise the C-strategy picks the axis whose two
-    edge points' connecting line is closer in angle to the endpoint
-    chord (undirected), and returns ALL of that axis's prominent turns
-    as canvas arc fractions, ascending - two for a C, more for a coil.
-
-    Eligibility is double-gated: the axis needs >= 2 prominent interior
-    trend reversals (the double tangency that gives a C-shaped H/V guide
-    its two fold loci) AND both of its bbox edge points must be interior
-    - an interior wiggle on a monotone rise has two reversals, but its
-    box extremes are still the endpoints and the spec's box test says
-    the endpoints own that stroke."""
-    if len(points) < 4:
-        return None
-    xs = [p[0] for p in points]
-    ys = [p[1] for p in points]
-    width = max(xs) - min(xs)
-    height = max(ys) - min(ys)
-    if max(width, height) <= 4.0 * POLY_STEP:
-        return None  # a dot
-    cum = _cumulative_lengths(points)
-    total = cum[-1]
-    if total <= 1e-6:
-        return None
-    span = math.hypot(points[-1][0] - points[0][0],
-                      points[-1][1] - points[0][1])
-    if span <= max(4.0 * POLY_STEP, 0.05 * total):
-        return None  # near-closed: no chord frame exists downstream either
-    tol = max(2.0 * POLY_STEP, 0.03 * max(width, height))
-    chord_angle = math.atan2(points[-1][1] - points[0][1],
-                             points[-1][0] - points[0][0])
-    candidates = []
-    for order, (axis, values) in enumerate((("y", ys), ("x", xs))):
-        turns = _prominent_turns(values, tol)
-        if len(turns) < 2:
-            continue
-        if (max(values) - max(values[0], values[-1]) <= tol
-                or min(values[0], values[-1]) - min(values) <= tol):
-            continue  # a box edge still belongs to an endpoint
-        hi_turn = max(turns, key=lambda t: values[t[0]])
-        lo_turn = min(turns, key=lambda t: values[t[0]])
-        a = points[hi_turn[0]]
-        b = points[lo_turn[0]]
-        pair_angle = math.atan2(b[1] - a[1], b[0] - a[0])
-        delta = (pair_angle - chord_angle) % math.pi
-        delta = min(delta, math.pi - delta)
-        # Total ordering: angle, then arc separation, then extreme
-        # distance, then a fixed axis order - a plan that flips between
-        # builds would restack fills between two runs of the same scene.
-        sep = abs(cum[hi_turn[0]] - cum[lo_turn[0]]) / total
-        dist = math.hypot(a[0] - b[0], a[1] - b[1])
-        candidates.append((delta, -sep, -dist, order, turns))
-    if not candidates:
-        return None
-    candidates.sort()
-    turns = candidates[0][4]
-    picked = []
-    for index, prom in sorted(turns):
-        frac = cum[index] / total
-        if frac < 0.05 or frac > 0.95:
-            continue
-        if picked and frac - picked[-1][0] < 0.10:
-            # A sliver piece is the very defect the cuts remove; keep
-            # the more prominent of the colliding pair.
-            if prom > picked[-1][1]:
-                picked[-1] = (frac, prom)
-            continue
-        picked.append((frac, prom))
-    if len(picked) < 2:
-        return None
-    return [frac for frac, _prom in picked]
-
-
-def _main_protruding_axes(frame):
-    """The MAIN frame's protruding-side axis lines, in MAIN canvas.
-
-    The crossing splits each guide into two half-axes; a half whose own
-    bow clears the frame's tremor window protrudes. Zero to four of them
-    - the spec's own parenthetical says the answer need not be one."""
-    out = []
-    samples = 33
-    for guide, cross_arc, total in ((frame.gh, frame.h_arc, frame.h_total),
-                                    (frame.gv, frame.v_arc, frame.v_total)):
-        for lo, hi in ((0.0, cross_arc), (cross_arc, total)):
-            if hi - lo <= 4.0 * POLY_STEP:
-                continue
-            half = [guide.point_at(lo + (hi - lo) * k / (samples - 1))
-                    for k in range(samples)]
-            ax, ay = half[0]
-            bx, by = half[-1]
-            chord = math.hypot(bx - ax, by - ay)
-            if chord <= 1e-6:
-                continue
-            nx, ny = -(by - ay) / chord, (bx - ax) / chord
-            bow = max(((p[0] - ax) * nx + (p[1] - ay) * ny for p in half),
-                      key=abs)
-            if abs(bow) <= max(2.0 * POLY_STEP, 0.03 * (hi - lo)):
-                continue
-            out.append({"points": half,
-                        "weight": abs(bow) - max(2.0 * POLY_STEP,
-                                                 0.03 * (hi - lo))})
-    return out
-
-
-def _c_shape_plan(child_points, child_third, main_points, main_third,
-                  main_frame, to_main_canvas, anchor_third, radius_factor):
-    """The C-strategy plan for one additional pair, or None.
-
-    Box detection runs on the MAIN board's polyline first (the spec's
-    letter); a main line that is the synthesized straight chord carries
-    no shape and its edge points are its endpoints by construction, so
-    the child board's polyline is read next - whichever side carries the
-    bend supplies the vertices. Cuts are carried as ALIGNED Third arc
-    fractions (the station-pairing currency) and converted through each
-    side's own Third cumulative lengths - see the inline comment.
-
-    faces[k] labels ALIGNED piece k: +1 convex (front), -1 concave
-    (back), 0 no label. Front is chosen by an authority ladder - the
-    red handle when it sits inside a piece's own band (direct user
-    evidence; near/far authority stays with the handle per the To 3D
-    rule), else the bowing main guides (the protruding-side axes), else
-    NOTHING: the grouping still applies, the stacking stays bit-exact
-    ("never guess a stacking the drawing does not imply")."""
-    for pts in (main_points, child_points):
-        fracs = _c_shape_vertices(pts)
-        if fracs is not None:
-            bent_main = pts is main_points
-            break
-    else:
-        return None
-    # ALIGNED THIRD-ARC-FRACTION CURRENCY. _prepare stations the two
-    # sides against each other by each side's OWN Third arc fraction
-    # (station k of one resampled side pairs with station k of the
-    # other), after chord-aligning the main side's direction. A cut must
-    # therefore be carried as a Third arc fraction in the ALIGNED (child
-    # stored) direction and converted through each side's own Third
-    # cumulative lengths. The first version carried raw CANVAS fractions
-    # per stored side: an anti-directional partner re-paired mirrored
-    # material (measured 219.8 px drift on a redraw the legacy path
-    # holds at 0.0), and on differing frames the canvas fraction named
-    # a different station than the pairing uses.
-    m_chord = (main_third[-1][0] - main_third[0][0],
-               main_third[-1][1] - main_third[0][1])
-    c_chord = (child_third[-1][0] - child_third[0][0],
-               child_third[-1][1] - child_third[0][1])
-    aligned = m_chord[0] * c_chord[0] + m_chord[1] * c_chord[1] >= 0.0
-    bent_points = main_points if bent_main else child_points
-    bent_third = main_third if bent_main else child_third
-    t_bent = _cumulative_lengths([tuple(p) for p in bent_third])
-    if t_bent[-1] <= 1e-9:
-        return None
-
-    def bent_third_fraction(f):
-        # canvas fraction -> fractional index (points and thirds are
-        # index-parallel) -> the bent side's Third arc fraction
-        idx = _canvas_index_of_fraction(bent_points, f)
-        i = min(max(int(idx), 0), len(bent_third) - 2)
-        t = min(max(idx - i, 0.0), 1.0)
-        arc = t_bent[i] + (t_bent[i + 1] - t_bent[i]) * t
-        return arc / t_bent[-1]
-
-    g_bent = [bent_third_fraction(f) for f in fracs]
-    if bent_main and not aligned:
-        g_aligned = [1.0 - g for g in reversed(g_bent)]
-    else:
-        g_aligned = list(g_bent)
-    g_main = (list(g_aligned) if aligned
-              else [1.0 - g for g in reversed(g_aligned)])
-
-    def index_at_third_fraction(third, fraction):
-        cum = _cumulative_lengths([tuple(p) for p in third])
-        if cum[-1] <= 1e-9:
-            return 0.0
-        arc = cum[-1] * min(max(fraction, 0.0), 1.0)
-        i = min(max(bisect.bisect_right(cum, arc) - 1, 0), len(third) - 2)
-        span = cum[i + 1] - cum[i]
-        return i + (0.0 if span <= 1e-9 else (arc - cum[i]) / span)
-
-    cuts_child = [index_at_third_fraction(child_third, g) for g in g_aligned]
-    cuts_main = [index_at_third_fraction(main_third, g) for g in g_main]
-    pieces = len(fracs) + 1
-
-    def piece_ranges(bounds, count):
-        out = []
-        for k in range(pieces):
-            lo = max(int(math.ceil(bounds[k])), 0)
-            hi = min(int(math.floor(bounds[k + 1])), count - 1)
-            out.append((lo, hi))
-        return out
-
-    # Everything below indexes pieces in the ALIGNED (child stored)
-    # order - the order _prepare consumes faces in. A bent main side
-    # that is anti-aligned has its stored piece k at aligned position
-    # pieces-1-k; scoring in stored order flipped every label on even
-    # piece counts (measured full face inversion on a 4-piece zigzag).
-    faces = [0] * pieces
-    why = "no front evidence"
-    front_class = None
-    if _ADDITIONAL.get("face_stacking", True):
-        # (a) the red handle inside the band: the class it lands in IS
-        # the convex side, decided before any heuristic can disagree.
-        # The band test is PER PIECE - each piece's real field radius is
-        # radius_factor * max(piece chord, piece arc); the whole-line
-        # radius accepted a handle sitting where the field is
-        # identically zero (measured 137.6 px out vs real bands of
-        # 35/127/35).
-        if anchor_third is not None:
-            child_total = _cumulative_lengths(
-                [tuple(p) for p in child_third])[-1]
-            main_total = _cumulative_lengths(
-                [tuple(p) for p in main_third])[-1]
-            g_bounds = [0.0] + g_aligned + [1.0]
-            ranges = piece_ranges([0.0] + cuts_child
-                                  + [len(child_third) - 1.0],
-                                  len(child_third))
-            best = None
-            for k, (lo, hi) in enumerate(ranges):
-                if hi - lo < 1:
-                    continue
-                piece = [tuple(child_third[i]) for i in range(lo, hi + 1)]
-                d = _polyline_arc_of(anchor_third, piece)[0]
-                span = g_bounds[k + 1] - g_bounds[k]
-                arc_k = span * max(child_total, main_total)
-                chord_k = math.hypot(piece[-1][0] - piece[0][0],
-                                     piece[-1][1] - piece[0][1])
-                radius_k = radius_factor * max(chord_k, arc_k)
-                if d < radius_k and (best is None or d < best[0]):
-                    best = (d, k)
-            if best is not None:
-                front_class = best[1] % 2
-                why = "the red handle (it sits on that side)"
-        # (b) the user's rule: the convex side is closer to the MAIN
-        # frame's protruding-side axes. Distances in MAIN canvas px -
-        # the bow only exists there.
-        if front_class is None:
-            axes = _main_protruding_axes(main_frame)
-            if axes:
-                if bent_main:
-                    canvas = main_points
-                    bounds = ([0.0]
-                              + [_canvas_index_of_fraction(main_points, f)
-                                 for f in fracs]
-                              + [len(main_points) - 1.0])
-                else:
-                    canvas = [to_main_canvas(t) for t in child_third]
-                    bounds = [0.0] + cuts_child + [len(child_third) - 1.0]
-                ranges = piece_ranges(bounds, len(canvas))
-
-                def median(sample):
-                    ordered = sorted(sample)
-                    mid = len(ordered) // 2
-                    if len(ordered) % 2:
-                        return ordered[mid]
-                    return 0.5 * (ordered[mid - 1] + ordered[mid])
-
-                score = 0.0
-                scale = 0.0
-                for axis in axes:
-                    dists = {0: [], 1: []}
-                    for k, (lo, hi) in enumerate(ranges):
-                        # stored piece k of an anti-aligned bent main
-                        # sits at aligned position pieces-1-k
-                        k_al = (pieces - 1 - k
-                                if bent_main and not aligned else k)
-                        for i in range(lo, hi + 1):
-                            dists[k_al % 2].append(
-                                _polyline_arc_of(canvas[i],
-                                                 axis["points"])[0])
-                    if not dists[0] or not dists[1]:
-                        continue
-                    d0 = median(dists[0])
-                    d1 = median(dists[1])
-                    score += axis["weight"] * (d1 - d0)
-                    scale += axis["weight"] * (d1 + d0)
-                if scale > 1e-9 and abs(score) >= 0.02 * scale:
-                    front_class = 0 if score > 0.0 else 1
-                    why = "the bowing main guide"
-    else:
-        why = "face stacking disabled"
-    if front_class is not None:
-        faces = [1 if k % 2 == front_class else -1 for k in range(pieces)]
-    return {"cuts_child": cuts_child, "cuts_main": cuts_main,
-            "faces": faces, "why": why}
-
-
-class _AdditionalWarp:
-    """The influence field of the additional (pink) refinement lines.
-
-    THIRD SPACE. The child frame's arc coordinates (l_h, l_v) already form a
-    standard Cartesian plane in which both guide axes are straight - the
-    flattened view of the surface. Child->Third is `coords`, Main->Third is
-    the main frame's arcs divided by the per-side transfer scales, so both
-    boards' additional lines land in ONE shared plane.
-
-    A line drawn to hug the surface has the surface's geodesics crossing it
-    ORTHOGONALLY; in the flattened Third plane those geodesics are straight,
-    so they run along the normal of the line's START-TO-END CHORD. The warp
-    therefore works entirely in the chord frame (o, u, n):
-
-      - the drawn pair's difference is the FULL VECTOR profile
-        delta(s) = M(s) - C(s) over the chord parameter s, station-matched
-        by arc fraction. The geodesic theorem survives in the DECAY
-        direction (the chord normal n), not as a projection filter: a
-        normal-only profile provably cannot trace a C, whose arms
-        displace ALONG the chord;
-      - the profile is TRANSLATION-SWEPT along n - every Third point at
-        chord parameter s displaces by w(|r - r_c(s)|/R) * delta(s).
-        The weight is centred on the DRAWN LINE (r_c(s) = the child line's
-        own normal offset at s), not on the chord, so a bowed or hooked
-        line receives its full correction on itself. No spine/ridge
-        coordinates anywhere: the sweep direction stays one constant
-        vector per line, only the falloff centre rides the curve.
-      - w is the falloff (tool option): linear 1-x or quadratic (1-x)^2,
-        reaching zero at R = radius_factor * max(chord, arc length).
-        Beyond the chord's parameter span the profile tapers linearly to
-        zero over R, so a line's influence ends smoothly in every
-        direction.
-
-    Multiple lines COMPOSE in drawing order: each line is one STAGE whose
-    chord frame, geodesics and profile live in the rendering the earlier
-    stages already produce (the user's sequencing rule - addition 2 is
-    computed on addition 1's space). Lines whose bands never meet behave
-    exactly like an independent sum; where they meet, later refines
-    earlier instead of acting on a base-space ghost of it. The warp is
-    ALLOWED to fold: a delta beyond the fold threshold (R/gain) is the
-    drawn line asking the surface to double back, and that is how the
-    tool produces occlusion - back faces, creases and stacking. The fold machinery stays consistent through
-    det_sign() (multiplied into _orientation) and fold_loci() (the warp's
-    own analytic crease curves, injected beside the frame loci with their
-    exact child geometry). Chord-reversing shapes are handled by
-    SEGMENTATION in _prepare rather than smoothed away, and nothing is
-    capped. unapply() is exact outside folded bands (the
-    fixed-point rate is |dF/dr| < 1 there) and best-effort inside, where
-    the inverse is genuinely multivalued - the consumers that must be
-    exact there (cutters, crease probes) carry direct child geometry
-    instead.
+    CONTRACT SURFACE (same insertion points as the old class):
+      apply / unapply       forward field (bilinear on the solved grid,
+                            tent outside it) and its inverse (fixed-point
+                            + guarded Newton; exact tent inverse outside);
+      det_sign              sign of det(grad U) - O(1) when the solved
+                            field is orientation-preserving everywhere
+                            (the normal case: Poisson smoothing is exactly
+                            what keeps it so), per-cell lookup otherwise;
+      fold_loci             det = 0 contours of THIS field (usually
+                            none) - marched from the same per-node dets
+                            det_sign reads, so loci and pointwise
+                            orientation cannot disagree;
+      pairs                 one entry per drawn line ({"child", "main",
+                            "radius", ...}) - truthiness gates the warp;
+      has_faces / face_at   permanently False / 0: the C-shape face system
+                            rode on the chained sweeps and retires with
+                            them.
+    Intentional warp FOLDS retire too: under the flow model occlusion
+    comes from the child frame (severing) and the main frame (front/back
+    split), and a Poisson-integrated field resolves conflicting asks by
+    stress minimisation instead of doubling the sheet back.
     """
 
     SAMPLES = 65
-    # NOTHING here clamps the drawn intent any more. The normal derivative
-    # is free: |delta| beyond the fold threshold means the drawn line asks
-    # the surface to double back, and that FOLD is the point - it produces
-    # the occlusion relations, creases and stacking the tool exists for
-    # (the earlier fold-free contraction budget smoothed exactly that away,
-    # user report). The along-chord shear is free too: segmentation makes
-    # every segment chord-monotone, so steep profiles are drawn geometry,
-    # not projection junk (an earlier shear cap took 30% off a C's cap).
+    GRID = 96             # grid nodes along the longer domain side
+    STRETCH_ALPHA = 2.0   # tent decay exponent (spec: alpha >= 1)
+    CG_TOL = 1e-10        # relative residual^2
+    CG_MAX_ITER = 1500
+    # A locally rotated target field is NOT integrable: complying costs
+    # deformation of the identity-anchored surroundings that grows with
+    # domain AREA, so plain least squares simply ignores the drawn ask
+    # (energy audit: complying with a 25 deg ask cost ~50x more than
+    # ignoring it - and the solve showed 4 deg on the line). Two counters:
+    #   * FIT_GAIN - weighted least squares min integral w|grad U - G|^2
+    #     with w = 1 + FIT_GAIN * (band influence): where the lines
+    #     actually speak, matching them dominates; empty ground is the
+    #     SOFTEST, so an incompatible ask resolves by bending the empty
+    #     surroundings smoothly instead of by muting the drawn intent.
+    #     (The opposite weighting - stiff empty ground to kill the far
+    #     tails - was tried first and crushed rotation asks to 3.7 deg:
+    #     compliance and compact support are the true trade-off here, and
+    #     the drawn intent wins; the tails are smooth and Dirichlet-bound.)
+    #   * BOOST_ROUNDS - after each solve the achieved gradient is
+    #     measured ON each line and the per-station target is corrected
+    #     by the SECANT rule a* = ask * a_n / achieved_n (the response is
+    #     close to complex-linear, so the multiplicative step lands in
+    #     one round), capped at BOOST_CAP x the ask so an unreachable ask
+    #     cannot run away. Both leave an integrable ask (e.g. a pure
+    #     translation pair, J = I) untouched: zero deficit, no boost.
+    FIT_GAIN = 24.0
+    BOOST_ROUNDS = 3
+    BOOST_CAP = 4.0
+    # The H/V axes are the ABSOLUTE stable zone (user 2026-08-25: no line
+    # weight near the axes - the axes must not drift, ever). Two guards:
+    # every line's influence ramps to ZERO near either axis line
+    # (smoothstep over AXIS_GUARD), and a diagonal anchor pulls the
+    # ground near the axes toward U_base (identity there) with no
+    # exemption. Besides pinning the spine (measured 34 px drift from a
+    # line 250 px away without any anchor), the interior anchor shortens
+    # every harmonic tail.
+    # The axes are pinned as HARD interior Dirichlet lines (the grid
+    # rows/columns nearest x = 0 and y = 0 keep U = U_base exactly): a
+    # diagonal penalty was an arms race against the bands' fit weight
+    # (lambda = 8 still lost 19 px of V axis to a neighbouring band), and
+    # elimination costs nothing to tune. AXIS_GUARD is the weight-free
+    # halo that gives the field room to blend around the pinned lines.
+    AXIS_GUARD = 0.12      # weight-free halo, as a fraction of the window
 
-    def __init__(self, pairs, falloff="linear", radius_factor=0.5):
-        """`pairs` must arrive in DRAWING ORDER - each line becomes one
-        STAGE and the stages COMPOSE: line k's chord frame, geodesics and
-        profile are computed in the space the earlier lines already
-        produced (the Rendering after stages 1..k-1), per the user's
-        sequencing rule. The child-side thirds arrive in BASE Third
-        coordinates and are pushed forward through the chain built so
-        far; the main-side thirds are frame arcs unscaled, which is
-        already the rendering-space coordinate at draw time (the frame
-        inverse never involves the warp). Composition replaced the flat
-        sum of all lines: summing evaluated every line's field in base
-        coordinates, so a line drawn on top of a standing warp had its
-        ask displaced by exactly that warp's shift."""
+    def __init__(self, pairs, falloff="linear", radius_factor=0.5,
+                 frame_window=None):
         self.falloff = falloff if falloff in ADDITIONAL_FALLOFFS else "linear"
-        self.gain = 2.0 if self.falloff == "quadratic" else 1.0
-        self.stages = []  # one entry per drawn line, in drawing order
-        self.pairs = []   # flat view of every stage's segments
-        self._loci = None  # fold_loci memo; stages are immutable after init
-        for stage_index, entry in enumerate(pairs):
+        self.has_faces = False
+        self.pairs = []
+        self._loci = None
+        self._grid = None
+        self._tent = None
+        for entry in pairs:
             child_third, main_third = entry[0], entry[1]
-            plan = entry[2] if len(entry) > 2 else None  # 2-tuples still work
             if len(child_third) < 2 or len(main_third) < 2:
                 continue
-            staged_child = [self.apply(tuple(p)) for p in child_third]
-            segments = self._prepare(staged_child, main_third, radius_factor,
-                                     plan=plan)
-            if not segments:
-                continue
-            peak = 0.0
-            for segment in segments:
-                segment["group"] = stage_index
-                peak = max(peak, max(math.hypot(dx, dy)
-                                     for dx, dy in zip(segment["delta_x"],
-                                                       segment["delta_y"])))
-            for segment in segments:
-                segment["peak"] = peak
-                # How far the chain below this stage can displace a base
-                # point INSIDE this segment's scan window - the fold-locus
-                # scan widens by this bound. Proximity-GATED, not a blind
-                # running sum: an earlier stage whose reach cannot touch
-                # the window leaves it identity, so it contributes nothing
-                # (the blind sum tripled fold_loci cost and starved short
-                # later bands below their own probe density, silently
-                # losing their loci). Gating is inductive: the window is
-                # inflated by the pad accumulated so far, which bounds
-                # where the partial chain can have moved a window point
-                # by the time the candidate stage acts on it.
-                pad = 0.0
-                box = self._band_bbox(segment, 0.0)
-                for prior in self.stages:
-                    reach = (prior[0]["peak"]
-                             + max(p["prefix_pad"] for p in prior))
-                    grown = (box[0] - pad, box[1] - pad,
-                             box[2] + pad, box[3] + pad)
-                    if any(self._boxes_touch(
-                            self._band_bbox(p, reach), grown)
-                           for p in prior):
-                        pad += prior[0]["peak"]
-                segment["prefix_pad"] = pad
-            self.stages.append(segments)
-            self.pairs.extend(segments)
-        self.has_faces = any(
-            s.get("face") or any((s.get("face_spans") or ((), ()))[1])
-            for s in self.pairs)
+            line = self._prepare([tuple(p) for p in child_third],
+                                 [tuple(p) for p in main_third],
+                                 radius_factor)
+            if line is not None:
+                self.pairs.append(line)
+        if self.pairs:
+            self._build(frame_window)
 
-    @staticmethod
-    def _band_bbox(segment, extra):
-        """Axis-aligned bounds of one segment's influence band (its own
-        input space), inflated by `extra` on every side."""
-        origin, u, n = segment["origin"], segment["u"], segment["n"]
-        radius = segment["radius"]
-        s_lo = segment["keys"][0] - radius
-        s_hi = segment["keys"][-1] + radius
-        r_lo = min(segment["offsets"]) - 1.25 * radius
-        r_hi = max(segment["offsets"]) + 1.25 * radius
-        xs = []
-        ys = []
-        for s in (s_lo, s_hi):
-            for r in (r_lo, r_hi):
-                xs.append(origin[0] + u[0] * s + n[0] * r)
-                ys.append(origin[1] + u[1] * s + n[1] * r)
-        return (min(xs) - extra, min(ys) - extra,
-                max(xs) + extra, max(ys) + extra)
+    # ---------------------------------------------------------------- prep
 
-    @staticmethod
-    def _boxes_touch(a, b):
-        return not (a[2] < b[0] or b[2] < a[0] or a[3] < b[1] or b[3] < a[1])
-
-    @staticmethod
-    def _resample(points, count):
-        cum = _cumulative_lengths(points)
-        total = cum[-1]
-        if total <= 1e-9:
+    def _prepare(self, child, main, radius_factor):
+        """One drawn pair -> stations, per-segment similarities, radius."""
+        # Direction alignment: station k pairs with station k, so a line
+        # redrawn BACKWARDS against its untouched partner must not read
+        # as a ~180 degree flow ask (measured 71 px of drift without the
+        # flip). The chord dot decides, exactly like the old sweep did.
+        chord_c = (child[-1][0] - child[0][0], child[-1][1] - child[0][1])
+        chord_m = (main[-1][0] - main[0][0], main[-1][1] - main[0][1])
+        if chord_c[0] * chord_m[0] + chord_c[1] * chord_m[1] < 0.0:
+            main = list(reversed(main))
+        c = _resample_fractions(child, self.SAMPLES)
+        m = _resample_fractions(main, self.SAMPLES)
+        cum = _cumulative_lengths(c)
+        arc = cum[-1]
+        chord = math.hypot(c[-1][0] - c[0][0], c[-1][1] - c[0][1])
+        if arc <= 1e-9:
             return None
-        return [_point_at_arc(points, cum, total * k / (count - 1))
-                for k in range(count)]
-
-    @staticmethod
-    def _smooth(values, keys, limit):
-        """[1,2,1]-smooth until the worst LOCAL slope |dv/ds| fits `limit`.
-
-        The chord projection of a hooked or S-shaped line interleaves its
-        branches, manufacturing steep steps that are projection artifacts,
-        not drawn geometry - measured 900x slope inflation on a 250-degree
-        hook, which then consumed the whole deformation budget and gutted
-        every OTHER line's correction. The slope is measured against the
-        LOCAL key gap - the same quantity the gradient budget later
-        charges; an average-spacing version left a 5x gap between what was
-        smoothed and what was billed. Smoothing is best-effort (a monotone
-        ramp is a [1,2,1] fixed point); whatever slope remains is charged
-        at full value by _pair_gradient, never assumed away.
-        """
-        for _ in range(64):
-            worst = max((abs(b - a) / max(k1 - k0, 1e-6)
-                         for a, b, k0, k1 in zip(values, values[1:],
-                                                 keys, keys[1:])),
-                        default=0.0)
-            if worst <= limit:
-                break
-            values = ([values[0]]
-                      + [(values[i - 1] + 2.0 * values[i] + values[i + 1]) * 0.25
-                         for i in range(1, len(values) - 1)]
-                      + [values[-1]])
-        return values
-
-    def _prepare(self, child_third, main_third, radius_factor, depth=0,
-                 plan=None, face=0):
-        """One drawn pair -> a LIST of chord-monotone sweep segments.
-
-        The translation sweep needs the chord parameter to advance
-        monotonically along both sides. A C- or hook-shaped line reverses
-        it: its branches interleave under the chord projection, the merge
-        averages them, and the drawn shape came out SMOOTHED away (user
-        report, arc/chord 1.95). Where either side's chord parameter
-        reverses, the pair is SPLIT at the turning stations and each run
-        becomes its own sweep with its own chord frame - a C is three
-        sweeps, faithful to what was drawn, still spine-free.
-
-        With a C-strategy `plan` the primary cuts happen FIRST, at the
-        drawn line's own deformation vertices (box detection), and each
-        piece carries its face label (+1 convex/front, -1 concave/back,
-        0 unlabelled) into its segment dicts; the trend-reversal
-        recursion still runs inside each piece, for chord-monotonicity
-        only - those residual cuts never change the label. The old
-        first-reversal recursion alone peeled a left-recursive sliver
-        cascade off a deep C (measured radii 40.5/18.3/11.0/5.2 on a
-        symmetric 270-degree C, with fold loci traced outside the shape
-        entirely).
-        """
-        if len(child_third) < 2 or len(main_third) < 2:
-            return []
-        if depth == 0 and plan is not None:
-            # Direction alignment must settle BEFORE the planned cuts -
-            # the plan states its main-side indices in stored stroke
-            # order. Resampling preserves endpoints, so this chord dot
-            # is the same one the unplanned path computes below.
-            m_chord = (main_third[-1][0] - main_third[0][0],
-                       main_third[-1][1] - main_third[0][1])
-            c_chord = (child_third[-1][0] - child_third[0][0],
-                       child_third[-1][1] - child_third[0][1])
-            main_line = [tuple(p) for p in main_third]
-            cuts_main = list(plan["cuts_main"])
-            if m_chord[0] * c_chord[0] + m_chord[1] * c_chord[1] < 0.0:
-                main_line = list(reversed(main_line))
-                last = len(main_line) - 1.0
-                cuts_main = [last - c for c in reversed(cuts_main)]
-            faces = plan.get("faces") or []
-            # The cuts exist for the CHILD side's chord-monotonicity
-            # (the profile is a function of the child chord parameter).
-            # A monotone child - a main-drawn C over its straight
-            # synthesized chord - already traces the drawn shape
-            # VERBATIM in one sweep; cutting it into partition-of-unity
-            # pieces measurably degraded that tracing (review finding).
-            # It keeps the single sweep, and the face labels ride as
-            # chord-parameter windows on the segment instead.
-            length = math.hypot(c_chord[0], c_chord[1])
-            monotone = length > 1e-6
-            if monotone:
-                u0 = (c_chord[0] / length, c_chord[1] / length)
-                trend = 0
-                s_prev = 0.0
-                for p in child_third:
-                    s_here = ((p[0] - child_third[0][0]) * u0[0]
-                              + (p[1] - child_third[0][1]) * u0[1])
-                    step = s_here - s_prev
-                    s_prev = s_here
-                    if abs(step) <= 1e-6:
-                        continue
-                    sign = 1 if step > 0.0 else -1
-                    if trend == 0:
-                        trend = sign
-                    elif sign != trend:
-                        monotone = False
-                        break
-            if monotone:
-                segments = self._prepare(child_third, main_line,
-                                         radius_factor, depth + 1)
-                if any(faces):
-                    for segment in segments:
-                        s_cuts = []
-                        for cut in plan["cuts_child"]:
-                            i = min(max(int(cut), 0), len(child_third) - 2)
-                            t = min(max(cut - i, 0.0), 1.0)
-                            p = (child_third[i][0]
-                                 + (child_third[i + 1][0]
-                                    - child_third[i][0]) * t,
-                                 child_third[i][1]
-                                 + (child_third[i + 1][1]
-                                    - child_third[i][1]) * t)
-                            s_cuts.append(
-                                (p[0] - segment["origin"][0])
-                                * segment["u"][0]
-                                + (p[1] - segment["origin"][1])
-                                * segment["u"][1])
-                        s_cuts.sort()
-                        segment["face_spans"] = (s_cuts, list(faces))
-                return segments
-            bounds_c = ([0.0] + list(plan["cuts_child"])
-                        + [len(child_third) - 1.0])
-            bounds_m = [0.0] + cuts_main + [len(main_line) - 1.0]
-            out = []
-            for k in range(len(bounds_c) - 1):
-                if (bounds_c[k + 1] - bounds_c[k] < 1e-6
-                        or bounds_m[k + 1] - bounds_m[k] < 1e-6):
-                    continue
-                out += self._prepare(
-                    _slice_at_index(child_third, bounds_c[k],
-                                    bounds_c[k + 1]),
-                    _slice_at_index(main_line, bounds_m[k],
-                                    bounds_m[k + 1]),
-                    radius_factor, depth + 1,
-                    face=faces[k] if k < len(faces) else 0)
-            return out
-        child_line = self._resample([tuple(p) for p in child_third], self.SAMPLES)
-        main_line = self._resample([tuple(p) for p in main_third], self.SAMPLES)
-        if child_line is None or main_line is None:
-            return []
-        # Station k pairs with station k, so the two sides must run the same
-        # way; a reversed partner (a right-to-left redraw of the same shape)
-        # otherwise pairs fore against aft and fabricates a delta from
-        # identical geometry (measured 13.5 px). Chord dot decides - whole
-        # lines only: segments inherit the parent's correspondence and must
-        # never be re-flipped.
-        if depth == 0:
-            m_chord = (main_line[-1][0] - main_line[0][0],
-                       main_line[-1][1] - main_line[0][1])
-            c_chord = (child_line[-1][0] - child_line[0][0],
-                       child_line[-1][1] - child_line[0][1])
-            if m_chord[0] * c_chord[0] + m_chord[1] * c_chord[1] < 0.0:
-                main_line = list(reversed(main_line))
-        # BOTH sides' arcs: the child side alone broke the main-drawn
-        # path, where the synthesized partner is the straight chord - a
-        # 340-degree drawn C carried 593 px of arc yet reached only its
-        # chord's worth (R = 17 px), the opposite of the "reach follows
-        # the line's own ARC length" rule stated at the radius below.
-        arc_total = max(
-            _cumulative_lengths([tuple(p) for p in child_third])[-1],
-            _cumulative_lengths([tuple(p) for p in main_third])[-1])
-        origin = child_line[0]
-        chord = (child_line[-1][0] - origin[0], child_line[-1][1] - origin[1])
-        length = math.hypot(chord[0], chord[1])
-        if length <= 1e-6:
-            return []  # a closed scribble has no chord frame
-        u = (chord[0] / length, chord[1] / length)
-        n = (-u[1], u[0])
-
-        # The profile is a function of the CHILD side's chord parameter, so
-        # only the child side must be chord-monotone; a C-shaped child line
-        # splits at its trend reversals into sub-sweeps. (The main side may
-        # curve freely - its shape rides in the vector profile.)
-        def reversal(points):
-            # First station where the chord parameter's TREND flips. Zero
-            # steps (the flat samples at an extremum) are skipped, not
-            # treated as breaks - an adjacency test missed every extremum
-            # that sampled onto a plateau.
-            s_values = [(p[0] - origin[0]) * u[0] + (p[1] - origin[1]) * u[1]
-                        for p in points]
-            trend = 0
-            for k in range(len(s_values) - 1):
-                step = s_values[k + 1] - s_values[k]
-                if abs(step) <= 1e-6:
-                    continue
-                sign = 1 if step > 0.0 else -1
-                if trend == 0:
-                    trend = sign
-                elif sign != trend:
-                    return k
-            return None
-
-        # The depth cap gates the SPLITTING, not the whole call: a capped
-        # sub-line falls through to the table build below and is emitted as
-        # one un-split best-effort sweep. Capping at the entry returned []
-        # for BOTH depth-5 halves, silently zeroing the whole remainder of
-        # any line with enough chord reversals (measured 55/120 stations
-        # dead on a 340-degree hook, the drawn tail doing nothing at all).
-        split = reversal(child_line) if depth <= 4 else None
-        if split is not None and 2 <= split <= len(child_line) - 3:
-            return (self._prepare(child_line[:split + 1], main_line[:split + 1],
-                                  radius_factor, depth + 1, face=face)
-                    + self._prepare(child_line[split:], main_line[split:],
-                                    radius_factor, depth + 1, face=face))
-        # Per chord station s: the child line's OWN normal offset r_c(s) -
-        # the sweep is centred on the DRAWN line, not on the chord - and
-        # the pair's FULL VECTOR difference delta(s) = M(s) - C(s). The
-        # first version projected delta onto n (deformation strictly along
-        # the chord normal), which can only produce graphs over the chord:
-        # a C-shaped ask, whose arms displace ALONG the chord, came out
-        # smoothed to nothing (user report). The geodesic story survives
-        # in the DECAY direction, which stays the chord normal.
-        table = []
-        for c, m in zip(child_line, main_line):
-            s = (c[0] - origin[0]) * u[0] + (c[1] - origin[1]) * u[1]
-            r_c = (c[0] - origin[0]) * n[0] + (c[1] - origin[1]) * n[1]
-            table.append((s, m[0] - c[0], m[1] - c[1], r_c))
-        table.sort(key=lambda entry: entry[0])
-        # Collapse near-coincident chord parameters (sampling jitter at an
-        # extremum; averaging keeps the profile a function of s).
-        merged = []
-        span = max(table[-1][0] - table[0][0], 1e-6)
-        epsilon = span / (4.0 * self.SAMPLES)
-        for s, dx, dy, r_c in table:
-            if merged and s - merged[-1][0] < epsilon:
-                prev_s, px, py, pr, count = merged[-1]
-                merged[-1] = (prev_s,
-                              (px * count + dx) / (count + 1),
-                              (py * count + dy) / (count + 1),
-                              (pr * count + r_c) / (count + 1),
-                              count + 1)
-            else:
-                merged.append((s, dx, dy, r_c, 1))
-        if len(merged) < 2:
-            return []
-        keys = [entry[0] for entry in merged]
-        # Light anti-spike smoothing only: segmentation removed the branch
-        # interleave that used to need heavy passes, and heavy smoothing
-        # was exactly what flattened the drawn shape out of the mapping.
-        delta_x = self._smooth([entry[1] for entry in merged], keys, 4.0)
-        delta_y = self._smooth([entry[2] for entry in merged], keys, 4.0)
-        offsets = self._smooth([entry[3] for entry in merged], keys, 4.0)
-        # Reach follows the line's own ARC length, not its chord: a hooked
-        # line has a tiny chord but a long presence on the surface.
-        radius = max(radius_factor * max(length, arc_total), 1e-6)
-        # MULTISCALE SWEEP: the profile tables get a box-blur pyramid, and
-        # sampling picks the level whose smoothing length matches the
-        # probe's normal distance from the drawn line. A translation sweep
-        # carries the profile VERBATIM across the whole band, so a
-        # high-frequency line (a 427-degree coil, ADD_TOPO_ERROR) printed
-        # its oscillation onto flat ground 200+ px away and folded it into
-        # eight phantom-yet-real creases; physically, distance smooths -
-        # far ground feels only the line's average ask (the heat-kernel
-        # picture of the geodesic influence). On the line itself blur is
-        # zero and every existing behavior is bit-identical.
-        step_med = max((keys[-1] - keys[0]) / max(len(keys) - 1, 1), 1e-6)
-
-        def box(values, half):
-            prefix = [0.0]
-            for v in values:
-                prefix.append(prefix[-1] + v)
-            out = []
-            n = len(values)
-            for i in range(n):
-                lo = max(0, i - half)
-                hi = min(n - 1, i + half)
-                out.append((prefix[hi + 1] - prefix[lo]) / (hi - lo + 1))
-            return out
-
-        # Half-widths 1,2,4,...: the first level is a light touch, so the
-        # exact->blurred onset transition carries a SMALL profile change
-        # over its ramp (a coarse first level compressed the whole change
-        # into a thin shell around the line whose normal gradient itself
-        # read as a fold).
-        blur_levels = [(delta_x, delta_y, offsets)]
-        for k in range(7):
-            half = 2 ** k
-            prev = blur_levels[-1]
-            blur_levels.append(tuple(box(v, half) for v in prev))
-        # How far the blurred sweep centre can drift from the exact one -
-        # the support early-out pads by it, or det_sign would short-cut
-        # inside a band whose live centre moved past the raw slack.
-        rc_span = max((max(abs(a - b) for a, b in zip(level[2], offsets))
-                       for level in blur_levels[1:]), default=0.0)
-        # The sweep centre's actual worst slope (smoothing is best-effort,
-        # so 4.0 is a target, not a bound) - _in_support pads with it.
-        offset_slope = max((abs(b - a) / max(k1 - k0, 1e-6)
-                            for a, b, k0, k1 in zip(offsets, offsets[1:],
-                                                    keys, keys[1:])),
-                           default=0.0)
-        return [{"origin": origin, "u": u, "n": n, "radius": radius,
-                 "keys": keys, "delta_x": delta_x, "delta_y": delta_y,
-                 "offsets": offsets, "offset_slope": offset_slope,
-                 "blur_levels": blur_levels, "blur_step": step_med,
-                 "blur_rc_span": rc_span, "face": face}]
-
-    def jacobian(self, third, step=0.25):
-        """2x2 Jacobian of apply() by the CHAIN RULE: the product of
-        per-stage central-difference Jacobians, each taken at that
-        stage's own input point with a step calibrated to that stage's
-        radius. Differencing the whole composite in base coordinates
-        amplified the probe step by the earlier stages' gradients and
-        straddled a later stage's band - measured 2.85% of probes
-        reporting phantom folds (det<0 where the converged determinant
-        is strongly positive) at an earlier-stage gradient of 20, and
-        the chain-rule form drops that to 0 with the same eval count."""
-        z = (third[0], third[1])
-        jac = (1.0, 0.0, 0.0, 1.0)
-        for segments in self.stages:
-            h = min(step, 0.25 * min(s["radius"] for s in segments))
-            a, b, c, d = self._stage_jacobian(segments, z, h)
-            jac = (a * jac[0] + b * jac[2], a * jac[1] + b * jac[3],
-                   c * jac[0] + d * jac[2], c * jac[1] + d * jac[3])
-            dx, dy = self._stage_displacement(segments, z)
-            z = (z[0] + dx, z[1] + dy)
-        return jac
-
-    def _in_support(self, third, pad):
-        """Can any pair move any point within `pad` of `third`? Exact when
-        False: the s test is padded by the taper reach plus pad, and the r
-        test by pad times (1 + the pair's ACTUAL worst sweep-centre slope,
-        stored at build - smoothing only targets 4.0), so displacement is
-        identically (0, 0) over the whole difference stencil."""
-        for pair in self.pairs:
-            rel = (third[0] - pair["origin"][0], third[1] - pair["origin"][1])
-            s = rel[0] * pair["u"][0] + rel[1] * pair["u"][1]
-            radius = pair["radius"]
-            if not (pair["keys"][0] - radius - pad
-                    <= s <= pair["keys"][-1] + radius + pad):
+        radius = max(radius_factor * max(chord, arc), 1e-6)
+        sims = []
+        last = (1.0, 0.0)
+        for k in range(self.SAMPLES - 1):
+            tcx = c[k + 1][0] - c[k][0]
+            tcy = c[k + 1][1] - c[k][1]
+            tmx = m[k + 1][0] - m[k][0]
+            tmy = m[k + 1][1] - m[k][1]
+            denom = tcx * tcx + tcy * tcy
+            if denom <= 1e-12:
+                sims.append(last)   # degenerate station: carry the trend
                 continue
-            _dx, _dy, r_c, _taper = self._sample(pair, s)
-            r = rel[0] * pair["n"][0] + rel[1] * pair["n"][1]
-            slack = (pad * (1.5 + pair.get("offset_slope", 0.0))
-                     + pair.get("blur_rc_span", 0.0))
-            if abs(r - r_c) < radius + slack:
-                return True
-        return False
-
-    def face_at(self, third):
-        """+1 convex (front) / -1 concave (back) / 0 unlabelled, at a
-        BASE Third point.
-
-        Weighted by the SAME falloff the field uses, so the label fades
-        continuously across a group boundary instead of stepping. Same
-        base-space approximation as _in_support and det_sign on
-        multi-stage documents: the label only picks the direction of a
-        stacking bump that is already happening, so a fringe mislabel
-        degrades to the old unconditional guess, never to a new failure
-        mode."""
-        if not getattr(self, "has_faces", False) \
-                or not self._in_support(third, 0.0):
-            return 0
-        # Per-CLASS MAX weight, not a signed sum: a sum lets the class
-        # with more pieces win by count - a deep C's two concave arms
-        # outvoted its single convex belly at points the belly clearly
-        # owns (measured inversion), flipping the stacking bump.
-        best = {1: 0.0, -1: 0.0}
-        for pair in self.pairs:
-            label = pair.get("face")
-            spans = pair.get("face_spans")
-            if not label and not spans:
-                continue
-            rel = (third[0] - pair["origin"][0],
-                   third[1] - pair["origin"][1])
-            s = rel[0] * pair["u"][0] + rel[1] * pair["u"][1]
-            _dx, _dy, r_c, taper = self._sample(pair, s)
-            r = rel[0] * pair["n"][0] + rel[1] * pair["n"][1]
-            weight = self._weight(abs(r - r_c) / pair["radius"]) * taper
-            if weight <= 0.0:
-                continue
-            if not label:
-                bounds, labels = spans
-                k = bisect.bisect_right(bounds, s)
-                label = labels[k] if k < len(labels) else labels[-1]
-                if not label:
-                    continue
-            best[label] = max(best[label], weight)
-        if best[1] > best[-1] + 1e-9:
-            return 1
-        return -1 if best[-1] > best[1] + 1e-9 else 0
-
-    def det_sign(self, third):
-        """Sign of det D(apply) - the warp's own fold parity at a point.
-
-        Outside every pair's influence band the map is the identity over
-        the whole difference stencil, so the answer is 1 without touching
-        the Jacobian - ~96% of overlay and orientation probes on a real
-        document end there (measured; the unconditional version was a 5x
-        per-point regression)."""
-        if not self._in_support(third, 0.25):
-            return 1
-        a, b, c, d = self.jacobian(third)
-        return 1 if a * d - b * c >= 0.0 else -1
-
-    def fold_loci(self, samples=48):
-        """The warp's OWN fold loci as Third-space curves, traced
-        numerically: per pair band, det D(apply) sign changes are bisected
-        along the chord-normal direction and chained column-to-column by
-        nearest band coordinate. Numeric on purpose - the vector profile
-        and the group blending have no usable closed form, and tracing the
-        SAME det_sign field the pointwise orientation uses means loci and
-        cuts cannot disagree. Cost: ~4k det probes per pair (grid plus
-        bisections) and the det field sums every pair, so a segmented line
-        pays quadratically - hundreds of ms; memoized, so a mapping run
-        pays it once.
-
-        The bands of one line's segments (and of separate lines) overlap
-        while the det field is GLOBAL, so the same locus gets traced once
-        per band it lies in; the duplicates would double depth counts and
-        double-draw creases downstream. Dedupe in THIRD space - the
-        domain - because a folded sheet legitimately superimposes distinct
-        loci in the image (same rationale as _uncovered_runs' arc-space
-        coverage).
-
-        A later STAGE's band is expressed in its own input space, but the
-        scan runs over base Third coordinates: the base preimage of the
-        band is the band displaced by at most prefix_pad - the summed
-        peaks of the earlier stages that can actually REACH the window
-        (proximity-gated at build) - so the scan window widens by that
-        bound while the probe counts scale to keep the unpadded step
-        size."""
-        if self._loci is not None:
-            # Copies: _with_warp_loci registers curves by id() in
-            # map_point.warp_curve_child, so each call must hand out
-            # distinct list objects.
-            return [list(curve) for curve in self._loci]
-        traced = []
-        for pair in self.pairs:
-            origin, u, n = pair["origin"], pair["u"], pair["n"]
-            radius = pair["radius"]
-            pad = pair.get("prefix_pad", 0.0)
-            span_lo = pair["keys"][0] - radius - pad
-            span_hi = pair["keys"][-1] + radius + pad
-            base_span = max(pair["keys"][-1] - pair["keys"][0] + 2.0 * radius,
-                            1e-6)
-            # The pad widens the window; the probe count follows so the
-            # step size inside the segment's own band NEVER coarsens (a
-            # 120 cap once starved a short later band below 2 columns and
-            # silently lost its locus; the proximity gate keeps pads - and
-            # so these counts - small unless stages genuinely overlap).
-            columns = min(400, max(samples, int(math.ceil(
-                samples * (span_hi - span_lo) / base_span))))
-
-            def third_at(s, r):
-                return (origin[0] + u[0] * s + n[0] * r,
-                        origin[1] + u[1] * s + n[1] * r)
-
-            # Chaining by nearest row under a slope gate. The old rule -
-            # append by array rank whenever the crossing COUNT matched -
-            # welded unrelated loci with long straight jumps through
-            # sign-constant territory whenever one locus left the band as
-            # another entered (measured a 240 px phantom "locus" wholly in
-            # det>0 ground), and shredded real loci into 2-point stubs on
-            # every count change (a third of the columns).
-            # The chaining gate follows the segment's OWN feature scale
-            # (core step, not the padded span): a pad-inflated tol once
-            # exceeded the separation between a short segment's two real
-            # loci - exactly the weld this gate exists to prevent.
-            tol = min(max(4.0 * base_span / samples, 0.05 * radius),
-                      0.5 * radius)
-
-            # Row resolution must resolve the blur ramp's normal feature
-            # scale, not just the radius: the multiscale field varies
-            # along the normal at the blur-step scale, and rows coarser
-            # than that reported back faces with no traceable locus.
-            row_step = min(2.5 * radius / 40.0,
-                           4.0 * pair.get("blur_step", radius))
-
-            def run_sweep(col_lo, col_hi, col_count, row_bounds, point_at):
-                open_curves = []  # [points, last_row]
-                for k in range(col_count + 1):
-                    col = col_lo + (col_hi - col_lo) * k / col_count
-                    row_lo, row_hi = row_bounds(col)
-                    steps = min(400, max(40, int(math.ceil(
-                        (row_hi - row_lo) / max(row_step, 1e-6)))))
-                    crossings = []
-                    prev_sign = None
-                    prev_row = None
-                    for j in range(steps + 1):
-                        row = row_lo + (row_hi - row_lo) * j / steps
-                        sign = self.det_sign(point_at(col, row))
-                        if prev_sign is not None and sign != prev_sign:
-                            a, b = prev_row, row
-                            for _ in range(18):
-                                mid = (a + b) * 0.5
-                                if self.det_sign(point_at(col, mid)) == prev_sign:
-                                    a = mid
-                                else:
-                                    b = mid
-                            crossings.append((a + b) * 0.5)
-                        prev_sign = sign
-                        prev_row = row
-                    taken = [False] * len(open_curves)
-                    matches = []
-                    for ci, crossing in enumerate(crossings):
-                        best = None
-                        for oi, (_points, last_row) in enumerate(open_curves):
-                            gap = abs(crossing - last_row)
-                            if gap <= tol and (best is None or gap < best[0]):
-                                if not taken[oi]:
-                                    best = (gap, oi)
-                        matches.append(best[1] if best else None)
-                        if best:
-                            taken[best[1]] = True
-                    survivors = []
-                    for oi, (points, _last_row) in enumerate(open_curves):
-                        if not taken[oi]:
-                            if len(points) >= 2:
-                                traced.append(points)
-                    for ci, crossing in enumerate(crossings):
-                        oi = matches[ci]
-                        if oi is None:
-                            survivors.append([[point_at(col, crossing)],
-                                              crossing])
-                        else:
-                            open_curves[oi][0].append(point_at(col, crossing))
-                            open_curves[oi][1] = crossing
-                            survivors.append(open_curves[oi])
-                    open_curves = survivors
-                for points, _last_row in open_curves:
-                    if len(points) >= 2:
-                        traced.append(points)
-
-            # TWO sweep directions, like the frame creases' h/v sweeps: a
-            # locus stretch running ALONG the scan columns is invisible to
-            # that sweep - the single s-sweep missed the near-vertical
-            # stretches that close a fold band at its ends, leaving a
-            # depth/side boundary with no locus, no cutter and no crease
-            # (measured: a parity step 9.7 px from every cutter). The
-            # orthogonal sweep traces them; the Third-space dedupe merges
-            # the overlap.
-            def s_rows(s):
-                _dx, _dy, r_c, _taper = self._sample(pair, s)
-                return (r_c - 1.25 * radius - pad, r_c + 1.25 * radius + pad)
-
-            run_sweep(span_lo, span_hi, columns, s_rows,
-                      lambda s, r: third_at(s, r))
-            r_all_lo = min(pair["offsets"]) - 1.25 * radius - pad
-            r_all_hi = max(pair["offsets"]) + 1.25 * radius + pad
-            r_columns = min(400, max(samples, int(math.ceil(
-                samples * (r_all_hi - r_all_lo) / (2.5 * radius)))))
-            run_sweep(r_all_lo, r_all_hi, r_columns,
-                      lambda _r: (span_lo, span_hi),
-                      lambda r, s: third_at(s, r))
-        grid = _ArcGrid(4.0 * POLY_STEP)
-        curves = []
-        for curve in sorted(traced, key=len, reverse=True):
-            for run in _uncovered_runs(curve, grid, POLY_STEP):
-                if len(run) >= 2:
-                    curves.append(run)
-                    grid.add_curve(run)
-        self._loci = curves
-        return [list(curve) for curve in curves]
-
-    def _sample(self, pair, s, blur=0.0):
-        """(delta_x, delta_y, r_c, taper) at chord parameter s.
-
-        The end taper is returned SEPARATELY, not multiplied into the
-        deltas: displacement() folds it into the WEIGHT so that a
-        tapered-out segment leaves the group's partition-of-unity
-        denominator at the same rate its contribution vanishes. Tapering
-        the delta alone let the weight drop out of the denominator
-        discontinuously at the taper edge - a C0 tear of up to half the
-        applied delta along a whole curve (measured 35 px on a C drawn on
-        the child board), which det_sign then reported as phantom folds.
-
-        `blur` = the probe's normal distance from the drawn line: the
-        profile is read from the box-blur pyramid level whose smoothing
-        length matches it (interpolated BETWEEN levels - a level switch
-        would itself be a seam), so far ground feels only the line's
-        smoothed ask and a high-frequency coil no longer folds flat
-        ground hundreds of px away. blur=0 reads the exact tables.
-        """
-        table_keys = pair["keys"]
-        lo, hi = table_keys[0], table_keys[-1]
-        taper = 1.0
-        if s < lo:
-            taper = max(0.0, 1.0 - (lo - s) / pair["radius"])
-            s = lo
-        elif s > hi:
-            taper = max(0.0, 1.0 - (s - hi) / pair["radius"])
-            s = hi
-        index = bisect.bisect_right(table_keys, s) - 1
-        index = max(0, min(index, len(table_keys) - 2))
-        s0, s1 = table_keys[index], table_keys[index + 1]
-        t = 0.0 if s1 - s0 <= 1e-9 else (s - s0) / (s1 - s0)
-
-        levels = pair.get("blur_levels")
-        if levels is None or blur <= 4.0 * pair.get("blur_step", 0.0):
-            def lerp(values):
-                return values[index] + (values[index + 1] - values[index]) * t
-
-            return (lerp(pair["delta_x"]),
-                    lerp(pair["delta_y"]),
-                    lerp(pair["offsets"]),
-                    taper)
-        # Window length ~ the normal distance itself, and the ramp starts
-        # gently (onset at 4 steps, one level per octave): wavelengths
-        # longer than the distance survive - a plain bow keeps most of its
-        # far reach - while the level-to-level change stays small enough
-        # that the ramp's own normal gradient cannot read as a fold.
-        level = max(0.0, math.log2(blur / pair["blur_step"]) - 2.0)
-        k0 = min(int(level), len(levels) - 1)
-        k1 = min(k0 + 1, len(levels) - 1)
-        frac = min(max(level - k0, 0.0), 1.0) if k1 > k0 else 0.0
-
-        def lerp2(low, high):
-            a = low[index] + (low[index + 1] - low[index]) * t
-            b = high[index] + (high[index + 1] - high[index]) * t
-            return a + (b - a) * frac
-
-        return (lerp2(levels[k0][0], levels[k1][0]),
-                lerp2(levels[k0][1], levels[k1][1]),
-                lerp2(levels[k0][2], levels[k1][2]),
-                taper)
+            # tau_main / tau_child as a complex ratio: one similarity
+            # (rotation + scale) per station - full-vector intent, no
+            # normal-only projection (a C's arms displace ALONG the chord).
+            last = ((tmx * tcx + tmy * tcy) / denom,
+                    (tmy * tcx - tmx * tcy) / denom)
+            sims.append(last)
+        # Light smoothing: hand-drawn stations jitter, and the target field
+        # feeds a second derivative (div G) - two box passes over the
+        # similarity coefficients kill the per-station spikes without
+        # flattening the drawn shape.
+        for _ in range(2):
+            smoothed = list(sims)
+            for k in range(1, len(sims) - 1):
+                smoothed[k] = (
+                    (sims[k - 1][0] + 2.0 * sims[k][0] + sims[k + 1][0]) / 4.0,
+                    (sims[k - 1][1] + 2.0 * sims[k][1] + sims[k + 1][1]) / 4.0)
+            sims = smoothed
+        # A line whose ask is the identity EVERYWHERE (a pure translation
+        # pair, or a freshly drawn line against its own auto-synced
+        # partner) is NEUTRAL: it must not enter the field at all. Left
+        # in, its J = I stations actively compete with other lines' asks
+        # wherever the bands overlap - a straight untouched pair laid
+        # across a tuned band was measured to bend it by 64.6 px.
+        neutral = all(abs(a - 1.0) < 1e-6 and abs(b) < 1e-6
+                      for a, b in sims)
+        return {"child": c, "main": m, "cum": cum, "sims": sims,
+                "radius": radius, "chord": chord, "arc": arc,
+                "neutral": neutral}
 
     def _weight(self, x):
         if x >= 1.0:
             return 0.0
-        return (1.0 - x) ** 2 if self.falloff == "quadratic" else 1.0 - x
+        base = 1.0 - x
+        return base * base if self.falloff == "quadratic" else base
 
-    def _stage_displacement(self, segments, third):
-        """ONE stage's field at `third` (the stage's own input space): a
-        partition-of-unity blend of that drawn line's chord-monotone
-        segments - adjacent segments overlap near their junction, and a
-        plain sum double-counted the shared delta there (measured 54 px
-        off the drawn C). Where the weights sum below 1 the plain sum
-        stands, so a single-segment line is untouched."""
-        vx = vy = weight_sum = 0.0
-        for pair in segments:
-            rel = (third[0] - pair["origin"][0], third[1] - pair["origin"][1])
-            s = rel[0] * pair["u"][0] + rel[1] * pair["u"][1]
-            delta_x, delta_y, r_c, taper = self._sample(pair, s)
-            r = rel[0] * pair["n"][0] + rel[1] * pair["n"][1]
-            blur = abs(r - r_c)
-            if blur > 4.0 * pair.get("blur_step", 0.0):
-                # Far from the line the profile is read blurred; the
-                # first (exact) sample only located the sweep centre.
-                delta_x, delta_y, r_c, taper = self._sample(pair, s, blur)
-            # The taper scales the WEIGHT, not the delta: numerator and
-            # denominator must vanish together or the normalizer tears.
-            weight = self._weight(abs(r - r_c) / pair["radius"]) * taper
-            if weight <= 0.0:
+    # ---------------------------------------------------------------- tent
+
+    @staticmethod
+    def _smoothstep(t):
+        t = min(1.0, max(0.0, t))
+        return t * t * (3.0 - 2.0 * t)
+
+    def _tent_axis(self, value, side_neg, side_pos):
+        """Raw displacement of one axis under the pre-stretch tent."""
+        t_neg, b_neg = side_neg
+        t_pos, b_pos = side_pos
+        if value >= 0.0:
+            if t_pos == 0.0:
+                return 0.0
+            w = min(1.0, (value / b_pos) ** self.STRETCH_ALPHA)
+            return t_pos * w
+        if t_neg == 0.0:
+            return 0.0
+        w = min(1.0, (-value / b_neg) ** self.STRETCH_ALPHA)
+        return -t_neg * w
+
+    def _tent_apply(self, third):
+        """The pre-stretch. Each component is damped to ZERO near the
+        OTHER axis (smoothstep over the guard zone): the spec's separable
+        formula slid points ALONG the axes (T_V * W_V(y) moved V-axis
+        ground 19 px at (0, 150)), and the axes must not move at all."""
+        tent = self._tent
+        tx, ty = tent["x"], tent["y"]
+        sx = self._smoothstep(abs(third[0]) / tent["zx"])
+        sy = self._smoothstep(abs(third[1]) / tent["zy"])
+        return (third[0] + self._tent_axis(third[0], tx[0], tx[1]) * sy,
+                third[1] + self._tent_axis(third[1], ty[0], ty[1]) * sx)
+
+    def _tent_invert(self, third):
+        """Damped-Newton inverse of the (now non-separable) tent. The
+        tent is smooth and modest, so this converges in a few steps; the
+        seed ignores the cross damping (the separable inverse)."""
+        x = (third[0] - self._tent_axis(third[0], *self._tent["x"]),
+             third[1] - self._tent_axis(third[1], *self._tent["y"]))
+        best = None
+        for _ in range(60):
+            fx, fy = self._tent_apply(x)
+            rx, ry = fx - third[0], fy - third[1]
+            res = math.hypot(rx, ry)
+            if best is None or res < best[0]:
+                best = (res, x)
+            if res < 1e-9:
+                return x
+            step = max(1e-3, 0.05 * (abs(rx) + abs(ry)))
+            xp = self._tent_apply((x[0] + step, x[1]))
+            yp = self._tent_apply((x[0], x[1] + step))
+            jxx = (xp[0] - fx) / step
+            jyx = (xp[1] - fy) / step
+            jxy = (yp[0] - fx) / step
+            jyy = (yp[1] - fy) / step
+            det = jxx * jyy - jxy * jyx
+            if abs(det) < 1e-9:
+                x = (x[0] - rx, x[1] - ry)
                 continue
-            vx += weight * delta_x
-            vy += weight * delta_y
-            weight_sum += weight
-        if weight_sum > 1.0:
-            vx /= weight_sum
-            vy /= weight_sum
-        return vx, vy
+            cand = (x[0] - (jyy * rx - jxy * ry) / det,
+                    x[1] - (jxx * ry - jyx * rx) / det)
+            cfx, cfy = self._tent_apply(cand)
+            cres = math.hypot(cfx - third[0], cfy - third[1])
+            x = cand if cres < res else (x[0] - 0.5 * rx, x[1] - 0.5 * ry)
+        return best[1]
+
+    # --------------------------------------------------------------- build
+
+    def _build(self, frame_window):
+        import numpy as np
+
+        # Neutral lines (identity asks) stay out of the field entirely -
+        # they are drawn markers awaiting an edit, not requests.
+        active = [line for line in self.pairs if not line.get("neutral")]
+        if not active:
+            return
+        xs = [p[0] for line in active
+              for p in line["child"] + line["main"]]
+        ys = [p[1] for line in active
+              for p in line["child"] + line["main"]]
+        if frame_window is not None:
+            (h_lo, h_hi), (v_lo, v_hi) = frame_window
+        else:
+            h_lo, h_hi = min(xs), max(xs)
+            v_lo, v_hi = min(ys), max(ys)
+        b_left = max(abs(h_lo), 1e-6)
+        b_right = max(abs(h_hi), 1e-6)
+        b_bottom = max(abs(v_lo), 1e-6)
+        b_top = max(abs(v_hi), 1e-6)
+        # Stage I - overrun scan: how far the lines escape the frame window.
+        t_left = max(0.0, h_lo - min(xs))
+        t_right = max(0.0, max(xs) - h_hi)
+        t_bottom = max(0.0, v_lo - min(ys))
+        t_top = max(0.0, max(ys) - v_hi)
+        zone_x = max(1e-6, self.AXIS_GUARD * (b_left + b_right))
+        zone_y = max(1e-6, self.AXIS_GUARD * (b_bottom + b_top))
+        self._tent = {"x": ((t_left, b_left), (t_right, b_right)),
+                      "y": ((t_bottom, b_bottom), (t_top, b_top)),
+                      "zx": zone_x, "zy": zone_y}
+        # Solve domain: the stretched window plus every band's radius, so a
+        # line's influence never presses against the Dirichlet boundary.
+        margin = max(line["radius"] for line in active)
+        x0 = h_lo - t_left - margin
+        x1 = h_hi + t_right + margin
+        y0 = v_lo - t_bottom - margin
+        y1 = v_hi + t_top + margin
+        span_x = max(x1 - x0, 1e-6)
+        span_y = max(y1 - y0, 1e-6)
+        longest = max(span_x, span_y)
+        nx = max(24, int(round(self.GRID * span_x / longest)))
+        ny = max(24, int(round(self.GRID * span_y / longest)))
+        du = span_x / nx
+        dv = span_y / ny
+
+        gx = np.linspace(x0, x1, nx + 1)
+        gy = np.linspace(y0, y1, ny + 1)
+        X, Y = np.meshgrid(gx, gy, indexing="ij")
+
+        # Tent field on the nodes (vectorised copy of _tent_apply,
+        # including the cross-axis damping that keeps both axes still).
+        def tent_axis_np(values, side_neg, side_pos):
+            t_neg, b_neg = side_neg
+            t_pos, b_pos = side_pos
+            out = np.zeros_like(values)
+            pos = values >= 0.0
+            if t_pos != 0.0:
+                w = np.minimum(1.0, (values[pos] / b_pos) ** self.STRETCH_ALPHA)
+                out[pos] = t_pos * w
+            neg = ~pos
+            if t_neg != 0.0:
+                w = np.minimum(1.0, (-values[neg] / b_neg) ** self.STRETCH_ALPHA)
+                out[neg] = -t_neg * w
+            return out
+
+        def smoothstep_np(values):
+            t = np.clip(values, 0.0, 1.0)
+            return t * t * (3.0 - 2.0 * t)
+
+        cross_x = smoothstep_np(np.abs(X) / zone_x)
+        cross_y = smoothstep_np(np.abs(Y) / zone_y)
+        ub_x = X + tent_axis_np(X, *self._tent["x"]) * cross_y
+        ub_y = Y + tent_axis_np(Y, *self._tent["y"]) * cross_x
+
+        # Stage II - per-line node influence at the STRETCHED node
+        # positions (the lines live in the stretched ground the tent
+        # exposes). Geometry is static across boost rounds, so weights and
+        # nearest-segment indices are computed once per line.
+        px = ub_x.ravel()
+        py = ub_y.ravel()
+
+        # Weight-free halo around both axis lines (see AXIS_GUARD): the
+        # V axis is x = 0, the H axis is y = 0 in Third, and NO line may
+        # weigh on either - smoothstep from 0 on the axis to 1 at the
+        # halo's edge, min over the two axes.
+        guard = np.minimum(cross_x, cross_y)
+
+        def guard_at(x, y):
+            return min(self._smoothstep(abs(x) / zone_x),
+                       self._smoothstep(abs(y) / zone_y))
+
+        fields = []
+        for line in active:
+            pts = line["child"]
+            ax = np.array([p[0] for p in pts[:-1]])
+            ay = np.array([p[1] for p in pts[:-1]])
+            bx = np.array([p[0] for p in pts[1:]])
+            by = np.array([p[1] for p in pts[1:]])
+            ex = bx - ax
+            ey = by - ay
+            ee = np.maximum(ex * ex + ey * ey, 1e-12)
+            dxs = px[:, None] - ax[None, :]
+            dys = py[:, None] - ay[None, :]
+            t = np.clip((dxs * ex[None, :] + dys * ey[None, :]) / ee[None, :],
+                        0.0, 1.0)
+            qx = dxs - t * ex[None, :]
+            qy = dys - t * ey[None, :]
+            dist2 = qx * qx + qy * qy
+            seg = np.argmin(dist2, axis=1)
+            d = np.sqrt(dist2[np.arange(dist2.shape[0]), seg])
+            ratio = d / line["radius"]
+            w = np.where(ratio >= 1.0, 0.0, 1.0 - ratio)
+            if self.falloff == "quadratic":
+                w = w * w
+            fields.append({
+                "w": w.reshape(X.shape) * guard,
+                "seg": seg,
+                "ask": np.array([complex(s[0], s[1]) for s in line["sims"]]),
+                "boost": None,   # filled per round
+                "line": line,
+            })
+
+        # Ambient: the tent's own FULL gradient (the cross-axis damping
+        # makes it non-separable, so the off-diagonals are no longer
+        # zero), so an empty region integrates back to exactly U_base and
+        # every band edge blends continuously.
+        amb_xx = np.gradient(ub_x, du, axis=0)
+        amb_xy = np.gradient(ub_x, dv, axis=1)
+        amb_yx = np.gradient(ub_y, du, axis=0)
+        amb_yy = np.gradient(ub_y, dv, axis=1)
+        wsum = np.zeros_like(X)
+        for field in fields:
+            wsum += field["w"]
+        w_amb = np.maximum(0.0, 1.0 - wsum) + 1e-9
+        total = wsum + w_amb
+        # Weighted least squares: matching the target is most expensive
+        # exactly where the lines speak (see FIT_GAIN above) - empty
+        # ground is the softest, so incompatible asks bend the empty
+        # surroundings smoothly instead of muting the drawn intent.
+        omega = 1.0 + self.FIT_GAIN * (wsum / total)
+        om_e = 0.5 * (omega[1:, :] + omega[:-1, :])   # x-edge weights
+        om_n = 0.5 * (omega[:, 1:] + omega[:, :-1])   # y-edge weights
+        # Hard axis pinning (see AXIS_GUARD above): BOTH grid columns/rows
+        # straddling each axis line hold D = 0 (U = U_base, the identity
+        # on the axes - the tent's W(0) = 0). Both straddlers, not just
+        # the nearest: with one pinned column the continuum line x = 0
+        # interpolates between it and a FREE neighbour and still drifted
+        # 19 px.
+        pinned = np.zeros_like(X, dtype=bool)
+        pinned[np.abs(gx) <= du * 0.999, :] = True
+        pinned[:, np.abs(gy) <= dv * 0.999] = True
+
+        def weighted_div_lap(gxx, gxy, base):
+            """div(omega * G_row) - div(omega * grad base), edge-sampled so
+            the operator and the RHS share one discretization."""
+            flux_x = om_e * (0.5 * (gxx[1:, :] + gxx[:-1, :])
+                             - (base[1:, :] - base[:-1, :]) / du)
+            flux_y = om_n * (0.5 * (gxy[:, 1:] + gxy[:, :-1])
+                             - (base[:, 1:] - base[:, :-1]) / dv)
+            out = np.zeros_like(base)
+            out[1:-1, :] += (flux_x[1:, :] - flux_x[:-1, :]) / du
+            out[:, 1:-1] += (flux_y[:, 1:] - flux_y[:, :-1]) / dv
+            return out
+
+        def apply_A(Z):
+            """-div(omega * grad Z); homogeneous Dirichlet on the domain
+            boundary AND on the pinned axis lines."""
+            flux_x = om_e * (Z[1:, :] - Z[:-1, :]) / du
+            flux_y = om_n * (Z[:, 1:] - Z[:, :-1]) / dv
+            out = np.zeros_like(Z)
+            out[1:-1, :] -= (flux_x[1:, :] - flux_x[:-1, :]) / du
+            out[:, 1:-1] -= (flux_y[:, 1:] - flux_y[:, :-1]) / dv
+            out[0, :] = out[-1, :] = 0.0
+            out[:, 0] = out[:, -1] = 0.0
+            out[pinned] = 0.0
+            return out
+
+        def solve(rhs):
+            # apply_A is MINUS div(omega grad) (SPD), so the equation
+            # div(omega grad D) = rhs becomes A D = -rhs.
+            D = np.zeros_like(rhs)
+            R = np.zeros_like(rhs)
+            R[1:-1, 1:-1] = -rhs[1:-1, 1:-1]
+            R[pinned] = 0.0
+            P = R.copy()
+            rs = float(np.sum(R * R))
+            if rs <= 0.0:
+                return D
+            rs0 = rs
+            for _ in range(self.CG_MAX_ITER):
+                AP = apply_A(P)
+                denom = float(np.sum(P * AP)) or 1e-30
+                alpha = rs / denom
+                D += alpha * P
+                R -= alpha * AP
+                rs_new = float(np.sum(R * R))
+                if rs_new <= self.CG_TOL * rs0:
+                    break
+                P = R + (rs_new / rs) * P
+                rs = rs_new
+            return D
+
+        def assemble(boosted):
+            g00 = np.zeros_like(X)
+            g01 = np.zeros_like(X)
+            g10 = np.zeros_like(X)
+            g11 = np.zeros_like(X)
+            for field in fields:
+                sims = field["ask"]
+                if boosted and field["boost"] is not None:
+                    sims = field["boost"]
+                sa = sims.real[field["seg"]].reshape(X.shape)
+                sb = sims.imag[field["seg"]].reshape(X.shape)
+                w2 = field["w"]
+                g00 += w2 * sa
+                g01 += w2 * -sb
+                g10 += w2 * sb
+                g11 += w2 * sa
+            g00 = (g00 + w_amb * amb_xx) / total
+            g01 = (g01 + w_amb * amb_xy) / total
+            g10 = (g10 + w_amb * amb_yx) / total
+            g11 = (g11 + w_amb * amb_yy) / total
+            return g00, g01, g10, g11
+
+        def assemble_and_solve():
+            g00, g01, g10, g11 = assemble(boosted=True)
+            ux = ub_x + solve(weighted_div_lap(g00, g01, ub_x))
+            uy = ub_y + solve(weighted_div_lap(g10, g11, ub_y))
+            return ux, uy
+
+        def bilinear_np(table, sx, sy):
+            fx = np.clip((sx - x0) / du, 0.0, nx - 1e-9)
+            fy = np.clip((sy - y0) / dv, 0.0, ny - 1e-9)
+            i = fx.astype(int)
+            j = fy.astype(int)
+            tx = fx - i
+            ty = fy - j
+            return ((1.0 - tx) * ((1.0 - ty) * table[i, j]
+                                  + ty * table[i, j + 1])
+                    + tx * ((1.0 - ty) * table[i + 1, j]
+                            + ty * table[i + 1, j + 1]))
+
+        # The measurement REFERENCE is the blended field of the ORIGINAL
+        # asks, fixed across rounds. G - not each line's own ask - is the
+        # reference because G already encodes the weighted compromise
+        # between overlapping lines, so the boost compensates the solver's
+        # dilution without starting an arms race between conflicting lines
+        # (boosting toward the raw asks escalated two opposing rotations
+        # into a fold). And it must be the ORIGINAL blend: measuring
+        # against the boosted blend chases a target that rises with every
+        # round (a single 25 deg ask overshot to 46 deg).
+        g00m, g01m, g10m, g11m = assemble(boosted=False)
+        ux, uy = assemble_and_solve()
+        for _round in range(self.BOOST_ROUNDS):
+            duxx = np.gradient(ux, du, axis=0)
+            duxy = np.gradient(ux, dv, axis=1)
+            duyx = np.gradient(uy, du, axis=0)
+            duyy = np.gradient(uy, dv, axis=1)
+            worst = 0.0
+            for field in fields:
+                pts = field["line"]["child"]
+                mx = np.array([(a[0] + b[0]) * 0.5
+                               for a, b in zip(pts[:-1], pts[1:])])
+                my = np.array([(a[1] + b[1]) * 0.5
+                               for a, b in zip(pts[:-1], pts[1:])])
+                tcx = np.array([b[0] - a[0] for a, b in zip(pts[:-1], pts[1:])])
+                tcy = np.array([b[1] - a[1] for a, b in zip(pts[:-1], pts[1:])])
+                denom = np.maximum(tcx * tcx + tcy * tcy, 1e-12)
+
+                def ratio_along(mxx, mxy, myx, myy):
+                    """A 2x2 field's action on the station tangent as a
+                    complex similarity against the tangent itself."""
+                    ox = mxx * tcx + mxy * tcy
+                    oy = myx * tcx + myy * tcy
+                    return ((ox * tcx + oy * tcy) / denom
+                            + 1j * ((oy * tcx - ox * tcy) / denom))
+
+                achieved = ratio_along(bilinear_np(duxx, mx, my),
+                                       bilinear_np(duxy, mx, my),
+                                       bilinear_np(duyx, mx, my),
+                                       bilinear_np(duyy, mx, my))
+                target = ratio_along(bilinear_np(g00m, mx, my),
+                                     bilinear_np(g01m, mx, my),
+                                     bilinear_np(g10m, mx, my),
+                                     bilinear_np(g11m, mx, my))
+                current = field["ask"] if field["boost"] is None \
+                    else field["boost"]
+                # Stations inside the axis halo are weight-free BY DESIGN;
+                # compensating their deficit would crank the target
+                # against the guard, so the correction fades with it.
+                station_guard = np.array([guard_at(x, y)
+                                          for x, y in zip(mx, my)])
+                worst = max(worst,
+                            float(np.max(station_guard
+                                         * np.abs(target - achieved))))
+                safe = np.where(np.abs(achieved) < 1e-6,
+                                1e-6 + 0j, achieved)
+                boosted = current * target / safe
+                mag = np.abs(boosted)
+                cap = self.BOOST_CAP * np.maximum(np.abs(field["ask"]), 1e-6)
+                boosted = np.where(mag > cap, boosted * (cap / mag), boosted)
+                field["boost"] = (station_guard * boosted
+                                  + (1.0 - station_guard) * current)
+            if worst < 0.02:
+                break
+            ux, uy = assemble_and_solve()
+
+        def det_of(sol_x, sol_y):
+            return (np.gradient(sol_x, du, axis=0)
+                    * np.gradient(sol_y, dv, axis=1)
+                    - np.gradient(sol_x, dv, axis=1)
+                    * np.gradient(sol_y, du, axis=0))
+
+        # FIDELITY RETREAT: compliance never at the price of a fold the
+        # unboosted compromise did not have. The pure blend is injective
+        # for conflicting asks (the spec's no-wrinkle promise); the boost
+        # can graze det below zero (measured -0.02 pockets). If negatives
+        # appear, halve every boost toward the original ask and re-solve;
+        # at full retreat any remaining fold is the honest energy answer
+        # (e.g. a strong ask pressed against a pinned axis) and stays.
+        det = det_of(ux, uy)
+        retreat = 0
+        while np.any(det <= 0.0) and retreat < 3 \
+                and any(field["boost"] is not None for field in fields):
+            for field in fields:
+                if field["boost"] is not None:
+                    field["boost"] = (field["ask"]
+                                      + 0.5 * (field["boost"] - field["ask"]))
+                    if float(np.max(np.abs(field["boost"]
+                                           - field["ask"]))) < 1e-6:
+                        field["boost"] = None
+            ux, uy = assemble_and_solve()
+            det = det_of(ux, uy)
+            retreat += 1
+
+        # Orientation bookkeeping: per-node det of grad U, marched by
+        # fold_loci and read by det_sign - the SAME numbers, so loci and
+        # pointwise orientation cannot disagree.
+        self._all_positive = bool(np.all(det > 0.0))
+        self._grid = {
+            "x0": x0, "y0": y0, "du": du, "dv": dv, "nx": nx, "ny": ny,
+            "ux": ux.tolist(), "uy": uy.tolist(),
+            "det": None if self._all_positive else det.tolist(),
+        }
+
+    # ------------------------------------------------------------- queries
+
+    def _bilinear(self, table, third):
+        grid = self._grid
+        fx = (third[0] - grid["x0"]) / grid["du"]
+        fy = (third[1] - grid["y0"]) / grid["dv"]
+        i = int(fx)
+        j = int(fy)
+        if i < 0 or j < 0 or i >= grid["nx"] or j >= grid["ny"]:
+            return None
+        tx = fx - i
+        ty = fy - j
+        row0 = table[i]
+        row1 = table[i + 1]
+        return ((1.0 - tx) * ((1.0 - ty) * row0[j] + ty * row0[j + 1])
+                + tx * ((1.0 - ty) * row1[j] + ty * row1[j + 1]))
 
     def apply(self, third):
-        """The COMPOSITE: stages in drawing order, each evaluated at the
-        point the earlier stages already produced. Lines whose bands do
-        not meet behave exactly like the old flat sum (each acts where
-        the others are identity); where they meet, a later line refines
-        the earlier line's rendering instead of a base-space copy of it."""
-        z = (third[0], third[1])
-        for segments in self.stages:
-            dx, dy = self._stage_displacement(segments, z)
-            if dx != 0.0 or dy != 0.0:
-                z = (z[0] + dx, z[1] + dy)
-        return z
+        if self._grid is None:
+            return (third[0], third[1])
+        x = self._bilinear(self._grid["ux"], third)
+        if x is None:
+            return self._tent_apply(third)
+        y = self._bilinear(self._grid["uy"], third)
+        return (x, y)
 
     def displacement(self, third):
         z = self.apply(third)
         return (z[0] - third[0], z[1] - third[1])
 
-    def _stage_jacobian(self, segments, third, step):
-        xp = self._stage_displacement(segments, (third[0] + step, third[1]))
-        xm = self._stage_displacement(segments, (third[0] - step, third[1]))
-        yp = self._stage_displacement(segments, (third[0], third[1] + step))
-        ym = self._stage_displacement(segments, (third[0], third[1] - step))
-        return (1.0 + (xp[0] - xm[0]) / (2.0 * step),
+    def jacobian(self, third, step=0.25):
+        xp = self.apply((third[0] + step, third[1]))
+        xm = self.apply((third[0] - step, third[1]))
+        yp = self.apply((third[0], third[1] + step))
+        ym = self.apply((third[0], third[1] - step))
+        return ((xp[0] - xm[0]) / (2.0 * step),
                 (yp[0] - ym[0]) / (2.0 * step),
                 (xp[1] - xm[1]) / (2.0 * step),
-                1.0 + (yp[1] - ym[1]) / (2.0 * step))
+                (yp[1] - ym[1]) / (2.0 * step))
 
-    def _stage_iterate(self, segments, third, seed, iterations):
-        x = seed
+    def unapply(self, third):
+        """Inverse of the single global field: fixed-point iteration with a
+        guarded Newton polish (the field is smooth, so this converges
+        wherever det stays positive - the normal case by construction);
+        outside the solved grid the tent inverse is exact and 1-D."""
+        if self._grid is None:
+            return (third[0], third[1])
+        probe = self._tent_invert(third)
+        grid = self._grid
+        inside = (grid["x0"] <= probe[0] <= grid["x0"] + grid["nx"] * grid["du"]
+                  and grid["y0"] <= probe[1]
+                  <= grid["y0"] + grid["ny"] * grid["dv"])
+        if not inside:
+            return probe
+        x = probe
         best = None
-        newton_h = min(0.1, 0.25 * min(s["radius"] for s in segments))
-        for it in range(iterations):
-            dx, dy = self._stage_displacement(segments, x)
-            rx = x[0] + dx - third[0]
-            ry = x[1] + dy - third[1]
+        step = 0.25 * min(grid["du"], grid["dv"])
+        for it in range(60):
+            fx, fy = self.apply(x)
+            rx = fx - third[0]
+            ry = fy - third[1]
             res = math.hypot(rx, ry)
             if best is None or res < best[0]:
                 best = (res, x)
             if res < 1e-9:
-                return best
-            fp = (third[0] - dx, third[1] - dy)
+                return x
+            fp = (x[0] - rx, x[1] - ry)
             if it < 8:
                 x = fp
                 continue
-            # Newton polish: fixed-point stalls where the local gradient
-            # nears 1 (the fold threshold); the true Jacobian does not.
-            # Guarded: the field is piecewise, so a raw Newton step can
-            # catapult - keep it only if it beats the fixed-point residual.
-            jxx, jxy, jyx, jyy = self._stage_jacobian(segments, x, newton_h)
+            jxx, jxy, jyx, jyy = self.jacobian(x, step)
             det = jxx * jyy - jxy * jyx
-            if abs(det) < 1e-6:
+            if abs(det) < 1e-9:
                 x = fp
                 continue
             cand = (x[0] - (jyy * rx - jxy * ry) / det,
                     x[1] - (jxx * ry - jyx * rx) / det)
-            cdx, cdy = self._stage_displacement(segments, cand)
-            cres = math.hypot(cand[0] + cdx - third[0],
-                              cand[1] + cdy - third[1])
+            cfx, cfy = self.apply(cand)
+            cres = math.hypot(cfx - third[0], cfy - third[1])
             x = cand if cres < res else fp
-        return best
-
-    def _stage_unapply(self, segments, third):
-        best = self._stage_iterate(segments, third, third, 60)
-        if best[0] < 1e-6:
-            return best[1]
-        # Near a fold apex the fixed point oscillates around the target
-        # and the guarded Newton never beats it, so the plain iteration
-        # can return a NON-preimage whose residual then reads as drawn
-        # deformation downstream (a straight synced line became a
-        # full-strength deformer). A true preimage exists (the folded
-        # sheet's image covers the band) - restart from seeds offset by
-        # fractions of each segment's local ask and keep the best.
-        for pair in segments:
-            rel = (third[0] - pair["origin"][0], third[1] - pair["origin"][1])
-            s = rel[0] * pair["u"][0] + rel[1] * pair["u"][1]
-            delta_x, delta_y, _r_c, taper = self._sample(pair, s)
-            if abs(delta_x) < 1e-9 and abs(delta_y) < 1e-9:
-                continue
-            for fraction in (0.5, 1.0, 1.5):
-                seed = (third[0] - fraction * delta_x,
-                        third[1] - fraction * delta_y)
-                candidate = self._stage_iterate(segments, third, seed, 30)
-                if candidate[0] < best[0]:
-                    best = candidate
-                if best[0] < 1e-6:
-                    return best[1]
         return best[1]
 
-    def unapply(self, third):
-        """Inverse of the composite: stages inverted in REVERSE drawing
-        order, each by fixed-point iteration with a guarded Newton
-        polish on that single stage's field. Exact outside folded bands
-        (each stage's iteration rate is its own |dF/dr| < 1 there);
-        inside a folded band the inverse is genuinely multivalued and
-        this returns a best-effort branch - the consumers that need
-        exactness there (warp-locus cutters and probes) carry direct
-        child geometry instead."""
-        z = third
-        for segments in reversed(self.stages):
-            z = self._stage_unapply(segments, z)
-        return z
+    def det_sign(self, third):
+        """Sign of det(grad U) - +1 almost always (Poisson smoothing keeps
+        the field orientation-preserving); read from the solved nodes'
+        dets when it is not, so orientation and fold_loci agree."""
+        if self._grid is None or self._all_positive:
+            return 1
+        value = self._bilinear(self._grid["det"], third)
+        if value is None:
+            return 1
+        return 1 if value >= 0.0 else -1
+
+    def face_at(self, third):
+        return 0
+
+    def fold_loci(self, samples=48):
+        """det = 0 contours of the solved field, in Third space - marched
+        from the same per-node det values det_sign reads. Empty for an
+        orientation-preserving field (the normal case). Fresh list copies
+        per call: consumers register curves by id()."""
+        if self._grid is None or self._all_positive:
+            return []
+        if self._loci is None:
+            grid = self._grid
+            det = grid["det"]
+            nx, ny = grid["nx"], grid["ny"]
+            du, dv = grid["du"], grid["dv"]
+            x0, y0 = grid["x0"], grid["y0"]
+
+            def edge_zero(va, vb, ax, ay, bx, by):
+                t = va / (va - vb) if va != vb else 0.5
+                return (ax + (bx - ax) * t, ay + (by - ay) * t)
+
+            segments = []
+            for i in range(nx):
+                for j in range(ny):
+                    corners = ((det[i][j], x0 + du * i, y0 + dv * j),
+                               (det[i + 1][j], x0 + du * (i + 1), y0 + dv * j),
+                               (det[i + 1][j + 1], x0 + du * (i + 1),
+                                y0 + dv * (j + 1)),
+                               (det[i][j + 1], x0 + du * i, y0 + dv * (j + 1)))
+                    crossings = []
+                    for a in range(4):
+                        va, ax_, ay_ = corners[a]
+                        vb, bx_, by_ = corners[(a + 1) % 4]
+                        if (va < 0.0) != (vb < 0.0):
+                            crossings.append(
+                                edge_zero(va, vb, ax_, ay_, bx_, by_))
+                    if len(crossings) >= 2:
+                        segments.append((crossings[0], crossings[1]))
+
+            def key_of(point):
+                return (round(point[0], 6), round(point[1], 6))
+
+            links = {}
+            for a, b in segments:
+                links.setdefault(key_of(a), []).append((a, b))
+                links.setdefault(key_of(b), []).append((b, a))
+            used = set()
+            curves = []
+            for a, b in segments:
+                if (key_of(a), key_of(b)) in used:
+                    continue
+                chain = [a, b]
+                used.add((key_of(a), key_of(b)))
+                used.add((key_of(b), key_of(a)))
+                for grow_end in (True, False):
+                    while True:
+                        tip = chain[-1] if grow_end else chain[0]
+                        extended = False
+                        for start, far in links.get(key_of(tip), ()):
+                            pair = (key_of(start), key_of(far))
+                            if pair in used:
+                                continue
+                            used.add(pair)
+                            used.add((pair[1], pair[0]))
+                            if grow_end:
+                                chain.append(far)
+                            else:
+                                chain.insert(0, far)
+                            extended = True
+                            break
+                        if not extended:
+                            break
+                if len(chain) >= 2:
+                    curves.append(chain)
+            self._loci = curves
+        return [list(curve) for curve in self._loci]
 
 
 def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None,
@@ -3054,11 +2530,10 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
                 arc_v / (v_scale_pos if arc_v >= 0.0 else v_scale_neg))
 
     # The additional (pink) lines' influence field, built in Third space
-    # from each pair's two boards. `additional_pairs` arrives in DRAWING
-    # ORDER and the warp stages COMPOSE in that order - each later line
-    # is computed in the rendering the earlier ones produce (child-side
-    # thirds are base coordinates, pushed forward inside _AdditionalWarp;
-    # main-side thirds are frame arcs unscaled, already rendering-space).
+    # from each pair's two boards as ONE global flow field (user spec
+    # 2026-08-25, _FlowFieldWarp): lines guide the texture's flow
+    # direction, all lines blend into a single target gradient field, and
+    # a Poisson solve integrates it - drawing order no longer matters.
     # A line's STORED Third polyline is authoritative when present: on a
     # folded frame the inverse solve is branch-ambiguous, and re-deriving
     # a synced partner through it was measured to fabricate a 278 px
@@ -3069,27 +2544,6 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
     warp = None
     additional_notes = []
     if additional_pairs:
-        # The red handle's pre-warp Third position, for the C-strategy's
-        # first authority rung. Only a handle the user actually placed
-        # counts as evidence - _nearest_arc's crossing default is a
-        # fallback, not an opinion about front and back.
-        anchor_third = None
-        anchor_item = _assets_for("main").get(NEAREST_PROPERTY) or {}
-        if anchor_item.get("arc") is not None:
-            a = _nearest_arc()
-            # run_center_line_tool auto-creates this asset AT THE
-            # CROSSING the moment both guides exist, so exact (0,0) is
-            # indistinguishable from a handle nobody touched - and a
-            # handle AT the crossing adds nothing the crossing-is-front
-            # premise does not already say. Only a moved handle counts.
-            if abs(a[0]) > 1e-6 or abs(a[1]) > 1e-6:
-                a = (min(max(a[0], -main.h_arc), main.h_total - main.h_arc),
-                     min(max(a[1], -main.v_arc), main.v_total - main.v_arc))
-                anchor_third = unscale_arcs(*a)
-
-        def to_main_canvas(t):
-            return main.hv(*scale_arcs(*t))
-
         thirds = []
         for line_index, (child_item, main_item) in enumerate(additional_pairs):
             child_item = child_item or {}
@@ -3130,14 +2584,6 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
                     child_points, child_third, f_lo, f_hi)
                 main_third = _slice_third_by_canvas_fraction(
                     main_points, main_third, f_lo, f_hi)
-                # The points travel with the thirds (same window, same
-                # inner-index rule) so the C-strategy below still
-                # addresses both lists by one fractional index; a stroke
-                # whose bend was clipped away is simply no longer a C.
-                child_points = _slice_points_by_canvas_fraction(
-                    child_points, f_lo, f_hi)
-                main_points = _slice_points_by_canvas_fraction(
-                    main_points, f_lo, f_hi)
                 additional_notes.append(
                     f"additional line {line_index + 1} crosses a fold edge "
                     f"of its frame; only its longest continuous stretch "
@@ -3145,23 +2591,13 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
                     "shapes the mapping")
             if len(child_third) < 2 or len(main_third) < 2:
                 continue
-            plan = None
-            if (len(child_points) == len(child_third)
-                    and len(main_points) == len(main_third)):
-                plan = _c_shape_plan(child_points, child_third,
-                                     main_points, main_third,
-                                     main, to_main_canvas, anchor_third,
-                                     _ADDITIONAL["radius_factor"])
-            if plan is not None:
-                additional_notes.append(
-                    f"additional line {line_index + 1} reads as a C "
-                    f"({len(plan['cuts_child'])} deformation vertices; "
-                    + (f"front side by {plan['why']})"
-                       if any(plan["faces"]) else f"{plan['why']})"))
-            thirds.append((child_third, main_third, plan))
+            thirds.append((child_third, main_third))
         if thirds:
-            candidate = _AdditionalWarp(thirds, _ADDITIONAL["falloff"],
-                                        _ADDITIONAL["radius_factor"])
+            candidate = _FlowFieldWarp(
+                thirds, _ADDITIONAL["falloff"],
+                _ADDITIONAL["radius_factor"],
+                frame_window=((-child.h_arc, child.h_total - child.h_arc),
+                              (-child.v_arc, child.v_total - child.v_arc)))
             warp = candidate if candidate.pairs else None
 
     def main_of_third(third):
@@ -9693,21 +9129,17 @@ def run_additional_line_tool(view_name, points, width=2.5, commands=None):
         # (delta == 0), and the tool appeared to do nothing until the
         # partner was edited.
         #
-        # STAGES COMPOSE: this new line is the LAST stage, so its chord
-        # and geodesics live in the RENDERING the standing lines already
-        # produce - the chord is taken after pushing a child-drawn line
-        # through the standing chain, and a main-drawn line's frame arcs
-        # already ARE that rendering space (the frame inverse never
-        # involves the warp). The synced partner's stored coordinates
-        # keep each board's own convention (child stores base Third,
-        # main stores rendering), so the child-side chord pulls back
-        # through the chain - best-effort inside a fold band, where the
-        # preimage is genuinely multivalued. Under the old flat-sum
-        # model going through the warp RE-ENCODED the standing
-        # deformation (a measured doubling); under composition NOT going
-        # through it is what mis-anchors - a partner synthesized in base
-        # coordinates landed displaced by exactly the standing warp's
-        # shift when drawn over a warped region.
+        # THE PARTNER LIVES IN RENDERING SPACE: the chord is taken after
+        # pushing a child-drawn line through the STANDING flow field, and
+        # a main-drawn line's frame arcs already ARE rendering space (the
+        # frame inverse never involves the warp). The synced partner's
+        # stored coordinates keep each board's own convention (child
+        # stores base Third, main stores rendering), so the child-side
+        # chord pulls back through the field's inverse. A partner
+        # synthesized in base coordinates instead landed displaced by
+        # exactly the standing warp's shift when drawn over a warped
+        # region (measured under the old model; the anchoring argument
+        # is field-shape independent).
         chain = None
         if lines_here or lines_other:  # the new item is not appended yet
             full, _chain_why = _mapper_from_assets()
