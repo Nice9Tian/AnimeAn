@@ -123,11 +123,12 @@ for mode_name, emit, bucket in (
     print(f"5) {mode_name} mode: bridging off {base} segment(s), "
           f"on {base}+1 with 1 bridge")
 
-# 6) BEZIER-MODE PLUMBING: cubic islands bridge through the two-point trend
-#    probes at their facing ends.
+# 6) BEZIER-MODE PLUMBING: cubic islands bridge through the island trend
+#    probes at their facing ends (the probes span whole islands now, so a
+#    sub-pixel end sliver cannot set the trend).
 cub_a = ((-200.0, 30.0), (-100.0, 30.0), (0.0, 30.0), tuple(islands[0][-1]))
 cub_b = (tuple(islands[1][0]), (300.0, 30.0), (320.0, 30.0), (350.0, 30.0))
-pairs = [(am._cubic_tail_polyline(cub_a), am._cubic_head_polyline(cub_b))]
+pairs = [(am._cubic_tail_polyline([cub_a]), am._cubic_head_polyline([cub_b]))]
 am._BRIDGE["enabled"] = True
 out = FakeOut()
 added = am._emit_bridges(out, mp, pairs, None, (0, 0, 0, 255), 3.0,
@@ -172,5 +173,37 @@ assert not out.bridges
 assert am._bridge_third_cubic(mp0, ia, [ia[-1], (0.0, 50.0)]) is None
 am._BRIDGE["enabled"] = False
 print("8) one island -> no bridge; coincident cuts -> no degenerate cubic")
+
+# --- Review fixes (2026-08-25) --------------------------------------------
+
+# 9) SIDE STABILITY: side and depth are probed one step INSIDE island A
+#    (_island_end_anchor), never at the cut itself - the cut sits on
+#    det J = 0, where the verdict was a rounding coin flip (26% of
+#    sub-pixel perturbations emitted a BACK bridge between FRONT islands).
+probe = am._island_end_anchor(islands[0], at_end=True)
+assert mp.third_of(probe)[2], probe
+assert am._fold_sign(mp, probe) == am._split_by_fold(mp, islands[0])[-1][1]
+for k in range(20):
+    y = 5.0 + 85.0 * k / 19.0
+    ip = am._sever_source(mp, am._densify([(-200.0, y), (350.0, y)]), [])
+    if len(ip) < 2:
+        continue
+    p_k = am._island_end_anchor(ip[0], at_end=True)
+    assert am._fold_sign(mp, p_k) == am._split_by_fold(mp, ip[0])[-1][1], y
+print("9) bridge side matches island A across the sweep (no coin flip)")
+
+# 10) COUNTING: a bridge clipped into two visible stretches by the mapping
+#     area is still ONE bridge in out.bridges (the summary's count); each
+#     clipped piece still counts as an emitted item.
+area = [[(-400.0, -100.0), (150.0, -100.0), (150.0, 60.0), (-400.0, 60.0)],
+        [(200.0, -100.0), (500.0, -100.0), (500.0, 60.0), (200.0, 60.0)]]
+am._BRIDGE["enabled"] = True
+out = FakeOut()
+added = am._emit_bridges(out, mp, [(islands[0], islands[1])], area,
+                         (0, 0, 0, 255), 3.0, curved=False, eps=am.rdp_eps())
+am._BRIDGE["enabled"] = False
+assert added == 2, added
+assert len(out.bridges) == 1, len(out.bridges)
+print("10) clipped bridge: 2 emitted pieces, 1 recorded bridge")
 
 print("t_bridge: ALL OK")

@@ -162,4 +162,143 @@ sides = [side for _run, side in runs]
 assert -1 in sides and 1 in sides, sides
 print(f"10) main-fold split still live (runs: {sides}), severing untouched")
 
+# --- Review fixes (2026-08-25) --------------------------------------------
+
+# 11) A severed island's endpoints sit on VALID ground: the bisected cut
+#     snaps to the True side of the bracket, and a verdict change falling
+#     on a source vertex is bisected ACROSS the vertex instead of stopping
+#     there with a branch-jumped lift.
+ZIG_H = [(-300.0, 0.0), (120.0, 0.0), (0.0, 100.0), (400.0, 100.0)]
+MAIN_H = [(-300.0, 0.0), (300.0, 0.0)]
+mp3 = build(ZIG_H, V, MAIN_H, V)
+node = (118.0, 30.0)   # a source vertex just before the verdict boundary
+poly = am._densify([(-200.0, 30.0), node]) + am._densify([node, (350.0, 30.0)])[1:]
+for pts in (am._densify([(-200.0, 30.0), (350.0, 30.0)]), poly):
+    cut_islands = am._sever_source(mp3, pts, [])
+    assert len(cut_islands) == 2, len(cut_islands)
+    for island in cut_islands:
+        assert mp3.third_of(island[0])[2], island[0]
+        assert mp3.third_of(island[-1])[2], island[-1]
+print("11) sever cuts land on the valid side; vertex changes bisect across")
+
+# 12) An UNFOLDABLE frame keeps the identity even where the chord-seed
+#     Newton plateaus (near-parallel guides, ground far outside the frame):
+#     retry from the iterate, then the exact residual correction - never
+#     the raw stalled iterate (measured 113 px drift before the fix).
+bow = [(-300.0 + 600.0 * k / 50.0, 15.0 * math.sin(math.pi * k / 50.0))
+       for k in range(51)]
+tilt = math.radians(6.0)
+v6 = [(-math.sin(tilt) * 500.0, -math.cos(tilt) * 500.0),
+      (math.sin(tilt) * 500.0, math.cos(tilt) * 500.0)]
+mp4 = build(bow, v6, bow, v6)
+assert not mp4.can_fold()
+for y in (625.0, 650.0, 700.0, 800.0):
+    q = mp4((180.0, y))
+    assert math.hypot(q[0] - 180.0, q[1] - y) <= 1e-6, (y, q)
+print("12) unfoldable-frame plateau absorbed: identity holds off-frame")
+
+# 13) Fills and strokes agree on where the pattern ends: the sever cutters
+#     are marched from the SAME verdict field the strokes consult, so a
+#     straddling ring's cut edges sit on the stroke seams - including the
+#     divergence edge, which no Third locus projects onto (the zig re-open
+#     at canvas x~274 while the nearest locus images onto the x=0 line).
+stroke_seams = []
+am._sever_source(mp3, am._densify([(-50.0, 30.0), (350.0, 30.0)]),
+                 stroke_seams)
+seam_x = sorted(p[0] for p in stroke_seams)
+assert len(seam_x) == 2, seam_x
+ring = [(-50.0, -20.0), (350.0, -20.0), (350.0, 80.0), (-50.0, 80.0)]
+zpieces = am._sever_ring(mp3, am._densify(ring + [ring[0]])[:-1])
+assert len(zpieces) >= 2, len(zpieces)
+edges = sorted(x for piece in zpieces
+               for x in (min(p[0] for p in piece), max(p[0] for p in piece))
+               if -40.0 < x < 340.0)
+assert len(edges) >= 2, edges
+assert abs(edges[0] - seam_x[0]) <= 3.0, (edges, seam_x)
+assert abs(edges[-1] - seam_x[1]) <= 3.0, (edges, seam_x)
+print(f"13) fill cut edges [{edges[0]:.1f}, {edges[-1]:.1f}] sit on the "
+      f"stroke seams [{seam_x[0]:.1f}, {seam_x[1]:.1f}]")
+
+# 14) A donut whose hole dips into severed ground KEEPS its hole: the piece
+#     verdict votes over boundary samples (one interior probe painted the
+#     cut-out solid / deleted whole donuts on a speckle), and the hole
+#     piece attaches through spread boundary candidates (a single edge
+#     midpoint on the shared cut chord detached the crescent).
+
+
+def _circle(cx, cy, r, n=90):
+    return [(cx + r * math.cos(2.0 * math.pi * k / n),
+             cy + r * math.sin(2.0 * math.pi * k / n)) for k in range(n)]
+
+
+def _ring_commands(rings):
+    commands = []
+    for ring_pts in rings:
+        commands.append({"type": "move",
+                         "to": {"x": ring_pts[0][0], "y": ring_pts[0][1]}})
+        for p in ring_pts[1:] + [ring_pts[0]]:
+            commands.append({"type": "line", "to": {"x": p[0], "y": p[1]}})
+    return commands
+
+
+class _FillOut:
+    def __init__(self):
+        self.cuts = []
+        self.fills = []
+
+    def add_fill(self, side, depth, mapped, shade):
+        if not mapped:
+            return False
+        self.fills.append((side, depth, mapped, shade))
+        return True
+
+
+fill = {"commands": _ring_commands([_circle(300.0, 0.0, 95.0),
+                                    _circle(255.0, 0.0, 25.0)]),
+        "color": {"r": 200, "g": 60, "b": 60, "a": 255}}
+fout = _FillOut()
+assert am._emit_fills(None, fout, mp3, [fill], None, None) >= 1
+
+
+def _covered(point):
+    total = 0
+    for _side, _depth, mapped, _shade in fout.fills:
+        hits = sum(1 for ring_pts in mapped
+                   if am._point_in_ring(point, ring_pts))
+        total += hits % 2
+    return total
+
+
+assert _covered(mp3((277.5, 0.0))) == 0    # the hole's surviving crescent
+assert _covered(mp3((370.0, 0.0))) >= 1    # the outer's lit band
+print("14) severed donut keeps its hole; lit band still paints")
+
+# 15) "To 3D" collects only computable ground: the stroke drape severs like
+#     the 2D emitters (pre-fix it lifted the whole stroke with bare coords,
+#     piling severed points onto fabricated Third positions).
+seen_islands = []
+orig_sever = am._sever_source
+
+
+def _sever_spy(map_point, piece, seams=None):
+    result = orig_sever(map_point, piece, seams)
+    seen_islands.extend(result)
+    return result
+
+
+am._sever_source = _sever_spy
+try:
+    res3d = am._reconstruct_surface_3d(
+        mp1, [], [{"polylines": [[{"x": -150.0, "y": 20.0},
+                                  {"x": 250.0, "y": 20.0}]],
+                   "width": 3.0}], grid_target=16)
+finally:
+    am._sever_source = orig_sever
+assert res3d is not None
+assert seen_islands, "the 3D drape must sever its strokes"
+for island in seen_islands:
+    for p in island:
+        assert p[0] <= 165.0, p   # nothing past the silhouette is lifted
+print("15) 3D reconstruction drapes severed islands only")
+
 print("t_sever: ALL OK")

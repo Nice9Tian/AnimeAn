@@ -2896,9 +2896,30 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
                        l_v * (v_scale_pos if l_v >= 0.0 else v_scale_neg))
 
     def map_point(point):
-        """Child -> Third -> Main, literally. No residual term: the lift IS
-        the coordinate, and where it does not exist the caller severs."""
-        return main_of_third(coords(point))
+        """Child -> Third -> Main, literally. No residual term on a frame
+        that can fold: the lift IS the coordinate, and where it does not
+        exist the caller severs.
+
+        On an UNFOLDABLE frame severing is off, so a Newton lift that
+        stalls on a plateau (a near-parallel frame, ground far outside the
+        guides) has nobody to drop it - and emitting the stalled iterate
+        verbatim was measured to drift an identity mapping by 113 px where
+        the residual formula was bit-exact. The preimage does exist there
+        (hv_child is a homeomorphism above the gate): retry from the
+        stalled iterate, which reaches it in practice, and absorb whatever
+        residual remains with the exact identity-preserving correction.
+        Foldable frames never take this branch - there a high residual
+        means severed ground, and the fudge is exactly what this pipeline
+        removed."""
+        l_h, l_v, residual = _lift(point)
+        if residual > _SEVER_RESIDUAL and not can_fold():
+            l_h, l_v, residual = _lift(point, (l_h, l_v))
+            if residual > _SEVER_RESIDUAL:
+                rebuilt = child.hv(l_h, l_v)
+                image = main_of_third((l_h, l_v))
+                return (image[0] + point[0] - rebuilt[0],
+                        image[1] + point[1] - rebuilt[1])
+        return main_of_third((l_h, l_v))
 
     _fold_gate = {}
 
@@ -2913,20 +2934,39 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
         homeomorphism onto its (linearly extended) sweep, and severing
         short-circuits to "one island" without a single extra solve - in
         particular straight guides never pay anything.
+
+        The chords alone are NOT the whole field the verdict samples: the
+        exact one-sided tangents at a sharp corner (tangent_at's clamp
+        jumps to them) and the exact end tangents (point_at extends
+        linearly along them beyond the guide) can both leave the chord
+        cone - a 120-degree turn confined to one chord-short terminal
+        cubic passed the chord gate at +0.50 while the windowed cell
+        genuinely reached -0.36, silently disabling severing on a frame
+        that folds. Those few extra directions join the sets; adding
+        directions only ever OPENS the gate, so the conservative claim
+        survives.
         """
         cached = _fold_gate.get("value")
         if cached is not None:
             return cached
-        h_dirs = []
-        for a, b in zip(child.h, child.h[1:]):
-            length = math.hypot(b[0] - a[0], b[1] - a[1])
-            if length > 1e-9:
-                h_dirs.append(((b[0] - a[0]) / length, (b[1] - a[1]) / length))
-        v_dirs = []
-        for a, b in zip(child.v, child.v[1:]):
-            length = math.hypot(b[0] - a[0], b[1] - a[1])
-            if length > 1e-9:
-                v_dirs.append(((b[0] - a[0]) / length, (b[1] - a[1]) / length))
+
+        def gate_dirs(curve):
+            dirs = []
+            for a, b in zip(curve.points, curve.points[1:]):
+                length = math.hypot(b[0] - a[0], b[1] - a[1])
+                if length > 1e-9:
+                    dirs.append(((b[0] - a[0]) / length,
+                                 (b[1] - a[1]) / length))
+            eps = 1e-6
+            extremes = [0.0, curve.total]
+            extremes.extend(getattr(curve, "sharp_arcs", None) or ())
+            for arc in extremes:
+                for side in (arc - eps, arc + eps):
+                    dirs.append(curve.dir_at(side))
+            return dirs
+
+        h_dirs = gate_dirs(child.gh)
+        v_dirs = gate_dirs(child.gv)
         lowest = None
         for hx, hy in h_dirs:
             for vx, vy in v_dirs:
@@ -2954,7 +2994,6 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
     map_point.third_of = third_of
     map_point.main_of_third = main_of_third
     map_point.can_fold = can_fold
-    map_point.child_hand = child_hand
     map_point.main_coords = main_coords
     map_point.scale_arcs = scale_arcs
     map_point.unscale_arcs = unscale_arcs
@@ -3276,6 +3315,31 @@ def _structural_knots(map_point, a, b):
     return knots
 
 
+def _flatness_recurse(sample, dlerp, result, tol, max_depth):
+    """The shared flatness recursion of _adaptive_map_polyline and
+    _project_third_cubic: subdivide until the image chord passes the
+    three-term test - forced maximum output chord, midpoint deviation, and
+    the golden-section probe that stops a straight source aliasing through
+    whole periods of a wavy guide. `sample` maps a domain value to the
+    image; `dlerp` interpolates the DOMAIN (2D child points for the
+    polyline sampler, scalar t for a Third cubic). Inserted samples are
+    appended to `result` flagged non-anchor."""
+    def recurse(a, b, wa, wb, depth):
+        if depth >= max_depth:
+            return
+        m = dlerp(a, b, 0.5)
+        wm = sample(m)
+        g = dlerp(a, b, _PROBE_T)
+        wg = sample(g)
+        if (_dist(wa, wb) > _FORCE_STEP
+                or _dist(wm, _mid(wa, wb)) > tol
+                or _dist(wg, _lerp(wa, wb, _PROBE_T)) > tol):
+            recurse(a, m, wa, wm, depth + 1)
+            result.append((wm, False))
+            recurse(m, b, wm, wb, depth + 1)
+    return recurse
+
+
 def _adaptive_map_polyline(map_point, points, tol=_CURVE_TOL, max_depth=_SPLINE_MAX_DEPTH):
     """Map `points` through the warp, inserting samples between the ORIGINAL
     vertices so the mapped polyline stays within `tol` of the true warped
@@ -3283,28 +3347,14 @@ def _adaptive_map_polyline(map_point, points, tol=_CURVE_TOL, max_depth=_SPLINE_
 
     Returns [(mapped_point, is_original), ...]. The original vertices are
     anchors: downstream decimation only touches the inserted samples, never
-    them. Two flatness probes (midpoint + golden section) plus a forced
-    maximum output chord length guard against a straight source segment
-    aliasing through the probes when it spans whole periods of a wavy guide.
+    them. The flatness guards live in _flatness_recurse, shared with the
+    bridge projector so the two samplers cannot drift apart.
     """
     if len(points) < 2:
         return [(map_point(p), True) for p in points]
 
     result = [(map_point(points[0]), True)]
-
-    def recurse(a, b, wa, wb, depth):
-        if depth >= max_depth:
-            return
-        m = _mid(a, b)
-        wm = map_point(m)
-        g = _lerp(a, b, _PROBE_T)
-        wg = map_point(g)
-        if (_dist(wa, wb) > _FORCE_STEP
-                or _dist(wm, _mid(wa, wb)) > tol
-                or _dist(wg, _lerp(wa, wb, _PROBE_T)) > tol):
-            recurse(a, m, wa, wm, depth + 1)
-            result.append((wm, False))
-            recurse(m, b, wm, wb, depth + 1)
+    recurse = _flatness_recurse(map_point, _lerp, result, tol, max_depth)
 
     wa = result[0][0]
     for i in range(len(points) - 1):
@@ -3957,6 +4007,26 @@ def _frame_point(frame, u_hat, v_hat):
     return frame.hv(du, dv)
 
 
+def _sever_edge_image(mapper, valid_p, valid_lift, invalid_p):
+    """The main-canvas image of the seam point between a valid and an
+    invalid grid sample: bisect the child-space segment on the validity
+    verdict (seeded from the valid side, so Newton cannot snap onto a far
+    branch) and project the valid-side lift. The reference grid's island
+    edges then land ON the fold line like the strokes' cuts do, instead of
+    at whatever sample happened to fall nearest (measured 42 px median /
+    79 px max error at the default density)."""
+    lo, lift = valid_p, valid_lift
+    hi = invalid_p
+    for _ in range(20):
+        mid = ((lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5)
+        l_h, l_v, ok = mapper.third_of(mid, seed=lift)
+        if ok:
+            lo, lift = mid, (l_h, l_v)
+        else:
+            hi = mid
+    return mapper.main_of_third(lift)
+
+
 def _grid_overlay_items(view_name):
     """Refer-rect grid: the 3x3 anchor lattice (crossing, 4 guide endpoints,
     4 quadrant corners) with quarter-step iso-lines, for ONE board.
@@ -4009,15 +4079,27 @@ def _grid_overlay_items(view_name):
                 iso_v = [_frame_point(child_frame, s, level) for s in samples]
                 for points in (iso_u, iso_v):
                     if can_fold:
+                        # Runs end (and begin) at the BISECTED seam, not at
+                        # the last sample that happened to be valid: the
+                        # boundary points also keep a one-sample island
+                        # drawable instead of silently blank.
                         runs = []
                         run = []
+                        prev = None   # (point, lift, ok) of the last sample
                         for p in points:
                             l_h, l_v, ok = mapper.third_of(p)
                             if ok:
+                                if (not run and prev is not None
+                                        and not prev[2]):
+                                    run.append(_sever_edge_image(
+                                        mapper, p, (l_h, l_v), prev[0]))
                                 run.append(mapper.main_of_third((l_h, l_v)))
                             elif run:
+                                run.append(_sever_edge_image(
+                                    mapper, prev[0], prev[1], p))
                                 runs.append(run)
                                 run = []
+                            prev = (p, (l_h, l_v), ok)
                         if run:
                             runs.append(run)
                     else:
@@ -4032,8 +4114,13 @@ def _grid_overlay_items(view_name):
                             "width": 1.0,
                             "removable": False,
                         })
-            _GRID_CACHE[view_name] = items
-            return items
+            if items:
+                _GRID_CACHE[view_name] = items
+                return items
+            # A fully severed lattice (every iso-line blank) falls through
+            # to the own-axes fallback below: the docstring's promise - a
+            # reference rectangle stays available either way - outranks
+            # showing nothing.
 
     # This board's own axes, and nothing else: a half-drawn setup still
     # deserves a reference rectangle. Failure paths CACHE their empty
@@ -4614,22 +4701,32 @@ def _fold_sign(map_point, point):
     return 1 if raw == map_point.fold_reference else -1
 
 
-def _split_by_fold(map_point, points):
-    """Split a source polyline into runs of constant orientation.
+def _classified_runs(map_point, points, classify, snap_true=False):
+    """Split a source polyline into runs of constant classification.
 
-    Returns [(run_points, side)] with side in (+1, -1); consecutive runs
-    SHARE their boundary point, so front and back meet exactly (the map is
-    continuous there - only its derivative flips, so a fold is never a gap).
+    The shared core of _split_by_fold (classify = fold side) and
+    _sever_source (classify = lift validity): split each source segment at
+    the structural knots, judge each piece at its midpoint, snap each
+    change onto the exact boundary by bisection (the knots come from a
+    linear interpolation of the coordinates, so they can sit off the true
+    cell boundary; the classifier is exact), and regroup into
+    [(run_points, verdict)] where consecutive runs share their boundary
+    point. Returns None when there is nothing to judge.
 
-    The boundary needs no root finding. Guide tangents are piecewise CONSTANT
-    on polyline guides, so the orientation is constant inside a cell and can
-    only flip at a cell boundary - which is exactly a structural knot (§6.2),
-    already computed for the sampler. Measured: every sign flip along a
-    densified source lands on a knot (worst gap 0.01 px).
+    snap_true is the severing variant's contract: the classification is a
+    BOOLEAN whose False runs get dropped, so
+      * a change that falls on a source vertex is still bisected - ACROSS
+        the vertex, inside whichever segment actually holds the
+        transition. The fold splitter keeps the vertex (both sides
+        survive, and on polyline guides the vertex IS the cell boundary),
+        but a severed island that stopped at the vertex was measured to
+        end on invalid ground with a branch-jumped lift;
+      * the shared boundary point is the bracket end on the True side,
+        never the straddling midpoint, so a surviving run's cut endpoint
+        always HAS the coordinate it is about to be mapped with (the
+        midpoint landed on the invalid side of det J = 0 about half the
+        time - one rounding coin flip per cut).
     """
-    if len(points) < 2:
-        return [(list(points), 1)]
-
     pieces = []
     for index, (a, b) in enumerate(zip(points, points[1:])):
         bounds = [0.0] + _structural_knots(map_point, a, b) + [1.0]
@@ -4637,47 +4734,104 @@ def _split_by_fold(map_point, points):
             if t1 - t0 <= 1e-12:
                 continue
             pieces.append([index, a, b, t0, t1,
-                           _fold_sign(map_point, _lerp(a, b, (t0 + t1) * 0.5))])
+                           classify(_lerp(a, b, (t0 + t1) * 0.5))])
     if not pieces:
-        return [(list(points), 1)]
+        return None
 
-    # Snap each side change onto the real boundary. The knots come from a
-    # LINEAR interpolation of the coordinates over the segment, so on a coarse
-    # source they can sit a few px off the true cell boundary - and then the
-    # cut would not lie on the crease, which is derived independently from the
-    # frames. _fold_sign is exact, so bisecting between the two neighbouring
-    # midpoints pins the cut down and the two derivations agree by
-    # construction. Folds are rare, so this costs a handful of solves per run.
-    for left, right in zip(pieces, pieces[1:]):
-        if left[5] == right[5] or left[0] != right[0]:
-            continue  # same side, or the change falls on a source vertex
-        a, b = left[1], left[2]
-        lo = (left[3] + left[4]) * 0.5
-        hi = (right[3] + right[4]) * 0.5
+    def bisect_span(a, b, lo, hi, low_class):
+        """[lo, hi] brackets one change inside segment (a, b): tighten it
+        until (last t of low_class, first t of the other class) touch."""
         for _ in range(30):
             mid = (lo + hi) * 0.5
-            if _fold_sign(map_point, _lerp(a, b, mid)) == left[5]:
+            if classify(_lerp(a, b, mid)) == low_class:
                 lo = mid
             else:
                 hi = mid
-        boundary = (lo + hi) * 0.5
+        return lo, hi
+
+    def snapped(lo, hi, low_class):
+        if not snap_true:
+            return (lo + hi) * 0.5
+        return lo if low_class else hi
+
+    inserts = []
+    for position, (left, right) in enumerate(zip(pieces, pieces[1:])):
+        if left[5] == right[5]:
+            continue
+        if left[0] != right[0]:
+            if not snap_true:
+                continue  # fold split: the shared vertex IS the boundary
+            vertex_class = classify(left[2])
+            if vertex_class == left[5]:
+                lo, hi = bisect_span(right[1], right[2],
+                                     0.0, (right[3] + right[4]) * 0.5,
+                                     vertex_class)
+                boundary = snapped(lo, hi, vertex_class)
+                if boundary - right[3] > 1e-12:
+                    inserts.append((position + 1,
+                                    [right[0], right[1], right[2],
+                                     right[3], boundary, vertex_class]))
+                right[3] = boundary
+            else:
+                lo, hi = bisect_span(left[1], left[2],
+                                     (left[3] + left[4]) * 0.5, 1.0,
+                                     left[5])
+                boundary = snapped(lo, hi, left[5])
+                if left[4] - boundary > 1e-12:
+                    inserts.append((position + 1,
+                                    [left[0], left[1], left[2],
+                                     boundary, left[4], vertex_class]))
+                left[4] = boundary
+            continue
+        lo, hi = bisect_span(left[1], left[2],
+                             (left[3] + left[4]) * 0.5,
+                             (right[3] + right[4]) * 0.5, left[5])
+        boundary = snapped(lo, hi, left[5])
         left[4] = boundary
         right[3] = boundary
+    for position, piece in reversed(inserts):
+        pieces.insert(position, piece)
 
     runs = []
     first = pieces[0]
-    current = [_lerp(first[1], first[2], first[3]), _lerp(first[1], first[2], first[4])]
-    side = first[5]
+    current = [_lerp(first[1], first[2], first[3]),
+               _lerp(first[1], first[2], first[4])]
+    verdict = first[5]
     for piece in pieces[1:]:
         start = _lerp(piece[1], piece[2], piece[3])
         end = _lerp(piece[1], piece[2], piece[4])
-        if piece[5] == side:
+        if piece[5] == verdict:
             current.append(end)
         else:
-            runs.append((current, side))
+            runs.append((current, verdict))
             current = [start, end]
-            side = piece[5]
-    runs.append((current, side))
+            verdict = piece[5]
+    runs.append((current, verdict))
+    return runs
+
+
+def _split_by_fold(map_point, points):
+    """Split a source polyline into runs of constant orientation.
+
+    Returns [(run_points, side)] with side in (+1, -1); consecutive runs
+    SHARE their boundary point, so front and back meet exactly (the map is
+    continuous there - only its derivative flips, so a fold is never a gap).
+
+    The mechanics live in _classified_runs, shared with _sever_source.
+    Guide tangents are piecewise CONSTANT on polyline guides, so the
+    orientation is constant inside a cell and can only flip at a cell
+    boundary - a structural knot (§6.2) or a source vertex. Measured: every
+    sign flip along a densified source lands on a knot (worst gap 0.01 px);
+    the bisection pins the cut onto the crease, which is derived
+    independently from the frames, so the two derivations agree by
+    construction. Folds are rare, so it costs a handful of solves per run.
+    """
+    if len(points) < 2:
+        return [(list(points), 1)]
+    runs = _classified_runs(map_point, points,
+                            lambda p: _fold_sign(map_point, p))
+    if runs is None:
+        return [(list(points), 1)]
     return runs
 
 
@@ -4687,14 +4841,15 @@ def _sever_source(map_point, points, seams=None):
 
     Every stretch whose Third lift is invalid (child-frame foldover, or a
     diverging Newton solve - see third_of) is DROPPED, and each surviving
-    island ends exactly ON the fold line: the cut position is solved by
-    bisection on the validity verdict, the fold-line idea - never left at
-    whatever sample happened to fall nearest. Downstream the islands flow
-    through the unchanged reconstruction machinery, so a stroke crossing a
-    child fold visually ENDS at the seam, the way a printed pattern wraps
-    around to the hidden face of a folded sheet. With no residual term left
-    in the map there is nothing else these points could do: their UV
-    coordinate does not exist.
+    island ends exactly ON the fold line - on its VALID side, so the cut
+    endpoint still has a lift: the cut position is solved by bisection on
+    the validity verdict (_classified_runs with snap_true), the fold-line
+    idea - never left at whatever sample happened to fall nearest.
+    Downstream the islands flow through the unchanged reconstruction
+    machinery, so a stroke crossing a child fold visually ENDS at the
+    seam, the way a printed pattern wraps around to the hidden face of a
+    folded sheet. With no residual term left in the map there is nothing
+    else these points could do: their UV coordinate does not exist.
 
     `seams` (if given) collects the cut points (child space), one per severed
     boundary, for the run summary. The whole function is FREE on frames that
@@ -4702,63 +4857,13 @@ def _sever_source(map_point, points, seams=None):
     """
     if len(points) < 2 or not map_point.can_fold():
         return [list(points)]
-
-    def valid(p):
-        return map_point.third_of(p)[2]
-
-    # Mirror _split_by_fold: split each source segment at the structural
-    # knots first (on polyline guides the verdict is constant inside a cell
-    # and can only change at a cell boundary), then judge each piece at its
-    # midpoint.
-    pieces = []
-    for index, (a, b) in enumerate(zip(points, points[1:])):
-        bounds = [0.0] + _structural_knots(map_point, a, b) + [1.0]
-        for t0, t1 in zip(bounds, bounds[1:]):
-            if t1 - t0 <= 1e-12:
-                continue
-            pieces.append([index, a, b, t0, t1,
-                           valid(_lerp(a, b, (t0 + t1) * 0.5))])
-    if not pieces:
+    runs = _classified_runs(map_point, points,
+                            lambda p: map_point.third_of(p)[2],
+                            snap_true=True)
+    if runs is None:
         return [list(points)]
-    if all(piece[5] for piece in pieces):
+    if all(ok for _run, ok in runs):
         return [list(points)]  # entirely on the computable sheet
-
-    # Snap each verdict change onto the true fold boundary. Knot positions
-    # come from a linear interpolation of the coordinates over the segment,
-    # so on a folded frame they can sit off the real cell boundary; the
-    # verdict itself is exact, so bisecting between the two neighbouring
-    # midpoints pins the cut onto det J = 0 (resp. the divergence edge).
-    for left, right in zip(pieces, pieces[1:]):
-        if left[5] == right[5] or left[0] != right[0]:
-            continue  # same verdict, or the change falls on a source vertex
-        a, b = left[1], left[2]
-        lo = (left[3] + left[4]) * 0.5
-        hi = (right[3] + right[4]) * 0.5
-        for _ in range(30):
-            mid = (lo + hi) * 0.5
-            if valid(_lerp(a, b, mid)) == left[5]:
-                lo = mid
-            else:
-                hi = mid
-        boundary = (lo + hi) * 0.5
-        left[4] = boundary
-        right[3] = boundary
-
-    runs = []
-    first = pieces[0]
-    current = [_lerp(first[1], first[2], first[3]),
-               _lerp(first[1], first[2], first[4])]
-    side = first[5]
-    for piece in pieces[1:]:
-        start = _lerp(piece[1], piece[2], piece[3])
-        end = _lerp(piece[1], piece[2], piece[4])
-        if piece[5] == side:
-            current.append(end)
-        else:
-            runs.append((current, side))
-            current = [start, end]
-            side = piece[5]
-    runs.append((current, side))
 
     islands = []
     for index, (run, ok) in enumerate(runs):
@@ -4848,10 +4953,10 @@ def _project_third_cubic(map_point, cub, tol=_CURVE_TOL,
     """Forward-project a THIRD-SPACE cubic into main canvas flagged points.
 
     Step 4 for a bridge: every probe is main_of_third - pure forward
-    arithmetic, no Newton - and the sampling carries the same guards as the
-    child-space sampler (midpoint + golden-section flatness, forced maximum
-    output chord), judged in the IMAGE where the tolerance means pixels.
-    Endpoints are anchors; inserted samples decimate downstream as usual.
+    arithmetic, no Newton - and the sampling is the SAME _flatness_recurse
+    the child-space sampler drives, judged in the IMAGE where the tolerance
+    means pixels. Endpoints are anchors; inserted samples decimate
+    downstream as usual.
     """
     def image(t):
         return map_point.main_of_third(_cubic_point(cub, t))
@@ -4859,24 +4964,30 @@ def _project_third_cubic(map_point, cub, tol=_CURVE_TOL,
     first = image(0.0)
     last = image(1.0)
     result = [(first, True)]
-
-    def recurse(t0, t1, w0, w1, depth):
-        if depth >= max_depth:
-            return
-        tm = (t0 + t1) * 0.5
-        wm = image(tm)
-        tg = t0 + (t1 - t0) * _PROBE_T
-        wg = image(tg)
-        if (_dist(w0, w1) > _FORCE_STEP
-                or _dist(wm, _mid(w0, w1)) > tol
-                or _dist(wg, _lerp(w0, w1, _PROBE_T)) > tol):
-            recurse(t0, tm, w0, wm, depth + 1)
-            result.append((wm, False))
-            recurse(tm, t1, wm, w1, depth + 1)
-
+    recurse = _flatness_recurse(image, lambda a, b, t: a + (b - a) * t,
+                                result, tol, max_depth)
     recurse(0.0, 1.0, first, last, 0)
     result.append((last, True))
     return result
+
+
+def _island_end_anchor(points, at_end, reach=POLY_STEP):
+    """A verdict probe pulled back from an island's cut by `reach` child px.
+
+    The cut endpoint itself sits ON det J = 0 (the bisection converges onto
+    the seam), so any orientation or depth sampled there is decided by
+    rounding noise - measured: 26% of sub-pixel input perturbations flipped
+    a bridge to BACK while both its islands were FRONT. One step back into
+    the island the verdict is the island's own."""
+    walk = points[-2::-1] if at_end else points[1:]
+    previous = points[-1] if at_end else points[0]
+    run = 0.0
+    for point in walk:
+        run += math.hypot(point[0] - previous[0], point[1] - previous[1])
+        previous = point
+        if run >= reach:
+            return point
+    return previous if walk else points[0]
 
 
 def _emit_bridges(out, map_point, gap_pairs, main_area, color_tuple, width,
@@ -4885,11 +4996,13 @@ def _emit_bridges(out, map_point, gap_pairs, main_area, color_tuple, width,
 
     `gap_pairs` is [(a_points, b_points)] - per gap, the child polylines
     ending at cut A and starting at cut B. Side and stacking depth are
-    borrowed from the A-side cut, the last point with a defined child
-    coordinate: the bridge itself spans ground that HAS no child coordinate,
-    which is also why it never feeds the crease/seal machinery - it is new
-    geometry, not a fold of the sheet. Output is a fitted curve (`curved`)
-    or a polyline, matching the emitter that asked.
+    borrowed from island A - probed one step INSIDE it, never at the cut
+    itself, which sits on det J = 0 (_island_end_anchor): the bridge spans
+    ground that HAS no child coordinate, which is also why it never feeds
+    the crease/seal machinery - it is new geometry, not a fold of the
+    sheet. Output is a fitted curve (`curved`) or a polyline, matching the
+    emitter that asked. `out.bridges` records each gap ONCE, however many
+    pieces the mapping area clips its projection into.
     """
     added = 0
     for a_points, b_points in gap_pairs:
@@ -4898,10 +5011,12 @@ def _emit_bridges(out, map_point, gap_pairs, main_area, color_tuple, width,
             continue
         flagged = _project_third_cubic(map_point, bridge)
         if _FOLD["split"]:
-            side = _fold_sign(map_point, a_points[-1])
-            depth = _run_depth(map_point, [a_points[-1]], side)
+            probe = _island_end_anchor(a_points, at_end=True)
+            side = _fold_sign(map_point, probe)
+            depth = _run_depth(map_point, [probe], side)
         else:
             side, depth = _MappedOutput.FRONT, 0
+        emitted_pieces = 0
         for clipped in _clip_flagged(flagged, main_area):
             knots = _decimate_between_anchors(clipped, eps)
             if curved:
@@ -4914,23 +5029,53 @@ def _emit_bridges(out, map_point, gap_pairs, main_area, color_tuple, width,
                                            _side_style(side, color_tuple),
                                            width, depth)
             if emitted:
-                added += 1
-                out.bridges.append(bridge)
+                emitted_pieces += 1
+        if emitted_pieces:
+            added += emitted_pieces
+            out.bridges.append(bridge)
     return added
 
 
-def _cubic_tail_polyline(cub):
-    """A two-point child polyline probing a cubic's END trend (bezier mode)."""
-    hull = max(bezier.hull_length(cub), 1e-9)
-    t = max(0.0, 1.0 - min(0.5, POLY_STEP / hull))
-    return [_cubic_point(cub, t), cub[3]]
+def _cubic_tail_polyline(cubics, span=4.0 * POLY_STEP):
+    """A short child polyline probing an island's END trend (bezier mode).
+
+    Walks backward over the island's last cubics until the polyline spans
+    `span` of child ground: the final cubic alone can be the sub-pixel
+    sliver a bisected cut leaves behind (the sever pass rejects parts by
+    PARAMETER span, not geometry), and a probe confined to it defeated
+    _third_end_tangent's walk-inward guard - the sliver's ill-conditioned
+    direction set the trend. Earlier cubics feed the probe until there is
+    real ground to measure. The last point stays the cut itself."""
+    points = []
+    total = 0.0
+    for cub in reversed(cubics):
+        hull = max(bezier.hull_length(cub), 1e-9)
+        count = max(1, min(8, int(math.ceil(hull / POLY_STEP))))
+        seg = [_cubic_point(cub, k / count) for k in range(count + 1)]
+        points = seg[:-1] + points if points else seg
+        total += hull
+        if total >= span:
+            break
+    return points
 
 
-def _cubic_head_polyline(cub):
-    """A two-point child polyline probing a cubic's START trend (bezier mode)."""
-    hull = max(bezier.hull_length(cub), 1e-9)
-    t = min(0.5, POLY_STEP / hull)
-    return [cub[0], _cubic_point(cub, t)]
+def _cubic_head_polyline(cubics, span=4.0 * POLY_STEP):
+    """A short child polyline probing an island's START trend (bezier mode).
+
+    The head twin of _cubic_tail_polyline: walks forward over the island's
+    first cubics until `span` of child ground backs the probe. The first
+    point stays the cut itself."""
+    points = []
+    total = 0.0
+    for cub in cubics:
+        hull = max(bezier.hull_length(cub), 1e-9)
+        count = max(1, min(8, int(math.ceil(hull / POLY_STEP))))
+        seg = [_cubic_point(cub, k / count) for k in range(count + 1)]
+        points = points + seg[1:] if points else seg
+        total += hull
+        if total >= span:
+            break
+    return points
 
 
 def _crease_scan(map_point, row_range, axis, samples=48, max_columns=600,
@@ -5445,6 +5590,39 @@ def _child_of_arcs(map_point, arcs):
     return map_point.child_frame.hv(*third)
 
 
+def _locus_flips(curve, to_child, changes, probe, samples):
+    """Probe a traced locus at `samples` spread spots: does `changes` see a
+    field flip across it anywhere?
+
+    The shared sampling loop of _curve_is_fold and _sever_curve_is_real.
+    `to_child` puts a locus vertex on the child canvas; `changes(p, q,
+    vertex)` judges one probe pair one `probe` step to each side (the
+    locus vertex rides along so the sever twin can seed its lifts). A
+    locus nothing could judge (degenerate geometry) is kept, as before the
+    phantom filters existed.
+    """
+    count = len(curve)
+    if count < 2:
+        return False
+    tested = 0
+    for k in range(samples):
+        index = max(0, min(count - 2, int((k + 0.5) * (count - 1) / samples)))
+        pa = to_child(curve[index])
+        pb = to_child(curve[index + 1])
+        dx, dy = pb[0] - pa[0], pb[1] - pa[1]
+        length = math.hypot(dx, dy)
+        if length <= 1e-9:
+            continue
+        nx, ny = -dy / length, dx / length
+        mid = ((pa[0] + pb[0]) * 0.5, (pa[1] + pb[1]) * 0.5)
+        tested += 1
+        if changes((mid[0] + nx * probe, mid[1] + ny * probe),
+                   (mid[0] - nx * probe, mid[1] - ny * probe),
+                   curve[index]):
+            return True
+    return tested == 0  # nothing to judge: keep
+
+
 def _curve_is_fold(map_point, curve, probe=POLY_STEP, samples=5):
     """Does the field actually CHANGE SIDE across this traced curve?
 
@@ -5461,25 +5639,36 @@ def _curve_is_fold(map_point, curve, probe=POLY_STEP, samples=5):
     sample flips - even near a birth point the arms part beyond the probe
     somewhere mid-branch) from phantoms (no sample flips anywhere).
     """
-    count = len(curve)
-    if count < 2:
-        return False
-    tested = 0
-    for k in range(samples):
-        index = max(0, min(count - 2, int((k + 0.5) * (count - 1) / samples)))
-        pa = _child_of_arcs(map_point, curve[index])
-        pb = _child_of_arcs(map_point, curve[index + 1])
-        dx, dy = pb[0] - pa[0], pb[1] - pa[1]
-        length = math.hypot(dx, dy)
-        if length <= 1e-9:
-            continue
-        nx, ny = -dy / length, dx / length
-        mid = ((pa[0] + pb[0]) * 0.5, (pa[1] + pb[1]) * 0.5)
-        tested += 1
-        if (_fold_sign(map_point, (mid[0] + nx * probe, mid[1] + ny * probe))
-                != _fold_sign(map_point, (mid[0] - nx * probe, mid[1] - ny * probe))):
-            return True
-    return tested == 0  # nothing to judge: keep, as before this filter
+    return _locus_flips(
+        curve,
+        lambda entry: _child_of_arcs(map_point, entry),
+        lambda p, q, _entry: (_fold_sign(map_point, p)
+                              != _fold_sign(map_point, q)),
+        probe, samples)
+
+
+def _merged_loci(pools, keep=None):
+    """Priority-merge sweep pools into one deduped locus set.
+
+    The shared merge of _crease_curves and _sever_loci. Geometry is only
+    ever DROPPED when something at least as good already covers it: pools
+    arrive best-first (corner lines - exact and continuous through every
+    junction - then the well-conditioned sweep stretches, then the degraded
+    ones as fallback for whatever neither sweep sampled well; degraded
+    beats deleted). `keep` filters each candidate run BEFORE it claims
+    ground in the dedup grid, so a rejected run cannot shadow a real one
+    from a later pool."""
+    tolerance = 2.5 * POLY_STEP
+    grid = _ArcGrid(4.0 * POLY_STEP)
+    pieces = []
+    for pool in pools:
+        for curve in pool:
+            for run in _uncovered_runs(curve, grid, tolerance):
+                if keep is not None and (len(run) < 2 or not keep(run)):
+                    continue
+                pieces.append(run)
+                grid.add_curve(run)
+    return pieces
 
 
 def _crease_curves(map_point, v_range, h_range=None, samples=48, max_columns=600,
@@ -5521,25 +5710,13 @@ def _crease_curves(map_point, v_range, h_range=None, samples=48, max_columns=600
     else:
         v_good, v_bad = _crease_scan(map_point, h_range, "v", samples, max_columns)
         boundaries.append((0, h_range[0], h_range[1]))
-        # Priority merge: geometry is only ever DROPPED when something at
-        # least as good already covers it. Well-conditioned stretches first
-        # (the h sweep's, then the transposed sweep's exact fill of what h
-        # graded badly), then the degraded stretches as fallback for whatever
-        # neither sweep sampled well - branch tips, stretches outside the
-        # other sweep's row window. Degraded beats deleted: it is exactly the
-        # quality the single-sweep tracer always had there.
-        tolerance = 2.5 * POLY_STEP
-        grid = _ArcGrid(4.0 * POLY_STEP)
-        pieces = []
-        # Corner lines first: they are exact and continuous through every
-        # junction, so the sweeps' fragmented versions of the same lines
-        # dedupe away against them instead of the other way round.
-        for pool in (_corner_loci(map_point, v_range, h_range, corner_spans),
-                     h_good, v_good, h_bad, v_bad):
-            for curve in pool:
-                for run in _uncovered_runs(curve, grid, tolerance):
-                    pieces.append(run)
-                    grid.add_curve(run)
+        # Priority merge (see _merged_loci): corner lines first - they are
+        # exact and continuous through every junction, so the sweeps'
+        # fragmented versions of the same lines dedupe away against them
+        # instead of the other way round.
+        pieces = _merged_loci(
+            (_corner_loci(map_point, v_range, h_range, corner_spans),
+             h_good, v_good, h_bad, v_bad))
     def _with_warp_loci(curves):
         """Append the additional-line warp's own fold loci - exact analytic
         curves the frame sweeps are structurally blind to (they test main
@@ -5898,9 +6075,29 @@ def _child_cutters(map_point):
             points = [_child_of_arcs(map_point, arc_pair) for arc_pair in curve]
         if len(points) >= 2:
             bare.append(points)
+    cutters, raw = _cutter_polylines(bare, reach)
+    map_point.child_cutters = cutters
+    map_point.child_cutters_raw = raw
+    return cutters
+
+
+def _cutter_polylines(bare, reach):
+    """(cutters, raw) from bare locus polylines: the shared construction of
+    _child_cutters and _sever_cutters.
+
+    Every end gets a straight extension of the full reach. Junction ends
+    and dedupe splice ends dead-end INSIDE fills and shorter overhangs
+    measurably under-cut (a depth-3 fill vanished at 32 px, and distance
+    heuristics for "which ends are junctions" kept missing cases because
+    arc-space gaps stretch unpredictably through the transfer scales). The
+    cost is cosmetic only - extension crossings split same-depth pieces
+    that render identically - and the bbox gate in _split_ring_by_fold
+    keeps them off rings the real locus never approaches. `raw` keeps the
+    pre-extension geometry: crease anchors and bbox gates must see only
+    REAL loci, never an extension."""
     raw = [_densify(list(points)) for points in bare]
     cutters = []
-    for index, points in enumerate(bare):
+    for points in bare:
         points = list(points)
         for end, other in ((0, 1), (-1, -2)):
             dx = points[end][0] - points[other][0]
@@ -5908,15 +6105,6 @@ def _child_cutters(map_point):
             length = math.hypot(dx, dy)
             if length <= 1e-9:
                 continue
-            # Every end gets the full reach. Junction ends and dedupe splice
-            # ends dead-end INSIDE fills and shorter overhangs measurably
-            # under-cut (a depth-3 fill vanished at 32 px, and distance
-            # heuristics for "which ends are junctions" kept missing cases
-            # because arc-space gaps stretch unpredictably through the
-            # transfer scales). The cost is cosmetic only - extension
-            # crossings split same-depth pieces that render identically -
-            # and the bbox gate in _split_ring_by_fold keeps them off
-            # rings the real locus never approaches.
             tip = points[end]
             extended = (tip[0] + dx / length * reach, tip[1] + dy / length * reach)
             if end == 0:
@@ -5924,42 +6112,41 @@ def _child_cutters(map_point):
             else:
                 points.append(extended)
         cutters.append(_densify(points))
-    map_point.child_cutters = cutters
-    map_point.child_cutters_raw = raw
-    return cutters
+    return cutters, raw
 
 
 def _sever_curve_is_real(map_point, curve, probe=POLY_STEP, samples=5):
     """Does the VALIDITY verdict actually change across this traced seam?
 
-    The severing twin of _curve_is_fold: the child-frame sweeps inherit the
-    same phantom failure mode (near-corner rows chaining isolated per-row
-    zeros into a long pseudo-curve the field never flips across). A phantom
-    seam would slice fills cosmetically; probing third_of one step to each
-    side separates real seams from phantoms. Probes run in CHILD CANVAS
-    space - the space the cutters cut in.
+    The severing twin of _curve_is_fold (same _locus_flips loop): the
+    child-frame sweeps inherit the same phantom failure mode (near-corner
+    rows chaining isolated per-row zeros into a long pseudo-curve the field
+    never flips across). A phantom seam would slice fills cosmetically;
+    probing third_of one step to each side separates real seams from
+    phantoms. Probes run in CHILD CANVAS space - the space the cutters cut
+    in - and each pair is judged under BOTH seedings, either flip counts:
+      * the default chord seed sees a tangential fold's shadow side as
+        unreachable (there is nothing to converge to) - but beside a
+        RE-EMERGENCE seam it converges onto the far front sheet from both
+        sides, so both probes read "valid" and a real seam was dropped as
+        a phantom, leaving fills uncut where the strokes' verdict re-opens;
+      * the locus's own Third coordinate as seed makes Newton report the
+        LOCAL sheet, whose det genuinely flips at a re-emergence corner -
+        but ON a tangential fold that seed is the singular point itself,
+        where the solve stalls on both sides.
+    A phantom flips under neither: no local zero crossing, and no global
+    coverage change.
     """
-    count = len(curve)
-    if count < 2:
-        return False
     child = map_point.child_frame
-    tested = 0
-    for k in range(samples):
-        index = max(0, min(count - 2, int((k + 0.5) * (count - 1) / samples)))
-        pa = child.hv(*curve[index])
-        pb = child.hv(*curve[index + 1])
-        dx, dy = pb[0] - pa[0], pb[1] - pa[1]
-        length = math.hypot(dx, dy)
-        if length <= 1e-9:
-            continue
-        nx, ny = -dy / length, dx / length
-        mid = ((pa[0] + pb[0]) * 0.5, (pa[1] + pb[1]) * 0.5)
-        tested += 1
-        if (map_point.third_of((mid[0] + nx * probe, mid[1] + ny * probe))[2]
-                != map_point.third_of((mid[0] - nx * probe,
-                                       mid[1] - ny * probe))[2]):
+    third_of = map_point.third_of
+
+    def flips(p, q, entry):
+        if third_of(p)[2] != third_of(q)[2]:
             return True
-    return tested == 0  # nothing to judge: keep
+        return third_of(p, seed=entry)[2] != third_of(q, seed=entry)[2]
+
+    return _locus_flips(curve, lambda entry: child.hv(*entry), flips,
+                        probe, samples)
 
 
 def _sever_loci(map_point):
@@ -5991,56 +6178,177 @@ def _sever_loci(map_point):
     v_good, v_bad = _crease_scan(map_point, h_range, "v", frame=child)
     corner = _corner_loci(map_point, v_range, h_range,
                           spans=(h_span, v_span), frame=child)
-    tolerance = 2.5 * POLY_STEP
-    grid = _ArcGrid(4.0 * POLY_STEP)
-    pieces = []
-    for pool in (corner, h_good, v_good, h_bad, v_bad):
-        for curve in pool:
-            for run in _uncovered_runs(curve, grid, tolerance):
-                if len(run) >= 2 and _sever_curve_is_real(map_point, run):
-                    pieces.append(run)
-                    grid.add_curve(run)
+    pieces = _merged_loci(
+        (corner, h_good, v_good, h_bad, v_bad),
+        keep=lambda run: _sever_curve_is_real(map_point, run))
     map_point.sever_curves = pieces
     return pieces
 
 
-def _sever_cutters(map_point):
-    """The UV seams as ring cutters in CHILD canvas space, cached.
+def _sever_cutters(map_point, grid_n=64):
+    """The VALIDITY BOUNDARY as ring cutters in CHILD canvas space, cached.
 
-    Same construction as _child_cutters (straight end extensions so a seam
-    dead-ending inside a fill still cuts it; pre-extension geometry kept for
-    the bbox gate), but from the child frame's own fold loci: fills must be
-    cut where the LIFT stops existing, and the pieces on severed ground are
-    then dropped by _split_ring_by_fold - the fill's paint wraps out of
-    sight at the seam exactly like the strokes do.
+    Marched from the verdict field itself (third_of), not projected from
+    the traced Third loci: strokes sever wherever the pointwise verdict
+    changes, and that boundary includes DIVERGENCE edges - ground where the
+    chord-seed Newton stops reaching any front-branch preimage - which no
+    Third locus can express. Measured on the zig frame: the strokes
+    re-open at canvas x~273.5, while the nearest traced locus projects to
+    the x=0 line - a loci-projected cutter never cuts fills there at all,
+    and even where a locus existed its image sat 1.2 px off the stroke
+    cuts (locus corner at x=120 vs windowed verdict edge at x=118.79).
+    Cutting from the same field the strokes consult makes fills and
+    strokes agree on where the pattern ends BY CONSTRUCTION.
+
+    Marching squares over a padded frame window: verdict at the lattice
+    nodes, each crossing edge bisected onto the verdict boundary
+    (sub-pixel), cell segments chained into polylines, and the usual
+    straight end extensions applied (_cutter_polylines) so a boundary
+    leaving the window still cuts whole fills. The pre-extension geometry
+    stays on map_point.sever_cutter_raw for the bbox gate. A verdict
+    structure thinner than one cell (~window/64) can slip between the
+    nodes - the same class of limit the loci tracer's phantom filter
+    already accepted. Cached per mapper; free on frames that cannot fold.
     """
     cached = getattr(map_point, "sever_cutter_polys", None)
     if cached is not None:
         return cached
+    if not map_point.can_fold():
+        map_point.sever_cutter_polys = []
+        map_point.sever_cutter_raw = []
+        return map_point.sever_cutter_polys
     child = map_point.child_frame
-    reach = 2.0 * (child.gh.total + child.gv.total)
-    bare = []
-    for curve in _sever_loci(map_point):
-        points = [child.hv(*third) for third in curve]
-        if len(points) >= 2:
-            bare.append(points)
-    raw = [_densify(list(points)) for points in bare]
-    cutters = []
-    for points in bare:
-        points = list(points)
-        for end, other in ((0, 1), (-1, -2)):
-            dx = points[end][0] - points[other][0]
-            dy = points[end][1] - points[other][1]
-            length = math.hypot(dx, dy)
-            if length <= 1e-9:
-                continue
-            tip = points[end]
-            extended = (tip[0] + dx / length * reach, tip[1] + dy / length * reach)
-            if end == 0:
-                points.insert(0, extended)
+    third_of = map_point.third_of
+
+    # Canvas window: hv = H + V - O componentwise, so the reachable canvas
+    # box is the H-extent plus the V-extent (each over its padded arc
+    # range, linear extensions included) minus the crossing.
+    def curve_box(curve, arc, low, high, steps=33):
+        xs, ys = [], []
+        for k in range(steps):
+            p = curve.point_at(arc + low + (high - low) * k / (steps - 1))
+            xs.append(p[0])
+            ys.append(p[1])
+        return min(xs), min(ys), max(xs), max(ys)
+
+    h_pad = 0.5 * child.h_total
+    v_pad = 0.5 * child.v_total
+    hx0, hy0, hx1, hy1 = curve_box(child.gh, child.h_arc,
+                                   -child.h_arc - h_pad,
+                                   child.h_total - child.h_arc + h_pad)
+    vx0, vy0, vx1, vy1 = curve_box(child.gv, child.v_arc,
+                                   -child.v_arc - v_pad,
+                                   child.v_total - child.v_arc + v_pad)
+    x0 = hx0 + vx0 - child.origin[0]
+    x1 = hx1 + vx1 - child.origin[0]
+    y0 = hy0 + vy0 - child.origin[1]
+    y1 = hy1 + vy1 - child.origin[1]
+    # The verdict field keeps changing BEYOND the sheet's image box: a
+    # silhouette edge sits just outside it (the hook frame's at x=160.19
+    # with the box ending at 160.0 - zero crossings sampled, no cutter at
+    # all), and divergence edges bound the solvable region around it.
+    # Widen by a quarter span each side; chains that cross the window get
+    # straight-extended to full reach anyway.
+    x0, x1 = x0 - 0.25 * (x1 - x0), x1 + 0.25 * (x1 - x0)
+    y0, y1 = y0 - 0.25 * (y1 - y0), y1 + 0.25 * (y1 - y0)
+    dx = (x1 - x0) / grid_n
+    dy = (y1 - y0) / grid_n
+
+    valid = [[third_of((x0 + dx * i, y0 + dy * j))[2]
+              for j in range(grid_n + 1)] for i in range(grid_n + 1)]
+
+    def edge_point(ax, ay, bx, by, a_ok):
+        """Bisect the verdict change on one lattice edge onto the boundary."""
+        for _ in range(14):
+            mx, my = (ax + bx) * 0.5, (ay + by) * 0.5
+            if third_of((mx, my))[2] == a_ok:
+                ax, ay = mx, my
             else:
-                points.append(extended)
-        cutters.append(_densify(points))
+                bx, by = mx, my
+        return ((ax + bx) * 0.5, (ay + by) * 0.5)
+
+    crossings = {}   # ("h"/"v", i, j) -> boundary point on that edge
+
+    def edge(kind, i, j, ax, ay, bx, by, a_ok):
+        key = (kind, i, j)
+        point = crossings.get(key)
+        if point is None:
+            point = edge_point(ax, ay, bx, by, a_ok)
+            crossings[key] = point
+        return point
+
+    segments = []
+    for i in range(grid_n):
+        for j in range(grid_n):
+            sw = valid[i][j]
+            se = valid[i + 1][j]
+            nw = valid[i][j + 1]
+            ne = valid[i + 1][j + 1]
+            if sw == se == nw == ne:
+                continue
+            xa, xb = x0 + dx * i, x0 + dx * (i + 1)
+            ya, yb = y0 + dy * j, y0 + dy * (j + 1)
+            sides = []
+            if sw != se:
+                sides.append(edge("h", i, j, xa, ya, xb, ya, sw))
+            if nw != ne:
+                sides.append(edge("h", i, j + 1, xa, yb, xb, yb, nw))
+            if sw != nw:
+                sides.append(edge("v", i, j, xa, ya, xa, yb, sw))
+            if se != ne:
+                sides.append(edge("v", i + 1, j, xb, ya, xb, yb, se))
+            if len(sides) == 2:
+                segments.append((sides[0], sides[1]))
+            elif len(sides) == 4:
+                # Saddle: the centre verdict decides which arms pair up.
+                centre_ok = third_of(((xa + xb) * 0.5, (ya + yb) * 0.5))[2]
+                bottom, top, left, right = sides
+                if centre_ok == sw:
+                    segments.append((left, top))
+                    segments.append((bottom, right))
+                else:
+                    segments.append((left, bottom))
+                    segments.append((top, right))
+
+    # Chain the cell segments into polylines by shared endpoints.
+    def key_of(point):
+        return (round(point[0], 6), round(point[1], 6))
+
+    links = {}
+    for a, b in segments:
+        links.setdefault(key_of(a), []).append((a, b))
+        links.setdefault(key_of(b), []).append((b, a))
+    used = set()
+    bare = []
+    for a, b in segments:
+        if (key_of(a), key_of(b)) in used:
+            continue
+        chain = [a, b]
+        used.add((key_of(a), key_of(b)))
+        used.add((key_of(b), key_of(a)))
+        for grow_end in (True, False):
+            while True:
+                tip = chain[-1] if grow_end else chain[0]
+                extended = False
+                for start, far in links.get(key_of(tip), ()):
+                    pair = (key_of(start), key_of(far))
+                    if pair in used:
+                        continue
+                    used.add(pair)
+                    used.add((pair[1], pair[0]))
+                    if grow_end:
+                        chain.append(far)
+                    else:
+                        chain.insert(0, far)
+                    extended = True
+                    break
+                if not extended:
+                    break
+        if len(chain) >= 2:
+            bare.append(chain)
+
+    reach = 2.0 * (child.gh.total + child.gv.total)
+    cutters, raw = _cutter_polylines(bare, reach)
     map_point.sever_cutter_polys = cutters
     map_point.sever_cutter_raw = raw
     return cutters
@@ -6257,6 +6565,67 @@ def _split_ring_with_chord(ring, chord):
     return result if len(result) == 2 else None
 
 
+def _ring_on_valid_ground(map_point, ring, samples=9):
+    """Is this ring piece on computable ground? A VOTE over spread boundary
+    vertices, never one interior probe.
+
+    The ring's own boundary is painted ground (an outer's outline, the rim
+    a hole is cut against), while an interior point of a donut's outer ring
+    is the HOLE - ground the fill does not even own. A single interior
+    probe was measured to (a) drop a hole ring whose centre sat in shadow,
+    painting the cut-out solid, (b) delete a whole donut over one isolated
+    Newton-residual speckle at the shared centre, and (c) discard a piece
+    spanning severed and lit ground wholesale. Boundary samples vote the
+    piece's real footprint; vertices that sit ON a seam chord after a cut
+    split their voice both ways and the majority still reads the original
+    outline. Ties keep the piece - fills err on the side of drawing.
+    """
+    n = len(ring)
+    if n == 0:
+        return False
+    count = min(samples, n)
+    third_of = map_point.third_of
+    votes = sum(1 if third_of(ring[(k * n) // count])[2] else -1
+                for k in range(count))
+    return votes >= 0
+
+
+def _sever_ring(map_point, ring, gate_bbox=None):
+    """Cut a closed ring along the child frame's UV seams and keep only the
+    pieces on computable ground - the severing stage of _split_ring_by_fold,
+    shared with the 3D reconstruction (which must not drape geometry the 2D
+    pipeline deleted). Free on frames that cannot fold."""
+    if not map_point.can_fold():
+        return [ring]
+    if gate_bbox is None:
+        rx0 = min(p[0] for p in ring)
+        rx1 = max(p[0] for p in ring)
+        ry0 = min(p[1] for p in ring)
+        ry1 = max(p[1] for p in ring)
+    else:
+        rx0, ry0, rx1, ry1 = gate_bbox
+    margin = 2.0 * POLY_STEP
+    pieces = [ring]
+    sever_cutters = _sever_cutters(map_point)
+    sever_raws = (getattr(map_point, "sever_cutter_raw", None)
+                  or [None] * len(sever_cutters))
+    for cutter, raw in zip(sever_cutters, sever_raws):
+        if raw is not None:
+            if (max(p[0] for p in raw) < rx0 - margin
+                    or min(p[0] for p in raw) > rx1 + margin
+                    or max(p[1] for p in raw) < ry0 - margin
+                    or min(p[1] for p in raw) > ry1 + margin):
+                continue
+        cut = []
+        for piece in pieces:
+            cut.extend(_cut_ring_by_polyline(piece, cutter))
+        pieces = cut
+    # The verdict runs even when no seam touched the bbox: a small ring
+    # can sit ENTIRELY on severed ground with no seam crossing it.
+    return [piece for piece in pieces
+            if _ring_on_valid_ground(map_point, piece)]
+
+
 def _split_ring_by_fold(map_point, ring, crossings_out=None, gate_bbox=None):
     """[(sub_ring, side, interior_point)] after cutting by every crease.
 
@@ -6276,7 +6645,8 @@ def _split_ring_by_fold(map_point, ring, crossings_out=None, gate_bbox=None):
     SEVERING runs first and unconditionally (it is map semantics, not the
     fold-split display option): the ring is cut along the child frame's UV
     seams and every piece on severed ground - where the Third lift does not
-    exist - is dropped, mirroring what _sever_source does to the strokes.
+    exist - is dropped (_sever_ring, boundary-vote verdict), mirroring what
+    _sever_source does to the strokes.
     """
     if gate_bbox is None:
         rx0 = min(p[0] for p in ring)
@@ -6287,26 +6657,8 @@ def _split_ring_by_fold(map_point, ring, crossings_out=None, gate_bbox=None):
         rx0, ry0, rx1, ry1 = gate_bbox
     margin = 2.0 * POLY_STEP
 
-    pieces = [ring]
-    if map_point.can_fold():
-        sever_cutters = _sever_cutters(map_point)
-        sever_raws = (getattr(map_point, "sever_cutter_raw", None)
-                      or [None] * len(sever_cutters))
-        for cutter, raw in zip(sever_cutters, sever_raws):
-            if raw is not None:
-                if (max(p[0] for p in raw) < rx0 - margin
-                        or min(p[0] for p in raw) > rx1 + margin
-                        or max(p[1] for p in raw) < ry0 - margin
-                        or min(p[1] for p in raw) > ry1 + margin):
-                    continue
-            cut = []
-            for piece in pieces:
-                cut.extend(_cut_ring_by_polyline(piece, cutter))
-            pieces = cut
-        # The verdict runs even when no seam touched the bbox: a small ring
-        # can sit ENTIRELY on severed ground with no seam crossing it.
-        pieces = [piece for piece in pieces
-                  if map_point.third_of(_ring_interior_point(piece))[2]]
+    pieces = _sever_ring(map_point, ring,
+                         gate_bbox=(rx0, ry0, rx1, ry1))
 
     if not _FOLD["split"]:
         return [(piece, _MappedOutput.FRONT, _ring_interior_point(piece))
@@ -6493,16 +6845,7 @@ def _emit_fills(animean, out, map_point, fills, child_area, main_area):
                         gate_bbox=fill_bbox):
                     if is_hole[index]:
                         # A hole's depth is its outer's - never probed.
-                        # Its attachment point must sit ON the hole's own
-                        # boundary: an interior point (the centroid) of a
-                        # hole ring lies inside any ISLAND nested within
-                        # it, and the innermost-outer rule then attached
-                        # the hole to that island (4-ring nest: the outer
-                        # lost its hole and painted the hole band solid).
-                        edge = ((piece[0][0] + piece[1][0]) * 0.5,
-                                (piece[0][1] + piece[1][1]) * 0.5) \
-                            if len(piece) >= 2 else piece[0]
-                        holes.append((piece, edge))
+                        holes.append(piece)
                     else:
                         depth = _fold_depth(map_point, rep, side)
                         entry = {"child": piece, "rings": [piece],
@@ -6521,13 +6864,31 @@ def _emit_fills(animean, out, map_point, fills, child_area, main_area):
         # level-2+ subpaths: an island's hole is contained by the level-0
         # outer too, and first-match attached it there, painting the
         # island's hole solid.
-        for piece, rep in holes:
+        #
+        # The attachment point must sit ON the hole's own boundary: an
+        # interior point (the centroid) of a hole ring lies inside any
+        # ISLAND nested within it, and the innermost rule then attached
+        # the hole to that island (4-ring nest: the outer lost its hole
+        # and painted the hole band solid). But ONE boundary point is not
+        # enough either - a cut hole piece SHARES its chord with the outer
+        # piece's boundary, and an edge midpoint on that chord made
+        # containment a coin flip (the severed donut's crescent detached
+        # and rendered solid). Spread candidates, first hit wins: some
+        # stretch of the boundary is the hole's own outline.
+        for piece in holes:
             best = None
-            for entries in outers.values():
-                for entry in entries:
-                    if _point_in_ring(rep, entry["child"]):
-                        if best is None or entry["level"] > best["level"]:
-                            best = entry
+            n = len(piece)
+            for k in range(min(7, n)):
+                a = piece[(k * n) // min(7, n)]
+                b = piece[((k * n) // min(7, n) + 1) % n]
+                rep = ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5)
+                for entries in outers.values():
+                    for entry in entries:
+                        if _point_in_ring(rep, entry["child"]):
+                            if best is None or entry["level"] > best["level"]:
+                                best = entry
+                if best is not None:
+                    break
             if best is not None:
                 best["holes"].append(piece)
 
@@ -6946,10 +7307,11 @@ def _emit_bezier_mode(animean, out, stroke, map_point, child_area, main_area, co
                                           width, depth):
                             added += 1
             if _BRIDGE["enabled"] and len(islands) > 1:
-                # The trend probes come from the facing cubics' own geometry:
-                # a short two-point polyline just inside each cut.
-                pairs = [(_cubic_tail_polyline(ia[-1]),
-                          _cubic_head_polyline(ib[0]))
+                # The trend probes come from the facing islands' own
+                # geometry: a short polyline just inside each cut, spanning
+                # enough cubics that a sub-pixel sliver cannot set the trend.
+                pairs = [(_cubic_tail_polyline(ia),
+                          _cubic_head_polyline(ib))
                          for ia, ib in zip(islands, islands[1:])]
                 added += _emit_bridges(out, map_point, pairs, main_area,
                                        color_tuple, width, curved=True,
@@ -6957,81 +7319,77 @@ def _emit_bezier_mode(animean, out, stroke, map_point, child_area, main_area, co
     return added
 
 
-def _split_cubic_by_fold(map_point, cub):
-    """Split ONE source cubic where the map's orientation flips inside it.
+def _classified_cubic_parts(map_point, cub, classify, snap_true=False):
+    """Split ONE source cubic where `classify` changes inside it:
+    [(sub_cubic, verdict)].
 
-    Unlike the polyline path there is no analytic knot list for a cubic, so
-    the crossings are located by scanning the source parameter and bisecting.
-    That is legitimate here: the sign is piecewise constant, so a sign change
-    between two probes brackets exactly one cell boundary.
+    The cubic twin of _classified_runs, shared by _split_cubic_by_fold and
+    _sever_cubics_by_child_fold. There is no analytic knot list for a
+    cubic, so the crossings are located by scanning the source parameter
+    and bisecting - legitimate because the classification is piecewise
+    constant, so a change between two probes brackets exactly one cell
+    boundary. snap_true places each cut at the bracket end on the True
+    side (see _classified_runs): a severed island's end cubic must stop on
+    ground that still has a lift.
     """
     net = bezier.hull_length(cub)
     probes = max(4, min(96, int(math.ceil(net / POLY_STEP))))
     ts = [k / probes for k in range(probes + 1)]
-    signs = [_fold_sign(map_point, _cubic_point(cub, t)) for t in ts]
+    marks = [classify(_cubic_point(cub, t)) for t in ts]
 
     cuts = []
     for k in range(1, len(ts)):
-        if signs[k] == signs[k - 1]:
+        if marks[k] == marks[k - 1]:
             continue
         lo, hi = ts[k - 1], ts[k]
         for _ in range(24):
             mid = (lo + hi) * 0.5
-            if _fold_sign(map_point, _cubic_point(cub, mid)) == signs[k - 1]:
+            if classify(_cubic_point(cub, mid)) == marks[k - 1]:
                 lo = mid
             else:
                 hi = mid
-        cuts.append((lo + hi) * 0.5)
+        if snap_true:
+            cuts.append(lo if marks[k - 1] else hi)
+        else:
+            cuts.append((lo + hi) * 0.5)
 
     bounds = [0.0] + cuts + [1.0]
     parts = []
     for t0, t1 in zip(bounds, bounds[1:]):
         if t1 - t0 <= 1e-9:
             continue
-        side = _fold_sign(map_point, _cubic_point(cub, (t0 + t1) * 0.5))
-        parts.append((_split_cubic(cub, t0, t1), side))
+        parts.append((_split_cubic(cub, t0, t1),
+                      classify(_cubic_point(cub, (t0 + t1) * 0.5))))
     return parts
+
+
+def _split_cubic_by_fold(map_point, cub):
+    """Split ONE source cubic where the map's orientation flips inside it
+    (see _classified_cubic_parts for the scan-and-bisect mechanics)."""
+    return _classified_cubic_parts(
+        map_point, cub, lambda p: _fold_sign(map_point, p))
 
 
 def _sever_cubics_by_child_fold(map_point, cubics, seams=None):
     """Cut a run of source cubics into computable UV islands (bezier mode).
 
     The cubic twin of _sever_source: scan each cubic's parameter for
-    validity changes of the Third lift, bisect each change onto the fold
-    line, keep the valid parts, drop the rest, and regroup contiguous valid
-    parts - a severed stretch splits the subpath into separate islands.
-    Free on frames that cannot fold (can_fold gate).
+    validity changes of the Third lift (_classified_cubic_parts), bisect
+    each change onto the fold line - cuts land on the VALID side, so an
+    island's end cubic still has a lift - keep the valid parts, drop the
+    rest, and regroup contiguous valid parts: a severed stretch splits the
+    subpath into separate islands. Free on frames that cannot fold
+    (can_fold gate).
     """
     if not cubics or not map_point.can_fold():
         return [list(cubics)] if cubics else []
 
-    def valid_at(cub, t):
-        return map_point.third_of(_cubic_point(cub, t))[2]
-
+    third_of = map_point.third_of
     parts = []
     for cub in cubics:
-        net = bezier.hull_length(cub)
-        probes = max(4, min(96, int(math.ceil(net / POLY_STEP))))
-        ts = [k / probes for k in range(probes + 1)]
-        flags = [valid_at(cub, t) for t in ts]
-        cuts = []
-        for k in range(1, len(ts)):
-            if flags[k] == flags[k - 1]:
-                continue
-            lo, hi = ts[k - 1], ts[k]
-            for _ in range(24):
-                mid = (lo + hi) * 0.5
-                if valid_at(cub, mid) == flags[k - 1]:
-                    lo = mid
-                else:
-                    hi = mid
-            cuts.append((lo + hi) * 0.5)
-        bounds = [0.0] + cuts + [1.0]
-        for t0, t1 in zip(bounds, bounds[1:]):
-            if t1 - t0 <= 1e-9:
-                continue
-            parts.append((_split_cubic(cub, t0, t1),
-                          valid_at(cub, (t0 + t1) * 0.5)))
+        parts.extend(_classified_cubic_parts(
+            map_point, cub,
+            lambda p: third_of(p)[2], snap_true=True))
 
     islands = []
     current = []
@@ -9098,24 +9456,30 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
             if len(source_ring) < 3:
                 continue
             # Respect the child mapping area: the real mapping deletes
-            # what falls outside it, and the object must match.
-            for ring in _clip_rings_to_area([source_ring], child_area):
-                if len(ring) < 3:
-                    continue
-                exact = [tuple(map_point.coords(p)) for p in ring]
-                # TWO resolutions with two jobs: containment probes use a
-                # decimated copy (bbox-gated, cheap), but TRIANGULATION
-                # keeps the EXACT ring - the boundary must be the same
-                # geometry the outline strokes drape along, or the two
-                # part with sawtooth gaps (user report; an RDP pass here
-                # chorded curves the strokes still followed).
-                coarse = decimate(exact)
-                bbox = (min(p[0] for p in coarse),
-                        min(p[1] for p in coarse),
-                        max(p[0] for p in coarse),
-                        max(p[1] for p in coarse))
-                group.append((coarse, bbox))
-                group_fine.append(exact)
+            # what falls outside it, and the object must match. SEVERING
+            # matches too (_sever_ring): the 2D pipeline is the authority
+            # on what exists, and lifting severed ground here built the
+            # solid from stalled branch-jumped iterates - geometry piled
+            # up at fabricated Third positions the render had deleted.
+            for clipped in _clip_rings_to_area([source_ring], child_area):
+                for ring in _sever_ring(map_point, clipped):
+                    if len(ring) < 3:
+                        continue
+                    exact = [tuple(map_point.coords(p)) for p in ring]
+                    # TWO resolutions with two jobs: containment probes use
+                    # a decimated copy (bbox-gated, cheap), but
+                    # TRIANGULATION keeps the EXACT ring - the boundary
+                    # must be the same geometry the outline strokes drape
+                    # along, or the two part with sawtooth gaps (user
+                    # report; an RDP pass here chorded curves the strokes
+                    # still followed).
+                    coarse = decimate(exact)
+                    bbox = (min(p[0] for p in coarse),
+                            min(p[1] for p in coarse),
+                            max(p[0] for p in coarse),
+                            max(p[1] for p in coarse))
+                    group.append((coarse, bbox))
+                    group_fine.append(exact)
         if group:
             rings_third.append(group)
             rings_fine.append(group_fine)
@@ -9125,10 +9489,13 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
         style_color, _w = _stroke_style(stroke, 1.0)
         for poly in _stroke_polylines(stroke):
             for piece in _clip_polyline(poly, child_area):
-                if len(piece) >= 2:
-                    stroke_info.append(
-                        ([tuple(map_point.coords(p)) for p in piece],
-                         style_color))
+                # Same severing the 2D emitters apply: only islands whose
+                # lift exists may drape onto the sheet.
+                for island in _sever_source(map_point, piece):
+                    if len(island) >= 2:
+                        stroke_info.append(
+                            ([tuple(map_point.coords(p)) for p in island],
+                             style_color))
     stroke_third = [poly for poly, _color in stroke_info]
     solid_pts = [p for group in rings_third for ring, _b in group
                  for p in ring]
