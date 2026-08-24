@@ -451,6 +451,9 @@ QJsonObject sceneToJson(const AnimeSceneModel &model)
         groupObject[QStringLiteral("groupId")] = node.groupId;
         groupObject[QStringLiteral("name")] = node.name;
         groupObject[QStringLiteral("collapsed")] = node.collapsed;
+        if (!node.tag.isEmpty()) {
+            groupObject[QStringLiteral("tag")] = node.tag;
+        }
         QJsonArray children;
         for (const AnimeLayerNode &child : node.children) {
             children.append(nodeToJson(child));
@@ -595,6 +598,7 @@ bool sceneFromJson(const QJsonObject &root, AnimeSceneModel *model, QString *err
                 }
                 node.name = groupObject.value(QStringLiteral("name")).toString();
                 node.collapsed = groupObject.value(QStringLiteral("collapsed")).toBool(false);
+                node.tag = groupObject.value(QStringLiteral("tag")).toString();
                 node.children = treeFromJson(groupObject.value(QStringLiteral("children")).toArray());
             } else {
                 node.layerId = value.toInt(0);

@@ -204,9 +204,13 @@ void PaintOpenGLWidget::resetHistory(const QString &label)
     m_history.reset(label, m_model);
     // Scene content was (re)established outside the history flow (startup,
     // project open): let scripts re-sync any state they keep in scriptData.
-    // That re-sync covers the frame too, so it becomes the notified baseline
-    // instead of triggering a redundant framechange right afterwards.
+    // That re-sync covers the frame and layer too, so they become the
+    // notified baselines instead of triggering redundant framechange /
+    // layerchange right afterwards.
     m_pythonNotifiedFrame = m_model.currentFrame();
+    m_pythonNotifiedLayer = m_model.currentLayer();
+    m_pythonNotifiedLayerId =
+        m_pythonNotifiedLayer >= 0 ? m_model.layerIdAt(m_pythonNotifiedLayer) : 0;
     pythonHookSendMessage(QStringLiteral("historyrestore"));
     emit historyChanged();
 }
@@ -242,6 +246,60 @@ void PaintOpenGLWidget::notifyFrameChangedIfNeeded()
     pythonHookSendMessage(QStringLiteral("framechange"));
 }
 
+void PaintOpenGLWidget::notifyLayerChangedIfNeeded()
+{
+#ifdef ANIMEAN_WITH_PYTHON
+    // Same contract as notifyFrameChangedIfNeeded: the current layer lives on
+    // the model and several paths write it without passing through the widget
+    // (ui.set_current, scene.set_current_layer, deleteLayer's fix-ups), so
+    // the baseline is the widget's own last-notified value, never a
+    // "previous" re-read from the model. The message carries the stable
+    // column id alongside the index: indices shift on every move/delete,
+    // and a tool keying per-layer state (an auto-mapping layer's config)
+    // must key it on identity.
+    const int layer = m_model.currentLayer();
+    const int layerId = layer >= 0 ? m_model.layerIdAt(layer) : 0;
+    if (layer == m_pythonNotifiedLayer && layerId == m_pythonNotifiedLayerId) {
+        return;
+    }
+    const int previous = m_pythonNotifiedLayer;
+    m_pythonNotifiedLayer = layer;
+    m_pythonNotifiedLayerId = layerId;
+    if (!animeanHookEventSubscribed(QStringLiteral("layerchange"))) {
+        return;
+    }
+
+    const int frameRow = m_model.currentFrame();
+    const AnimeCell cell = m_model.cellAt(frameRow, layer);
+
+    py::gil_scoped_acquire acquire;
+    py::dict cellInfo;
+    cellInfo["row"] = frameRow;
+    cellInfo["layer"] = layer;
+    cellInfo["asset"] = cell.assetIndex;
+    cellInfo["frame_id"] = cell.frameId;
+
+    py::dict message;
+    message["event"] = "layerchange";
+    message["view"] = m_viewName.toStdString();
+    message["tool"] = (m_activePythonTool.isEmpty() ? toolName(m_tool) : m_activePythonTool).toStdString();
+    message["base_tool"] = toolName(m_tool).toStdString();
+    message["property"] = m_strokeProperty.toStdString();
+    message["cell"] = cellInfo;
+    message["stroke"] = py::dict();
+    message["position"] = pointToPythonDict(QPointF());
+    message["delta"] = pointToPythonDict(QPointF());
+    message["layer"] = layer;
+    message["layer_id"] = layerId;
+    message["previous"] = previous == -2 ? -1 : previous;
+
+    const QString output = ::pythonHookSendMessage(message);
+    if (!isQuietHookOutput(output)) {
+        emit pythonDebugMessage(output);
+    }
+#endif
+}
+
 bool PaintOpenGLWidget::undoHistory()
 {
     return goToHistory(m_history.currentIndex() - 1);
@@ -262,10 +320,13 @@ bool PaintOpenGLWidget::goToHistory(int index)
     // let the mouse release from an interrupted pre-restore overlay drag be
     // dispatched into that new state. Deliberately a silent clear, not
     // cancelActiveOverlayDrag(): a cancel would mutate the very state the
-    // restore just made authoritative. The restore also covers the frame,
-    // so it becomes the notified baseline.
+    // restore just made authoritative. The restore also covers the frame
+    // and layer, so they become the notified baselines.
     m_activeOverlayDrag.clear();
     m_pythonNotifiedFrame = m_model.currentFrame();
+    m_pythonNotifiedLayer = m_model.currentLayer();
+    m_pythonNotifiedLayerId =
+        m_pythonNotifiedLayer >= 0 ? m_model.layerIdAt(m_pythonNotifiedLayer) : 0;
     m_points.clear();
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
@@ -1338,6 +1399,7 @@ void PaintOpenGLWidget::setCurrentLayer(int layerIndex)
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
     m_hasLastMovePos = false;
+    notifyLayerChangedIfNeeded();
     update();
 }
 
@@ -1501,6 +1563,9 @@ bool PaintOpenGLWidget::deleteLayer(int layerIndex)
     m_model.remapFillSourceLayersAfterDelete(layerIndex);
     removeInvalidFillRegions();
     commitHistory(QStringLiteral("Delete Layer"));
+    // The columns shifted: the same current index can now be a different
+    // column, which the id-aware baseline detects.
+    notifyLayerChangedIfNeeded();
     update();
     return true;
 }
@@ -1518,6 +1583,7 @@ int PaintOpenGLWidget::deleteLayerGroup(int groupId)
     // and would leave half-restored states in the list.
     commitHistory(deleted == 1 ? QStringLiteral("Delete Group")
                                : QStringLiteral("Delete Group (%1 layers)").arg(deleted));
+    notifyLayerChangedIfNeeded();
     update();
     return deleted;
 }
@@ -1531,6 +1597,7 @@ bool PaintOpenGLWidget::moveLayer(int fromIndex, int toIndex)
     m_model.remapFillSourceLayersAfterMove(fromIndex, toIndex);
     removeInvalidFillRegions();
     commitHistory(QStringLiteral("Move Layer"));
+    notifyLayerChangedIfNeeded();
     update();
     return true;
 }

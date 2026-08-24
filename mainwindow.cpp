@@ -380,14 +380,21 @@ MainWindow::MainWindow(QWidget *parent)
     // own callback rather than a fifth flag on the scene refresh.
     registerAnimeanUiToolOptionsCallback([this]() { refreshExtraToolOptions(); });
     registerAnimeanUiRefreshCallback([this](bool frame, bool layer, bool asset, bool widget) {
-        PaintOpenGLWidget *view = activePaintWidget();
-        SelectionAttention &attention = attentionFor(view);
-        attention.frame = view->model().currentFrame();
-        attention.layer = view->model().currentLayer();
-        attention.asset = view->model().currentAsset();
-        view->setCurrentFrame(attention.frame);
-        view->setCurrentLayer(attention.layer);
-        view->setCurrentAsset(attention.asset);
+        // EVERY view re-reads its own model, not just the active one: a
+        // script can move another board's focus (a live auto-mapping run
+        // moves the MAIN current layer while the texture board is active),
+        // and syncing only the active view left the other widget's
+        // attention cache and layerchange baseline stale - the next click
+        // on that same index was then swallowed.
+        for (PaintOpenGLWidget *paintView : m_paintViews) {
+            SelectionAttention &attention = attentionFor(paintView);
+            attention.frame = paintView->model().currentFrame();
+            attention.layer = paintView->model().currentLayer();
+            attention.asset = paintView->model().currentAsset();
+            paintView->setCurrentFrame(attention.frame);
+            paintView->setCurrentLayer(attention.layer);
+            paintView->setCurrentAsset(attention.asset);
+        }
         if (frame) {
             refreshFrameList(attentionFor(framePanelTarget()).frame);
         }
@@ -1917,12 +1924,37 @@ void MainWindow::setupConnections()
 
     connect(m_layerPanel->layerList(), &QTreeWidget::currentItemChanged, this,
             [this](QTreeWidgetItem *item, QTreeWidgetItem *) {
-        // Group rows carry no layer of their own; selecting one must not
-        // move attention (and must not be read as "layer 0" either).
-        if (m_refreshingLists || !item || item->data(0, kGroupIdRole).toInt() != 0) {
+        if (m_refreshingLists || !item) {
             return;
         }
-        const int layerIndex = item->data(0, Qt::UserRole).toInt();
+        int layerIndex = -1;
+        if (item->data(0, kGroupIdRole).toInt() != 0) {
+            // A group row carries no layer of its own; treat selecting it as
+            // selecting its first member layer, so a unit-of-work group (an
+            // auto-mapping layer) behaves like one focusable item. Reading it
+            // as "layer 0" is still wrong - resolve through the children.
+            std::function<int(QTreeWidgetItem *)> firstLayer =
+                [&](QTreeWidgetItem *node) {
+                for (int i = 0; i < node->childCount(); ++i) {
+                    QTreeWidgetItem *child = node->child(i);
+                    if (child->data(0, kGroupIdRole).toInt() > 0) {
+                        const int inner = firstLayer(child);
+                        if (inner >= 0) {
+                            return inner;
+                        }
+                    } else {
+                        const int index = child->data(0, Qt::UserRole).toInt();
+                        if (index >= 0) {
+                            return index;
+                        }
+                    }
+                }
+                return -1;
+            };
+            layerIndex = firstLayer(item);
+        } else {
+            layerIndex = item->data(0, Qt::UserRole).toInt();
+        }
         if (layerIndex < 0) {
             return;
         }
@@ -2984,17 +3016,19 @@ void MainWindow::showLayerContextMenu(const QPoint &pos)
 #ifdef ANIMEAN_WITH_PYTHON
     QTreeWidget *tree = m_layerPanel->layerList();
     QTreeWidgetItem *item = tree->itemAt(pos);
-    if (!item) {
-        return;
-    }
     PaintOpenGLWidget *view = layerPanelTarget();
 
-    const int groupId = item->data(0, kGroupIdRole).toInt();
-    const int layerIndex = groupId > 0 ? -1 : item->data(0, Qt::UserRole).toInt();
+    // No row under the cursor is still a menu: providers get kind "panel"
+    // and typically answer with creation entries (new line / fill /
+    // auto-mapping layer) - the layer view's own "establish typed layers"
+    // surface.
+    const int groupId = item ? item->data(0, kGroupIdRole).toInt() : 0;
+    const int layerIndex =
+        (item && groupId <= 0) ? item->data(0, Qt::UserRole).toInt() : -1;
     // A group's members, flattened, so a provider can inspect what it holds
     // without needing its own view of the tree.
     QVector<int> members;
-    if (groupId > 0) {
+    if (item && groupId > 0) {
         std::function<void(QTreeWidgetItem *)> walk = [&](QTreeWidgetItem *node) {
             for (int i = 0; i < node->childCount(); ++i) {
                 QTreeWidgetItem *child = node->child(i);
@@ -3013,12 +3047,25 @@ void MainWindow::showLayerContextMenu(const QPoint &pos)
     try {
         py::dict context;
         context["view"] = view->viewName().toStdString();
-        context["kind"] = groupId > 0 ? "group" : "layer";
+        context["kind"] = !item ? "panel" : (groupId > 0 ? "group" : "layer");
         context["group"] = groupId;
-        context["group_name"] = item->text(0).toStdString();
+        context["group_name"] = item ? item->text(0).toStdString() : std::string();
         context["layer"] = layerIndex;
         context["layer_name"] = layerIndex >= 0 ? view->layerName(layerIndex).toStdString()
                                                 : std::string();
+        // Stable identity + unit ownership, so a provider can key per-layer
+        // state without re-deriving the tree: the column id, the row's own
+        // group tag (group rows), and for a layer row the innermost group
+        // that contains it plus that group's tag.
+        context["layer_id"] = layerIndex >= 0 ? view->model().layerIdAt(layerIndex) : 0;
+        context["tag"] = groupId > 0 ? view->model().layerGroupTag(groupId).toStdString()
+                                     : std::string();
+        const int ownerGroup =
+            layerIndex >= 0 ? view->model().groupIdForLayer(layerIndex) : 0;
+        context["owner_group"] = ownerGroup;
+        context["owner_tag"] = ownerGroup > 0
+            ? view->model().layerGroupTag(ownerGroup).toStdString()
+            : std::string();
         py::list memberList;
         for (int index : members) {
             memberList.append(index);
@@ -3067,13 +3114,31 @@ void MainWindow::showLayerContextMenu(const QPoint &pos)
     }
     for (const QJsonValue &value : entries) {
         const QJsonObject object = value.toObject();
+        const QString kind = object.value(QStringLiteral("kind")).toString(QStringLiteral("action"));
+        if (kind == QStringLiteral("separator")) {
+            menu.addSeparator();
+            continue;
+        }
         const QString name = object.value(QStringLiteral("name")).toString();
         if (name.isEmpty()) {
             continue;
         }
         QAction *action = menu.addAction(object.value(QStringLiteral("title")).toString(name));
         action->setEnabled(object.value(QStringLiteral("enabled")).toBool(true));
-        const QString groupName = item->text(0);
+        if (kind == QStringLiteral("settings")) {
+            // Same declarative contract as the menu bar (fillScriptMenu): the
+            // settings dialog opens from the Qt trigger, never from inside a
+            // Python-dispatched handler. The provider that produced this
+            // entry saw the full row context, so per-row state (WHICH layer
+            // the window edits) is the provider's to stash.
+            const QString target = object.value(QStringLiteral("settings")).toString(name);
+            const QString title = object.value(QStringLiteral("title")).toString(name);
+            connect(action, &QAction::triggered, this, [this, target, title]() {
+                openScriptSettings(target, title);
+            });
+            continue;
+        }
+        const QString groupName = item ? item->text(0) : QString();
         const QString layerName = layerIndex >= 0 ? view->layerName(layerIndex) : QString();
         connect(action, &QAction::triggered, this,
                 [this, view, name, groupId, groupName, layerIndex, layerName, members]() {
@@ -3113,6 +3178,11 @@ void MainWindow::applyLayerPanelStructure(int movedColumnId)
                 node.groupId = groupId;
                 node.name = item->text(0);
                 node.collapsed = !item->isExpanded();
+                // The widget carries no role for the script-owned tag, so it
+                // is re-read from the model by id - without this, one drag
+                // reorder stripped "automapping" off every unit group and
+                // orphaned its config.
+                node.tag = model.layerGroupTag(groupId);
                 node.children = capture(item);
                 if (node.children.isEmpty()) {
                     continue;
@@ -3333,12 +3403,20 @@ void MainWindow::refreshLayerList(int selectedRow)
         }
     }
     if (selectedItem) {
-        // A selected layer inside a collapsed group has to be reachable.
+        // A selected layer inside a collapsed group stays reachable WITHOUT
+        // forcing the group open: the selection lands on the outermost
+        // collapsed ancestor instead. Force-expanding here defeated the
+        // one-row look of an auto-mapping unit (whose member is the current
+        // layer whenever the unit is focused), and the next panel drag then
+        // wrote collapsed=false into the document permanently.
+        QTreeWidgetItem *display = selectedItem;
         for (QTreeWidgetItem *parent = selectedItem->parent(); parent; parent = parent->parent()) {
-            parent->setExpanded(true);
+            if (!parent->isExpanded()) {
+                display = parent;
+            }
         }
-        if (tree->currentItem() != selectedItem) {
-            tree->setCurrentItem(selectedItem);
+        if (tree->currentItem() != display) {
+            tree->setCurrentItem(display);
         }
     } else {
         tree->clearSelection();
