@@ -371,4 +371,37 @@ for shift in (0, 18, 27, 36, 40, 60):
     assert len(pieces17) >= 2, (shift, len(pieces17))
 print("17) closed cutter cuts the straddling ring at every chain phase")
 
+# 18) A BOUNDED shadow island (closed marched contour): the cutter set
+#     carries the contour plus a densified centre slicer ordered first,
+#     and a ring fully containing the island is partitioned so the
+#     island's ground is dropped.
+w1 = {"points": am._densify([(x, 80.0 * math.sin(x / 40.0))
+                             for x in range(-300, 301, 4)]), "width": 3.0}
+w2 = {"points": am._densify([(80.0 * math.sin(y / 40.0), y)
+                             for y in range(-300, 301, 4)]), "width": 3.0}
+mp5 = build(w1, w2, MAIN_H, V)
+cutters18 = am._sever_cutters(mp5)
+closed18 = [c for c in cutters18
+            if len(c) >= 4 and math.hypot(c[0][0] - c[-1][0],
+                                          c[0][1] - c[-1][1]) <= 1e-6]
+slicers18 = [c for c in cutters18
+             if len(c) >= 2 and max(abs(p[1] - c[0][1]) for p in c) <= 1e-9]
+assert closed18 and slicers18, (len(closed18), len(slicers18))
+assert all(len(s) > 2 for s in slicers18)   # densified like every cutter
+target = max(closed18,
+             key=lambda c: (max(p[0] for p in c) - min(p[0] for p in c))
+             * (max(p[1] for p in c) - min(p[1] for p in c)))
+tx0 = min(p[0] for p in target); tx1 = max(p[0] for p in target)
+ty0 = min(p[1] for p in target); ty1 = max(p[1] for p in target)
+tcx, tcy = (tx0 + tx1) * 0.5, (ty0 + ty1) * 0.5
+rect18 = [(tx0 - 25.0, ty0 - 25.0), (tx1 + 25.0, ty0 - 25.0),
+          (tx1 + 25.0, ty1 + 25.0), (tx0 - 25.0, ty1 + 25.0)]
+pieces18 = am._sever_ring(mp5, am._densify(rect18 + [rect18[0]])[:-1])
+covered18 = sum(1 for pc in pieces18
+                if am._point_in_ring((tcx, tcy), pc)) % 2
+assert len(pieces18) >= 2, len(pieces18)
+assert mp5.third_of((tcx, tcy))[2] or covered18 == 0, covered18
+print(f"18) bounded shadow island: {len(closed18)} closed contour(s) + "
+      f"slicer(s), island ground dropped from {len(pieces18)} piece(s)")
+
 print("t_sever: ALL OK")

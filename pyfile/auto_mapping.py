@@ -6413,7 +6413,11 @@ def _sever_cutters(map_point, grid_n=64):
             ys = [p[1] for p in chain]
             cy = (min(ys) + max(ys)) * 0.5
             cx = (min(xs) + max(xs)) * 0.5
-            slicers.append([(cx - reach, cy), (cx + reach, cy)])
+            # Densified like every other cutter: chord vertices are spliced
+            # verbatim into the pieces and mapped one-for-one, so a bare
+            # 2-point slicer left a full-width straight edge that diverged
+            # 40 px from the warped image of the same line.
+            slicers.append(_densify([(cx - reach, cy), (cx + reach, cy)]))
     cutters[:0] = slicers
     map_point.sever_cutter_polys = cutters
     # The skip gate must see the EXTENDED geometry: a sever extension is a
