@@ -209,6 +209,8 @@ void PaintOpenGLWidget::resetHistory(const QString &label)
     // layerchange right afterwards.
     m_pythonNotifiedFrame = m_model.currentFrame();
     m_pythonNotifiedLayer = m_model.currentLayer();
+    m_pythonNotifiedLayerId =
+        m_pythonNotifiedLayer >= 0 ? m_model.layerIdAt(m_pythonNotifiedLayer) : 0;
     pythonHookSendMessage(QStringLiteral("historyrestore"));
     emit historyChanged();
 }
@@ -256,11 +258,13 @@ void PaintOpenGLWidget::notifyLayerChangedIfNeeded()
     // and a tool keying per-layer state (an auto-mapping layer's config)
     // must key it on identity.
     const int layer = m_model.currentLayer();
-    if (layer == m_pythonNotifiedLayer) {
+    const int layerId = layer >= 0 ? m_model.layerIdAt(layer) : 0;
+    if (layer == m_pythonNotifiedLayer && layerId == m_pythonNotifiedLayerId) {
         return;
     }
     const int previous = m_pythonNotifiedLayer;
     m_pythonNotifiedLayer = layer;
+    m_pythonNotifiedLayerId = layerId;
     if (!animeanHookEventSubscribed(QStringLiteral("layerchange"))) {
         return;
     }
@@ -286,7 +290,7 @@ void PaintOpenGLWidget::notifyLayerChangedIfNeeded()
     message["position"] = pointToPythonDict(QPointF());
     message["delta"] = pointToPythonDict(QPointF());
     message["layer"] = layer;
-    message["layer_id"] = layer >= 0 ? m_model.layerIdAt(layer) : 0;
+    message["layer_id"] = layerId;
     message["previous"] = previous == -2 ? -1 : previous;
 
     const QString output = ::pythonHookSendMessage(message);
@@ -321,6 +325,8 @@ bool PaintOpenGLWidget::goToHistory(int index)
     m_activeOverlayDrag.clear();
     m_pythonNotifiedFrame = m_model.currentFrame();
     m_pythonNotifiedLayer = m_model.currentLayer();
+    m_pythonNotifiedLayerId =
+        m_pythonNotifiedLayer >= 0 ? m_model.layerIdAt(m_pythonNotifiedLayer) : 0;
     m_points.clear();
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
@@ -1557,6 +1563,9 @@ bool PaintOpenGLWidget::deleteLayer(int layerIndex)
     m_model.remapFillSourceLayersAfterDelete(layerIndex);
     removeInvalidFillRegions();
     commitHistory(QStringLiteral("Delete Layer"));
+    // The columns shifted: the same current index can now be a different
+    // column, which the id-aware baseline detects.
+    notifyLayerChangedIfNeeded();
     update();
     return true;
 }
@@ -1574,6 +1583,7 @@ int PaintOpenGLWidget::deleteLayerGroup(int groupId)
     // and would leave half-restored states in the list.
     commitHistory(deleted == 1 ? QStringLiteral("Delete Group")
                                : QStringLiteral("Delete Group (%1 layers)").arg(deleted));
+    notifyLayerChangedIfNeeded();
     update();
     return deleted;
 }
@@ -1587,6 +1597,7 @@ bool PaintOpenGLWidget::moveLayer(int fromIndex, int toIndex)
     m_model.remapFillSourceLayersAfterMove(fromIndex, toIndex);
     removeInvalidFillRegions();
     commitHistory(QStringLiteral("Move Layer"));
+    notifyLayerChangedIfNeeded();
     update();
     return true;
 }

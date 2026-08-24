@@ -274,6 +274,16 @@ class FakeUi:
     def set_overlay(self, *_a):
         pass
 
+    class _Panel:
+        @staticmethod
+        def refresh():
+            pass
+
+    widget = _Panel()
+    layer = _Panel()
+    main = _Panel()
+    children = _Panel()
+
 
 def fresh_world():
     scenes = {"main": FakeScene("main"), "child": FakeScene("child")}
@@ -533,5 +543,60 @@ roles12 = {info["role"] for info in am._UNIT_META[uid12]["members"].values()}
 assert roles12 == {"front", "back", "seal"}
 assert am._ACTIVE_UNIT["id"] == uid12
 print("12) legacy group converted: config adopted, snapshots retired")
+
+# 13) HEAL: when the unit's group was deleted (pruned), the next run
+#     re-houses the unit in a fresh tagged group instead of leaking loose
+#     layers forever.
+scenes, fake = fresh_world()
+main = scenes["main"]
+uid13 = am._create_unit()
+install_guides(uid13)
+scenes["child"].pattern = {scenes["child"].layer_id_at(scenes["child"].add_layer()):
+                           [stroke([(-100.0, 40.0), (100.0, 40.0)])]}
+del main.groups[int(uid13)]          # the panel's Delete Group
+assert am._perform_mapping()
+assert uid13 not in am._UNIT_META    # migrated away from the dead id
+healed = am._ACTIVE_UNIT["id"]
+assert healed and healed in am._UNIT_META
+assert main.layer_group_tag(int(healed)) == am.UNIT_TAG
+assert set(main.layer_ids_in_group(int(healed))) ==     {int(k) for k in am._UNIT_META[healed]["members"]}
+print("13) deleted unit group healed into a fresh tagged group on re-run")
+
+# 14) LOAD PRUNE: units whose tagged group is gone do not survive a
+#     scriptData reload - unit mode unlatches when the last one dies.
+am._save_units("main")
+del main.groups[int(healed)]
+am._UNIT_META.clear(); am._UNIT_ASSETS["main"].clear()
+am._load_units("main", main)
+assert healed not in am._UNIT_META
+assert not am._UNIT_META               # last unit dead -> legacy mode again
+assert am._ACTIVE_UNIT["id"] is None
+print("14) reload prunes dead units; legacy mode returns")
+
+# 15) CAPTURE ORDER: the implicit unit auto-create must not shift the layer
+#     index out from under the stroke being captured.
+scenes, fake = fresh_world()
+main = scenes["main"]
+child = scenes["child"]
+seed_uid = am._create_unit()           # unit mode on...
+am._activate_unit(None)                # ...but nothing focused
+removed = []
+child_layer = child.add_layer()
+child_lid = child.layer_id_at(child_layer)
+guide_stroke = stroke(H, prop=am.H_PROPERTY)
+child.pattern[child_lid] = [guide_stroke]
+child.remove_stroke = lambda row, layer, index, _lid=child_lid: removed.append(
+    (row, layer, index, child.layer_id_at(layer)))
+am._capture_mapping_item({"row": 0, "layer": child_layer, "asset": 0,
+                          "frame_id": 1},
+                         {"index": 0},
+                         {"property": am.H_PROPERTY, "view": "child",
+                          "event": "linefinish", "tool": "extra"})
+assert removed and removed[0][3] == child_lid   # removed from the RIGHT layer
+new_uid = am._ACTIVE_UNIT["id"]
+assert new_uid and new_uid != seed_uid          # auto-created a fresh unit
+assets15 = am._UNIT_ASSETS["child"][new_uid]
+assert assets15[am.H_PROPERTY]["points"] == [tuple(p) for p in H]
+print("15) capture reads/removes the stroke before the auto-created unit shifts indices")
 
 print("t_units: ALL OK")

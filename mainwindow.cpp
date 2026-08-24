@@ -380,14 +380,21 @@ MainWindow::MainWindow(QWidget *parent)
     // own callback rather than a fifth flag on the scene refresh.
     registerAnimeanUiToolOptionsCallback([this]() { refreshExtraToolOptions(); });
     registerAnimeanUiRefreshCallback([this](bool frame, bool layer, bool asset, bool widget) {
-        PaintOpenGLWidget *view = activePaintWidget();
-        SelectionAttention &attention = attentionFor(view);
-        attention.frame = view->model().currentFrame();
-        attention.layer = view->model().currentLayer();
-        attention.asset = view->model().currentAsset();
-        view->setCurrentFrame(attention.frame);
-        view->setCurrentLayer(attention.layer);
-        view->setCurrentAsset(attention.asset);
+        // EVERY view re-reads its own model, not just the active one: a
+        // script can move another board's focus (a live auto-mapping run
+        // moves the MAIN current layer while the texture board is active),
+        // and syncing only the active view left the other widget's
+        // attention cache and layerchange baseline stale - the next click
+        // on that same index was then swallowed.
+        for (PaintOpenGLWidget *paintView : m_paintViews) {
+            SelectionAttention &attention = attentionFor(paintView);
+            attention.frame = paintView->model().currentFrame();
+            attention.layer = paintView->model().currentLayer();
+            attention.asset = paintView->model().currentAsset();
+            paintView->setCurrentFrame(attention.frame);
+            paintView->setCurrentLayer(attention.layer);
+            paintView->setCurrentAsset(attention.asset);
+        }
         if (frame) {
             refreshFrameList(attentionFor(framePanelTarget()).frame);
         }
@@ -3171,6 +3178,11 @@ void MainWindow::applyLayerPanelStructure(int movedColumnId)
                 node.groupId = groupId;
                 node.name = item->text(0);
                 node.collapsed = !item->isExpanded();
+                // The widget carries no role for the script-owned tag, so it
+                // is re-read from the model by id - without this, one drag
+                // reorder stripped "automapping" off every unit group and
+                // orphaned its config.
+                node.tag = model.layerGroupTag(groupId);
                 node.children = capture(item);
                 if (node.children.isEmpty()) {
                     continue;
@@ -3391,12 +3403,20 @@ void MainWindow::refreshLayerList(int selectedRow)
         }
     }
     if (selectedItem) {
-        // A selected layer inside a collapsed group has to be reachable.
+        // A selected layer inside a collapsed group stays reachable WITHOUT
+        // forcing the group open: the selection lands on the outermost
+        // collapsed ancestor instead. Force-expanding here defeated the
+        // one-row look of an auto-mapping unit (whose member is the current
+        // layer whenever the unit is focused), and the next panel drag then
+        // wrote collapsed=false into the document permanently.
+        QTreeWidgetItem *display = selectedItem;
         for (QTreeWidgetItem *parent = selectedItem->parent(); parent; parent = parent->parent()) {
-            parent->setExpanded(true);
+            if (!parent->isExpanded()) {
+                display = parent;
+            }
         }
-        if (tree->currentItem() != selectedItem) {
-            tree->setCurrentItem(selectedItem);
+        if (tree->currentItem() != display) {
+            tree->setCurrentItem(display);
         }
     } else {
         tree->clearSelection();

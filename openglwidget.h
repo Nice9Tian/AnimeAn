@@ -455,8 +455,12 @@ private:
     // widget's own, not a value re-read from the model.
     int m_pythonNotifiedFrame = -1;
     // The layer Python was last told about via "layerchange"; -1 is a valid
-    // "nothing selected" state, so the unset sentinel is -2.
+    // "nothing selected" state, so the unset sentinel is -2. The COLUMN ID
+    // rides along: deleting or reordering layers can put a different column
+    // under the same index, and an index-only baseline swallowed that
+    // change entirely.
     int m_pythonNotifiedLayer = -2;
+    int m_pythonNotifiedLayerId = -1;
     bool m_unboundedCanvas = false;
     BackgroundMode m_backgroundMode = BackgroundMode::White;
     bool m_contentEditable = true;

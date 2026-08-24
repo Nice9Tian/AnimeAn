@@ -616,9 +616,23 @@ def _load_units(view_name, scene):
     if view_name == "main":
         _UNIT_META.clear()
         _UNIT_META.update(meta)
+        # Units whose tagged group no longer exists in the restored tree
+        # are dead: keeping them would latch unit mode (hidden overlays)
+        # on a document that visibly has no automapping layers, and would
+        # re-persist the orphan config forever.
+        for dead in list(_UNIT_META):
+            try:
+                if scene.layer_group_tag(int(dead)) == UNIT_TAG:
+                    continue
+            except (AttributeError, TypeError, ValueError):
+                continue
+            _UNIT_META.pop(dead, None)
+            for store_view in ("main", "child"):
+                _UNIT_ASSETS.get(store_view, {}).pop(dead, None)
         # The restored document decides which unit is active now: re-derive
         # from the restored current layer rather than trusting the pre-undo
-        # activation.
+        # activation. Route the change through the same refresh the live
+        # activation uses, or the OTHER board keeps the old unit's overlays.
         uid = None
         try:
             layer = scene.current_layer()
@@ -626,7 +640,12 @@ def _load_units(view_name, scene):
                 uid = _unit_for_layer(scene, layer)
         except Exception:
             uid = None
-        _ACTIVE_UNIT["id"] = uid if uid in _UNIT_META else None
+        derived = uid if uid in _UNIT_META else None
+        if derived != _ACTIVE_UNIT["id"]:
+            _ACTIVE_UNIT["id"] = derived
+            _invalidate_grid_cache()
+            _push_overlay("main")
+            _push_overlay("child")
 
 
 def _unit_for_layer(scene, layer_index):
@@ -8215,17 +8234,6 @@ def _capture_mapping_item(cell, stroke, message):
         print(f"[auto_mapping] capture skipped: {error}")
         return
 
-    if _UNIT_META and _ACTIVE_UNIT["id"] is None:
-        # Unit mode with nothing focused: a drawn guide would land in the
-        # hidden legacy scratch and "disappear". Give it a home instead -
-        # the muscle-memory workflow (draw first, organise later) keeps
-        # working, it just creates the automapping layer implicitly.
-        if _create_unit() is None:
-            print("[auto_mapping] focus an automapping layer first "
-                  "(right-click the layer panel to create one).")
-            return
-        print("[auto_mapping] created a new automapping layer for this guide.")
-
     strokes = scene.cell_to_dict(layer, row, True, POLY_STEP)["image"]["strokes"]
     if index >= len(strokes):
         return
@@ -8243,6 +8251,22 @@ def _capture_mapping_item(cell, stroke, message):
         print(f"[auto_mapping] curve capture unavailable ({error}); "
               "keeping the flattened guide.")
     scene.remove_stroke(row, layer, index)
+
+    if _UNIT_META and _ACTIVE_UNIT["id"] is None:
+        # Unit mode with nothing focused: a drawn guide would land in the
+        # hidden legacy scratch and "disappear". Give it a home instead -
+        # the muscle-memory workflow (draw first, organise later) keeps
+        # working, it just creates the automapping layer implicitly. This
+        # runs strictly AFTER the stroke has been read and removed:
+        # _create_unit inserts a main column at index 0, which shifts every
+        # layer index and would turn the cached cell["layer"] stale.
+        if _create_unit() is None:
+            print("[auto_mapping] focus an automapping layer first "
+                  "(right-click the layer panel to create one).")
+            message["cancel_history"] = True
+            _animean().ui.widget.refresh()
+            return
+        print("[auto_mapping] created a new automapping layer for this guide.")
 
     assets = _assets_for(view)
     if prop == MAPPING_AREA_PROPERTY:
@@ -8516,7 +8540,10 @@ def _tool_option_changed(cell, stroke, message):
         # 100 = near white. Tools that want a specific colour can set
         # _FOLD["back_color"] directly from the debug pane.
         level = int(round(20 + shade * 2.0))
-        _FOLD["back_color"] = (level, level + 8, level + 32, 255)
+        shade_color = (level, level + 8, level + 32, 255)
+        if _FOLD["back_color"] == shade_color:
+            return
+        _FOLD["back_color"] = shade_color
         print(f"[auto_mapping] back/lining shade -> {_FOLD['back_color'][:3]}")
         _maybe_auto_run()
         return
@@ -8531,10 +8558,25 @@ REFER_RECT_ITEM = "refer_rect"
 
 
 def _view_menu_items(view_name):
-    """The View menu of one board, re-read on every open so ticks are true."""
+    """The View menu of one board, re-read on every open so ticks are true.
+
+    In unit mode these entries EDIT THE ACTIVE UNIT's display settings (the
+    same state the Advanced Settings window shows) - leaving them wired to
+    the legacy globals would have made them dead controls that still looked
+    alive. With no unit focused they are disabled rather than hidden, so
+    the menu shape stays stable."""
     def build():
+        unit_mode = bool(_UNIT_META)
+        settings = _unit_settings() if _ACTIVE_UNIT["id"] else None
+        enabled = (not unit_mode) or settings is not None
+        grid_on = (settings["show_grid"] if settings is not None
+                   else _REFER_RECT.get(view_name, False))
+        divisions = (settings["grid_divisions"] if settings is not None
+                     else _GRID["divisions"])
+        occlusion_on = (settings["show_occlusion"] if settings is not None
+                        else _OCCLUSION["enabled"])
         items = [{"name": REFER_RECT_ITEM, "title": "Mapping Refer Rect",
-                  "kind": "check", "checked": _REFER_RECT.get(view_name, False)}]
+                  "kind": "check", "checked": grid_on, "enabled": enabled}]
         # Grid density lives with the grid it densifies. One shared value
         # for both boards: the point of the fine setting is COMPARING the
         # two boards' grids cell by cell, which needs them to agree.
@@ -8542,14 +8584,35 @@ def _view_menu_items(view_name):
             "name": "refer_rect_divisions", "title": "Refer Rect Divisions",
             "kind": "submenu",
             "items": [{"name": f"grid_div_{n}", "title": f"{n} x {n}",
-                       "kind": "radio",
-                       "checked": _GRID["divisions"] == n}
+                       "kind": "radio", "enabled": enabled,
+                       "checked": divisions == n}
                       for n in GRID_DIVISION_CHOICES]})
         if view_name == "child":
             items.append({"name": OCCLUSION_BUTTON, "title": "Occluded Areas",
-                          "kind": "check", "checked": _OCCLUSION["enabled"]})
+                          "kind": "check", "checked": occlusion_on,
+                          "enabled": enabled})
         return items
     return build
+
+
+def _unit_view_setting(name, value):
+    """Route a View-menu toggle onto the active unit's settings."""
+    uid = _ACTIVE_UNIT["id"]
+    meta = _UNIT_META.get(uid)
+    if not meta:
+        return False
+    meta.setdefault("settings", {})[name] = value
+    _save_units("main")
+    _invalidate_grid_cache()
+    _push_overlay("main")
+    _push_overlay("child")
+    try:
+        animean = _animean()
+        animean.ui.refresh()
+        animean.ui.history_commit("Unit Settings", "main")
+    except Exception:
+        pass
+    return True
 
 
 def _view_menu_action(message):
@@ -8559,6 +8622,11 @@ def _view_menu_action(message):
     name = message.get("name") or ""
     checked = bool(message.get("checked"))
     if name == REFER_RECT_ITEM:
+        if _UNIT_META:
+            if _unit_view_setting("show_grid", checked):
+                print(f"[auto_mapping] unit refer rect grid "
+                      f"{'ON' if checked else 'OFF'}")
+            return
         if _REFER_RECT.get(view) == checked:
             return
         _REFER_RECT[view] = checked
@@ -8572,8 +8640,13 @@ def _view_menu_action(message):
             divisions = int(name[len("grid_div_"):])
         except ValueError:
             return
-        if divisions not in GRID_DIVISION_CHOICES \
-                or _GRID["divisions"] == divisions:
+        if divisions not in GRID_DIVISION_CHOICES:
+            return
+        if _UNIT_META:
+            if _unit_view_setting("grid_divisions", divisions):
+                print(f"[auto_mapping] unit grid -> {divisions} x {divisions}")
+            return
+        if _GRID["divisions"] == divisions:
             return
         _GRID["divisions"] = divisions
         _invalidate_grid_cache()
@@ -8584,6 +8657,11 @@ def _view_menu_action(message):
               "iso-lines")
         return
     if name == OCCLUSION_BUTTON:
+        if _UNIT_META:
+            if _unit_view_setting("show_occlusion", checked):
+                print(f"[auto_mapping] unit occlusion preview "
+                      f"{'ON' if checked else 'OFF'}")
+            return
         _set_occlusion(checked)
 
 
@@ -8712,9 +8790,36 @@ def _install_unit_output(scene, out, uid, meta):
     - anything the user dragged into the group by hand stays.
     """
     try:
-        scene.add_layers_to_group(int(uid), list(out.layers))
+        adopted = scene.add_layers_to_group(int(uid), list(out.layers))
     except AttributeError:
-        pass  # older build without the grouping binding: layers stay loose
+        adopted = -1  # older build without the grouping binding
+    if adopted == 0 and out.layers:
+        # The unit's group is gone (pruned when its last member died) and
+        # add_layers_to_group reports that with a plain 0. Re-house the
+        # unit around this run's layers; config and settings migrate to
+        # the new group id.
+        new_gid = 0
+        try:
+            new_gid = scene.create_layer_group(UNIT_LAYER_TITLE,
+                                               list(out.layers), [], True)
+            if new_gid and not scene.set_layer_group_tag(new_gid, UNIT_TAG):
+                new_gid = 0
+        except AttributeError:
+            new_gid = 0
+        if new_gid:
+            healed = str(new_gid)
+            _UNIT_META[healed] = meta
+            _UNIT_META.pop(uid, None)
+            for store_view in ("main", "child"):
+                store = _UNIT_ASSETS.setdefault(store_view, {})
+                if uid in store:
+                    store[healed] = store.pop(uid)
+            if _ACTIVE_UNIT["id"] == uid:
+                _ACTIVE_UNIT["id"] = healed
+            _save_units("child")
+            print(f"[auto_mapping] automapping layer re-housed as group "
+                  f"{healed} (its group had been deleted).")
+            uid = healed
 
     members = {}
     primary_id = 0
@@ -8861,6 +8966,10 @@ def _create_unit(view="main", commit=True):
     if commit:
         try:
             animean.ui.history_commit("New Auto-Mapping Layer", "main")
+            # The child scene's scriptData gained this unit's (empty) slot:
+            # without its own commit, one texture-board undo would drop the
+            # child half of the config while main kept it.
+            animean.ui.history_commit("New Auto-Mapping Layer", "child")
         except Exception:
             pass
     return uid
@@ -8892,7 +9001,9 @@ def _duplicate_unit(source_uid):
     _push_overlay("child")
     _maybe_auto_run()
     try:
-        _animean().ui.history_commit("Duplicate Auto-Mapping Layer", "main")
+        animean = _animean()
+        animean.ui.history_commit("Duplicate Auto-Mapping Layer", "main")
+        animean.ui.history_commit("Duplicate Auto-Mapping Layer", "child")
     except Exception:
         pass
     return uid
@@ -8920,22 +9031,30 @@ def _convert_group_to_unit(scene, gid, member_indices):
     uid = str(gid)
     frame = max(scene.current_frame(), 0)
 
-    # Config: the live scratch guides first (they are what the user sees and
-    # drags today); the group's own snapshots fill whatever is missing.
-    main_assets = dict(_MAPPING_ASSETS.get("main") or {})
-    child_assets = dict(_MAPPING_ASSETS.get("child") or {})
+    # Config: the group's OWN axis snapshots are the authority - they are
+    # the record of the run that made this group. The live scratch fills
+    # gaps only, and only for the FIRST conversion: the scratch is one
+    # scene-global set, and letting a second group adopt it silently handed
+    # every later conversion the first group's guides while its own
+    # snapshot layers were deleted below - irrecoverably.
+    first_unit = not _UNIT_META
+    scratch_main = dict(_MAPPING_ASSETS.get("main") or {}) if first_unit else {}
+    child_assets = dict(_MAPPING_ASSETS.get("child") or {}) if first_unit else {}
     snapshots = _guide_axes_in_layers(scene, frame, member_indices)
+    main_assets = {key: value for key, value in scratch_main.items()
+                   if key not in GUIDE_PROPERTIES}
     for prop, target in ((H_GUIDE_LAYER_PROPERTY, H_PROPERTY),
                          (V_GUIDE_LAYER_PROPERTY, V_PROPERTY)):
-        if target in main_assets or prop not in snapshots:
-            continue
-        points, width, commands = snapshots[prop]
-        item = {"points": [tuple(p) for p in points], "width": width}
-        if commands:
-            item["commands"] = commands
-        main_assets[target] = item
+        if prop in snapshots:
+            points, width, commands = snapshots[prop]
+            item = {"points": [tuple(p) for p in points], "width": width}
+            if commands:
+                item["commands"] = commands
+            main_assets[target] = item
+        elif target in scratch_main:
+            main_assets[target] = scratch_main[target]
     marker = snapshots.get(NEAREST_LAYER_PROPERTY)
-    if NEAREST_PROPERTY not in main_assets and marker and marker[2]:
+    if marker and marker[2]:
         main_assets[NEAREST_PROPERTY] = {"arc": [float(marker[2][0]),
                                                  float(marker[2][1])]}
 
@@ -9000,6 +9119,7 @@ def _convert_group_to_unit(scene, gid, member_indices):
         animean = _animean()
         animean.ui.refresh()
         animean.ui.history_commit("Convert to Auto-Mapping Layer", "main")
+        animean.ui.history_commit("Convert to Auto-Mapping Layer", "child")
     except Exception:
         pass
     have_guides = all(p in main_assets for p in GUIDE_PROPERTIES)
@@ -9197,7 +9317,11 @@ def _unit_setting_changed(cell, stroke, message):
         _push_overlay("main")
         _push_overlay("child")
     try:
-        _animean().ui.refresh()
+        animean = _animean()
+        animean.ui.refresh()
+        # The settings live in scriptData and drive real layer visibility:
+        # a document edit, so it must be undoable.
+        animean.ui.history_commit("Unit Settings", "main")
     except Exception:
         pass
 
