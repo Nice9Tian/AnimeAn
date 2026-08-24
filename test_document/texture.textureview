@@ -5,12 +5,10 @@
                 {
                     "frameId": 1,
                     "image": {
-                        "fills": [
-                        ],
+                        "fills": [],
                         "strokes": [
                             {
-                                "groupId": [
-                                ],
+                                "groupId": [],
                                 "isNewForFill": true,
                                 "isPoint": false,
                                 "selected": false,
@@ -538,8 +536,7 @@
                                 }
                             },
                             {
-                                "groupId": [
-                                ],
+                                "groupId": [],
                                 "isNewForFill": true,
                                 "isPoint": false,
                                 "selected": false,
@@ -2342,8 +2339,7 @@
                                 }
                             },
                             {
-                                "groupId": [
-                                ],
+                                "groupId": [],
                                 "isNewForFill": true,
                                 "isPoint": false,
                                 "selected": false,
@@ -4156,8 +4152,7 @@
                                 }
                             },
                             {
-                                "groupId": [
-                                ],
+                                "groupId": [],
                                 "isNewForFill": true,
                                 "isPoint": false,
                                 "selected": false,
@@ -4410,8 +4405,7 @@
                                 }
                             },
                             {
-                                "groupId": [
-                                ],
+                                "groupId": [],
                                 "isNewForFill": true,
                                 "isPoint": false,
                                 "selected": false,
@@ -4699,8 +4693,7 @@
                                 }
                             },
                             {
-                                "groupId": [
-                                ],
+                                "groupId": [],
                                 "isNewForFill": true,
                                 "isPoint": false,
                                 "selected": false,
@@ -4808,8 +4801,7 @@
                                 }
                             },
                             {
-                                "groupId": [
-                                ],
+                                "groupId": [],
                                 "isNewForFill": true,
                                 "isPoint": false,
                                 "selected": false,
@@ -5202,8 +5194,7 @@
                                 }
                             },
                             {
-                                "groupId": [
-                                ],
+                                "groupId": [],
                                 "isNewForFill": true,
                                 "isPoint": false,
                                 "selected": false,
@@ -5726,8 +5717,7 @@
                                 }
                             },
                             {
-                                "groupId": [
-                                ],
+                                "groupId": [],
                                 "isNewForFill": true,
                                 "isPoint": false,
                                 "selected": false,
@@ -6320,8 +6310,7 @@
                                 }
                             },
                             {
-                                "groupId": [
-                                ],
+                                "groupId": [],
                                 "isNewForFill": true,
                                 "isPoint": false,
                                 "selected": false,
@@ -7134,8 +7123,7 @@
                                 }
                             },
                             {
-                                "groupId": [
-                                ],
+                                "groupId": [],
                                 "isNewForFill": true,
                                 "isPoint": false,
                                 "selected": false,
@@ -7723,8 +7711,7 @@
                                 }
                             },
                             {
-                                "groupId": [
-                                ],
+                                "groupId": [],
                                 "isNewForFill": true,
                                 "isPoint": false,
                                 "selected": false,
@@ -8532,8 +8519,7 @@
                                 }
                             },
                             {
-                                "groupId": [
-                                ],
+                                "groupId": [],
                                 "isNewForFill": true,
                                 "isPoint": false,
                                 "selected": false,
@@ -8581,8 +8567,7 @@
                                 }
                             },
                             {
-                                "groupId": [
-                                ],
+                                "groupId": [],
                                 "isNewForFill": true,
                                 "isPoint": false,
                                 "selected": false,
@@ -8630,8 +8615,7 @@
                                 }
                             },
                             {
-                                "groupId": [
-                                ],
+                                "groupId": [],
                                 "isNewForFill": true,
                                 "isPoint": false,
                                 "selected": false,
@@ -8679,8 +8663,7 @@
                                 }
                             },
                             {
-                                "groupId": [
-                                ],
+                                "groupId": [],
                                 "isNewForFill": true,
                                 "isPoint": false,
                                 "selected": false,
@@ -8728,8 +8711,7 @@
                                 }
                             },
                             {
-                                "groupId": [
-                                ],
+                                "groupId": [],
                                 "isNewForFill": true,
                                 "isPoint": false,
                                 "selected": false,
@@ -8977,8 +8959,7 @@
                                 "sourceLayerIndex": 2
                             }
                         ],
-                        "strokes": [
-                        ]
+                        "strokes": []
                     }
                 }
             ],
@@ -9209,8 +9190,7 @@
                                 "sourceLayerIndex": 2
                             }
                         ],
-                        "strokes": [
-                        ]
+                        "strokes": []
                     }
                 }
             ],
@@ -9223,7 +9203,7 @@
     "currentAsset": 0,
     "currentFrame": 0,
     "currentLayer": 2,
-    "format": "AnimeAn Project",
+    "format": "AnimeAn Texture View",
     "layerTree": [
         1,
         2,
@@ -9238,8 +9218,7 @@
     "xsheet": {
         "columns": [
             {
-                "cells": [
-                ],
+                "cells": [],
                 "id": 1,
                 "locked": false,
                 "name": "Layer 1",
@@ -9248,8 +9227,7 @@
                 "visible": true
             },
             {
-                "cells": [
-                ],
+                "cells": [],
                 "id": 2,
                 "locked": false,
                 "name": "Layer 2",

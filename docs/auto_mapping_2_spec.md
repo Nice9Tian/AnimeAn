@@ -495,7 +495,7 @@ $$c_1' = p_0' + D_{\mathbf h_1}\Phi_2(p_0),\qquad c_2' = p_3' + D_{\mathbf h_2}\
 
 ### 10.4 曲线重建保真度
 
-以 `test_document/texture.animean` 真实图案 + 波浪主轴（22 条笔画）测量各模式输出与真实像的最大偏差：
+以 `test_document/texture.textureview` 真实图案 + 波浪主轴（22 条笔画）测量各模式输出与真实像的最大偏差：
 
 | 笔画 | 源长 (px) | 真实像弯曲度 | polyline 模式 | spline 模式 | bezier 模式 |
 |---|---:|---:|---:|---:|---:|
