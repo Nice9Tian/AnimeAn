@@ -65,6 +65,12 @@ void clearAnimeanUiHistoryCallback();
 void registerAnimeanUiPadValueCallback(std::function<void(const QString &pad, double x, double y)> callback);
 void clearAnimeanUiPadValueCallback();
 
+// The active theme mode ("dark" / "light"), mirrored for Python to read back
+// through animean_python.ui.theme(). C++ pushes it whenever the theme is
+// applied; there is no setter on the Python side - a script asks what the app
+// looks like, it does not decide.
+void setAnimeanUiTheme(const QString &mode);
+
 // True when at least one Python hook subscribes to the event (python_hooks
 // pushes the subscription set via ui.set_hook_events). Lets dispatch sites
 // skip the GIL/message work entirely for events nobody listens to. Until the

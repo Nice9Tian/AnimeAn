@@ -47,6 +47,9 @@ std::function<void(const QString &op, const QString &view, const QString &label)
 bool g_hookEventMaskValid = false;
 QSet<QString> g_hookEventMask;
 
+// Mirror of the C++ theme mode; the app pushes it on every AnimeTheme::apply.
+QString g_uiTheme = QStringLiteral("dark");
+
 // Preview displacement session (ui.displace_*): base geometry plus per-vertex
 // offsets for the strokes of one internal layer. Scaling rewrites that
 // layer's strokes as base + scale (*) offset entirely in C++, so a pad drag
@@ -1073,6 +1076,11 @@ bool animeanHookEventSubscribed(const QString &event)
     return !g_hookEventMaskValid || g_hookEventMask.contains(event);
 }
 
+void setAnimeanUiTheme(const QString &mode)
+{
+    g_uiTheme = mode;
+}
+
 void registerAnimeanUiHistoryCallback(std::function<void(const QString &op, const QString &view, const QString &label)> callback)
 {
     g_uiHistoryCallback = std::move(callback);
@@ -1136,6 +1144,12 @@ void bindAnimeanPythonModule(py::module_ &m)
         if (g_uiToolOptionsCallback) {
             g_uiToolOptionsCallback();
         }
+    });
+    // "dark" / "light". Read-only: a script that paints its own overlay can
+    // pick colours that read on the current theme, but the theme itself is
+    // the user's choice, made in the menu bar.
+    ui.def("theme", []() {
+        return g_uiTheme.toStdString();
     });
     ui.def("set_overlay",
            [](const std::string &view, py::sequence items) {

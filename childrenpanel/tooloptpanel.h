@@ -52,6 +52,11 @@ private:
         QWidget *target = nullptr;
     };
 
+    // Rebuilds the prototype stylesheets from AnimeTheme and re-applies them
+    // to the controls already on screen. Runs at construction and on every
+    // theme change: a generated control copied its style when it was built, so
+    // a new application palette alone would leave it on the old colours.
+    void applyTheme();
     QWidget *createButtonControl(const QJsonObject &control);
     QWidget *createListControl(const QJsonObject &control);
     QWidget *createSliderControl(const QJsonObject &control);

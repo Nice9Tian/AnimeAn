@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "theme.h"
 
 #include <QApplication>
 #include <QSurfaceFormat>
@@ -51,6 +52,12 @@ int main(int argc, char *argv[])
     QSurfaceFormat::setDefaultFormat(format);
 
     QApplication app(argc, argv);
+
+    // Fusion + the saved palette before MainWindow is built: a widget reads
+    // the application palette as it is constructed, so a theme applied later
+    // would leave every already-built surface on the old one. The mode comes
+    // from QSettings ("theme/mode", default Dark) on this first query.
+    AnimeTheme::apply(&app);
 
 #ifdef ANIMEAN_WITH_PYTHON
     const QString appDir = QCoreApplication::applicationDirPath();

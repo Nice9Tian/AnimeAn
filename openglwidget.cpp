@@ -1,4 +1,5 @@
 #include "openglwidget.h"
+#include "theme.h"
 
 #include <QLineF>
 #include <QGuiApplication>
@@ -2111,7 +2112,7 @@ void PaintOpenGLWidget::paintGL()
         if (m_unboundedCanvas) {
             paintBackground(painter, QRectF(rect()));
         } else {
-            painter.fillRect(rect(), QColor(72, 72, 72));
+            painter.fillRect(rect(), AnimeTheme::color(AnimeTheme::Role::ViewportSurround));
         }
         // Map the cached pixels from the view they were rendered for onto the
         // view we are looking at now. A cache pixel p is document
@@ -2132,7 +2133,7 @@ void PaintOpenGLWidget::paintGL()
         }
         if (m_activeIndicator) {
             painter.setBrush(Qt::NoBrush);
-            painter.setPen(QPen(QColor(0, 120, 255), 3.0));
+            painter.setPen(QPen(AnimeTheme::color(AnimeTheme::Role::Accent), 3.0));
             painter.drawRect(QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5));
         }
         return;
@@ -2142,7 +2143,7 @@ void PaintOpenGLWidget::paintGL()
         // Infinite reference board: the whole viewport is paper.
         paintBackground(painter, rect());
     } else {
-        painter.fillRect(rect(), QColor(72, 72, 72));
+        painter.fillRect(rect(), AnimeTheme::color(AnimeTheme::Role::ViewportSurround));
     }
 
     painter.save();
@@ -2150,10 +2151,12 @@ void PaintOpenGLWidget::paintGL()
     painter.scale(m_zoom, m_zoom);
     if (!m_unboundedCanvas) {
         const QRectF page = documentRect();
+        // The paper is white in both themes: it is the artwork's ground, not
+        // chrome, and its colour is what the drawing is composed against.
         painter.fillRect(page, Qt::white);
         // The page can now be smaller than the viewport, so say where it ends.
         painter.setBrush(Qt::NoBrush);
-        painter.setPen(QPen(QColor(140, 140, 140), 1.0 / m_zoom));
+        painter.setPen(QPen(AnimeTheme::color(AnimeTheme::Role::Divider), 1.0 / m_zoom));
         painter.drawRect(page);
     }
 
@@ -2221,7 +2224,7 @@ void PaintOpenGLWidget::paintGL()
     // The active-view indicator hugs the viewport, not the document.
     if (m_activeIndicator) {
         painter.setBrush(Qt::NoBrush);
-        painter.setPen(QPen(QColor(0, 120, 255), 3.0));
+        painter.setPen(QPen(AnimeTheme::color(AnimeTheme::Role::Accent), 3.0));
         painter.drawRect(QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5));
     }
 }

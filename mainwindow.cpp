@@ -15,6 +15,7 @@
 #include "paintviewcontainer.h"
 #include "projectio.h"
 #include "selectionattention.h"
+#include "theme.h"
 #include "childrenpanel/tooloptpanel.h"
 #include "childrenpanel/toolcontrolconfig.h"
 #include "childrenpanel/toolspanel.h"
@@ -23,6 +24,7 @@
 #include <QAbstractItemModel>
 #include <QAbstractItemView>
 #include <QAction>
+#include <QActionGroup>
 #include <QApplication>
 #include <QCoreApplication>
 #include <QDockWidget>
@@ -46,6 +48,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QPalette>
 #include <QSizeF>
 #include <QRectF>
 #include <QTransform>
@@ -570,6 +573,34 @@ void MainWindow::setupDocks()
     createHistoryDock();
     createForcePadDock();
 
+    // Theme sits left of Windows: it changes how every panel LOOKS, while
+    // Windows changes which ones exist.
+    QMenu *themeMenu = menuBar()->addMenu(QStringLiteral("Theme"));
+    QActionGroup *themeGroup = new QActionGroup(this);
+    QAction *darkThemeAction = themeMenu->addAction(QStringLiteral("Dark"));
+    QAction *lightThemeAction = themeMenu->addAction(QStringLiteral("Light"));
+    for (QAction *action : {darkThemeAction, lightThemeAction}) {
+        action->setCheckable(true);
+        themeGroup->addAction(action);
+    }
+    darkThemeAction->setChecked(AnimeTheme::mode() == AnimeTheme::Mode::Dark);
+    lightThemeAction->setChecked(AnimeTheme::mode() == AnimeTheme::Mode::Light);
+    connect(darkThemeAction, &QAction::triggered, this, []() {
+        AnimeTheme::setMode(AnimeTheme::Mode::Dark);
+    });
+    connect(lightThemeAction, &QAction::triggered, this, []() {
+        AnimeTheme::setMode(AnimeTheme::Mode::Light);
+    });
+    connect(AnimeTheme::instance(), &AnimeTheme::themeChanged, this, [this]() {
+        // The boards paint their surround and page edge from the theme, and
+        // the history list bakes the redo tail's colour into its items; a new
+        // application palette reaches neither on its own.
+        for (PaintOpenGLWidget *view : m_paintViews) {
+            view->update();
+        }
+        refreshHistoryList();
+    });
+
     // "Windows", not "View": every entry here shows or hides a PANEL. What is
     // drawn on the canvas is a different question, and it now has its own
     // View menu (script-provided, per board) so the two cannot be confused.
@@ -870,7 +901,9 @@ void MainWindow::refreshHistoryList()
         QListWidgetItem *item = new QListWidgetItem(
             QStringLiteral("%1. %2").arg(i + 1).arg(history.labelAt(i)));
         if (i > history.currentIndex()) {
-            item->setForeground(Qt::gray);
+            // The redo tail is "there but not in effect" - the same thing the
+            // palette's disabled text says, in whatever theme is on.
+            item->setForeground(list->palette().color(QPalette::Disabled, QPalette::Text));
         }
         list->addItem(item);
     }
