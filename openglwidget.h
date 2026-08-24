@@ -286,6 +286,11 @@ private:
     // Emits "framechange" when the model's frame moved past the last frame
     // Python was told about - regardless of who moved it.
     void notifyFrameChangedIfNeeded();
+    // Emits "layerchange" when the model's current layer moved past the last
+    // layer Python was told about - the layer counterpart of the frame
+    // notifier, and the mechanism layer-focused tools (an auto-mapping
+    // layer's overlays) hang their show/hide policy on.
+    void notifyLayerChangedIfNeeded();
     // Topmost draggable overlay item within grab range of the screen position.
     // When it returns an id and screenDistance is given, screenDistance is
     // the pointer's screen-space distance to that item's nearest segment.
@@ -449,6 +454,9 @@ private:
     // addFrame, project load), so the notification baseline must be the
     // widget's own, not a value re-read from the model.
     int m_pythonNotifiedFrame = -1;
+    // The layer Python was last told about via "layerchange"; -1 is a valid
+    // "nothing selected" state, so the unset sentinel is -2.
+    int m_pythonNotifiedLayer = -2;
     bool m_unboundedCanvas = false;
     BackgroundMode m_backgroundMode = BackgroundMode::White;
     bool m_contentEditable = true;

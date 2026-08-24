@@ -83,7 +83,6 @@ V_GUIDE_LAYER_PROPERTY = "auto_mapped_guide_v"
 NEAREST_LAYER_PROPERTY = "auto_mapped_guide_nearest"
 NEAREST_LAYER_NAME = "Nearest Point"
 MAPPING_GROUP_NAME = "Auto Mapping"
-RESTORE_GUIDES_ACTION = "restore_mapping_guides"
 # Everything a run puts on the board. None of it may act as a wall for region
 # detection, and none of it may be picked up as pattern by the next run.
 # The Fukusato workflow routes its region detection through _detect_region
@@ -259,7 +258,26 @@ _OCCLUSION_CACHE = {"items": None, "note": "", "share": 0.0}
 
 
 def refer_rect_enabled(view_name="main"):
+    """Grid display policy: the active unit's setting in unit mode, the
+    per-board View-menu global otherwise."""
+    if _UNIT_META:
+        uid = _ACTIVE_UNIT["id"]
+        return bool(uid) and bool(_unit_settings(uid).get("show_grid", False))
     return bool(_REFER_RECT.get(view_name, False))
+
+
+def _occlusion_enabled():
+    if _UNIT_META:
+        uid = _ACTIVE_UNIT["id"]
+        return bool(uid) and bool(_unit_settings(uid).get("show_occlusion", False))
+    return bool(_OCCLUSION["enabled"])
+
+
+def _grid_divisions():
+    if _UNIT_META and _ACTIVE_UNIT["id"]:
+        value = int(_unit_settings().get("grid_divisions", 5))
+        return value if value in GRID_DIVISION_CHOICES else 5
+    return int(_GRID.get("divisions", 5))
 
 
 def curve_mode():
@@ -382,7 +400,17 @@ def _canvas_rect(view_name):
 
 
 def _assets_for(view_name):
-    return _MAPPING_ASSETS.setdefault(view_name, {})
+    """The mapping-asset dict edits apply to RIGHT NOW.
+
+    With an active mapping unit (an automapping layer has the focus) this is
+    that unit's own per-view asset set; otherwise the legacy scene-global
+    scratch set. Every internal consumer resolves through here, which is
+    what makes the whole 10k-line pipeline per-unit without knowing it.
+    """
+    uid = _ACTIVE_UNIT["id"]
+    if uid is None:
+        return _MAPPING_ASSETS.setdefault(view_name, {})
+    return _UNIT_ASSETS.setdefault(view_name, {}).setdefault(uid, {})
 
 
 def _save_assets(view_name):
@@ -391,6 +419,9 @@ def _save_assets(view_name):
     scriptData travels with every history snapshot and with saved projects, so
     guides/areas become undoable and survive save/load.
     """
+    if _ACTIVE_UNIT["id"] is not None:
+        _save_units(view_name)
+        return
     try:
         scene = _scene_model(view_name)
     except Exception:
@@ -399,7 +430,7 @@ def _save_assets(view_name):
 
 
 def _load_assets(view_name):
-    """Rebuild the dict + overlays from the scene's scriptData (post-restore)."""
+    """Rebuild the dicts + overlays from the scene's scriptData (post-restore)."""
     try:
         scene = _scene_model(view_name)
     except Exception:
@@ -407,7 +438,13 @@ def _load_assets(view_name):
     data = script_store.read(scene, "mapping_assets") or {}
     if not isinstance(data, dict):
         data = {}
+    _MAPPING_ASSETS[view_name] = _sanitize_assets(data)
+    _load_units(view_name, scene)
+    _overlays_changed(view_name)
 
+
+def _sanitize_assets(data):
+    """One asset dict from raw scriptData: validated, typed, id-stamped."""
     assets = {}
     for prop, item in data.items():
         if prop == MAPPING_AREA_PROPERTY:
@@ -466,8 +503,175 @@ def _load_assets(view_name):
                 if item.get("commands"):
                     loaded["commands"] = item["commands"]
                 assets[prop] = loaded
-    _MAPPING_ASSETS[view_name] = assets
-    _overlays_changed(view_name)
+    return assets
+
+
+# ---------------------------------------------------------------------------
+# mapping units: one "automapping layer" = one tagged layer group whose
+# config (guides, area, additional lines, display settings) lives in
+# scriptData keyed by the group id. The layer stack holds only the OUTPUT;
+# the unit's config is the authority and the output regenerates from it.
+# ---------------------------------------------------------------------------
+
+UNIT_TAG = "automapping"
+UNIT_STORE_KEY = "mapping_units"
+UNIT_SETTINGS_NAME = "automapping_unit"
+UNIT_LAYER_TITLE = "Auto-Mapping Layer"
+NEW_UNIT_ACTION = "new_automapping_layer"
+NEW_LINE_LAYER_ACTION = "new_line_layer"
+NEW_FILL_LAYER_ACTION = "new_fill_layer"
+DUPLICATE_UNIT_ACTION = "duplicate_automapping_layer"
+
+_UNIT_SETTING_DEFAULTS = {
+    "show_h": True,          # H axis overlay (both boards)
+    "show_v": True,          # V axis overlay
+    "show_additional": True, # pink additional lines
+    "show_area": True,       # mapping-area outline
+    "show_nearest": True,    # red nearest-point handle (main)
+    "show_grid": False,      # refer-rect grid
+    "grid_divisions": 5,
+    "show_occlusion": False, # occluded-areas tint (texture board)
+    "front_visible": True,   # front content/lines member layers
+    "back_visible": True,    # back content/lines member layers
+    "seal_visible": True,    # crease-line member layers
+    "auto_render": True,     # re-run the mapping live on every edit
+}
+
+# view -> {unit id -> {property -> item}}; the per-unit twin of
+# _MAPPING_ASSETS, resolved through _assets_for.
+_UNIT_ASSETS = {}
+# unit id -> {"settings": {...}, "primary": layer id, "members":
+# {layer id (str) -> {"role": "front"|"back"|"seal", "depth": int}}}.
+# Owned by the MAIN scene (the unit's group lives in its layer tree).
+_UNIT_META = {}
+_ACTIVE_UNIT = {"id": None}
+# The unit the Advanced Settings window edits: stashed by the layer-menu
+# provider at right-click time (the C++ settings dialog carries no per-row
+# context by design - see MainWindow::showLayerContextMenu).
+_SETTINGS_TARGET = {"unit": None}
+# Non-zero while a mapping run (or unit surgery) is mutating layers: the
+# layerchange/pattern hooks it triggers are echoes, not user edits.
+_RUN_GUARD = {"depth": 0}
+
+
+def _unit_settings(uid=None):
+    uid = uid if uid is not None else _ACTIVE_UNIT["id"]
+    merged = dict(_UNIT_SETTING_DEFAULTS)
+    meta = _UNIT_META.get(uid) if uid else None
+    if meta:
+        merged.update(meta.get("settings") or {})
+    return merged
+
+
+def _save_units(view_name):
+    """Persist the per-unit store for one view.
+
+    The main scene carries each unit's assets AND its meta (settings,
+    primary layer, member roles); the child scene carries only its own
+    per-unit assets - each scene owns exactly the state its history must
+    restore, mirroring how the legacy per-view store split.
+    """
+    try:
+        scene = _scene_model(view_name)
+    except Exception:
+        return
+    units = {}
+    store = _UNIT_ASSETS.setdefault(view_name, {})
+    ids = set(store) | (set(_UNIT_META) if view_name == "main" else set())
+    for uid in ids:
+        entry = {"assets": store.get(uid) or {}}
+        if view_name == "main":
+            meta = _UNIT_META.get(uid) or {}
+            entry["settings"] = meta.get("settings") or {}
+            entry["primary"] = meta.get("primary") or 0
+            entry["members"] = meta.get("members") or {}
+        units[uid] = entry
+    script_store.write(scene, UNIT_STORE_KEY, {"units": units} if units else None)
+
+
+def _load_units(view_name, scene):
+    """Rebuild this view's per-unit store (and, on main, the unit meta)."""
+    data = script_store.read(scene, UNIT_STORE_KEY) or {}
+    units = data.get("units") if isinstance(data, dict) else None
+    store = {}
+    meta = {}
+    for uid, entry in (units or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        uid = str(uid)
+        store[uid] = _sanitize_assets(entry.get("assets") or {})
+        if view_name == "main":
+            members = {}
+            for lid, info in (entry.get("members") or {}).items():
+                if isinstance(info, dict) and info.get("role"):
+                    members[str(lid)] = {"role": str(info["role"]),
+                                         "depth": int(info.get("depth", 0))}
+            meta[uid] = {
+                "settings": dict(entry.get("settings") or {}),
+                "primary": int(entry.get("primary") or 0),
+                "members": members,
+            }
+    _UNIT_ASSETS[view_name] = store
+    if view_name == "main":
+        _UNIT_META.clear()
+        _UNIT_META.update(meta)
+        # The restored document decides which unit is active now: re-derive
+        # from the restored current layer rather than trusting the pre-undo
+        # activation.
+        uid = None
+        try:
+            layer = scene.current_layer()
+            if layer is not None and layer >= 0:
+                uid = _unit_for_layer(scene, layer)
+        except Exception:
+            uid = None
+        _ACTIVE_UNIT["id"] = uid if uid in _UNIT_META else None
+
+
+def _unit_for_layer(scene, layer_index):
+    """The unit id owning this layer, or None (old build / no unit)."""
+    try:
+        gid = scene.group_id_for_layer(layer_index, UNIT_TAG)
+    except AttributeError:
+        return None
+    return str(gid) if gid else None
+
+
+def _activate_unit(uid):
+    if uid is not None and uid not in _UNIT_META:
+        uid = None
+    if uid == _ACTIVE_UNIT["id"]:
+        return
+    _ACTIVE_UNIT["id"] = uid
+    # Entering a unit shows ITS guides; leaving hides everything - the
+    # overlay builders read _assets_for/_unit_settings, so a repaint is the
+    # whole policy.
+    _invalidate_grid_cache()
+    _push_overlay("main")
+    _push_overlay("child")
+    try:
+        _animean().ui.refresh()
+    except Exception:
+        pass
+
+
+def _layer_focus_event(message):
+    """layerchange hook: unit activation follows the MAIN board's focus.
+
+    The child board's layers carry the shared pattern, not units, so its
+    focus changes are irrelevant - and must not tear down the overlays the
+    user is editing guides under.
+    """
+    if message.get("view") != "main" or _RUN_GUARD["depth"]:
+        return
+    uid = None
+    layer = message.get("layer", -1)
+    if isinstance(layer, int) and layer >= 0:
+        try:
+            uid = _unit_for_layer(_scene_model("main"), layer)
+        except Exception:
+            uid = None
+    _activate_unit(uid)
 
 
 # ---------------------------------------------------------------------------
@@ -3748,7 +3952,7 @@ def _occlusion_overlay_items():
     (bottom edge + reversed top edge), so adjacent rows tile without the
     seams or cap-bulges polyline bands would leave.
     """
-    if not _OCCLUSION["enabled"]:
+    if not _occlusion_enabled():
         return []
     cached = _OCCLUSION_CACHE["items"]
     if cached is not None:
@@ -3883,10 +4087,26 @@ def overlay_items(view_name):
     Public so other tools (e.g. repulsion_tool's drag preview) can COMPOSE
     their own items with the mapping display instead of clobbering it -
     ui.set_overlay replaces a view's whole item list.
+
+    UNIT MODE (the document has automapping layers): everything here is
+    focus-gated - no active unit means no mapping overlays at all, and the
+    active unit's Advanced Settings decide which components draw. A document
+    with no units keeps the legacy always-on behaviour.
     """
+    settings = None
+    if _UNIT_META:
+        if _ACTIVE_UNIT["id"] is None:
+            return []
+        settings = _unit_settings()
+
+    def wanted(key):
+        return settings is None or bool(settings.get(key, True))
+
     assets = _assets_for(view_name)
     items = []
     for prop, key in ((H_PROPERTY, "h"), (V_PROPERTY, "v")):
+        if not wanted(f"show_{key}"):
+            continue
         guide = assets.get(prop)
         if guide and len(guide.get("points") or []) >= 2:
             # Colour, width and style come from the display settings now, not
@@ -3917,7 +4137,9 @@ def overlay_items(view_name):
                     # would make a short mark nearly invisible.
                     "removable": False,
                 })
-    for index, line in enumerate((assets.get(ADDITIONAL_PROPERTY) or {}).get("lines") or []):
+    additional_lines = ((assets.get(ADDITIONAL_PROPERTY) or {}).get("lines")
+                        if wanted("show_additional") else None)
+    for index, line in enumerate(additional_lines or []):
         if len(line.get("points") or []) < 2:
             continue
         items.append({
@@ -3931,7 +4153,7 @@ def overlay_items(view_name):
             "pen_style": _display_style("additional_style"),
             "removable": True,
         })
-    area = assets.get(MAPPING_AREA_PROPERTY)
+    area = assets.get(MAPPING_AREA_PROPERTY) if wanted("show_area") else None
     if area:
         for polygon in area.get("polygons") or []:
             items.append({
@@ -3953,7 +4175,7 @@ def overlay_items(view_name):
             items[:0] = _occlusion_overlay_items()
         except Exception as error:
             print(f"[auto_mapping] occlusion preview skipped: {error}")
-    if view_name == "main":
+    if view_name == "main" and wanted("show_nearest"):
         try:
             # ON TOP of the guides: the anchor is the one thing here you grab.
             items.extend(_nearest_overlay_items())
@@ -4067,14 +4289,14 @@ def _grid_overlay_items(view_name):
 
     A board with no axes, or with axes that do not cross, has no frame and so
     draws nothing - there is no rectangle to refer to."""
-    if not _REFER_RECT.get(view_name, False):
+    if not refer_rect_enabled(view_name):
         return []
     cached = _GRID_CACHE.get(view_name)
     if cached is not None:
         return cached
 
     items = []
-    divisions = max(2, int(_GRID.get("divisions", 5)))
+    divisions = max(2, _grid_divisions())
     levels = [i / (divisions - 1) * 2.0 - 1.0 for i in range(divisions)]
     count = 6 * (divisions - 1) + 1   # divisions=5 -> 25, the historical density
     samples = [i / (count - 1) * 2.0 - 1.0 for i in range(count)]
@@ -4190,9 +4412,9 @@ def _overlays_changed(view_name):
     function of the child's own axes."""
     _invalidate_grid_cache()
     _push_overlay(view_name)
-    if _OCCLUSION["enabled"] and view_name != "child":
+    if _occlusion_enabled() and view_name != "child":
         _push_overlay("child")
-    if _REFER_RECT.get("main") and view_name != "main":
+    if refer_rect_enabled("main") and view_name != "main":
         _push_overlay("main")
 
 
@@ -4386,6 +4608,9 @@ def _guide_drag_event(message):
         pass
     print(f"[auto_mapping] {overlay_id} moved by "
           f"({delta[0]:.1f}, {delta[1]:.1f})")
+    # Editing an axis rebuilt the refer grid above; with unit focus the
+    # mapping itself follows, no manual click.
+    _maybe_auto_run()
 
 
 def _additional_line_by_overlay_id(view, overlay_id):
@@ -4488,6 +4713,7 @@ def _nearest_handle_event(message):
     l_h, l_v = _nearest_arc()
     print(f"[auto_mapping] nearest point at arc ({l_h:.1f}, {l_v:.1f}); "
           "the next Auto Mapping stacks fold layers from here.")
+    _maybe_auto_run()
 
 
 def _detect_region(scene, view_name, frame, seed):
@@ -7120,6 +7346,11 @@ class _MappedOutput:
         self.seal_depths = {}    # depth -> seal strokes, occluded like content
         self.side_counts = {self.FRONT: 0, self.BACK: 0}
         self.layers = []
+        # Parallel to self.layers: {"role": "front"|"back"|"seal",
+        # "depth": int} per created layer, so a mapping unit can record
+        # exactly which member plays which part (visibility toggles,
+        # primary-layer selection) without name sniffing.
+        self.layer_roles = []
         # Where the emitters actually cut the artwork, in mapped space. The
         # crease anchors onto these, so they have to come from the geometry
         # that gets DRAWN: bezier mode splits the smoothed cubics, while
@@ -7195,111 +7426,17 @@ class _MappedOutput:
         self.layers.append(layer)
         return layer
 
-    def add_anchor_layer(self, position, arc):
-        """Record the nearest-end anchor as its own layer: a small red ring.
+    def group_output(self):
+        """Pack this run's layers into one group (legacy, unit-less runs).
 
-        Same contract as the axis snapshots: the marker is provenance the
-        restore can read back, so a stored run brings its STACKING back too,
-        not just its axes. The ring's centre alone is NOT enough to restore
-        from - hv is two-to-one across every crease, so a position on a
-        folded sheet has a preimage per flap and a geometric solve can land
-        on the wrong one, inverting the stacking. The ARC COORDINATES are
-        therefore written into the layer name (readable provenance in the
-        panel, exact restore for Re-expand); the ring's centre stays the
-        geometric fallback for a renamed layer.
-        """
-        if position is None:
-            return []
-        name = f"{NEAREST_LAYER_NAME} ({arc[0]:.2f}, {arc[1]:.2f})"
-        layer = _create_mapped_layer(self.scene, self.row, name)
-        if layer < 0:
-            return []
-        self._track_new_layer(layer)
-        image = self.scene.image_at(self.row, layer, True)
-        if image is None:
-            return []
-        radius = 5.0
-        ring = [(position[0] + radius * math.cos(2.0 * math.pi * k / 16),
-                 position[1] + radius * math.sin(2.0 * math.pi * k / 16))
-                for k in range(17)]
-        obj = self.animean.vectorlogic.make_stroke_object(
-            ring, NEAREST_HANDLE_COLOR, 1.5, image.stroke_count() + 1, False, False)
-        obj.property = NEAREST_LAYER_PROPERTY
-        image.add_stroke_object(obj)
-        return [layer]
-
-    def add_guide_layers(self, h_guide, v_guide):
-        """Draw the two MAIN guide axes into their own layers.
-
-        Each axis is drawn at ITS OWN width, taken from the guide asset. An
-        earlier version drew both at 0.8 * width_scale - a stroke width chosen
-        for the crease - and Re-expand then handed that number back as the
-        guide's width, so restoring a guide visibly changed its thickness.
-        The snapshot has to be lossless in every field the restore reads.
-
-        These are the axes that shaped this run, recorded next to the result
-        they produced, on the board the result landed on. The live guides stay
-        where they were - session assets drawn as overlays, still editable and
-        still removable by their x badge - so this is a snapshot, not a move:
-        re-running the mapping after nudging a guide gives a new group whose
-        axes show what THAT run used.
-        """
-        created = []
-        for name, guide, prop in ((H_LAYER_NAME, h_guide, H_GUIDE_LAYER_PROPERTY),
-                                  (V_LAYER_NAME, v_guide, V_GUIDE_LAYER_PROPERTY)):
-            points = (guide or {}).get("points") or []
-            if len(points) < 2:
-                continue
-            width = float((guide or {}).get("width", 3.0))
-            layer = _create_mapped_layer(self.scene, self.row, name)
-            if layer < 0:
-                continue
-            self._track_new_layer(layer)
-            # Same shift _track_new_layer applies to self.layers: the new layer
-            # went to index 0, so everything recorded here moved down one.
-            # Without this both axes reported index 0 and the H/V group was
-            # built from one layer named twice.
-            created = [index + 1 for index in created]
-            image = self.scene.image_at(self.row, layer, True)
-            if image is None:
-                continue
-            color = H_COLOR if prop == H_GUIDE_LAYER_PROPERTY else V_COLOR
-            commands = (guide or {}).get("commands")
-            if commands:
-                # The snapshot must be lossless in every field the restore
-                # reads, and the restore now reads the CURVE: building the
-                # stroke from the real path keeps Re-expand from demoting a
-                # curve guide to its flattening.
-                obj = self.animean.vectorlogic.make_stroke_object_from_path(
-                    commands, [(float(x), float(y)) for x, y in points],
-                    color, width, image.stroke_count() + 1)
-            else:
-                obj = self.animean.vectorlogic.make_stroke_object(
-                    [(float(x), float(y)) for x, y in points], color, width,
-                    image.stroke_count() + 1, False, False)
-            obj.property = prop
-            image.add_stroke_object(obj)
-            created.append(layer)
-        return created
-
-    def group_output(self, guide_layers):
-        """Pack this run into one nested group: [H/V [H, V], front, back, crease].
-
-        The guide subgroup starts collapsed - it is provenance, not something
-        you edit - which is exactly what nesting buys: one row in the panel
-        that opens into two axes.
+        Unit runs never call this - their layers are adopted into the unit's
+        own tagged group in place (_install_unit_output).
         """
         try:
-            guide_group = 0
-            if guide_layers:
-                guide_group = self.scene.create_layer_group(
-                    GUIDE_GROUP_NAME, guide_layers, [], True)
-            members = [index for index in self.layers if index not in guide_layers]
-            groups = [guide_group] if guide_group else []
-            if not members and not groups:
+            if not self.layers:
                 return 0
             return self.scene.create_layer_group(
-                MAPPING_GROUP_NAME, members, groups, False)
+                MAPPING_GROUP_NAME, list(self.layers), [], False)
         except AttributeError:
             return 0  # older build without the grouping bindings
 
@@ -7363,17 +7500,22 @@ class _MappedOutput:
         for depth in deep_first:
             if self.depths.get(depth):
                 plan.append((self._layer_name(depth, generic),
-                             self.depths[depth], False))
+                             self.depths[depth], False, depth))
             if self.seal_depths.get(depth):
                 name = (SEAL_LAYER_NAME if depth == 0 and not generic
                         else f"{SEAL_LAYER_NAME} depth {depth}")
-                plan.append((name, self.seal_depths[depth], True))
-        for name, items, seal in plan:
+                plan.append((name, self.seal_depths[depth], True, depth))
+        for name, items, seal, depth in plan:
             layer = _create_mapped_layer(self.scene, self.row, name)
             if layer < 0:
                 print(f"[auto_mapping] could not create the '{name}'.")
                 continue
             self._track_new_layer(layer)
+            self.layer_roles.append({
+                "role": ("seal" if seal
+                          else ("front" if depth == 0 else "back")),
+                "depth": depth,
+            })
             image = self.scene.image_at(self.row, layer, True)
             if image is None:
                 print(f"[auto_mapping] '{name}' has no editable cell.")
@@ -7385,6 +7527,7 @@ class _MappedOutput:
         for layer in sorted(self.layers, reverse=True):
             _discard_mapped_layer(self.scene, layer)
         self.layers = []
+        self.layer_roles = []
 
 
 def _fold_runs(map_point, piece, cuts=None):
@@ -7940,8 +8083,10 @@ def _perform_mapping():
     generated = 0
     clipped_out = 0
     mapped_fills = 0
-    guide_layers = []
     mapping_group = 0
+    layer_names = ""
+    uid = _ACTIVE_UNIT["id"]
+    unit_meta = _UNIT_META.get(uid) if uid else None
     try:
         for stroke in child_pattern:
             color_tuple, width = _stroke_style(stroke, width_scale)
@@ -7958,22 +8103,22 @@ def _perform_mapping():
                         main_area, width_scale)
         added = out.flush()
         if added:
-            # Provenance first, so the axes sit above the artwork they shaped
-            # and the whole run collapses to a single panel row.
-            guide_layers = out.add_guide_layers(main_assets.get(H_PROPERTY),
-                                                main_assets.get(V_PROPERTY))
-            anchor = getattr(map_point, "depth_anchor", None)
-            if anchor is None:
-                frame = map_point.main_frame
-                arc_h, arc_v = _nearest_arc()
-                anchor = (min(max(arc_h, -frame.h_arc), frame.h_total - frame.h_arc),
-                          min(max(arc_v, -frame.v_arc), frame.v_total - frame.v_arc))
-            anchor_layers = out.add_anchor_layer(map_point.main_frame.hv(*anchor), anchor)
-            if anchor_layers:
-                # The anchor layer went to index 0; every axis index recorded
-                # before it moved down one.
-                guide_layers = [index + 1 for index in guide_layers] + anchor_layers
-            mapping_group = out.group_output(guide_layers)
+            # Names read now: installing into a unit deletes the previous
+            # run's members, which shifts every index recorded in out.layers.
+            layer_names = ", ".join(f"'{main.layer_name(index)}'"
+                                    for index in sorted(out.layers))
+            if unit_meta is not None:
+                # UNIT RUN: adopt the new layers into the unit's group and
+                # retire the previous output in place - focus stays inside
+                # the unit, no stale copies pile up, one panel row per unit.
+                mapping_group = int(uid)
+                _install_unit_output(main, out, uid, unit_meta)
+            else:
+                # Legacy run: every click still gets its own fresh group.
+                # The axis-snapshot provenance layers (Re-expand) are gone -
+                # a mapping's guides live in its unit config now, and
+                # duplicating the unit replaces re-expanding a snapshot.
+                mapping_group = out.group_output()
     except Exception:
         # A half-filled layer without its own history commit would silently
         # ride along in the NEXT unrelated commit; roll it back instead.
@@ -7996,15 +8141,13 @@ def _perform_mapping():
         animean.ui.history_commit("Auto Mapping", "main")
     except Exception:
         pass  # older builds without the history binding
-    layer_names = ", ".join(f"'{main.layer_name(index)}'" for index in sorted(out.layers))
     summary = (f"[auto_mapping] Auto Mapping (coons interpolation, {mode} mode) mapped "
-               f"{added} stroke(s) into NEW layer(s) {layer_names} "
+               f"{added} stroke(s) into layer(s) {layer_names} "
                f"(frame {main_frame + 1} of main_paint_view, width x{width_scale:.2f})")
-    if mapping_group:
-        summary += (f"; packed into layer group '{MAPPING_GROUP_NAME}' with a collapsed "
-                    f"'{GUIDE_GROUP_NAME}' subgroup holding the two axes")
-    elif guide_layers:
-        summary += "; the axes were recorded but this build cannot group layers"
+    if unit_meta is not None:
+        summary += f"; refreshed the automapping layer (group {uid}) in place"
+    elif mapping_group:
+        summary += f"; packed into layer group '{MAPPING_GROUP_NAME}'"
     if mapped_fills:
         deepest = max((d for d in out.depths if out.depths[d]), default=0)
         summary += f"; {mapped_fills} fill group(s) mapped"
@@ -8040,10 +8183,13 @@ def _perform_mapping():
 
 
 def _run():
+    _RUN_GUARD["depth"] += 1
     try:
         _perform_mapping()
     except Exception as error:  # keep the UI alive; feedback goes to the debug dock
         print(f"[auto_mapping] error: {error!r}")
+    finally:
+        _RUN_GUARD["depth"] -= 1
 
 
 # ---------------------------------------------------------------------------
@@ -8067,6 +8213,17 @@ def _capture_mapping_item(cell, stroke, message):
     except Exception as error:
         print(f"[auto_mapping] capture skipped: {error}")
         return
+
+    if _UNIT_META and _ACTIVE_UNIT["id"] is None:
+        # Unit mode with nothing focused: a drawn guide would land in the
+        # hidden legacy scratch and "disappear". Give it a home instead -
+        # the muscle-memory workflow (draw first, organise later) keeps
+        # working, it just creates the automapping layer implicitly.
+        if _create_unit() is None:
+            print("[auto_mapping] focus an automapping layer first "
+                  "(right-click the layer panel to create one).")
+            return
+        print("[auto_mapping] created a new automapping layer for this guide.")
 
     strokes = scene.cell_to_dict(layer, row, True, POLY_STEP)["image"]["strokes"]
     if index >= len(strokes):
@@ -8233,6 +8390,7 @@ def _overlay_removed(cell, stroke, message):
             except Exception:
                 pass
         print(f"[auto_mapping] additional line (id {pair_id}) removed")
+        _maybe_auto_run()
         return
     assets = _assets_for(view)
     if item_id in assets:
@@ -8256,6 +8414,7 @@ def _overlay_removed(cell, stroke, message):
         else:
             print(f"[auto_mapping] removed {label} in {view} view")
         _overlays_changed(view)
+        _maybe_auto_run()
 
 
 def _history_restored(cell, stroke, message):
@@ -8299,6 +8458,7 @@ def _tool_option_changed(cell, stroke, message):
                 _animean().ui.refresh_tool_options()
             except Exception:
                 pass
+            _maybe_auto_run()
         return
     if hook == "rdp_eps":
         try:
@@ -8308,18 +8468,21 @@ def _tool_option_changed(cell, stroke, message):
         if _RDP_STATE["eps"] != eps:
             _RDP_STATE["eps"] = eps
             print(f"[auto_mapping] RDP tolerance -> {eps:.1f}px")
+            _maybe_auto_run()
         return
     if hook == "fold_split":
         enabled = str(message.get("value", "")).lower() == "on"
         if _FOLD["split"] != enabled:
             _FOLD["split"] = enabled
             print(f"[auto_mapping] front/back fold split {'ON' if enabled else 'OFF'}")
+            _maybe_auto_run()
         return
     if hook == "fold_seal":
         enabled = str(message.get("value", "")).lower() == "on"
         if _FOLD["seal"] != enabled:
             _FOLD["seal"] = enabled
             print(f"[auto_mapping] crease strokes {'ON' if enabled else 'OFF'}")
+            _maybe_auto_run()
         return
     if hook == "bridge_topology":
         enabled = str(message.get("value", "")).lower() == "on"
@@ -8331,6 +8494,7 @@ def _tool_option_changed(cell, stroke, message):
             # controls live in this panel, so no refresh is needed (the
             # RDP slider needs one only because curve mode lives in the
             # menu bar, outside the panel).
+            _maybe_auto_run()
         return
     if hook == "bridge_tension":
         try:
@@ -8340,6 +8504,7 @@ def _tool_option_changed(cell, stroke, message):
         if _BRIDGE["tension"] != tension:
             _BRIDGE["tension"] = tension
             print(f"[auto_mapping] bridge tension k -> {tension:.2f} x |AB|")
+            _maybe_auto_run()
         return
     if hook == "back_shade":
         try:
@@ -8352,6 +8517,7 @@ def _tool_option_changed(cell, stroke, message):
         level = int(round(20 + shade * 2.0))
         _FOLD["back_color"] = (level, level + 8, level + 32, 255)
         print(f"[auto_mapping] back/lining shade -> {_FOLD['back_color'][:3]}")
+        _maybe_auto_run()
         return
     # The refer grid used to be a tool option here. It moved to a per-board
     # View menu: it is a display choice about a BOARD, not a setting of the
@@ -8443,186 +8609,371 @@ def _report_occlusion():
               f"guide rectangle lands face-down (tinted).")
 
 
-def _legacy_guide_axis(stroke, layer_name):
-    """Which axis an OLD snapshot stroke is, when both shared one property.
+def _install_unit_output(scene, out, uid, meta):
+    """Adopt this run's layers into the unit group and retire the previous
+    output IN PLACE.
 
-    By COLOUR, not by layer name. The name looks like the obvious key and is
-    the wrong one: _create_mapped_layer routes every name through
-    uniqueLayerName, which drifts a taken name to "H axis1", "H axis2", ... -
-    so only the very first run in a document ever owns the bare "H axis", and
-    keying on it silently lost every later run's snapshot. The colour is
-    exact: the old code picked it from the loop's intended name before the
-    model renamed anything, so blue IS the H axis and green IS the V axis.
-    The name is kept as a last resort, matched as a prefix.
+    Focus survives on the new front layer (set BEFORE the old members die,
+    so the current layer never dangles into a deleted column), stale copies
+    never pile up, and only layers the unit RECORDED as its own are touched
+    - anything the user dragged into the group by hand stays.
     """
-    color = stroke.get("color") or {}
     try:
-        rgb = (int(color.get("r", -1)), int(color.get("g", -1)), int(color.get("b", -1)))
-    except (TypeError, ValueError):
-        rgb = (-1, -1, -1)
-    if rgb == H_COLOR[:3]:
-        return H_GUIDE_LAYER_PROPERTY
-    if rgb == V_COLOR[:3]:
-        return V_GUIDE_LAYER_PROPERTY
-    if layer_name.startswith(H_LAYER_NAME):
-        return H_GUIDE_LAYER_PROPERTY
-    if layer_name.startswith(V_LAYER_NAME):
-        return V_GUIDE_LAYER_PROPERTY
-    return ""
+        scene.add_layers_to_group(int(uid), list(out.layers))
+    except AttributeError:
+        pass  # older build without the grouping binding: layers stay loose
 
+    members = {}
+    primary_id = 0
+    primary_index = None
+    for index, role in zip(out.layers, out.layer_roles):
+        lid = scene.layer_id_at(index)
+        if lid:
+            members[str(lid)] = dict(role)
+        if role.get("role") == "front" and primary_index is None:
+            primary_index = index
+            primary_id = lid
+    if primary_index is None and out.layers:
+        primary_index = out.layers[0]
+        primary_id = scene.layer_id_at(primary_index)
 
-def _guide_axes_in_layers(scene, frame, layer_indices):
-    """{property -> (points, width, commands)} for the axis snapshots on
-    these layers.
-
-    Identified by the stroke property, so a renamed layer still restores
-    correctly; the layer name is only consulted for snapshots written before
-    the two axes carried separate properties. `commands` is the snapshot
-    stroke's real path (None on snapshots from before guides kept curves) -
-    the restore hands it back to run_center_line_tool so a curve guide
-    round-trips as a curve.
-    """
-    found = {}
-    for index in layer_indices:
-        if index is None or index < 0:
-            continue
+    if primary_index is not None:
+        # Directly on the MAIN model, never ui.set_current: that binding
+        # writes whichever view is active, and a live re-run triggered from
+        # a texture-board edit would move the CHILD's layer focus instead.
         try:
-            cell = scene.cell_to_dict(index, frame, True, POLY_STEP)
-        except Exception:
-            continue
-        raw_strokes = []
-        try:
-            raw_strokes = scene.cell_to_dict(index, frame, False)["image"]["strokes"]
+            scene.set_current_layer(primary_index)
         except Exception:
             pass
-        name = ""
+
+    old_members = set((meta.get("members") or {}).keys())
+    old_members.add(str(meta.get("primary") or 0))
+    for lid in old_members:
         try:
-            name = scene.layer_name(index)
-        except Exception:
-            pass
-        for position, stroke in enumerate(cell["image"]["strokes"]):
-            prop = stroke.get("property") or ""
-            if prop == GUIDE_LAYER_PROPERTY:
-                prop = _legacy_guide_axis(stroke, name)
-            if prop == NEAREST_LAYER_PROPERTY and prop not in found:
-                # The layer NAME carries the exact arc; the ring centre is
-                # the geometric fallback (renamed layer). The ring closes on
-                # a duplicated first vertex - averaging it twice biased the
-                # centre by radius/17 px, drifting the anchor a third of a
-                # pixel per map->re-expand cycle, always the same direction.
-                arc = None
-                match = re.search(r"\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)",
-                                  name or "")
-                if match:
-                    arc = (float(match.group(1)), float(match.group(2)))
-                points = _stroke_points(stroke)
-                if points and len(points) >= 2 and _dist(points[0], points[-1]) <= 1e-9:
-                    points = points[:-1]
-                if points:
-                    cx = sum(p[0] for p in points) / len(points)
-                    cy = sum(p[1] for p in points) / len(points)
-                    found[prop] = ((cx, cy), 0.0, arc)
-                continue
-            if prop not in (H_GUIDE_LAYER_PROPERTY, V_GUIDE_LAYER_PROPERTY):
-                continue
-            points = _stroke_points(stroke)
-            if len(points) < 2 or prop in found:
-                continue
-            commands = None
-            if position < len(raw_strokes):
-                commands = raw_strokes[position].get("commands") or None
-            found[prop] = (points, float(stroke.get("width", 3.0)), commands)
-    return found
+            lid_int = int(lid)
+        except (TypeError, ValueError):
+            continue
+        if lid_int <= 0 or str(lid_int) in members:
+            continue
+        index = scene.layer_index_for_id(lid_int)
+        if index >= 0:
+            _discard_mapped_layer(scene, index)
+
+    meta["members"] = members
+    meta["primary"] = primary_id
+    _apply_member_visibility(uid, scene)
+    _save_units("main")
 
 
-def _layer_menu_items(context):
-    """Offer 'Re-expand' on a group that holds an axis snapshot."""
-    if context.get("kind") != "group":
-        return []
-    view = context.get("view") or "main"
-    try:
-        scene = _scene_model(view)
-    except Exception:
-        return []
-    axes = _guide_axes_in_layers(scene, scene.current_frame(),
-                                 context.get("members") or [])
-    if not any(prop in axes for prop in (H_GUIDE_LAYER_PROPERTY,
-                                         V_GUIDE_LAYER_PROPERTY)):
-        return []  # an anchor marker alone restores nothing
-    return [{
-        "name": RESTORE_GUIDES_ACTION,
-        "title": "Re-expand (restore these axes as the guides)",
-    }]
-
-
-def _layer_menu_action(message):
-    """Put a stored axis snapshot back as this view's live H/V guides.
-
-    The snapshot was taken in the coordinates of the board it sits on, so
-    restoring it is exact: the mapping that produced the group can be re-run
-    from the same axes, and the overlays land back on top of the very strokes
-    the group is showing.
-    """
-    if message.get("action") != RESTORE_GUIDES_ACTION:
+def _apply_member_visibility(uid, scene=None):
+    """Push the unit's front/back/crease display toggles onto its member
+    layers - the settings window's checkboxes ARE layer visibility."""
+    meta = _UNIT_META.get(uid)
+    if not meta:
         return
-    view = message.get("view") or "main"
+    if scene is None:
+        try:
+            scene = _scene_model("main")
+        except Exception:
+            return
+    settings = _unit_settings(uid)
+    for lid, info in (meta.get("members") or {}).items():
+        try:
+            index = scene.layer_index_for_id(int(lid))
+        except (TypeError, ValueError):
+            continue
+        if index < 0:
+            continue
+        visible = bool(settings.get(f"{info.get('role', 'front')}_visible", True))
+        try:
+            scene.set_layer_visible(index, visible)
+        except Exception:
+            pass
+
+
+def _maybe_auto_run():
+    """Live re-render: re-run the active unit's mapping after a committed
+    edit (guide drag, redraw, additional line, nearest move, option change,
+    pattern stroke). A no-op outside unit focus, while a run is already in
+    flight, or when the unit's Live Re-render checkbox is off."""
+    uid = _ACTIVE_UNIT["id"]
+    if uid is None or _RUN_GUARD["depth"]:
+        return
+    if not _unit_settings(uid).get("auto_render", True):
+        return
+    _run()
+
+
+def _pattern_changed(cell, stroke, message):
+    """Texture-board artwork edits refresh the focused unit automatically."""
+    if message.get("view") != "child" or _RUN_GUARD["depth"]:
+        return
+    if message.get("tool") == "extra" and message.get("event") == "linefinish":
+        return  # a guide/area/additional capture: its own tail re-runs
+    _maybe_auto_run()
+
+
+def _create_unit(view="main", commit=True):
+    """New Auto-Mapping Layer: a tagged group + one (empty) primary member.
+
+    The unit starts with no guides - the user draws H/V with the center-line
+    tools while the unit has focus, and every capture lands in THIS unit's
+    config. The member layer exists from the start so the unit is focusable
+    (and stays focusable across re-runs)."""
+    try:
+        scene = _scene_model("main")
+    except Exception as error:
+        print(f"[auto_mapping] unit creation skipped: {error}")
+        return None
+    row = max(scene.current_frame(), 0)
+    layer = _create_mapped_layer(scene, row)
+    if layer < 0:
+        print("[auto_mapping] could not create the unit's layer.")
+        return None
+    try:
+        gid = scene.create_layer_group(MAPPING_GROUP_NAME, [layer], [], False)
+    except AttributeError:
+        gid = 0
+    if not gid:
+        print("[auto_mapping] this build cannot group layers; no unit created.")
+        _discard_mapped_layer(scene, layer)
+        return None
+    try:
+        scene.set_layer_group_tag(gid, UNIT_TAG)
+    except AttributeError:
+        print("[auto_mapping] this build cannot tag layer groups; no unit created.")
+        return None
+    uid = str(gid)
+    primary_id = scene.layer_id_at(layer)
+    _UNIT_META[uid] = {
+        "settings": dict(_UNIT_SETTING_DEFAULTS),
+        "primary": primary_id,
+        "members": {str(primary_id): {"role": "front", "depth": 0}},
+    }
+    _UNIT_ASSETS.setdefault("main", {})[uid] = {}
+    _UNIT_ASSETS.setdefault("child", {})[uid] = {}
+    _save_units("main")
+    _save_units("child")
+    animean = _animean()
+    try:
+        # Directly on the main model (ui.set_current writes whichever view
+        # is active); the refresh below re-syncs panels and attention.
+        scene.set_current_layer(layer)
+    except Exception:
+        pass
+    _activate_unit(uid)
+    animean.ui.refresh()
+    if commit:
+        try:
+            animean.ui.history_commit("New Auto-Mapping Layer", "main")
+        except Exception:
+            pass
+    return uid
+
+
+def _duplicate_unit(source_uid):
+    """Duplicate an automapping layer: copy its CONFIG into a fresh unit and
+    re-render. The output regenerates from the config, so nothing else needs
+    deep-copying - this is the workflow that replaced Re-expand."""
+    if source_uid not in _UNIT_META:
+        print("[auto_mapping] duplicate: that group is not an automapping layer.")
+        return None
+    source_settings = dict(_UNIT_META[source_uid].get("settings") or {})
+    source_assets = {
+        view: _UNIT_ASSETS.get(view, {}).get(source_uid) or {}
+        for view in ("main", "child")
+    }
+    uid = _create_unit(commit=False)
+    if uid is None:
+        return None
+    _UNIT_META[uid]["settings"] = source_settings
+    for view in ("main", "child"):
+        # _sanitize_assets builds fresh structures from what it reads, so
+        # the copy shares nothing mutable with the source unit.
+        _UNIT_ASSETS[view][uid] = _sanitize_assets(source_assets[view])
+        _save_units(view)
+    _invalidate_grid_cache()
+    _push_overlay("main")
+    _push_overlay("child")
+    _maybe_auto_run()
+    try:
+        _animean().ui.history_commit("Duplicate Auto-Mapping Layer", "main")
+    except Exception:
+        pass
+    return uid
+
+
+def _create_plain_layer(view, fill=False):
+    """New Line Layer / New Fill Layer from the panel's context menu."""
     try:
         scene = _scene_model(view)
     except Exception as error:
-        print(f"[auto_mapping] re-expand skipped: {error}")
+        print(f"[auto_mapping] layer creation skipped: {error}")
+        return
+    index = scene.add_fill_layer() if fill else scene.add_layer()
+    if index is None or index < 0:
+        return
+    try:
+        scene.set_layer_name(index, "fill layer" if fill else "line layer")
+    except Exception:
+        pass
+    animean = _animean()
+    try:
+        animean.ui.set_current(layer=index)
+    except Exception:
+        pass
+    animean.ui.refresh()
+    try:
+        animean.ui.history_commit(
+            "New Fill Layer" if fill else "New Line Layer", view)
+    except Exception:
+        pass
+
+
+def _unit_from_menu_message(scene, message):
+    """Resolve which unit a layer-menu action targets."""
+    group = int(message.get("group") or 0)
+    if group > 0:
+        try:
+            if scene.layer_group_tag(group) == UNIT_TAG:
+                return str(group)
+        except AttributeError:
+            return None
+        return None
+    layer = message.get("layer")
+    if isinstance(layer, int) and layer >= 0:
+        return _unit_for_layer(scene, layer)
+    return None
+
+
+def _layer_menu_items(context):
+    """The layer panel's right-click entries.
+
+    An automapping unit's rows get Advanced Settings + Duplicate; every
+    context (rows and the empty panel area alike) gets the typed-layer
+    creation entries. The old Re-expand entry is gone: guides live in the
+    unit's config now, and duplicating the unit is the supported way to
+    derive a variant mapping.
+    """
+    items = []
+    view = context.get("view") or "main"
+    uid = None
+    if context.get("kind") == "group" and context.get("tag") == UNIT_TAG:
+        uid = str(context.get("group") or 0)
+    elif context.get("kind") == "layer" and context.get("owner_tag") == UNIT_TAG:
+        uid = str(context.get("owner_group") or 0)
+    if uid and uid in _UNIT_META:
+        # Stash the target for the settings window: the C++ dialog opens
+        # with no per-row context by design (see showLayerContextMenu).
+        _SETTINGS_TARGET["unit"] = uid
+        items.append({"name": "unit_settings", "title": "Advanced Settings...",
+                      "kind": "settings", "settings": UNIT_SETTINGS_NAME})
+        items.append({"name": DUPLICATE_UNIT_ACTION,
+                      "title": f"Duplicate {UNIT_LAYER_TITLE}"})
+        items.append({"kind": "separator", "name": "-"})
+    if view == "main":
+        items.append({"name": NEW_UNIT_ACTION,
+                      "title": f"New {UNIT_LAYER_TITLE}"})
+    items.append({"name": NEW_LINE_LAYER_ACTION, "title": "New Line Layer"})
+    items.append({"name": NEW_FILL_LAYER_ACTION, "title": "New Fill Layer"})
+    return items
+
+
+def _layer_menu_action(message):
+    action = message.get("action") or ""
+    view = message.get("view") or "main"
+    if action == NEW_UNIT_ACTION:
+        _create_unit(view)
+        return
+    if action == NEW_LINE_LAYER_ACTION:
+        _create_plain_layer(view, fill=False)
+        return
+    if action == NEW_FILL_LAYER_ACTION:
+        _create_plain_layer(view, fill=True)
+        return
+    if action == DUPLICATE_UNIT_ACTION:
+        try:
+            scene = _scene_model("main")
+        except Exception as error:
+            print(f"[auto_mapping] duplicate skipped: {error}")
+            return
+        uid = _unit_from_menu_message(scene, message)
+        if uid:
+            _duplicate_unit(uid)
         return
 
-    axes = _guide_axes_in_layers(scene, scene.current_frame(),
-                                 message.get("members") or [])
-    if not axes:
-        print("[auto_mapping] re-expand: this group holds no stored axes.")
+
+def _unit_settings_layout():
+    """The Advanced Settings window of one automapping layer.
+
+    Re-evaluated every time the window opens (register_settings takes the
+    callable), so the checkboxes always show the TARGET unit's stored state.
+    """
+    uid = _SETTINGS_TARGET["unit"] or _ACTIVE_UNIT["id"]
+    s = _unit_settings(uid)
+
+    def check(name, title, row):
+        return {"name": name, "hook": "unit_setting", "type": "check",
+                "title": title, "value": "on" if s.get(name) else "off",
+                "row": row, "start_column": 0, "end_column": 1}
+
+    controls = [
+        check("show_h", "H Axis", 0),
+        check("show_v", "V Axis", 1),
+        check("show_additional", "Additional Lines", 2),
+        check("show_area", "Mapping Area", 3),
+        check("show_nearest", "Nearest-Point Handle", 4),
+        check("show_grid", "Refer-Rect Grid", 5),
+        {"name": "grid_divisions", "hook": "unit_setting", "type": "list",
+         "title": "Grid Density",
+         "options": [{"title": str(n), "value": str(n)}
+                     for n in GRID_DIVISION_CHOICES],
+         "value": str(s.get("grid_divisions", 5)),
+         "row": 6, "start_column": 0, "end_column": 1,
+         "visible_when": {"name": "show_grid", "values": ["on"]}},
+        check("show_occlusion", "Occluded Areas (texture board)", 7),
+        check("front_visible", "Front / Front Lines", 8),
+        check("back_visible", "Back / Back Lines", 9),
+        check("seal_visible", "Crease Lines", 10),
+        check("auto_render", "Live Re-render", 11),
+    ]
+    return {"controls": controls}
+
+
+def _unit_setting_changed(cell, stroke, message):
+    """One handler for the whole Advanced Settings window."""
+    if message.get("hook") != "unit_setting":
         return
-
-    # Drive the H and V line tools, one per axis - the same call drawing a
-    # guide makes - rather than writing the asset dict from here.
-    restored = []
-    for prop, target in ((H_GUIDE_LAYER_PROPERTY, H_PROPERTY),
-                         (V_GUIDE_LAYER_PROPERTY, V_PROPERTY)):
-        if prop not in axes:
-            continue
-        points, width, commands = axes[prop]
-        if run_center_line_tool(view, target, points, width, commands):
-            restored.append(ITEM_LABELS[target])
-    if not restored:
-        print("[auto_mapping] re-expand: nothing to restore.")
+    uid = _SETTINGS_TARGET["unit"] or _ACTIVE_UNIT["id"]
+    meta = _UNIT_META.get(uid)
+    if not meta:
         return
-
-    # The anchor marker restores the STACKING the run used: its ring centre,
-    # solved against the just-restored guides, is the stored arc position.
-    # (run_center_line_tool auto-created a crossing anchor above; the marker
-    # overwrites it with the recorded one.)
-    marker = axes.get(NEAREST_LAYER_PROPERTY)
-    if marker and view == "main":
-        frame = _main_guide_frame()
-        if frame is not None:
-            point, _width, arc = marker
-            if arc is None:
-                # Renamed layer: fall back to solving the ring's centre.
-                # CAVEAT: hv is two-to-one across a crease, so on a folded
-                # frame this can pick the other flap; the layer-name arc is
-                # the authoritative record precisely because of that.
-                arc = frame.solve(point, 0.0, 0.0)
-            l_h = min(max(arc[0], -frame.h_arc), frame.h_total - frame.h_arc)
-            l_v = min(max(arc[1], -frame.v_arc), frame.v_total - frame.v_arc)
-            _assets_for("main")[NEAREST_PROPERTY] = {"arc": [l_h, l_v]}
-            _save_assets("main")
-            _push_nearest_handle()
-            restored.append("nearest point")
-
+    name = message.get("name") or ""
+    raw = message.get("value")
+    settings = meta.setdefault("settings", {})
+    if name == "grid_divisions":
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return
+        if value not in GRID_DIVISION_CHOICES:
+            return
+        settings[name] = value
+    elif name in _UNIT_SETTING_DEFAULTS:
+        settings[name] = str(raw).lower() in ("on", "true", "1")
+    else:
+        return
+    _save_units("main")
+    if name in ("front_visible", "back_visible", "seal_visible"):
+        _apply_member_visibility(uid)
+    if uid == _ACTIVE_UNIT["id"]:
+        _invalidate_grid_cache()
+        _push_overlay("main")
+        _push_overlay("child")
     try:
         _animean().ui.refresh()
-        _animean().ui.history_commit("Re-expand Guides", view)
     except Exception:
-        pass  # older builds without the history binding
-    assets = _assets_for(view)
-    missing = [ITEM_LABELS[p] for p in GUIDE_PROPERTIES if p not in assets]
-    print(f"[auto_mapping] re-expanded {', '.join(restored)} onto {view}_paint_view"
-          + (f"; still missing: {', '.join(missing)}" if missing else ""))
+        pass
 
 
 MENU_NAME = "auto_mapping"
@@ -8862,6 +9213,9 @@ def run_center_line_tool(view_name, property_value, points, width=3.0, commands=
               "(drag the red handle to restack fold layers).")
     _save_assets(view_name)
     _overlays_changed(view_name)
+    # A redrawn axis rebuilds the grid above; with unit focus the mapping
+    # re-renders live too.
+    _maybe_auto_run()
     return True
 
 
@@ -9184,6 +9538,7 @@ def run_additional_line_tool(view_name, points, width=2.5, commands=None):
     check, _why = _mapper_from_assets()
     for note in getattr(check, "additional_notes", ()) if check else ():
         print(f"[auto_mapping] warning: {note}")
+    _maybe_auto_run()
     return True
 
 
@@ -10861,9 +11216,19 @@ python_hooks.register_menu({
     "items": _menu_items,          # callable: re-evaluated on every open
 })
 python_hooks.register_settings(LINE_SETTINGS_NAME, _line_settings_layout)
+# Each automapping layer's Advanced Settings window (right-click -> settings;
+# the provider stashes WHICH unit before the window opens).
+python_hooks.register_settings(UNIT_SETTINGS_NAME, _unit_settings_layout)
 python_hooks.set_hook(_menu_action, menu=True)
 python_hooks.set_hook(_line_display_changed, option=True)
+python_hooks.set_hook(_unit_setting_changed, option=True)
 python_hooks.set_hook(_layer_menu_action, layermenu=True)
+# Unit focus follows the MAIN board's current layer: entering an automapping
+# layer shows its guides and arms live re-render, leaving hides them.
+python_hooks.set_hook(_layer_focus_event, layerchange=True)
+# Live re-render on texture-board artwork edits while a unit has focus.
+python_hooks.set_hook(_pattern_changed, linefinish=True, erasefinish=True,
+                      deletefinish=True, fillfinish=True, movefinish=True)
 # The nearest-end anchor (red handle) reacts from startup: its drag events
 # arrive whenever the main guides exist, not only while a tool is armed.
 python_hooks.set_hook(_nearest_handle_event, handle=True)

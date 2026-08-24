@@ -163,14 +163,27 @@ def menu_items_json(context):
             print(f"[python_hooks] menu provider failed: {error}")
             continue
         for item in produced:
+            kind = item.get("kind") or "action"
+            if kind == "separator":
+                items.append({"kind": "separator", "name": "-"})
+                continue
             name = item.get("name")
             if not name:
                 continue
-            items.append({
+            entry = {
                 "name": name,
                 "title": item.get("title") or name,
                 "enabled": bool(item.get("enabled", True)),
-            })
+                "kind": kind,
+            }
+            if kind == "settings":
+                # Declarative, like the menu bar: C++ opens the registered
+                # settings window itself after the menu closes. The provider
+                # saw the full row context when it produced this entry, so
+                # per-row state (which layer the window edits) is stashed by
+                # the provider, not carried here.
+                entry["settings"] = item.get("settings") or name
+            items.append(entry)
     return json.dumps(items)
 
 
@@ -237,6 +250,7 @@ def set_hook(
     pad=False,
     viewbutton=False,
     layermenu=False,
+    layerchange=False,
     handle=False,
     menu=False,
     tool=None,
@@ -261,6 +275,7 @@ def set_hook(
         "pad": pad,
         "viewbutton": viewbutton,
         "layermenu": layermenu,
+        "layerchange": layerchange,
         "handle": handle,
         "menu": menu,
     }

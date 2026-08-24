@@ -179,6 +179,12 @@ struct AnimeLayerNode {
     int groupId = 0;
     QString name;          // groups only
     bool collapsed = false; // groups only
+    // Groups only: an opaque KIND string a script tool stamps on a group it
+    // owns (e.g. "automapping"). The C++ side never interprets it beyond
+    // carrying it through persistence, history and the layer context menu -
+    // it is what lets a tool recognise its own unit-of-work groups without
+    // the name-prefix guessing that uniqueLayerName() defeats.
+    QString tag;
     QVector<AnimeLayerNode> children;
 
     bool isGroup() const { return groupId > 0; }
@@ -307,6 +313,17 @@ public:
                          bool collapsed = false);
     bool setLayerGroupCollapsed(int groupId, bool collapsed);
     bool setLayerGroupName(int groupId, const QString &name);
+    // Detaches the named layers from wherever they sit and appends them to
+    // an EXISTING group - the missing half of createLayerGroup that lets a
+    // tool refresh a unit-of-work group's members in place. Returns how many
+    // layers moved.
+    int addLayersToGroup(int groupId, const QVector<int> &layerIndices);
+    // The opaque script-owned kind string on a group (see AnimeLayerNode::tag).
+    bool setLayerGroupTag(int groupId, const QString &tag);
+    QString layerGroupTag(int groupId) const;
+    // The innermost group that (transitively) contains this column, filtered
+    // to groups carrying `tag` when it is non-empty; 0 when none does.
+    int groupIdForLayer(int layerIndex, const QString &tag = QString()) const;
     // Removes the group itself, splicing its children into its parent.
     bool dissolveLayerGroup(int groupId);
     // Every column id at or below this group, in tree order.

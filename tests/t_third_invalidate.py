@@ -1,9 +1,10 @@
 """Guide edits must retire additional-line thirds - incl. delete-then-redraw."""
 import math
+import os
 import sys
 import types
 
-ROOT = r"C:\Users\admin\Documents\AnimeAn"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT + r"\pyfile")
 sys.modules.setdefault("animean_python", types.ModuleType("animean_python"))
 import auto_mapping as am

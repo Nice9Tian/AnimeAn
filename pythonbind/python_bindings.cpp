@@ -1671,6 +1671,7 @@ void bindAnimeanPythonModule(py::module_ &m)
                         group["group"] = node.groupId;
                         group["name"] = node.name.toStdString();
                         group["collapsed"] = node.collapsed;
+                        group["tag"] = node.tag.toStdString();
                         group["children"] = convert(node.children);
                         out.append(group);
                         continue;
@@ -1710,6 +1711,28 @@ void bindAnimeanPythonModule(py::module_ &m)
              })
         .def("dissolve_layer_group", &AnimeSceneModel::dissolveLayerGroup)
         .def("delete_layer_group", &AnimeSceneModel::deleteLayerGroup)
+        .def("add_layers_to_group",
+             [](AnimeSceneModel &model, int groupId, const std::vector<int> &layers) {
+                 QVector<int> layerIndices;
+                 for (int index : layers) {
+                     layerIndices.append(index);
+                 }
+                 return model.addLayersToGroup(groupId, layerIndices);
+             },
+             py::arg("group_id"), py::arg("layers"))
+        .def("set_layer_group_tag",
+             [](AnimeSceneModel &model, int groupId, const std::string &tag) {
+                 return model.setLayerGroupTag(groupId, QString::fromUtf8(tag.c_str()));
+             })
+        .def("layer_group_tag",
+             [](const AnimeSceneModel &model, int groupId) {
+                 return model.layerGroupTag(groupId).toStdString();
+             })
+        .def("group_id_for_layer",
+             [](const AnimeSceneModel &model, int layerIndex, const std::string &tag) {
+                 return model.groupIdForLayer(layerIndex, QString::fromUtf8(tag.c_str()));
+             },
+             py::arg("layer_index"), py::arg("tag") = std::string())
         .def("canvas_size", [](const AnimeSceneModel &model) {
             return py::make_tuple(model.canvasSize().width(), model.canvasSize().height());
         })

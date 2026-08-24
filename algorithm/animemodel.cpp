@@ -1375,6 +1375,89 @@ bool AnimeSceneModel::layerGroupCollapsed(int groupId) const
     return group && group->collapsed;
 }
 
+int AnimeSceneModel::addLayersToGroup(int groupId, const QVector<int> &layerIndices)
+{
+    normalizeLayerTreeInternal();
+    if (!findGroup(m_scene.layerTree, groupId)) {
+        return 0;
+    }
+    QSet<int> wantedLayers;
+    for (int index : layerIndices) {
+        const int id = layerIdAt(index);
+        if (id > 0) {
+            wantedLayers.insert(id);
+        }
+    }
+    if (wantedLayers.isEmpty()) {
+        return 0;
+    }
+    QVector<AnimeLayerNode> taken;
+    QSet<int> parents;
+    int firstParentId = 0;
+    int row = 0;
+    takeNodes(m_scene.layerTree, 0, wantedLayers, QSet<int>(),
+              taken, parents, &firstParentId, &row);
+    // Re-find after the take: detaching runs over the whole tree and the
+    // by-id lookup survives any reshuffle a pointer would not.
+    AnimeLayerNode *group = findGroup(m_scene.layerTree, groupId);
+    if (!group) {
+        normalizeLayerTreeInternal(); // re-adopt the detached leaves
+        return 0;
+    }
+    for (const AnimeLayerNode &node : taken) {
+        group->children.append(node);
+    }
+    return taken.size();
+}
+
+bool AnimeSceneModel::setLayerGroupTag(int groupId, const QString &tag)
+{
+    normalizeLayerTreeInternal();
+    if (AnimeLayerNode *group = findGroup(m_scene.layerTree, groupId)) {
+        group->tag = tag;
+        return true;
+    }
+    return false;
+}
+
+QString AnimeSceneModel::layerGroupTag(int groupId) const
+{
+    const_cast<AnimeSceneModel *>(this)->normalizeLayerTreeInternal();
+    const AnimeLayerNode *group = findGroupConst(m_scene.layerTree, groupId);
+    return group ? group->tag : QString();
+}
+
+int AnimeSceneModel::groupIdForLayer(int layerIndex, const QString &tag) const
+{
+    const int layerId = layerIdAt(layerIndex);
+    if (layerId <= 0) {
+        return 0;
+    }
+    // Walk to the leaf, remembering the deepest matching group along the
+    // PATH to it - innermost wins, and an untagged wrapper around a tagged
+    // unit does not hide the unit.
+    const_cast<AnimeSceneModel *>(this)->normalizeLayerTreeInternal();
+    int found = 0;
+    std::function<bool(const QVector<AnimeLayerNode> &, int)> walk =
+        [&](const QVector<AnimeLayerNode> &nodes, int best) -> bool {
+        for (const AnimeLayerNode &node : nodes) {
+            if (node.isGroup()) {
+                const int next =
+                    (tag.isEmpty() || node.tag == tag) ? node.groupId : best;
+                if (walk(node.children, next)) {
+                    return true;
+                }
+            } else if (node.layerId == layerId) {
+                found = best;
+                return true;
+            }
+        }
+        return false;
+    };
+    walk(m_scene.layerTree, 0);
+    return found;
+}
+
 int AnimeSceneModel::addLayer()
 {
     if (m_currentFrame < 0) {
