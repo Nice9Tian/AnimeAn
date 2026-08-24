@@ -33,7 +33,14 @@ endif()
 find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets OpenGLWidgets)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets OpenGLWidgets)
 
-set(PROJECT_SOURCES
+include(CTest)
+
+# One home for the scene-model / file-format core. The app and the C++ unit
+# tests link this library instead of re-listing (and re-compiling) the same
+# translation units per target. The optional pybind11 module below keeps its
+# own source list on purpose: it compiles the same files under
+# ANIMEAN_BUILDING_PYTHON_MODULE, so it cannot share these object files.
+add_library(animean_core STATIC
     algorithm/animemodel.cpp
     algorithm/animemodel.h
     algorithm/beziersplit.cpp
@@ -43,14 +50,22 @@ set(PROJECT_SOURCES
     algorithm/vectorlogic.cpp
     algorithm/vectorlogic.h
     algorithm/viewscale.h
+    projectio.cpp
+    projectio.h
+)
+target_include_directories(animean_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/algorithm
+)
+target_link_libraries(animean_core PUBLIC Qt${QT_VERSION_MAJOR}::Widgets)
+
+set(PROJECT_SOURCES
     clipreader.cpp
     clipreader.h
     main.cpp
     mainwindow.cpp
     mainwindow.h
     mainwindow.ui
-    projectio.cpp
-    projectio.h
     selectionattention.cpp
     selectionattention.h
     openglwidget.cpp
@@ -107,7 +122,13 @@ target_include_directories(AnimeAn PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/pythonbind
 )
 
-target_link_libraries(AnimeAn PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::OpenGLWidgets)
+target_link_libraries(AnimeAn PRIVATE animean_core Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::OpenGLWidgets)
+
+if(BUILD_TESTING)
+    add_executable(projectio_tests tests/projectio_tests.cpp)
+    target_link_libraries(projectio_tests PRIVATE animean_core)
+    add_test(NAME projectio_roundtrip COMMAND projectio_tests)
+endif()
 
 if(ANIMEAN_WITH_PYTHON)
     target_sources(AnimeAn PRIVATE pythonbind/python_bindings.cpp pythonbind/python_bindings.h)
