@@ -33,6 +33,8 @@ endif()
 find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets OpenGLWidgets)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets OpenGLWidgets)
 
+include(CTest)
+
 set(PROJECT_SOURCES
     algorithm/animemodel.cpp
     algorithm/animemodel.h
@@ -108,6 +110,26 @@ target_include_directories(AnimeAn PRIVATE
 )
 
 target_link_libraries(AnimeAn PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::OpenGLWidgets)
+
+if(BUILD_TESTING)
+    add_executable(projectio_tests
+        tests/projectio_tests.cpp
+        projectio.cpp
+        projectio.h
+        algorithm/animemodel.cpp
+        algorithm/animemodel.h
+        algorithm/beziersplit.cpp
+        algorithm/beziersplit.h
+        algorithm/vectorlogic.cpp
+        algorithm/vectorlogic.h
+    )
+    target_include_directories(projectio_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/algorithm
+    )
+    target_link_libraries(projectio_tests PRIVATE Qt${QT_VERSION_MAJOR}::Widgets)
+    add_test(NAME projectio_roundtrip COMMAND projectio_tests)
+endif()
 
 if(ANIMEAN_WITH_PYTHON)
     target_sources(AnimeAn PRIVATE pythonbind/python_bindings.cpp pythonbind/python_bindings.h)

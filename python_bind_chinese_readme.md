@@ -267,7 +267,7 @@ def activate_midline_tool(name="midline", property_value="midline"):
 - **Redo 是撤回链的精确逆操作**：在任何画板上做了新操作，两个画板的 redo 尾巴都会被清除 — Ctrl+Y 永远不会复活一个时间上下文已不存在的旧操作。
 - 新增 **History 停靠窗**：列出活动画板的操作记录（笔画、擦除、填充、图层/帧/素材操作、导入、Auto Mapping 等），当前状态高亮，可重做的后续状态灰显；**点击任意一行直接跳到那个状态**（双向跳转）。切换画板焦点时列表跟着切换。
 - 实现是**快照制**：每步操作后记录整个场景模型的副本（Qt 隐式共享，未改动部分零拷贝），撤回即恢复快照 — 所以任何来源的模型改动（含 Python 脚本）都能被完整还原。
-- 打开工程 / 打开 texture view 会重置对应画板的历史（以打开后的状态为新起点）。历史不写入工程文件。
+- 打开 `.anproj` 工程会同时替换主画板和 texture view，并重置两个画板的历史；单独打开 `.textureview` 只替换和重置子画板。历史本身不写入文件。
 - mapping_asset（中心线/选区 overlay）是会话数据，不参与撤回。
 - Python 脚本改动模型后调用 `animean_python.ui.history_commit(label, view="")` 即可让这次改动成为一条可撤回的记录（`view` 空 = 活动画板）；也可用 `ui.history_undo(view)` / `ui.history_redo(view)`。`auto_mapping` 每次映射后会自动提交一条 "Auto Mapping"。
 
@@ -276,10 +276,12 @@ def activate_midline_tool(name="midline", property_value="midline"):
 内容导入不再跟随焦点，而是按菜单显式区分目标画板：
 
 - **File 菜单** 的 `Import Raster` / `Import OpenToonz Lines` / `Import Clip Studio Paint` **始终导入到主画板**（main_paint_view），无论当前焦点在哪，触发时会自动激活主画板。（`.clip` 由内置的无依赖 Clip Studio 矢量读取器 `clipreader` 解析。）
+- **File 菜单** 的 `Save` / `Save As` 始终保存完整 `.anproj` 工程，其中同时包含主画板和 texture view；保存内容不再随当前焦点变化。
 - **Texture View File 菜单**（新增顶层菜单，texture view = 子画板）用于操作子画板的文件：
   - `Import Raster / OpenToonz Lines / Clip Studio Paint into Texture View...`：把这三种格式导入到**子画板**（会先显示并激活子画板窗口）。
-  - `Open Texture View...` / `Save Texture View As...`：把子画板场景作为 `.animean` 工程文件独立读写（与主工程互不影响，便于复用同一套纹理图案）。
+  - `Open Texture View...` / `Save Texture View As...`：把子画板场景作为 `.textureview` 文件独立读写（与完整工程互不影响，便于复用同一套纹理图案）。
   - `Export Texture View Image...`：把子画板当前画面导出为 PNG（抓取画布帧缓冲；若此时 overlay 引导线可见会一并出现在图里）。
+- 旧 `.animean` 文件仍可作为工程或 texture view 打开；再次保存时会迁移为 `.anproj` 或 `.textureview`，不会覆盖旧文件。
 
 内嵌 Python 全局变量（每次选择变化时同步）：
 
@@ -328,7 +330,7 @@ H 中心线、V 中心线、Mapping Area 三者统称 **mapping asset**，由 `a
 - 选中 `H/V Center Line` 工具时，选项面板提供 **Smooth / Width 滑条**（与画笔同一套参数）：中心线按当前平滑度成形后再被捕获。
 - 每个元素包围盒右上角有 **"x" 按钮**，点击派发 `overlayremove` 事件，脚本从字典删除并刷新 overlay，然后直接重画即可。
 - 水平线/垂直线/区域**每个画板各只有一个**（字典键唯一），重画/重点自然替换旧的。
-- **可撤销、可存档**：字典的每次变化会序列化进场景的通用 `scriptData` 字段（C++ 只存不解释）。它随历史快照一起被记录 — 画中心线、点选区、点 "x" 删除都产生/并入历史记录，Ctrl+Z/Ctrl+Y 可完整还原（撤销/重做后脚本经 `historyrestore` 事件自动重建字典和 overlay）；`scriptData` 也随 `.animean` 保存，中心线/选区现在**跨会话保留**。旧版本存放在图层里的中心线/区域仍会在下次运行 `Auto Mapping` 时自动迁移。
+- **可撤销、可存档**：字典的每次变化会序列化进场景的通用 `scriptData` 字段（C++ 只存不解释）。它随历史快照一起被记录 — 画中心线、点选区、点 "x" 删除都产生/并入历史记录，Ctrl+Z/Ctrl+Y 可完整还原（撤销/重做后脚本经 `historyrestore` 事件自动重建字典和 overlay）；`scriptData` 也随 `.anproj` / `.textureview` 保存，中心线/选区现在**跨会话保留**。旧版本存放在图层里的中心线/区域仍会在下次运行 `Auto Mapping` 时自动迁移。
 
 ### 映射结果落在专属的 mapped layer
 

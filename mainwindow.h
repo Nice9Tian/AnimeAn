@@ -3,6 +3,7 @@
 
 #include <QHash>
 #include <QJsonArray>
+#include <QJsonObject>
 #include <QMainWindow>
 #include <QPoint>
 #include <QString>
@@ -116,15 +117,12 @@ private:
     void openTextureView();
     bool saveTextureViewAs();
     bool exportTextureImage();
-    bool writeModelToFile(const AnimeSceneModel &model, const QString &fileName, const QString &dialogTitle);
+    bool writeJsonToFile(const QJsonObject &object, const QString &fileName, const QString &dialogTitle);
     // Re-asks toolcontrol.py for the active extra tool's layout and applies
     // it. A no-op when no extra tool is showing.
     void refreshExtraToolOptions();
     void updateWindowTitle();
     PaintOpenGLWidget *activePaintWidget() const;
-    // The remembered file of a given board, writable so Save can adopt one.
-    QString &filePathFor(const PaintOpenGLWidget *widget);
-    QString filePathFor(const PaintOpenGLWidget *widget) const;
     PaintOpenGLWidget *framePanelTarget() const;
     PaintOpenGLWidget *layerPanelTarget() const;
     PaintOpenGLWidget *assetPanelTarget() const;
@@ -165,11 +163,10 @@ private:
     int m_playbackFrameCount = 0;
     QPlainTextEdit *m_pythonDebugOutput = nullptr;
     QLineEdit *m_pythonDebugCommand = nullptr;
-    // One path PER BOARD. The main canvas and the texture board are separate
-    // documents (each PaintOpenGLWidget owns its model by value), so a single
-    // path would let a Save on one board overwrite the other board's file.
-    QString m_currentFilePath;        // the main canvas
-    QString m_childFilePath;          // the texture board
+    // The project path stores both views; the texture path is only for the
+    // independently reusable .textureview file managed by its own menu.
+    QString m_currentFilePath;
+    QString m_childFilePath;
     QHash<PaintOpenGLWidget *, SelectionAttention> m_attentionByView;
     SelectionAttention m_pendingAttention;
     AttentionChange m_pendingAttentionChange = AttentionChange::FrameChange;

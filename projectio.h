@@ -6,8 +6,23 @@
 #include <QJsonObject>
 #include <QString>
 
-QString projectFilter();
+QString projectOpenFilter();
+QString projectSaveFilter();
+QString textureViewOpenFilter();
+QString textureViewSaveFilter();
+QString ensureProjectFileExtension(const QString &fileName);
+QString ensureTextureViewFileExtension(const QString &fileName);
+
 QJsonObject modelToJson(const AnimeSceneModel &model);
 bool modelFromJson(const QJsonObject &root, AnimeSceneModel *model, QString *error);
+
+QJsonObject projectToJson(const AnimeSceneModel &mainModel, const AnimeSceneModel &textureModel);
+bool projectFromJson(const QJsonObject &root,
+                     AnimeSceneModel *mainModel,
+                     AnimeSceneModel *textureModel,
+                     QString *error);
+
+QJsonObject textureViewToJson(const AnimeSceneModel &model);
+bool textureViewFromJson(const QJsonObject &root, AnimeSceneModel *model, QString *error);
 
 #endif // PROJECTIO_H

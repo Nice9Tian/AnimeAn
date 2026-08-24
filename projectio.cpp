@@ -1,6 +1,7 @@
 #include "projectio.h"
 
 #include <QBuffer>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QRegularExpression>
 #include <QSet>
@@ -311,9 +312,75 @@ void loadImageFromJson(AnimeVectorImageModel *image, const QJsonValue &value)
 }
 }
 
-QString projectFilter()
+QString projectOpenFilter()
 {
-    return QStringLiteral("AnimeAn Projects (*.animean);;All Files (*)");
+    return QStringLiteral("AnimeAn Projects (*.anproj);;Legacy AnimeAn Files (*.animean);;All Files (*)");
+}
+
+QString projectSaveFilter()
+{
+    return QStringLiteral("AnimeAn Projects (*.anproj);;All Files (*)");
+}
+
+QString textureViewOpenFilter()
+{
+    return QStringLiteral("AnimeAn Texture Views (*.textureview);;Legacy AnimeAn Files (*.animean);;All Files (*)");
+}
+
+QString textureViewSaveFilter()
+{
+    return QStringLiteral("AnimeAn Texture Views (*.textureview);;All Files (*)");
+}
+
+namespace {
+QString ensureFileExtension(const QString &fileName, const QString &extension)
+{
+    if (fileName.isEmpty()) {
+        return fileName;
+    }
+
+    const QFileInfo info(fileName);
+    const QString suffix = info.suffix();
+    if (suffix.compare(extension, Qt::CaseInsensitive) == 0) {
+        return fileName;
+    }
+
+    // Replace extensions that AnimeAn owns. This makes migration from the
+    // former shared .animean suffix predictable instead of producing names
+    // such as drawing.animean.anproj.
+    if (suffix.compare(QStringLiteral("animean"), Qt::CaseInsensitive) == 0
+        || suffix.compare(QStringLiteral("anproj"), Qt::CaseInsensitive) == 0
+        || suffix.compare(QStringLiteral("textureview"), Qt::CaseInsensitive) == 0) {
+        return fileName.left(fileName.size() - suffix.size()) + extension;
+    }
+
+    return fileName + QLatin1Char('.') + extension;
+}
+
+QJsonObject modelPayload(const AnimeSceneModel &model)
+{
+    QJsonObject payload = modelToJson(model);
+    payload.remove(QStringLiteral("format"));
+    payload.remove(QStringLiteral("version"));
+    return payload;
+}
+
+bool modelFromPayload(QJsonObject payload, AnimeSceneModel *model, QString *error)
+{
+    payload[QStringLiteral("format")] = QStringLiteral("AnimeAn Project");
+    payload[QStringLiteral("version")] = 1;
+    return modelFromJson(payload, model, error);
+}
+}
+
+QString ensureProjectFileExtension(const QString &fileName)
+{
+    return ensureFileExtension(fileName, QStringLiteral("anproj"));
+}
+
+QString ensureTextureViewFileExtension(const QString &fileName)
+{
+    return ensureFileExtension(fileName, QStringLiteral("textureview"));
 }
 
 QJsonObject modelToJson(const AnimeSceneModel &model)
@@ -561,4 +628,122 @@ bool modelFromJson(const QJsonObject &root, AnimeSceneModel *model, QString *err
     loaded.normalizeLayerTree();
     *model = loaded;
     return true;
+}
+
+QJsonObject projectToJson(const AnimeSceneModel &mainModel, const AnimeSceneModel &textureModel)
+{
+    QJsonObject root;
+    root[QStringLiteral("format")] = QStringLiteral("AnimeAn Project");
+    root[QStringLiteral("version")] = 2;
+    root[QStringLiteral("mainView")] = modelPayload(mainModel);
+    root[QStringLiteral("textureView")] = modelPayload(textureModel);
+    return root;
+}
+
+bool projectFromJson(const QJsonObject &root,
+                     AnimeSceneModel *mainModel,
+                     AnimeSceneModel *textureModel,
+                     QString *error)
+{
+    if (!mainModel || !textureModel) {
+        if (error) {
+            *error = QStringLiteral("Project destination is missing.");
+        }
+        return false;
+    }
+    if (root.value(QStringLiteral("format")).toString() != QStringLiteral("AnimeAn Project")) {
+        if (error) {
+            *error = QStringLiteral("Unsupported project file.");
+        }
+        return false;
+    }
+
+    const int version = root.value(QStringLiteral("version")).toInt(1);
+    if (version == 1) {
+        // Version 1 (.animean) held one scene. Treat it as the main view and
+        // supply a fresh default texture view so legacy work remains readable.
+        AnimeSceneModel loadedMain;
+        QString modelError;
+        if (!modelFromJson(root, &loadedMain, &modelError)) {
+            if (error) {
+                *error = modelError;
+            }
+            return false;
+        }
+        *mainModel = loadedMain;
+        *textureModel = AnimeSceneModel();
+        return true;
+    }
+
+    if (version != 2
+        || !root.value(QStringLiteral("mainView")).isObject()
+        || !root.value(QStringLiteral("textureView")).isObject()) {
+        if (error) {
+            *error = QStringLiteral("Unsupported project version or missing view data.");
+        }
+        return false;
+    }
+
+    AnimeSceneModel loadedMain;
+    AnimeSceneModel loadedTexture;
+    QString modelError;
+    if (!modelFromPayload(root.value(QStringLiteral("mainView")).toObject(), &loadedMain, &modelError)) {
+        if (error) {
+            *error = QStringLiteral("Invalid main view: %1").arg(modelError);
+        }
+        return false;
+    }
+    if (!modelFromPayload(root.value(QStringLiteral("textureView")).toObject(), &loadedTexture, &modelError)) {
+        if (error) {
+            *error = QStringLiteral("Invalid texture view: %1").arg(modelError);
+        }
+        return false;
+    }
+
+    *mainModel = loadedMain;
+    *textureModel = loadedTexture;
+    return true;
+}
+
+QJsonObject textureViewToJson(const AnimeSceneModel &model)
+{
+    QJsonObject root = modelToJson(model);
+    root[QStringLiteral("format")] = QStringLiteral("AnimeAn Texture View");
+    root[QStringLiteral("version")] = 1;
+    return root;
+}
+
+bool textureViewFromJson(const QJsonObject &root, AnimeSceneModel *model, QString *error)
+{
+    if (!model) {
+        if (error) {
+            *error = QStringLiteral("Texture view destination is missing.");
+        }
+        return false;
+    }
+
+    const QString format = root.value(QStringLiteral("format")).toString();
+    if (format == QStringLiteral("AnimeAn Texture View")) {
+        if (root.value(QStringLiteral("version")).toInt(1) != 1) {
+            if (error) {
+                *error = QStringLiteral("Unsupported texture view version.");
+            }
+            return false;
+        }
+        QJsonObject legacyShape = root;
+        legacyShape[QStringLiteral("format")] = QStringLiteral("AnimeAn Project");
+        return modelFromJson(legacyShape, model, error);
+    }
+
+    // A version-1 .animean could represent either board, because the old
+    // format did not distinguish them. Keep that import path during migration.
+    if (format == QStringLiteral("AnimeAn Project")
+        && root.value(QStringLiteral("version")).toInt(1) == 1) {
+        return modelFromJson(root, model, error);
+    }
+
+    if (error) {
+        *error = QStringLiteral("Unsupported texture view file.");
+    }
+    return false;
 }

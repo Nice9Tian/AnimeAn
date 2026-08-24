@@ -1273,7 +1273,7 @@ void MainWindow::openTextureView()
         this,
         QStringLiteral("Open Texture View"),
         QString(),
-        projectFilter());
+        textureViewOpenFilter());
     if (fileName.isEmpty()) {
         return;
     }
@@ -1297,7 +1297,7 @@ void MainWindow::openTextureView()
 
     AnimeSceneModel loadedModel;
     QString error;
-    if (!modelFromJson(document.object(), &loadedModel, &error)) {
+    if (!textureViewFromJson(document.object(), &loadedModel, &error)) {
         QMessageBox::warning(this,
                              QStringLiteral("Open Texture View"),
                              error.isEmpty() ? QStringLiteral("Unsupported texture file.") : error);
@@ -1309,7 +1309,7 @@ void MainWindow::openTextureView()
     m_childPaintWidget->model().setIntId(2);
     m_childPaintWidget->modelReplaced();
     m_childPaintWidget->resetHistory(QStringLiteral("Open Texture View"));
-    m_childFilePath = fileName;
+    m_childFilePath = ensureTextureViewFileExtension(fileName);
     updateWindowTitle();
     showTextureView();
     updateAttention(m_childPaintWidget,
@@ -1323,19 +1323,21 @@ void MainWindow::openTextureView()
 
 bool MainWindow::saveTextureViewAs()
 {
+    const QString selectedFile = m_childFilePath.isEmpty()
+                                     ? QDir::home().filePath(QStringLiteral("texture.textureview"))
+                                     : m_childFilePath;
     QString fileName = QFileDialog::getSaveFileName(
         this,
         QStringLiteral("Save Texture View As"),
-        QDir::home().filePath(QStringLiteral("texture.animean")),
-        projectFilter());
+        selectedFile,
+        textureViewSaveFilter());
     if (fileName.isEmpty()) {
         return false;
     }
-    if (QFileInfo(fileName).suffix().isEmpty()) {
-        fileName += QStringLiteral(".animean");
-    }
-    if (!writeModelToFile(m_childPaintWidget->model(), fileName,
-                          QStringLiteral("Save Texture View"))) {
+    fileName = ensureTextureViewFileExtension(fileName);
+    if (!writeJsonToFile(textureViewToJson(m_childPaintWidget->model()),
+                         fileName,
+                         QStringLiteral("Save Texture View"))) {
         return false;
     }
     m_childFilePath = fileName;   // the board now has a file of its own
@@ -1371,7 +1373,9 @@ void MainWindow::refreshExtraToolOptions()
     m_toolOptPanel->configureLayout(extraLayout);
 }
 
-bool MainWindow::writeModelToFile(const AnimeSceneModel &model, const QString &fileName, const QString &dialogTitle)
+bool MainWindow::writeJsonToFile(const QJsonObject &object,
+                                 const QString &fileName,
+                                 const QString &dialogTitle)
 {
     QSaveFile file(fileName);
     if (!file.open(QIODevice::WriteOnly)) {
@@ -1381,7 +1385,7 @@ bool MainWindow::writeModelToFile(const AnimeSceneModel &model, const QString &f
         return false;
     }
 
-    const QJsonDocument document(modelToJson(model));
+    const QJsonDocument document(object);
     file.write(document.toJson(QJsonDocument::Indented));
     if (!file.commit()) {
         QMessageBox::warning(this,
@@ -1390,9 +1394,6 @@ bool MainWindow::writeModelToFile(const AnimeSceneModel &model, const QString &f
         return false;
     }
 
-    // The caller reports what was saved: saveProjectTo names the board, and
-    // the texture menu item says so itself. A hardcoded line here would have
-    // claimed "texture view" for every main-canvas save.
     return true;
 }
 
@@ -1458,16 +1459,6 @@ bool MainWindow::exportTextureImage()
 PaintOpenGLWidget *MainWindow::activePaintWidget() const
 {
     return m_activePaintWidget ? m_activePaintWidget : m_paintWidget;
-}
-
-QString &MainWindow::filePathFor(const PaintOpenGLWidget *widget)
-{
-    return widget == m_childPaintWidget ? m_childFilePath : m_currentFilePath;
-}
-
-QString MainWindow::filePathFor(const PaintOpenGLWidget *widget) const
-{
-    return widget == m_childPaintWidget ? m_childFilePath : m_currentFilePath;
 }
 
 PaintOpenGLWidget *MainWindow::framePanelTarget() const
@@ -2411,7 +2402,7 @@ void MainWindow::openProject()
         this,
         QStringLiteral("Open Project"),
         m_currentFilePath.isEmpty() ? QString() : QFileInfo(m_currentFilePath).absolutePath(),
-        projectFilter());
+        projectOpenFilter());
     if (fileName.isEmpty()) {
         return;
     }
@@ -2421,66 +2412,49 @@ void MainWindow::openProject()
 
 bool MainWindow::saveProject()
 {
-    // Save what the user is looking at. The two boards are two documents, and
-    // this used to be hardwired to the main one: work done entirely on the
-    // texture board was saved as the untouched default main scene - a valid
-    // 950-byte file that reopens blank, which reads as "Save did not run".
-    const QString &path = filePathFor(activePaintWidget());
-    if (path.isEmpty()) {
+    // File > Save always means the complete project. Texture-only persistence
+    // lives in the Texture View File menu and uses its own .textureview type.
+    if (m_currentFilePath.isEmpty()) {
         return saveProjectAs();
     }
-    return saveProjectTo(path);
+    return saveProjectTo(m_currentFilePath);
 }
 
 bool MainWindow::saveProjectAs()
 {
-    const PaintOpenGLWidget *target = activePaintWidget();
-    const bool isChild = target == m_childPaintWidget;
-    QString selectedFile = filePathFor(target);
+    QString selectedFile = m_currentFilePath;
     if (selectedFile.isEmpty()) {
-        selectedFile = QDir::home().filePath(isChild ? QStringLiteral("texture.animean")
-                                                     : QStringLiteral("untitled.animean"));
+        selectedFile = QDir::home().filePath(QStringLiteral("untitled.anproj"));
     }
 
-    // The title names the board, so a Save As can never quietly write the
-    // document the user was not looking at.
     QString fileName = QFileDialog::getSaveFileName(
         this,
-        isChild ? QStringLiteral("Save Texture Board As") : QStringLiteral("Save Project As"),
+        QStringLiteral("Save Project As"),
         selectedFile,
-        projectFilter());
+        projectSaveFilter());
     if (fileName.isEmpty()) {
         return false;
-    }
-    if (QFileInfo(fileName).suffix().isEmpty()) {
-        fileName += QStringLiteral(".animean");
     }
     return saveProjectTo(fileName);
 }
 
 bool MainWindow::saveProjectTo(const QString &fileName)
 {
-    // The ACTIVE board's model, not m_paintWidget's - see saveProject. Writing
-    // is shared with the texture menu through writeModelToFile so both routes
-    // cannot drift apart.
-    PaintOpenGLWidget *target = activePaintWidget();
-    if (!target) {
-        return false;
-    }
-    const bool isChild = target == m_childPaintWidget;
-    const QString title = isChild ? QStringLiteral("Save Texture Board")
-                                  : QStringLiteral("Save Project");
-    if (!writeModelToFile(target->model(), fileName, title)) {
+    if (!m_paintWidget || !m_childPaintWidget) {
         return false;
     }
 
-    // Each board remembers its OWN file, so a later Ctrl+S on one of them can
-    // never overwrite the other one's.
-    filePathFor(target) = fileName;
+    const QString projectFileName = ensureProjectFileExtension(fileName);
+    if (!writeJsonToFile(projectToJson(m_paintWidget->model(), m_childPaintWidget->model()),
+                         projectFileName,
+                         QStringLiteral("Save Project"))) {
+        return false;
+    }
+
+    m_currentFilePath = projectFileName;
     updateWindowTitle();
-    setStatusText(QStringLiteral("Saved %1: %2")
-                      .arg(isChild ? QStringLiteral("texture board") : QStringLiteral("project"),
-                           QFileInfo(fileName).fileName()));
+    setStatusText(QStringLiteral("Saved project (main + texture): %1")
+                      .arg(QFileInfo(projectFileName).fileName()));
     return true;
 }
 
@@ -2504,24 +2478,33 @@ bool MainWindow::loadProjectFrom(const QString &fileName)
         return false;
     }
 
-    AnimeSceneModel loadedModel;
+    AnimeSceneModel loadedMainModel;
+    AnimeSceneModel loadedTextureModel;
     QString error;
-    if (!modelFromJson(document.object(), &loadedModel, &error)) {
+    if (!projectFromJson(document.object(), &loadedMainModel, &loadedTextureModel, &error)) {
         QMessageBox::warning(this,
                              QStringLiteral("Open Project"),
                              error.isEmpty() ? QStringLiteral("Unsupported project file.") : error);
         return false;
     }
 
-    m_paintWidget->model() = loadedModel;
-    // Force the main view's scene identity: a .animean saved from the texture
-    // view carries textId "child_paint_view"/intId 2, which would otherwise
-    // collide with the child scene once loaded into the main model.
+    m_paintWidget->model() = loadedMainModel;
     m_paintWidget->model().setTextId(QStringLiteral("main_paint_view"));
     m_paintWidget->model().setIntId(1);
-    m_paintWidget->modelReplaced();   // the loaded document brings its own page
+
+    m_childPaintWidget->model() = loadedTextureModel;
+    m_childPaintWidget->model().setTextId(QStringLiteral("child_paint_view"));
+    m_childPaintWidget->model().setIntId(2);
+
+    m_paintWidget->modelReplaced();
+    m_childPaintWidget->modelReplaced();
     m_paintWidget->resetHistory(QStringLiteral("Open Project"));
-    m_currentFilePath = fileName;
+    m_childPaintWidget->resetHistory(QStringLiteral("Open Project"));
+
+    // Legacy .animean input is migrated to a sibling .anproj on the next
+    // Save, preserving the source file while enforcing the new distinction.
+    m_currentFilePath = ensureProjectFileExtension(fileName);
+    m_childFilePath.clear();
     updateWindowTitle();
     showMainPaintView();
     updateAttention(m_paintWidget,
@@ -2529,8 +2512,16 @@ bool MainWindow::loadProjectFrom(const QString &fileName)
                     m_paintWidget->model().currentFrame(),
                     m_paintWidget->model().currentLayer(),
                     m_paintWidget->model().currentAsset());
+    updateAttention(m_childPaintWidget,
+                    AttentionChange::FrameChange,
+                    m_childPaintWidget->model().currentFrame(),
+                    m_childPaintWidget->model().currentLayer(),
+                    m_childPaintWidget->model().currentAsset());
     m_paintWidget->update();
-    setStatusText(QStringLiteral("Opened: %1").arg(QFileInfo(fileName).fileName()));
+    m_childPaintWidget->update();
+    syncEmbeddedPythonState();
+    setStatusText(QStringLiteral("Opened project (main + texture): %1")
+                      .arg(QFileInfo(fileName).fileName()));
     return true;
 }
 
