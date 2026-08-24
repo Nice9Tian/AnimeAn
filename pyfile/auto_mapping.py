@@ -104,6 +104,31 @@ def fold_seal_enabled():
 
 def fold_back_color():
     return _FOLD["back_color"]
+
+
+# Bezier Bridge (补全拓扑, user request 2026-08-24): when the checkbox is on,
+# each severed gap between two consecutive UV islands of one source stroke is
+# spanned by a cubic Bezier BUILT IN THIRD SPACE from the captured coordinates
+# and trends -
+#     P0 = A,  P1 = A + k*v_A,  P2 = B - k*v_B,  P3 = B
+# where A/B are the Third lifts of the two cut points, v_A/v_B the islands'
+# Third-space travel directions at those cuts (the departure trend extended,
+# the arrival trend back-cast), and k = tension * |AB| (the slider; the
+# classic smooth-join default is 1/3). The bridge then rides the ordinary
+# Step 4 projection (main_of_third, forward-only) into the main view. It
+# deliberately does NOT exist in child space - the gap is exactly the ground
+# with no child coordinate - so it bypasses the child-space samplers.
+_BRIDGE = {"enabled": False, "tension": 0.33}
+
+
+def bridge_enabled():
+    return _BRIDGE["enabled"]
+
+
+def bridge_tension():
+    return _BRIDGE["tension"]
+
+
 # The one and only automapping button. Its internal id keeps the historical
 # "_2" suffix ("Auto Mapping 2", Coons interpolation) so nothing stored in
 # old sessions changes meaning; the retired spine-rotation algorithm lives in
@@ -4749,6 +4774,165 @@ def _sever_source(map_point, points, seams=None):
     return islands
 
 
+def _third_end_tangent(map_point, points, at_end, reach=POLY_STEP):
+    """Unit THIRD-SPACE tangent at one end of a child polyline, pointing in
+    the direction of travel (index order).
+
+    This is the "trend" the Bezier Bridge extends: the island's own Third
+    trace direction at the cut. Walks inward until the lifted distance
+    clears `reach`, so the sub-pixel sliver a bisected cut leaves next to
+    the last sample cannot set the trend; returns None when every vertex
+    lifts to (numerically) the same Third point - the caller falls back to
+    the chord.
+    """
+    if len(points) < 2:
+        return None
+    coords = map_point.coords
+    if at_end:
+        anchor = coords(points[-1])
+        walk = range(len(points) - 2, -1, -1)
+        sign = 1.0
+    else:
+        anchor = coords(points[0])
+        walk = range(1, len(points))
+        sign = -1.0
+    best = None
+    for index in walk:
+        t = coords(points[index])
+        dx = (anchor[0] - t[0]) * sign
+        dy = (anchor[1] - t[1]) * sign
+        norm = math.hypot(dx, dy)
+        if norm > 1e-9:
+            best = (dx / norm, dy / norm)
+            if norm >= reach:
+                break
+    return best
+
+
+def _bridge_third_cubic(map_point, a_points, b_points):
+    """The Bezier Bridge across one severed gap, as a cubic IN THIRD SPACE.
+
+    `a_points` is a child polyline ENDING at cut A, `b_points` one STARTING
+    at cut B (the two islands' facing ends). Control points per the user's
+    formula (2026-08-24):
+
+        P0 = A                      (the departure cut, lifted)
+        P1 = A + k * v_A            (extend the departure trend)
+        P2 = B - k * v_B            (back-cast the arrival trend)
+        P3 = B                      (the arrival cut, lifted)
+
+    with k = tension * |AB| (Third-space straight-line distance; the
+    tension slider defaults to the classic smooth-join 1/3). A missing
+    trend (degenerate island end) falls back to the chord direction, which
+    degrades that side of the bridge to the straight join. Returns the
+    Third cubic, or None when the two cuts lift to the same Third point
+    (nothing to bridge).
+    """
+    a = map_point.coords(a_points[-1])
+    b = map_point.coords(b_points[0])
+    span = math.hypot(b[0] - a[0], b[1] - a[1])
+    if span <= 1e-6:
+        return None
+    chord = ((b[0] - a[0]) / span, (b[1] - a[1]) / span)
+    v_a = _third_end_tangent(map_point, a_points, at_end=True) or chord
+    v_b = _third_end_tangent(map_point, b_points, at_end=False) or chord
+    k = _BRIDGE["tension"] * span
+    return (a,
+            (a[0] + k * v_a[0], a[1] + k * v_a[1]),
+            (b[0] - k * v_b[0], b[1] - k * v_b[1]),
+            b)
+
+
+def _project_third_cubic(map_point, cub, tol=_CURVE_TOL,
+                         max_depth=_SPLINE_MAX_DEPTH):
+    """Forward-project a THIRD-SPACE cubic into main canvas flagged points.
+
+    Step 4 for a bridge: every probe is main_of_third - pure forward
+    arithmetic, no Newton - and the sampling carries the same guards as the
+    child-space sampler (midpoint + golden-section flatness, forced maximum
+    output chord), judged in the IMAGE where the tolerance means pixels.
+    Endpoints are anchors; inserted samples decimate downstream as usual.
+    """
+    def image(t):
+        return map_point.main_of_third(_cubic_point(cub, t))
+
+    first = image(0.0)
+    last = image(1.0)
+    result = [(first, True)]
+
+    def recurse(t0, t1, w0, w1, depth):
+        if depth >= max_depth:
+            return
+        tm = (t0 + t1) * 0.5
+        wm = image(tm)
+        tg = t0 + (t1 - t0) * _PROBE_T
+        wg = image(tg)
+        if (_dist(w0, w1) > _FORCE_STEP
+                or _dist(wm, _mid(w0, w1)) > tol
+                or _dist(wg, _lerp(w0, w1, _PROBE_T)) > tol):
+            recurse(t0, tm, w0, wm, depth + 1)
+            result.append((wm, False))
+            recurse(tm, t1, wm, w1, depth + 1)
+
+    recurse(0.0, 1.0, first, last, 0)
+    result.append((last, True))
+    return result
+
+
+def _emit_bridges(out, map_point, gap_pairs, main_area, color_tuple, width,
+                  curved, eps):
+    """Emit one Bezier Bridge per severed gap (补全拓扑 checkbox).
+
+    `gap_pairs` is [(a_points, b_points)] - per gap, the child polylines
+    ending at cut A and starting at cut B. Side and stacking depth are
+    borrowed from the A-side cut, the last point with a defined child
+    coordinate: the bridge itself spans ground that HAS no child coordinate,
+    which is also why it never feeds the crease/seal machinery - it is new
+    geometry, not a fold of the sheet. Output is a fitted curve (`curved`)
+    or a polyline, matching the emitter that asked.
+    """
+    added = 0
+    for a_points, b_points in gap_pairs:
+        bridge = _bridge_third_cubic(map_point, a_points, b_points)
+        if bridge is None:
+            continue
+        flagged = _project_third_cubic(map_point, bridge)
+        if _FOLD["split"]:
+            side = _fold_sign(map_point, a_points[-1])
+            depth = _run_depth(map_point, [a_points[-1]], side)
+        else:
+            side, depth = _MappedOutput.FRONT, 0
+        for clipped in _clip_flagged(flagged, main_area):
+            knots = _decimate_between_anchors(clipped, eps)
+            if curved:
+                commands, flat = _cubics_to_commands(_catmull_rom_cubics(knots))
+                emitted = out.add_curved(side, commands, flat,
+                                         _side_style(side, color_tuple),
+                                         width, depth)
+            else:
+                emitted = out.add_polyline(side, knots,
+                                           _side_style(side, color_tuple),
+                                           width, depth)
+            if emitted:
+                added += 1
+                out.bridges.append(bridge)
+    return added
+
+
+def _cubic_tail_polyline(cub):
+    """A two-point child polyline probing a cubic's END trend (bezier mode)."""
+    hull = max(bezier.hull_length(cub), 1e-9)
+    t = max(0.0, 1.0 - min(0.5, POLY_STEP / hull))
+    return [_cubic_point(cub, t), cub[3]]
+
+
+def _cubic_head_polyline(cub):
+    """A two-point child polyline probing a cubic's START trend (bezier mode)."""
+    hull = max(bezier.hull_length(cub), 1e-9)
+    t = min(0.5, POLY_STEP / hull)
+    return [cub[0], _cubic_point(cub, t)]
+
+
 def _crease_scan(map_point, row_range, axis, samples=48, max_columns=600,
                  frame=None):
     """One directional sweep of the fold locus, as curves of (l_h, l_v) pairs.
@@ -6406,6 +6590,9 @@ class _MappedOutput:
         # pass (the pattern simply ENDS there, wrapped out of sight); they
         # are counted for the run summary.
         self.seams = []
+        # Bezier Bridges (补全拓扑): the Third-space cubics that spanned
+        # severed gaps this run, counted for the summary.
+        self.bridges = []
 
     @staticmethod
     def _layer_name(depth, generic=False):
@@ -6686,7 +6873,8 @@ def _emit_polyline_mode(animean, out, stroke, map_point, child_area, main_area, 
     eps = rdp_eps()
     for poly in _stroke_polylines(stroke):
         for piece in _clip_polyline(poly, child_area):
-            for island in _sever_source(map_point, piece, out.seams):
+            islands = _sever_source(map_point, piece, out.seams)
+            for island in islands:
                 for run, side in _fold_runs(map_point, island, out.cuts):
                     depth = _run_depth(map_point, run, side)
                     flagged = _adaptive_map_polyline(map_point, run)
@@ -6696,6 +6884,11 @@ def _emit_polyline_mode(animean, out, stroke, map_point, child_area, main_area, 
                                             _side_style(side, color_tuple),
                                             width, depth):
                             added += 1
+            if _BRIDGE["enabled"] and len(islands) > 1:
+                added += _emit_bridges(out, map_point,
+                                       list(zip(islands, islands[1:])),
+                                       main_area, color_tuple, width,
+                                       curved=False, eps=eps)
     return added
 
 
@@ -6709,7 +6902,8 @@ def _emit_spline_mode(animean, out, stroke, map_point, child_area, main_area, co
     eps = rdp_eps()
     for poly in _stroke_polylines(stroke):
         for piece in _clip_polyline(poly, child_area):
-            for island in _sever_source(map_point, piece, out.seams):
+            islands = _sever_source(map_point, piece, out.seams)
+            for island in islands:
                 for run, side in _fold_runs(map_point, island, out.cuts):
                     depth = _run_depth(map_point, run, side)
                     flagged = _adaptive_map_polyline(map_point, run)
@@ -6721,6 +6915,11 @@ def _emit_spline_mode(animean, out, stroke, map_point, child_area, main_area, co
                                           _side_style(side, color_tuple),
                                           width, depth):
                             added += 1
+            if _BRIDGE["enabled"] and len(islands) > 1:
+                added += _emit_bridges(out, map_point,
+                                       list(zip(islands, islands[1:])),
+                                       main_area, color_tuple, width,
+                                       curved=True, eps=eps)
     return added
 
 
@@ -6729,8 +6928,9 @@ def _emit_bezier_mode(animean, out, stroke, map_point, child_area, main_area, co
     added = 0
     for cubics in _commands_to_subpaths(stroke.get("commands")):
         for src_piece in _clip_cubics(cubics, child_area):
-            for island in _sever_cubics_by_child_fold(map_point, src_piece,
-                                                      out.seams):
+            islands = _sever_cubics_by_child_fold(map_point, src_piece,
+                                                  out.seams)
+            for island in islands:
                 for run, side in _fold_runs_cubic(map_point, island, out.cuts):
                     depth = (_run_depth(map_point,
                                         [_cubic_point(run[len(run) // 2], 0.5)],
@@ -6745,6 +6945,15 @@ def _emit_bezier_mode(animean, out, stroke, map_point, child_area, main_area, co
                                           _side_style(side, color_tuple),
                                           width, depth):
                             added += 1
+            if _BRIDGE["enabled"] and len(islands) > 1:
+                # The trend probes come from the facing cubics' own geometry:
+                # a short two-point polyline just inside each cut.
+                pairs = [(_cubic_tail_polyline(ia[-1]),
+                          _cubic_head_polyline(ib[0]))
+                         for ia, ib in zip(islands, islands[1:])]
+                added += _emit_bridges(out, map_point, pairs, main_area,
+                                       color_tuple, width, curved=True,
+                                       eps=rdp_eps())
     return added
 
 
@@ -7263,6 +7472,14 @@ def _perform_mapping():
         summary += (f"; topology SEVERED at {len(out.seams)} UV-seam cut(s) - "
                     "the child frame folds there (det J <= 0 / diverging "
                     "lift), so the pattern wraps out of view at the seam")
+    if out.bridges:
+        summary += (f"; {len(out.bridges)} Bezier Bridge(s) spanned the "
+                    f"severed gaps in Third space (补全拓扑, "
+                    f"k = {_BRIDGE['tension']:.2f} x |AB|)")
+    elif _BRIDGE["enabled"] and out.seams:
+        summary += ("; topology bridging is ON but no gap had two islands "
+                    "to join (a bridge needs the stroke to re-emerge from "
+                    "the fold)")
     if mapper_info.get("mirrored"):
         summary += ", MIRRORED (opposite frame handedness)"
     if child_area:
@@ -7550,6 +7767,26 @@ def _tool_option_changed(cell, stroke, message):
         if _FOLD["seal"] != enabled:
             _FOLD["seal"] = enabled
             print(f"[auto_mapping] crease strokes {'ON' if enabled else 'OFF'}")
+        return
+    if hook == "bridge_topology":
+        enabled = str(message.get("value", "")).lower() == "on"
+        if _BRIDGE["enabled"] != enabled:
+            _BRIDGE["enabled"] = enabled
+            print(f"[auto_mapping] topology bridging (补全拓扑) "
+                  f"{'ON' if enabled else 'OFF'}")
+            # The tension slider hides itself via visible_when - both
+            # controls live in this panel, so no refresh is needed (the
+            # RDP slider needs one only because curve mode lives in the
+            # menu bar, outside the panel).
+        return
+    if hook == "bridge_tension":
+        try:
+            tension = max(5, min(100, int(message.get("value", 33)))) / 100.0
+        except (TypeError, ValueError):
+            return
+        if _BRIDGE["tension"] != tension:
+            _BRIDGE["tension"] = tension
+            print(f"[auto_mapping] bridge tension k -> {tension:.2f} x |AB|")
         return
     if hook == "back_shade":
         try:

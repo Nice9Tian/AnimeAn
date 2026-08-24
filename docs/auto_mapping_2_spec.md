@@ -243,7 +243,17 @@ $$w' = \max\left(0.5,\ w\cdot\underbrace{\sqrt{\frac{L_h^m}{L_h^c}\cdot\frac{L_v
 
 子系折缝线本身由主系折缝同一套机器扫出（`_crease_scan` / `_corner_loci` 加 `frame` 参数指向子系参考架；`_sever_loci` 缓存于映射器）——扫出的 $(\ell_h,\ell_v)$ 对**就是** Third 坐标，无需除以 $\sigma$、无关 warp（Additional line 的 warp 作用在反解**之后**，不能创造或移动子系折叠；warp 自己的折叠走既有的正/背/深度机制，那是"有意的遮蔽"，与"不可计算"分属两类）。幻影过滤（`_sever_curve_is_real`）用有效性判定本身探测两侧，替代主系版的 `_fold_sign` 探测。
 
-#### 4.6.3 快速闸门
+#### 4.6.3 贝塞尔桥（补全拓扑，可选）
+
+工具菜单勾选项 **补全拓扑**（默认关）。勾选后，同一条源笔画被裁成的相邻两个 UV 岛之间，用**在 Third 空间凭空生成的三次贝塞尔曲线**跨过裁断缺口——不是直线：
+
+$$P_0 = A,\qquad P_1 = A + k\,\vec v_A,\qquad P_2 = B - k\,\vec v_B,\qquad P_3 = B$$
+
+其中 $A,B$ 是两个切口的 Third 提升，$\vec v_A,\vec v_B$ 是两岛在切口处的 **Third 空间行进趋势**（`_third_end_tangent`：沿岛向内回溯至提升距离清出 `POLY_STEP`，防止二分切口留下的亚像素残段定错方向；趋势缺失时退回弦向），$k=\text{tension}\cdot\lVert B-A\rVert$——张力系数由滑条 **Bridge k (% |AB|)** 控制（5–100%，默认 33 即经典平滑衔接的 $\tfrac13$，滑条仅在勾选后显示，`visible_when` 机制）。桥随后走普通 Step 4：`_project_third_cubic` 以与子空间采样器同款的守卫（中点 + 黄金分割平坦度、强制最大输出弦长）在**像空间**自适应采样，每个探针只是 `main_of_third` 纯正向求值。
+
+桥**刻意不存在于 child 空间**（缺口正是没有 child 坐标的地面），因此绕过一切子空间采样器；正/背与堆叠深度从 A 侧切口（最后一个有定义坐标的点）借用；桥不喂折缝/封口机器——它是新几何，不是纸的折叠。两岛切口即桥的端点，故与两岛输出**精确 C⁰ 相接**（实测逐位）。趋势共线时三次式退化为直线衔接（实测共线岛 $\max\lvert y\rvert = 0$）。运行摘要报告桥数；只有单岛（笔画未从折叠中重新出现）时无桥可搭，摘要说明之。
+
+#### 4.6.4 快速闸门
 
 直线与温和弯曲的参考架**不为裁断付任何代价**：`can_fold` 对两条展平轴线的全部方向对取带号 $\sin$ 夹角的最小值（相对交点旋向），高于 `_SEVER_GATE_SIN`（0.02）即证明子系**无处可折**——`_sever_source` 一个分支直接返回整条折线，填充与网格同样短路。判据故意用**原始**逐段方向而非窗口方向：抖动只会让闸门更保守（多开机器，判定仍稳定），不会漏折叠。
 
@@ -671,7 +681,8 @@ $$c_1' = p_0' + D_{\mathbf h_1}\Phi_2(p_0),\qquad c_2' = p_3' + D_{\mathbf h_2}\
 | 侧长下限 | $1\%$ 全长 | T 形交叉防除零 |
 | 轴夹角下限 | $\sin\theta = 0.05$ | 近平行架拒绝 |
 | `_SEVER_RESIDUAL` | 0.4 px | 牛顿达成残差超此即"无原像"，裁断（§4.6.1）——比 $10^{-7}$ 收敛容差宽容（强弯架的阻尼收敛可停在中途），又远小于任何真发散（影子区残差随离轮廓距离线性增长） |
-| `_SEVER_GATE_SIN` | 0.02 | `can_fold` 闸门的带号 $\sin$ 下限（§4.6.3） |
+| `_SEVER_GATE_SIN` | 0.02 | `can_fold` 闸门的带号 $\sin$ 下限（§4.6.4） |
+| 桥张力 tension | 0.33（滑条 0.05–1.00） | 贝塞尔桥手柄长 $k=\text{tension}\cdot\lVert B-A\rVert$（§4.6.3） |
 
 ## 附录 B：代码索引
 
@@ -689,7 +700,8 @@ $$c_1' = p_0' + D_{\mathbf h_1}\Phi_2(p_0),\qquad c_2' = p_3' + D_{\mathbf h_2}\
 | 坐标反解 $\mathrm{HV}[C]^{-1}$ §4.1 | `_Frame.solve` / `solve_full`（阻尼 Newton，后者带达成残差）/ `map_point.coords` |
 | Third 提升 + 有效性判定 §4.6.1 | `map_point.third_of` |
 | Third→Main 正向投射 §4.4 Step 4 | `map_point.main_of_third` |
-| 折叠闸门 §4.6.3 | `map_point.can_fold` |
+| 折叠闸门 §4.6.4 | `map_point.can_fold` |
+| 贝塞尔桥（趋势 / 三次式 / 投射 / 发射）§4.6.3 | `_third_end_tangent` / `_bridge_third_cubic` / `_project_third_cubic` / `_emit_bridges` |
 | 笔画裁断（折线） §4.6.1 | `_sever_source` |
 | 笔画裁断（bezier） §4.6.2 | `_sever_cubics_by_child_fold` |
 | 子系折缝 / 幻影过滤 / 环切割器 §4.6.2 | `_sever_loci` / `_sever_curve_is_real` / `_sever_cutters` |

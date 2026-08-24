@@ -273,11 +273,15 @@ def options_for_extra_tool(tool, state=None):
             split = "on" if auto_mapping.fold_split_enabled() else "off"
             seal = "on" if auto_mapping.fold_seal_enabled() else "off"
             sampled = auto_mapping.curve_mode() in ("polyline", "spline")
+            bridge = "on" if auto_mapping.bridge_enabled() else "off"
+            bridge_k = int(round(auto_mapping.bridge_tension() * 100))
         except Exception:
             rdp_tenths = 3
             split = "on"
             seal = "on"
             sampled = False
+            bridge = "off"
+            bridge_k = 33
         controls = []
         # RDP decimates the samples inserted between original points, so it
         # exists in the SAMPLED modes (polyline/spline) only - the bezier route
@@ -324,7 +328,28 @@ def options_for_extra_tool(tool, state=None):
                 "end_column": 2,
                 "visible_when": {"name": "fold_split", "values": ["on"]},
             },
+            # 补全拓扑 (Bezier Bridge): span each severed gap between two UV
+            # islands with a cubic built in Third space from the cut
+            # coordinates and trends (P0=A, P1=A+k*vA, P2=B-k*vB, P3=B).
+            # The slider is the tension k as a percentage of the straight
+            # Third-space distance |AB|; 33 is the classic smooth-join 1/3.
+            {
+                "name": "bridge_topology",
+                "type": "check",
+                "title": "补全拓扑",
+                "hook": "bridge_topology",
+                "value": bridge,
+                "row": fold_row + 2,
+                "start_column": 0,
+                "end_column": 2,
+            },
         ]
+        bridge_slider = _slider("bridge_tension", "Bridge k (% |AB|)",
+                                "bridge_tension", 5, 100, bridge_k,
+                                fold_row + 3)
+        bridge_slider["visible_when"] = {"name": "bridge_topology",
+                                         "values": ["on"]}
+        controls.append(bridge_slider)
     elif tool in ("fukusato_line", "fukusato_cut"):
         # Handle / crease strokes are ordinary drawing: same knobs as the pen.
         controls = [
