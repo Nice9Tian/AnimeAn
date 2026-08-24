@@ -176,6 +176,21 @@ _FORCE_STEP = 16.0      # output px: always sample at least this dense
 _MAX_KNOTS_PER_SPAN = 48  # cap on structural knots forced into one source span
 _PROBE_T = 0.381966     # golden-section probe; never rational vs the midpoint
 
+# Topology severing (user request 2026-08-24). The map is the pure staged
+# composition Child -> Third -> Main with NO residual term, so a child point
+# is only mappable where the Newton lift into Third actually exists. Where the
+# child frame folds over (the Jacobian determinant changes sign against the
+# crossing's handedness) or the lift diverges, the topology is SEVERED: the
+# stroke is cut at the fold line and the unreachable stretch is dropped -
+# a UV seam, which is exactly what makes the pattern wrap out of sight there
+# (occlusion by construction rather than residual fudging).
+_SEVER_RESIDUAL = 0.4   # px: Newton residual above this = no computable preimage
+# The fold gate: min over the two guides' direction pairs of |sin(angle)|,
+# SIGNED against the crossing's handedness. Above this margin the child frame
+# cannot fold anywhere and severing short-circuits to "one island" at zero
+# per-point cost (straight guides in particular never pay for severing).
+_SEVER_GATE_SIN = 0.02
+
 # RDP decimation strength ("RDP" slider in the tool options, in 0.1px units).
 # Only the samples INSERTED between two original vertices are decimated; the
 # original vertices themselves are anchors and always survive (user rule:
@@ -1054,7 +1069,19 @@ class _Frame:
                 self.gv.dir_at(self.v_arc + l_v))
 
     def solve(self, point, guess_h, guess_v, iterations=24, tol=1e-7):
+        """Invert hv; see solve_full. Kept for callers that only want arcs."""
+        l_h, l_v, _error = self.solve_full(point, guess_h, guess_v,
+                                           iterations, tol)
+        return l_h, l_v
+
+    def solve_full(self, point, guess_h, guess_v, iterations=24, tol=1e-7):
         """Invert hv: find (l_h, l_v) with hv(l_h, l_v) == point.
+
+        Returns (l_h, l_v, residual). The residual is the achieved
+        |hv(l_h, l_v) - point|: ~0 wherever the inverse exists, and LARGE
+        exactly where the frame folds over and `point` has no preimage on
+        the reachable sheet - which is the divergence half of the severing
+        verdict (see third_of in build_mapper).
 
         DAMPED Newton (the descent variant). hv is piecewise affine - an
         arc-length lookup on two polylines - so an undamped step lands exactly
@@ -1079,10 +1106,10 @@ class _Frame:
         Never converging is a legitimate outcome, not a bug: some of those
         points have no preimage at all and others have several, because the
         frame genuinely folds. So the search only ever ACCEPTS an improvement,
-        returns the best iterate it saw, and leaves the rest to the caller's
-        residual term. Iterate 0 is the chord seed - the coordinates the
-        pre-2026-08 implementation used - so the answer is never worse than
-        that.
+        returns the best iterate it saw, and REPORTS the residual so the
+        caller can sever the topology there instead of pretending the lift
+        exists. Iterate 0 is the chord seed - the coordinates the pre-2026-08
+        implementation used - so the answer is never worse than that.
         """
         limit = self.h_total + self.v_total + 1.0
         l_h, l_v = guess_h, guess_v
@@ -1120,7 +1147,7 @@ class _Frame:
                 break  # no downhill step along this direction; keep the best
             l_h, l_v, current, best_error = accepted
             best = (l_h, l_v)
-        return best
+        return best[0], best[1], best_error
 
 
 def _transfer_scales(child_raw, child_total, main_side):
@@ -2540,29 +2567,37 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
 
     Returns (map_point, width_scale) or (None, reason).
 
-    DECOUPLED FORM (user request 2026-08-10): both boards go through the SAME
-    reconstruction function `_Frame.hv(l_h, l_v) = H(l_h) + V(l_v) - O`, and
-    the map is
+    STAGED FORM (user request 2026-08-24): Third space enters from the very
+    start. Both boards go through the SAME reconstruction function
+    `_Frame.hv(l_h, l_v) = H(l_h) + V(l_v) - O`, and the map is the pure
+    Child -> Third -> Main composition with NO residual term:
 
-        Phi(p) = p - hv_child(l_h, l_v) + hv_main(s_h*l_h, s_v*l_v)
+        Phi(p) = hv_main( s * warp( hv_child^{-1}(p) ) )
 
-    where (l_h, l_v) are p's ARC-LENGTH coordinates in the child frame,
-    obtained by inverting hv_child (Newton from the cheap chord-basis guess).
+    where hv_child^{-1} is the Newton lift into Third space (arc-length
+    coordinates from the cheap chord-basis seed) and `s` the per-side
+    endpoint-anchored scales. The pre-2026-08-24 formula carried the extra
+    residual `p - hv_child(l_h, l_v)`: zero wherever the inverse converged,
+    and a silent glue term everywhere the child frame FOLDED - it kept the
+    map "defined" on ground where no UV coordinate exists, smearing the
+    pattern across the fold instead of hiding it. That fudge is gone. Where
+    the lift does not exist the point is INVALID and the topology is severed
+    (see third_of and _sever_source): strokes are cut at the fold line, the
+    unreachable stretch is dropped, and the pattern visually wraps out of
+    sight - 2D topology severing standing in for 3D occlusion. Dropping the
+    residual also drops one hv evaluation per mapped point and the whole
+    residual bookkeeping from every downstream consumer.
 
-    Two properties the previous chord-only formulation did not have:
-      * IDENTITY. Draw the same guides on both boards and Phi is the identity,
-        for any guide shape. The old form decomposed p on the child CHORDS and
-        rebuilt it on the main ARC, so a curved child guide displaced the whole
-        pattern by tens of pixels (measured: 28 px at amplitude 10, 157 px at
-        amplitude 60) even when both boards were identical.
-      * The child guides' curvature actually participates. Previously only
-        their two endpoints did (`eh`/`ev` were half-chords), so drawing a
+    Two properties inherited from the decoupled form (2026-08-10) survive
+    unchanged on the computable sheet:
+      * IDENTITY. Draw the same guides on both boards and Phi is the
+        identity: exact for straight guides (the chord seed IS the lift) and
+        to the Newton tolerance for curved ones - the two hv terms are the
+        same function at the same argument, so nothing is left to cancel.
+      * The child guides' curvature actually participates. Only their two
+        endpoints did before 2026-08 (`eh`/`ev` were half-chords), so a
         curved child center line silently discarded its shape AND injected
         that shape as an off-axis displacement.
-
-    The residual `p - hv_child(...)` is zero wherever the inverse converged;
-    it stays in the formula as the fallback that keeps the map defined (and
-    identity-preserving) on degenerate cells and outside the frame's coverage.
 
     Parametrization is still ENDPOINT-ANCHORED: the crossing splits each guide
     into two sides and each child side maps proportionally onto the matching
@@ -2621,8 +2656,29 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
         main_cross = main_cross_h[0] * main_cross_v[1] - main_cross_h[1] * main_cross_v[0]
         info["mirrored"] = (child_cross > 0.0) != (main_cross > 0.0)
 
+    # The child crossing's handedness anchors the severing verdict, exactly
+    # as fold_reference anchors front/back: a child frame drawn with V
+    # clockwise of H has negative det EVERYWHERE without folding once, so
+    # "folded" can only mean "flipped RELATIVE TO THE CROSSING". Windowed
+    # directions, matching _orientation - raw per-sample tangents of a
+    # hand-drawn guide jitter enough to flip a marginal verdict many times
+    # within a few px, which would shred strokes into micro-islands.
+    _hand_h, _hand_v = child.directions(0.0, 0.0)
+    child_hand = 1.0 if (_hand_h[0] * _hand_v[1]
+                         - _hand_h[1] * _hand_v[0]) >= 0.0 else -1.0
+
+    def _lift(point, seed=None):
+        """Newton lift Child -> Third, with the achieved residual."""
+        if seed is not None:
+            return child.solve_full(point, seed[0], seed[1])
+        dx = point[0] - child.origin[0]
+        dy = point[1] - child.origin[1]
+        guess_h = (dx * ev[1] - dy * ev[0]) / det * 0.5 * child_h_chord
+        guess_v = (eh[0] * dy - eh[1] * dx) / det * 0.5 * child_v_chord
+        return child.solve_full(point, guess_h, guess_v)
+
     def coords(point, seed=None):
-        """A point's arc-length coordinates in the child frame.
+        """A point's arc-length coordinates in the child frame (= Third).
 
         Seeded with the cheap chord-basis estimate, which is exact for
         straight child guides - that is why the whole mapper reduces to the
@@ -2631,13 +2687,30 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
         the caller may know which preimage it means (additional-line
         redraws seed from the replaced line's stored coordinates).
         """
-        if seed is not None:
-            return child.solve(point, seed[0], seed[1])
-        dx = point[0] - child.origin[0]
-        dy = point[1] - child.origin[1]
-        guess_h = (dx * ev[1] - dy * ev[0]) / det * 0.5 * child_h_chord
-        guess_v = (eh[0] * dy - eh[1] * dx) / det * 0.5 * child_v_chord
-        return child.solve(point, guess_h, guess_v)
+        l_h, l_v, _residual = _lift(point, seed)
+        return l_h, l_v
+
+    def third_of(point, seed=None):
+        """The Third-space lift plus its VALIDITY verdict: (l_h, l_v, valid).
+
+        A point is valid when its UV coordinate is actually computable:
+          * the Newton lift converged (residual <= _SEVER_RESIDUAL px) - a
+            diverging lift means the point has no preimage on the reachable
+            sheet at all; and
+          * det J of the child frame at the lift keeps the crossing's sign -
+            det <= 0 (relative to the crossing's handedness) is a foldover,
+            where hv_child stops being injective and the same canvas point
+            carries the front AND the back of the sheet.
+        Invalid points are where the topology gets severed (_sever_source):
+        they are dropped, never mapped, because no residual term exists to
+        fudge them any more.
+        """
+        l_h, l_v, residual = _lift(point, seed)
+        if residual > _SEVER_RESIDUAL:
+            return l_h, l_v, False
+        t_h, t_v = child.directions(l_h, l_v)
+        cell = t_h[0] * t_v[1] - t_h[1] * t_v[0]
+        return l_h, l_v, cell * child_hand > 0.0
 
     # The MAIN frame's inverse, mirror of coords: needed to carry points
     # drawn on the main board (additional lines) into Third space.
@@ -2783,15 +2856,61 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
                                         _ADDITIONAL["radius_factor"])
             warp = candidate if candidate.pairs else None
 
-    def map_point(point):
-        l_h, l_v = coords(point)
-        rebuilt = child.hv(l_h, l_v)
+    def main_of_third(third):
+        """Forward projection Third -> Main: warp, per-side scale, rebuild.
+
+        Pure forward arithmetic - no Newton - so a stored UV island projects
+        into the main view at O(log n) per point. This is Step 4 of the
+        staged pipeline; everything before it (lift, severing) happens in
+        child/Third space and never needs to run again for a projection.
+        """
+        l_h, l_v = third
         if warp is not None:
             l_h, l_v = warp.apply((l_h, l_v))
-        image = main.hv(l_h * (h_scale_pos if l_h >= 0.0 else h_scale_neg),
-                        l_v * (v_scale_pos if l_v >= 0.0 else v_scale_neg))
-        return (image[0] + point[0] - rebuilt[0],
-                image[1] + point[1] - rebuilt[1])
+        return main.hv(l_h * (h_scale_pos if l_h >= 0.0 else h_scale_neg),
+                       l_v * (v_scale_pos if l_v >= 0.0 else v_scale_neg))
+
+    def map_point(point):
+        """Child -> Third -> Main, literally. No residual term: the lift IS
+        the coordinate, and where it does not exist the caller severs."""
+        return main_of_third(coords(point))
+
+    _fold_gate = {}
+
+    def can_fold():
+        """Can the child frame fold ANYWHERE? Cached frame-global gate.
+
+        Min over all pairs of flattened guide segment directions of the
+        signed sin(angle) against the crossing handedness. RAW directions on
+        purpose - jitter only makes the gate more conservative (it opens the
+        per-point severing machinery, whose verdicts are then windowed and
+        stable). Above the margin no cell can flip, hv_child is a global
+        homeomorphism onto its (linearly extended) sweep, and severing
+        short-circuits to "one island" without a single extra solve - in
+        particular straight guides never pay anything.
+        """
+        cached = _fold_gate.get("value")
+        if cached is not None:
+            return cached
+        h_dirs = []
+        for a, b in zip(child.h, child.h[1:]):
+            length = math.hypot(b[0] - a[0], b[1] - a[1])
+            if length > 1e-9:
+                h_dirs.append(((b[0] - a[0]) / length, (b[1] - a[1]) / length))
+        v_dirs = []
+        for a, b in zip(child.v, child.v[1:]):
+            length = math.hypot(b[0] - a[0], b[1] - a[1])
+            if length > 1e-9:
+                v_dirs.append(((b[0] - a[0]) / length, (b[1] - a[1]) / length))
+        lowest = None
+        for hx, hy in h_dirs:
+            for vx, vy in v_dirs:
+                value = (hx * vy - hy * vx) * child_hand
+                if lowest is None or value < lowest:
+                    lowest = value
+        result = lowest is None or lowest <= _SEVER_GATE_SIN
+        _fold_gate["value"] = result
+        return result
 
     def inverse_point(point):
         """Main-board point -> child-board point through the full mapping
@@ -2807,6 +2926,10 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
     width_scale = math.sqrt((main.h_total / child.h_total) * (main.v_total / child.v_total))
 
     map_point.coords = coords
+    map_point.third_of = third_of
+    map_point.main_of_third = main_of_third
+    map_point.can_fold = can_fold
+    map_point.child_hand = child_hand
     map_point.main_coords = main_coords
     map_point.scale_arcs = scale_arcs
     map_point.unscale_arcs = unscale_arcs
@@ -3848,19 +3971,42 @@ def _grid_overlay_items(view_name):
         mapper, _note = _current_mapper()
         if mapper is not None:
             child_frame = mapper.child_frame
+            # SEVERED GRID: on a folding child frame the iso lines break
+            # where the Third lift stops existing, so the reference grid
+            # shows the UV islands the pattern is actually cut into - grid
+            # ground with no computable coordinate draws nothing rather
+            # than a residual-era smear. The verdict reuses the lift the
+            # projection needs anyway, so the folding path costs no extra
+            # solve; non-folding frames skip the verdict entirely.
+            can_fold = mapper.can_fold()
             for level in levels:
-                iso_u = [mapper(_frame_point(child_frame, level, s))
-                         for s in samples]
-                iso_v = [mapper(_frame_point(child_frame, s, level))
-                         for s in samples]
+                iso_u = [_frame_point(child_frame, level, s) for s in samples]
+                iso_v = [_frame_point(child_frame, s, level) for s in samples]
                 for points in (iso_u, iso_v):
-                    items.append({
-                        "id": "refer_rect_grid",
-                        "points": points,
-                        "color": GRID_COLOR,
-                        "width": 1.0,
-                        "removable": False,
-                    })
+                    if can_fold:
+                        runs = []
+                        run = []
+                        for p in points:
+                            l_h, l_v, ok = mapper.third_of(p)
+                            if ok:
+                                run.append(mapper.main_of_third((l_h, l_v)))
+                            elif run:
+                                runs.append(run)
+                                run = []
+                        if run:
+                            runs.append(run)
+                    else:
+                        runs = [[mapper(p) for p in points]]
+                    for run in runs:
+                        if len(run) < 2:
+                            continue
+                        items.append({
+                            "id": "refer_rect_grid",
+                            "points": run,
+                            "color": GRID_COLOR,
+                            "width": 1.0,
+                            "removable": False,
+                        })
             _GRID_CACHE[view_name] = items
             return items
 
@@ -4510,8 +4656,108 @@ def _split_by_fold(map_point, points):
     return runs
 
 
-def _crease_scan(map_point, row_range, axis, samples=48, max_columns=600):
+def _sever_source(map_point, points, seams=None):
+    """Cut a source polyline into its computable UV ISLANDS (Step 2 of the
+    staged pipeline: lift, verdict, sever).
+
+    Every stretch whose Third lift is invalid (child-frame foldover, or a
+    diverging Newton solve - see third_of) is DROPPED, and each surviving
+    island ends exactly ON the fold line: the cut position is solved by
+    bisection on the validity verdict, the fold-line idea - never left at
+    whatever sample happened to fall nearest. Downstream the islands flow
+    through the unchanged reconstruction machinery, so a stroke crossing a
+    child fold visually ENDS at the seam, the way a printed pattern wraps
+    around to the hidden face of a folded sheet. With no residual term left
+    in the map there is nothing else these points could do: their UV
+    coordinate does not exist.
+
+    `seams` (if given) collects the cut points (child space), one per severed
+    boundary, for the run summary. The whole function is FREE on frames that
+    cannot fold (can_fold gate): one branch, zero extra solves.
+    """
+    if len(points) < 2 or not map_point.can_fold():
+        return [list(points)]
+
+    def valid(p):
+        return map_point.third_of(p)[2]
+
+    # Mirror _split_by_fold: split each source segment at the structural
+    # knots first (on polyline guides the verdict is constant inside a cell
+    # and can only change at a cell boundary), then judge each piece at its
+    # midpoint.
+    pieces = []
+    for index, (a, b) in enumerate(zip(points, points[1:])):
+        bounds = [0.0] + _structural_knots(map_point, a, b) + [1.0]
+        for t0, t1 in zip(bounds, bounds[1:]):
+            if t1 - t0 <= 1e-12:
+                continue
+            pieces.append([index, a, b, t0, t1,
+                           valid(_lerp(a, b, (t0 + t1) * 0.5))])
+    if not pieces:
+        return [list(points)]
+    if all(piece[5] for piece in pieces):
+        return [list(points)]  # entirely on the computable sheet
+
+    # Snap each verdict change onto the true fold boundary. Knot positions
+    # come from a linear interpolation of the coordinates over the segment,
+    # so on a folded frame they can sit off the real cell boundary; the
+    # verdict itself is exact, so bisecting between the two neighbouring
+    # midpoints pins the cut onto det J = 0 (resp. the divergence edge).
+    for left, right in zip(pieces, pieces[1:]):
+        if left[5] == right[5] or left[0] != right[0]:
+            continue  # same verdict, or the change falls on a source vertex
+        a, b = left[1], left[2]
+        lo = (left[3] + left[4]) * 0.5
+        hi = (right[3] + right[4]) * 0.5
+        for _ in range(30):
+            mid = (lo + hi) * 0.5
+            if valid(_lerp(a, b, mid)) == left[5]:
+                lo = mid
+            else:
+                hi = mid
+        boundary = (lo + hi) * 0.5
+        left[4] = boundary
+        right[3] = boundary
+
+    runs = []
+    first = pieces[0]
+    current = [_lerp(first[1], first[2], first[3]),
+               _lerp(first[1], first[2], first[4])]
+    side = first[5]
+    for piece in pieces[1:]:
+        start = _lerp(piece[1], piece[2], piece[3])
+        end = _lerp(piece[1], piece[2], piece[4])
+        if piece[5] == side:
+            current.append(end)
+        else:
+            runs.append((current, side))
+            current = [start, end]
+            side = piece[5]
+    runs.append((current, side))
+
+    islands = []
+    for index, (run, ok) in enumerate(runs):
+        if not ok:
+            continue
+        if seams is not None:
+            if index > 0:
+                seams.append(run[0])
+            if index < len(runs) - 1:
+                seams.append(run[-1])
+        if len(run) >= 2:
+            islands.append(run)
+    return islands
+
+
+def _crease_scan(map_point, row_range, axis, samples=48, max_columns=600,
+                 frame=None):
     """One directional sweep of the fold locus, as curves of (l_h, l_v) pairs.
+
+    `frame` selects whose folds are traced: the MAIN frame by default (the
+    creases the output folds along), or the CHILD frame for the severing
+    seams - there the traced (l_h, l_v) pairs are Third coordinates directly
+    and the image-space refinement below runs on the child canvas, which is
+    exactly the space the seam cutters cut in.
 
     det J vanishes where the main H direction turns parallel to the main V
     direction: f(l_h, l_v) = T_h(l_h) x T_v(l_v) = 0. A sweep fixes one
@@ -4531,7 +4777,7 @@ def _crease_scan(map_point, row_range, axis, samples=48, max_columns=600):
     alternate, so ranks cannot swap); on a count change branches continue by
     nearest arc within a tight window (see the inline note).
     """
-    main = map_point.main_frame
+    main = frame if frame is not None else map_point.main_frame
     low, high = row_range
     if axis == "h":
         scan_guide, scan_zero, scan_window = main.gh, main.h_arc, main.h_window
@@ -4903,8 +5149,13 @@ def _stitch_crease(pieces, tolerance, boundaries):
     return list(pieces.values())
 
 
-def _corner_loci(map_point, v_range, h_range, spans=None, step=POLY_STEP):
+def _corner_loci(map_point, v_range, h_range, spans=None, step=POLY_STEP,
+                 frame=None):
     """Exact fold loci of guide CORNERS: constant-arc lines in arc space.
+
+    `frame` selects the frame whose corners are enumerated (default MAIN);
+    with the CHILD frame the emitted lines are Third-space seam candidates
+    for the severing pass.
 
     A sharp corner folds the map along the corner's preimage - a straight
     line l_h = m_c (H corner) or l_v = m_c (V corner) in arc space, exactly
@@ -4922,7 +5173,7 @@ def _corner_loci(map_point, v_range, h_range, spans=None, step=POLY_STEP):
     sweeps use, so these curves are drop-in members of the same pool - just
     exact, complete, and continuous through every junction.
     """
-    main = map_point.main_frame
+    main = frame if frame is not None else map_point.main_frame
     curves = []
     # The line POSITION gate uses the artwork's true arc extent (`spans`,
     # unpadded), not the padded scan window: a fold at an arc no material
@@ -5494,6 +5745,123 @@ def _child_cutters(map_point):
     return cutters
 
 
+def _sever_curve_is_real(map_point, curve, probe=POLY_STEP, samples=5):
+    """Does the VALIDITY verdict actually change across this traced seam?
+
+    The severing twin of _curve_is_fold: the child-frame sweeps inherit the
+    same phantom failure mode (near-corner rows chaining isolated per-row
+    zeros into a long pseudo-curve the field never flips across). A phantom
+    seam would slice fills cosmetically; probing third_of one step to each
+    side separates real seams from phantoms. Probes run in CHILD CANVAS
+    space - the space the cutters cut in.
+    """
+    count = len(curve)
+    if count < 2:
+        return False
+    child = map_point.child_frame
+    tested = 0
+    for k in range(samples):
+        index = max(0, min(count - 2, int((k + 0.5) * (count - 1) / samples)))
+        pa = child.hv(*curve[index])
+        pb = child.hv(*curve[index + 1])
+        dx, dy = pb[0] - pa[0], pb[1] - pa[1]
+        length = math.hypot(dx, dy)
+        if length <= 1e-9:
+            continue
+        nx, ny = -dy / length, dx / length
+        mid = ((pa[0] + pb[0]) * 0.5, (pa[1] + pb[1]) * 0.5)
+        tested += 1
+        if (map_point.third_of((mid[0] + nx * probe, mid[1] + ny * probe))[2]
+                != map_point.third_of((mid[0] - nx * probe,
+                                       mid[1] - ny * probe))[2]):
+            return True
+    return tested == 0  # nothing to judge: keep
+
+
+def _sever_loci(map_point):
+    """The CHILD frame's fold loci in Third space, cached on the mapper.
+
+    These are the UV SEAMS of the staged pipeline: the curves where
+    det J_child = 0, on whose far side the Third lift stops existing. Same
+    dual-sweep + corner-line + dedup machinery as the main-frame crease
+    tracer, pointed at the child frame - the traced (l_h, l_v) pairs ARE
+    Third coordinates, no unscaling, no warp (the additional-line warp acts
+    AFTER the lift and cannot create or move child-frame folds). The window
+    is frame-global (the guides bound where a fold can live), so the result
+    is pattern-independent and computed once per mapper.
+    """
+    cached = getattr(map_point, "sever_curves", None)
+    if cached is not None:
+        return cached
+    if not map_point.can_fold():
+        map_point.sever_curves = []
+        return map_point.sever_curves
+    child = map_point.child_frame
+    h_pad = 0.5 * child.h_total
+    v_pad = 0.5 * child.v_total
+    h_span = (-child.h_arc, child.h_total - child.h_arc)
+    v_span = (-child.v_arc, child.v_total - child.v_arc)
+    h_range = (h_span[0] - h_pad, h_span[1] + h_pad)
+    v_range = (v_span[0] - v_pad, v_span[1] + v_pad)
+    h_good, h_bad = _crease_scan(map_point, v_range, "h", frame=child)
+    v_good, v_bad = _crease_scan(map_point, h_range, "v", frame=child)
+    corner = _corner_loci(map_point, v_range, h_range,
+                          spans=(h_span, v_span), frame=child)
+    tolerance = 2.5 * POLY_STEP
+    grid = _ArcGrid(4.0 * POLY_STEP)
+    pieces = []
+    for pool in (corner, h_good, v_good, h_bad, v_bad):
+        for curve in pool:
+            for run in _uncovered_runs(curve, grid, tolerance):
+                if len(run) >= 2 and _sever_curve_is_real(map_point, run):
+                    pieces.append(run)
+                    grid.add_curve(run)
+    map_point.sever_curves = pieces
+    return pieces
+
+
+def _sever_cutters(map_point):
+    """The UV seams as ring cutters in CHILD canvas space, cached.
+
+    Same construction as _child_cutters (straight end extensions so a seam
+    dead-ending inside a fill still cuts it; pre-extension geometry kept for
+    the bbox gate), but from the child frame's own fold loci: fills must be
+    cut where the LIFT stops existing, and the pieces on severed ground are
+    then dropped by _split_ring_by_fold - the fill's paint wraps out of
+    sight at the seam exactly like the strokes do.
+    """
+    cached = getattr(map_point, "sever_cutter_polys", None)
+    if cached is not None:
+        return cached
+    child = map_point.child_frame
+    reach = 2.0 * (child.gh.total + child.gv.total)
+    bare = []
+    for curve in _sever_loci(map_point):
+        points = [child.hv(*third) for third in curve]
+        if len(points) >= 2:
+            bare.append(points)
+    raw = [_densify(list(points)) for points in bare]
+    cutters = []
+    for points in bare:
+        points = list(points)
+        for end, other in ((0, 1), (-1, -2)):
+            dx = points[end][0] - points[other][0]
+            dy = points[end][1] - points[other][1]
+            length = math.hypot(dx, dy)
+            if length <= 1e-9:
+                continue
+            tip = points[end]
+            extended = (tip[0] + dx / length * reach, tip[1] + dy / length * reach)
+            if end == 0:
+                points.insert(0, extended)
+            else:
+                points.append(extended)
+        cutters.append(_densify(points))
+    map_point.sever_cutter_polys = cutters
+    map_point.sever_cutter_raw = raw
+    return cutters
+
+
 def _point_in_ring(point, ring):
     """Odd-even test against a closed ring (implicit closing edge)."""
     inside = False
@@ -5720,13 +6088,12 @@ def _split_ring_by_fold(map_point, ring, crossings_out=None, gate_bbox=None):
     `crossings_out` collects the ring/crease crossing points (child space):
     the fill's side-change positions, which the crease anchors on exactly
     like it anchors on the strokes' cuts.
+
+    SEVERING runs first and unconditionally (it is map semantics, not the
+    fold-split display option): the ring is cut along the child frame's UV
+    seams and every piece on severed ground - where the Third lift does not
+    exist - is dropped, mirroring what _sever_source does to the strokes.
     """
-    if not _FOLD["split"]:
-        return [(ring, _MappedOutput.FRONT, _ring_interior_point(ring))]
-    pieces = [ring]
-    raw_crossings = [] if crossings_out is not None else None
-    cutters = _child_cutters(map_point)
-    raws = getattr(map_point, "child_cutters_raw", None) or [None] * len(cutters)
     if gate_bbox is None:
         rx0 = min(p[0] for p in ring)
         rx1 = max(p[0] for p in ring)
@@ -5735,6 +6102,34 @@ def _split_ring_by_fold(map_point, ring, crossings_out=None, gate_bbox=None):
     else:
         rx0, ry0, rx1, ry1 = gate_bbox
     margin = 2.0 * POLY_STEP
+
+    pieces = [ring]
+    if map_point.can_fold():
+        sever_cutters = _sever_cutters(map_point)
+        sever_raws = (getattr(map_point, "sever_cutter_raw", None)
+                      or [None] * len(sever_cutters))
+        for cutter, raw in zip(sever_cutters, sever_raws):
+            if raw is not None:
+                if (max(p[0] for p in raw) < rx0 - margin
+                        or min(p[0] for p in raw) > rx1 + margin
+                        or max(p[1] for p in raw) < ry0 - margin
+                        or min(p[1] for p in raw) > ry1 + margin):
+                    continue
+            cut = []
+            for piece in pieces:
+                cut.extend(_cut_ring_by_polyline(piece, cutter))
+            pieces = cut
+        # The verdict runs even when no seam touched the bbox: a small ring
+        # can sit ENTIRELY on severed ground with no seam crossing it.
+        pieces = [piece for piece in pieces
+                  if map_point.third_of(_ring_interior_point(piece))[2]]
+
+    if not _FOLD["split"]:
+        return [(piece, _MappedOutput.FRONT, _ring_interior_point(piece))
+                for piece in pieces]
+    raw_crossings = [] if crossings_out is not None else None
+    cutters = _child_cutters(map_point)
+    raws = getattr(map_point, "child_cutters_raw", None) or [None] * len(cutters)
     for cutter, raw in zip(cutters, raws):
         if raw is not None:
             # Crossing a cutter's straight extension never changes the
@@ -6005,6 +6400,12 @@ class _MappedOutput:
         # _stroke_polylines falls back to the artist's raw input trail when a
         # stroke carries commands instead of polylines - a different curve.
         self.cuts = []
+        # Child-fold SEAM cut points (child space): where the topology was
+        # severed because the Newton lift into Third does not exist. These
+        # are UV seams, not main-frame creases - they never feed the seal
+        # pass (the pattern simply ENDS there, wrapped out of sight); they
+        # are counted for the run summary.
+        self.seams = []
 
     @staticmethod
     def _layer_name(depth, generic=False):
@@ -6285,14 +6686,16 @@ def _emit_polyline_mode(animean, out, stroke, map_point, child_area, main_area, 
     eps = rdp_eps()
     for poly in _stroke_polylines(stroke):
         for piece in _clip_polyline(poly, child_area):
-            for run, side in _fold_runs(map_point, piece, out.cuts):
-                depth = _run_depth(map_point, run, side)
-                flagged = _adaptive_map_polyline(map_point, run)
-                for clipped in _clip_flagged(flagged, main_area):
-                    points = _decimate_between_anchors(clipped, eps)
-                    if out.add_polyline(side, points, _side_style(side, color_tuple),
-                                        width, depth):
-                        added += 1
+            for island in _sever_source(map_point, piece, out.seams):
+                for run, side in _fold_runs(map_point, island, out.cuts):
+                    depth = _run_depth(map_point, run, side)
+                    flagged = _adaptive_map_polyline(map_point, run)
+                    for clipped in _clip_flagged(flagged, main_area):
+                        points = _decimate_between_anchors(clipped, eps)
+                        if out.add_polyline(side, points,
+                                            _side_style(side, color_tuple),
+                                            width, depth):
+                            added += 1
     return added
 
 
@@ -6306,15 +6709,18 @@ def _emit_spline_mode(animean, out, stroke, map_point, child_area, main_area, co
     eps = rdp_eps()
     for poly in _stroke_polylines(stroke):
         for piece in _clip_polyline(poly, child_area):
-            for run, side in _fold_runs(map_point, piece, out.cuts):
-                depth = _run_depth(map_point, run, side)
-                flagged = _adaptive_map_polyline(map_point, run)
-                for clipped in _clip_flagged(flagged, main_area):
-                    knots = _decimate_between_anchors(clipped, eps)
-                    commands, flat = _cubics_to_commands(_catmull_rom_cubics(knots))
-                    if out.add_curved(side, commands, flat,
-                                      _side_style(side, color_tuple), width, depth):
-                        added += 1
+            for island in _sever_source(map_point, piece, out.seams):
+                for run, side in _fold_runs(map_point, island, out.cuts):
+                    depth = _run_depth(map_point, run, side)
+                    flagged = _adaptive_map_polyline(map_point, run)
+                    for clipped in _clip_flagged(flagged, main_area):
+                        knots = _decimate_between_anchors(clipped, eps)
+                        commands, flat = _cubics_to_commands(
+                            _catmull_rom_cubics(knots))
+                        if out.add_curved(side, commands, flat,
+                                          _side_style(side, color_tuple),
+                                          width, depth):
+                            added += 1
     return added
 
 
@@ -6323,17 +6729,22 @@ def _emit_bezier_mode(animean, out, stroke, map_point, child_area, main_area, co
     added = 0
     for cubics in _commands_to_subpaths(stroke.get("commands")):
         for src_piece in _clip_cubics(cubics, child_area):
-            for run, side in _fold_runs_cubic(map_point, src_piece, out.cuts):
-                depth = (_run_depth(map_point, [_cubic_point(run[len(run) // 2], 0.5)], side)
-                         if run else (0 if side == _MappedOutput.FRONT else 1))
-                out_cubics = []
-                for cub in run:
-                    out_cubics.extend(_warp_cubic(map_point, cub))
-                for out_piece in _clip_cubics(out_cubics, main_area):
-                    commands, flat = _cubics_to_commands(out_piece)
-                    if out.add_curved(side, commands, flat,
-                                      _side_style(side, color_tuple), width, depth):
-                        added += 1
+            for island in _sever_cubics_by_child_fold(map_point, src_piece,
+                                                      out.seams):
+                for run, side in _fold_runs_cubic(map_point, island, out.cuts):
+                    depth = (_run_depth(map_point,
+                                        [_cubic_point(run[len(run) // 2], 0.5)],
+                                        side)
+                             if run else (0 if side == _MappedOutput.FRONT else 1))
+                    out_cubics = []
+                    for cub in run:
+                        out_cubics.extend(_warp_cubic(map_point, cub))
+                    for out_piece in _clip_cubics(out_cubics, main_area):
+                        commands, flat = _cubics_to_commands(out_piece)
+                        if out.add_curved(side, commands, flat,
+                                          _side_style(side, color_tuple),
+                                          width, depth):
+                            added += 1
     return added
 
 
@@ -6371,6 +6782,65 @@ def _split_cubic_by_fold(map_point, cub):
         side = _fold_sign(map_point, _cubic_point(cub, (t0 + t1) * 0.5))
         parts.append((_split_cubic(cub, t0, t1), side))
     return parts
+
+
+def _sever_cubics_by_child_fold(map_point, cubics, seams=None):
+    """Cut a run of source cubics into computable UV islands (bezier mode).
+
+    The cubic twin of _sever_source: scan each cubic's parameter for
+    validity changes of the Third lift, bisect each change onto the fold
+    line, keep the valid parts, drop the rest, and regroup contiguous valid
+    parts - a severed stretch splits the subpath into separate islands.
+    Free on frames that cannot fold (can_fold gate).
+    """
+    if not cubics or not map_point.can_fold():
+        return [list(cubics)] if cubics else []
+
+    def valid_at(cub, t):
+        return map_point.third_of(_cubic_point(cub, t))[2]
+
+    parts = []
+    for cub in cubics:
+        net = bezier.hull_length(cub)
+        probes = max(4, min(96, int(math.ceil(net / POLY_STEP))))
+        ts = [k / probes for k in range(probes + 1)]
+        flags = [valid_at(cub, t) for t in ts]
+        cuts = []
+        for k in range(1, len(ts)):
+            if flags[k] == flags[k - 1]:
+                continue
+            lo, hi = ts[k - 1], ts[k]
+            for _ in range(24):
+                mid = (lo + hi) * 0.5
+                if valid_at(cub, mid) == flags[k - 1]:
+                    lo = mid
+                else:
+                    hi = mid
+            cuts.append((lo + hi) * 0.5)
+        bounds = [0.0] + cuts + [1.0]
+        for t0, t1 in zip(bounds, bounds[1:]):
+            if t1 - t0 <= 1e-9:
+                continue
+            parts.append((_split_cubic(cub, t0, t1),
+                          valid_at(cub, (t0 + t1) * 0.5)))
+
+    islands = []
+    current = []
+    previous_ok = None
+    for part, ok in parts:
+        if ok:
+            if not current and previous_ok is False and seams is not None:
+                seams.append(part[0])  # island opens ON the fold line
+            current.append(part)
+        elif current:
+            if seams is not None:
+                seams.append(current[-1][3])  # island closes ON the fold line
+            islands.append(current)
+            current = []
+        previous_ok = ok
+    if current:
+        islands.append(current)
+    return islands
 
 
 def _emit_seals(animean, out, map_point, pattern, child_area, main_area, width_scale):
@@ -6758,8 +7228,11 @@ def _perform_mapping():
     if added == 0:
         out.rollback()
         animean.ui.refresh()
-        print(f"[auto_mapping] nothing mapped: all {clipped_out} stroke(s) fell outside "
-              "the mapping area(s); the empty layer was discarded.")
+        reason = "fell outside the mapping area(s)"
+        if out.seams:
+            reason += " or lay entirely on severed ground (child-frame folds)"
+        print(f"[auto_mapping] nothing mapped: all {clipped_out} stroke(s) "
+              f"{reason}; the empty layer was discarded.")
         return False
 
     animean.ui.refresh()
@@ -6786,6 +7259,10 @@ def _perform_mapping():
     if back_count:
         summary += (f"; {back_count} stroke/fill item(s) landed on the BACK of "
                     f"a fold (det J < 0)")
+    if out.seams:
+        summary += (f"; topology SEVERED at {len(out.seams)} UV-seam cut(s) - "
+                    "the child frame folds there (det J <= 0 / diverging "
+                    "lift), so the pattern wraps out of view at the seam")
     if mapper_info.get("mirrored"):
         summary += ", MIRRORED (opposite frame handedness)"
     if child_area:
