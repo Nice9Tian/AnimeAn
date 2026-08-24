@@ -2692,6 +2692,67 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
     child_hand = 1.0 if (_hand_h[0] * _hand_v[1]
                          - _hand_h[1] * _hand_v[0]) >= 0.0 else -1.0
 
+    # can_fold is defined BEFORE _lift on purpose: _lift's plateau-retry
+    # guard calls it, and build_mapper itself runs _lift while rebuilding
+    # an additional line's Third coordinates - binding the gate later made
+    # that path a NameError (a pink line without a cached third, crossing
+    # plateau ground, killed the whole mapper build).
+    _fold_gate = {}
+
+    def can_fold():
+        """Can the child frame fold ANYWHERE? Cached frame-global gate.
+
+        Min over all pairs of flattened guide segment directions of the
+        signed sin(angle) against the crossing handedness. RAW directions on
+        purpose - jitter only makes the gate more conservative (it opens the
+        per-point severing machinery, whose verdicts are then windowed and
+        stable). Above the margin no cell can flip, hv_child is a global
+        homeomorphism onto its (linearly extended) sweep, and severing
+        short-circuits to "one island" without a single extra solve - in
+        particular straight guides never pay anything.
+
+        The chords alone are NOT the whole field the verdict samples: the
+        exact one-sided tangents at a sharp corner (tangent_at's clamp
+        jumps to them) and the exact end tangents (point_at extends
+        linearly along them beyond the guide) can both leave the chord
+        cone - a 120-degree turn confined to one chord-short terminal
+        cubic passed the chord gate at +0.50 while the windowed cell
+        genuinely reached -0.36, silently disabling severing on a frame
+        that folds. Those few extra directions join the sets; adding
+        directions only ever OPENS the gate, so the conservative claim
+        survives.
+        """
+        cached = _fold_gate.get("value")
+        if cached is not None:
+            return cached
+
+        def gate_dirs(curve):
+            dirs = []
+            for a, b in zip(curve.points, curve.points[1:]):
+                length = math.hypot(b[0] - a[0], b[1] - a[1])
+                if length > 1e-9:
+                    dirs.append(((b[0] - a[0]) / length,
+                                 (b[1] - a[1]) / length))
+            eps = 1e-6
+            extremes = [0.0, curve.total]
+            extremes.extend(getattr(curve, "sharp_arcs", None) or ())
+            for arc in extremes:
+                for side in (arc - eps, arc + eps):
+                    dirs.append(curve.dir_at(side))
+            return dirs
+
+        h_dirs = gate_dirs(child.gh)
+        v_dirs = gate_dirs(child.gv)
+        lowest = None
+        for hx, hy in h_dirs:
+            for vx, vy in v_dirs:
+                value = (hx * vy - hy * vx) * child_hand
+                if lowest is None or value < lowest:
+                    lowest = value
+        result = lowest is None or lowest <= _SEVER_GATE_SIN
+        _fold_gate["value"] = result
+        return result
+
     def _lift(point, seed=None):
         """Newton lift Child -> Third, with the achieved residual.
 
@@ -2932,62 +2993,6 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
             return (image[0] + point[0] - rebuilt[0],
                     image[1] + point[1] - rebuilt[1])
         return main_of_third((l_h, l_v))
-
-    _fold_gate = {}
-
-    def can_fold():
-        """Can the child frame fold ANYWHERE? Cached frame-global gate.
-
-        Min over all pairs of flattened guide segment directions of the
-        signed sin(angle) against the crossing handedness. RAW directions on
-        purpose - jitter only makes the gate more conservative (it opens the
-        per-point severing machinery, whose verdicts are then windowed and
-        stable). Above the margin no cell can flip, hv_child is a global
-        homeomorphism onto its (linearly extended) sweep, and severing
-        short-circuits to "one island" without a single extra solve - in
-        particular straight guides never pay anything.
-
-        The chords alone are NOT the whole field the verdict samples: the
-        exact one-sided tangents at a sharp corner (tangent_at's clamp
-        jumps to them) and the exact end tangents (point_at extends
-        linearly along them beyond the guide) can both leave the chord
-        cone - a 120-degree turn confined to one chord-short terminal
-        cubic passed the chord gate at +0.50 while the windowed cell
-        genuinely reached -0.36, silently disabling severing on a frame
-        that folds. Those few extra directions join the sets; adding
-        directions only ever OPENS the gate, so the conservative claim
-        survives.
-        """
-        cached = _fold_gate.get("value")
-        if cached is not None:
-            return cached
-
-        def gate_dirs(curve):
-            dirs = []
-            for a, b in zip(curve.points, curve.points[1:]):
-                length = math.hypot(b[0] - a[0], b[1] - a[1])
-                if length > 1e-9:
-                    dirs.append(((b[0] - a[0]) / length,
-                                 (b[1] - a[1]) / length))
-            eps = 1e-6
-            extremes = [0.0, curve.total]
-            extremes.extend(getattr(curve, "sharp_arcs", None) or ())
-            for arc in extremes:
-                for side in (arc - eps, arc + eps):
-                    dirs.append(curve.dir_at(side))
-            return dirs
-
-        h_dirs = gate_dirs(child.gh)
-        v_dirs = gate_dirs(child.gv)
-        lowest = None
-        for hx, hy in h_dirs:
-            for vx, vy in v_dirs:
-                value = (hx * vy - hy * vx) * child_hand
-                if lowest is None or value < lowest:
-                    lowest = value
-        result = lowest is None or lowest <= _SEVER_GATE_SIN
-        _fold_gate["value"] = result
-        return result
 
     def inverse_point(point):
         """Main-board point -> child-board point through the full mapping
@@ -5069,15 +5074,19 @@ def _cubic_tail_polyline(cubics, span=4.0 * POLY_STEP):
     points = []
     total = 0.0
     for cub in reversed(cubics):
+        want = span - total
+        if want <= 1e-9:
+            # FP guard: the accumulation can land one ULP under `span`,
+            # and walking on with t0 == 1.0 prepended a zero-length sliver
+            # plus a jump back over the whole island.
+            break
         hull = max(bezier.hull_length(cub), 1e-9)
-        t0 = max(0.0, 1.0 - min(1.0, (span - total) / hull))
+        t0 = max(0.0, 1.0 - min(1.0, want / hull))
         count = max(2, min(16, int(math.ceil((1.0 - t0) * hull / POLY_STEP))))
         seg = [_cubic_point(cub, t0 + (1.0 - t0) * k / count)
                for k in range(count + 1)]
         points = seg[:-1] + points if points else seg
         total += (1.0 - t0) * hull
-        if total >= span:
-            break
     return points
 
 
@@ -5091,14 +5100,15 @@ def _cubic_head_polyline(cubics, span=4.0 * POLY_STEP):
     points = []
     total = 0.0
     for cub in cubics:
+        want = span - total
+        if want <= 1e-9:
+            break   # FP guard, mirror of _cubic_tail_polyline's
         hull = max(bezier.hull_length(cub), 1e-9)
-        t1 = min(1.0, (span - total) / hull)
+        t1 = min(1.0, want / hull)
         count = max(2, min(16, int(math.ceil(t1 * hull / POLY_STEP))))
         seg = [_cubic_point(cub, t1 * k / count) for k in range(count + 1)]
         points = points + seg[1:] if points else seg
         total += t1 * hull
-        if total >= span:
-            break
     return points
 
 
@@ -6234,10 +6244,13 @@ def _sever_cutters(map_point, grid_n=64):
 
     Marching squares over a padded frame window: verdict at the lattice
     nodes, each crossing edge bisected onto the verdict boundary
-    (sub-pixel), cell segments chained into polylines, and the usual
-    straight end extensions applied (_cutter_polylines) so a boundary
-    leaving the window still cuts whole fills. The pre-extension geometry
-    stays on map_point.sever_cutter_raw for the bbox gate. A verdict
+    (sub-pixel), cell segments chained into polylines, and straight end
+    extensions applied to OPEN chains (_cutter_polylines) so a boundary
+    leaving the window still cuts whole fills; closed contours stay
+    closed (cut cyclically by _cut_ring_by_polyline) and add a straight
+    slicer through their centre so a fully-contained shadow island still
+    partitions its ring. map_point.sever_cutter_bounds carries each
+    cutter's extended bbox for _sever_ring's skip gate. A verdict
     structure thinner than one cell (~window/64) can slip between the
     nodes - the same class of limit the loci tracer's phantom filter
     already accepted. Cached per mapper; free on frames that cannot fold.
@@ -6247,7 +6260,7 @@ def _sever_cutters(map_point, grid_n=64):
         return cached
     if not map_point.can_fold():
         map_point.sever_cutter_polys = []
-        map_point.sever_cutter_raw = []
+        map_point.sever_cutter_bounds = []
         return map_point.sever_cutter_polys
     child = map_point.child_frame
     third_of = map_point.third_of
@@ -6380,14 +6393,35 @@ def _sever_cutters(map_point, grid_n=64):
             bare.append(chain)
 
     reach = 2.0 * (child.gh.total + child.gv.total)
-    cutters, raw = _cutter_polylines(bare, reach)
+    cutters, _raw = _cutter_polylines(bare, reach)
+    # A CLOSED contour cannot express a fully-contained shadow island as a
+    # hole (this pipeline's fill pieces are simple rings), so each closed
+    # chain also contributes one straight SLICER through its centre: a
+    # ring containing the island gets sliced into simple pieces whose
+    # votes then drop the island's ground - the deterministic version of
+    # what the removed end-extension spikes used to achieve by accident.
+    # Slicer cuts away from the island are cosmetic (same-verdict pieces).
+    # Slicers go FIRST: each cutter is applied once, and a contour lying
+    # strictly inside a ring has no boundary crossings to cut with until
+    # the slicer has split the ring through the island.
+    slicers = []
+    for chain in bare:
+        if (len(chain) >= 3
+                and math.hypot(chain[0][0] - chain[-1][0],
+                               chain[0][1] - chain[-1][1]) <= 1e-6):
+            xs = [p[0] for p in chain]
+            ys = [p[1] for p in chain]
+            cy = (min(ys) + max(ys)) * 0.5
+            cx = (min(xs) + max(xs)) * 0.5
+            slicers.append([(cx - reach, cy), (cx + reach, cy)])
+    cutters[:0] = slicers
     map_point.sever_cutter_polys = cutters
-    map_point.sever_cutter_raw = raw
     # The skip gate must see the EXTENDED geometry: a sever extension is a
     # real (straight-continued) validity boundary, not the crease system's
-    # parity-neutral cutting aid - gating on the window-clamped raw let a
-    # fill beyond the marched window skip the cutter and be kept or wiped
-    # whole by the vote while the strokes over the same ground were cut.
+    # parity-neutral cutting aid - gating on the window-clamped bare
+    # geometry let a fill beyond the marched window skip the cutter and be
+    # kept or wiped whole by the vote while the strokes over the same
+    # ground were cut.
     map_point.sever_cutter_bounds = [
         (min(p[0] for p in cutter), min(p[1] for p in cutter),
          max(p[0] for p in cutter), max(p[1] for p in cutter))
@@ -6533,6 +6567,30 @@ def _cut_ring_by_polyline(ring, cutter, crossings_out=None):
                 # anchors the crease needs to span the fill's fold edge.
                 crossings_out.append(crossings[k][1])
                 crossings_out.append(crossings[k + 1][1])
+    if (len(crossings) >= 2 and len(cutter) >= 3
+            and math.hypot(cutter[0][0] - cutter[-1][0],
+                           cutter[0][1] - cutter[-1][1]) <= 1e-6):
+        # A CLOSED cutter (a marched contour around a severed island) is
+        # cyclic: the stretch that wraps past its parameter seam is a
+        # chord like any other, invisible to the consecutive-pairs walk
+        # above - whether a straddling ring got cut used to depend on
+        # where the chaining happened to start the loop.
+        total = float(len(cutter) - 1)
+        first, last = crossings[0], crossings[-1]
+        m = (last[0] + first[0] + total) * 0.5
+        if m >= total:
+            m -= total
+        if _point_in_ring(cutter_point(m), ring):
+            wrapped = [last[1]]
+            for j in range(int(last[0]) + 1, len(cutter)):
+                wrapped.append(cutter[j])
+            for j in range(1, int(first[0]) + 1):
+                wrapped.append(cutter[j])
+            wrapped.append(first[1])
+            chords.append(wrapped)
+            if crossings_out is not None:
+                crossings_out.append(last[1])
+                crossings_out.append(first[1])
 
     pieces = [list(ring)]
     for chord in chords:

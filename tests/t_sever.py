@@ -344,4 +344,31 @@ for island in seen_islands:
         assert p[0] <= 165.0, p   # nothing past the silhouette is lifted
 print("15) 3D reconstruction drapes severed islands only")
 
+# 16) The mapper must BUILD with an additional line that has no cached
+#     third and crosses severed ground: build_mapper rebuilds the line's
+#     Third coordinates through _lift, whose plateau-retry guard calls
+#     can_fold - binding the gate after _lift once made this a NameError
+#     that killed the whole build.
+extra = {"id": 1, "points": [(120.0, 0.0), (200.0, 0.0), (300.0, 0.0)],
+         "width": 3.0}
+mp_extra, _note = am.build_mapper(
+    hook_h(), V, MAIN_H, V, {},
+    additional_pairs=[(dict(extra), dict(extra))])
+assert mp_extra is not None
+print("16) mapper builds with an uncached additional line on severed ground")
+
+# 17) A CLOSED sever contour cuts rings CYCLICALLY: the wrap-around stretch
+#     past the chain's parameter seam is a chord like any other, so the cut
+#     cannot depend on where the chaining started the loop.
+sq = am._densify([(-50.0, -50.0), (50.0, -50.0), (50.0, 50.0),
+                  (-50.0, 50.0), (-50.0, -50.0)])[:-1]
+loop = [(50.0 + 30.0 * math.cos(2.0 * math.pi * k / 72.0),
+         30.0 * math.sin(2.0 * math.pi * k / 72.0)) for k in range(72)]
+for shift in (0, 18, 27, 36, 40, 60):
+    rotated = loop[shift:] + loop[:shift]
+    rotated.append(rotated[0])
+    pieces17 = am._cut_ring_by_polyline(sq, rotated)
+    assert len(pieces17) >= 2, (shift, len(pieces17))
+print("17) closed cutter cuts the straddling ring at every chain phase")
+
 print("t_sever: ALL OK")
