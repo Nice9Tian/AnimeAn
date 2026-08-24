@@ -1612,16 +1612,18 @@ class _FlowFieldWarp:
     # elimination costs nothing to tune. AXIS_GUARD is the weight-free
     # halo that gives the field room to blend around the pinned lines.
     AXIS_GUARD = 0.12      # weight-free halo, as a fraction of the window
+    DET_FOLD_TOL = 1e-3    # |det| below this is a graze, not a fold
 
     def __init__(self, pairs, falloff="linear", radius_factor=0.5,
                  frame_window=None):
         self.falloff = falloff if falloff in ADDITIONAL_FALLOFFS else "linear"
         self.has_faces = False
         self.pairs = []
+        self.notes = []
         self._loci = None
         self._grid = None
         self._tent = None
-        for entry in pairs:
+        for index, entry in enumerate(pairs):
             child_third, main_third = entry[0], entry[1]
             if len(child_third) < 2 or len(main_third) < 2:
                 continue
@@ -1629,7 +1631,15 @@ class _FlowFieldWarp:
                                  [tuple(p) for p in main_third],
                                  radius_factor)
             if line is not None:
+                line["index"] = index
                 self.pairs.append(line)
+                if line["neutral"]:
+                    # A silent no-op must not stay silent: the user drew a
+                    # line and nothing happened.
+                    self.notes.append(
+                        f"additional line {index + 1} is neutral (both "
+                        "sides ask for the identity flow) - bend or "
+                        "rotate either side to shape the mapping")
         if self.pairs:
             self._build(frame_window)
 
@@ -1640,10 +1650,27 @@ class _FlowFieldWarp:
         # Direction alignment: station k pairs with station k, so a line
         # redrawn BACKWARDS against its untouched partner must not read
         # as a ~180 degree flow ask (measured 71 px of drift without the
-        # flip). The chord dot decides, exactly like the old sweep did.
+        # flip). The chord dot decides, exactly like the old sweep did -
+        # except for near-CLOSED lines, whose chord is a few percent of
+        # their arc and its sign is decided by where the user happened to
+        # lift the pen: those align by endpoint proximity instead.
         chord_c = (child[-1][0] - child[0][0], child[-1][1] - child[0][1])
         chord_m = (main[-1][0] - main[0][0], main[-1][1] - main[0][1])
-        if chord_c[0] * chord_m[0] + chord_c[1] * chord_m[1] < 0.0:
+        arc_c_raw = _cumulative_lengths(child)[-1]
+        arc_m_raw = _cumulative_lengths(main)[-1]
+        if (math.hypot(*chord_c) < 0.05 * max(arc_c_raw, 1e-9)
+                or math.hypot(*chord_m) < 0.05 * max(arc_m_raw, 1e-9)):
+            same = (math.hypot(child[0][0] - main[0][0],
+                               child[0][1] - main[0][1])
+                    + math.hypot(child[-1][0] - main[-1][0],
+                                 child[-1][1] - main[-1][1]))
+            cross = (math.hypot(child[0][0] - main[-1][0],
+                                child[0][1] - main[-1][1])
+                     + math.hypot(child[-1][0] - main[0][0],
+                                  child[-1][1] - main[0][1]))
+            if cross < same:
+                main = list(reversed(main))
+        elif chord_c[0] * chord_m[0] + chord_c[1] * chord_m[1] < 0.0:
             main = list(reversed(main))
         c = _resample_fractions(child, self.SAMPLES)
         m = _resample_fractions(main, self.SAMPLES)
@@ -1707,18 +1734,37 @@ class _FlowFieldWarp:
         return t * t * (3.0 - 2.0 * t)
 
     def _tent_axis(self, value, side_neg, side_pos):
-        """Raw displacement of one axis under the pre-stretch tent."""
-        t_neg, b_neg = side_neg
-        t_pos, b_pos = side_pos
-        if value >= 0.0:
-            if t_pos == 0.0:
-                return 0.0
-            w = min(1.0, (value / b_pos) ** self.STRETCH_ALPHA)
-            return t_pos * w
-        if t_neg == 0.0:
+        """Raw displacement of one axis under the pre-stretch tent.
+
+        Piecewise: (|t|/B)^alpha rise to the full overrun T at the
+        original edge, HOLD across the stretched window (so the Dirichlet
+        boundary carries the full translation), then a smoothstep FADE
+        back to zero - the clamped profile translated ALL far ground
+        beyond the edge forever (a probe 3000 px out moved by the full
+        overrun of a 200 px line). The fade span is >= 2T, so the slope
+        stays above -0.75 and value + displacement remains monotone (the
+        1-D inverse stays well-defined)."""
+        t, b, f0, f1 = side_pos if value >= 0.0 else side_neg
+        if t == 0.0:
             return 0.0
-        w = min(1.0, (-value / b_neg) ** self.STRETCH_ALPHA)
-        return -t_neg * w
+        v = abs(value)
+        if v <= b:
+            disp = t * (v / b) ** self.STRETCH_ALPHA
+        elif v <= f0:
+            disp = t
+        elif v >= f1:
+            disp = 0.0
+        else:
+            s = (v - f0) / (f1 - f0)
+            disp = t * (1.0 - s * s * (3.0 - 2.0 * s))
+        return disp if value >= 0.0 else -disp
+
+    def _tent_cross(self, value, zone, pad):
+        """Cross-axis damping factor: ZERO across the pinned band (pad)
+        and the axis itself, smoothstep to 1 at the halo's edge - the
+        pinned rows sit up to a cell off-axis, and pinning them to a
+        U_base that still carried tent displacement dragged the axes."""
+        return self._smoothstep((abs(value) - pad) / zone)
 
     def _tent_apply(self, third):
         """The pre-stretch. Each component is damped to ZERO near the
@@ -1727,8 +1773,8 @@ class _FlowFieldWarp:
         ground 19 px at (0, 150)), and the axes must not move at all."""
         tent = self._tent
         tx, ty = tent["x"], tent["y"]
-        sx = self._smoothstep(abs(third[0]) / tent["zx"])
-        sy = self._smoothstep(abs(third[1]) / tent["zy"])
+        sx = self._tent_cross(third[0], tent["zx"], tent["px"])
+        sy = self._tent_cross(third[1], tent["zy"], tent["py"])
         return (third[0] + self._tent_axis(third[0], tx[0], tx[1]) * sy,
                 third[1] + self._tent_axis(third[1], ty[0], ty[1]) * sx)
 
@@ -1768,7 +1814,8 @@ class _FlowFieldWarp:
     # --------------------------------------------------------------- build
 
     def _build(self, frame_window):
-        import numpy as np
+        import pydeps
+        np = pydeps.ensure("numpy")
 
         # Neutral lines (identity asks) stay out of the field entirely -
         # they are drawn markers awaiting an edit, not requests.
@@ -1795,9 +1842,6 @@ class _FlowFieldWarp:
         t_top = max(0.0, max(ys) - v_hi)
         zone_x = max(1e-6, self.AXIS_GUARD * (b_left + b_right))
         zone_y = max(1e-6, self.AXIS_GUARD * (b_bottom + b_top))
-        self._tent = {"x": ((t_left, b_left), (t_right, b_right)),
-                      "y": ((t_bottom, b_bottom), (t_top, b_top)),
-                      "zx": zone_x, "zy": zone_y}
         # Solve domain: the stretched window plus every band's radius, so a
         # line's influence never presses against the Dirichlet boundary.
         margin = max(line["radius"] for line in active)
@@ -1808,56 +1852,66 @@ class _FlowFieldWarp:
         span_x = max(x1 - x0, 1e-6)
         span_y = max(y1 - y0, 1e-6)
         longest = max(span_x, span_y)
-        nx = max(24, int(round(self.GRID * span_x / longest)))
-        ny = max(24, int(round(self.GRID * span_y / longest)))
+        # Floor 48: with 24 an anisotropic frame resolved its short axis by
+        # a handful of cells and the two-cell pinned band ate a fifth of it.
+        nx = max(48, int(round(self.GRID * span_x / longest)))
+        ny = max(48, int(round(self.GRID * span_y / longest)))
         du = span_x / nx
         dv = span_y / ny
+
+        # Tent sides as (T, B, fade_start, fade_end): full translation
+        # holds exactly to the domain edge (the Dirichlet boundary carries
+        # it), then fades to zero over >= 2T so far ground is untouched
+        # and the profile stays monotone.
+        def tent_side(t, b, edge):
+            return (t, b, edge, edge + max(2.0 * t, 0.25 * b))
+
+        pad_x = 1.25 * du     # the pinned band is tent-free (see _tent_cross)
+        pad_y = 1.25 * dv
+        self._tent = {"x": (tent_side(t_left, b_left, b_left + t_left + margin),
+                            tent_side(t_right, b_right,
+                                      b_right + t_right + margin)),
+                      "y": (tent_side(t_bottom, b_bottom,
+                                      b_bottom + t_bottom + margin),
+                            tent_side(t_top, b_top, b_top + t_top + margin)),
+                      "zx": zone_x, "zy": zone_y,
+                      "px": pad_x, "py": pad_y}
 
         gx = np.linspace(x0, x1, nx + 1)
         gy = np.linspace(y0, y1, ny + 1)
         X, Y = np.meshgrid(gx, gy, indexing="ij")
 
-        # Tent field on the nodes (vectorised copy of _tent_apply,
-        # including the cross-axis damping that keeps both axes still).
-        def tent_axis_np(values, side_neg, side_pos):
-            t_neg, b_neg = side_neg
-            t_pos, b_pos = side_pos
-            out = np.zeros_like(values)
-            pos = values >= 0.0
-            if t_pos != 0.0:
-                w = np.minimum(1.0, (values[pos] / b_pos) ** self.STRETCH_ALPHA)
-                out[pos] = t_pos * w
-            neg = ~pos
-            if t_neg != 0.0:
-                w = np.minimum(1.0, (-values[neg] / b_neg) ** self.STRETCH_ALPHA)
-                out[neg] = -t_neg * w
-            return out
+        # Tent field on the nodes: the scalar helpers are exact and the
+        # node count is small, so vectorisation buys nothing worth a
+        # second copy of the piecewise profile drifting out of sync.
+        tent_x = np.array([self._tent_axis(v, *self._tent["x"]) for v in gx])
+        tent_y = np.array([self._tent_axis(v, *self._tent["y"]) for v in gy])
+        cross_x = np.array([self._tent_cross(v, zone_x, pad_x) for v in gx])
+        cross_y = np.array([self._tent_cross(v, zone_y, pad_y) for v in gy])
+        ub_x = X + tent_x[:, None] * cross_y[None, :]
+        ub_y = Y + tent_y[None, :] * cross_x[:, None]
 
-        def smoothstep_np(values):
-            t = np.clip(values, 0.0, 1.0)
-            return t * t * (3.0 - 2.0 * t)
-
-        cross_x = smoothstep_np(np.abs(X) / zone_x)
-        cross_y = smoothstep_np(np.abs(Y) / zone_y)
-        ub_x = X + tent_axis_np(X, *self._tent["x"]) * cross_y
-        ub_y = Y + tent_axis_np(Y, *self._tent["y"]) * cross_x
-
-        # Stage II - per-line node influence at the STRETCHED node
-        # positions (the lines live in the stretched ground the tent
-        # exposes). Geometry is static across boost rounds, so weights and
-        # nearest-segment indices are computed once per line.
-        px = ub_x.ravel()
-        py = ub_y.ravel()
+        # Stage II - per-line node influence at the RAW node positions:
+        # apply() is queried at raw Third coordinates (the lifts), so the
+        # weights must be measured there too. Measuring at the STRETCHED
+        # positions ub(X) was the review's headline find: with any real
+        # tent overrun the band landed one tent-displacement away from
+        # the drawn line and the ask evaporated (25 deg -> 1.6 deg, the
+        # field's peak 125 px from the line). Geometry is static across
+        # boost rounds, so weights and nearest-segment indices are
+        # computed once per line.
+        px = X.ravel()
+        py = Y.ravel()
 
         # Weight-free halo around both axis lines (see AXIS_GUARD): the
         # V axis is x = 0, the H axis is y = 0 in Third, and NO line may
         # weigh on either - smoothstep from 0 on the axis to 1 at the
         # halo's edge, min over the two axes.
-        guard = np.minimum(cross_x, cross_y)
+        guard = np.minimum(cross_x[:, None], cross_y[None, :])
 
         def guard_at(x, y):
-            return min(self._smoothstep(abs(x) / zone_x),
-                       self._smoothstep(abs(y) / zone_y))
+            return min(self._tent_cross(x, zone_x, pad_x),
+                       self._tent_cross(y, zone_y, pad_y))
 
         fields = []
         for line in active:
@@ -1889,11 +1943,23 @@ class _FlowFieldWarp:
                 "boost": None,   # filled per round
                 "line": line,
             })
+            if float(np.max(fields[-1]["w"])) < 0.05:
+                # The axis halo ate the whole line: say so instead of
+                # letting the tool look broken.
+                self.notes.append(
+                    f"additional line {line['index'] + 1} lies almost "
+                    "entirely inside the H/V axes' guard halo - the axes "
+                    "may not move, so it has (nearly) no influence")
 
         # Ambient: the tent's own FULL gradient (the cross-axis damping
         # makes it non-separable, so the off-diagonals are no longer
         # zero), so an empty region integrates back to exactly U_base and
-        # every band edge blends continuously.
+        # every band edge blends continuously. The NODE version below
+        # serves only the boost's measurement reference; the solve blends
+        # at the EDGES with the exact edge difference of U_base (a
+        # node-centred ambient averaged onto edges disagreed with the
+        # exact base term it was subtracted from, leaving a spurious
+        # residual flux in line-free ground).
         amb_xx = np.gradient(ub_x, du, axis=0)
         amb_xy = np.gradient(ub_x, dv, axis=1)
         amb_yx = np.gradient(ub_y, du, axis=0)
@@ -1903,13 +1969,25 @@ class _FlowFieldWarp:
             wsum += field["w"]
         w_amb = np.maximum(0.0, 1.0 - wsum) + 1e-9
         total = wsum + w_amb
+
+        def edge_x(values):
+            return 0.5 * (values[1:, :] + values[:-1, :])
+
+        def edge_y(values):
+            return 0.5 * (values[:, 1:] + values[:, :-1])
+
         # Weighted least squares: matching the target is most expensive
         # exactly where the lines speak (see FIT_GAIN above) - empty
         # ground is the softest, so incompatible asks bend the empty
         # surroundings smoothly instead of muting the drawn intent.
-        omega = 1.0 + self.FIT_GAIN * (wsum / total)
-        om_e = 0.5 * (omega[1:, :] + omega[:-1, :])   # x-edge weights
-        om_n = 0.5 * (omega[:, 1:] + omega[:, :-1])   # y-edge weights
+        wsum_ex = edge_x(wsum)
+        wsum_ey = edge_y(wsum)
+        wamb_ex = np.maximum(0.0, 1.0 - wsum_ex) + 1e-9
+        wamb_ey = np.maximum(0.0, 1.0 - wsum_ey) + 1e-9
+        total_ex = wsum_ex + wamb_ex
+        total_ey = wsum_ey + wamb_ey
+        om_e = 1.0 + self.FIT_GAIN * (wsum_ex / total_ex)  # x-edge weights
+        om_n = 1.0 + self.FIT_GAIN * (wsum_ey / total_ey)  # y-edge weights
         # Hard axis pinning (see AXIS_GUARD above): BOTH grid columns/rows
         # straddling each axis line hold D = 0 (U = U_base, the identity
         # on the axes - the tent's W(0) = 0). Both straddlers, not just
@@ -1920,13 +1998,17 @@ class _FlowFieldWarp:
         pinned[np.abs(gx) <= du * 0.999, :] = True
         pinned[:, np.abs(gy) <= dv * 0.999] = True
 
-        def weighted_div_lap(gxx, gxy, base):
-            """div(omega * G_row) - div(omega * grad base), edge-sampled so
-            the operator and the RHS share one discretization."""
-            flux_x = om_e * (0.5 * (gxx[1:, :] + gxx[:-1, :])
-                             - (base[1:, :] - base[:-1, :]) / du)
-            flux_y = om_n * (0.5 * (gxy[:, 1:] + gxy[:, :-1])
-                             - (base[:, 1:] - base[:, :-1]) / dv)
+        def weighted_div_lap(n_x, n_y, base):
+            """div(omega * (G_row - grad base)) with the blend done ON the
+            edges: n_x / n_y are the LINE parts of the row's numerator at
+            the nodes, the ambient part is the exact edge difference of
+            `base` itself, so G_edge - grad(base)_edge collapses to
+            (n_edge - wsum_edge * grad(base)_edge) / total_edge and a
+            line-free edge contributes exactly zero flux."""
+            base_gx = (base[1:, :] - base[:-1, :]) / du
+            base_gy = (base[:, 1:] - base[:, :-1]) / dv
+            flux_x = om_e * (edge_x(n_x) - wsum_ex * base_gx) / total_ex
+            flux_y = om_n * (edge_y(n_y) - wsum_ey * base_gy) / total_ey
             out = np.zeros_like(base)
             out[1:-1, :] += (flux_x[1:, :] - flux_x[:-1, :]) / du
             out[:, 1:-1] += (flux_y[:, 1:] - flux_y[:, :-1]) / dv
@@ -1970,11 +2052,12 @@ class _FlowFieldWarp:
                 rs = rs_new
             return D
 
-        def assemble(boosted):
-            g00 = np.zeros_like(X)
-            g01 = np.zeros_like(X)
-            g10 = np.zeros_like(X)
-            g11 = np.zeros_like(X)
+        def numerators(boosted):
+            """The LINE parts of G's numerator per component, at nodes."""
+            n00 = np.zeros_like(X)
+            n01 = np.zeros_like(X)
+            n10 = np.zeros_like(X)
+            n11 = np.zeros_like(X)
             for field in fields:
                 sims = field["ask"]
                 if boosted and field["boost"] is not None:
@@ -1982,20 +2065,16 @@ class _FlowFieldWarp:
                 sa = sims.real[field["seg"]].reshape(X.shape)
                 sb = sims.imag[field["seg"]].reshape(X.shape)
                 w2 = field["w"]
-                g00 += w2 * sa
-                g01 += w2 * -sb
-                g10 += w2 * sb
-                g11 += w2 * sa
-            g00 = (g00 + w_amb * amb_xx) / total
-            g01 = (g01 + w_amb * amb_xy) / total
-            g10 = (g10 + w_amb * amb_yx) / total
-            g11 = (g11 + w_amb * amb_yy) / total
-            return g00, g01, g10, g11
+                n00 += w2 * sa
+                n01 += w2 * -sb
+                n10 += w2 * sb
+                n11 += w2 * sa
+            return n00, n01, n10, n11
 
         def assemble_and_solve():
-            g00, g01, g10, g11 = assemble(boosted=True)
-            ux = ub_x + solve(weighted_div_lap(g00, g01, ub_x))
-            uy = ub_y + solve(weighted_div_lap(g10, g11, ub_y))
+            n00, n01, n10, n11 = numerators(boosted=True)
+            ux = ub_x + solve(weighted_div_lap(n00, n01, ub_x))
+            uy = ub_y + solve(weighted_div_lap(n10, n11, ub_y))
             return ux, uy
 
         def bilinear_np(table, sx, sy):
@@ -2019,7 +2098,11 @@ class _FlowFieldWarp:
         # into a fold). And it must be the ORIGINAL blend: measuring
         # against the boosted blend chases a target that rises with every
         # round (a single 25 deg ask overshot to 46 deg).
-        g00m, g01m, g10m, g11m = assemble(boosted=False)
+        n00r, n01r, n10r, n11r = numerators(boosted=False)
+        g00m = (n00r + w_amb * amb_xx) / total
+        g01m = (n01r + w_amb * amb_xy) / total
+        g10m = (n10r + w_amb * amb_yx) / total
+        g11m = (n11r + w_amb * amb_yy) / total
         ux, uy = assemble_and_solve()
         for _round in range(self.BOOST_ROUNDS):
             duxx = np.gradient(ux, du, axis=0)
@@ -2076,10 +2159,36 @@ class _FlowFieldWarp:
             ux, uy = assemble_and_solve()
 
         def det_of(sol_x, sol_y):
-            return (np.gradient(sol_x, du, axis=0)
-                    * np.gradient(sol_y, dv, axis=1)
-                    - np.gradient(sol_x, dv, axis=1)
-                    * np.gradient(sol_y, du, axis=0))
+            """Per-node orientation as the MINIMUM over every one-sided
+            stencil (all four left/right x down/up combinations). Central
+            differences average the two adjacent cells and cannot see a
+            fold confined to one cell row - the review reproduced a field
+            whose node dets certified injectivity while apply() measurably
+            folded (probe steps moving backwards, 12.8 px inverse error,
+            and the fidelity retreat never firing because it reads the
+            same array)."""
+            sxx = (sol_x[1:, :] - sol_x[:-1, :]) / du
+            sxy = (sol_x[:, 1:] - sol_x[:, :-1]) / dv
+            syx = (sol_y[1:, :] - sol_y[:-1, :]) / du
+            syy = (sol_y[:, 1:] - sol_y[:, :-1]) / dv
+
+            def sided(edge, axis):
+                if axis == 0:
+                    return (np.concatenate([edge[:1, :], edge], axis=0),
+                            np.concatenate([edge, edge[-1:, :]], axis=0))
+                return (np.concatenate([edge[:, :1], edge], axis=1),
+                        np.concatenate([edge, edge[:, -1:]], axis=1))
+
+            xx_l, xx_r = sided(sxx, 0)
+            yx_l, yx_r = sided(syx, 0)
+            xy_d, xy_u = sided(sxy, 1)
+            yy_d, yy_u = sided(syy, 1)
+            best = None
+            for xx, yx in ((xx_l, yx_l), (xx_r, yx_r)):
+                for xy, yy in ((xy_d, yy_d), (xy_u, yy_u)):
+                    det = xx * yy - xy * yx
+                    best = det if best is None else np.minimum(best, det)
+            return best
 
         # FIDELITY RETREAT: compliance never at the price of a fold the
         # unboosted compromise did not have. The pure blend is injective
@@ -2090,7 +2199,7 @@ class _FlowFieldWarp:
         # (e.g. a strong ask pressed against a pinned axis) and stays.
         det = det_of(ux, uy)
         retreat = 0
-        while np.any(det <= 0.0) and retreat < 3 \
+        while np.any(det <= -self.DET_FOLD_TOL) and retreat < 3 \
                 and any(field["boost"] is not None for field in fields):
             for field in fields:
                 if field["boost"] is not None:
@@ -2105,8 +2214,10 @@ class _FlowFieldWarp:
 
         # Orientation bookkeeping: per-node det of grad U, marched by
         # fold_loci and read by det_sign - the SAME numbers, so loci and
-        # pointwise orientation cannot disagree.
-        self._all_positive = bool(np.all(det > 0.0))
+        # pointwise orientation cannot disagree. The tolerance keeps a
+        # last-bit graze of zero from registering a phantom locus (and
+        # from making the retreat count vary between runs).
+        self._all_positive = bool(np.all(det > -self.DET_FOLD_TOL))
         self._grid = {
             "x0": x0, "y0": y0, "du": du, "dv": dv, "nx": nx, "ny": ny,
             "ux": ux.tolist(), "uy": uy.tolist(),
@@ -2119,10 +2230,14 @@ class _FlowFieldWarp:
         grid = self._grid
         fx = (third[0] - grid["x0"]) / grid["du"]
         fy = (third[1] - grid["y0"]) / grid["dv"]
+        # Bounds on the FRACTIONS, not on int(fx): int() truncates toward
+        # zero, so fx in (-1, 0) slipped past an `i < 0` guard and the
+        # one-cell strip outside the low edges was silently EXTRAPOLATED
+        # with negative weights instead of falling back to the tent.
+        if fx < 0.0 or fy < 0.0 or fx >= grid["nx"] or fy >= grid["ny"]:
+            return None
         i = int(fx)
         j = int(fy)
-        if i < 0 or j < 0 or i >= grid["nx"] or j >= grid["ny"]:
-            return None
         tx = fx - i
         ty = fy - j
         row0 = table[i]
@@ -2160,39 +2275,77 @@ class _FlowFieldWarp:
         outside the solved grid the tent inverse is exact and 1-D."""
         if self._grid is None:
             return (third[0], third[1])
-        probe = self._tent_invert(third)
         grid = self._grid
-        inside = (grid["x0"] <= probe[0] <= grid["x0"] + grid["nx"] * grid["du"]
-                  and grid["y0"] <= probe[1]
-                  <= grid["y0"] + grid["ny"] * grid["dv"])
-        if not inside:
-            return probe
-        x = probe
-        best = None
         step = 0.25 * min(grid["du"], grid["dv"])
-        for it in range(60):
+
+        def solve_from(seed, iterations):
+            """Guarded iteration from the FIRST step: a bare fixed point
+            diverges wherever the fit-weighted field's gradient exceeds
+            one (i.e. inside every strong band), so each candidate -
+            Newton when the local Jacobian cooperates, damped fixed point
+            otherwise - is accepted only if it does not worsen the
+            residual."""
+            x = seed
             fx, fy = self.apply(x)
-            rx = fx - third[0]
-            ry = fy - third[1]
-            res = math.hypot(rx, ry)
-            if best is None or res < best[0]:
-                best = (res, x)
-            if res < 1e-9:
-                return x
-            fp = (x[0] - rx, x[1] - ry)
-            if it < 8:
-                x = fp
-                continue
-            jxx, jxy, jyx, jyy = self.jacobian(x, step)
-            det = jxx * jyy - jxy * jyx
-            if abs(det) < 1e-9:
-                x = fp
-                continue
-            cand = (x[0] - (jyy * rx - jxy * ry) / det,
-                    x[1] - (jxx * ry - jyx * rx) / det)
-            cfx, cfy = self.apply(cand)
-            cres = math.hypot(cfx - third[0], cfy - third[1])
-            x = cand if cres < res else fp
+            best = (math.hypot(fx - third[0], fy - third[1]), x)
+            for _ in range(iterations):
+                rx = fx - third[0]
+                ry = fy - third[1]
+                res = math.hypot(rx, ry)
+                if res < 1e-9:
+                    return (res, x)
+                jxx, jxy, jyx, jyy = self.jacobian(x, step)
+                det = jxx * jyy - jxy * jyx
+                if abs(det) >= 1e-9:
+                    cand = (x[0] - (jyy * rx - jxy * ry) / det,
+                            x[1] - (jxx * ry - jyx * rx) / det)
+                else:
+                    cand = (x[0] - rx, x[1] - ry)
+                scale = 1.0
+                accepted = False
+                for _damp in range(5):
+                    trial = (x[0] + (cand[0] - x[0]) * scale,
+                             x[1] + (cand[1] - x[1]) * scale)
+                    tfx, tfy = self.apply(trial)
+                    tres = math.hypot(tfx - third[0], tfy - third[1])
+                    if tres < res:
+                        x, fx, fy = trial, tfx, tfy
+                        if tres < best[0]:
+                            best = (tres, x)
+                        accepted = True
+                        break
+                    scale *= 0.5
+                if not accepted:
+                    break
+            return best
+
+        # Seed with the tent inverse; when that lands OUTSIDE the grid the
+        # true preimage may still be inside (the flow field reaches past
+        # the tent), so the seed is clamped in and the iteration - whose
+        # probes go through apply(), defined everywhere - decides.
+        seed = self._tent_invert(third)
+        lo_x, hi_x = grid["x0"], grid["x0"] + grid["nx"] * grid["du"]
+        lo_y, hi_y = grid["y0"], grid["y0"] + grid["ny"] * grid["dv"]
+        clamped = (min(max(seed[0], lo_x), hi_x),
+                   min(max(seed[1], lo_y), hi_y))
+        best = solve_from(clamped, 60)
+        if best[0] > 1e-6 and clamped != seed:
+            candidate = solve_from(seed, 30)
+            if candidate[0] < best[0]:
+                best = candidate
+        if best[0] > 1e-6:
+            # Multi-seed retry (the old warp's lesson): jitter around the
+            # displacement-corrected seed and keep the best.
+            base = (third[0] - (self.apply(clamped)[0] - clamped[0]),
+                    third[1] - (self.apply(clamped)[1] - clamped[1]))
+            spread = 2.0 * max(grid["du"], grid["dv"])
+            for ox, oy in ((0.0, 0.0), (spread, 0.0), (-spread, 0.0),
+                           (0.0, spread), (0.0, -spread)):
+                candidate = solve_from((base[0] + ox, base[1] + oy), 30)
+                if candidate[0] < best[0]:
+                    best = candidate
+                if best[0] < 1e-6:
+                    break
         return best[1]
 
     def det_sign(self, third):
@@ -2618,6 +2771,8 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
                 frame_window=((-child.h_arc, child.h_total - child.h_arc),
                               (-child.v_arc, child.v_total - child.v_arc)))
             warp = candidate if candidate.pairs else None
+            if warp is not None:
+                additional_notes.extend(warp.notes)
 
     def main_of_third(third):
         """Forward projection Third -> Main: warp, per-side scale, rebuild.
@@ -3367,8 +3522,35 @@ def _direction_arrow_points(points, size):
     return [wing1, tip, wing2]
 
 
+_MAPPER_CACHE = {"key": None, "mapper": None}
+
+
+def _mapper_fingerprint(child_assets, main_assets, pairs):
+    """A cheap content key for _current_mapper's cache: the guide point
+    lists, the pair geometry/authority, and the tool options that shape
+    the mapping. Self-validating - no invalidation hooks to forget."""
+    parts = []
+    for assets in (child_assets, main_assets):
+        for prop in GUIDE_PROPERTIES:
+            item = assets.get(prop) or {}
+            parts.append((prop, tuple(map(tuple, item.get("points") or ())),
+                          bool(item.get("commands"))))
+    for child_item, main_item in pairs or []:
+        for item in (child_item, main_item):
+            item = item or {}
+            parts.append((item.get("id"),
+                          tuple(map(tuple, item.get("points") or ())),
+                          tuple(map(tuple, item.get("third") or ()))))
+    parts.append((_ADDITIONAL["falloff"], _ADDITIONAL["radius_factor"]))
+    return hash(tuple(parts))
+
+
 def _current_mapper():
-    """The mapper for the guide assets as they stand, or (None, why-not)."""
+    """The mapper for the guide assets as they stand, or (None, why-not).
+
+    CACHED by content fingerprint: guide drags rebuild the overlay per
+    mouse move, and with a flow-field warp present an uncached rebuild is
+    a full Poisson solve (~hundreds of ms) per frame."""
     child_assets = _assets_for("child")
     main_assets = _assets_for("main")
     for view, assets in (("child", child_assets), ("main", main_assets)):
@@ -3381,15 +3563,21 @@ def _current_mapper():
     if not _polylines_cross(main_assets[H_PROPERTY]["points"],
                             main_assets[V_PROPERTY]["points"]):
         return None, "the main center lines do not cross"
+    pairs = _additional_pairs()
+    key = _mapper_fingerprint(child_assets, main_assets, pairs)
+    if _MAPPER_CACHE["key"] == key and _MAPPER_CACHE["mapper"] is not None:
+        return _MAPPER_CACHE["mapper"], ""
     mapper, _ = build_mapper(
         child_assets[H_PROPERTY], child_assets[V_PROPERTY],
         main_assets[H_PROPERTY], main_assets[V_PROPERTY],
         # The preview must show the mapping the RUN will use - with the
         # additional-line pairs. Without them the face-down bands sat at
         # the unwarped position (measured 6-7% of the domain mis-tinted).
-        additional_pairs=_additional_pairs())
+        additional_pairs=pairs)
     if mapper is None:
         return None, "the mapper refuses these guides"
+    _MAPPER_CACHE["key"] = key
+    _MAPPER_CACHE["mapper"] = mapper
     return mapper, ""
 
 

@@ -162,4 +162,93 @@ ms = (time.perf_counter() - t0) * 1000.0
 assert ms < 2000.0, ms
 print(f"9) mapper with a flow line builds in {ms:.0f} ms")
 
+# --- Review fixes (2026-08-25, round 2) ------------------------------------
+
+# 10) THE TENT MUST NOT DISPLACE THE ASK: the same drawn pair, with the
+#     frame's V half-height shrunk so the tent overrun grows from 0 to
+#     ~200 px, keeps the on-line flow. Pre-fix the weights were measured
+#     at the STRETCHED node positions and the ask evaporated (25 -> 1.6
+#     deg) with its peak 125 px from the drawn line.
+for half, lo_flow in ((600.0, 15.0), (200.0, 15.0)):
+    v_short = [(0.0, -half), (0.0, half)]
+    mp8, _ = am.build_mapper(H, v_short, H, v_short, {}, additional_pairs=[
+        (line_asset([(60.0, 320.0), (260.0, 320.0)]),
+         line_asset([(60.0, 320.0),
+                     (60.0 + 200.0 * math.cos(ANG),
+                      320.0 + 200.0 * math.sin(ANG))]))])
+    a = mp8.warp.apply((160.0, 320.0))
+    b = mp8.warp.apply((168.0, 320.0))
+    flow = math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))
+    assert lo_flow < flow < 32.0, (half, flow)
+print("10) the ask stays on the drawn line whatever the tent overrun")
+
+# 11) FAR GROUND AND AXES BEYOND THE GRID: the tent fades to zero past the
+#     stretched window (a clamped tent translated ground 3000 px out by
+#     the full overrun), and the axes hold outside the grid too.
+q = mp8((280.0, 3000.0))
+assert math.hypot(q[0] - 280.0, q[1] - 3000.0) < 1e-6, q
+drift = max(math.hypot(*(c - d for c, d in zip(mp8.warp.apply(p), p)))
+            for p in [(0.0, 5000.0), (4000.0, 0.0), (0.0, -3000.0),
+                      (0.0, 150.0), (200.0, 0.0)])
+assert drift < 0.05, drift
+print("11) tent fades out; axes hold in and out of the grid")
+
+# 12) HONEST FOLDS, END TO END: a strong ask pressed against the pinned
+#     axis genuinely folds the field - and every consumer must see the
+#     SAME story: _all_positive False, loci marched, det_sign flipping,
+#     a crossing stroke splitting front/back, the loci registered for
+#     the cutters, and unapply still a right inverse inside the band.
+ang45 = math.radians(45.0)
+mp9, _ = am.build_mapper(H, V, H, V, {}, additional_pairs=[
+    (line_asset([(30.0, 35.0), (250.0, 35.0)]),
+     line_asset([(30.0, 35.0), (30.0 + 220.0 * math.cos(ang45),
+                                35.0 + 220.0 * math.sin(ang45))]))])
+w9 = mp9.warp
+assert not w9._all_positive
+loci9 = w9.fold_loci()
+assert loci9, "a folding field must march its loci"
+assert loci9 is not w9.fold_loci()          # fresh copies per call
+band = [(x, y) for x in (35.0, 45.0, 60.0) for y in (8.0, 11.0)]
+assert any(w9.det_sign(p) == -1 for p in band), \
+    [w9.det_sign(p) for p in band]
+runs9 = am._split_by_fold(mp9, am._densify([(50.0, -40.0), (50.0, 70.0)]))
+sides9 = {side for _r, side in runs9}
+assert sides9 == {1, -1}, sides9
+am._crease_curves(mp9, (-250.0, 250.0), (-350.0, 350.0), stitch=False)
+assert getattr(mp9, "warp_curve_child", None), \
+    "warp loci must register their child geometry for the cutters"
+ri = 0.0
+for p in band:
+    z = w9.apply(p)
+    back = w9.apply(w9.unapply(z))
+    ri = max(ri, math.hypot(back[0] - z[0], back[1] - z[1]))
+assert ri < 0.05, ri
+print(f"12) honest fold: {len(loci9)} locus, det_sign flips, stroke "
+      f"splits {sorted(sides9)}, loci registered, right-inverse {ri:.1e}")
+
+# 13) SILENT NO-OPS SPEAK: a neutral pair and a halo-swallowed line both
+#     leave a note for the user instead of looking broken.
+mp10 = build([(line_asset([(60.0, 120.0), (260.0, 120.0)]),
+               line_asset([(90.0, 150.0), (290.0, 150.0)]))])
+assert any("neutral" in n for n in mp10.warp.notes), mp10.warp.notes
+mp11 = build([(line_asset([(5.0, -30.0), (5.0, 30.0)]),
+               line_asset([(5.0, -30.0), (25.0, 30.0)]))])
+assert mp11.warp is None or any("halo" in n for n in mp11.warp.notes)
+print("13) neutral and halo-muted lines leave notes")
+
+# 14) NEAR-CLOSED LINES align by endpoint proximity (their chord's sign is
+#     pen-lift noise): reversing the partner's point order changes nothing.
+loop_c = [(150.0 + 40.0 * math.cos(2 * math.pi * k / 24.0),
+           120.0 + 40.0 * math.sin(2 * math.pi * k / 24.0))
+          for k in range(23)]
+loop_m = [(150.0 + 46.0 * math.cos(2 * math.pi * k / 24.0),
+           120.0 + 34.0 * math.sin(2 * math.pi * k / 24.0))
+          for k in range(23)]
+mp12 = build([(line_asset(loop_c), line_asset(loop_m))])
+mp13 = build([(line_asset(loop_c), line_asset(list(reversed(loop_m))))])
+drift = max(math.hypot(*(c - d for c, d in zip(mp12(p), mp13(p))))
+            for p in [(150.0, 120.0), (190.0, 120.0), (150.0, 160.0)])
+assert drift < 1.0, drift
+print("14) near-closed pair alignment is point-order-proof")
+
 print("t_flowfield: ALL OK")
