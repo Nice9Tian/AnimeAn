@@ -373,6 +373,12 @@ def _push_overlay(view, state):
 
 
 def _refresh(view):
+    # The session is being re-framed, which is also where a re-arm lands - and
+    # C++ clears its script cursor on EVERY setTool, including one that arms
+    # the tool already armed (no "cancel" is sent for that, so _clear does not
+    # run). Forget the remembered name here too, or the memo would claim a
+    # pointer nobody is wearing and the next hover would push nothing.
+    _CURSORS.pop(view, None)
     box, frame, layer, rotatable = _layer_box(view)
     session = _SESSIONS.setdefault(view, {})
     session.update({"box": box, "angle": 0.0,

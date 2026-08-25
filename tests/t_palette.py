@@ -134,6 +134,19 @@ assert pb.control({}, 3)["row"] == 3
 print("10) control() reports type/hook/value/swatches/placement")
 
 
+# 10b) the seed follows the TOOL's colour slot. The pen and the bucket keep
+# separate colours, and the seeded value is what the chip, the hex readout and
+# every picker open on - seeding the pen on the Fill panel would show, and
+# commit, a colour the bucket is not painting with.
+tool_colors._COLORS.clear()
+tool_colors._COLORS["pen"] = (255, 0, 0, 255)
+tool_colors._COLORS["fill"] = (0, 0, 255, 255)
+assert pb.control({}, 0)["value"] == "#ffff0000"              # default slot: pen
+assert pb.control({}, 0, "pen")["value"] == "#ffff0000"
+assert pb.control({}, 0, "fill")["value"] == "#ff0000ff"
+print("10b) control() seeds from the tool's own colour slot")
+
+
 # 11) toolcontrol's Pen and Fill rows carry the palette, nobody else does
 import toolcontrol  # noqa: E402
 
@@ -146,6 +159,9 @@ for tool in ("pen", "fill"):
 for tool in ("eraser", "arrow", "connect", "transfer"):
     types_seen = {c["type"] for c in toolcontrol.options_for_tool(tool, {})["controls"]}
     assert "palette" not in types_seen, tool
+# ... and each of the two panels opens on its OWN colour, not the pen's twice.
+assert toolcontrol.options_for_tool("pen", {})["controls"][0]["value"] == "#ffff0000"
+assert toolcontrol.options_for_tool("fill", {})["controls"][0]["value"] == "#ff0000ff"
 print("11) palette sits on Pen and Fill only, one control per row")
 
 

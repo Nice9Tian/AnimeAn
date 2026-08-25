@@ -17,18 +17,21 @@ def _stabilizer(state):
         return int(state.get("smooth", 50))
 
 
-def _color_controls(state=None, row=0):
+def _color_controls(state=None, row=0, key="pen"):
     """The colour row of the Pen and Fill panels: the palette.
 
     Three fixed swatch buttons used to live here. They could not express a
     colour the user had not been given, so the row is now the palette
     control - the saved box, a wheel, HSV and RGB - and which colours the box
     holds is palette_box's business, not this module's.
+
+    `key` is the caller's colour slot; the pen and the bucket keep separate
+    colours, so the panel has to say which one it is showing.
     """
     try:
         import palette_box
 
-        return [palette_box.control(state, row)]
+        return [palette_box.control(state, row, key)]
     except Exception:
         # Without the policy module there is still a drawing colour to set:
         # the generic swatch opens the platform colour dialog on the same
@@ -68,7 +71,7 @@ def options_for_tool(tool, state=None):
 
     if tool == "fill":
         controls = [
-            *_color_controls(state, 0),
+            *_color_controls(state, 0, "fill"),
             {
                 "name": "fill_scope",
                 "type": "list",
@@ -222,7 +225,7 @@ def options_for_tool(tool, state=None):
         ]
     else:
         controls = [
-            *_color_controls(state, 0),
+            *_color_controls(state, 0, "pen"),
             _slider("smooth", "Stabilizer", "smooth", 0, 100, _stabilizer(state), 1),
             _slider("pen_width", "Width", "pen_width", 1, 50, int(state.get("pen_width", 5)), 2),
         ]

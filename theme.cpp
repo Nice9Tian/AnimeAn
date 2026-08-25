@@ -226,9 +226,13 @@ void AnimeTheme::apply(QApplication *app)
     // platform - the native Windows styles paint their own chrome whatever the
     // palette says. Swapping the style again on a mode change would rebuild
     // every widget's style for nothing, so it is set once.
-    if (!app->style()
-        || app->style()->objectName().compare(QStringLiteral("fusion"), Qt::CaseInsensitive) != 0) {
+    // The latch cannot be read back off the application: setStyleSheet below
+    // wraps the style in an unnamed QStyleSheetStyle, so objectName() is "" from
+    // the first apply() on and any name test would re-install Fusion every time.
+    static bool fusionInstalled = false;
+    if (!fusionInstalled) {
         app->setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
+        fusionInstalled = true;
     }
     app->setPalette(buildPalette(mode()));
     app->setStyleSheet(appStyleSheet(mode()));

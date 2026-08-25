@@ -2273,6 +2273,18 @@ void PaintOpenGLWidget::scheduleOnionCacheRefresh()
     m_onionCacheTimer->start(180);
 }
 
+int PaintOpenGLWidget::maxOnionGhosts() const
+{
+    const qreal ratio = devicePixelRatioF();
+    const qint64 bytesPerGhost =
+        std::max<qint64>(1, qint64(std::max(1, int(std::lround(width() * ratio))))
+                                * std::max(1, int(std::lround(height() * ratio))) * 4);
+    // Half the playback cache's budget: the two can be live at the same time,
+    // and the ghosts are the set the user did not ask to have prerendered.
+    const qint64 budget = 256LL * 1024 * 1024;
+    return int(std::min<qint64>(std::max<qint64>(1, budget / bytesPerGhost), kMaxOnionGhosts));
+}
+
 QImage PaintOpenGLWidget::onionGhost(int frameIndex, bool past)
 {
     const auto cached = m_onionCache.constFind(frameIndex);
@@ -2285,7 +2297,7 @@ QImage PaintOpenGLWidget::onionGhost(int frameIndex, bool past)
         m_onionCachePan = m_panOffset;
         m_onionCacheZoom = m_zoom;
         m_onionCacheSize = size();
-    } else if (cached == m_onionCache.constEnd() && m_onionCache.size() >= kMaxOnionGhosts) {
+    } else if (cached == m_onionCache.constEnd() && m_onionCache.size() >= maxOnionGhosts()) {
         // Re-tinting a frame already in the set must not evict the set: the
         // playhead crossing one ghost would otherwise re-render all of them.
         m_onionCache.clear();
@@ -2298,6 +2310,11 @@ QImage PaintOpenGLWidget::onionGhost(int frameIndex, bool past)
     const QSize pixelSize(std::max(1, int(std::lround(m_onionCacheSize.width() * ratio))),
                           std::max(1, int(std::lround(m_onionCacheSize.height() * ratio))));
     QImage image(pixelSize, QImage::Format_ARGB32_Premultiplied);
+    if (image.isNull()) {
+        // A failed allocation must not be remembered: a cached null would keep
+        // this frame invisible until something else drops the whole set.
+        return QImage();
+    }
     image.setDevicePixelRatio(ratio);
     image.fill(Qt::transparent);
 
@@ -2352,11 +2369,12 @@ void PaintOpenGLWidget::paintOnionGhosts(QPainter &painter)
     std::sort(frames.begin(), frames.end(), [current](int a, int b) {
         return qAbs(a - current) < qAbs(b - current);
     });
-    if (frames.size() > kMaxOnionGhosts) {
+    const int ghostBudget = maxOnionGhosts();
+    if (frames.size() > ghostBudget) {
         // Each ghost is a full-viewport image; past this many the memory
         // costs more than the extra frames say, and the ones dropped are the
         // faintest anyway.
-        frames.resize(kMaxOnionGhosts);
+        frames.resize(ghostBudget);
     }
     // Far to near, so the frame nearest the playhead lands on top.
     std::reverse(frames.begin(), frames.end());

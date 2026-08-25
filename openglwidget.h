@@ -297,6 +297,10 @@ private:
     void paintOnionGhosts(QPainter &painter);
     // The tinted ghost for one frame, rendered on demand and cached.
     QImage onionGhost(int frameIndex, bool past);
+    // How many ghosts this viewport can afford. kMaxOnionGhosts is a count,
+    // not a size, so the answer is a byte budget divided by one full-viewport
+    // image - the same reasoning buildPlaybackCache applies to its frames.
+    int maxOnionGhosts() const;
     void clearOnionCache();
     // Same shape as the playback cache: a ghost bakes the transform in, so a
     // pan or zoom re-renders it once the gesture settles rather than per tick.

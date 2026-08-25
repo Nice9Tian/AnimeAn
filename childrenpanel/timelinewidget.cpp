@@ -43,6 +43,9 @@ constexpr int kHoldRowHeight = 15;
 constexpr int kLaneThickness = 12;
 constexpr int kLaneDot = 9;
 constexpr int kScrollThickness = 6;
+// How much of the neighbouring cell stays visible when the run is scrolled to
+// follow the playhead: enough to read as "there is more this way".
+constexpr int kScrollIntoViewMargin = 10;
 constexpr int kStripColumnWidth = 126;
 constexpr int kStripHeaderHeight = 32;
 constexpr int kStripCommandHeight = 28;
@@ -384,8 +387,15 @@ QString tooltipFor(TimelineCommand command, const TimelineState &state)
     case TimelineCommand::DeleteFrame:
         return QStringLiteral("Delete frame");
     case TimelineCommand::Onion:
-        return QStringLiteral("Onion skin");
+        return state.onionAvailable
+                   ? QStringLiteral("Onion skin")
+                   : QStringLiteral("Onion skin is a main board feature - point the "
+                                    "timeline back at the main board to use it");
     case TimelineCommand::GuideLines:
+        if (!state.onionAvailable) {
+            return QStringLiteral("Onion skin is a main board feature - point the "
+                                  "timeline back at the main board to use it");
+        }
         return state.onion ? QStringLiteral("Include guide lines in the ghosts")
                            : QStringLiteral("Turn onion skin on first");
     case TimelineCommand::Prev:
@@ -542,10 +552,12 @@ void TimelineTransportBar::relayout()
     // Centred, but never underneath the left group: on a narrow bar the
     // assembly slides right rather than overlapping what it would hide.
     int cx = std::max(x, (width() - assemblyWidth) / 2);
-    add(TimelineCommand::Onion, QRect(cx, 0, kButtonWidth, h), true, m_state.onion);
+    add(TimelineCommand::Onion, QRect(cx, 0, kButtonWidth, h), m_state.onionAvailable,
+        m_state.onionAvailable && m_state.onion);
     cx += kButtonWidth;
-    add(TimelineCommand::GuideLines, QRect(cx, 0, guideWidth, h), m_state.onion,
-        m_state.onion && m_state.guideLines);
+    add(TimelineCommand::GuideLines, QRect(cx, 0, guideWidth, h),
+        m_state.onionAvailable && m_state.onion,
+        m_state.onionAvailable && m_state.onion && m_state.guideLines);
     cx += guideWidth;
     m_dividers.append(QRect(cx + kDividerGap, (h - 20) / 2, 1, 20));
     cx += 1 + 2 * kDividerGap;
@@ -761,6 +773,7 @@ void TimelineStrip::setState(const TimelineState &state)
 {
     m_state = state;
     relayout();
+    ensureCurrentVisible();
     update();
 }
 
@@ -852,6 +865,44 @@ void TimelineStrip::clampScroll()
     }
 }
 
+void TimelineStrip::ensureCurrentVisible()
+{
+    // A drag is the one time the run must hold still: the pointer is measured
+    // against the cells it was pressed on, so moving them under it would drop
+    // the frame somewhere the user never aimed at.
+    if (m_dragging || m_headerDrag) {
+        return;
+    }
+    if (m_state.currentFrame < 0 || m_state.currentFrame >= m_cells.size()) {
+        return;
+    }
+    // Same axis split as clampScroll: the scroll bar is drawn across the OTHER
+    // edge, so it never shortens the run's own axis.
+    const int viewport = m_vertical
+                             ? height() - kStripHeaderHeight - kStripCommandHeight
+                             : width();
+    if (viewport <= 0) {
+        return;
+    }
+    const int origin = m_vertical ? kStripHeaderHeight + kStripCommandHeight : 0;
+    const QRect &cell = m_cells[m_state.currentFrame].rect;
+    const int cellNear = m_vertical ? cell.top() : cell.left();
+    const int cellFar = m_vertical ? cell.bottom() : cell.right();
+    int delta = 0;
+    if (cellNear - kScrollIntoViewMargin < origin) {
+        delta = cellNear - kScrollIntoViewMargin - origin;
+    } else if (cellFar + kScrollIntoViewMargin > origin + viewport - 1) {
+        delta = cellFar + kScrollIntoViewMargin - (origin + viewport - 1);
+    }
+    if (delta == 0) {
+        return;
+    }
+    m_scroll += delta;
+    // relayout re-places every cell from the new offset and clamps it, so a
+    // margin that ran off either end is absorbed there.
+    relayout();
+}
+
 QImage TimelineStrip::thumbnail(int frame, const QSize &size)
 {
     const auto cached = m_thumbnails.constFind(frame);
@@ -908,11 +959,16 @@ void TimelineStrip::paintEvent(QPaintEvent *)
     const int current = m_state.currentFrame;
     int firstPast = std::numeric_limits<int>::max();
     int lastAhead = std::numeric_limits<int>::min();
-    for (int frame : m_state.lanes) {
-        if (frame < current) {
-            firstPast = std::min(firstPast, frame);
-        } else if (frame > current) {
-            lastAhead = std::max(lastAhead, frame);
+    // The lane set belongs to the main board. While the strip is showing
+    // another document the sentinels stay untouched, so no run is drawn - the
+    // dots would otherwise describe main-board frames over these cells.
+    if (m_state.onionAvailable) {
+        for (int frame : m_state.lanes) {
+            if (frame < current) {
+                firstPast = std::min(firstPast, frame);
+            } else if (frame > current) {
+                lastAhead = std::max(lastAhead, frame);
+            }
         }
     }
 
@@ -999,7 +1055,7 @@ void TimelineStrip::paintEvent(QPaintEvent *)
                                  cell.lane.center().y());
             }
         }
-        if (!cell.hold && m_state.lanes.contains(cell.frame)) {
+        if (!cell.hold && m_state.onionAvailable && m_state.lanes.contains(cell.frame)) {
             QColor dot = cell.frame < current ? role(AnimeTheme::Role::OnionPast)
                        : cell.frame > current ? role(AnimeTheme::Role::OnionAhead)
                                               : role(AnimeTheme::Role::TextDim);
@@ -1061,7 +1117,11 @@ int TimelineStrip::dropTargetAt(const QPoint &pos) const
             return i;
         }
     }
-    return std::max(0, int(m_cells.size()) - 1);
+    // Past the last centre is a real slot of its own - the end of the run.
+    // Answering size()-1 here would make "drop at the end" indistinguishable
+    // from "drop before the last cell" once the caller converts to a
+    // post-removal index.
+    return int(m_cells.size());
 }
 
 void TimelineStrip::wheelEvent(QWheelEvent *event)
@@ -1158,7 +1218,7 @@ void TimelineStrip::mouseMoveEvent(QMouseEvent *event)
     if (cell.hold) {
         setToolTip(QStringLiteral("Held: shows the same drawing as frame %1. "
                                   "Editing either one changes both.").arg(cell.frame));
-    } else if (cell.lane.contains(event->pos())) {
+    } else if (m_state.onionAvailable && cell.lane.contains(event->pos())) {
         setToolTip(m_state.lanes.contains(cell.frame)
                        ? QStringLiteral("Remove frame %1 from the onion skin").arg(cell.frame + 1)
                        : QStringLiteral("Ghost frame %1 under the current one").arg(cell.frame + 1));
@@ -1200,13 +1260,21 @@ void TimelineStrip::mouseReleaseEvent(QMouseEvent *event)
     }
     const Cell cell = m_cells[cellIndex];
     if (dragged) {
-        const int target = dropTargetAt(event->pos());
+        // dropTargetAt answers in PRE-removal slots (the gap the pointer is
+        // in, with the dragged cell still occupying its own). The model moves
+        // by takeAt+insert, so a rightward move has already lost that slot by
+        // the time the index is used - hence the -1, and hence the no-op test
+        // AFTER it rather than before.
+        int target = dropTargetAt(event->pos());
+        if (cell.frame < target) {
+            --target;
+        }
         if (target != cell.frame) {
             emit moveFrameRequested(cell.frame, target);
         }
         return;
     }
-    if (!cell.hold && cell.lane.contains(event->pos())) {
+    if (!cell.hold && m_state.onionAvailable && cell.lane.contains(event->pos())) {
         emit laneToggled(cell.frame, !m_state.lanes.contains(cell.frame));
         return;
     }
@@ -1291,7 +1359,10 @@ void TimelineFloatPanel::mouseMoveEvent(QMouseEvent *event)
         m_hoverClose = hover;
         update();
     }
-    if (!m_dragging) {
+    // Mouse tracking is on for the close-box hover, so a buttonless move
+    // arrives here too - without the button test a stale drag flag would let
+    // the window follow a pointer that is not holding it.
+    if (!m_dragging || !(event->buttons() & Qt::LeftButton)) {
         return;
     }
     move(event->globalPosition().toPoint() - m_grabOffset);
@@ -1314,6 +1385,17 @@ void TimelineFloatPanel::leaveEvent(QEvent *event)
         update();
     }
     QWidget::leaveEvent(event);
+}
+
+void TimelineFloatPanel::hideEvent(QHideEvent *event)
+{
+    // A drag that ends in a re-dock hides the panel mid-gesture, and hiding a
+    // window drops Qt's implicit grab - the release is then discarded and
+    // never reaches mouseReleaseEvent. Clearing here is the only place the
+    // flags are guaranteed to be reset before the panel is shown again.
+    m_dragging = false;
+    m_hoverClose = false;
+    QWidget::hideEvent(event);
 }
 
 // ------------------------------------------------------------- reopen pill
@@ -1490,6 +1572,15 @@ void TimelineWidget::setOnionState(bool enabled, bool guides, const QSet<int> &l
     pushState();
 }
 
+void TimelineWidget::setOnionAvailable(bool available)
+{
+    if (m_state.onionAvailable == available) {
+        return;
+    }
+    m_state.onionAvailable = available;
+    pushState();
+}
+
 void TimelineWidget::setThumbnailProvider(std::function<QImage(int, QSize)> provider)
 {
     m_strip->setThumbnailProvider(std::move(provider));
@@ -1534,10 +1625,12 @@ void TimelineWidget::handleCommand(TimelineCommand command)
         emit deleteFrameRequested();
         break;
     case TimelineCommand::Onion:
-        emit onionToggled(!m_state.onion);
+        if (m_state.onionAvailable) {
+            emit onionToggled(!m_state.onion);
+        }
         break;
     case TimelineCommand::GuideLines:
-        if (m_state.onion) {
+        if (m_state.onionAvailable && m_state.onion) {
             emit onionGuideToggled(!m_state.guideLines);
         }
         break;
@@ -1688,6 +1781,25 @@ bool TimelineWidget::eventFilter(QObject *watched, QEvent *event)
         positionPill();
     }
     return QWidget::eventFilter(watched, event);
+}
+
+void TimelineWidget::changeEvent(QEvent *event)
+{
+    QWidget::changeEvent(event);
+    if (event->type() != QEvent::EnabledChange) {
+        return;
+    }
+    // Depending on the layout the float panel, the pill and the re-sided strip
+    // are NOT children of this widget, so Qt's own enable propagation stops
+    // here. A freeze that reached the timeline would otherwise leave whichever
+    // piece is currently parked elsewhere fully live.
+    const bool on = isEnabled();
+    for (QWidget *piece : {static_cast<QWidget *>(m_panel), static_cast<QWidget *>(m_strip),
+                           static_cast<QWidget *>(m_bar), static_cast<QWidget *>(m_pill)}) {
+        if (piece && !isAncestorOf(piece)) {
+            piece->setEnabled(on);
+        }
+    }
 }
 
 TimelineWidget::Layout TimelineWidget::dropTargetFor(const QPoint &globalPos,

@@ -575,6 +575,11 @@ MainWindow::MainWindow(QWidget *parent)
         "[python register] animean_python, animemodel, ui, model, current, model_pybind, vectorlogic, canvas_width, canvas_height, "
         "main_model, child_model, active_view"));
     runPythonInitializationScript();
+    // The first tool options panel is built inside setupDocks(), which runs
+    // BEFORE the scenes are registered above - so any scene-scoped control
+    // (the palette's swatch set) was built against no scene at all. Rebuild it
+    // once now that Python can see the document it belongs to.
+    refreshToolOptions();
 #endif
 }
 
@@ -2695,7 +2700,15 @@ void MainWindow::createTimeline()
         setStatusText(QStringLiteral("Playback: %1 fps").arg(fps));
     });
 
+    // The onion family is MAIN-board only: the frame indices below are read
+    // from, and written to, m_paintWidget, so a strip that is currently
+    // listing the child document's frames must not reach them. The transport
+    // dims the controls (setOnionAvailable in refreshTimeline); these guards
+    // are the second lock, for any path that raises the signal anyway.
     connect(m_timeline, &TimelineWidget::onionToggled, this, [this](bool on) {
+        if (framePanelTarget() != m_paintWidget) {
+            return;
+        }
         m_onionEnabled = on;
         if (on && m_onionFrames.isEmpty()) {
             // An empty lane would make the button do nothing visible; the
@@ -2715,12 +2728,18 @@ void MainWindow::createTimeline()
     });
 
     connect(m_timeline, &TimelineWidget::onionGuideToggled, this, [this](bool on) {
+        if (framePanelTarget() != m_paintWidget) {
+            return;
+        }
         m_onionGuideLines = on;
         m_paintWidget->setOnionGuideLines(on);
         m_timeline->setOnionState(m_onionEnabled, m_onionGuideLines, m_onionFrames);
     });
 
     connect(m_timeline, &TimelineWidget::onionLaneToggled, this, [this](int frame, bool on) {
+        if (framePanelTarget() != m_paintWidget) {
+            return;
+        }
         if (on) {
             m_onionFrames.insert(frame);
         } else {
@@ -2800,6 +2819,9 @@ void MainWindow::applyNewCanvasSize(const QSize &size)
     // be undoable and it has to be saved.
     m_paintWidget->commitHistory(QStringLiteral("Canvas Size"));
     syncEmbeddedPythonState();
+    // Same reason as the project load: scene-scoped control values are read
+    // when the panel is built, and this is a document edit.
+    refreshToolOptions();
     setStatusText(QStringLiteral("Canvas: %1 x %2 px").arg(size.width()).arg(size.height()));
 }
 
@@ -2921,6 +2943,11 @@ bool MainWindow::loadProjectFrom(const QString &fileName)
     updateWindowTitle();
     showMainPaintView();
     syncEmbeddedPythonState();
+    // Controls whose value is stored in the scene (the palette's swatch set)
+    // are read once, when the panel is built. The document under them has just
+    // been replaced, so the panel has to be rebuilt or it keeps showing - and
+    // editing - the previous project's box.
+    refreshToolOptions();
     setStatusText(QStringLiteral("Opened project (main + texture): %1")
                       .arg(QFileInfo(fileName).fileName()));
     return true;
@@ -3217,6 +3244,12 @@ void MainWindow::setPythonUiFrozen(bool frozen)
         if (dock && dock != m_pythonDebugDock) {
             dock->setEnabled(enabled);
         }
+    }
+    // The timeline replaced the Frames dock but hangs off the central widget's
+    // container, so the dock sweep above no longer reaches it - and its
+    // buttons are the ones that mutate the document the script is working on.
+    if (m_timeline) {
+        m_timeline->setEnabled(enabled);
     }
     if (m_pythonDebugDock) {
         m_pythonDebugDock->setEnabled(true);
@@ -3752,6 +3785,12 @@ void MainWindow::refreshTimeline()
     m_timeline->setFps(view->model().playbackFps());
     m_timeline->setPlaybackActive(m_playbackTimer && m_playbackTimer->isActive());
     m_timeline->setLoop(m_playbackLoop);
+    // Onion renders on the MAIN board only (setOnionFrames/setOnionEnabled are
+    // never called on the child view), so while the timeline is pointed
+    // elsewhere the whole family is offered as unavailable rather than
+    // silently editing the main board's ghost set from the child's rows. The
+    // main view keeps whatever onion state it had - it is still on screen.
+    m_timeline->setOnionAvailable(view == m_paintWidget);
     m_timeline->setOnionState(m_onionEnabled, m_onionGuideLines, m_onionFrames);
 }
 

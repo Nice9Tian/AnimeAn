@@ -202,18 +202,23 @@ def current_color(key="pen"):
     return _FALLBACK_COLOR
 
 
-def control(state=None, row=0):
+def control(state=None, row=0, key="pen"):
     """The palette control for the tool options grid.
 
     The value hook stays "color" so the pick reaches the draw layer through
     the path that already exists (C++ arms Fill or Pen, then paints, and
     tool_colors records it). Only the box edits need this module.
+
+    `key` is the tool's colour slot: the pen and the bucket keep separate
+    colours, and the value seeded here is what the chip, the hex readout and
+    every picker open on - so seeding the wrong slot makes the panel edit a
+    colour the tool is not painting with.
     """
     return {
         "name": CONTROL_NAME,
         "type": "palette",
         "hook": VALUE_HOOK,
-        "value": current_color(),
+        "value": current_color(key),
         "swatches": list(swatches()),
         "row": row,
         "start_column": 0,

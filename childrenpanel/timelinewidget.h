@@ -49,6 +49,11 @@ struct TimelineState {
     int fps = 12;
     bool onion = false;
     bool guideLines = false;
+    // Whether the onion family applies to the board the strip is currently
+    // showing. Onion renders on the MAIN view only, so when the timeline is
+    // pointed at the child board the buttons dim and the lanes go dead rather
+    // than quietly editing the other document's ghost set.
+    bool onionAvailable = true;
     QSet<int> lanes;
     bool collapsed = false;
     // The strip's orientation, which also decides where the collapse chevron
@@ -152,6 +157,10 @@ private:
 
     void relayout();
     void clampScroll();
+    // Scrolls the current frame's cell back into the viewport. The playhead is
+    // driven from outside (Play, Next, a typed frame) and the painted scroll
+    // bar is not a grab handle, so nothing else can follow it.
+    void ensureCurrentVisible();
     int cellAt(const QPoint &pos) const;
     int dropTargetAt(const QPoint &pos) const;
     QRect commandRect(int index) const;
@@ -196,6 +205,7 @@ protected:
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
     void leaveEvent(QEvent *event) override;
+    void hideEvent(QHideEvent *event) override;
 
 private:
     QRect closeRect() const;
@@ -253,6 +263,9 @@ public:
     void setFps(int fps);
     void setLoop(bool loop);
     void setOnionState(bool enabled, bool guides, const QSet<int> &lanes);
+    // Onion is a main-board feature; the owner says whether the board the
+    // strip is currently pointed at is that board.
+    void setOnionAvailable(bool available);
     void setThumbnailProvider(std::function<QImage(int, QSize)> provider);
     void clearThumbnails();
 
@@ -287,6 +300,7 @@ signals:
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
+    void changeEvent(QEvent *event) override;
 
 private:
     void handleCommand(TimelineCommand command);
