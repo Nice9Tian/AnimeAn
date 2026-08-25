@@ -258,6 +258,10 @@ void PaintOpenGLWidget::notifyFrameChangedIfNeeded()
     cancelActiveOverlayDrag();
     m_pythonNotifiedFrame = frame;
     pythonHookSendMessage(QStringLiteral("framechange"));
+    // Which ghosts are past and which are ahead depends on where the playhead
+    // is, so a frame move re-colours the whole ghost set. Guarded inside the
+    // notifier: with onion off this is free.
+    notifyOnionChangedIfNeeded();
 }
 
 void PaintOpenGLWidget::notifyLayerChangedIfNeeded()
@@ -2314,6 +2318,7 @@ void PaintOpenGLWidget::setOnionEnabled(bool enabled)
     }
     m_onionEnabled = enabled;
     clearOnionCache();
+    notifyOnionChangedIfNeeded();
     update();
 }
 
@@ -2329,6 +2334,7 @@ void PaintOpenGLWidget::setOnionFrames(const QSet<int> &frames)
     }
     m_onionFrames = frames;
     clearOnionCache();
+    notifyOnionChangedIfNeeded();
     update();
 }
 
@@ -2344,6 +2350,7 @@ void PaintOpenGLWidget::setOnionGuideLines(bool include)
     }
     m_onionGuideLines = include;
     clearOnionCache();
+    notifyOnionChangedIfNeeded();
     update();
 }
 
@@ -2365,6 +2372,80 @@ void PaintOpenGLWidget::setOnionExcludeProperties(const QStringList &properties)
 QStringList PaintOpenGLWidget::onionExcludeProperties() const
 {
     return m_onionExcludeProperties;
+}
+
+void PaintOpenGLWidget::notifyOnionChangedIfNeeded()
+{
+#ifdef ANIMEAN_WITH_PYTHON
+    // A ghost is a rendering of the LAYER STACK, so everything a Python tool
+    // draws through ui.set_overlay (auto_mapping's H/V axes, additional lines)
+    // is missing from it - Guide Line alone can therefore change nothing
+    // visible. This message is the mechanism that lets the owning script draw
+    // its own ghost overlays: it reports the ghost set and where the playhead
+    // sits, and the script decides what that means.
+    const bool enabled = m_onionEnabled;
+    // OFF collapses to one canonical baseline so scrubbing frames on a board
+    // with no ghosts never crosses the language boundary.
+    const bool guides = enabled && m_onionGuideLines;
+    const int current = enabled ? m_model.currentFrame() : -1;
+    QList<int> frames;
+    if (enabled) {
+        frames = m_onionFrames.values();
+        std::sort(frames.begin(), frames.end());
+    }
+    if (m_pythonNotifiedOnionValid
+        && m_pythonNotifiedOnionEnabled == enabled
+        && m_pythonNotifiedOnionGuides == guides
+        && m_pythonNotifiedOnionCurrent == current
+        && m_pythonNotifiedOnionFrames == frames) {
+        return;
+    }
+    m_pythonNotifiedOnionValid = true;
+    m_pythonNotifiedOnionEnabled = enabled;
+    m_pythonNotifiedOnionGuides = guides;
+    m_pythonNotifiedOnionCurrent = current;
+    m_pythonNotifiedOnionFrames = frames;
+
+    if (!animeanHookEventSubscribed(QStringLiteral("onion"))) {
+        return;
+    }
+
+    const int frameRow = m_model.currentFrame();
+    const int layer = m_model.currentLayer();
+    const AnimeCell cell = m_model.cellAt(frameRow, layer);
+
+    py::gil_scoped_acquire acquire;
+    py::dict cellInfo;
+    cellInfo["row"] = frameRow;
+    cellInfo["layer"] = layer;
+    cellInfo["asset"] = cell.assetIndex;
+    cellInfo["frame_id"] = cell.frameId;
+
+    py::list frameList;
+    for (int frame : frames) {
+        frameList.append(frame);
+    }
+
+    py::dict message;
+    message["event"] = "onion";
+    message["view"] = m_viewName.toStdString();
+    message["tool"] = (m_activePythonTool.isEmpty() ? toolName(m_tool) : m_activePythonTool).toStdString();
+    message["base_tool"] = toolName(m_tool).toStdString();
+    message["property"] = m_strokeProperty.toStdString();
+    message["cell"] = cellInfo;
+    message["stroke"] = py::dict();
+    message["position"] = pointToPythonDict(QPointF());
+    message["delta"] = pointToPythonDict(QPointF());
+    message["enabled"] = enabled;
+    message["guides"] = guides;
+    message["frames"] = frameList;
+    message["current"] = frameRow;
+
+    const QString output = ::pythonHookSendMessage(message);
+    if (!isQuietHookOutput(output)) {
+        emit pythonDebugMessage(output);
+    }
+#endif
 }
 
 void PaintOpenGLWidget::clearOnionCache()

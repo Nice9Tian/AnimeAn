@@ -558,6 +558,32 @@ _SETTINGS_TARGET = {"unit": None}
 # layerchange/pattern hooks it triggers are echoes, not user edits.
 _RUN_GUARD = {"depth": 0}
 
+# --- onion-skin ghost guides ------------------------------------------------
+# An onion ghost is a rendering of the LAYER STACK, so the H/V axes and the
+# additional lines - which are ui.set_overlay items, not artwork - are missing
+# from it: Guide Line alone changes nothing visible for a mapping unit. The
+# "onion" hook event reports the ghost set, and this module draws the other
+# frames' axes itself, in the onion tints.
+#
+# The tints MIRROR AnimeTheme's OnionPast/OnionAhead roles (theme.cpp:52-53,
+# #b3392f / #2f7a4f) by value on purpose: which colour a ghost overlay takes
+# is tool POLICY, so it lives here rather than behind a new theme binding.
+ONION_PAST_COLOR = (179, 57, 47, 150)
+ONION_AHEAD_COLOR = (47, 122, 79, 150)
+# Own slot in the overlay stack: the live axes (owner "auto_mapping") are
+# rebuilt on their own schedule and must never be clobbered by the ghosts.
+ONION_OVERLAY_OWNER = "auto_mapping_onion"
+ONION_GUIDE_ID = "onion_guide"
+# Ghost lines are thinner than the live ones: a ghost must never read as the
+# axis you can grab.
+ONION_WIDTH_SCALE = 0.6
+# view name -> the last "onion" message's state. Module level because the
+# overlay is re-pushed from the unit render paths too, not only on the event.
+_ONION = {}
+# Views whose ghost slot currently holds items, so "nothing to draw and
+# nothing was drawn" can skip the push entirely.
+_ONION_PUSHED = set()
+
 
 def _unit_settings(uid=None):
     uid = uid if uid is not None else _ACTIVE_UNIT["id"]
@@ -4263,6 +4289,173 @@ def _push_overlay(view_name):
         overlay_stack.set_items(view_name, "auto_mapping", overlay_items(view_name))
     except Exception as error:
         print(f"[auto_mapping] overlay update failed: {error}")
+    # The ghost axes belong to OTHER units on other frames, so they move when
+    # units are re-rendered, re-housed or deleted - not only when the onion
+    # controls are touched. Riding the live push is the one refresh point every
+    # such path already goes through, and it is a no-op while onion is off.
+    _push_onion_overlay(view_name)
+
+
+def _unit_frames_present(scene, meta, frames):
+    """Which of `frames` this unit's MEMBER layers have a cell on.
+
+    "A unit is on frame f" is exactly the rule the Layers panel uses to decide
+    whether to list a row (MainWindow::refreshLayerList): a layer shows on the
+    frames where it has a cell. Members are resolved by STABLE id - indices
+    shift on every layer move or delete.
+    """
+    indices = []
+    for lid in (meta.get("members") or {}):
+        try:
+            index = scene.layer_index_for_id(int(lid))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if index >= 0:
+            indices.append(index)
+    if not indices:
+        return []
+    cell_asset = getattr(scene, "cell_asset_index", None)
+    if cell_asset is not None:
+        return [frame for frame in frames
+                if any(cell_asset(frame, index) >= 0 for index in indices)]
+    # Older build without the per-cell binding: one structure scan, not one
+    # per (frame, layer) pair.
+    rows = set()
+    try:
+        for layer in scene.get_structure()["layers"]:
+            if layer["index"] not in indices:
+                continue
+            for cell in layer.get("cells") or []:
+                if not cell.get("empty", False) or cell.get("asset_index", -1) >= 0:
+                    rows.add(int(cell.get("frame_index", -1)))
+    except Exception:
+        return []
+    return [frame for frame in frames if frame in rows]
+
+
+def _onion_ghost_items(assets, uid, color):
+    """One unit's axes + additional lines as non-interactive ghost items."""
+    items = []
+    for prop, key in ((H_PROPERTY, "h"), (V_PROPERTY, "v")):
+        points = ((assets.get(prop) or {}).get("points")) or []
+        if len(points) < 2:
+            continue
+        items.append({
+            "id": f"{ONION_GUIDE_ID}:{uid}:{prop}",
+            "points": list(points),
+            "color": color,
+            "width": max(1.0, float(_LINE_DISPLAY.get(f"{key}_width", 3.0))
+                         * ONION_WIDTH_SCALE),
+            "pen_style": _display_style(f"{key}_style"),
+            # A ghost is a reference, never a target: nothing here may be
+            # grabbed, dragged or removed.
+            "removable": False,
+            "draggable": False,
+        })
+    lines = (assets.get(ADDITIONAL_PROPERTY) or {}).get("lines") or []
+    for index, line in enumerate(lines):
+        points = line.get("points") or []
+        if len(points) < 2:
+            continue
+        items.append({
+            "id": f"{ONION_GUIDE_ID}:{uid}:{ADDITIONAL_PROPERTY}:"
+                  f"{_line_id(line, index)}",
+            "points": list(points),
+            "color": color,
+            "width": max(1.0, float(_LINE_DISPLAY.get("additional_width", 2.5))
+                         * ONION_WIDTH_SCALE),
+            "pen_style": _display_style("additional_style"),
+            "removable": False,
+            "draggable": False,
+        })
+    return items
+
+
+def onion_guide_items(view_name):
+    """Ghost axes for the units that live on an enabled onion frame.
+
+    LEGACY DOCUMENTS (no automapping layers at all) get nothing: their guides
+    live in ONE scene-global scratch set that is frame-invariant, so every
+    ghost frame would re-draw the very lines already on screen, in ghost
+    colours, exactly on top of the live ones. There is no "other frame's axis"
+    to show, so the honest answer is an empty list.
+    """
+    state = _ONION.get(view_name)
+    if not state or not state.get("enabled") or not state.get("guides"):
+        return []
+    if not _UNIT_META:
+        return []
+    current = int(state.get("current", 0))
+    frames = sorted({int(frame) for frame in (state.get("frames") or ())
+                     if int(frame) != current})
+    if not frames:
+        return []
+    try:
+        # Always the MAIN scene: a unit's member layers live in the main
+        # document's layer tree by definition (_UNIT_META is owned there), so
+        # "which frames is this unit on" is a main-board question even when the
+        # ghosts are being drawn for another view's assets.
+        scene = _scene_model("main")
+    except Exception:
+        return []
+
+    items = []
+    assets_by_unit = _UNIT_ASSETS.get(view_name) or {}
+    for uid in sorted(_UNIT_META):
+        meta = _UNIT_META[uid]
+        if _unit_frames_present(scene, meta, [current]):
+            # Already represented on the frame being drawn - its axes are the
+            # live overlay's job (or it is simply "now"), never a ghost.
+            continue
+        present = _unit_frames_present(scene, meta, frames)
+        if not present:
+            continue
+        # A unit spanning several ghost frames takes the tint of the NEAREST
+        # one; that is the frame the artist is reading it against.
+        frame = min(present, key=lambda row: (abs(row - current), row))
+        color = ONION_PAST_COLOR if frame < current else ONION_AHEAD_COLOR
+        items.extend(_onion_ghost_items(assets_by_unit.get(uid) or {},
+                                        uid, color))
+    return items
+
+
+def _push_onion_overlay(view_name="main"):
+    """Refresh this view's ghost-guide slot. An empty list CLEARS the slot
+    (overlay_stack drops an owner with no items), which is what turning onion
+    or Guide Line off, and "no unit qualifies", both come out as.
+
+    Nothing to draw AND nothing drawn last time means no push at all: this
+    rides every live overlay refresh, and the common case (onion off) must not
+    cost a second ui.set_overlay round trip per push.
+    """
+    try:
+        items = onion_guide_items(view_name)
+    except Exception as error:
+        print(f"[auto_mapping] onion guide overlay failed: {error}")
+        return
+    if not items and view_name not in _ONION_PUSHED:
+        return
+    try:
+        overlay_stack.set_items(view_name, ONION_OVERLAY_OWNER, items)
+    except Exception as error:
+        print(f"[auto_mapping] onion guide overlay failed: {error}")
+        return
+    if items:
+        _ONION_PUSHED.add(view_name)
+    else:
+        _ONION_PUSHED.discard(view_name)
+
+
+def _onion_event(message):
+    """C++ says the ghost set, the Guide Line flag or the playhead moved."""
+    view = message.get("view") or "main"
+    _ONION[view] = {
+        "enabled": bool(message.get("enabled")),
+        "guides": bool(message.get("guides")),
+        "frames": tuple(int(frame) for frame in (message.get("frames") or ())),
+        "current": int(message.get("current") or 0),
+    }
+    _push_onion_overlay(view)
 
 
 def _set_draw_color(color):
@@ -4944,11 +5137,25 @@ def _create_mapped_layer(scene, row, name=MAPPED_LAYER_NAME):
     (top), with the fill source-layer indices remapped to follow the shift.
     The user's frame/layer/asset selection is restored before returning
     (add_layer() selects what it creates; the move shifts old indices by +1).
+
+    `row` is the frame the caller is writing to, and it is HONOURED here.
+    scene.add_layer() takes no row: AnimeSceneModel::addLayer() exposes the new
+    column on m_currentFrame, and silently rewrites a negative current frame to
+    0 (animemodel.cpp:1665-1673). So parking the model on `row` first is the
+    only way to make the creation cell and the cell the caller then fills
+    through image_at(row, ...) the SAME cell. Left to the selection, the two
+    diverged: the column was exposed wherever the selection happened to sit
+    while the artwork went to `row` - an empty layer on one frame and orphan
+    artwork on another - and with no frame selected at all both collapsed onto
+    row 0, i.e. everything landed on frame 1.
     """
     saved_frame = scene.current_frame()
     saved_layer = scene.current_layer()
     saved_asset = scene.current_asset()
 
+    if row is None or row < 0:
+        row = max(saved_frame, 0)
+    scene.set_current_frame(row)
     layer_index = scene.add_layer()
     if layer_index < 0:
         scene.set_current_frame(saved_frame)
@@ -8079,7 +8286,20 @@ def _perform_mapping():
         mode = DEFAULT_CURVE_MODE
 
     child_frame = max(child.current_frame(), 0)
-    main_frame = max(main.current_frame(), 0)
+    # The row this whole run writes to, captured ONCE: every output layer is
+    # created on it and every stroke/fill is written into its cell, so the run
+    # cannot drift onto another frame halfway through.
+    main_frame = main.current_frame()
+    if main_frame < 0:
+        # The main board reports no frame at all. Quietly rewriting that to
+        # row 0 is exactly how runs used to land on frame 1 while the artist
+        # believed they were on frame N (selectionattention.cpp used to clear
+        # the frame on an Assets-panel click), so the fallback SAYS so now
+        # instead of hiding it.
+        print("[auto_mapping] the main board has no current frame; this run "
+              "targets frame 1. Click a frame in the timeline first if that "
+              "is not what you wanted.")
+        main_frame = 0
 
     _absorb_legacy_items("child", child, child_frame)
     _absorb_legacy_items("main", main, main_frame)
@@ -9383,6 +9603,11 @@ def _bake_unit_to_layers(scene, uid, group_name=""):
     baked = 0
     _RUN_GUARD["depth"] += 1
     try:
+        # Same contract as _create_mapped_layer: add_layer()/add_fill_layer()
+        # expose the new column on the model's CURRENT frame, so park it on the
+        # row being baked or the pair is born on one frame and filled on
+        # another (animemodel.cpp:1665-1683).
+        scene.set_current_frame(row)
         vector_index = scene.add_layer()
         if vector_index is None or vector_index < 0:
             print("[auto_mapping] To Editable Layer: could not create the "
@@ -12152,6 +12377,9 @@ python_hooks.set_hook(_layer_menu_action, layermenu=True)
 # Unit focus follows the MAIN board's current layer: entering an automapping
 # layer shows its guides and arms live re-render, leaving hides them.
 python_hooks.set_hook(_layer_focus_event, layerchange=True)
+# Onion ghosts draw the layer stack only; the axes are overlays, so the ghost
+# guides for other frames' units are drawn from here.
+python_hooks.set_hook(_onion_event, onion=True)
 # Live re-render on texture-board artwork edits while a unit has focus.
 python_hooks.set_hook(_pattern_changed, linefinish=True, erasefinish=True,
                       deletefinish=True, fillfinish=True, movefinish=True)

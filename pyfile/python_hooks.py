@@ -269,6 +269,7 @@ def set_hook(
     viewbutton=False,
     layermenu=False,
     layerchange=False,
+    onion=False,
     handle=False,
     menu=False,
     tool=None,
@@ -294,6 +295,11 @@ def set_hook(
         "viewbutton": viewbutton,
         "layermenu": layermenu,
         "layerchange": layerchange,
+        # Onion-skin state changed on a board (ghost set, the Guide Line flag,
+        # or the playhead while ghosts are on). Ghosts render the layer stack
+        # only, so a tool that draws through ui.set_overlay has to ghost its
+        # own overlays; this is how it learns which frames are showing.
+        "onion": onion,
         "handle": handle,
         "menu": menu,
     }

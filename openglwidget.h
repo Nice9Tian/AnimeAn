@@ -368,6 +368,13 @@ private:
     // notifier, and the mechanism layer-focused tools (an auto-mapping
     // layer's overlays) hang their show/hide policy on.
     void notifyLayerChangedIfNeeded();
+    // Emits "onion" when this board's ghost set, the guide-line flag or - while
+    // onion is on - the current frame moved past what Python was last told.
+    // Ghosts render layer-stack CONTENT only; the H/V axes and additional lines
+    // are Python OVERLAYS, so the policy side needs the ghost set to draw its
+    // own ghost guides (auto_mapping). Mechanism only: any view may emit, only
+    // the main board carries onion state today.
+    void notifyOnionChangedIfNeeded();
     // Topmost draggable overlay item within grab range of the screen position.
     // When it returns an id and screenDistance is given, screenDistance is
     // the pointer's screen-space distance to that item's nearest segment.
@@ -547,6 +554,17 @@ private:
     // change entirely.
     int m_pythonNotifiedLayer = -2;
     int m_pythonNotifiedLayerId = -1;
+    // The onion state Python was last told about via "onion". While onion is
+    // OFF the whole family collapses to one canonical baseline (frames empty,
+    // current -1), so plain frame changes on a board with no ghosts cost
+    // nothing. The baseline starts VALID and equal to those defaults: a fresh
+    // board has no ghosts, so the first message a script ever sees is the one
+    // that turns onion on - never a redundant "off".
+    bool m_pythonNotifiedOnionValid = true;
+    bool m_pythonNotifiedOnionEnabled = false;
+    bool m_pythonNotifiedOnionGuides = false;
+    int m_pythonNotifiedOnionCurrent = -1;
+    QList<int> m_pythonNotifiedOnionFrames;
     bool m_unboundedCanvas = false;
     BackgroundMode m_backgroundMode = BackgroundMode::White;
     bool m_contentEditable = true;

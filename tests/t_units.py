@@ -56,7 +56,11 @@ class FakeScene:
         self.name = name
         self.columns = []          # [{"id", "name", "visible", "type"}]
         self.groups = {}           # gid -> {"name","tag","layer_ids":[...]}
-        self.images = {}           # layer id -> FakeImage
+        # (row, layer id) -> FakeImage. ROW-AWARE on purpose: the C++ xsheet
+        # exposes a column only on the rows where it has a cell, so a fake that
+        # answered every row with one image could not tell "the run wrote to
+        # the current frame" from "the run wrote to frame 1".
+        self.cells = {}
         self.pattern = {}          # layer id -> [stroke dict] (child pattern)
         self._script = ""
         self._next_id = 1
@@ -101,6 +105,11 @@ class FakeScene:
         self.columns.append(column)
         index = len(self.columns) - 1
         self._layer = index
+        # AnimeSceneModel::addLayer() exposes the column on m_currentFrame, and
+        # rewrites a negative current frame to 0 first (animemodel.cpp:1665).
+        row = max(self._frame, 0)
+        self._frame = row
+        self.cells.setdefault((row, column["id"]), FakeImage())
         return index
 
     def add_fill_layer(self):
@@ -141,6 +150,8 @@ class FakeScene:
         for group in self.groups.values():
             group["layer_ids"] = [i for i in group["layer_ids"]
                                   if i != column["id"]]
+        for key in [k for k in self.cells if k[1] == column["id"]]:
+            self.cells.pop(key)
         if self._layer >= len(self.columns):
             self._layer = len(self.columns) - 1
         return True
@@ -212,29 +223,50 @@ class FakeScene:
         return list(self.groups.get(gid, {}).get("layer_ids", []))
 
     # --- content ---
-    def image_at(self, _row, layer_index, _create=True, _asset_type="vector"):
+    def image_at(self, row, layer_index, create=True, _asset_type="vector"):
         lid = self.layer_id_at(layer_index)
-        return self.images.setdefault(lid, FakeImage())
+        key = (row, lid)
+        if key not in self.cells:
+            if not create:
+                return None
+            self.cells[key] = FakeImage()
+        return self.cells[key]
+
+    def cell_asset_index(self, row, layer_index):
+        lid = self.layer_id_at(layer_index)
+        return 0 if (row, lid) in self.cells else -1
+
+    def rows_for_layer(self, lid):
+        """Test helper: every row this column is exposed on."""
+        return sorted(row for (row, other) in self.cells if other == lid)
+
+    def frame_count(self):
+        return max(4, max((row for row, _ in self.cells), default=0) + 1)
 
     def get_structure(self):
         layers = []
         for index, column in enumerate(self.columns):
+            cells = []
+            for row in self.rows_for_layer(column["id"]):
+                cells.append({"layer_index": index, "frame_index": row,
+                              "asset_index": index, "frame_id": 1,
+                              "empty": column["id"] not in self.pattern,
+                              "stroke_count": len(self.pattern.get(column["id"], [])),
+                              "fill_count": 0})
             layers.append({
                 "index": index, "name": column["name"],
                 "column_name": column["name"], "visible": column["visible"],
                 "internal": False, "locked": False, "opacity": 1.0,
                 "type": column["type"],
-                "cells": [{"layer_index": index, "frame_index": self._frame,
-                           "asset_index": index, "frame_id": 1,
-                           "empty": column["id"] not in self.pattern,
-                           "stroke_count": len(self.pattern.get(column["id"], [])),
-                           "fill_count": 0}],
+                "cells": cells,
             })
+        count = self.frame_count()
         return {"sceneName": f"{self.name}_paint_view", "layers": layers,
                 "current_frame": self._frame, "current_layer": self._layer,
-                "frame_count": 1, "layer_count": len(self.columns),
+                "frame_count": count, "layer_count": len(self.columns),
                 "asset_count": 0,
-                "frames": [{"index": 0, "num": 1, "name": "1"}],
+                "frames": [{"index": i, "num": i + 1, "name": str(i + 1)}
+                           for i in range(count)],
                 "assets": []}
 
     def cell_to_dict(self, layer_index, _frame, _to_poly=True, _step=4.0):
@@ -631,5 +663,63 @@ am._capture_mapping_item({"row": 0, "layer": cl, "asset": 0, "frame_id": 1},
                           "event": "linefinish", "tool": "extra"})
 assert am._ACTIVE_UNIT["id"] is not None
 print("16) units by default: button and capture auto-create + adopt scratch")
+
+# 17) FRAME ANCHORING (R3-5 regression): a run invoked on frame 3 (row 2) puts
+#     BOTH halves of every output layer on row 2 - the cell add_layer() exposes
+#     the column on AND the cell flush() writes the artwork into. The old code
+#     let those come from two sources (`row` was passed to
+#     _create_mapped_layer and then ignored, so the column was exposed wherever
+#     the selection sat), which is how output ended up on frame 1.
+scenes, fake = fresh_world()
+main = scenes["main"]
+child = scenes["child"]
+main.set_current_frame(2)
+uid17 = am._create_unit()
+install_guides(uid17)
+child.pattern = {child.layer_id_at(child.add_layer()):
+                 [stroke([(-100.0, 50.0), (100.0, 50.0)])]}
+assert main.current_frame() == 2, "creating a unit must not move the frame"
+assert am._perform_mapping()
+assert main.current_frame() == 2, "a run must not move the frame either"
+members17 = am._UNIT_META[uid17]["members"]
+assert members17
+for lid in members17:
+    rows = main.rows_for_layer(int(lid))
+    assert rows == [2], f"member {lid} exposed on {rows}, expected [2]"
+    image = main.cells[(2, int(lid))]
+    assert image.strokes or image.fills, f"member {lid} has no artwork on row 2"
+assert not any(row == 0 for (row, _lid) in main.cells), \
+    "nothing from this run may land on frame 1"
+
+# The contract underneath it, exercised where the two sources DISAGREE: the
+# model's selection sits on row 0 while the caller asks for row 2. The column
+# must be exposed on the row that was ASKED FOR, and the caller's selection
+# must come back untouched.
+main.set_current_frame(0)
+main.set_current_layer(-1)
+made = am._create_mapped_layer(main, 2, "anchored layer")
+assert made >= 0
+made_id = main.layer_id_at(made)
+assert main.rows_for_layer(made_id) == [2], main.rows_for_layer(made_id)
+assert main.current_frame() == 0, "the user's frame selection must be restored"
+assert main.image_at(2, made, False) is not None
+assert main.image_at(0, made, False) is None, \
+    "the column must not also be exposed on frame 1"
+
+# ... and the same run started with NO frame selected (current_frame -1, which
+#     the model rewrites to 0) still puts the column and its artwork together.
+scenes, fake = fresh_world()
+main = scenes["main"]
+child = scenes["child"]
+main.set_current_frame(-1)
+uid17b = am._create_unit()
+install_guides(uid17b)
+child.pattern = {child.layer_id_at(child.add_layer()):
+                 [stroke([(-100.0, 50.0), (100.0, 50.0)])]}
+assert am._perform_mapping()
+for lid in am._UNIT_META[uid17b]["members"]:
+    assert main.rows_for_layer(int(lid)) == [0]
+    assert main.cells[(0, int(lid))].strokes
+print("17) run output lands on the frame it was invoked on (row 2, not row 0)")
 
 print("t_units: ALL OK")
