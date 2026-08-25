@@ -376,7 +376,17 @@ MainWindow::MainWindow(QWidget *parent)
     // touching the scene at all (the Auto Mapping calculation mode lives in
     // the menu bar and decides whether RDP applies), so the rebuild is its
     // own callback rather than a fifth flag on the scene refresh.
-    registerAnimeanUiToolOptionsCallback([this]() { refreshExtraToolOptions(); });
+    registerAnimeanUiToolOptionsCallback([this]() {
+        // Built-in tools (no extra tool armed) rebuild through the plain
+        // tool-options path; refreshExtraToolOptions early-returns for them,
+        // which would make ui.refresh_tool_options() a silent no-op on Pen
+        // and Fill — exactly where the palette control lives.
+        if (m_activeExtraTool.isEmpty()) {
+            refreshToolOptions();
+        } else {
+            refreshExtraToolOptions();
+        }
+    });
     registerAnimeanUiRefreshCallback([this](bool frame, bool layer, bool asset, bool widget) {
         // EVERY view re-reads its own model, not just the active one: a
         // script can move another board's focus (a live auto-mapping run

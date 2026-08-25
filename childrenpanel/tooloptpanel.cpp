@@ -1,5 +1,6 @@
 #include "tooloptpanel.h"
 #include "ui_tooloptpanel.h"
+#include "palettecontrol.h"
 #include "theme.h"
 
 #include <QAbstractItemView>
@@ -267,6 +268,8 @@ void ToolOptPanel::configureControls(const QJsonArray &controls, int rowSpacing,
             widget = createCheckControl(control);
         } else if (type == QStringLiteral("color")) {
             widget = createColorControl(control);
+        } else if (type == QStringLiteral("palette")) {
+            widget = createPaletteControl(control);
         }
 
         if (!widget) {
@@ -551,6 +554,31 @@ QWidget *ToolOptPanel::createColorControl(const QJsonObject &control)
     layout->addWidget(swatch);
     layout->addStretch(1);
     return container;
+}
+
+QWidget *ToolOptPanel::createPaletteControl(const QJsonObject &control)
+{
+    const QString name = textValue(control, QStringLiteral("name"));
+    const QString hook = textValue(control, QStringLiteral("hook"), name);
+    const int row = intValue(control, QStringLiteral("row"), 0);
+    const int startColumn = intValue(control, QStringLiteral("start_column"), 0);
+    const int endColumn = intValue(control, QStringLiteral("end_column"), startColumn);
+
+    PaletteControl *palette = new PaletteControl(control, this);
+    palette->setObjectName(name);
+    connect(palette, &PaletteControl::valueCommitted, this,
+            [this, hook, name, row, startColumn, endColumn](const QString &argb) {
+        emitOptionChanged(hook, name, QStringLiteral("palette"), argb, row, startColumn, endColumn);
+    });
+    // The saved set travels on its own hook whatever the value hook is: which
+    // colours EXIST is a policy question, while the value hook ("color") is
+    // the one C++ answers itself by arming a tool and painting with it.
+    connect(palette, &PaletteControl::boxEdited, this,
+            [this, name, row, startColumn, endColumn](const QString &action) {
+        emitOptionChanged(QStringLiteral("palette_box"), name, QStringLiteral("palette"), action,
+                          row, startColumn, endColumn);
+    });
+    return palette;
 }
 
 void ToolOptPanel::applyVisibilityRules()

@@ -13,6 +13,9 @@ PYTHON_FILE_MODULES = (
     # Imported early: it owns the per-tool drawing colour, and a tool armed
     # before it loads would record nothing.
     "tool_colors",
+    # After tool_colors: a fresh box seeds itself from the remembered pen and
+    # fill colours, and reads nothing if that cache does not exist yet.
+    "palette_box",
     "transfer_tool",
     "script_store",
     "overlay_stack",

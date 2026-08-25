@@ -17,39 +17,34 @@ def _stabilizer(state):
         return int(state.get("smooth", 50))
 
 
-def _color_controls():
-    return [
-        {
-            "name": "color",
-            "type": "button",
-            "title": "Black",
-            "hook": "color",
-            "value": "black",
-            "row": 0,
-            "column": 0,
-            "state": {"color": "black"},
-        },
-        {
-            "name": "color",
-            "type": "button",
-            "title": "Blue",
-            "hook": "color",
-            "value": "blue",
-            "row": 0,
-            "column": 1,
-            "state": {"color": "blue"},
-        },
-        {
-            "name": "color",
-            "type": "button",
-            "title": "Green",
-            "hook": "color",
-            "value": "green",
-            "row": 0,
-            "column": 2,
-            "state": {"color": "green"},
-        },
-    ]
+def _color_controls(state=None, row=0):
+    """The colour row of the Pen and Fill panels: the palette.
+
+    Three fixed swatch buttons used to live here. They could not express a
+    colour the user had not been given, so the row is now the palette
+    control - the saved box, a wheel, HSV and RGB - and which colours the box
+    holds is palette_box's business, not this module's.
+    """
+    try:
+        import palette_box
+
+        return [palette_box.control(state, row)]
+    except Exception:
+        # Without the policy module there is still a drawing colour to set:
+        # the generic swatch opens the platform colour dialog on the same
+        # hook, so the pen is never left without one.
+        return [
+            {
+                "name": "color",
+                "type": "color",
+                "title": "Color",
+                "hook": "color",
+                "value": "#ff000000",
+                "row": row,
+                "start_column": 0,
+                "end_column": 2,
+            },
+        ]
 
 
 def _slider(name, title, hook, minimum, maximum, value, row):
@@ -73,7 +68,7 @@ def options_for_tool(tool, state=None):
 
     if tool == "fill":
         controls = [
-            *_color_controls(),
+            *_color_controls(state, 0),
             {
                 "name": "fill_scope",
                 "type": "list",
@@ -227,7 +222,7 @@ def options_for_tool(tool, state=None):
         ]
     else:
         controls = [
-            *_color_controls(),
+            *_color_controls(state, 0),
             _slider("smooth", "Stabilizer", "smooth", 0, 100, _stabilizer(state), 1),
             _slider("pen_width", "Width", "pen_width", 1, 50, int(state.get("pen_width", 5)), 2),
         ]

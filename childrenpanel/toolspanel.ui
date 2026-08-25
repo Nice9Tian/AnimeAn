@@ -1,54 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
  <class>ToolsPanel</class>
+ <!-- The panel has no designable children: the built-in tools are custom
+      painted chips laid out in C++, and the script tools are created from
+      whatever extra_tools.py declares. The width is the icon rail's own
+      width (8 padding + 44 + 6 + 44 + 8) so Designer shows the real size. -->
  <widget class="QWidget" name="ToolsPanel">
   <property name="geometry">
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>160</width>
-    <height>180</height>
+    <width>126</width>
+    <height>230</height>
    </rect>
   </property>
-  <widget class="QPushButton" name="penButton">
-   <property name="geometry">
-    <rect>
-     <x>10</x>
-     <y>10</y>
-     <width>140</width>
-     <height>30</height>
-    </rect>
-   </property>
-   <property name="text">
-    <string>Pen</string>
-   </property>
-  </widget>
-  <widget class="QPushButton" name="eraserButton">
-   <property name="geometry">
-    <rect>
-     <x>10</x>
-     <y>90</y>
-     <width>140</width>
-     <height>30</height>
-    </rect>
-   </property>
-   <property name="text">
-    <string>Eraser</string>
-   </property>
-  </widget>
-  <widget class="QPushButton" name="fillButton">
-   <property name="geometry">
-    <rect>
-     <x>10</x>
-     <y>130</y>
-     <width>140</width>
-     <height>30</height>
-    </rect>
-   </property>
-   <property name="text">
-    <string>Fill</string>
-   </property>
-  </widget>
  </widget>
  <resources/>
  <connections/>
