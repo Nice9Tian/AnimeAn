@@ -133,6 +133,10 @@ if(BUILD_TESTING)
     add_executable(projectio_tests tests/projectio_tests.cpp)
     target_link_libraries(projectio_tests PRIVATE animean_core)
     add_test(NAME projectio_roundtrip COMMAND projectio_tests)
+
+    add_executable(strokefit_tests tests/strokefit_tests.cpp)
+    target_link_libraries(strokefit_tests PRIVATE animean_core)
+    add_test(NAME strokefit_zoom_invariance COMMAND strokefit_tests)
 endif()
 
 if(ANIMEAN_WITH_PYTHON)
