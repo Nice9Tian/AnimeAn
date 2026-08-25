@@ -4,11 +4,31 @@
 #include <QColor>
 #include <QPointF>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 #include <functional>
 
 class AnimeSceneModel;
+
+// One parent window, as ui.windows reports it. Names are the stable identity
+// Python addresses ("tools", "layers", ...); titles are what the user reads.
+struct AnimeanWindowInfo {
+    QString name;
+    QString title;
+    bool visible = false;
+    QStringList pages;
+    QString current;
+};
+
+// The window-management surface, registered as one unit like the freeze
+// callback. `current` is not a member: it is list() filtered by name, and two
+// answers to the same question drift.
+struct AnimeanWindowsApi {
+    std::function<QVector<AnimeanWindowInfo>()> list;
+    std::function<void(const QString &name, bool on)> show;
+    std::function<void(const QString &name, const QString &page)> select;
+};
 
 struct AnimeanOverlayItem {
     QString id;
@@ -52,6 +72,8 @@ void registerAnimeanUiToolOptionsCallback(std::function<void()> callback);
 void clearAnimeanUiToolOptionsCallback();
 void registerAnimeanUiFreezeCallback(std::function<void(bool frozen)> callback);
 void clearAnimeanUiFreezeCallback();
+void registerAnimeanUiWindowsCallback(AnimeanWindowsApi api);
+void clearAnimeanUiWindowsCallback();
 void registerAnimeanUiOverlayCallback(std::function<void(const QString &view, const QVector<AnimeanOverlayItem> &items)> callback);
 void clearAnimeanUiOverlayCallback();
 void registerAnimeanUiEditHandleCallback(std::function<void(const QString &view, const QVector<AnimeanEditHandle> &handles)> callback);
@@ -64,6 +86,18 @@ void registerAnimeanUiHistoryCallback(std::function<void(const QString &op, cons
 void clearAnimeanUiHistoryCallback();
 void registerAnimeanUiPadValueCallback(std::function<void(const QString &pad, double x, double y)> callback);
 void clearAnimeanUiPadValueCallback();
+// The mouse pointer a tool asks for, by NAME ("", "arrow", "size_all",
+// "size_h", "size_v", "size_bdiag", "size_fdiag", "cross", "rotate"). Generic
+// on purpose: which region of which tool deserves which pointer is policy and
+// lives in Python; C++ only knows how to draw each name.
+void registerAnimeanUiCursorCallback(std::function<void(const QString &view, const QString &name)> callback);
+void clearAnimeanUiCursorCallback();
+
+// The active theme mode ("dark" / "light"), mirrored for Python to read back
+// through animean_python.ui.theme(). C++ pushes it whenever the theme is
+// applied; there is no setter on the Python side - a script asks what the app
+// looks like, it does not decide.
+void setAnimeanUiTheme(const QString &mode);
 
 // True when at least one Python hook subscribes to the event (python_hooks
 // pushes the subscription set via ui.set_hook_events). Lets dispatch sites

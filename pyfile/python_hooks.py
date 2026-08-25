@@ -46,6 +46,24 @@ def protected_properties_json(view):
     return json.dumps(_PROTECTED_PROPERTIES.get(view, []))
 
 
+# Stroke properties that read as GUIDE LINES rather than artwork. The onion
+# skin drops them unless the timeline's Guide Line toggle asks for them; which
+# properties those are is a tool fact, so the same ask-don't-assume split.
+_ONION_GUIDE_PROPERTIES = []
+
+
+def register_onion_guide_properties(properties):
+    """Name the stroke properties the onion skin treats as guide lines."""
+    for entry in properties or []:
+        name = str(entry)
+        if name and name not in _ONION_GUIDE_PROPERTIES:
+            _ONION_GUIDE_PROPERTIES.append(name)
+
+
+def onion_guide_properties_json():
+    return json.dumps(_ONION_GUIDE_PROPERTIES)
+
+
 # Context-menu providers. C++ asks at right-click time what the menu for the
 # clicked row should contain, renders whatever it is handed, and reports the
 # choice back as a "layermenu" hook event. It never learns what any entry

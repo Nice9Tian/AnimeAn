@@ -25,23 +25,6 @@
    <property name="cursor">
     <cursorShape>PointingHandCursor</cursorShape>
    </property>
-   <property name="styleSheet">
-    <string notr="true">QPushButton {
-    border: 1px solid #8a8a8a;
-    border-radius: 3px;
-    padding: 4px 8px;
-}
-QPushButton:hover {
-    border-color: #3d8ec9;
-}
-QPushButton:pressed {
-    padding-top: 5px;
-    padding-left: 9px;
-}
-QPushButton:focus {
-    border: 1px solid #0067c0;
-}</string>
-   </property>
    <property name="text">
     <string>Button</string>
    </property>
@@ -61,31 +44,6 @@ QPushButton:focus {
    <property name="cursor">
     <cursorShape>PointingHandCursor</cursorShape>
    </property>
-   <property name="styleSheet">
-    <string notr="true">QSlider::groove:horizontal {
-    height: 6px;
-    border-radius: 3px;
-    background: #d8d8d8;
-}
-QSlider::sub-page:horizontal {
-    border-radius: 3px;
-    background: #3d8ec9;
-}
-QSlider::handle:horizontal {
-    width: 14px;
-    height: 14px;
-    margin: -5px 0;
-    border: 1px solid #777777;
-    border-radius: 7px;
-    background: #ffffff;
-}
-QSlider::handle:horizontal:hover {
-    border-color: #0067c0;
-}
-QSlider::handle:horizontal:pressed {
-    background: #e7f3ff;
-}</string>
-   </property>
    <property name="orientation">
     <enum>Qt::Orientation::Horizontal</enum>
    </property>
@@ -101,27 +59,6 @@ QSlider::handle:horizontal:pressed {
      <width>200</width>
      <height>62</height>
     </rect>
-   </property>
-   <property name="styleSheet">
-    <string notr="true">QListWidget {
-    border: 1px solid palette(mid);
-    border-radius: 3px;
-    background: palette(base);
-    padding: 2px;
-}
-QListWidget::item {
-    min-height: 22px;
-    padding: 3px 6px;
-    border-radius: 2px;
-    color: palette(text);
-}
-QListWidget::item:hover {
-    background: rgba(61, 142, 201, 0.35);
-}
-QListWidget::item:selected {
-    color: #ffffff;
-    background: #3d8ec9;
-}</string>
    </property>
   </widget>
  </widget>

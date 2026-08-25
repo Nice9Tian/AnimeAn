@@ -11485,6 +11485,12 @@ python_hooks.set_hook(_view_menu_action, menu=True)
 # tools that still work while it is.
 python_hooks.register_protected_properties("child", [H_PROPERTY, V_PROPERTY,
                                                      ADDITIONAL_PROPERTY])
+# A guide is annotation, not drawing: ghosting it would put a second axis on
+# the paper for every frame in the onion lane. The timeline can ask for them
+# back (Guide Line), which is why this is a list rather than a rule in C++.
+python_hooks.register_onion_guide_properties([
+    H_PROPERTY, V_PROPERTY, ADDITIONAL_PROPERTY,
+    H_GUIDE_LAYER_PROPERTY, V_GUIDE_LAYER_PROPERTY, NEAREST_LAYER_PROPERTY])
 # The layer-panel context menu has the same requirement: right-clicking a
 # mapping group must work in a fresh session, before any tool is armed.
 python_hooks.register_menu_provider(_layer_menu_items)

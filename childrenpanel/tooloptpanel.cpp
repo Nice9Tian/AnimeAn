@@ -1,5 +1,7 @@
 #include "tooloptpanel.h"
 #include "ui_tooloptpanel.h"
+#include "palettecontrol.h"
+#include "theme.h"
 
 #include <QAbstractItemView>
 #include <QCheckBox>
@@ -18,6 +20,15 @@
 #include <QVBoxLayout>
 
 namespace {
+// Which prototype a generated control took its style from, so a theme change
+// can rebuild that style in place instead of rebuilding the whole panel.
+// Untagged widgets (the colour swatch, labels) are palette-driven and follow
+// the application palette on their own.
+const char kStyleRoleProperty[] = "animeanStyleRole";
+// The tint a colour button was built with; its style is that tint composed
+// with the current prototype style.
+const char kButtonTintProperty[] = "animeanButtonTint";
+
 QString textValue(const QJsonObject &object, const QString &key, const QString &fallback = QString())
 {
     const QJsonValue value = object.value(key);
@@ -68,6 +79,106 @@ QString colorButtonStyle(const QString &standardStyle, const QColor &color)
              hoverColor.name(QColor::HexRgb),
              pressedColor.name(QColor::HexRgb));
 }
+
+QString buttonStyleSheet()
+{
+    // A tinted button appends its own background over this one
+    // (colorButtonStyle); the base is what an untinted button reads as, and a
+    // stylesheeted QPushButton paints no background unless it is given one.
+    return QStringLiteral("QPushButton {"
+                          " border: 1px solid %1;"
+                          " border-radius: 3px;"
+                          " padding: 4px 8px;"
+                          " background: %2;"
+                          "}"
+                          "QPushButton:hover {"
+                          " border-color: %3;"
+                          "}"
+                          "QPushButton:pressed {"
+                          " padding-top: 5px;"
+                          " padding-left: 9px;"
+                          "}"
+                          "QPushButton:focus {"
+                          " border: 1px solid %4;"
+                          "}")
+        .arg(AnimeTheme::color(AnimeTheme::Role::Divider).name(),
+             AnimeTheme::color(AnimeTheme::Role::SurfaceAlt).name(),
+             AnimeTheme::color(AnimeTheme::Role::Accent).name(),
+             AnimeTheme::color(AnimeTheme::Role::AccentHover).name());
+}
+
+QString sliderStyleSheet()
+{
+    // The handle is palette-driven (midlight over mid): the palette already
+    // puts it a step above the groove in either mode.
+    return QStringLiteral("QSlider::groove:horizontal {"
+                          " height: 6px;"
+                          " border-radius: 3px;"
+                          " background: %1;"
+                          "}"
+                          "QSlider::sub-page:horizontal {"
+                          " border-radius: 3px;"
+                          " background: %2;"
+                          "}"
+                          "QSlider::handle:horizontal {"
+                          " width: 14px;"
+                          " height: 14px;"
+                          " margin: -5px 0;"
+                          " border: 1px solid palette(mid);"
+                          " border-radius: 7px;"
+                          " background: palette(midlight);"
+                          "}"
+                          "QSlider::handle:horizontal:hover {"
+                          " border-color: %3;"
+                          "}"
+                          "QSlider::handle:horizontal:pressed {"
+                          " background: %2;"
+                          "}")
+        .arg(AnimeTheme::color(AnimeTheme::Role::SurfaceAlt).name(),
+             AnimeTheme::color(AnimeTheme::Role::Accent).name(),
+             AnimeTheme::color(AnimeTheme::Role::AccentHover).name());
+}
+
+QString listStyleSheet()
+{
+    // Everything here except the hover wash is a palette role, so a list never
+    // needs restyling; the wash needs an alpha the palette cannot express.
+    const QColor accent = AnimeTheme::color(AnimeTheme::Role::Accent);
+    return QStringLiteral("QListWidget {"
+                          " border: 1px solid palette(mid);"
+                          " border-radius: 3px;"
+                          " background: palette(base);"
+                          " padding: 2px;"
+                          "}"
+                          "QListWidget::item {"
+                          " min-height: 22px;"
+                          " padding: 3px 6px;"
+                          " border-radius: 2px;"
+                          " color: palette(text);"
+                          "}"
+                          "QListWidget::item:hover {"
+                          " background: rgba(%1, %2, %3, 0.35);"
+                          "}"
+                          "QListWidget::item:selected {"
+                          " color: palette(highlighted-text);"
+                          " background: palette(highlight);"
+                          "}")
+        .arg(accent.red())
+        .arg(accent.green())
+        .arg(accent.blue());
+}
+
+void restyleControl(QWidget *widget, const QString &buttonStyle, const QString &sliderStyle)
+{
+    const QString role = widget->property(kStyleRoleProperty).toString();
+    if (role == QStringLiteral("button")) {
+        const QVariant tint = widget->property(kButtonTintProperty);
+        widget->setStyleSheet(tint.isValid() ? colorButtonStyle(buttonStyle, tint.value<QColor>())
+                                             : buttonStyle);
+    } else if (role == QStringLiteral("slider")) {
+        widget->setStyleSheet(sliderStyle);
+    }
+}
 }
 
 ToolOptPanel::ToolOptPanel(QWidget *parent)
@@ -78,6 +189,8 @@ ToolOptPanel::ToolOptPanel(QWidget *parent)
     ui->standardButton->hide();
     ui->standardSlider->hide();
     ui->standardList->hide();
+    applyTheme();
+    connect(AnimeTheme::instance(), &AnimeTheme::themeChanged, this, &ToolOptPanel::applyTheme);
 
     m_layout = new QVBoxLayout(this);
     m_layout->setContentsMargins(8, 8, 8, 8);
@@ -155,6 +268,8 @@ void ToolOptPanel::configureControls(const QJsonArray &controls, int rowSpacing,
             widget = createCheckControl(control);
         } else if (type == QStringLiteral("color")) {
             widget = createColorControl(control);
+        } else if (type == QStringLiteral("palette")) {
+            widget = createPaletteControl(control);
         }
 
         if (!widget) {
@@ -222,6 +337,19 @@ void ToolOptPanel::setSmoothValue(int value)
     }
 }
 
+void ToolOptPanel::applyTheme()
+{
+    const QString buttonStyle = buttonStyleSheet();
+    const QString sliderStyle = sliderStyleSheet();
+    ui->standardButton->setStyleSheet(buttonStyle);
+    ui->standardSlider->setStyleSheet(sliderStyle);
+    ui->standardList->setStyleSheet(listStyleSheet());
+
+    for (QWidget *control : findChildren<QWidget *>()) {
+        restyleControl(control, buttonStyle, sliderStyle);
+    }
+}
+
 QWidget *ToolOptPanel::createButtonControl(const QJsonObject &control)
 {
     const QString name = textValue(control, QStringLiteral("name"));
@@ -232,11 +360,13 @@ QWidget *ToolOptPanel::createButtonControl(const QJsonObject &control)
     QPushButton *button = new QPushButton(textValue(control, QStringLiteral("title")), this);
     button->setCursor(ui->standardButton->cursor());
     button->setMinimumSize(ui->standardButton->minimumSize());
+    button->setProperty(kStyleRoleProperty, QStringLiteral("button"));
     button->setStyleSheet(ui->standardButton->styleSheet());
     const QString value = textValue(control, QStringLiteral("value"));
     const QJsonObject state = control.value(QStringLiteral("state")).toObject();
     const QColor color = colorFromState(state);
     if (color.isValid()) {
+        button->setProperty(kButtonTintProperty, color);
         button->setStyleSheet(colorButtonStyle(ui->standardButton->styleSheet(), color));
     }
     connect(button, &QPushButton::clicked, this, [this, hook, name, value, row, startColumn, endColumn]() {
@@ -323,6 +453,7 @@ QWidget *ToolOptPanel::createSliderControl(const QJsonObject &control)
     QSlider *slider = new QSlider(Qt::Horizontal, container);
     slider->setObjectName(name);
     slider->setCursor(ui->standardSlider->cursor());
+    slider->setProperty(kStyleRoleProperty, QStringLiteral("slider"));
     slider->setStyleSheet(ui->standardSlider->styleSheet());
     slider->setSingleStep(ui->standardSlider->singleStep());
     slider->setPageStep(ui->standardSlider->pageStep());
@@ -423,6 +554,31 @@ QWidget *ToolOptPanel::createColorControl(const QJsonObject &control)
     layout->addWidget(swatch);
     layout->addStretch(1);
     return container;
+}
+
+QWidget *ToolOptPanel::createPaletteControl(const QJsonObject &control)
+{
+    const QString name = textValue(control, QStringLiteral("name"));
+    const QString hook = textValue(control, QStringLiteral("hook"), name);
+    const int row = intValue(control, QStringLiteral("row"), 0);
+    const int startColumn = intValue(control, QStringLiteral("start_column"), 0);
+    const int endColumn = intValue(control, QStringLiteral("end_column"), startColumn);
+
+    PaletteControl *palette = new PaletteControl(control, this);
+    palette->setObjectName(name);
+    connect(palette, &PaletteControl::valueCommitted, this,
+            [this, hook, name, row, startColumn, endColumn](const QString &argb) {
+        emitOptionChanged(hook, name, QStringLiteral("palette"), argb, row, startColumn, endColumn);
+    });
+    // The saved set travels on its own hook whatever the value hook is: which
+    // colours EXIST is a policy question, while the value hook ("color") is
+    // the one C++ answers itself by arming a tool and painting with it.
+    connect(palette, &PaletteControl::boxEdited, this,
+            [this, name, row, startColumn, endColumn](const QString &action) {
+        emitOptionChanged(QStringLiteral("palette_box"), name, QStringLiteral("palette"), action,
+                          row, startColumn, endColumn);
+    });
+    return palette;
 }
 
 void ToolOptPanel::applyVisibilityRules()

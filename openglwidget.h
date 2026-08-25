@@ -8,10 +8,13 @@
 
 #include <QColor>
 #include <QElapsedTimer>
+#include <QHash>
+#include <QImage>
 #include <QLineF>
 #include <QMouseEvent>
 #include <QOpenGLWidget>
 #include <QPainterPath>
+#include <QSet>
 #include <QString>
 #include <QVariant>
 #include <QVector>
@@ -32,16 +35,17 @@ public:
         // two places it crosses its neighbours on either side of the click.
         CutLine,
         Fill,
-        Move,
         Arrow,
         // Bridge two snapped vertices with a new stroke. Pure mechanism here
         // (brush ring, hover/click forwarding, handle hints); the snapping
         // and the connection geometry live in pyfile/connect_tool.py.
         Connect,
         // Free transform. Same pure mechanism as Arrow/Connect: handles are
-        // rendered and hit-tested here and every press/drag is reported to
-        // Python; the box, its 8 handles, the scale/stretch/translate maths
-        // and the modifier constraints all live in pyfile/transfer_tool.py.
+        // rendered and hit-tested here and every press/drag/hover is reported
+        // to Python; the box, its 8 handles, the rotation ring outside the
+        // corners, the scale/stretch/translate/rotate maths, the modifier
+        // constraints and which pointer belongs to which region all live in
+        // pyfile/transfer_tool.py.
         Transfer
     };
 
@@ -95,6 +99,12 @@ public:
 
     void setOverlayItems(const QVector<OverlayItem> &items);
     void setEditHandles(const QVector<EditHandle> &handles);
+    // The pointer a script asks for by NAME ("size_all", "rotate", ""); which
+    // affordance sits under the cursor is the tool's decision, drawing the
+    // name is this widget's. Empty restores the default. The pen ignores it:
+    // its ring IS its cursor. Cleared by setTool, so a tool switch can never
+    // leave another tool's pointer behind.
+    void setScriptCursor(const QString &name);
 
     void setViewName(const QString &name);
     QString viewName() const;
@@ -142,6 +152,21 @@ public:
     void showPlaybackFrame(int index);
     void endPlayback();
     bool playbackActive() const;
+    // Onion skin. Pure mechanism: WHICH frames are ghosted is the timeline's
+    // decision (its lane), and which stroke properties count as guide lines
+    // rather than artwork is Python's (setOnionExcludeProperties).
+    void setOnionEnabled(bool enabled);
+    bool onionEnabled() const;
+    void setOnionFrames(const QSet<int> &frames);
+    QSet<int> onionFrames() const;
+    void setOnionGuideLines(bool include);
+    bool onionGuideLines() const;
+    void setOnionExcludeProperties(const QStringList &properties);
+    QStringList onionExcludeProperties() const;
+    // One frame rendered offscreen at thumbnail size: the page scaled to fit
+    // on white, the artwork on top, nothing else. Plain QPainter, so it needs
+    // no GL context and works for a view that has never been shown.
+    QImage renderFrameThumbnail(int frameIndex, const QSize &size);
     void setPenColor(const QColor &color);
     void setDrawingColor(const QColor &color);
     void setPenWidth(qreal width);
@@ -261,10 +286,25 @@ private:
         Vertical
     };
 
-    void paintSceneContent(QPainter &painter, int frameIndex, bool includeCurrentStroke);
+    // `skipProperties`, when given, drops strokes whose property is named in
+    // it. Fills and raster are untouched: only line work carries a property.
+    void paintSceneContent(QPainter &painter, int frameIndex, bool includeCurrentStroke,
+                           const QStringList *skipProperties = nullptr);
     // Re-render the playback cache for the current view, once the gesture that
     // changed it has settled.
     void schedulePlaybackCacheRefresh();
+    // The ghost frames, under the current frame and above the page.
+    void paintOnionGhosts(QPainter &painter);
+    // The tinted ghost for one frame, rendered on demand and cached.
+    QImage onionGhost(int frameIndex, bool past);
+    // How many ghosts this viewport can afford. kMaxOnionGhosts is a count,
+    // not a size, so the answer is a byte budget divided by one full-viewport
+    // image - the same reasoning buildPlaybackCache applies to its frames.
+    int maxOnionGhosts() const;
+    void clearOnionCache();
+    // Same shape as the playback cache: a ghost bakes the transform in, so a
+    // pan or zoom re-renders it once the gesture settles rather than per tick.
+    void scheduleOnionCacheRefresh();
     void paintOverlayItems(QPainter &painter);
     // Badge just above-right of `anchor`, clamped into view. `slot` counts
     // leftwards from the x badge (1 = the check badge); `slotCount` is how
@@ -350,7 +390,6 @@ private:
                              const QPointF &from,
                              const QPointF &to) const;
     bool fillAt(const QPointF &pos);
-    bool moveCurrentLayerBy(const QPointF &delta);
     bool currentLayerAcceptsFill() const;
     QVector<QLineF> fillGraphSegments(FillScope scope, int layerIndex) const;
     QPainterPath vectorRegionPathAt(const QPointF &seed, FillScope scope, int layerIndex) const;
@@ -383,14 +422,15 @@ private:
     bool m_hasHoverPos = false;
     QPointF m_lastEraserPos;
     bool m_hasLastEraserPos = false;
-    QPointF m_lastMovePos;
-    bool m_hasLastMovePos = false;
     qreal m_penWidth = 5.0;
     QString m_strokeProperty;
     QString m_activePythonTool;
     bool m_eraseGestureChanged = false;
-    bool m_moveGestureChanged = false;
     qreal m_eraserRadius = 12.0;
+    // The pointer a Python tool asked for (ui.set_cursor). Names only - C++
+    // owns what each name looks like, the tool owns when it applies. Empty =
+    // no request; the pen's ring always wins over it.
+    QString m_scriptCursor;
     qreal m_minPointDistance = 2.0;
     int m_smoothValue = 50;              // stabilizer strength
     AnimeStrokeFitSettings m_fitSettings; // how a committed stroke is fitted
@@ -477,6 +517,26 @@ private:
     qreal m_playbackCacheZoom = 1.0;
     int m_playbackCacheFrameCount = 0;
     QTimer *m_playbackCacheTimer = nullptr;
+    bool m_onionEnabled = false;
+    QSet<int> m_onionFrames;
+    bool m_onionGuideLines = false;
+    QStringList m_onionExcludeProperties;
+    struct OnionGhostImage {
+        QImage image;
+        // Which tint it carries. The playhead moving past a frame flips it,
+        // and only the frames that crossed have to be redrawn.
+        bool past = true;
+    };
+    QHash<int, OnionGhostImage> m_onionCache;
+    // The view every cached ghost was rendered for; captured when the cache
+    // refills, so a half-stale set can never mix two transforms.
+    QPointF m_onionCachePan;
+    qreal m_onionCacheZoom = 1.0;
+    QSize m_onionCacheSize;
+    QTimer *m_onionCacheTimer = nullptr;
+    // Ghosts are full-viewport images; past this many the memory is worse
+    // than the redraw, so the cache is dropped rather than grown.
+    static constexpr int kMaxOnionGhosts = 16;
     bool m_swallowNextPress = false;
     QVector<OverlayItem> m_overlayItems;
     QVector<OverlayHandle> m_overlayHandles;

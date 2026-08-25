@@ -72,6 +72,10 @@ set(PROJECT_SOURCES
     openglwidget.h
     paintviewcontainer.cpp
     paintviewcontainer.h
+    parentwindow.cpp
+    parentwindow.h
+    theme.cpp
+    theme.h
     childrenpanel/assetpanel.cpp
     childrenpanel/assetpanel.h
     childrenpanel/assetpanel.ui
@@ -79,9 +83,6 @@ set(PROJECT_SOURCES
     childrenpanel/childpaintwindow.h
     childrenpanel/forcepad.cpp
     childrenpanel/forcepad.h
-    childrenpanel/framepanel.cpp
-    childrenpanel/framepanel.h
-    childrenpanel/framepanel.ui
     childrenpanel/historypanel.cpp
     childrenpanel/historypanel.h
     childrenpanel/layerpanel.cpp
@@ -89,6 +90,10 @@ set(PROJECT_SOURCES
     childrenpanel/layerpanel.ui
     childrenpanel/newprojectdialog.cpp
     childrenpanel/newprojectdialog.h
+    childrenpanel/palettecontrol.cpp
+    childrenpanel/palettecontrol.h
+    childrenpanel/timelinewidget.cpp
+    childrenpanel/timelinewidget.h
     childrenpanel/toolcontrolconfig.cpp
     childrenpanel/toolcontrolconfig.h
     childrenpanel/tooloptpanel.cpp
@@ -230,6 +235,18 @@ if(ANIMEAN_WITH_PYTHON)
             "${ANIMEAN_PYFILE_DIR}/viewscale.py"
             "$<TARGET_FILE_DIR:AnimeAn>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ANIMEAN_PYFILE_DIR}/tool_colors.py"
+            "$<TARGET_FILE_DIR:AnimeAn>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ANIMEAN_PYFILE_DIR}/transfer_tool.py"
+            "$<TARGET_FILE_DIR:AnimeAn>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ANIMEAN_PYFILE_DIR}/window_manager.py"
+            "$<TARGET_FILE_DIR:AnimeAn>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ANIMEAN_PYFILE_DIR}/palette_box.py"
+            "$<TARGET_FILE_DIR:AnimeAn>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${ANIMEAN_PYTHONBIND_DIR}/animemodel.py"
             "$<TARGET_FILE_DIR:AnimeAn>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -348,6 +365,18 @@ if(WIN32 AND QT_VERSION_MAJOR EQUAL 6)
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ANIMEAN_PYFILE_DIR}/viewscale.py"
+                "${ANIMEAN_DEPLOY_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ANIMEAN_PYFILE_DIR}/tool_colors.py"
+                "${ANIMEAN_DEPLOY_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ANIMEAN_PYFILE_DIR}/transfer_tool.py"
+                "${ANIMEAN_DEPLOY_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ANIMEAN_PYFILE_DIR}/window_manager.py"
+                "${ANIMEAN_DEPLOY_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ANIMEAN_PYFILE_DIR}/palette_box.py"
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ANIMEAN_PYTHONBIND_DIR}/animemodel.py"

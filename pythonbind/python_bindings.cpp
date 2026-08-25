@@ -36,16 +36,21 @@ std::function<void(bool frame, bool layer, bool asset, bool widget)> g_uiRefresh
 // should offer (a mode that lives in the menu bar).
 std::function<void()> g_uiToolOptionsCallback;
 std::function<void(bool frozen)> g_uiFreezeCallback;
+AnimeanWindowsApi g_uiWindows;
 std::function<void(const QString &view, const QVector<AnimeanOverlayItem> &items)> g_uiOverlayCallback;
 std::function<void(const QString &view, const QVector<AnimeanEditHandle> &handles)> g_uiEditHandleCallback;
 std::function<void(const QColor &color)> g_uiDrawColorCallback;
 std::function<void(int stabilizer, int simplify, int corner)> g_uiDrawSettingsCallback;
 std::function<void(const QString &pad, double x, double y)> g_uiPadValueCallback;
+std::function<void(const QString &view, const QString &name)> g_uiCursorCallback;
 std::function<void(const QString &op, const QString &view, const QString &label)> g_uiHistoryCallback;
 
 // Event subscription mask pushed by python_hooks (ui.set_hook_events).
 bool g_hookEventMaskValid = false;
 QSet<QString> g_hookEventMask;
+
+// Mirror of the C++ theme mode; the app pushes it on every AnimeTheme::apply.
+QString g_uiTheme = QStringLiteral("dark");
 
 // Preview displacement session (ui.displace_*): base geometry plus per-vertex
 // offsets for the strokes of one internal layer. Scaling rewrites that
@@ -1022,6 +1027,16 @@ void clearAnimeanUiFreezeCallback()
     g_uiFreezeCallback = nullptr;
 }
 
+void registerAnimeanUiWindowsCallback(AnimeanWindowsApi api)
+{
+    g_uiWindows = std::move(api);
+}
+
+void clearAnimeanUiWindowsCallback()
+{
+    g_uiWindows = AnimeanWindowsApi();
+}
+
 void registerAnimeanUiOverlayCallback(std::function<void(const QString &view, const QVector<AnimeanOverlayItem> &items)> callback)
 {
     g_uiOverlayCallback = std::move(callback);
@@ -1068,9 +1083,24 @@ void clearAnimeanUiPadValueCallback()
     g_uiPadValueCallback = nullptr;
 }
 
+void registerAnimeanUiCursorCallback(std::function<void(const QString &view, const QString &name)> callback)
+{
+    g_uiCursorCallback = std::move(callback);
+}
+
+void clearAnimeanUiCursorCallback()
+{
+    g_uiCursorCallback = nullptr;
+}
+
 bool animeanHookEventSubscribed(const QString &event)
 {
     return !g_hookEventMaskValid || g_hookEventMask.contains(event);
+}
+
+void setAnimeanUiTheme(const QString &mode)
+{
+    g_uiTheme = mode;
 }
 
 void registerAnimeanUiHistoryCallback(std::function<void(const QString &op, const QString &view, const QString &label)> callback)
@@ -1136,6 +1166,12 @@ void bindAnimeanPythonModule(py::module_ &m)
         if (g_uiToolOptionsCallback) {
             g_uiToolOptionsCallback();
         }
+    });
+    // "dark" / "light". Read-only: a script that paints its own overlay can
+    // pick colours that read on the current theme, but the theme itself is
+    // the user's choice, made in the menu bar.
+    ui.def("theme", []() {
+        return g_uiTheme.toStdString();
     });
     ui.def("set_overlay",
            [](const std::string &view, py::sequence items) {
@@ -1244,6 +1280,20 @@ void bindAnimeanPythonModule(py::module_ &m)
            py::arg("pad"),
            py::arg("x") = 0.0,
            py::arg("y") = 0.0);
+    ui.def("set_cursor",
+           [](const std::string &view, const std::string &name) {
+               // Generic: name a mouse pointer for one view. "" restores the
+               // default. C++ owns what each name looks like (and refuses to
+               // invent new ones); WHEN a name applies - which region of which
+               // tool's box the cursor sits over - is policy, and lives in
+               // Python. The pen's ring outranks it.
+               if (g_uiCursorCallback) {
+                   g_uiCursorCallback(QString::fromStdString(view),
+                                      QString::fromStdString(name));
+               }
+           },
+           py::arg("view"),
+           py::arg("name") = "");
     ui.def("set_hook_events",
            [](py::sequence events) {
                // python_hooks pushes the set of events that currently have at
@@ -1357,6 +1407,61 @@ void bindAnimeanPythonModule(py::module_ &m)
            py::arg("frame") = py::none(),
            py::arg("layer") = py::none(),
            py::arg("asset") = py::none());
+
+    // Parent windows: show one, pick one of its pages, ask what is there.
+    // Pure mechanism - the shell owns which windows and pages exist, and a
+    // name it does not know is a no-op rather than a guess.
+    py::module_ uiWindows = ui.def_submodule("windows", "Show, select and inspect AnimeAn parent windows.");
+    uiWindows.def("list", []() {
+        py::list windows;
+        if (!g_uiWindows.list) {
+            return windows;
+        }
+        for (const AnimeanWindowInfo &info : g_uiWindows.list()) {
+            py::dict entry;
+            entry["name"] = info.name.toStdString();
+            entry["title"] = info.title.toStdString();
+            entry["visible"] = info.visible;
+            py::list pages;
+            for (const QString &page : info.pages) {
+                pages.append(page.toStdString());
+            }
+            entry["pages"] = pages;
+            entry["current"] = info.current.toStdString();
+            windows.append(entry);
+        }
+        return windows;
+    });
+    uiWindows.def("show",
+                  [](const std::string &name, bool on) {
+                      if (g_uiWindows.show) {
+                          g_uiWindows.show(QString::fromStdString(name), on);
+                      }
+                  },
+                  py::arg("name"),
+                  py::arg("on") = true);
+    uiWindows.def("select",
+                  [](const std::string &name, const std::string &page) {
+                      if (g_uiWindows.select) {
+                          g_uiWindows.select(QString::fromStdString(name), QString::fromStdString(page));
+                      }
+                  },
+                  py::arg("name"),
+                  py::arg("page"));
+    uiWindows.def("current",
+                  [](const std::string &name) -> py::object {
+                      if (!g_uiWindows.list) {
+                          return py::none();
+                      }
+                      const QString wanted = QString::fromStdString(name);
+                      for (const AnimeanWindowInfo &info : g_uiWindows.list()) {
+                          if (info.name == wanted) {
+                              return py::str(info.current.toStdString());
+                          }
+                      }
+                      return py::none();
+                  },
+                  py::arg("name"));
 
     py::module_ uiMain = ui.def_submodule("main", "Refresh all AnimeAn UI surfaces.");
     uiMain.def("refresh", []() {
@@ -1517,6 +1622,10 @@ void bindAnimeanPythonModule(py::module_ &m)
              py::arg("color") = py::none(),
              py::arg("seed") = py::none())
         .def("clear_raster", &AnimeVectorImageModel::clearRasterImage)
+        // Whether this cell carries a bitmap. A raster is stored as a top-left
+        // plus a QImage, so it can be scaled and moved but NOT rotated or
+        // sheared: a tool that would produce one has to ask first and refuse.
+        .def("has_raster", &AnimeVectorImageModel::hasRaster)
         .def("bounds", [](const AnimeVectorImageModel &image) {
             return rectToTuple(image.bounds());
         })

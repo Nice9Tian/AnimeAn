@@ -7,36 +7,44 @@ import fukusato_workflow
 
 
 def extra_tools():
+    # "page" names which Tools page the button belongs on. The shell owns the
+    # pages ("painting" | "mapping" | "fukusato"); this list only says which
+    # family each tool is part of, and an omitted page means "mapping".
     return [
         {
             "name": "midline",
             "title": "Midline",
             "property": "midline",
             "handler": "midline_tool.activate_midline_tool",
+            "page": "mapping",
         },
         {
             "name": "h_center_line",
             "title": "H Center Line",
             "property": auto_mapping.H_PROPERTY,
             "handler": "auto_mapping.activate_center_line_tool",
+            "page": "mapping",
         },
         {
             "name": "v_center_line",
             "title": "V Center Line",
             "property": auto_mapping.V_PROPERTY,
             "handler": "auto_mapping.activate_center_line_tool",
+            "page": "mapping",
         },
         {
             "name": "mapping_area",
             "title": "Mapping Area",
             "property": auto_mapping.MAPPING_AREA_PROPERTY,
             "handler": "auto_mapping.activate_mapping_area_tool",
+            "page": "mapping",
         },
         {
             "name": "additional_line",
             "title": "Additional Line",
             "property": auto_mapping.ADDITIONAL_PROPERTY,
             "handler": "auto_mapping.activate_additional_line_tool",
+            "page": "mapping",
         },
         {
             # THE automapping (Coons interpolation, formerly "Auto Mapping 2").
@@ -52,24 +60,28 @@ def extra_tools():
             # pen armed under it let a stray click draw into the artwork.
             # The Arrow's default mode then makes the H/V axes draggable.
             "base_tool": "arrow",
+            "page": "mapping",
         },
         {
             "name": "fukusato_line",
             "title": "Fukusato Guide / 引导线",
             "property": fukusato_workflow.HANDLE_PROPERTY,
             "handler": "fukusato_workflow.activate_handle_tool",
+            "page": "fukusato",
         },
         {
             "name": "fukusato_cut",
             "title": "Crease Line / 折角线",
             "property": crease_line_tool.PROPERTY,
             "handler": "crease_line_tool.activate_crease_line",
+            "page": "fukusato",
         },
         {
             "name": "fukusato_guide_mapping",
             "title": "Fukusato Mapping",
             "property": fukusato_workflow.RUN_TOOL,
             "handler": "fukusato_workflow.run_mapping",
+            "page": "fukusato",
         },
     ]
 
