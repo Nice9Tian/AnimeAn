@@ -373,6 +373,11 @@ public:
     int addFillLayer();
     int addAsset(AnimeColumnType type = AnimeColumnType::Vector, const QString &name = QString());
     bool deleteAsset(int assetIndex);
+    // Removes the column AND garbage-collects the assets it exposed that no
+    // surviving cell references (the private asset addLayer paired with the
+    // column, typically). An asset still exposed on another column survives,
+    // and so does a panel asset never exposed anywhere - only what THIS
+    // delete orphaned is collected, via deleteAsset's index renumbering.
     bool deleteLayer(int layerIndex);
     bool moveLayer(int fromIndex, int toIndex);
     int addFrame();
@@ -440,6 +445,8 @@ private:
     // normalizeLayerTree is logically const (it only reconciles bookkeeping),
     // but it writes, so the const readers go through this.
     void normalizeLayerTreeInternal();
+    // True while any cell in any column still exposes this asset.
+    bool assetExposedAnywhere(int assetIndex) const;
 
     AnimeScene m_scene;
     int m_currentLayer = 0;

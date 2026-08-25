@@ -74,9 +74,9 @@ PREVIEW_ALPHA = 200
 _BASELINE = {"valid": False, "view": None, "frame": -1, "strokes": [],
              "fingerprints": {}, "applied": (0.0, 0.0)}
 _GESTURE = {"active": False, "moved": False}
-# The temporary preview layer (press -> release): its column/asset indices
-# and the source layers hidden while the copies are showing.
-_PREVIEW = {"active": False, "view": None, "layer": -1, "asset": -1, "hidden": ()}
+# The temporary preview layer (press -> release): its column index and the
+# source layers hidden while the copies are showing.
+_PREVIEW = {"active": False, "view": None, "layer": -1, "hidden": ()}
 
 
 def _animean():
@@ -496,7 +496,7 @@ def _start_preview(view):
     # with the bookkeeping done last, that rollback would be a no-op and the
     # document would keep an invisible ghost column forever.
     _PREVIEW.update({"active": True, "view": view, "layer": layer,
-                     "asset": asset, "hidden": ()})
+                     "hidden": ()})
 
     hidden = []
     for info in scene.get_structure()["layers"]:
@@ -524,10 +524,9 @@ def _end_preview():
         return
     view = _PREVIEW["view"]
     layer = _PREVIEW["layer"]
-    asset = _PREVIEW["asset"]
     hidden = _PREVIEW["hidden"]
     _PREVIEW.update({"active": False, "view": None, "layer": -1,
-                     "asset": -1, "hidden": ()})
+                     "hidden": ()})
 
     animean = _animean()
     animean.ui.displace_end()
@@ -539,10 +538,11 @@ def _end_preview():
         scene.set_layer_visible(index, True)
     # Only delete what is still OUR layer: an undo mid-gesture restores an
     # older model where the temp column (and asset) no longer exist.
+    # delete_layer garbage-collects the temp column's backing asset with it
+    # (nothing else ever exposes it); deleting the remembered index again
+    # here would hit whatever asset got renumbered into it.
     if 0 <= layer < scene.layer_count() and scene.layer_internal(layer):
         scene.delete_layer(layer)
-        if asset >= 0:
-            scene.delete_asset(asset)
     animean.ui.widget.refresh()
 
 

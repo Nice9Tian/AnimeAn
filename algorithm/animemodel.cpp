@@ -1727,10 +1727,37 @@ bool AnimeSceneModel::deleteAsset(int assetIndex)
     return true;
 }
 
+bool AnimeSceneModel::assetExposedAnywhere(int assetIndex) const
+{
+    for (const AnimeColumn &column : m_scene.xsheet.columns) {
+        for (int row = 0; row <= column.maxRow(); ++row) {
+            if (column.cellAt(row).assetIndex == assetIndex) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 bool AnimeSceneModel::deleteLayer(int layerIndex)
 {
     if (layerIndex < 0 || layerIndex >= m_scene.xsheet.columns.size()) {
         return false;
+    }
+
+    // What the doomed column exposes, captured before it goes: only THESE
+    // assets are candidates for collection below. An asset the user added in
+    // the panel but never exposed is deliberately not a candidate - deleting
+    // an unrelated layer must not eat it.
+    QSet<int> candidates;
+    {
+        const AnimeColumn &column = m_scene.xsheet.columns[layerIndex];
+        for (int row = 0; row <= column.maxRow(); ++row) {
+            const int assetIndex = column.cellAt(row).assetIndex;
+            if (assetIndex >= 0) {
+                candidates.insert(assetIndex);
+            }
+        }
     }
 
     m_scene.xsheet.columns.removeAt(layerIndex);
@@ -1742,6 +1769,18 @@ bool AnimeSceneModel::deleteLayer(int layerIndex)
         --m_currentLayer;
     }
     m_currentAsset = assetIndexAt(m_currentFrame, m_currentLayer);
+
+    // Collect the assets this delete orphaned. Descending order, because
+    // deleteAsset renumbers every index above the removed one - lower
+    // candidates stay valid that way. deleteAsset also keeps every remaining
+    // cell and m_currentAsset pointing at the asset they meant.
+    QList<int> ordered = candidates.values();
+    std::sort(ordered.begin(), ordered.end(), std::greater<int>());
+    for (int assetIndex : ordered) {
+        if (!assetExposedAnywhere(assetIndex)) {
+            deleteAsset(assetIndex);
+        }
+    }
     return true;
 }
 
