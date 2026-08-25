@@ -432,6 +432,10 @@ FitParams fitParamsFor(const AnimeStrokeFitSettings &settings)
     // CORNER drives the angle threshold and the window the turn is measured
     // over. A wider window averages a turn out, so a corner-shy setting gets
     // both a steeper threshold and a longer window; they pull the same way.
+    // The window here is the LONG-stroke budget: the fit entry points
+    // additionally cap it by the stroke's own arc (shortStrokeStrideWindow
+    // below), so a stroke drawn small on screen is classified by its shape
+    // rather than sliced up by a window that dwarfs it.
     params.cornerAngleDeg = 55.0 - 35.0 * c;
     params.strideWindow = 8.0 - 4.0 * c;
     // All px budgets above are SCREEN px: tremor, the device's report rate
@@ -454,18 +458,56 @@ FitParams fitParamsFor(const AnimeStrokeFitSettings &settings)
 // noise budget scaled below the tremor floor chases jitter (3-6x the nodes
 // AND further from the intended line), sub-sample windows invent corners,
 // and 3-sample spans slip through the Schneider solve as runaway cubics.
-// What helps short strokes is narrower: gaussianSigma, lineTolerance and
-// the windows are NOISE budgets and stay fixed; only fitTolerance - the
-// curve-follow budget, which also caps the smoothing displacement in
-// fitPiece - scales down with the WHOLE stroke's arc (floored near the
-// tremor amplitude), so a small curved drawing cannot be deformed by a
-// long-stroke-sized allowance.
+// What helps short strokes is narrower: gaussianSigma and lineTolerance are
+// NOISE budgets and stay fixed. Two per-stroke budgets do adapt, each with
+// a floor near the tremor scale: fitTolerance - the curve-follow budget,
+// which also caps the smoothing displacement in fitPiece - scales down with
+// the WHOLE stroke's arc, so a small curved drawing cannot be deformed by a
+// long-stroke-sized allowance; and strideWindow, capped by the stroke's arc
+// in shortStrokeStrideWindow below, so the corner question stays about the
+// stroke's SHAPE rather than its on-screen size.
 qreal shortStrokeFitTolerance(qreal fitTolerance, qreal arc, qreal pixelScale)
 {
     // The reference length and the tremor floor are screen-sized quantities
     // too (a "short stroke" is short ON SCREEN).
     return std::max<qreal>(0.8 * pixelScale,
                            fitTolerance * std::min<qreal>(1.0, arc / (60.0 * pixelScale)));
+}
+
+// The corner/tangent window is a screen-px budget like the others, but the
+// corner decision it feeds is a SHAPE question, and a fixed screen window
+// stops asking it once the drawing is small on screen: the turn measured
+// over an arc window w on a curve of radius r is ~w/r, so on a stroke drawn
+// zoomed out (small screen radius, window converted by pixelScale into a
+// large share of the whole stroke) smooth curvature itself crosses the
+// corner threshold and the fit slices the stroke into chords (measured: a
+// 30 doc-px-radius circle drawn at 1/4 zoom - a 7.5 px gesture on screen -
+// came back as 3 chords with 84-degree joints; the same circle drawn at 1x
+// fits as smooth cubics). Capping the window by the stroke's own arc makes
+// the classification a SHAPE question again - "does the turn CONCENTRATE
+// within this share of the stroke?" - which is invariant to where the zoom
+// slider sat while drawing.
+//
+// The cap is the corner threshold's own share of a full turn, at 60%: over
+// a window of arc * (threshold / 2*pi) a closed convex curve accumulates
+// exactly the threshold, so 60% of that guarantees smooth closed geometry
+// stays under it at EVERY corner setting, with the remaining 40% absorbing
+// the sampling wiggle of a sparse zoomed-out capture (measured on a jittery
+// 20-sample circle: geometric turn 22.5 degrees, readings up to ~30, i.e.
+// noise eats most of the margin - a flat arc/12 cap left 7.5 degrees and
+// the circle still polygonised). At the default 37.5-degree threshold this
+// works out to arc/16, which keeps every deliberate polygon corner sharp: a
+// square's side is a quarter of the arc, so the window is a quarter of a
+// side and the corner still reads ~90 degrees. The floor is the tremor
+// scale, per the note above: below ~2 screen px of arc a turn reading is
+// hand jitter, not shape, and sub-sample windows invent corners - it also
+// guarantees a genuine corner on a tiny stroke is still measured over real
+// arc rather than a vanishing window.
+qreal shortStrokeStrideWindow(qreal strideWindow, qreal arc, qreal pixelScale,
+                              qreal cornerAngleDeg)
+{
+    const qreal thresholdShare = (cornerAngleDeg / 360.0) * 0.6;
+    return std::min(strideWindow, std::max(2.0 * pixelScale, arc * thresholdShare));
 }
 
 QVector<QPointF> dedupePoints(const QVector<QPointF> &points)
@@ -787,6 +829,23 @@ QVector<qreal> turnAngles(const QVector<QPointF> &pts, const QVector<qreal> &arc
         while (fwd + 1 < n && arc[fwd] - arc[i] < window) {
             ++fwd;
         }
+        // The walks stop at the first sample PAST the window. Under a sparse
+        // capture (the device reports screen distances, so a zoomed-out
+        // drawing arrives with few, far-apart document samples) that one
+        // step can overshoot the window by most of a sample spacing, and the
+        // turn is then measured over up to twice the arc it should be -
+        // sparse input reads as "sharper" than the same drawing captured
+        // densely, and smooth curves get called corners. Take whichever
+        // neighbour lands NEAREST the window instead, never collapsing onto
+        // i itself.
+        if (back + 1 < i
+            && (arc[i] - arc[back]) - window > window - (arc[i] - arc[back + 1])) {
+            ++back;
+        }
+        if (fwd - 1 > i
+            && (arc[fwd] - arc[i]) - window > window - (arc[fwd - 1] - arc[i])) {
+            --fwd;
+        }
         QPointF vIn = pts[i] - pts[back];
         QPointF vOut = pts[fwd] - pts[i];
         const qreal lenIn = std::hypot(vIn.x(), vIn.y());
@@ -838,8 +897,18 @@ void fitPiece(const QVector<QPointF> &piece, const FitParams &params, QPainterPa
         if (best < 1e-6) {
             return; // every sample coincides: nothing drawable
         }
-        fitPiece(piece.mid(0, farthest + 1), params, path, forcedEntry, nullptr);
-        fitPiece(piece.mid(farthest), params, path, nullptr, forcedExit);
+        // The two halves meet at the split sample, so they must LEAVE and
+        // ENTER it along one shared tangent - each half estimating its own
+        // (the old behaviour, both slots null) let the estimates disagree by
+        // the sampling noise, and a small drawn O carried a 70-degree kink
+        // at the far side of the loop. Same handoff rule as every other
+        // joint; degenerate direction falls back to independent estimates.
+        const QPointF seamDir = piece[farthest + 1] - piece[farthest - 1];
+        const qreal seamLen = std::hypot(seamDir.x(), seamDir.y());
+        const QPointF seamTangent = seamLen > 1e-9 ? seamDir / seamLen : QPointF();
+        const QPointF *seam = seamLen > 1e-9 ? &seamTangent : nullptr;
+        fitPiece(piece.mid(0, farthest + 1), params, path, forcedEntry, seam);
+        fitPiece(piece.mid(farthest), params, path, seam, forcedExit);
         return;
     }
 
@@ -1074,6 +1143,8 @@ QPainterPath AnimeVectorLogic::fitStrokePath(const QVector<QPointF> &points,
     }
     params.fitTolerance =
         shortStrokeFitTolerance(params.fitTolerance, rawArc, params.pixelScale);
+    params.strideWindow = shortStrokeStrideWindow(params.strideWindow, rawArc,
+                                                  params.pixelScale, params.cornerAngleDeg);
     fitRun(deduped, params, path);
     return path;
 }
@@ -1242,6 +1313,13 @@ QPainterPath AnimeVectorLogic::liveFitStrokePath(AnimeLiveFitState &state,
     FitParams params = fitParamsFor(settings);
     params.fitTolerance =
         shortStrokeFitTolerance(params.fitTolerance, arc.last(), params.pixelScale);
+    // Strokes long enough to bake (kFreezeMargin + kFreezeChunk of arc) are
+    // always past the point where the cap binds, so the frozen prefix never
+    // sees a mid-stroke window change; only the short-stroke release fit -
+    // the whole stroke as one tail - is affected, and it matches what the
+    // offline fitStrokePath would do with the same points.
+    params.strideWindow = shortStrokeStrideWindow(params.strideWindow, arc.last(),
+                                                  params.pixelScale, params.cornerAngleDeg);
 
     while (arc.last() - arc[state.frozenSamples] > kFreezeMargin + kFreezeChunk) {
         // The bake boundary is nudged to the FLATTEST sample of its window,
