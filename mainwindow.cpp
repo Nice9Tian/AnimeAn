@@ -738,7 +738,7 @@ void MainWindow::setupDocks()
     // registrations are what these menus are built from.
     createScriptMenus();
     attachChildScriptMenus();
-    pullOnionGuideProperties();
+    pullOnionPolicy();
     // Re-baseline both histories now that the views carry their fixed scene
     // identities; the constructor-time baseline predates setTextId/setIntId
     // and undoing into it would corrupt the main/child identity invariant.
@@ -3305,7 +3305,38 @@ void MainWindow::createTimeline()
             m_paintWidget->setOnionFrames(m_onionFrames);
         }
         m_paintWidget->setOnionEnabled(on);
-        m_timeline->setOnionState(m_onionEnabled, m_onionGuideLines, m_onionFrames);
+        m_timeline->setOnionState(m_onionEnabled, m_onionLines, m_onionFills,
+                                  m_onionAmLayers, m_onionGuideLines, m_onionFrames);
+    });
+
+    connect(m_timeline, &TimelineWindow::onionLinesToggled, this, [this](bool on) {
+        if (framePanelTarget() != m_paintWidget) {
+            return;
+        }
+        m_onionLines = on;
+        m_paintWidget->setOnionLines(on);
+        m_timeline->setOnionState(m_onionEnabled, m_onionLines, m_onionFills,
+                                  m_onionAmLayers, m_onionGuideLines, m_onionFrames);
+    });
+
+    connect(m_timeline, &TimelineWindow::onionFillsToggled, this, [this](bool on) {
+        if (framePanelTarget() != m_paintWidget) {
+            return;
+        }
+        m_onionFills = on;
+        m_paintWidget->setOnionFills(on);
+        m_timeline->setOnionState(m_onionEnabled, m_onionLines, m_onionFills,
+                                  m_onionAmLayers, m_onionGuideLines, m_onionFrames);
+    });
+
+    connect(m_timeline, &TimelineWindow::onionAmLayersToggled, this, [this](bool on) {
+        if (framePanelTarget() != m_paintWidget) {
+            return;
+        }
+        m_onionAmLayers = on;
+        m_paintWidget->setOnionAmLayers(on);
+        m_timeline->setOnionState(m_onionEnabled, m_onionLines, m_onionFills,
+                                  m_onionAmLayers, m_onionGuideLines, m_onionFrames);
     });
 
     connect(m_timeline, &TimelineWindow::onionGuideToggled, this, [this](bool on) {
@@ -3314,7 +3345,8 @@ void MainWindow::createTimeline()
         }
         m_onionGuideLines = on;
         m_paintWidget->setOnionGuideLines(on);
-        m_timeline->setOnionState(m_onionEnabled, m_onionGuideLines, m_onionFrames);
+        m_timeline->setOnionState(m_onionEnabled, m_onionLines, m_onionFills,
+                                  m_onionAmLayers, m_onionGuideLines, m_onionFrames);
     });
 
     connect(m_timeline, &TimelineWindow::onionLaneToggled, this, [this](int frame, bool on) {
@@ -3327,7 +3359,8 @@ void MainWindow::createTimeline()
             m_onionFrames.remove(frame);
         }
         m_paintWidget->setOnionFrames(m_onionFrames);
-        m_timeline->setOnionState(m_onionEnabled, m_onionGuideLines, m_onionFrames);
+        m_timeline->setOnionState(m_onionEnabled, m_onionLines, m_onionFills,
+                                  m_onionAmLayers, m_onionGuideLines, m_onionFrames);
     });
 
     for (PaintOpenGLWidget *view : m_paintViews) {
@@ -3345,7 +3378,7 @@ void MainWindow::createTimeline()
     m_timeline->restoreLayout();
 }
 
-void MainWindow::pullOnionGuideProperties()
+void MainWindow::pullOnionPolicy()
 {
 #ifdef ANIMEAN_WITH_PYTHON
     if (!m_paintWidget) {
@@ -3369,6 +3402,21 @@ void MainWindow::pullOnionGuideProperties()
         m_paintWidget->setOnionExcludeProperties(properties);
     } catch (const py::error_already_set &error) {
         setStatusText(QStringLiteral("onion guide properties error: %1")
+                          .arg(QString::fromUtf8(error.what())));
+    }
+    // And which layer-group TAG marks an auto-mapping layer, for the AM LAYER
+    // gate. Same reason, one level up: C++ owns the gate, not the vocabulary.
+    try {
+        const std::string json = py::module_::import("python_hooks")
+                                     .attr("onion_layer_tag_json")()
+                                     .cast<std::string>();
+        // A bare JSON string is not a document root QJsonDocument accepts, so
+        // it is read back through a one-element wrapper array.
+        const QJsonArray array =
+            QJsonDocument::fromJson("[" + QByteArray::fromStdString(json) + "]").array();
+        m_paintWidget->setOnionLayerTag(array.isEmpty() ? QString() : array.at(0).toString());
+    } catch (const py::error_already_set &error) {
+        setStatusText(QStringLiteral("onion layer tag error: %1")
                           .arg(QString::fromUtf8(error.what())));
     }
 #endif
@@ -4617,7 +4665,8 @@ void MainWindow::refreshTimeline()
     // silently editing the main board's ghost set from the child's rows. The
     // main view keeps whatever onion state it had - it is still on screen.
     m_timeline->setOnionAvailable(view == m_paintWidget);
-    m_timeline->setOnionState(m_onionEnabled, m_onionGuideLines, m_onionFrames);
+    m_timeline->setOnionState(m_onionEnabled, m_onionLines, m_onionFills, m_onionAmLayers,
+                              m_onionGuideLines, m_onionFrames);
 }
 
 void MainWindow::refreshAssetList(int selectedRow)

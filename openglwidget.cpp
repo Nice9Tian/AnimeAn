@@ -2129,12 +2129,26 @@ QString PaintOpenGLWidget::sendPythonHandleMessage(const QString &phase,
 }
 
 void PaintOpenGLWidget::paintSceneContent(QPainter &painter, int frameIndex, bool includeCurrentStroke,
-                                          const QStringList *skipProperties)
+                                          const SceneContentFilter *filter)
 {
+    const bool drawStrokes = !filter || filter->strokes;
+    const bool drawGuideStrokes = !filter || filter->guideStrokes;
+    const bool drawFills = !filter || filter->fills;
+    const bool drawRaster = !filter || filter->raster;
+    const QStringList *guideProperties = filter ? filter->guideProperties : nullptr;
+    const QString *excludeLayerTag =
+        (filter && filter->excludeLayerTag && !filter->excludeLayerTag->isEmpty())
+            ? filter->excludeLayerTag
+            : nullptr;
     const AnimeScene &scene = m_model.scene();
     const auto paintColumn = [&](int columnIndex) {
         const AnimeColumn &column = scene.xsheet.columns[columnIndex];
         if (!column.visible) {
+            return;
+        }
+        // The LAYER gate, ahead of every content class: a column that sits in
+        // a group carrying the excluded tag contributes nothing at all.
+        if (excludeLayerTag && m_model.groupIdForLayer(columnIndex, *excludeLayerTag) > 0) {
             return;
         }
 
@@ -2142,20 +2156,23 @@ void PaintOpenGLWidget::paintSceneContent(QPainter &painter, int frameIndex, boo
         const VectorImageModel *image = m_model.imageForCell(cell);
         painter.setOpacity(column.opacity);
         if (image) {
-            if (image->hasRaster()) {
+            if (drawRaster && image->hasRaster()) {
                 const AnimeRasterImage &raster = image->raster();
                 painter.drawImage(raster.topLeft, raster.image);
             }
-            painter.setPen(Qt::NoPen);
-            for (const AnimeVectorFillRegion &fill : image->fillRegions()) {
-                painter.setBrush(fill.color);
-                painter.drawPath(fill.path);
+            if (drawFills) {
+                painter.setPen(Qt::NoPen);
+                for (const AnimeVectorFillRegion &fill : image->fillRegions()) {
+                    painter.setBrush(fill.color);
+                    painter.drawPath(fill.path);
+                }
             }
             painter.setBrush(Qt::NoBrush);
             for (const VectorStrokeNode &node : image->strokeNodes()) {
                 const VectorStroke &stroke = node.stroke;
-                if (skipProperties && !stroke.property.isEmpty()
-                    && skipProperties->contains(stroke.property)) {
+                const bool isGuide = guideProperties && !stroke.property.isEmpty()
+                                     && guideProperties->contains(stroke.property);
+                if (!(isGuide ? drawGuideStrokes : drawStrokes)) {
                     continue;
                 }
                 // penStyle is a generic per-stroke property (Qt::PenStyle).
@@ -2175,7 +2192,8 @@ void PaintOpenGLWidget::paintSceneContent(QPainter &painter, int frameIndex, boo
             }
         }
 
-        if (includeCurrentStroke && columnIndex == m_model.currentLayer() && m_hasCurrentStroke) {
+        if (includeCurrentStroke && drawStrokes && columnIndex == m_model.currentLayer()
+            && m_hasCurrentStroke) {
             painter.setPen(QPen(m_currentStroke.color,
                                 AnimeVectorLogic::displayStrokeWidth(m_currentStroke.width, m_zoom),
                                 Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
@@ -2378,6 +2396,54 @@ bool PaintOpenGLWidget::onionGuideLines() const
     return m_onionGuideLines;
 }
 
+void PaintOpenGLWidget::setOnionLines(bool include)
+{
+    if (m_onionLines == include) {
+        return;
+    }
+    m_onionLines = include;
+    clearOnionCache();
+    notifyOnionChangedIfNeeded();
+    update();
+}
+
+bool PaintOpenGLWidget::onionLines() const
+{
+    return m_onionLines;
+}
+
+void PaintOpenGLWidget::setOnionFills(bool include)
+{
+    if (m_onionFills == include) {
+        return;
+    }
+    m_onionFills = include;
+    clearOnionCache();
+    notifyOnionChangedIfNeeded();
+    update();
+}
+
+bool PaintOpenGLWidget::onionFills() const
+{
+    return m_onionFills;
+}
+
+void PaintOpenGLWidget::setOnionAmLayers(bool include)
+{
+    if (m_onionAmLayers == include) {
+        return;
+    }
+    m_onionAmLayers = include;
+    clearOnionCache();
+    notifyOnionChangedIfNeeded();
+    update();
+}
+
+bool PaintOpenGLWidget::onionAmLayers() const
+{
+    return m_onionAmLayers;
+}
+
 void PaintOpenGLWidget::setOnionExcludeProperties(const QStringList &properties)
 {
     if (m_onionExcludeProperties == properties) {
@@ -2393,6 +2459,21 @@ QStringList PaintOpenGLWidget::onionExcludeProperties() const
     return m_onionExcludeProperties;
 }
 
+void PaintOpenGLWidget::setOnionLayerTag(const QString &tag)
+{
+    if (m_onionLayerTag == tag) {
+        return;
+    }
+    m_onionLayerTag = tag;
+    clearOnionCache();
+    update();
+}
+
+QString PaintOpenGLWidget::onionLayerTag() const
+{
+    return m_onionLayerTag;
+}
+
 void PaintOpenGLWidget::notifyOnionChangedIfNeeded()
 {
 #ifdef ANIMEAN_WITH_PYTHON
@@ -2406,6 +2487,9 @@ void PaintOpenGLWidget::notifyOnionChangedIfNeeded()
     // OFF collapses to one canonical baseline so scrubbing frames on a board
     // with no ghosts never crosses the language boundary.
     const bool guides = enabled && m_onionGuideLines;
+    const bool lines = enabled && m_onionLines;
+    const bool fills = enabled && m_onionFills;
+    const bool amLayers = enabled && m_onionAmLayers;
     const int current = enabled ? m_model.currentFrame() : -1;
     QList<int> frames;
     if (enabled) {
@@ -2415,6 +2499,9 @@ void PaintOpenGLWidget::notifyOnionChangedIfNeeded()
     if (m_pythonNotifiedOnionValid
         && m_pythonNotifiedOnionEnabled == enabled
         && m_pythonNotifiedOnionGuides == guides
+        && m_pythonNotifiedOnionLines == lines
+        && m_pythonNotifiedOnionFills == fills
+        && m_pythonNotifiedOnionAmLayers == amLayers
         && m_pythonNotifiedOnionCurrent == current
         && m_pythonNotifiedOnionFrames == frames) {
         return;
@@ -2422,6 +2509,9 @@ void PaintOpenGLWidget::notifyOnionChangedIfNeeded()
     m_pythonNotifiedOnionValid = true;
     m_pythonNotifiedOnionEnabled = enabled;
     m_pythonNotifiedOnionGuides = guides;
+    m_pythonNotifiedOnionLines = lines;
+    m_pythonNotifiedOnionFills = fills;
+    m_pythonNotifiedOnionAmLayers = amLayers;
     m_pythonNotifiedOnionCurrent = current;
     m_pythonNotifiedOnionFrames = frames;
 
@@ -2457,6 +2547,9 @@ void PaintOpenGLWidget::notifyOnionChangedIfNeeded()
     message["delta"] = pointToPythonDict(QPointF());
     message["enabled"] = enabled;
     message["guides"] = guides;
+    message["lines"] = lines;
+    message["fills"] = fills;
+    message["am_layers"] = amLayers;
     message["frames"] = frameList;
     message["current"] = frameRow;
 
@@ -2546,8 +2639,21 @@ QImage PaintOpenGLWidget::onionGhost(int frameIndex, bool past)
     painter.scale(m_onionCacheZoom, m_onionCacheZoom);
     // No page fill: a ghost is artwork, and a white ground would bury the
     // frame it is supposed to sit under.
-    paintSceneContent(painter, frameIndex, false,
-                      m_onionGuideLines ? nullptr : &m_onionExcludeProperties);
+    SceneContentFilter filter;
+    // Raster content is drawn artwork, so it answers to LINE rather than
+    // carrying a switch of its own.
+    filter.strokes = m_onionLines;
+    filter.raster = m_onionLines;
+    filter.fills = m_onionFills;
+    filter.guideProperties = &m_onionExcludeProperties;
+    filter.guideStrokes = m_onionGuideLines;
+    // AM LAYER is a gate on the LAYER, not on a content class: off, an
+    // auto-mapping layer's columns leave the ghost entirely, whatever LINE
+    // and FILL say. With no tag registered there is nothing to gate.
+    if (!m_onionAmLayers) {
+        filter.excludeLayerTag = &m_onionLayerTag;
+    }
+    paintSceneContent(painter, frameIndex, false, &filter);
     // One flat tint: a ghost says WHEN, so the ink's own colours would only
     // compete with the frame that is being drawn.
     painter.setWorldTransform(QTransform());

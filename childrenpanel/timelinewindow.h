@@ -27,6 +27,9 @@ enum class TimelineCommand {
     Duplicate,
     DeleteFrame,
     Onion,
+    OnionLines,
+    OnionFills,
+    OnionAmLayers,
     GuideLines,
     Prev,
     Pause,
@@ -55,6 +58,13 @@ struct TimelineState {
     bool loop = true;
     int fps = 12;
     bool onion = false;
+    // The three ghost content classes. Lines and fills start on: onion turned
+    // on with nothing to show would read as a broken button.
+    bool onionLines = true;
+    bool onionFills = true;
+    // A per-LAYER gate over the classes above: auto-mapping layers ghost their
+    // content only while this is on. Starts on for the same reason.
+    bool onionAmLayers = true;
     bool guideLines = false;
     // Whether the onion family applies to the board the strip is currently
     // showing. Onion renders on the MAIN view only, so when the timeline is
@@ -72,7 +82,7 @@ struct TimelineState {
     bool floating = false;
 };
 
-// The transport: frame commands at the left, the onion pair + playback +
+// The transport: frame commands at the left, the onion family + playback +
 // rate + frame field as one centred assembly, window chrome at the right.
 // Custom painted rather than a row of QPushButtons - the design is a flat
 // band of equal cells, which no button style reproduces.
@@ -196,6 +206,13 @@ private:
     int m_keyExtent = 0;   // key cell length along the run
     int m_holdExtent = 0;  // hold sliver length along the run
     int m_cellThickness = 0;   // cell size across the run
+    // Onion lane metrics for the current cell scale, recomputed by relayout
+    // alongside the cell metrics: the band (which is also the click target),
+    // the anchored-ghost dot and the run line between them all grow and shrink
+    // with the cells, floored so the lane never fades to a hairline.
+    int m_laneThickness = 0;
+    qreal m_laneDotRadius = 0.0;
+    qreal m_laneLine = 0.0;
     int m_hoverCommand = -1;
     int m_pressedCommand = -1;
     int m_pressedCell = -1;
@@ -277,7 +294,10 @@ public:
     void setPlaybackActive(bool active);
     void setFps(int fps);
     void setLoop(bool loop);
-    void setOnionState(bool enabled, bool guides, const QSet<int> &lanes);
+    // Arguments follow the family's VISUAL order: [Onion][LINE][FILL]
+    // [AM LAYER][GUIDE LINE], then the lane set.
+    void setOnionState(bool enabled, bool lines, bool fills, bool amLayers, bool guides,
+                       const QSet<int> &lanes);
     // Onion is a main-board feature; the owner says whether the board the
     // strip is currently pointed at is that board.
     void setOnionAvailable(bool available);
@@ -307,6 +327,9 @@ signals:
     void prevRequested();
     void nextRequested();
     void onionToggled(bool on);
+    void onionLinesToggled(bool on);
+    void onionFillsToggled(bool on);
+    void onionAmLayersToggled(bool on);
     void onionGuideToggled(bool on);
     void onionLaneToggled(int frame, bool on);
 

@@ -46,8 +46,19 @@ constexpr int kKeyCellHeight = 74;
 constexpr qreal kHoldFraction = 0.2;
 // The preview is the PAGE, so it keeps 4:3 whatever the cell does.
 constexpr qreal kPreviewAspect = 4.0 / 3.0;
-constexpr int kLaneThickness = 12;
-constexpr int kLaneDot = 9;
+// The onion lane at 1:1 cells: the band the ghost run lives in, the dot that
+// marks an anchored ghost, and the run line that joins them. The lane is the
+// ONLY read-out of which frames are ghosted, so it is drawn at read-across-
+// the-room weight rather than as a hairline with a pinhead on it. The band is
+// sized to contain the dot with a hair of margin.
+constexpr int kLaneThickness = 18;
+constexpr int kLaneDot = 16;
+constexpr qreal kLaneLine = 3.0;
+// Floors for a strip scaled down: below these the lane stops being visible
+// (and, for the band, stops being clickable) however small the cells get.
+constexpr int kMinLaneThickness = 11;
+constexpr qreal kMinLaneDotRadius = 4.0;
+constexpr qreal kMinLaneLine = 2.0;
 constexpr int kScrollThickness = 6;
 // How much of the neighbouring cell stays visible when the run is scrolled to
 // follow the playhead: enough to read as "there is more this way".
@@ -416,12 +427,33 @@ QString tooltipFor(TimelineCommand command, const TimelineState &state)
                    ? QStringLiteral("Onion skin")
                    : QStringLiteral("Onion skin is a main board feature - point the "
                                     "timeline back at the main board to use it");
+    case TimelineCommand::OnionLines:
+        if (!state.onionAvailable) {
+            return QStringLiteral("Onion skin is a main board feature - point the "
+                                  "timeline back at the main board to use it");
+        }
+        return state.onion ? QStringLiteral("Show painting lines in the onion ghosts")
+                           : QStringLiteral("Turn onion skin on first");
+    case TimelineCommand::OnionFills:
+        if (!state.onionAvailable) {
+            return QStringLiteral("Onion skin is a main board feature - point the "
+                                  "timeline back at the main board to use it");
+        }
+        return state.onion ? QStringLiteral("Show fill areas in the onion ghosts")
+                           : QStringLiteral("Turn onion skin on first");
+    case TimelineCommand::OnionAmLayers:
+        if (!state.onionAvailable) {
+            return QStringLiteral("Onion skin is a main board feature - point the "
+                                  "timeline back at the main board to use it");
+        }
+        return state.onion ? QStringLiteral("Show auto-mapping layers in the onion ghosts")
+                           : QStringLiteral("Turn onion skin on first");
     case TimelineCommand::GuideLines:
         if (!state.onionAvailable) {
             return QStringLiteral("Onion skin is a main board feature - point the "
                                   "timeline back at the main board to use it");
         }
-        return state.onion ? QStringLiteral("Include guide lines in the ghosts")
+        return state.onion ? QStringLiteral("Show guide lines in the onion ghosts")
                            : QStringLiteral("Turn onion skin on first");
     case TimelineCommand::Prev:
         return QStringLiteral("Previous frame");
@@ -524,6 +556,16 @@ void TimelineTransportBar::relayout()
     m_dividers.clear();
     const QFontMetrics guideMetrics(labelFont(10));
     const int guideWidth = guideMetrics.horizontalAdvance(QStringLiteral("GUIDE")) + 14;
+    // LINE and FILL share one width so the pair reads as one control, and the
+    // narrower of the two never looks squeezed against its neighbour.
+    const int classWidth = std::max(guideMetrics.horizontalAdvance(QStringLiteral("LINE")),
+                                    guideMetrics.horizontalAdvance(QStringLiteral("FILL")))
+                           + 14;
+    // AM LAYER stacks its two words like GUIDE LINE, so the wider of them
+    // sets the cell.
+    const int amWidth = std::max(guideMetrics.horizontalAdvance(QStringLiteral("AM")),
+                                 guideMetrics.horizontalAdvance(QStringLiteral("LAYER")))
+                        + 14;
     const QFontMetrics rateMetrics(monoFont(11, true));
     const int rateWidth =
         rateMetrics.horizontalAdvance(TimelineWindow::shortTextForFps(m_state.fps)) + 9 + 7 + 11 + 9;
@@ -556,7 +598,7 @@ void TimelineTransportBar::relayout()
     const int chromeWidth = chrome.size() * kButtonWidth;
 
     const int dividerWidth = 1 + 2 * kDividerGap;
-    const int onionWidth = kButtonWidth + guideWidth;
+    const int onionWidth = kButtonWidth + 2 * classWidth + amWidth + guideWidth;
     const int playbackWidth = kButtonWidth * 4 + kPlayWidth;
     const int rateFieldWidth = rateWidth + kFrameFieldWidth + 2 * kFrameFieldGap;
     const int assemblyWidth = onionWidth + dividerWidth + playbackWidth + dividerWidth
@@ -619,9 +661,18 @@ void TimelineTransportBar::relayout()
     add(TimelineCommand::Onion, QRect(cx, assemblyY, kButtonWidth, h), m_state.onionAvailable,
         m_state.onionAvailable && m_state.onion);
     cx += kButtonWidth;
-    add(TimelineCommand::GuideLines, QRect(cx, assemblyY, guideWidth, h),
-        m_state.onionAvailable && m_state.onion,
-        m_state.onionAvailable && m_state.onion && m_state.guideLines);
+    const bool contentLive = m_state.onionAvailable && m_state.onion;
+    add(TimelineCommand::OnionLines, QRect(cx, assemblyY, classWidth, h), contentLive,
+        contentLive && m_state.onionLines);
+    cx += classWidth;
+    add(TimelineCommand::OnionFills, QRect(cx, assemblyY, classWidth, h), contentLive,
+        contentLive && m_state.onionFills);
+    cx += classWidth;
+    add(TimelineCommand::OnionAmLayers, QRect(cx, assemblyY, amWidth, h), contentLive,
+        contentLive && m_state.onionAmLayers);
+    cx += amWidth;
+    add(TimelineCommand::GuideLines, QRect(cx, assemblyY, guideWidth, h), contentLive,
+        contentLive && m_state.guideLines);
     cx += guideWidth;
     m_dividers.append(QRect(cx + kDividerGap, assemblyY + (h - 20) / 2, 1, 20));
     cx += dividerWidth;
@@ -675,14 +726,28 @@ void TimelineTransportBar::paintEvent(QPaintEvent *)
         drawChromeCell(painter, item.rect, hover, item.active, item.enabled);
         const QColor foreground = chromeForeground(hover, item.active, item.enabled);
 
-        if (item.command == TimelineCommand::GuideLines) {
+        if (item.command == TimelineCommand::OnionLines
+            || item.command == TimelineCommand::OnionFills) {
+            painter.setPen(foreground);
+            painter.setFont(labelFont(10));
+            painter.drawText(item.rect, Qt::AlignCenter,
+                             item.command == TimelineCommand::OnionLines
+                                 ? QStringLiteral("LINE")
+                                 : QStringLiteral("FILL"));
+            continue;
+        }
+        if (item.command == TimelineCommand::OnionAmLayers
+            || item.command == TimelineCommand::GuideLines) {
+            const bool guide = item.command == TimelineCommand::GuideLines;
             painter.setPen(foreground);
             painter.setFont(labelFont(10));
             const int half = item.rect.height() / 2;
             painter.drawText(QRect(item.rect.x(), item.rect.y() + half - 11, item.rect.width(), 11),
-                             Qt::AlignCenter, QStringLiteral("GUIDE"));
+                             Qt::AlignCenter,
+                             guide ? QStringLiteral("GUIDE") : QStringLiteral("AM"));
             painter.drawText(QRect(item.rect.x(), item.rect.y() + half, item.rect.width(), 11),
-                             Qt::AlignCenter, QStringLiteral("LINE"));
+                             Qt::AlignCenter,
+                             guide ? QStringLiteral("LINE") : QStringLiteral("LAYER"));
             continue;
         }
         if (item.command == TimelineCommand::Rate) {
@@ -920,11 +985,20 @@ void TimelineStrip::relayout()
     m_cells.clear();
     const int count = std::max(1, m_state.frameCount);
     int offset = 0;
+    // The lane rides the same scale as the cells, so a resized strip keeps its
+    // proportions; the floors then keep it readable at the bottom end. Set
+    // before the cell loop: the band width is part of a cell's geometry.
+    const auto scaleLane = [this](qreal scale) {
+        m_laneThickness = std::max(kMinLaneThickness, int(std::lround(kLaneThickness * scale)));
+        m_laneDotRadius = std::max(kMinLaneDotRadius, kLaneDot / 2.0 * scale);
+        m_laneLine = std::max(kMinLaneLine, kLaneLine * scale);
+    };
     if (m_vertical) {
         // Cells scale with the column's width; the key cell keeps 126:74 and
         // the hold sliver keeps its fifth of the key.
         const int rowWidth = std::max(1, width() - kScrollThickness);
         const qreal scale = qreal(rowWidth) / qreal(kStripColumnWidth);
+        scaleLane(scale);
         m_cellThickness = rowWidth;
         m_keyExtent = std::max(16, int(std::lround(kKeyCellHeight * scale)));
         m_holdExtent = std::max(5, int(std::lround(m_keyExtent * kHoldFraction)));
@@ -936,7 +1010,7 @@ void TimelineStrip::relayout()
             cell.frame = frame;
             cell.hold = hold;
             cell.rect = QRect(0, top + offset - m_scroll, rowWidth, rowHeight);
-            cell.lane = QRect(rowWidth - kLaneThickness - 2, cell.rect.y(), kLaneThickness,
+            cell.lane = QRect(rowWidth - m_laneThickness - 2, cell.rect.y(), m_laneThickness,
                               rowHeight);
             m_cells.append(cell);
             offset += rowHeight;
@@ -944,6 +1018,7 @@ void TimelineStrip::relayout()
     } else {
         const int cellHeight = std::max(1, height() - kScrollThickness);
         const qreal scale = qreal(cellHeight) / qreal(kKeyCellHeight);
+        scaleLane(scale);
         m_cellThickness = cellHeight;
         m_keyExtent = std::max(28, int(std::lround(kKeyCellWidth * scale)));
         m_holdExtent = std::max(8, int(std::lround(m_keyExtent * kHoldFraction)));
@@ -954,7 +1029,7 @@ void TimelineStrip::relayout()
             cell.frame = frame;
             cell.hold = hold;
             cell.rect = QRect(offset - m_scroll, 0, cellWidth, cellHeight);
-            cell.lane = QRect(cell.rect.x(), 0, cellWidth, kLaneThickness);
+            cell.lane = QRect(cell.rect.x(), 0, cellWidth, m_laneThickness);
             m_cells.append(cell);
             offset += cellWidth;
         }
@@ -1093,7 +1168,7 @@ void TimelineStrip::paintEvent(QPaintEvent *)
             // The preview is the PAGE: 4:3 whatever shape the cell took when
             // the dock was resized.
             int previewHeight = m_vertical ? cell.rect.height() - 8 : cell.rect.height();
-            const int previewRoom = m_vertical ? cell.rect.width() - kLaneThickness - 2 - 4
+            const int previewRoom = m_vertical ? cell.rect.width() - m_laneThickness - 2 - 4
                                                : cell.rect.width() - 4;
             int previewWidth = std::min(previewRoom, int(std::lround(previewHeight * kPreviewAspect)));
             if (previewWidth > 0 && previewHeight > 0) {
@@ -1101,7 +1176,7 @@ void TimelineStrip::paintEvent(QPaintEvent *)
                                          int(std::lround(previewWidth / kPreviewAspect)));
                 QRect preview;
                 if (m_vertical) {
-                    preview = QRect(cell.rect.x() + (cell.rect.width() - kLaneThickness - 2
+                    preview = QRect(cell.rect.x() + (cell.rect.width() - m_laneThickness - 2
                                                      - previewWidth) / 2,
                                     cell.rect.y() + 4, previewWidth, previewHeight);
                 } else {
@@ -1129,7 +1204,7 @@ void TimelineStrip::paintEvent(QPaintEvent *)
                 const int chipWidth = std::min(preview.width() - 4,
                                                metrics.horizontalAdvance(name) + 10);
                 const QRect chip(preview.x() + 2,
-                                 preview.y() + (m_vertical ? 1 : kLaneThickness + 1),
+                                 preview.y() + (m_vertical ? 1 : m_laneThickness + 1),
                                  std::max(12, chipWidth), 13);
                 painter.fillRect(chip, currentCell ? role(AnimeTheme::Role::Accent)
                                                    : role(AnimeTheme::Role::Surface));
@@ -1157,13 +1232,17 @@ void TimelineStrip::paintEvent(QPaintEvent *)
         if (lineColor.isValid()) {
             QColor faded = lineColor;
             faded.setAlpha(170);
-            painter.setPen(QPen(faded, 1.0));
+            // Drawn in real coordinates: a 3px pen on an integer centre line
+            // straddles the pixel grid and comes out soft, which is exactly the
+            // hairline look this weight exists to get rid of.
+            painter.setPen(QPen(faded, m_laneLine, Qt::SolidLine, Qt::FlatCap));
+            const QPointF centre = QPointF(cell.lane.center()) + QPointF(0.5, 0.5);
             if (m_vertical) {
-                painter.drawLine(cell.lane.center().x(), cell.lane.top(), cell.lane.center().x(),
-                                 cell.lane.bottom());
+                painter.drawLine(QPointF(centre.x(), cell.lane.top()),
+                                 QPointF(centre.x(), cell.lane.bottom() + 1));
             } else {
-                painter.drawLine(cell.lane.left(), cell.lane.center().y(), cell.lane.right(),
-                                 cell.lane.center().y());
+                painter.drawLine(QPointF(cell.lane.left(), centre.y()),
+                                 QPointF(cell.lane.right() + 1, centre.y()));
             }
         }
         if (!cell.hold && m_state.onionAvailable && m_state.lanes.contains(cell.frame)) {
@@ -1172,8 +1251,8 @@ void TimelineStrip::paintEvent(QPaintEvent *)
                                               : role(AnimeTheme::Role::TextDim);
             painter.setPen(Qt::NoPen);
             painter.setBrush(dot);
-            painter.drawEllipse(QPointF(cell.lane.center()) + QPointF(0.5, 0.5), kLaneDot / 2.0,
-                                kLaneDot / 2.0);
+            painter.drawEllipse(QPointF(cell.lane.center()) + QPointF(0.5, 0.5), m_laneDotRadius,
+                                m_laneDotRadius);
             painter.setBrush(Qt::NoBrush);
         }
 
@@ -1662,9 +1741,13 @@ void TimelineWindow::setLoop(bool loop)
     pushState();
 }
 
-void TimelineWindow::setOnionState(bool enabled, bool guides, const QSet<int> &lanes)
+void TimelineWindow::setOnionState(bool enabled, bool lines, bool fills, bool amLayers,
+                                   bool guides, const QSet<int> &lanes)
 {
     m_state.onion = enabled;
+    m_state.onionLines = lines;
+    m_state.onionFills = fills;
+    m_state.onionAmLayers = amLayers;
     m_state.guideLines = guides;
     m_state.lanes = lanes;
     pushState();
@@ -1713,6 +1796,21 @@ void TimelineWindow::handleCommand(TimelineCommand command)
     case TimelineCommand::Onion:
         if (m_state.onionAvailable) {
             emit onionToggled(!m_state.onion);
+        }
+        break;
+    case TimelineCommand::OnionLines:
+        if (m_state.onionAvailable && m_state.onion) {
+            emit onionLinesToggled(!m_state.onionLines);
+        }
+        break;
+    case TimelineCommand::OnionFills:
+        if (m_state.onionAvailable && m_state.onion) {
+            emit onionFillsToggled(!m_state.onionFills);
+        }
+        break;
+    case TimelineCommand::OnionAmLayers:
+        if (m_state.onionAvailable && m_state.onion) {
+            emit onionAmLayersToggled(!m_state.onionAmLayers);
         }
         break;
     case TimelineCommand::GuideLines:

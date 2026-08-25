@@ -188,8 +188,25 @@ public:
     QSet<int> onionFrames() const;
     void setOnionGuideLines(bool include);
     bool onionGuideLines() const;
+    // The other two ghost content classes, independent of the guide flag:
+    // LINES are the painting strokes (and the raster artwork that reads as
+    // drawing), FILLS the fill regions. The CURRENT frame is never affected.
+    void setOnionLines(bool include);
+    bool onionLines() const;
+    void setOnionFills(bool include);
+    bool onionFills() const;
+    // A per-LAYER gate that multiplies the three content classes above: with
+    // it off, every column inside a group carrying the onion layer tag drops
+    // out of the ghosts wholesale - its strokes and its fills alike - while
+    // untagged columns are untouched. Mechanism only: WHICH tag marks such a
+    // layer is Python's (setOnionLayerTag), exactly as with the guide
+    // properties, so C++ never learns the word "automapping".
+    void setOnionAmLayers(bool include);
+    bool onionAmLayers() const;
     void setOnionExcludeProperties(const QStringList &properties);
     QStringList onionExcludeProperties() const;
+    void setOnionLayerTag(const QString &tag);
+    QString onionLayerTag() const;
     // One frame rendered offscreen at thumbnail size: the page scaled to fit
     // on white, the artwork on top, nothing else. Plain QPainter, so it needs
     // no GL context and works for a view that has never been shown.
@@ -323,10 +340,26 @@ private:
         Vertical
     };
 
-    // `skipProperties`, when given, drops strokes whose property is named in
-    // it. Fills and raster are untouched: only line work carries a property.
+    // Which classes of scene content one pass draws. A null filter draws
+    // everything, which is what every pass except the onion one wants.
+    // `guideProperties` names the stroke properties that count as guide lines
+    // rather than artwork; those strokes obey `guideStrokes`, all others
+    // `strokes`. With no list every stroke is artwork.
+    // `excludeLayerTag`, when given and non-empty, drops whole COLUMNS: any
+    // column whose innermost tagged group carries that tag is skipped before
+    // any content class is consulted. It is the layer gate, so it wins over
+    // every flag above.
+    struct SceneContentFilter {
+        bool strokes = true;
+        bool fills = true;
+        bool raster = true;
+        const QStringList *guideProperties = nullptr;
+        bool guideStrokes = true;
+        const QString *excludeLayerTag = nullptr;
+    };
+
     void paintSceneContent(QPainter &painter, int frameIndex, bool includeCurrentStroke,
-                           const QStringList *skipProperties = nullptr);
+                           const SceneContentFilter *filter = nullptr);
     // Re-render the playback cache for the current view, once the gesture that
     // changed it has settled.
     void schedulePlaybackCacheRefresh();
@@ -368,8 +401,9 @@ private:
     // notifier, and the mechanism layer-focused tools (an auto-mapping
     // layer's overlays) hang their show/hide policy on.
     void notifyLayerChangedIfNeeded();
-    // Emits "onion" when this board's ghost set, the guide-line flag or - while
-    // onion is on - the current frame moved past what Python was last told.
+    // Emits "onion" when this board's ghost set, the content flags (guides,
+    // lines, fills, am_layers) or - while onion is on - the current frame
+    // moved past what Python was last told.
     // Ghosts render layer-stack CONTENT only; the H/V axes and additional lines
     // are Python OVERLAYS, so the policy side needs the ghost set to draw its
     // own ghost guides (auto_mapping). Mechanism only: any view may emit, only
@@ -563,6 +597,9 @@ private:
     bool m_pythonNotifiedOnionValid = true;
     bool m_pythonNotifiedOnionEnabled = false;
     bool m_pythonNotifiedOnionGuides = false;
+    bool m_pythonNotifiedOnionLines = false;
+    bool m_pythonNotifiedOnionFills = false;
+    bool m_pythonNotifiedOnionAmLayers = false;
     int m_pythonNotifiedOnionCurrent = -1;
     QList<int> m_pythonNotifiedOnionFrames;
     bool m_unboundedCanvas = false;
@@ -585,7 +622,13 @@ private:
     bool m_onionEnabled = false;
     QSet<int> m_onionFrames;
     bool m_onionGuideLines = false;
+    bool m_onionLines = true;
+    bool m_onionFills = true;
+    bool m_onionAmLayers = true;
     QStringList m_onionExcludeProperties;
+    // Empty until Python registers one, and an empty tag gates nothing: a
+    // session with no auto-mapping module loaded ghosts exactly as before.
+    QString m_onionLayerTag;
     struct OnionGhostImage {
         QImage image;
         // Which tint it carries. The playhead moving past a frame flips it,

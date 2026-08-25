@@ -6,6 +6,7 @@ layers - never appear in one. The "onion" hook event hands the ghost set to
 the policy side, which draws the OTHER frames' unit axes itself, tinted like
 the ghosts they belong to.
 """
+import json
 import os
 import sys
 import types
@@ -232,5 +233,37 @@ overlay_stack._LAYERS["main"].pop(am.ONION_OVERLAY_OWNER)
 am._push_overlay("main")
 assert len(ghosts()) == count, "a unit re-render must restore the ghost guides"
 print("8) _push_overlay re-pushes the ghost slot")
+
+# 9) The message carries the OTHER ghost gates too ("lines", "fills" for the
+#    transport's LINE/FILL toggles, "am_layers" for AM LAYER). All three gate
+#    layer-stack content, which no overlay is, so the ghost guides must come
+#    out identical either way - and a handler that read them positionally, or
+#    refused unknown keys, would drift the moment C++ gained one.
+scene = fresh_world()
+install_unit(scene, "1", 11, rows=(0,), extra_line=[(10.0, 10.0), (90.0, 90.0)])
+onion()
+baseline = [dict(item) for item in ghosts()]
+assert baseline
+onion(lines=False, fills=False, am_layers=False)
+assert ghosts() == baseline, ghosts()
+onion(lines=True, fills=True, am_layers=True, unknown_future_key=1)
+assert ghosts() == baseline, ghosts()
+print("9) lines/fills/am_layers (and any unknown key) leave the ghost guides alone")
+
+# 10) MECHANISM / POLICY: the AM LAYER gate is C++'s to apply, but the WORD
+#     "automapping" is ours. Importing auto_mapping registers the layer-group
+#     tag the gate keys on, exactly as it registers the guide properties, and
+#     C++ reads both back as JSON at startup.
+assert json.loads(python_hooks.onion_layer_tag_json()) == am.UNIT_TAG
+assert am.UNIT_TAG, "an empty tag would gate nothing"
+guide_properties = json.loads(python_hooks.onion_guide_properties_json())
+assert am.H_PROPERTY in guide_properties, guide_properties
+# A fresh registry gates nothing: a session with no auto-mapping module keeps
+# ghosting every layer whatever AM LAYER says.
+saved = python_hooks._ONION_LAYER_TAG
+python_hooks.register_onion_layer_tag(None)
+assert json.loads(python_hooks.onion_layer_tag_json()) == ""
+python_hooks.register_onion_layer_tag(saved)
+print("10) auto_mapping registers the onion layer tag; C++ never spells it")
 
 print("t_onion_guides: ok")
