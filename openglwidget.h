@@ -8,10 +8,13 @@
 
 #include <QColor>
 #include <QElapsedTimer>
+#include <QHash>
+#include <QImage>
 #include <QLineF>
 #include <QMouseEvent>
 #include <QOpenGLWidget>
 #include <QPainterPath>
+#include <QSet>
 #include <QString>
 #include <QVariant>
 #include <QVector>
@@ -142,6 +145,21 @@ public:
     void showPlaybackFrame(int index);
     void endPlayback();
     bool playbackActive() const;
+    // Onion skin. Pure mechanism: WHICH frames are ghosted is the timeline's
+    // decision (its lane), and which stroke properties count as guide lines
+    // rather than artwork is Python's (setOnionExcludeProperties).
+    void setOnionEnabled(bool enabled);
+    bool onionEnabled() const;
+    void setOnionFrames(const QSet<int> &frames);
+    QSet<int> onionFrames() const;
+    void setOnionGuideLines(bool include);
+    bool onionGuideLines() const;
+    void setOnionExcludeProperties(const QStringList &properties);
+    QStringList onionExcludeProperties() const;
+    // One frame rendered offscreen at thumbnail size: the page scaled to fit
+    // on white, the artwork on top, nothing else. Plain QPainter, so it needs
+    // no GL context and works for a view that has never been shown.
+    QImage renderFrameThumbnail(int frameIndex, const QSize &size);
     void setPenColor(const QColor &color);
     void setDrawingColor(const QColor &color);
     void setPenWidth(qreal width);
@@ -261,10 +279,21 @@ private:
         Vertical
     };
 
-    void paintSceneContent(QPainter &painter, int frameIndex, bool includeCurrentStroke);
+    // `skipProperties`, when given, drops strokes whose property is named in
+    // it. Fills and raster are untouched: only line work carries a property.
+    void paintSceneContent(QPainter &painter, int frameIndex, bool includeCurrentStroke,
+                           const QStringList *skipProperties = nullptr);
     // Re-render the playback cache for the current view, once the gesture that
     // changed it has settled.
     void schedulePlaybackCacheRefresh();
+    // The ghost frames, under the current frame and above the page.
+    void paintOnionGhosts(QPainter &painter);
+    // The tinted ghost for one frame, rendered on demand and cached.
+    QImage onionGhost(int frameIndex, bool past);
+    void clearOnionCache();
+    // Same shape as the playback cache: a ghost bakes the transform in, so a
+    // pan or zoom re-renders it once the gesture settles rather than per tick.
+    void scheduleOnionCacheRefresh();
     void paintOverlayItems(QPainter &painter);
     // Badge just above-right of `anchor`, clamped into view. `slot` counts
     // leftwards from the x badge (1 = the check badge); `slotCount` is how
@@ -477,6 +506,26 @@ private:
     qreal m_playbackCacheZoom = 1.0;
     int m_playbackCacheFrameCount = 0;
     QTimer *m_playbackCacheTimer = nullptr;
+    bool m_onionEnabled = false;
+    QSet<int> m_onionFrames;
+    bool m_onionGuideLines = false;
+    QStringList m_onionExcludeProperties;
+    struct OnionGhostImage {
+        QImage image;
+        // Which tint it carries. The playhead moving past a frame flips it,
+        // and only the frames that crossed have to be redrawn.
+        bool past = true;
+    };
+    QHash<int, OnionGhostImage> m_onionCache;
+    // The view every cached ghost was rendered for; captured when the cache
+    // refills, so a half-stale set can never mix two transforms.
+    QPointF m_onionCachePan;
+    qreal m_onionCacheZoom = 1.0;
+    QSize m_onionCacheSize;
+    QTimer *m_onionCacheTimer = nullptr;
+    // Ghosts are full-viewport images; past this many the memory is worse
+    // than the redraw, so the cache is dropped rather than grown.
+    static constexpr int kMaxOnionGhosts = 16;
     bool m_swallowNextPress = false;
     QVector<OverlayItem> m_overlayItems;
     QVector<OverlayHandle> m_overlayHandles;

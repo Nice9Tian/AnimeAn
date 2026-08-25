@@ -2,26 +2,47 @@
 #include "openglwidget.h"
 
 #include <QGridLayout>
+#include <QHBoxLayout>
 #include <QScrollBar>
+#include <QVBoxLayout>
 
 #include <cmath>
 
 PaintViewContainer::PaintViewContainer(QWidget *parent)
     : QWidget(parent)
 {
-    QGridLayout *layout = new QGridLayout(this);
+    // Three nested boxes rather than one grid: the timeline needs a full-width
+    // band under EVERYTHING (canvas plus scroll bars) and a column beside the
+    // canvas, and expressing both in one grid meant every slot had to know
+    // about the others' spans.
+    QVBoxLayout *outer = new QVBoxLayout(this);
+    outer->setContentsMargins(0, 0, 0, 0);
+    outer->setSpacing(0);
+    m_outerLayout = outer;
+
+    m_viewRow = new QWidget(this);
+    QHBoxLayout *rowLayout = new QHBoxLayout(m_viewRow);
+    rowLayout->setContentsMargins(0, 0, 0, 0);
+    rowLayout->setSpacing(0);
+    m_rowLayout = rowLayout;
+
+    m_canvasArea = new QWidget(m_viewRow);
+    QGridLayout *layout = new QGridLayout(m_canvasArea);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
 
-    m_paintWidget = new PaintOpenGLWidget(this);
-    m_horizontalBar = new QScrollBar(Qt::Horizontal, this);
-    m_verticalBar = new QScrollBar(Qt::Vertical, this);
+    m_paintWidget = new PaintOpenGLWidget(m_canvasArea);
+    m_horizontalBar = new QScrollBar(Qt::Horizontal, m_canvasArea);
+    m_verticalBar = new QScrollBar(Qt::Vertical, m_canvasArea);
 
     layout->addWidget(m_paintWidget, 0, 0);
     layout->addWidget(m_verticalBar, 0, 1);
     layout->addWidget(m_horizontalBar, 1, 0);
     layout->setRowStretch(0, 1);
     layout->setColumnStretch(0, 1);
+
+    rowLayout->addWidget(m_canvasArea, 1);
+    outer->addWidget(m_viewRow, 1);
 
     connect(m_paintWidget, &PaintOpenGLWidget::viewTransformChanged,
             this, &PaintViewContainer::syncScrollBars);
@@ -38,6 +59,38 @@ PaintViewContainer::PaintViewContainer(QWidget *parent)
 PaintOpenGLWidget *PaintViewContainer::paintWidget() const
 {
     return m_paintWidget;
+}
+
+QWidget *PaintViewContainer::canvasArea() const
+{
+    return m_canvasArea;
+}
+
+void PaintViewContainer::setBottomChrome(QWidget *widget)
+{
+    if (m_bottomChrome == widget) {
+        return;
+    }
+    m_bottomChrome = widget;
+    if (widget) {
+        m_outerLayout->addWidget(widget);
+    }
+}
+
+void PaintViewContainer::setSideChrome(QWidget *widget, Qt::Edge edge)
+{
+    // Reparenting the previous occupant is the CALLER's job: it owns the
+    // widget, and dropping it to a null parent here would flash it as a
+    // top-level window on the way to its next home.
+    m_sideChrome = widget;
+    if (!widget) {
+        return;
+    }
+    if (edge == Qt::LeftEdge) {
+        m_rowLayout->insertWidget(0, widget);
+    } else {
+        m_rowLayout->addWidget(widget);
+    }
 }
 
 void PaintViewContainer::syncScrollBars()

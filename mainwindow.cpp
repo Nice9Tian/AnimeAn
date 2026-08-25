@@ -2,11 +2,11 @@
 #include "ui_mainwindow.h"
 #include "childrenpanel/assetpanel.h"
 #include "childrenpanel/childpaintwindow.h"
-#include "childrenpanel/framepanel.h"
 #include "childrenpanel/forcepad.h"
 #include "childrenpanel/historypanel.h"
 #include "childrenpanel/layerpanel.h"
 #include "childrenpanel/newprojectdialog.h"
+#include "childrenpanel/timelinewidget.h"
 
 #include <QComboBox>
 #include "clipreader.h"
@@ -64,6 +64,7 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include <string>
@@ -90,15 +91,6 @@ constexpr int kPlaybackFps = 12;
 // rest of this file already reads); groups carry -1 there and their group id
 // here, so "is this row a group" is one lookup.
 constexpr int kGroupIdRole = Qt::UserRole + 1;
-
-int movedRowTarget(int sourceRow, int destinationChild)
-{
-    int target = destinationChild;
-    if (sourceRow < destinationChild) {
-        --target;
-    }
-    return target;
-}
 
 QString toolControlName(PaintOpenGLWidget::Tool tool)
 {
@@ -404,7 +396,7 @@ MainWindow::MainWindow(QWidget *parent)
             paintView->setCurrentAsset(attention.asset);
         }
         if (frame) {
-            refreshFrameList(attentionFor(framePanelTarget()).frame);
+            refreshTimeline();
         }
         if (layer) {
             refreshLayerLists();
@@ -598,6 +590,9 @@ void MainWindow::setupDocks()
     m_paintViews = {m_paintWidget, m_childPaintWidget};
     m_paintWidget->setActiveIndicator(true);
     createListDocks();
+    // After createListDocks: the timeline hangs off the main view's container
+    // and replaces the frames dock, so it is created with the other surfaces.
+    createTimeline();
     createToolDocks();
     // After createToolDocks: importing extra_tools there pulls in the tool
     // modules, whose import-time registrations fill the view-button registry.
@@ -609,6 +604,7 @@ void MainWindow::setupDocks()
     // registrations are what these menus are built from.
     createScriptMenus();
     attachChildScriptMenus();
+    pullOnionGuideProperties();
     // Re-baseline both histories now that the views carry their fixed scene
     // identities; the constructor-time baseline predates setTextId/setIntId
     // and undoing into it would corrupt the main/child identity invariant.
@@ -651,14 +647,18 @@ void MainWindow::setupDocks()
     QMenu *windowsMenu = menuBar()->addMenu(QStringLiteral("Windows"));
     windowsMenu->addAction(m_childPaintWindow->toggleViewAction());
     windowsMenu->addSeparator();
-    // The same eight entries as before, now parent windows: the menu shows
-    // ONE line per window, and its pages are reached by their tabs.
+    // Parent windows: the menu shows ONE line per window, and its pages are
+    // reached by their tabs. The timeline is not one of them - it lives in
+    // the main view, so it carries its own toggle instead.
     m_parentWindows = {m_toolsDock, m_toolOptDock, m_layerDock, m_assetDock,
-                       m_frameDock, m_historyDock, m_forcePadDock, m_pythonDebugDock};
+                       m_historyDock, m_forcePadDock, m_pythonDebugDock};
     for (ParentWindow *window : m_parentWindows) {
         if (window) {
             windowsMenu->addAction(window->toggleViewAction());
         }
+    }
+    if (m_timelineAction) {
+        windowsMenu->addAction(m_timelineAction);
     }
 
     // NOTE: deliberately NO horizontal resizeDocks on the bottom band —
@@ -720,8 +720,9 @@ void MainWindow::startPlayback()
     m_playbackFrameCount = frameCount;
     m_playbackIndex = std::min(std::max(attentionFor(view).frame, 0), frameCount - 1);
     view->showPlaybackFrame(m_playbackIndex);
-    m_framePanel->playButton()->setEnabled(false);
-    m_framePanel->pauseButton()->setEnabled(true);
+    if (m_timeline) {
+        m_timeline->setPlaybackActive(true);
+    }
     // The rate comes from the document being played, not from a constant.
     m_playbackTimer->setInterval(1000 / view->model().playbackFps());
     m_playbackTimer->start();
@@ -737,16 +738,24 @@ void MainWindow::advancePlaybackFrame()
         return;
     }
 
+    if (!m_playbackLoop && m_playbackIndex >= m_playbackFrameCount - 1) {
+        // Loop off means "play it once": stop ON the last frame rather than
+        // wrapping, so the pose the run ends on is the one left editable.
+        stopPlayback();
+        return;
+    }
     m_playbackIndex = (m_playbackIndex + 1) % m_playbackFrameCount;
     m_playbackView->showPlaybackFrame(m_playbackIndex);
 
     // Move the timeline highlight only: the model stays untouched while the
     // prerendered frames are on screen.
-    if (m_playbackView == framePanelTarget()) {
-        m_refreshingLists = true;
-        const QSignalBlocker blocker(m_framePanel->frameList());
-        m_framePanel->frameList()->setCurrentRow(m_playbackIndex);
-        m_refreshingLists = false;
+    if (m_timeline && m_playbackView == framePanelTarget()) {
+        QVector<bool> holds;
+        holds.reserve(m_playbackFrameCount);
+        for (int i = 0; i < m_playbackFrameCount; ++i) {
+            holds.append(m_playbackView->model().isHoldFrame(i));
+        }
+        m_timeline->setFrameData(m_playbackFrameCount, m_playbackIndex, holds);
     }
 }
 
@@ -761,8 +770,9 @@ void MainWindow::stopPlayback()
     const int pausedFrame = m_playbackIndex;
     m_playbackView = nullptr;
     m_playbackFrameCount = 0;
-    m_framePanel->playButton()->setEnabled(true);
-    m_framePanel->pauseButton()->setEnabled(false);
+    if (m_timeline) {
+        m_timeline->setPlaybackActive(false);
+    }
 
     view->endPlayback();
     // Land the editable state on the frame the user paused at, back in vector.
@@ -1007,9 +1017,12 @@ void MainWindow::applyHistoryRestore(PaintOpenGLWidget *view)
                     view->model().currentLayer(),
                     view->model().currentAsset());
     // updateAttention always rebuilds the layer/asset lists, but skips the
-    // frame list when the frame INDEX is unchanged — even though a restore may
-    // have changed the frame COUNT. Rebuild just that one unconditionally.
-    refreshFrameList(attentionFor(framePanelTarget()).frame);
+    // timeline when the frame INDEX is unchanged — even though a restore may
+    // have changed the frame COUNT, and certainly changed the drawings.
+    if (m_timeline) {
+        m_timeline->clearThumbnails();
+    }
+    refreshTimeline();
     view->update();
 }
 
@@ -1710,12 +1723,14 @@ void MainWindow::setActivePaintView(PaintOpenGLWidget *view)
 
 void MainWindow::refreshPanelTargets()
 {
-    refreshFrameList(attentionFor(framePanelTarget()).frame);
+    // The timeline may now be pointed at a different board, so the thumbnails
+    // it is holding are of the wrong document.
+    if (m_timeline) {
+        m_timeline->clearThumbnails();
+    }
+    refreshTimeline();
     refreshLayerLists();
     refreshAssetList(attentionFor(assetPanelTarget()).asset);
-    // The rate is per document, so it follows whichever view the Frames panel
-    // is pointed at - and it has to resync after a load or an undo too.
-    refreshFpsCombo();
 }
 
 void MainWindow::setupListDragDrop()
@@ -1730,14 +1745,8 @@ void MainWindow::setupListDragDrop()
         panel->layerList()->viewport()->installEventFilter(this);
     }
 
-    m_framePanel->frameList()->setDragDropMode(QAbstractItemView::InternalMove);
-    m_framePanel->frameList()->setDefaultDropAction(Qt::MoveAction);
-    m_framePanel->frameList()->setDragDropOverwriteMode(false);
-    m_framePanel->frameList()->setSelectionMode(QAbstractItemView::SingleSelection);
-
     m_assetPanel->assetList()->setDragDropMode(QAbstractItemView::DragOnly);
     m_assetPanel->assetList()->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_framePanel->frameList()->viewport()->installEventFilter(this);
     m_assetPanel->assetList()->viewport()->installEventFilter(this);
 }
 
@@ -2021,73 +2030,9 @@ void MainWindow::setupConnections()
     connectLayerPanel(m_mainLayerPanel, m_paintWidget);
     connectLayerPanel(m_childLayerPanel, m_childPaintWidget);
 
-    connect(m_framePanel->frameList(), &QListWidget::currentRowChanged, this, [this](int row) {
-        if (!m_refreshingLists && row >= 0) {
-            // Picking a frame by hand means the user is done watching; without
-            // this the next tick would snap the highlight back.
-            stopPlayback();
-            PaintOpenGLWidget *view = framePanelTarget();
-            requestAttentionUpdate(view, AttentionChange::FrameChange,
-                                   row, attentionFor(view).layer, attentionFor(view).asset);
-        }
-    });
-
-    connect(m_framePanel->addButton(), &QPushButton::clicked, this, [this]() {
-        stopPlayback();  // editing the timeline invalidates the prerender
-        PaintOpenGLWidget *view = framePanelTarget();
-        const int frameIndex = view->addFrame();
-        updateAttention(view, AttentionChange::FrameChange,
-                        frameIndex, attentionFor(view).layer, attentionFor(view).asset);
-    });
-
-    connect(m_framePanel->addHoldButton(), &QPushButton::clicked, this, [this]() {
-        stopPlayback();
-        PaintOpenGLWidget *view = framePanelTarget();
-        const int frameIndex = view->addHoldFrame();
-        updateAttention(view, AttentionChange::FrameChange,
-                        frameIndex, attentionFor(view).layer, attentionFor(view).asset);
-    });
-
-    connect(m_framePanel->deleteButton(), &QPushButton::clicked, this, [this]() {
-        stopPlayback();
-        const int row = m_framePanel->frameList()->currentRow();
-        PaintOpenGLWidget *view = framePanelTarget();
-        if (view->deleteFrame(row)) {
-            const int nextFrame = row < view->frameCount() ? row : view->frameCount() - 1;
-            updateAttention(view, AttentionChange::FrameChange,
-                            nextFrame, attentionFor(view).layer, attentionFor(view).asset);
-        }
-    });
-
     m_playbackTimer = new QTimer(this);
     m_playbackTimer->setInterval(1000 / kPlaybackFps);
     connect(m_playbackTimer, &QTimer::timeout, this, &MainWindow::advancePlaybackFrame);
-    connect(m_framePanel->playButton(), &QPushButton::clicked, this, &MainWindow::startPlayback);
-    connect(m_framePanel->pauseButton(), &QPushButton::clicked, this, &MainWindow::stopPlayback);
-
-    // The rate belongs to the document, so both the preset list and a typed
-    // number land in the model; the panel then re-reads it, which normalises
-    // whatever was typed back into the canonical text.
-    auto applyFps = [this]() {
-        if (m_refreshingLists) {
-            return;
-        }
-        PaintOpenGLWidget *view = framePanelTarget();
-        const int current = view->model().playbackFps();
-        const int fps = FramePanel::fpsForComboText(m_framePanel->fpsCombo()->currentText(), current);
-        if (fps != current) {
-            view->model().setPlaybackFps(fps);
-            view->commitHistory(QStringLiteral("Playback Rate"));
-        }
-        refreshFpsCombo();
-        if (m_playbackTimer->isActive()) {
-            m_playbackTimer->setInterval(1000 / fps);
-        }
-        setStatusText(QStringLiteral("Playback: %1 fps").arg(fps));
-    };
-    connect(m_framePanel->fpsCombo(), &QComboBox::activated, this, [applyFps](int) { applyFps(); });
-    connect(m_framePanel->fpsCombo()->lineEdit(), &QLineEdit::editingFinished, this, applyFps);
-    refreshFpsCombo();
 
     connect(m_assetPanel->addButton(), &QPushButton::clicked, this, [this]() {
         PaintOpenGLWidget *view = assetPanelTarget();
@@ -2107,27 +2052,6 @@ void MainWindow::setupConnections()
             requestAttentionUpdate(view, AttentionChange::AssetChange,
                                    attentionFor(view).frame, attentionFor(view).layer, row);
         }
-    });
-
-    connect(m_framePanel->frameList()->model(), &QAbstractItemModel::rowsMoved,
-            this, [this](const QModelIndex &, int sourceStart, int sourceEnd,
-                         const QModelIndex &, int destinationChild) {
-        if (m_refreshingLists || sourceStart != sourceEnd) {
-            return;
-        }
-        stopPlayback();  // reordering frames invalidates the prerender
-        PaintOpenGLWidget *view = framePanelTarget();
-        const int target = movedRowTarget(sourceStart, destinationChild);
-        if (!view->moveFrame(sourceStart, target)) {
-            updateAttention(view,
-                            AttentionChange::FrameChange,
-                            view->model().currentFrame(),
-                            view->model().currentLayer(),
-                            view->model().currentAsset());
-            return;
-        }
-        updateAttention(view, AttentionChange::FrameChange,
-                        target, attentionFor(view).layer, attentionFor(view).asset);
     });
 
     connect(ui->actionimport_Raster, &QAction::triggered, this, [this]() {
@@ -2319,7 +2243,6 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         }
     }
     const bool watchedListViewport = layerPanel
-                                     || watched == m_framePanel->frameList()->viewport()
                                      || watched == m_assetPanel->assetList()->viewport();
     if (watchedListViewport) {
         if (event->type() == QEvent::MouseButtonPress) {
@@ -2623,17 +2546,12 @@ void MainWindow::createListDocks()
     // means both stacks are always on screen, one tab apart.
     m_mainLayerPanel = new LayerPanel(this);
     m_childLayerPanel = new LayerPanel(this);
-    m_framePanel = new FramePanel(this);
     m_assetPanel = new AssetPanel(this);
 
     m_layerDock = new ParentWindow(QStringLiteral("layers"), QStringLiteral("Layers"), this);
     m_layerDock->addPage(QStringLiteral("main"), QStringLiteral("Main Layers"), m_mainLayerPanel);
     m_layerDock->addPage(QStringLiteral("child"), QStringLiteral("Child Layers"), m_childLayerPanel);
     addDockWidget(Qt::RightDockWidgetArea, m_layerDock);
-
-    m_frameDock = new ParentWindow(QStringLiteral("frames"), QStringLiteral("Frames"), this);
-    m_frameDock->addPage(QStringLiteral("frames"), QStringLiteral("Frames"), m_framePanel);
-    addDockWidget(Qt::BottomDockWidgetArea, m_frameDock);
 
     m_assetDock = new ParentWindow(QStringLiteral("assets"), QStringLiteral("Assets"), this);
     m_assetDock->addPage(QStringLiteral("assets"), QStringLiteral("Assets"), m_assetPanel);
@@ -2642,6 +2560,194 @@ void MainWindow::createListDocks()
     // asset list is for reorganising what those cells point AT. The View
     // menu toggle brings it up.
     m_assetDock->hide();
+}
+
+void MainWindow::createTimeline()
+{
+    PaintViewContainer *container = qobject_cast<PaintViewContainer *>(centralWidget());
+    if (!container) {
+        return;
+    }
+    // Only the MAIN view gets a timeline. It still DRIVES whichever board
+    // framePanelTarget() resolves to, exactly as the frames dock did - one
+    // timeline, pointed by the child window's Changable Timeline flag.
+    m_timeline = new TimelineWidget(container, container);
+    m_timeline->setThumbnailProvider([this](int frame, QSize size) {
+        return framePanelTarget()->renderFrameThumbnail(frame, size);
+    });
+
+    m_timelineAction = new QAction(QStringLiteral("Timeline"), this);
+    m_timelineAction->setCheckable(true);
+    m_timelineAction->setChecked(m_timeline->timelineVisible());
+    connect(m_timelineAction, &QAction::triggered, this, [this](bool on) {
+        m_timeline->setTimelineVisible(on);
+    });
+    connect(m_timeline, &TimelineWidget::visibilityChanged, this, [this](bool visible) {
+        const QSignalBlocker blocker(m_timelineAction);
+        m_timelineAction->setChecked(visible);
+    });
+
+    connect(m_timeline, &TimelineWidget::frameActivated, this, [this](int frame) {
+        // Picking a frame by hand means the user is done watching; without
+        // this the next tick would snap the highlight back.
+        stopPlayback();
+        PaintOpenGLWidget *view = framePanelTarget();
+        requestAttentionUpdate(view, AttentionChange::FrameChange, frame,
+                               attentionFor(view).layer, attentionFor(view).asset);
+    });
+
+    connect(m_timeline, &TimelineWidget::addFrameRequested, this, [this]() {
+        stopPlayback();  // editing the timeline invalidates the prerender
+        PaintOpenGLWidget *view = framePanelTarget();
+        const int frameIndex = view->addFrame();
+        m_timeline->clearThumbnails();
+        updateAttention(view, AttentionChange::FrameChange,
+                        frameIndex, attentionFor(view).layer, attentionFor(view).asset);
+    });
+
+    connect(m_timeline, &TimelineWidget::addHoldRequested, this, [this]() {
+        stopPlayback();
+        PaintOpenGLWidget *view = framePanelTarget();
+        const int frameIndex = view->addHoldFrame();
+        m_timeline->clearThumbnails();
+        updateAttention(view, AttentionChange::FrameChange,
+                        frameIndex, attentionFor(view).layer, attentionFor(view).asset);
+    });
+
+    connect(m_timeline, &TimelineWidget::deleteFrameRequested, this, [this]() {
+        stopPlayback();
+        PaintOpenGLWidget *view = framePanelTarget();
+        const int row = attentionFor(view).frame;
+        if (view->deleteFrame(row)) {
+            m_timeline->clearThumbnails();
+            const int nextFrame = row < view->frameCount() ? row : view->frameCount() - 1;
+            updateAttention(view, AttentionChange::FrameChange,
+                            nextFrame, attentionFor(view).layer, attentionFor(view).asset);
+        }
+    });
+
+    connect(m_timeline, &TimelineWidget::moveFrameRequested, this, [this](int from, int to) {
+        stopPlayback();  // reordering frames invalidates the prerender
+        PaintOpenGLWidget *view = framePanelTarget();
+        m_timeline->clearThumbnails();
+        if (!view->moveFrame(from, to)) {
+            updateAttention(view,
+                            AttentionChange::FrameChange,
+                            view->model().currentFrame(),
+                            view->model().currentLayer(),
+                            view->model().currentAsset());
+            return;
+        }
+        updateAttention(view, AttentionChange::FrameChange,
+                        to, attentionFor(view).layer, attentionFor(view).asset);
+    });
+
+    connect(m_timeline, &TimelineWidget::playRequested, this, &MainWindow::startPlayback);
+    connect(m_timeline, &TimelineWidget::pauseRequested, this, &MainWindow::stopPlayback);
+    connect(m_timeline, &TimelineWidget::loopToggled, this, [this](bool on) {
+        m_playbackLoop = on;
+    });
+
+    const auto stepFrame = [this](int delta) {
+        stopPlayback();
+        PaintOpenGLWidget *view = framePanelTarget();
+        const int frame = std::min(std::max(0, attentionFor(view).frame + delta),
+                                   std::max(0, view->frameCount() - 1));
+        requestAttentionUpdate(view, AttentionChange::FrameChange, frame,
+                               attentionFor(view).layer, attentionFor(view).asset);
+    };
+    connect(m_timeline, &TimelineWidget::prevRequested, this, [stepFrame]() { stepFrame(-1); });
+    connect(m_timeline, &TimelineWidget::nextRequested, this, [stepFrame]() { stepFrame(1); });
+
+    // The rate belongs to the document, so both a preset and a typed number
+    // land in the model; the timeline then re-reads it.
+    connect(m_timeline, &TimelineWidget::fpsChanged, this, [this](int fps) {
+        PaintOpenGLWidget *view = framePanelTarget();
+        const int current = view->model().playbackFps();
+        if (fps != current) {
+            view->model().setPlaybackFps(fps);
+            view->commitHistory(QStringLiteral("Playback Rate"));
+        }
+        m_timeline->setFps(view->model().playbackFps());
+        if (m_playbackTimer && m_playbackTimer->isActive()) {
+            m_playbackTimer->setInterval(1000 / std::max(1, fps));
+        }
+        setStatusText(QStringLiteral("Playback: %1 fps").arg(fps));
+    });
+
+    connect(m_timeline, &TimelineWidget::onionToggled, this, [this](bool on) {
+        m_onionEnabled = on;
+        if (on && m_onionFrames.isEmpty()) {
+            // An empty lane would make the button do nothing visible; the
+            // neighbours are what "onion skin" means before anything is
+            // picked, and the lane still owns the set from here on.
+            const int frame = attentionFor(m_paintWidget).frame;
+            if (frame > 0) {
+                m_onionFrames.insert(frame - 1);
+            }
+            if (frame + 1 < m_paintWidget->frameCount()) {
+                m_onionFrames.insert(frame + 1);
+            }
+            m_paintWidget->setOnionFrames(m_onionFrames);
+        }
+        m_paintWidget->setOnionEnabled(on);
+        m_timeline->setOnionState(m_onionEnabled, m_onionGuideLines, m_onionFrames);
+    });
+
+    connect(m_timeline, &TimelineWidget::onionGuideToggled, this, [this](bool on) {
+        m_onionGuideLines = on;
+        m_paintWidget->setOnionGuideLines(on);
+        m_timeline->setOnionState(m_onionEnabled, m_onionGuideLines, m_onionFrames);
+    });
+
+    connect(m_timeline, &TimelineWidget::onionLaneToggled, this, [this](int frame, bool on) {
+        if (on) {
+            m_onionFrames.insert(frame);
+        } else {
+            m_onionFrames.remove(frame);
+        }
+        m_paintWidget->setOnionFrames(m_onionFrames);
+        m_timeline->setOnionState(m_onionEnabled, m_onionGuideLines, m_onionFrames);
+    });
+
+    for (PaintOpenGLWidget *view : m_paintViews) {
+        // A committed edit changes what the cells show, and the cells are
+        // pixels of the old scene until they are dropped.
+        connect(view, &PaintOpenGLWidget::historyChanged, this, [this]() {
+            if (m_timeline) {
+                m_timeline->clearThumbnails();
+            }
+        });
+    }
+}
+
+void MainWindow::pullOnionGuideProperties()
+{
+#ifdef ANIMEAN_WITH_PYTHON
+    if (!m_paintWidget) {
+        return;
+    }
+    // Which stroke properties are GUIDE lines rather than artwork is a script
+    // fact (auto_mapping's axes), so C++ asks rather than assumes - the same
+    // split as the protected properties above.
+    try {
+        const std::string json = py::module_::import("python_hooks")
+                                     .attr("onion_guide_properties_json")()
+                                     .cast<std::string>();
+        const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json));
+        QStringList properties;
+        for (const QJsonValue &value : document.array()) {
+            const QString property = value.toString();
+            if (!property.isEmpty()) {
+                properties.append(property);
+            }
+        }
+        m_paintWidget->setOnionExcludeProperties(properties);
+    } catch (const py::error_already_set &error) {
+        setStatusText(QStringLiteral("onion guide properties error: %1")
+                          .arg(QString::fromUtf8(error.what())));
+    }
+#endif
 }
 
 void MainWindow::newProject()
@@ -3147,7 +3253,7 @@ void MainWindow::updateAttention(PaintOpenGLWidget *view, AttentionChange change
     view->setCurrentAsset(attention.asset);
 
     if (update.frame && view == framePanelTarget()) {
-        refreshFrameList(attention.frame);
+        refreshTimeline();
     }
     if (update.layer) {
         // No target test: the page that shows THIS board is the one to
@@ -3606,67 +3712,27 @@ void MainWindow::refreshLayerList(LayerPanel *panel, PaintOpenGLWidget *view, in
     m_refreshingLists = wasRefreshing;
 }
 
-void MainWindow::refreshFpsCombo()
+void MainWindow::refreshTimeline()
 {
-    QComboBox *combo = m_framePanel->fpsCombo();
-    const int fps = framePanelTarget()->model().playbackFps();
-    const QString text = FramePanel::comboTextForFps(fps);
-    if (combo->currentText() == text) {
+    if (!m_timeline) {
         return;
     }
-    const bool wasRefreshing = m_refreshingLists;
-    m_refreshingLists = true;
-    const QSignalBlocker blocker(combo);
-    const int index = combo->findText(text);
-    if (index >= 0) {
-        combo->setCurrentIndex(index);
-    } else {
-        combo->setCurrentIndex(-1);
-        combo->setEditText(text);
-    }
-    m_refreshingLists = wasRefreshing;
-}
-
-void MainWindow::refreshFrameList(int selectedRow)
-{
     PaintOpenGLWidget *view = framePanelTarget();
-    QListWidget *list = m_framePanel->frameList();
-    m_refreshingLists = true;
-    const QSignalBlocker blocker(list);
-    // Same reasoning as refreshLayerList: a refresh that leaves the selection
-    // where it was must leave the viewport where it was too.
-    const int previousRow = list->currentRow();
-    const int scroll = list->verticalScrollBar()->value();
-    list->clear();
-    for (int i = 0; i < view->frameCount(); ++i) {
-        // "O" marks a HELD frame - one that shows the row above's drawing
-        // rather than one of its own. Derived from the cells every refresh,
-        // so it disappears the moment the frame stops holding.
-        const bool hold = view->model().isHoldFrame(i);
-        list->addItem(hold ? QStringLiteral("%1   O").arg(view->frameName(i))
-                           : view->frameName(i));
-        if (hold) {
-            list->item(list->count() - 1)->setToolTip(
-                QStringLiteral("Held: shows the same drawing as frame %1. "
-                               "Editing either one changes both.").arg(i));
-        }
+    const int frameCount = view->frameCount();
+    QVector<bool> holds;
+    holds.reserve(frameCount);
+    for (int i = 0; i < frameCount; ++i) {
+        // "Hold" is DERIVED from the cells every refresh, so a row stops
+        // reading as held the moment it stops holding.
+        holds.append(view->model().isHoldFrame(i));
     }
-    if (list->count() > 0) {
-        if (selectedRow < 0) {
-            list->clearSelection();
-            list->setCurrentRow(-1);
-            list->verticalScrollBar()->setValue(scroll);
-            m_refreshingLists = false;
-            return;
-        } else if (selectedRow >= list->count()) {
-            selectedRow = list->count() - 1;
-        }
-        list->setCurrentRow(selectedRow);
-        if (previousRow == selectedRow) {
-            list->verticalScrollBar()->setValue(scroll);
-        }
-    }
-    m_refreshingLists = false;
+    m_timeline->setFrameData(frameCount, attentionFor(view).frame, holds);
+    // The rate is per document, so it follows whichever view the timeline is
+    // pointed at - and it has to resync after a load or an undo too.
+    m_timeline->setFps(view->model().playbackFps());
+    m_timeline->setPlaybackActive(m_playbackTimer && m_playbackTimer->isActive());
+    m_timeline->setLoop(m_playbackLoop);
+    m_timeline->setOnionState(m_onionEnabled, m_onionGuideLines, m_onionFrames);
 }
 
 void MainWindow::refreshAssetList(int selectedRow)

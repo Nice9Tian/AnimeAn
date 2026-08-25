@@ -189,6 +189,9 @@ const SceneHistory &PaintOpenGLWidget::history() const
 void PaintOpenGLWidget::commitHistory(const QString &label)
 {
     m_history.commit(label, m_model);
+    // Any commit can have changed what a ghosted frame looks like, or how
+    // many frames there are; the ghosts are pixels of the old scene.
+    clearOnionCache();
     emit historyChanged();
     emit historyCommitted();
 }
@@ -213,6 +216,7 @@ void PaintOpenGLWidget::resetHistory(const QString &label)
     m_pythonNotifiedLayerId =
         m_pythonNotifiedLayer >= 0 ? m_model.layerIdAt(m_pythonNotifiedLayer) : 0;
     pythonHookSendMessage(QStringLiteral("historyrestore"));
+    clearOnionCache();
     emit historyChanged();
 }
 
@@ -336,6 +340,7 @@ bool PaintOpenGLWidget::goToHistory(int index)
     m_moveGestureChanged = false;
     m_axisSnapState = AxisSnapState::Inactive;
     pythonHookSendMessage(QStringLiteral("historyrestore"));
+    clearOnionCache();
     update();
     emit historyChanged();
     return true;
@@ -535,6 +540,7 @@ void PaintOpenGLWidget::modelReplaced()
     // it (possibly off the new one entirely) and the scroll bars kept the
     // previous range, since only a viewTransformChanged makes them resync.
     clampPan();
+    clearOnionCache();
     update();
     notifyViewTransformChanged();
 }
@@ -1899,7 +1905,8 @@ QString PaintOpenGLWidget::sendPythonHandleMessage(const QString &phase,
 #endif
 }
 
-void PaintOpenGLWidget::paintSceneContent(QPainter &painter, int frameIndex, bool includeCurrentStroke)
+void PaintOpenGLWidget::paintSceneContent(QPainter &painter, int frameIndex, bool includeCurrentStroke,
+                                          const QStringList *skipProperties)
 {
     const AnimeScene &scene = m_model.scene();
     const auto paintColumn = [&](int columnIndex) {
@@ -1924,6 +1931,10 @@ void PaintOpenGLWidget::paintSceneContent(QPainter &painter, int frameIndex, boo
             painter.setBrush(Qt::NoBrush);
             for (const VectorStrokeNode &node : image->strokeNodes()) {
                 const VectorStroke &stroke = node.stroke;
+                if (skipProperties && !stroke.property.isEmpty()
+                    && skipProperties->contains(stroke.property)) {
+                    continue;
+                }
                 // penStyle is a generic per-stroke property (Qt::PenStyle).
                 // Clamp out-of-range values to solid: 0 is NoPen, which would
                 // silently make the stroke invisible.
@@ -2096,6 +2107,245 @@ bool PaintOpenGLWidget::playbackActive() const
     return m_playbackActive;
 }
 
+void PaintOpenGLWidget::setOnionEnabled(bool enabled)
+{
+    if (m_onionEnabled == enabled) {
+        return;
+    }
+    m_onionEnabled = enabled;
+    clearOnionCache();
+    update();
+}
+
+bool PaintOpenGLWidget::onionEnabled() const
+{
+    return m_onionEnabled;
+}
+
+void PaintOpenGLWidget::setOnionFrames(const QSet<int> &frames)
+{
+    if (m_onionFrames == frames) {
+        return;
+    }
+    m_onionFrames = frames;
+    clearOnionCache();
+    update();
+}
+
+QSet<int> PaintOpenGLWidget::onionFrames() const
+{
+    return m_onionFrames;
+}
+
+void PaintOpenGLWidget::setOnionGuideLines(bool include)
+{
+    if (m_onionGuideLines == include) {
+        return;
+    }
+    m_onionGuideLines = include;
+    clearOnionCache();
+    update();
+}
+
+bool PaintOpenGLWidget::onionGuideLines() const
+{
+    return m_onionGuideLines;
+}
+
+void PaintOpenGLWidget::setOnionExcludeProperties(const QStringList &properties)
+{
+    if (m_onionExcludeProperties == properties) {
+        return;
+    }
+    m_onionExcludeProperties = properties;
+    clearOnionCache();
+    update();
+}
+
+QStringList PaintOpenGLWidget::onionExcludeProperties() const
+{
+    return m_onionExcludeProperties;
+}
+
+void PaintOpenGLWidget::clearOnionCache()
+{
+    m_onionCache.clear();
+}
+
+void PaintOpenGLWidget::scheduleOnionCacheRefresh()
+{
+    if (!m_onionCacheTimer) {
+        m_onionCacheTimer = new QTimer(this);
+        m_onionCacheTimer->setSingleShot(true);
+        connect(m_onionCacheTimer, &QTimer::timeout, this, [this]() {
+            if (!m_onionEnabled || m_onionCache.isEmpty()) {
+                return;
+            }
+            if (qFuzzyCompare(m_zoom, m_onionCacheZoom)
+                && m_panOffset == m_onionCachePan
+                && size() == m_onionCacheSize) {
+                return;   // the view came back to what the cache already holds
+            }
+            clearOnionCache();
+            update();
+        });
+    }
+    // Restarted on every tick, so a long gesture re-renders once at its end.
+    m_onionCacheTimer->start(180);
+}
+
+QImage PaintOpenGLWidget::onionGhost(int frameIndex, bool past)
+{
+    const auto cached = m_onionCache.constFind(frameIndex);
+    if (cached != m_onionCache.constEnd() && cached->past == past) {
+        return cached->image;
+    }
+
+    if (m_onionCache.isEmpty()) {
+        // First ghost of a fresh set fixes the transform the whole set shares.
+        m_onionCachePan = m_panOffset;
+        m_onionCacheZoom = m_zoom;
+        m_onionCacheSize = size();
+    } else if (cached == m_onionCache.constEnd() && m_onionCache.size() >= kMaxOnionGhosts) {
+        // Re-tinting a frame already in the set must not evict the set: the
+        // playhead crossing one ghost would otherwise re-render all of them.
+        m_onionCache.clear();
+        m_onionCachePan = m_panOffset;
+        m_onionCacheZoom = m_zoom;
+        m_onionCacheSize = size();
+    }
+
+    const qreal ratio = devicePixelRatioF();
+    const QSize pixelSize(std::max(1, int(std::lround(m_onionCacheSize.width() * ratio))),
+                          std::max(1, int(std::lround(m_onionCacheSize.height() * ratio))));
+    QImage image(pixelSize, QImage::Format_ARGB32_Premultiplied);
+    image.setDevicePixelRatio(ratio);
+    image.fill(Qt::transparent);
+
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+    painter.translate(m_onionCachePan);
+    painter.scale(m_onionCacheZoom, m_onionCacheZoom);
+    // No page fill: a ghost is artwork, and a white ground would bury the
+    // frame it is supposed to sit under.
+    paintSceneContent(painter, frameIndex, false,
+                      m_onionGuideLines ? nullptr : &m_onionExcludeProperties);
+    // One flat tint: a ghost says WHEN, so the ink's own colours would only
+    // compete with the frame that is being drawn.
+    painter.setWorldTransform(QTransform());
+    painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    painter.fillRect(QRect(QPoint(0, 0), m_onionCacheSize),
+                     AnimeTheme::color(past ? AnimeTheme::Role::OnionPast
+                                            : AnimeTheme::Role::OnionAhead));
+    painter.end();
+
+    OnionGhostImage ghost;
+    ghost.image = image;
+    ghost.past = past;
+    m_onionCache.insert(frameIndex, ghost);
+    return ghost.image;
+}
+
+void PaintOpenGLWidget::paintOnionGhosts(QPainter &painter)
+{
+    // Playback already shows every frame in turn; ghosting on top of it would
+    // be noise, and the prerender pass has the pixels anyway.
+    if (!m_onionEnabled || m_playbackActive || m_onionFrames.isEmpty()) {
+        return;
+    }
+    if (width() <= 0 || height() <= 0) {
+        return;
+    }
+
+    const int current = m_model.currentFrame();
+    const int frameCount = m_model.frameCount();
+    QVector<int> frames;
+    frames.reserve(m_onionFrames.size());
+    for (int frame : m_onionFrames) {
+        if (frame >= 0 && frame < frameCount && frame != current) {
+            frames.append(frame);
+        }
+    }
+    if (frames.isEmpty()) {
+        return;
+    }
+    std::sort(frames.begin(), frames.end(), [current](int a, int b) {
+        return qAbs(a - current) < qAbs(b - current);
+    });
+    if (frames.size() > kMaxOnionGhosts) {
+        // Each ghost is a full-viewport image; past this many the memory
+        // costs more than the extra frames say, and the ones dropped are the
+        // faintest anyway.
+        frames.resize(kMaxOnionGhosts);
+    }
+    // Far to near, so the frame nearest the playhead lands on top.
+    std::reverse(frames.begin(), frames.end());
+
+    const bool stale = !m_onionCache.isEmpty()
+                       && (!qFuzzyCompare(m_zoom, m_onionCacheZoom)
+                           || m_panOffset != m_onionCachePan
+                           || size() != m_onionCacheSize);
+    if (stale) {
+        scheduleOnionCacheRefresh();
+    }
+
+    painter.save();
+    // The ghosts carry their own transform, so they are blitted in widget
+    // space; while the cache is stale they are re-mapped onto the current
+    // view exactly the way the playback cache is.
+    painter.setWorldTransform(QTransform());
+    const qreal scale = m_onionCacheZoom > 0.0 ? m_zoom / m_onionCacheZoom : 1.0;
+    if (stale) {
+        painter.translate(m_panOffset - m_onionCachePan * scale);
+        painter.scale(scale, scale);
+    }
+    for (int frame : frames) {
+        const QImage ghost = onionGhost(frame, frame < current);
+        if (ghost.isNull()) {
+            continue;
+        }
+        const int distance = qAbs(frame - current);
+        painter.setOpacity(std::max<qreal>(0.12, 0.42 / (1.0 + 0.35 * (distance - 1))));
+        painter.drawImage(QPointF(0.0, 0.0), ghost);
+    }
+    painter.restore();
+}
+
+QImage PaintOpenGLWidget::renderFrameThumbnail(int frameIndex, const QSize &size)
+{
+    if (size.width() <= 0 || size.height() <= 0) {
+        return QImage();
+    }
+    QImage image(size, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::white);
+    if (frameIndex < 0 || frameIndex >= m_model.frameCount()) {
+        return image;
+    }
+
+    const QRectF page = documentRect();
+    if (page.width() <= 0.0 || page.height() <= 0.0) {
+        return image;
+    }
+    const qreal scale = std::min(size.width() / page.width(), size.height() / page.height());
+
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+    painter.translate((size.width() - page.width() * scale) * 0.5,
+                      (size.height() - page.height() * scale) * 0.5);
+    painter.scale(scale, scale);
+    painter.translate(-page.topLeft());
+    // Stroke widths are floored against the magnification they will be SEEN
+    // at, and that is the thumbnail's, not the board's.
+    const qreal previousZoom = m_zoom;
+    m_zoom = scale;
+    paintSceneContent(painter, frameIndex, false);
+    m_zoom = previousZoom;
+    painter.end();
+    return image;
+}
+
 void PaintOpenGLWidget::paintGL()
 {
     QPainter painter(this);
@@ -2159,6 +2409,9 @@ void PaintOpenGLWidget::paintGL()
         painter.setPen(QPen(AnimeTheme::color(AnimeTheme::Role::Divider), 1.0 / m_zoom));
         painter.drawRect(page);
     }
+
+    // Ghosts sit on the paper and under the frame being drawn.
+    paintOnionGhosts(painter);
 
     paintSceneContent(painter, m_model.currentFrame(), true);
 

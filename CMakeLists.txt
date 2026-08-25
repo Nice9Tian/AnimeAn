@@ -83,9 +83,6 @@ set(PROJECT_SOURCES
     childrenpanel/childpaintwindow.h
     childrenpanel/forcepad.cpp
     childrenpanel/forcepad.h
-    childrenpanel/framepanel.cpp
-    childrenpanel/framepanel.h
-    childrenpanel/framepanel.ui
     childrenpanel/historypanel.cpp
     childrenpanel/historypanel.h
     childrenpanel/layerpanel.cpp
@@ -93,6 +90,8 @@ set(PROJECT_SOURCES
     childrenpanel/layerpanel.ui
     childrenpanel/newprojectdialog.cpp
     childrenpanel/newprojectdialog.h
+    childrenpanel/timelinewidget.cpp
+    childrenpanel/timelinewidget.h
     childrenpanel/toolcontrolconfig.cpp
     childrenpanel/toolcontrolconfig.h
     childrenpanel/tooloptpanel.cpp

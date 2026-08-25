@@ -5,8 +5,9 @@ what a tool WANTS to be looking at is a decision, and decisions live here. A
 name the shell does not know is a quiet no-op on purpose - a tool that asks
 for a window a future layout dropped must not take the run down with it.
 
-Window names: "tools", "tool_options", "layers", "frames", "assets",
-"history", "repulsion_pad", "python_debug".
+Window names: "tools", "tool_options", "layers", "assets", "history",
+"repulsion_pad", "python_debug". The timeline is NOT one of them: it lives
+inside the main paint view rather than in a dock, and has its own toggle.
 """
 
 

@@ -6,6 +6,7 @@
 #include <QJsonObject>
 #include <QMainWindow>
 #include <QPoint>
+#include <QSet>
 #include <QString>
 #include <QVector>
 
@@ -19,9 +20,9 @@ class ForcePadPanel;
 class HistoryPanel;
 class QAction;
 class QDockWidget;
-class FramePanel;
 class LayerPanel;
 class ParentWindow;
+class TimelineWidget;
 class ToolsPanel;
 class PaintOpenGLWidget;
 class QLineEdit;
@@ -81,7 +82,13 @@ private:
     // Rebuild the tool options panel for the current tool (the Draw Setting
     // window and the panel's Smooth slider show the same stabilizer value).
     void refreshToolOptions();
-    void refreshFpsCombo();
+    // Everything the timeline draws itself from, gathered against the view it
+    // currently follows. The single replacement for refreshFrameList and
+    // refreshFpsCombo: frame data, rate and transport state move together.
+    void refreshTimeline();
+    void createTimeline();
+    // Which stroke properties the onion pass drops, asked once at startup.
+    void pullOnionGuideProperties();
     static QVector<QTreeWidgetItem *> layerPanelItems(LayerPanel *panel);
     // Writes the panel's current shape back into the model: the layer group
     // tree follows what the user dragged, and the dragged layer's z-order
@@ -159,7 +166,6 @@ private:
     void refreshLayerList(LayerPanel *panel, PaintOpenGLWidget *view, int selectedRow);
     // Both pages, each against its own board's current selection.
     void refreshLayerLists();
-    void refreshFrameList(int selectedRow);
     void refreshAssetList(int selectedRow);
     void setPythonUiFrozen(bool frozen);
     ParentWindow *parentWindowNamed(const QString &name) const;
@@ -172,10 +178,10 @@ private:
     QVector<PaintOpenGLWidget *> m_paintViews;
     LayerPanel *m_mainLayerPanel = nullptr;
     LayerPanel *m_childLayerPanel = nullptr;
-    FramePanel *m_framePanel = nullptr;
+    TimelineWidget *m_timeline = nullptr;
+    QAction *m_timelineAction = nullptr;
     AssetPanel *m_assetPanel = nullptr;
     ParentWindow *m_layerDock = nullptr;
-    ParentWindow *m_frameDock = nullptr;
     ParentWindow *m_assetDock = nullptr;
     ParentWindow *m_toolsDock = nullptr;
     ParentWindow *m_toolOptDock = nullptr;
@@ -199,6 +205,14 @@ private:
     PaintOpenGLWidget *m_playbackView = nullptr;
     int m_playbackIndex = 0;
     int m_playbackFrameCount = 0;
+    // Loop is a SESSION preference, not a document one: it says how you want
+    // to watch, not what the animation is.
+    bool m_playbackLoop = true;
+    // Onion state belongs to the session too, and only to the main board -
+    // the child board is a texture reference, not a run of drawings.
+    bool m_onionEnabled = false;
+    bool m_onionGuideLines = false;
+    QSet<int> m_onionFrames;
     QPlainTextEdit *m_pythonDebugOutput = nullptr;
     QLineEdit *m_pythonDebugCommand = nullptr;
     // The project path stores both views; the texture path is only for the
