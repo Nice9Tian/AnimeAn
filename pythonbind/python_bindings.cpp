@@ -43,6 +43,8 @@ std::function<void(const QColor &color)> g_uiDrawColorCallback;
 std::function<void(int stabilizer, int simplify, int corner)> g_uiDrawSettingsCallback;
 std::function<void(const QString &pad, double x, double y)> g_uiPadValueCallback;
 std::function<void(const QString &view, const QString &name)> g_uiCursorCallback;
+std::function<void(const QString &view, bool on)> g_uiFillPaintModeCallback;
+std::function<void(const QString &view, const QStringList &tools)> g_uiLockedToolsCallback;
 std::function<void(const QString &op, const QString &view, const QString &label)> g_uiHistoryCallback;
 
 // Event subscription mask pushed by python_hooks (ui.set_hook_events).
@@ -1097,6 +1099,26 @@ void clearAnimeanUiCursorCallback()
     g_uiCursorCallback = nullptr;
 }
 
+void registerAnimeanUiFillPaintModeCallback(std::function<void(const QString &view, bool on)> callback)
+{
+    g_uiFillPaintModeCallback = std::move(callback);
+}
+
+void clearAnimeanUiFillPaintModeCallback()
+{
+    g_uiFillPaintModeCallback = nullptr;
+}
+
+void registerAnimeanUiLockedToolsCallback(std::function<void(const QString &view, const QStringList &tools)> callback)
+{
+    g_uiLockedToolsCallback = std::move(callback);
+}
+
+void clearAnimeanUiLockedToolsCallback()
+{
+    g_uiLockedToolsCallback = nullptr;
+}
+
 bool animeanHookEventSubscribed(const QString &event)
 {
     return !g_hookEventMaskValid || g_hookEventMask.contains(event);
@@ -1298,6 +1320,35 @@ void bindAnimeanPythonModule(py::module_ &m)
            },
            py::arg("view"),
            py::arg("name") = "");
+    ui.def("set_fill_paint_mode",
+           [](const std::string &view, bool on) {
+               // Generic: the view stops refusing the pen and eraser gestures
+               // on a Fill column, and the eraser starts rubbing out fill
+               // REGIONS under the brush. It does NOT decide what the pen's
+               // stroke becomes - the caller that turned the mode on owns that
+               // (pyfile/layer_tool_policy.py converts it on linefinish).
+               if (g_uiFillPaintModeCallback) {
+                   g_uiFillPaintModeCallback(QString::fromStdString(view), on);
+               }
+           },
+           py::arg("view"),
+           py::arg("on") = true);
+    ui.def("set_locked_tools",
+           [](const std::string &view, py::sequence tools) {
+               // Generic: the shell disables the matching tool chips and
+               // refuses to arm a locked tool, switching to Arrow when the
+               // armed one is locked out from under the user. Arrow is the
+               // escape hatch and is never refused. An empty list clears.
+               QStringList names;
+               for (py::handle handle : tools) {
+                   names.append(QString::fromStdString(py::str(handle).cast<std::string>()));
+               }
+               if (g_uiLockedToolsCallback) {
+                   g_uiLockedToolsCallback(QString::fromStdString(view), names);
+               }
+           },
+           py::arg("view"),
+           py::arg("tools"));
     ui.def("set_hook_events",
            [](py::sequence events) {
                // python_hooks pushes the set of events that currently have at

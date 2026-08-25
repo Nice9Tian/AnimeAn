@@ -119,6 +119,31 @@ QString toolControlName(PaintOpenGLWidget::Tool tool)
     return QStringLiteral("pen");
 }
 
+// The lock NAME a tool answers to. Delete Line and Cut Line are eraser
+// sub-modes chosen in the tool options, not tools of their own (the rail draws
+// ONE eraser chip for all three), so one lock covers the family - locking
+// "eraser" and leaving its two sub-modes armable would be no lock at all.
+QString toolLockName(PaintOpenGLWidget::Tool tool)
+{
+    switch (tool) {
+    case PaintOpenGLWidget::Tool::DeleteLine:
+    case PaintOpenGLWidget::Tool::CutLine:
+        return QStringLiteral("eraser");
+    default:
+        return toolControlName(tool);
+    }
+}
+
+// The tools that have a chip on the painting rail, in rail order.
+const PaintOpenGLWidget::Tool kLockableTools[] = {
+    PaintOpenGLWidget::Tool::Arrow,
+    PaintOpenGLWidget::Tool::Pen,
+    PaintOpenGLWidget::Tool::Eraser,
+    PaintOpenGLWidget::Tool::Fill,
+    PaintOpenGLWidget::Tool::Transfer,
+    PaintOpenGLWidget::Tool::Connect,
+};
+
 int frameNameToRow(const QString &frameName)
 {
     QString digits;
@@ -551,6 +576,22 @@ MainWindow::MainWindow(QWidget *parent)
         }
         target->setScriptCursor(name);
     });
+    // ui.set_fill_paint_mode(view, on): routed by view name like the cursor and
+    // overlay channels. An unknown name is a no-op rather than a guess - the
+    // mode changes what a gesture MEANS, and guessing the board would change
+    // it on the wrong one.
+    registerAnimeanUiFillPaintModeCallback([this](const QString &view, bool on) {
+        for (PaintOpenGLWidget *paintView : m_paintViews) {
+            if (paintView->viewName() == view) {
+                paintView->setFillPaintMode(on);
+                return;
+            }
+        }
+        appendPythonDebugMessage(QStringLiteral("[fill paint] unknown view '%1'").arg(view));
+    });
+    registerAnimeanUiLockedToolsCallback([this](const QString &view, const QStringList &tools) {
+        applyLockedTools(view, tools);
+    });
     registerAnimeanUiDrawColorCallback([this](const QColor &color) {
         for (PaintOpenGLWidget *paintView : m_paintViews) {
             paintView->setDrawingColor(color);
@@ -634,6 +675,8 @@ MainWindow::~MainWindow()
     m_textureFrame = nullptr;
 #ifdef ANIMEAN_WITH_PYTHON
     clearAnimeanUiHistoryCallback();
+    clearAnimeanUiLockedToolsCallback();
+    clearAnimeanUiFillPaintModeCallback();
     clearAnimeanUiDrawColorCallback();
     clearAnimeanUiOverlayCallback();
     clearAnimeanUiFreezeCallback();
@@ -2672,6 +2715,22 @@ void MainWindow::createToolDocks()
     };
 
     auto applyTool = [this, toolOptPanel, loadToolOptions](PaintOpenGLWidget::Tool tool, bool reloadOptions) {
+        // A locked tool is refused HERE as well as at the chip: the chip is
+        // only one of the ways a tool gets armed - the colour swatch arms Pen
+        // or Fill, and the eraser-mode row arms Delete Line and Cut Line - and
+        // a lock that only dimmed a chip would leave those routes open. Arrow
+        // is never refusable: it is the fallback a lock switches to, so
+        // refusing it would strand the user on a locked tool.
+        if (tool != PaintOpenGLWidget::Tool::Arrow && isToolLocked(int(tool))) {
+            // Re-assert the armed tool so a panel that already checked itself
+            // (the extra-tool buttons clear the chips on click) goes back to
+            // showing what is actually armed.
+            const PaintOpenGLWidget::Tool armed = activePaintWidget()->tool();
+            for (ToolsPanel *panel : m_toolsPanels) {
+                panel->setTool(armed);
+            }
+            return;
+        }
         for (PaintOpenGLWidget *view : m_paintViews) {
             view->setTool(tool);
             view->setStrokeProperty(QString());
@@ -2691,6 +2750,10 @@ void MainWindow::createToolDocks()
 
     auto selectTool = [applyTool](PaintOpenGLWidget::Tool tool) {
         applyTool(tool, true);
+    };
+
+    m_applyTool = [applyTool](int tool, bool reloadOptions) {
+        applyTool(static_cast<PaintOpenGLWidget::Tool>(tool), reloadOptions);
     };
 
     loadToolOptions(PaintOpenGLWidget::Tool::Pen);
@@ -2781,6 +2844,49 @@ void MainWindow::createToolDocks()
     connect(toolOptPanel, &ToolOptPanel::optionChanged, this, [this](const QString &hook, const QString &name, const QString &type, const QVariant &value, int row, int startColumn, int endColumn) {
         activePaintWidget()->sendPythonToolOptionMessage(hook, name, type, value, row, startColumn, endColumn);
     });
+}
+
+bool MainWindow::isToolLocked(int tool) const
+{
+    const PaintOpenGLWidget::Tool value = static_cast<PaintOpenGLWidget::Tool>(tool);
+    if (value == PaintOpenGLWidget::Tool::Arrow) {
+        // The escape hatch. A policy that locked Arrow too would leave the
+        // board with no armable tool at all, so the shell keeps this one.
+        return false;
+    }
+    if (!m_paintWidget) {
+        return false;
+    }
+    const QSet<QString> locked = m_lockedToolsByView.value(m_paintWidget->viewName());
+    return locked.contains(toolLockName(value));
+}
+
+void MainWindow::applyLockedTools(const QString &view, const QStringList &tools)
+{
+    QSet<QString> locked;
+    for (const QString &name : tools) {
+        const QString trimmed = name.trimmed().toLower();
+        if (!trimmed.isEmpty()) {
+            locked.insert(trimmed);
+        }
+    }
+    m_lockedToolsByView.insert(view, locked);
+
+    // Only the MAIN board's set reaches the rail: one tool is armed for the
+    // whole application, so a second board's locks could only fight the first
+    // one's. A set pushed for another view is remembered - the binding is per
+    // view and a future per-board rail would read it - not applied.
+    if (!m_paintWidget || view != m_paintWidget->viewName() || !m_paintingToolsPanel) {
+        return;
+    }
+    for (PaintOpenGLWidget::Tool tool : kLockableTools) {
+        m_paintingToolsPanel->setToolEnabled(tool, !isToolLocked(int(tool)));
+    }
+    // The armed tool may have just been locked out from under the user. Arrow
+    // is always available, so it is where the board lands.
+    if (m_applyTool && isToolLocked(int(activePaintWidget()->tool()))) {
+        m_applyTool(int(PaintOpenGLWidget::Tool::Arrow), true);
+    }
 }
 
 void MainWindow::createListDocks()

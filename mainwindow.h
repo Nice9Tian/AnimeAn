@@ -60,6 +60,13 @@ private:
     void syncEmbeddedPythonState();
     void runPythonInitializationScript();
     void createToolDocks();
+    // ui.set_locked_tools(view, [...]) landing here: remember the set, dim the
+    // matching painting chips and switch to Arrow when the armed tool has just
+    // been locked out from under the user.
+    void applyLockedTools(const QString &view, const QStringList &tools);
+    // The tool travels as its underlying int - PaintOpenGLWidget is only
+    // forward-declared in this header, like m_reloadToolOptions below.
+    bool isToolLocked(int tool) const;
     void createListDocks();
     // The texture board's panel plus the sub-control frame that can carry it.
     // Not a dock any more: the panel has three possible homes and the frame is
@@ -263,6 +270,13 @@ private:
     // PaintOpenGLWidget is only forward-declared here, so the tool travels as
     // its underlying int and the lambda casts it back.
     std::function<void(int)> m_reloadToolOptions;
+    // Arming a tool from outside the chip rail (the lock's Arrow fallback).
+    // Same int-carried-tool reason as m_reloadToolOptions.
+    std::function<void(int tool, bool reloadOptions)> m_applyTool;
+    // Locked tool NAMES per view. Kept per view because the binding is, but
+    // only the main board's set governs the rail: one tool is armed for the
+    // whole application, so two boards cannot disagree about it.
+    QHash<QString, QSet<QString>> m_lockedToolsByView;
     int m_currentToolForOptions = 0;
     int m_toolPenWidth = 5;
     bool m_toolFillAllLayers = false;

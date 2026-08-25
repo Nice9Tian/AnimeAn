@@ -525,6 +525,7 @@ NEW_LINE_LAYER_ACTION = "new_line_layer"
 NEW_FILL_LAYER_ACTION = "new_fill_layer"
 DUPLICATE_UNIT_ACTION = "duplicate_automapping_layer"
 CONVERT_UNIT_ACTION = "convert_to_automapping_layer"
+TO_EDITABLE_ACTION = "automapping_to_editable_layer"
 
 _UNIT_SETTING_DEFAULTS = {
     "show_h": True,          # H axis overlay (both boards)
@@ -9078,6 +9079,258 @@ def _create_plain_layer(view, fill=False):
         pass
 
 
+# ---------------------------------------------------------------------------
+# To Editable Layer: flatten a unit's visible output into ordinary layers
+# ---------------------------------------------------------------------------
+
+def _bake_stroke(animean, image, stroke):
+    """Copy one source stroke into `image` verbatim, as a PLAIN stroke.
+
+    Geometry survives exactly: `commands` keeps the real cubics and
+    `raw_points` is the dense flattening the model stores for hit-testing /
+    erasing, so the baked stroke is the same object the unit drew - not a
+    refit of its polyline. Only the unit-internal property is dropped: the
+    layer is an ordinary drawing now, and a stroke still reading
+    "auto_mapped" would be skipped as mapping output by the next run's
+    pattern scan and by the fill walls.
+    """
+    points = stroke.get("raw_points") or _stroke_points(stroke)
+    if len(points) < 2:
+        return False
+    commands = stroke.get("commands") or None
+    color = stroke.get("color") or {"r": 0, "g": 0, "b": 0, "a": 255}
+    width = float(stroke.get("width", 3.0))
+    if commands:
+        obj = animean.vectorlogic.make_stroke_object_from_path(
+            commands, points, color, width, image.stroke_count() + 1)
+    else:
+        obj = animean.vectorlogic.make_stroke_object(
+            points, color, width, image.stroke_count() + 1, False, False)
+    obj.property = ""
+    obj.pen_style = int(stroke.get("pen_style", 1) or 1)
+    image.add_stroke_object(obj)
+    return True
+
+
+def _bake_fill_seed(fill):
+    """A point strictly INSIDE this region, for the baked child layer.
+
+    The baked fill layer is a tracked child of the baked line layer, so its
+    regions are re-derived from their STORED seed whenever the parent's
+    lines are edited (pyfile/fill_tool.py). Mapped fills are written with no
+    seed at all - they are painter's-algorithm rings, not bucket fills - and
+    a region left at the default (0, 0) would re-trace to whatever shape
+    happens to contain the canvas origin. Deriving a real interior point is
+    therefore part of the bake, not a nicety.
+    """
+    polygons = [ring for ring in _path_commands_to_polygons(fill.get("commands"))
+                if len(ring) >= 3]
+    if polygons:
+        return _ring_interior_point(max(polygons, key=len))
+    bounds = fill.get("bounds") or {}
+    return (float(bounds.get("x", 0.0)) + float(bounds.get("width", 0.0)) * 0.5,
+            float(bounds.get("y", 0.0)) + float(bounds.get("height", 0.0)) * 0.5)
+
+
+def _bake_fill(image, fill):
+    """Copy one source fill region into the baked FILL layer.
+
+    based_on_all_layers=True for the same reason the run writes it that way:
+    removeInvalidFillRegions() drops any region whose single source column is
+    gone, and the unit's columns are about to be deleted.
+    """
+    commands = fill.get("commands") or []
+    if not commands:
+        return False
+    color = fill.get("color") or {"r": 0, "g": 0, "b": 0, "a": 255}
+    image.add_fill_region(commands, color, "", _bake_fill_seed(fill), -1, True)
+    return True
+
+
+def _unit_row_name(scene, uid, fallback=""):
+    """The unit row's panel name, which the baked layers are named after."""
+    name = (fallback or "").strip()
+    if name:
+        return name
+    try:
+        gid = int(uid)
+    except (TypeError, ValueError):
+        return UNIT_LAYER_TITLE
+
+    def walk(nodes):
+        for node in nodes or []:
+            if not isinstance(node, dict):
+                continue
+            if int(node.get("group") or 0) == gid:
+                return (node.get("name") or "").strip()
+            found = walk(node.get("children"))
+            if found:
+                return found
+        return ""
+
+    try:
+        name = walk(scene.layer_tree())
+    except (AttributeError, TypeError, ValueError):
+        name = ""
+    return name or UNIT_LAYER_TITLE
+
+
+def _bake_unit_to_layers(scene, uid, group_name=""):
+    """To Editable Layer: flatten this unit's VISIBLE output into one plain
+    vector layer plus one tracked fill layer, then dissolve the unit.
+
+    The member registry is the authority on what belongs to the unit (never
+    the drifting layer names), and per-member VISIBILITY is the unit's only
+    real show/hide axis - a hidden front/back/crease role is not part of what
+    the user sees, so it is not part of the bake.
+
+    Copy order is PAINT order, not stack order: paintSceneContent draws the
+    columns from the last index down to 0 (index 0 ends up on top) and, within
+    one image, all fills then all strokes in insertion order (later on top).
+    The unit stacks depth 0 at the TOP, so the flattening has to append the
+    DEEPEST member first and the front member last - i.e. iterate the members
+    by DESCENDING column index, which is exactly the renderer's own loop.
+    KNOWN LIMIT (inherited from _MappedOutput): one image paints every fill
+    under every stroke, so a nearer depth's colour can no longer cover a
+    deeper depth's lines. The bake accepts that by construction - the fills
+    move to their own child layer, which sits directly BELOW the line layer.
+
+    Returns (line layer id, fill layer id), or None when nothing was baked.
+    """
+    meta = _UNIT_META.get(uid)
+    if not meta:
+        print("[auto_mapping] To Editable Layer: that group is not an "
+              "automapping layer.")
+        return None
+    row = max(scene.current_frame(), 0)
+
+    members = []       # (index, stable id) for every RECORDED member still alive
+    for lid in (meta.get("members") or {}):
+        try:
+            lid_int = int(lid)
+        except (TypeError, ValueError):
+            continue
+        index = scene.layer_index_for_id(lid_int)
+        if index >= 0:
+            members.append((index, lid_int))
+    members.sort()
+
+    strokes = []
+    fills = []
+    hidden = 0
+    for index, _lid in sorted(members, reverse=True):   # deepest first
+        if not scene.layer_visible(index):
+            hidden += 1
+            continue
+        image = scene.cell_strokes(index, row, False, POLY_STEP)
+        strokes.extend(image.get("strokes") or [])
+        fills.extend(image.get("fills") or [])
+    if not strokes and not fills:
+        print("[auto_mapping] To Editable Layer: this automapping layer has "
+              "no visible content on this frame; nothing baked.")
+        return None
+
+    animean = _animean()
+    name = _unit_row_name(scene, uid, group_name)
+    baked = 0
+    _RUN_GUARD["depth"] += 1
+    try:
+        vector_index = scene.add_layer()
+        if vector_index is None or vector_index < 0:
+            print("[auto_mapping] To Editable Layer: could not create the "
+                  "line layer.")
+            return None
+        scene.set_layer_name(vector_index, f"{name} lines")
+        fill_index = scene.add_fill_layer()
+        if fill_index is None or fill_index < 0:
+            _discard_mapped_layer(scene, vector_index)
+            print("[auto_mapping] To Editable Layer: could not create the "
+                  "fill layer.")
+            return None
+        scene.set_layer_name(fill_index, f"{name} fill")
+        vector_id = scene.layer_id_at(vector_index)
+        fill_id = scene.layer_id_at(fill_index)
+        try:
+            # The fills TRACK the baked lines (and the panel nests their row
+            # under the line row): the same child relation a bucket fill gets
+            # when it is born from one line layer's topology.
+            scene.set_layer_parent_id(fill_index, vector_id)
+        except Exception as error:
+            print(f"[auto_mapping] baked fills are not tracked: {error}")
+
+        image = scene.image_at(row, vector_index, True)
+        if image is not None:
+            for item in strokes:
+                baked += 1 if _bake_stroke(animean, image, item) else 0
+        image = scene.image_at(row, fill_index, True, "fill")
+        if image is not None:
+            for item in fills:
+                baked += 1 if _bake_fill(image, item) else 0
+
+        # Retire the unit the way a re-run retires its old output: by stable
+        # id, resolved one at a time (every delete renumbers the columns after
+        # it), and only layers the unit RECORDED as its own - a layer the user
+        # dragged into the group by hand survives the dissolve.
+        for _index, lid in members:
+            index = scene.layer_index_for_id(lid)
+            if index >= 0:
+                _discard_mapped_layer(scene, index)
+        try:
+            scene.dissolve_layer_group(int(uid))
+        except (AttributeError, TypeError, ValueError):
+            pass
+
+        # add_layer appends at the BOTTOM: move the pair up to where the unit
+        # row was. The count of layers ABOVE the unit's topmost member is
+        # invariant under deleting members, so that index is still the slot.
+        target = members[0][0] if members else 0
+        for lid, slot in ((vector_id, target), (fill_id, target + 1)):
+            index = scene.layer_index_for_id(lid)
+            slot = max(0, min(slot, scene.layer_count() - 1))
+            if index >= 0 and index != slot and scene.move_layer(index, slot):
+                scene.remap_fill_source_layers_after_move(index, slot)
+
+        _UNIT_META.pop(uid, None)
+        for store_view in ("main", "child"):
+            _UNIT_ASSETS.get(store_view, {}).pop(uid, None)
+        if _SETTINGS_TARGET["unit"] == uid:
+            _SETTINGS_TARGET["unit"] = None
+        _save_units("main")
+        _save_units("child")
+
+        index = scene.layer_index_for_id(vector_id)
+        if index >= 0:
+            try:
+                # Directly on the main model, never ui.set_current (that one
+                # writes whichever view is active).
+                scene.set_current_layer(index)
+            except Exception:
+                pass
+        # The guard swallows the layerchange echo, so focus is re-derived
+        # here: the baked layer belongs to no unit, which retires the
+        # dissolved unit's overlays without stranding another unit's.
+        if index >= 0:
+            _activate_unit(_unit_for_layer(scene, index))
+        elif _ACTIVE_UNIT["id"] == uid:
+            _activate_unit(None)
+    finally:
+        _RUN_GUARD["depth"] -= 1
+
+    try:
+        animean.ui.refresh()
+        animean.ui.history_commit("To Editable Layer", "main")
+        # The child scene's scriptData lost this unit's assets: without its
+        # own entry that half would ride the next unrelated texture-board
+        # commit (the rule _create_unit follows for the same reason).
+        animean.ui.history_commit("To Editable Layer", "child")
+    except Exception:
+        pass
+    print(f"[auto_mapping] '{name}' baked into '{name} lines' + '{name} fill' "
+          f"({baked} item(s) from {len(members) - hidden} visible member(s)"
+          + (f", {hidden} hidden member(s) dropped" if hidden else "") + ").")
+    return (vector_id, fill_id)
+
+
 def _unit_from_menu_message(scene, message):
     """Resolve which unit a layer-menu action targets."""
     group = int(message.get("group") or 0)
@@ -9118,6 +9371,8 @@ def _layer_menu_items(context):
                       "kind": "settings", "settings": UNIT_SETTINGS_NAME})
         items.append({"name": DUPLICATE_UNIT_ACTION,
                       "title": f"Duplicate {UNIT_LAYER_TITLE}"})
+        items.append({"name": TO_EDITABLE_ACTION,
+                      "title": "To Editable Layer"})
         items.append({"kind": "separator", "name": "-"})
     elif (context.get("kind") == "group" and view == "main"
           and context.get("tag") != UNIT_TAG):
@@ -9155,6 +9410,16 @@ def _layer_menu_action(message):
         uid = _unit_from_menu_message(scene, message)
         if uid:
             _duplicate_unit(uid)
+        return
+    if action == TO_EDITABLE_ACTION:
+        try:
+            scene = _scene_model("main")
+        except Exception as error:
+            print(f"[auto_mapping] bake skipped: {error}")
+            return
+        uid = _unit_from_menu_message(scene, message)
+        if uid:
+            _bake_unit_to_layers(scene, uid, message.get("group_name") or "")
         return
     if action == CONVERT_UNIT_ACTION:
         gid = int(message.get("group") or 0)

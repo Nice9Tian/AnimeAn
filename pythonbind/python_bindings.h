@@ -93,6 +93,20 @@ void clearAnimeanUiPadValueCallback();
 void registerAnimeanUiCursorCallback(std::function<void(const QString &view, const QString &name)> callback);
 void clearAnimeanUiCursorCallback();
 
+// Fill-paint mode for one view (ui.set_fill_paint_mode). The view knows how to
+// relax its Fill-column gesture ban and what the eraser then rubs out; WHICH
+// board deserves the mode - and what the pen's stroke is turned into
+// afterwards - is policy and lives in pyfile/layer_tool_policy.py.
+void registerAnimeanUiFillPaintModeCallback(std::function<void(const QString &view, bool on)> callback);
+void clearAnimeanUiFillPaintModeCallback();
+
+// Tools the shell must refuse for one view (ui.set_locked_tools). The names
+// are the built-in tool strings ("pen", "eraser", "fill", "connect",
+// "transfer", "arrow"); an empty list clears. C++ owns disabling the chips and
+// refusing the arm, Python owns which layer forbids what.
+void registerAnimeanUiLockedToolsCallback(std::function<void(const QString &view, const QStringList &tools)> callback);
+void clearAnimeanUiLockedToolsCallback();
+
 // The active theme mode ("dark" / "light"), mirrored for Python to read back
 // through animean_python.ui.theme(). C++ pushes it whenever the theme is
 // applied; there is no setter on the Python side - a script asks what the app

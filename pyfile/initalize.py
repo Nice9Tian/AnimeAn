@@ -31,6 +31,9 @@ PYTHON_FILE_MODULES = (
     "fukusato_workflow",
     "repulsion_tool",
     "fill_tool",
+    # After window_manager (it asks for the Tools page by name) and after
+    # fill_tool, whose parenting decides what a fill layer's kind is.
+    "layer_tool_policy",
     "visibility_tool",
     "linefinish",
     "hello_world",

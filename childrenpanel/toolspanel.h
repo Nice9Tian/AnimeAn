@@ -40,6 +40,11 @@ public:
     // Silent by design: the shell echoes the armed tool back into every panel,
     // and a chip that re-emitted on that echo would loop.
     void setChecked(bool checked);
+    // Disabled = the tool is locked out on the current layer. Qt already stops
+    // delivering mouse events to a disabled widget, so this only has to drop
+    // the hover/press state the chip was holding when the lock arrived and
+    // repaint dim.
+    void setChipEnabled(bool enabled);
 
 signals:
     void clicked();
@@ -82,6 +87,10 @@ public:
     ~ToolsPanel();
 
     void setTool(PaintOpenGLWidget::Tool tool);
+    // Locks (or releases) one built-in tool's chip. The shell owns the lock
+    // set; the panel only knows how to show one. Pages without built-ins and
+    // the extra text buttons are untouched.
+    void setToolEnabled(PaintOpenGLWidget::Tool tool, bool enabled);
     // Drops every check in this instance. The shell calls it on the pages that
     // did NOT make the selection, because exclusivity now spans three panels.
     void clearSelection();

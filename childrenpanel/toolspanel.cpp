@@ -274,13 +274,34 @@ void ToolChip::setChecked(bool checked)
     update();
 }
 
+void ToolChip::setChipEnabled(bool enabled)
+{
+    if (isEnabled() == enabled) {
+        return;
+    }
+    if (!enabled) {
+        // A chip disabled with the pointer on it gets no leaveEvent, so it
+        // would keep painting hovered under the dim branch's nose.
+        m_hovered = false;
+        m_pressed = false;
+    }
+    setEnabled(enabled);
+    update();
+}
+
 void ToolChip::paintEvent(QPaintEvent *event)
 {
     Q_UNUSED(event);
 
     QColor ground;
     QColor ink;
-    if (m_checked) {
+    if (!isEnabled()) {
+        // Locked: the resting ground with dimmed ink. Checked loses to this on
+        // purpose - a locked chip is never the armed tool (the shell switches
+        // to Arrow), and painting it accented would say otherwise.
+        ground = AnimeTheme::color(AnimeTheme::Role::ChipRest);
+        ink = AnimeTheme::color(AnimeTheme::Role::TextDim);
+    } else if (m_checked) {
         ground = AnimeTheme::color(m_pressed ? AnimeTheme::Role::AccentActive
                                              : AnimeTheme::Role::Accent);
         // The armed glyph rides on the accent fill. ChipHoverFg is the near
@@ -508,6 +529,15 @@ void ToolsPanel::setTool(PaintOpenGLWidget::Tool tool)
         if (button) {
             const QSignalBlocker blocker(button);
             button->setChecked(false);
+        }
+    }
+}
+
+void ToolsPanel::setToolEnabled(PaintOpenGLWidget::Tool tool, bool enabled)
+{
+    for (int index = 0; index < m_chips.size(); ++index) {
+        if (m_chipTools.at(index) == tool) {
+            m_chips[index]->setChipEnabled(enabled);
         }
     }
 }
