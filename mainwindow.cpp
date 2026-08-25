@@ -1405,9 +1405,10 @@ void MainWindow::autoFitTextureControlView()
     if (m_textureViewControl.autoFitSuspended) {
         return;
     }
-    // COVER, not contain: the reference fills the frame and the longer axis
-    // runs off the edges, so the panel row never shows a band of empty paper.
-    if (!m_childPaintWidget->fitViewToContent(true)) {
+    // CONTAIN: the content's LONG side fits the frame exactly, so the whole
+    // reference is always visible; the short axis keeps a margin instead of
+    // running off the edges. (User-chosen over cover after trying both.)
+    if (!m_childPaintWidget->fitViewToContent(false)) {
         return;
     }
     // Remember what the fit chose, so the next arrival here has something to
