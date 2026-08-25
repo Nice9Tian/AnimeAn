@@ -31,6 +31,11 @@ public:
     // Take the frame in. The host owns the placement; the frame has already
     // left wherever it was.
     virtual void embedSubControl(SubControlFrame *frame) = 0;
+    // Bring an already-embedded frame to where it can be seen. Only a host
+    // that can HIDE a frame it still owns has anything to do here (a stacked
+    // page has to be selected first), which is why it is not pure: a host that
+    // shows everything it holds is already done.
+    virtual void revealSubControl(SubControlFrame *frame);
 };
 
 // The one place a frame is looked up by name and a host is found by position.
@@ -195,6 +200,11 @@ private:
     // last parented to.
     QPointer<QWidget> m_preview;
     SubControlHost *m_host = nullptr;
+    // Where the frame would go BACK to. Separate from m_host because floating
+    // means having no host, and the dock affordance still has to answer "back
+    // to where". Cleared only by park(), which is the user saying "put it
+    // away" rather than "take it out".
+    SubControlHost *m_lastHost = nullptr;
     Placement m_placement = Placement::Parked;
     QRect m_floatGeometry;
     QPoint m_dragGrab;      // cursor offset inside the frame when the drag began

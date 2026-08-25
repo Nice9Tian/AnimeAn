@@ -73,6 +73,27 @@ def _layer_info(structure, index):
     return None
 
 
+def _tracked_fill_layer(structure, parent_id):
+    """Index of the fill layer that already TRACKS `parent_id`, or -1.
+
+    The first one in panel order: more than one tracked child on a line layer
+    is a state only a hand-built document reaches, and picking the first keeps
+    a click deterministic. A locked child is not offered - a fill must refuse
+    the same way it does on a locked current layer.
+    """
+    if not parent_id:
+        return -1
+    for layer in structure.get("layers") or []:
+        if (layer.get("type") or "") != "fill":
+            continue
+        if int(layer.get("parent_layer_id") or 0) != parent_id:
+            continue
+        if layer.get("locked") or layer.get("internal"):
+            continue
+        return int(layer["index"])
+    return -1
+
+
 def _region_path(scene, frame, seed, bounds, layer_index):
     """Path COMMANDS of the region around the seed, or None when the seed
     sits in an open area. Swap this out for fuzzy fill later."""
@@ -165,9 +186,20 @@ def _run_fill(scene, structure, frame, message):
 
     target_layer = original_layer
     created_layer = False
+    tracked = False
     if not original_is_fill:
-        target_layer = scene.add_fill_layer()
-        created_layer = True
+        # The fill layer this line layer ALREADY owns is where the next click
+        # belongs. The board goes back to the line layer below, so without
+        # this every click would stack another fill column beside the last.
+        # Only a layer that tracks this one qualifies: an unrelated fill layer
+        # is the user's, not ours to write into.
+        target_layer = (_tracked_fill_layer(structure, scene.layer_id_at(source_layer))
+                        if source_layer >= 0 else -1)
+        if target_layer >= 0:
+            tracked = True
+        else:
+            target_layer = scene.add_fill_layer()
+            created_layer = True
     if target_layer < 0:
         return
     scene.set_current_layer(target_layer)
@@ -180,6 +212,7 @@ def _run_fill(scene, structure, frame, message):
         # a click must never silently re-home an existing layer.
         try:
             scene.set_layer_parent_id(target_layer, scene.layer_id_at(source_layer))
+            tracked = True
         except Exception as error:
             # Never at the cost of the fill itself: the region below is the
             # artwork, the parent link is only how it keeps up.
@@ -218,6 +251,14 @@ def _run_fill(scene, structure, frame, message):
             source_layer_index=source_layer,
             based_on_all_layers=all_layers,
         )
+
+    if tracked and original_layer >= 0:
+        # Back to the layer the user was ON. They filled FROM the line layer
+        # and go on working there; the fill has already landed on the child
+        # either way. Leaving the board on a tracked child would hand the next
+        # gesture a layer whose drawing tools the layer policy locks - one
+        # fill click would end the drawing session.
+        scene.set_current_layer(original_layer)
 
     # Observers see where the fill LANDED, matching the C++ path (which
     # reads the model after fillAt has switched to the target layer).
@@ -368,9 +409,29 @@ def _fill_menu_action(message):
     # Only the link goes: the regions stay exactly as they are drawn, which
     # is the whole point of "keep the artwork, stop following".
     scene.set_layer_parent_id(layer, 0)
+    _repush_tool_policy(scene, view, layer)
     animean = _animean()
     animean.ui.layer.refresh()
     animean.ui.history_commit("To Independent Layer", view)
+
+
+def _repush_tool_policy(scene, view, layer):
+    """The layer's KIND changed while it stayed the current one.
+
+    Nothing will dispatch a layerchange for that - the board's notified layer
+    never moved - so the tool policy would keep enforcing the tracked-child
+    locks on a layer that is now independent. Only for the current row: the
+    menu can be raised on any row, and the released one is usually but not
+    always the one the board is on.
+    """
+    try:
+        if scene.current_layer() != layer:
+            return
+        import layer_tool_policy
+
+        layer_tool_policy.reevaluate(view)
+    except Exception as error:
+        print(f"[fill] tool policy not re-evaluated: {error}")
 
 
 def register_hooks():

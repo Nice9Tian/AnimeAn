@@ -211,17 +211,27 @@ def fill_message(scope="current", seed=(10.0, 10.0)):
 
 
 # 1) AUTO-PARENT: a Current-scope fill that has to create its own fill layer
-#    parents that layer to the line layer whose topology bounded it.
+#    parents that layer to the line layer whose topology bounded it - and
+#    leaves the board on the LINE layer, which is where the user is working.
+#    Ending on the auto-created child would hand the next click a layer whose
+#    drawing tools the layer policy locks.
 scene, ui = fresh_world()
 line = scene.add_layer()
 scene.set_current_layer(line)
 ft._fill_request({}, {}, fill_message("current"))
-assert scene.current_layer() == 1, "the fill did not land on a new fill layer"
 assert scene.columns[1]["type"] == "fill"
+assert scene.images[scene.layer_id_at(1)].fills, "the fill did not land on the new layer"
+assert scene.current_layer() == line, \
+    "a fill click left the board on the auto-created child layer"
 assert scene.layer_parent_id(1) == scene.layer_id_at(line), \
     "a current-scope fill did not track its source line layer"
 assert scene.child_layer_indices(line) == [1]
 assert ui.commits == [("Fill", "main")]
+
+# A second click in the same session still works on the same pair rather than
+# spawning another fill layer - the board never left the line layer.
+ft._fill_request({}, {}, fill_message("current", seed=(20.0, 20.0)))
+assert len(scene.columns) == 2, "a repeated fill stacked a second fill layer"
 
 # 2) SCOPE ALL: no single source to follow, so the new layer stays independent.
 scene, ui = fresh_world()
@@ -364,6 +374,39 @@ ui.commits.clear()
 ft._fill_menu_action({"event": "layermenu", "view": "main",
                       "action": "new_line_layer", "layer": line})
 assert ui.commits == [], "fill_tool answered another module's menu action"
+
+# 7b) The release re-pushes the TOOL POLICY when the released row is the one
+#     the board is on: the current layer never moves, so no layerchange will
+#     be dispatched and the tracked-child locks would otherwise stand.
+scene, ui = fresh_world()
+line = scene.add_layer()
+child = scene.add_fill_layer()
+scene.set_layer_parent_id(child, scene.layer_id_at(line))
+scene.set_current_layer(child)
+policy_calls = []
+stub_policy = types.ModuleType("layer_tool_policy")
+stub_policy.reevaluate = lambda view=None: policy_calls.append(view)
+saved_policy = sys.modules.get("layer_tool_policy")
+sys.modules["layer_tool_policy"] = stub_policy
+try:
+    ft._fill_menu_action({"event": "layermenu", "view": "main",
+                          "action": ft.TO_INDEPENDENT_ACTION, "layer": child})
+    assert policy_calls == ["main"], policy_calls
+
+    # A row that is NOT the current layer leaves the policy alone: the board
+    # is elsewhere and its verdict is still the right one.
+    policy_calls.clear()
+    other = scene.add_fill_layer()
+    scene.set_layer_parent_id(other, scene.layer_id_at(line))
+    ft._fill_menu_action({"event": "layermenu", "view": "main",
+                          "action": ft.TO_INDEPENDENT_ACTION, "layer": other})
+    assert scene.layer_parent_id(other) == 0, "the release skipped a non-current row"
+    assert policy_calls == [], "a non-current row re-pushed the policy"
+finally:
+    if saved_policy is None:
+        sys.modules.pop("layer_tool_policy", None)
+    else:
+        sys.modules["layer_tool_policy"] = saved_policy
 
 # 8) The hooks are actually registered for the events the policy needs.
 events = set()

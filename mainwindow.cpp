@@ -1637,8 +1637,11 @@ void MainWindow::showTextureSubControl()
     }
 }
 
-void MainWindow::ensureTextureBoardMapped()
+void MainWindow::ensureTextureBoardMapped(TextureMappingRestore *restore)
 {
+    if (restore) {
+        *restore = TextureMappingRestore();
+    }
     if (!m_childPaintWidget) {
         return;
     }
@@ -1648,12 +1651,35 @@ void MainWindow::ensureTextureBoardMapped()
     // Parked or behind another tab: it has to be on screen before
     // grabFramebuffer has anything to return.
     if (m_textureFrame && m_textureFrame->isLive()) {
+        // Surfacing the frame shows and raises it; nothing about the workspace
+        // the user chose moves, so there is nothing to give back.
         m_textureFrame->surface();
-    } else if (m_centralArea) {
+    } else if (m_centralArea && m_centralArea->currentPage() != QStringLiteral("texture")) {
+        // Selecting the central page ALSO re-targets the active view (through
+        // pageChanged), which a read-only caller never asked for: what it
+        // displaced is reported back so the caller can put both halves.
+        if (restore) {
+            restore->centralPage = m_centralArea->currentPage();
+            restore->activeView = activePaintWidget();
+        }
         m_centralArea->selectPage(QStringLiteral("texture"));
     }
     updateTextureHome();
     QCoreApplication::processEvents();
+}
+
+void MainWindow::restoreTextureBoardMapping(const TextureMappingRestore &restore)
+{
+    if (restore.centralPage.isEmpty()) {
+        return;
+    }
+    if (m_centralArea) {
+        m_centralArea->selectPage(restore.centralPage);
+    }
+    if (restore.activeView) {
+        setActivePaintView(restore.activeView);
+    }
+    updateTextureHome();
 }
 
 void MainWindow::openTextureView()
@@ -1878,7 +1904,8 @@ bool MainWindow::exportTextureImage()
     // is the common case and costs nothing. The active-view border is UI
     // chrome — hide it during the grab so it is not baked into the exported
     // image.
-    ensureTextureBoardMapped();
+    TextureMappingRestore mapping;
+    ensureTextureBoardMapped(&mapping);
     m_childPaintWidget->setActiveIndicator(false);
     // The Background choice is a VIEWING aid, so it is suppressed for the
     // grab the same way the active-view border is. A black board would tint
@@ -1891,6 +1918,9 @@ bool MainWindow::exportTextureImage()
     QCoreApplication::processEvents();
     const QImage image = m_childPaintWidget->grabFramebuffer();
     m_childPaintWidget->setBackgroundMode(savedBackground);
+    // Before every return below, indicator included: the workspace goes back
+    // whether the export succeeded, failed or was cancelled at the dialog.
+    restoreTextureBoardMapping(mapping);
     m_childPaintWidget->setActiveIndicator(activePaintWidget() == m_childPaintWidget);
     if (image.isNull()) {
         QMessageBox::warning(this,
@@ -1994,6 +2024,9 @@ void MainWindow::setActivePaintView(PaintOpenGLWidget *view)
     refreshPanelTargets();
     scheduleHistoryRefresh();
     syncEmbeddedPythonState();
+    // The rail is enforced against the board the next gesture lands on, and
+    // that board just changed.
+    refreshToolLockState();
     if (m_forcePadDock) {
         // The pad acts on the active view; say so where the user is looking.
         m_forcePadDock->setWindowTitle(QStringLiteral("Repulsion Pad - %1").arg(view->viewName()));
@@ -2854,10 +2887,15 @@ bool MainWindow::isToolLocked(int tool) const
         // board with no armable tool at all, so the shell keeps this one.
         return false;
     }
-    if (!m_paintWidget) {
+    PaintOpenGLWidget *view = activePaintWidget();
+    if (!view) {
         return false;
     }
-    const QSet<QString> locked = m_lockedToolsByView.value(m_paintWidget->viewName());
+    // The set belongs to the board the gesture will LAND on, not to the main
+    // board: a lock pushed for the drawing document must not follow the user
+    // onto the texture board, which has no lock set of its own and is
+    // therefore unrestricted.
+    const QSet<QString> locked = m_lockedToolsByView.value(view->viewName());
     return locked.contains(toolLockName(value));
 }
 
@@ -2871,12 +2909,18 @@ void MainWindow::applyLockedTools(const QString &view, const QStringList &tools)
         }
     }
     m_lockedToolsByView.insert(view, locked);
+    // A set pushed for a board the user is not on is remembered rather than
+    // applied; refreshToolLockState reads whichever set the ACTIVE board has.
+    refreshToolLockState();
+}
 
-    // Only the MAIN board's set reaches the rail: one tool is armed for the
-    // whole application, so a second board's locks could only fight the first
-    // one's. A set pushed for another view is remembered - the binding is per
-    // view and a future per-board rail would read it - not applied.
-    if (!m_paintWidget || view != m_paintWidget->viewName() || !m_paintingToolsPanel) {
+void MainWindow::refreshToolLockState()
+{
+    // One rail for the whole application, so it shows the active board's set.
+    // Called on both edges of the question: a new set arriving, and the active
+    // board changing under the set already stored.
+    PaintOpenGLWidget *view = activePaintWidget();
+    if (!m_paintingToolsPanel || !view) {
         return;
     }
     for (PaintOpenGLWidget::Tool tool : kLockableTools) {
@@ -2884,7 +2928,7 @@ void MainWindow::applyLockedTools(const QString &view, const QStringList &tools)
     }
     // The armed tool may have just been locked out from under the user. Arrow
     // is always available, so it is where the board lands.
-    if (m_applyTool && isToolLocked(int(activePaintWidget()->tool()))) {
+    if (m_applyTool && isToolLocked(int(view->tool()))) {
         m_applyTool(int(PaintOpenGLWidget::Tool::Arrow), true);
     }
 }
@@ -3855,6 +3899,13 @@ void MainWindow::applyLayerPanelStructure(LayerPanel *panel, PaintOpenGLWidget *
     // Capture the widget as a node tree BEFORE touching the columns. Leaves
     // are recorded by stable column id, so the reorder below - which shifts
     // every index after it - cannot invalidate what we captured.
+    //
+    // Rows a LEAF hosts (a layer nested under the one it tracks) are collected
+    // OUT of the recursion instead of being written next to their parent:
+    // appending them where the leaf sits would put them inside whatever group
+    // the leaf is in, making group membership follow a parent link the user
+    // never dragged. They are put back below, each in its own container.
+    QVector<AnimeLayerNode> hosted;
     std::function<QVector<AnimeLayerNode>(QTreeWidgetItem *)> capture =
         [&](QTreeWidgetItem *parent) {
         QVector<AnimeLayerNode> nodes;
@@ -3884,18 +3935,64 @@ void MainWindow::applyLayerPanelStructure(LayerPanel *panel, PaintOpenGLWidget *
                 nodes.append(node);
                 // A leaf can now HOLD rows: the panel nests a layer under the
                 // one it tracks. That nesting is a column property, so it is
-                // captured FLAT, at this level, never as tree children - a
-                // leaf has nowhere to put children in the model or the file
-                // format, and normalizeLayerTree would re-adopt them to the
-                // top level on the very next read.
-                nodes.append(capture(item));
+                // captured FLAT, never as tree children - a leaf has nowhere
+                // to put children in the model or the file format, and
+                // normalizeLayerTree would re-adopt them to the top level on
+                // the very next read.
+                hosted.append(capture(item));
                 continue;
             }
             nodes.append(node);
         }
         return nodes;
     };
-    const QVector<AnimeLayerNode> captured = capture(nullptr);
+    QVector<AnimeLayerNode> captured = capture(nullptr);
+
+    // Each hosted row goes back to the container it was in BEFORE the drag,
+    // re-read from the model's own tree by column id: the panel stopped
+    // showing that container the moment the row was nested under its parent,
+    // so the widget cannot answer for it. Top level when it had none, or when
+    // the group it was in no longer has rows in the panel.
+    if (!hosted.isEmpty()) {
+        QHash<int, int> groupForLayer;
+        std::function<void(const QVector<AnimeLayerNode> &, int)> readGroups =
+            [&](const QVector<AnimeLayerNode> &nodes, int groupId) {
+            for (const AnimeLayerNode &node : nodes) {
+                if (node.isGroup()) {
+                    readGroups(node.children, node.groupId);
+                } else {
+                    groupForLayer.insert(node.layerId, groupId);
+                }
+            }
+        };
+        readGroups(model.layerTree(), 0);
+
+        std::function<AnimeLayerNode *(QVector<AnimeLayerNode> &, int)> findGroup =
+            [&](QVector<AnimeLayerNode> &nodes, int groupId) -> AnimeLayerNode * {
+            for (AnimeLayerNode &node : nodes) {
+                if (!node.isGroup()) {
+                    continue;
+                }
+                if (node.groupId == groupId) {
+                    return &node;
+                }
+                if (AnimeLayerNode *found = findGroup(node.children, groupId)) {
+                    return found;
+                }
+            }
+            return nullptr;
+        };
+
+        for (const AnimeLayerNode &node : hosted) {
+            const int groupId = groupForLayer.value(node.layerId, 0);
+            AnimeLayerNode *group = groupId > 0 ? findGroup(captured, groupId) : nullptr;
+            if (group) {
+                group->children.append(node);
+            } else {
+                captured.append(node);
+            }
+        }
+    }
 
     // Z-order follows the panel: the dragged layer lands right after the leaf
     // shown above it, exactly as the flat list behaved. The item is re-found
@@ -3923,9 +4020,40 @@ void MainWindow::applyLayerPanelStructure(LayerPanel *panel, PaintOpenGLWidget *
         if (fromIndex < toIndex) {
             --toIndex;
         }
+        // The rows the panel drew NESTED under the dragged one, by stable id:
+        // the widget moved them along with their parent, and leaving their
+        // columns behind would silently re-stack the drawing (a tracked fill
+        // stranded at index 0 paints over the art it belongs to).
+        QVector<int> childIds;
+        for (int childIndex : model.childLayerIndices(fromIndex)) {
+            childIds.append(model.layerIdAt(childIndex));
+        }
+
         if (position >= 0 && fromIndex != toIndex && model.moveLayer(fromIndex, toIndex)) {
             model.remapFillSourceLayersAfterMove(fromIndex, toIndex);
             landedOn = toIndex;
+
+            // One move each, in panel order, so the children keep theirs. Both
+            // ends are re-resolved per move because every move shifts the
+            // indices between them - the anchor's included.
+            int anchorId = movedColumnId;
+            for (int childId : childIds) {
+                const int anchorIndex = model.layerIndexForId(anchorId);
+                const int childIndex = model.layerIndexForId(childId);
+                if (anchorIndex < 0 || childIndex < 0) {
+                    continue;
+                }
+                // takeAt+insert: a column coming from BELOW the anchor drags
+                // the anchor down one on the way out, so the slot right after
+                // it is the anchor's own index.
+                const int target = childIndex < anchorIndex ? anchorIndex : anchorIndex + 1;
+                if (childIndex != target && model.moveLayer(childIndex, target)) {
+                    model.remapFillSourceLayersAfterMove(childIndex, target);
+                }
+                anchorId = childId;
+            }
+            // The children may have pushed the dragged column along.
+            landedOn = model.layerIndexForId(movedColumnId);
         }
     }
 

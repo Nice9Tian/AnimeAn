@@ -313,9 +313,18 @@ signals:
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
     void changeEvent(QEvent *event) override;
+    // QDockWidget emits nothing when an already-floating dock is dragged or
+    // resized in place, so these two are the only record of where the user
+    // left a floating timeline.
+    void moveEvent(QMoveEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
 
 private:
     void handleCommand(TimelineCommand command);
+    // Records the current rect as the float geometry and schedules the write.
+    // Deferred because a drag delivers one move event per mouse step and the
+    // settings file is not a per-pixel journal.
+    void rememberFloatGeometry();
     // Re-homes the transport and the title bar for the current dock area, and
     // shows or hides the strip for the collapsed flag.
     void applyLayout();
@@ -354,6 +363,8 @@ private:
     bool m_restoreVisible = true;
     bool m_applyingLayout = false;
     bool m_restoring = false;
+    // A write is already queued for the geometry the drag is still changing.
+    bool m_floatGeometryQueued = false;
 };
 
 #endif // TIMELINEWINDOW_H

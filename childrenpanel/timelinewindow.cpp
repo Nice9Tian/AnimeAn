@@ -15,6 +15,7 @@
 #include <QPainterPath>
 #include <QRegularExpression>
 #include <QSettings>
+#include <QTimer>
 #include <QWheelEvent>
 #include <QWidgetAction>
 
@@ -56,9 +57,12 @@ constexpr int kStripCommandHeight = 28;
 constexpr int kStripCommandWidth = 30;
 constexpr int kStripCommandCount = 4;
 // Floors for the resizable strip: below these a cell has no room for a
-// preview and the run stops being readable.
+// preview and the run stops being readable. The column floor is the COMMAND
+// ROW's own width: the transport drops the frame family while docked to a
+// side, so a narrower strip would put Delete Frame past the widget's edge
+// with nothing else left to reach it by.
 constexpr int kMinStripThickness = 44;
-constexpr int kMinStripColumn = 72;
+constexpr int kMinStripColumn = kStripCommandCount * kStripCommandWidth + kScrollThickness;
 constexpr int kSideTitleHeight = 22;
 // What a collapsed side dock shrinks to: the title bar needs its name.
 constexpr int kCollapsedColumnWidth = 132;
@@ -561,7 +565,13 @@ void TimelineTransportBar::relayout()
     // One row while the side families and the centred assembly can all stand
     // clear of each other; otherwise the assembly drops to a second row and
     // the window chrome keeps the top-right corner it belongs in.
-    const int oneRowWidth = leftWidth + assemblyWidth + chromeWidth + 2 * kFamilyGap;
+    // TWICE the WIDER side, not the sum: the assembly is centred on the whole
+    // bar (below), so it reaches as far towards the narrow side as towards the
+    // wide one - summing them lets the vertical layout (no frame commands at
+    // the left, full chrome at the right) run the frame field over the
+    // float/orientation cells.
+    const int oneRowWidth = 2 * std::max(leftWidth, chromeWidth) + assemblyWidth
+                            + 2 * kFamilyGap;
     const int rows = width() >= oneRowWidth ? 1 : 2;
     if (rows != m_rows) {
         m_rows = rows;
@@ -599,8 +609,13 @@ void TimelineTransportBar::relayout()
     // playback controls do not move when the side groups change.
     const int assemblyRow = rows == 1 ? 0 : 1;
     const int assemblyY = assemblyRow * kBarHeight;
-    int cx = rows == 1 ? std::max(x, (width() - assemblyWidth) / 2)
-                       : std::max(0, (width() - assemblyWidth) / 2);
+    int cx = std::max(0, (width() - assemblyWidth) / 2);
+    if (rows == 1) {
+        // Both side families are cleared explicitly. The threshold above
+        // already guarantees the room; this is what makes the guarantee local
+        // to the line that places the assembly.
+        cx = std::max(x, std::min(cx, width() - chromeWidth - kFamilyGap - assemblyWidth));
+    }
     add(TimelineCommand::Onion, QRect(cx, assemblyY, kButtonWidth, h), m_state.onionAvailable,
         m_state.onionAvailable && m_state.onion);
     cx += kButtonWidth;
@@ -1586,6 +1601,17 @@ void TimelineWindow::restoreLayout()
     }
     applyLayout();
     setVisible(m_restoreVisible);
+    // Driven by hand rather than through visibilityChanged: the main window has
+    // not been shown yet, so this setVisible takes Qt's deferred path and no
+    // show/hide event - and therefore no signal - is ever delivered. Without
+    // this a timeline restored CLOSED leaves no reopen chip on the canvas.
+    if (m_bar && m_bar->parentWidget() != this) {
+        m_bar->setVisible(!isHidden());
+    }
+    if (m_pill) {
+        m_pill->setVisible(isHidden());
+        positionPill();
+    }
     m_restoring = false;
     // No resizeDocks here on purpose: a dock joining the layout for the first
     // time is given its size hint, which is already title + strip (or title
@@ -1849,6 +1875,40 @@ bool TimelineWindow::eventFilter(QObject *watched, QEvent *event)
         positionPill();
     }
     return QDockWidget::eventFilter(watched, event);
+}
+
+void TimelineWindow::moveEvent(QMoveEvent *event)
+{
+    QDockWidget::moveEvent(event);
+    rememberFloatGeometry();
+}
+
+void TimelineWindow::resizeEvent(QResizeEvent *event)
+{
+    QDockWidget::resizeEvent(event);
+    rememberFloatGeometry();
+}
+
+void TimelineWindow::rememberFloatGeometry()
+{
+    if (m_restoring || !isFloating()) {
+        return;
+    }
+    m_floatGeometry = geometry();
+    if (m_floatGeometryQueued) {
+        return;
+    }
+    m_floatGeometryQueued = true;
+    // One write per gesture rather than one per mouse step; the rect above is
+    // already current, so a settle that lands mid-drag still records what the
+    // dock is at when it fires.
+    QTimer::singleShot(400, this, [this]() {
+        m_floatGeometryQueued = false;
+        if (isFloating()) {
+            m_floatGeometry = geometry();
+            saveSettings();
+        }
+    });
 }
 
 void TimelineWindow::changeEvent(QEvent *event)

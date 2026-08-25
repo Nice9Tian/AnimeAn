@@ -234,14 +234,17 @@ assert UI.windows.selected == [("tools", "painting")]
 assert UI.locked == [("main", ())], "the vector layer did not clear the locks"
 assert UI.fill_paint == [("main", False)]
 
-# 3) TRACKED fill child: the whole drawing set is locked, Arrow is not in the
-#    list, and the pen is NOT remapped (its content is derived, not painted).
+# 3) TRACKED fill child: the DRAWING set is locked, Arrow is not in the list,
+#    and the pen is NOT remapped (its content is derived, not painted). Fill
+#    stays armable: a bucket click upgrades its own scope, and locking it left
+#    the user stranded on the layer their own fill had selected.
 scene = fresh_world()
 line = scene.add_layer()
 child = scene.add_fill_layer(parent=scene.layer_id_at(line))
 ltp._layer_changed(layer_message(child))
-assert UI.locked == [("main", ("pen", "eraser", "fill", "connect", "transfer"))], UI.locked
+assert UI.locked == [("main", ("pen", "eraser", "connect", "transfer"))], UI.locked
 assert "arrow" not in UI.locked[-1][1], "Arrow must stay available"
+assert "fill" not in UI.locked[-1][1], "the fill tool must stay armable on a child"
 assert UI.fill_paint == [("main", False)]
 
 # 4) INDEPENDENT fill layer: only connect is locked and the region brush arms.
@@ -430,9 +433,49 @@ assert ltp._sample_points([], 6.0) == []
 assert ltp._sample_points([(4.0, 4.0)], 6.0) == [(4.0, 4.0)]
 
 # 15) The hooks are registered for the events the policy needs.
-assert any(h["function"] is ltp._layer_changed and h["events"] == {"layerchange"}
+assert any(h["function"] is ltp._layer_changed
+           and h["events"] == {"layerchange", "historyrestore"}
            for h in python_hooks._HOOKS)
 assert any(h["function"] is ltp._stroke_finished and h["events"] == {"linefinish"}
            for h in python_hooks._HOOKS)
+
+# 16) UNDO: historyrestore carries no layer, so the verdict is re-read off the
+#     restored scene. Without this the child-fill locks outlive the layer they
+#     were pushed for and the drawing toolbar stays dead.
+scene = fresh_world()
+line = scene.add_layer()
+child = scene.add_fill_layer(parent=scene.layer_id_at(line))
+scene.set_current_layer(child)
+ltp._layer_changed(layer_message(child))
+assert UI.locked[-1] == ("main", ("pen", "eraser", "connect", "transfer"))
+# The undo puts the board back on the line layer and dispatches only this.
+scene.columns.pop(child)
+scene.set_current_layer(line)
+ltp._layer_changed({"event": "historyrestore", "view": "main", "tool": "pen",
+                    "base_tool": "pen", "property": "",
+                    "cell": {"row": 0, "layer": line, "asset": 0, "frame_id": 1},
+                    "stroke": {}, "position": {}, "delta": {}})
+assert UI.locked[-1] == ("main", ()), "the locks survived the restore"
+assert UI.fill_paint[-1] == ("main", False)
+
+# A restore on the TEXTURE board is still not this policy's business.
+UI.locked.clear()
+ltp._layer_changed({"event": "historyrestore", "view": "child", "cell": {}})
+assert UI.locked == [], "a child-board restore re-pushed the main board's verdict"
+
+# 17) reevaluate(): the entry point for a mutation that changes a layer's KIND
+#     without moving the board off it ("To Independent Layer").
+scene = fresh_world()
+line = scene.add_layer()
+child = scene.add_fill_layer(parent=scene.layer_id_at(line))
+scene.set_current_layer(child)
+ltp._layer_changed(layer_message(child))
+assert UI.locked[-1] == ("main", ("pen", "eraser", "connect", "transfer"))
+scene.columns[child]["parent"] = 0
+ltp.reevaluate("main")
+assert UI.locked[-1] == ("main", ("connect",)), UI.locked[-1]
+assert UI.fill_paint[-1] == ("main", True), "the region brush did not arm on release"
+ltp.reevaluate("child")
+assert UI.locked[-1] == ("main", ("connect",)), "another board's re-evaluation pushed"
 
 print("t_layer_policy: ok")

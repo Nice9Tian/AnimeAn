@@ -102,6 +102,9 @@ public:
     QWidget *subControlHostWidget() override;
     QRect subControlPreviewRect(const QPoint &globalPos) const override;
     void embedSubControl(SubControlFrame *frame) override;
+    // This panel IS a page of the Tools window, so a frame it holds is on
+    // screen only while that page is the selected one.
+    void revealSubControl(SubControlFrame *frame) override;
 
 signals:
     void toolSelected(PaintOpenGLWidget::Tool tool);

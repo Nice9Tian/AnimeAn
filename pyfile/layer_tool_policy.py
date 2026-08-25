@@ -7,10 +7,12 @@ follow it without being asked:
 - a layer inside an automapping unit  -> the Tools window shows its Mapping
   page (the unit is edited with the mapping tools, not with the pen),
 - an ordinary vector layer            -> the Painting page, nothing locked,
-- a fill layer that TRACKS a line layer (G4 parenting) -> pen, eraser, fill,
+- a fill layer that TRACKS a line layer (G4 parenting) -> pen, eraser,
   connect and transfer are locked out: its content is derived from the
   parent's topology, and hand-editing it would be overwritten by the next
-  re-trace. Arrow stays, so the layer can still be inspected,
+  re-trace. Arrow stays, so the layer can still be inspected, and so does
+  FILL - a fill gesture upgrades its own scope rather than writing by hand,
+  and locking it turned one bucket click into a dead toolbar,
 - an INDEPENDENT fill layer           -> connect is locked (there are no
   endpoints to join) and the pen becomes a REGION BRUSH: the stroke is drawn,
   then converted into a fill of every closed region it crossed and removed.
@@ -25,6 +27,9 @@ This module is the half that reads layers and decides.
 Every layerchange re-evaluates and pushes the WHOLE verdict, locks included:
 the previous layer's answer is never the new layer's answer, and "nothing is
 locked here" has to be said out loud or a stale lock would survive the move.
+historyrestore is subscribed for the same reason from the other side: an undo
+replaces the model, current layer included, and dispatches nothing else - so
+without it the locks would stay on a layer that no longer exists.
 """
 
 import math
@@ -38,9 +43,12 @@ VIEW = "main"
 
 UNIT_TAG = "automapping"
 
-# A tracked fill child is topology-derived artwork: every tool that would
-# write into it by hand is locked, because the next parent edit re-derives it.
-CHILD_FILL_LOCKS = ("pen", "eraser", "fill", "connect", "transfer")
+# A tracked fill child is topology-derived artwork: every DRAWING tool that
+# would write into it by hand is locked, because the next parent edit
+# re-derives it. Fill is deliberately NOT here - a bucket click on a child is
+# pointless rather than destructive, and locking it trapped the user on the
+# layer their own fill had just selected.
+CHILD_FILL_LOCKS = ("pen", "eraser", "connect", "transfer")
 # An independent fill layer keeps the pen and eraser (remapped below) and the
 # fill tool; connect has no open endpoints to join on a layer with no strokes.
 INDEPENDENT_FILL_LOCKS = ("connect",)
@@ -170,17 +178,48 @@ def _apply(view, kind):
 
 
 def _layer_changed(message):
+    """layerchange AND historyrestore: both mean "the current layer may not be
+    the one this verdict was pushed for".
+
+    historyrestore carries no "layer" key - it replaces the whole model - so
+    the layer is read back off the scene, which is already restored by the
+    time this runs.
+    """
     if (message.get("view") or "") != VIEW:
         return
     try:
         scene = _scene_model(VIEW)
-        kind = _layer_kind(scene, scene.get_structure(), message.get("layer"))
+        layer = message.get("layer")
+        if not isinstance(layer, int):
+            layer = scene.current_layer()
+        kind = _layer_kind(scene, scene.get_structure(), layer)
     except Exception:
         import traceback
 
         print(f"[layer policy] layer change failed:\n{traceback.format_exc()}")
         return
     _apply(VIEW, kind)
+
+
+def reevaluate(view=VIEW):
+    """Re-push the verdict for whatever layer the board is on right now.
+
+    For the mutations that change a layer's KIND without changing WHICH layer
+    is current ("To Independent Layer"): the board's notified layer never
+    moves, so no layerchange is dispatched and the previous verdict - written
+    for a kind the layer no longer has - would stand.
+    """
+    if view != VIEW:
+        return
+    try:
+        scene = _scene_model(view)
+        kind = _layer_kind(scene, scene.get_structure(), scene.current_layer())
+    except Exception:
+        import traceback
+
+        print(f"[layer policy] re-evaluate failed:\n{traceback.format_exc()}")
+        return
+    _apply(view, kind)
 
 
 # --- the pen as a region brush ----------------------------------------------
@@ -331,7 +370,7 @@ def _stroke_finished(cell, stroke, message):
 
 
 def register_hooks():
-    python_hooks.set_hook(_layer_changed, layerchange=True)
+    python_hooks.set_hook(_layer_changed, layerchange=True, historyrestore=True)
     python_hooks.set_hook(_stroke_finished, linefinish=True)
 
 

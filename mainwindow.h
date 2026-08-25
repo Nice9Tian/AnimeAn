@@ -64,6 +64,10 @@ private:
     // matching painting chips and switch to Arrow when the armed tool has just
     // been locked out from under the user.
     void applyLockedTools(const QString &view, const QStringList &tools);
+    // Re-reads the ACTIVE board's lock set onto the shared rail. Also run when
+    // the active board changes: which set governs is a property of the board
+    // the next gesture lands on, not of the set that arrived last.
+    void refreshToolLockState();
     // The tool travels as its underlying int - PaintOpenGLWidget is only
     // forward-declared in this header, like m_reloadToolOptions below.
     bool isToolLocked(int tool) const;
@@ -147,9 +151,18 @@ private:
     // The Windows-menu entry: show and raise the sub-control itself, floating
     // it when it has never been embedded anywhere.
     void showTextureSubControl();
+    // What mapping the texture board had to disturb, so a read-only caller can
+    // put it back. Empty page means nothing was moved.
+    struct TextureMappingRestore {
+        QString centralPage;
+        PaintOpenGLWidget *activeView = nullptr;
+    };
     // Makes the texture board renderable for a framebuffer grab without
-    // changing anything the user chose, when it already is.
-    void ensureTextureBoardMapped();
+    // changing anything the user chose, when it already is. When it cannot, it
+    // reports what it moved through `restore`.
+    void ensureTextureBoardMapped(TextureMappingRestore *restore = nullptr);
+    // Undoes exactly what ensureTextureBoardMapped reported, and nothing else.
+    void restoreTextureBoardMapping(const TextureMappingRestore &restore);
     void openTextureView();
     bool saveTextureView();
     bool saveTextureViewAs();

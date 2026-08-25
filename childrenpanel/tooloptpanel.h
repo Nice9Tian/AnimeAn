@@ -42,7 +42,9 @@ public:
 
     // SubControlHost: a drop lands as one more full-width row of the options
     // column, which is exactly what the declarative "subwindow" control builds
-    // when a layout asks for the frame by name.
+    // when a layout asks for the frame by name. revealSubControl is left at the
+    // base no-op on purpose: every row of this column is on screen together, so
+    // holding a frame is already showing it.
     QWidget *subControlHostWidget() override;
     QRect subControlPreviewRect(const QPoint &globalPos) const override;
     void embedSubControl(SubControlFrame *frame) override;

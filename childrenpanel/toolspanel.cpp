@@ -9,6 +9,7 @@
 #include <QPainterPath>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QTabWidget>
 #include <QtGlobal>
 #include <QtMath>
 #include <QVBoxLayout>
@@ -451,6 +452,28 @@ void ToolsPanel::embedSubControl(SubControlFrame *frame)
     m_layout->insertWidget(qMax(0, m_layout->count() - 1), frame);
     if (!m_subControlFrames.contains(frame)) {
         m_subControlFrames.append(frame);
+    }
+}
+
+void ToolsPanel::revealSubControl(SubControlFrame *frame)
+{
+    if (!frame || !isAncestorOf(frame)) {
+        return;
+    }
+    // Asked of the tab widget rather than of the ParentWindow: the panel is a
+    // page widget and knows nothing about the dock that owns it, and
+    // setCurrentIndex is what raises the page AND announces the change.
+    for (QWidget *ancestor = parentWidget(); ancestor; ancestor = ancestor->parentWidget()) {
+        if (QTabWidget *tabs = qobject_cast<QTabWidget *>(ancestor)) {
+            const int index = tabs->indexOf(this);
+            if (index >= 0) {
+                tabs->setCurrentIndex(index);
+            }
+            return;
+        }
+        if (ancestor->isWindow()) {
+            return;
+        }
     }
 }
 

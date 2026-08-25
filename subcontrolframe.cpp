@@ -33,6 +33,12 @@ constexpr int kPreviewAlpha = 64;
 
 SubControlHost::~SubControlHost() = default;
 
+void SubControlHost::revealSubControl(SubControlFrame *)
+{
+    // Nothing to do: a host that lays every frame it owns out on one visible
+    // surface has already revealed it by holding it.
+}
+
 // ---------------------------------------------------------------- registry
 
 SubControlRegistry *SubControlRegistry::instance()
@@ -304,17 +310,19 @@ SubControlFrame::SubControlFrame(const QString &name, const QString &title, QWid
     connect(m_titleBar, &SubControlTitleBar::dragMoved, this, &SubControlFrame::dragTo);
     connect(m_titleBar, &SubControlTitleBar::dragFinished, this, &SubControlFrame::endDrag);
     connect(m_titleBar, &SubControlTitleBar::affordanceClicked, this, [this]() {
-        if (isFloating()) {
-            // Back to the last host it knew, or parked when it never had one -
-            // guessing a host from a click would drop it somewhere the user
-            // never pointed at.
-            if (m_host) {
-                embedInto(m_host);
-            } else {
-                park();
-            }
-        } else {
+        if (!isFloating()) {
             floatFrame();
+            return;
+        }
+        // Back to the last host it knew - m_host is already gone by the time a
+        // frame floats, so the dock half of the glyph reads m_lastHost. Parked
+        // only when it never had a host, or that host has since died: guessing
+        // one from a click would drop the frame somewhere the user never
+        // pointed at.
+        if (m_lastHost && SubControlRegistry::instance()->hosts().contains(m_lastHost)) {
+            embedInto(m_lastHost);
+        } else {
+            park();
         }
     });
 
@@ -388,7 +396,18 @@ SubControlHost *SubControlFrame::host() const
 
 bool SubControlFrame::isLive() const
 {
-    return m_placement != Placement::Parked && !isHidden();
+    if (m_placement == Placement::Parked) {
+        return false;
+    }
+    if (isFloating()) {
+        return !isHidden();
+    }
+    // Embedded: isHidden() answers only for the frame's OWN flag, and a
+    // stacked page the user tabbed away from hides its children without
+    // touching theirs - the router would then hand the board to a frame nobody
+    // can see. isVisibleTo(window()) asks the whole chain and still reads true
+    // before the window is first shown, which is what isHidden() was for.
+    return isVisibleTo(window());
 }
 
 void SubControlFrame::detachFromHost()
@@ -414,6 +433,7 @@ void SubControlFrame::embedInto(SubControlHost *host)
         setWindowFlags(Qt::Widget);
     }
     m_host = host;
+    m_lastHost = host;
     m_placement = Placement::Embedded;
     m_grip->setVisible(false);
     m_titleBar->setFloating(false);
@@ -432,6 +452,7 @@ void SubControlFrame::adoptedBy(SubControlHost *host)
         setWindowFlags(Qt::Widget);
     }
     m_host = host;
+    m_lastHost = host;
     m_placement = Placement::Embedded;
     m_grip->setVisible(false);
     m_titleBar->setFloating(false);
@@ -481,6 +502,10 @@ void SubControlFrame::park()
     }
     detachFromHost();
     m_host = nullptr;
+    // Putting the frame AWAY is the one gesture that also forgets where it
+    // came from: the next surface() floats it rather than re-entering a panel
+    // the user has finished with.
+    m_lastHost = nullptr;
     m_placement = Placement::Parked;
     m_grip->setVisible(false);
     setParent(SubControlRegistry::instance()->keeper());
@@ -499,6 +524,12 @@ void SubControlFrame::surface()
     if (isFloating()) {
         activateWindow();
     } else {
+        // The host knows how to make its own slot visible - a page host has to
+        // SELECT the page rather than show it, which is why this is asked
+        // rather than done here.
+        if (m_host) {
+            m_host->revealSubControl(this);
+        }
         // A frame inside a closed dock is not "shown" by showing the frame:
         // the dock has to come up with it. DOCKS ONLY - calling show() on any
         // hidden ancestor would put a stacked-widget page on top of the page

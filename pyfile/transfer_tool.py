@@ -12,7 +12,10 @@ corner, a rotation ring:
                  horizontal or vertical, whichever the gesture leads with -
                  the same "commit to the axis you started on" rule the pen's
                  straight-line snap uses.
-  corner ring  : rotate about the box centre. A modifier snaps to 15 degrees.
+  corner ring  : rotate about the box centre, FREELY - a modifier, and only a
+                 modifier, snaps the angle to 15 degrees. The ring reaches far
+                 enough outside the corner to be the obvious target there;
+                 see ROTATE_RING_PX for why that matters.
 
 The box is a signed axis-aligned rect PLUS an angle about a fixed origin, never
 a stored quad: the grips and the outline are the rect's points carried through
@@ -74,7 +77,24 @@ MIN_SPAN = 1e-3
 # are SCREEN px - they belong to the hand, not to the drawing - and go through
 # viewscale, the one home of screen<->canvas conversion.
 GRIP_HIT_PX = 7.0
-ROTATE_RING_PX = 21.0
+# How far OUTSIDE a corner a press still means "turn this".
+#
+# It was 21, which left the ring a sliver: C++ tests the edit handles FIRST
+# (openglwidget.cpp editHandleAt, a +/-7 SCREEN px square on the corner), so
+# only ~10..21 px out actually rotated - 7.6% of the 60x60 px quadrant a hand
+# aims at. A press that fell SHORT started a corner SCALE instead, and a
+# corner scale mirrors through its anchor: swinging the hand in a circle then
+# walks the artwork through exactly four orientations, flipping every quarter
+# turn. That is the "rotation is locked to 90 degrees" this tool was reported
+# for - the gesture never reached the rotation code at all. A press that
+# overshot claimed nothing and silently re-framed the box, which taught the
+# hand to aim closer still, straight back into the grip.
+#
+# There is deliberately no INNER radius. The grip's square hit box already
+# owns the middle, in both C++ (handles before picks) and _cursor_name (grips
+# before the ring); a circle drawn inside that square would carve dead corners
+# out of it where neither region answers the press.
+ROTATE_RING_PX = 36.0
 ROTATE_SNAP_DEG = 15.0
 IDENTITY = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
 # Tool option: whether Alt/Ctrl/Shift constrain (keep ratio, lock the axis,
@@ -682,18 +702,29 @@ def _handle_event(message):  # noqa: C901 - one dispatch, read top-down
         return
 
     handle = str(message.get("handle") or "")
-    if not handle.startswith("tf:"):
-        return
-    grip = handle[3:]
 
     if phase == "press":
+        # A press names the thing under it, so here the id IS the gesture.
+        if not handle.startswith("tf:"):
+            return
+        grip = handle[3:]
         if grip not in GRIPS:
             return
         session["drag"] = _drag_record(grip, point, session)
         return
 
+    if phase not in ("move", "release"):
+        return
+
     drag = session.get("drag")
-    if drag is None:
+    # Once a gesture is under way the DRAG RECORD is the authority, not the id
+    # on the message. C++ echoes back the id it was handed on the pick, but a
+    # move that arrives with an EMPTY one must still reach the drag it belongs
+    # to: dropping it on the id alone froze the whole gesture in place and
+    # left only whatever single transform the release happened to carry. An id
+    # that belongs to somebody ELSE (an overlay drag owned by another tool) is
+    # still refused - a stale record must never ride another tool's gesture.
+    if drag is None or (handle and not handle.startswith("tf:")):
         return
     constrain = _constrained(modifiers)
 
