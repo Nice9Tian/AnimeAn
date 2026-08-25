@@ -146,13 +146,16 @@ drift = max(math.hypot(*(c - d
 assert drift < 1e-9, drift
 print("7) conflicting asks stay injective; drawing order is irrelevant")
 
-# 8) FALLOFF OPTION: quadratic concentrates the band - the off-line
-#    effect at ~0.6R is smaller than under linear.
+# 8) FALLOFF OPTION shapes BOTH halves of the family weight: the
+#    axis-side RAMP (probe between the line and its parallel axis) and
+#    the along-stroke extent ENVELOPE (probe beyond the stroke's end).
+#    Quadratic concentrates each toward the line.
 bow2 = [(20.0 + 200.0 * k / 32.0,
          50.0 + 40.0 * math.sin(math.pi * k / 32.0)) for k in range(33)]
 chord2 = [(20.0, 50.0), (220.0, 50.0)]
-probe = (120.0, 130.0)
-effects = {}
+ramp_probe = (120.0, 26.0)      # halfway down the ramp toward the H axis
+env_probe = (300.0, 55.0)       # past the stroke's end, inside its band
+effects = {"ramp": {}, "env": {}}
 for falloff in ("linear", "quadratic"):
     saved = am._ADDITIONAL["falloff"]
     am._ADDITIONAL["falloff"] = falloff
@@ -160,11 +163,15 @@ for falloff in ("linear", "quadratic"):
         mp7 = build([(line_asset(bow2), line_asset(chord2))])
     finally:
         am._ADDITIONAL["falloff"] = saved
-    q = mp7.warp.apply(probe)
-    effects[falloff] = math.hypot(q[0] - probe[0], q[1] - probe[1])
-assert effects["quadratic"] < effects["linear"], effects
-print(f"8) falloff shapes the band: quadratic {effects['quadratic']:.1f} px "
-      f"< linear {effects['linear']:.1f} px at 0.6R")
+    for key, probe in (("ramp", ramp_probe), ("env", env_probe)):
+        q = mp7.warp.apply(probe)
+        effects[key][falloff] = math.hypot(q[0] - probe[0], q[1] - probe[1])
+assert effects["ramp"]["quadratic"] < 0.8 * effects["ramp"]["linear"], effects
+assert effects["env"]["quadratic"] < effects["env"]["linear"], effects
+print(f"8) falloff shapes ramp ({effects['ramp']['quadratic']:.1f} < "
+      f"{effects['ramp']['linear']:.1f} px) and envelope "
+      f"({effects['env']['quadratic']:.1f} < {effects['env']['linear']:.1f} "
+      "px)")
 
 # 9) BUILD COST: the whole solve must stay interactive (guide drags
 #    rebuild the mapper).
@@ -211,20 +218,20 @@ print("11) tent fades out; axes hold in and out of the grid")
 #     SAME story: _all_positive False, loci marched, det_sign flipping,
 #     a crossing stroke splitting front/back, the loci registered for
 #     the cutters, and unapply still a right inverse inside the band.
-ang45 = math.radians(45.0)
+ang80 = math.radians(80.0)
 mp9, _ = am.build_mapper(H, V, H, V, {}, additional_pairs=[
-    (line_asset([(30.0, 35.0), (250.0, 35.0)]),
-     line_asset([(30.0, 35.0), (30.0 + 220.0 * math.cos(ang45),
-                                35.0 + 220.0 * math.sin(ang45))]))])
+    (line_asset([(30.0, 50.0), (280.0, 50.0)]),
+     line_asset([(30.0, 50.0), (30.0 + 250.0 * math.cos(ang80),
+                                50.0 + 250.0 * math.sin(ang80))]))])
 w9 = mp9.warp
 assert not w9._all_positive
 loci9 = w9.fold_loci()
 assert loci9, "a folding field must march its loci"
 assert loci9 is not w9.fold_loci()          # fresh copies per call
-band = [(x, y) for x in (35.0, 45.0, 60.0) for y in (8.0, 11.0)]
+band = [(x, y) for x in (25.0, 40.0, 55.0) for y in (20.0, 32.0)]
 assert any(w9.det_sign(p) == -1 for p in band), \
     [w9.det_sign(p) for p in band]
-runs9 = am._split_by_fold(mp9, am._densify([(30.0, -40.0), (30.0, 70.0)]))
+runs9 = am._split_by_fold(mp9, am._densify([(40.0, -40.0), (40.0, 70.0)]))
 sides9 = {side for _r, side in runs9}
 assert sides9 == {1, -1}, sides9
 am._crease_curves(mp9, (-250.0, 250.0), (-350.0, 350.0), stitch=False)
@@ -394,6 +401,12 @@ for p in [(300.0, 150.0), (300.0, 200.0), (-300.0, 180.0)]:
     assert abs(w_rel.apply(p)[0] - p[0]) < 0.01, p
 for p in [(150.0, -200.0), (-100.0, -200.0)]:
     assert abs(w_rel.apply(p)[1] - p[1]) < 0.01, p
+# The FREE component must actually be free (component-wise pinning):
+# the corner between the pinned right edge and the released top RIDES UP
+# the edge to meet the lifted top - full both-component pinning would
+# nail it and tear.
+corner_slide = w_rel.apply((300.0, 200.0))[1] - 200.0
+assert corner_slide > 20.0, corner_slide
 assert axis_drift(w_rel) < 0.01
 assert w_rel._all_positive and w_rel.fold_loci() == []
 rt = max(math.hypot(*(c - d for c, d in zip(w_rel.unapply(w_rel.apply(p)), p)))
@@ -437,5 +450,65 @@ assert 12.0 < held, (held, on_line)    # held outward, not radius-cut
 assert 18.0 < on_line < 32.0, on_line
 print(f"19) neutral orthogonal line inert ({change:.1e} px); outward hold "
       f"{held:.1f} deg at 70 px above (on-line {on_line:.1f} deg)")
+
+# 20) MIXED SPANS (review 2026-08-25): a short same-family line must not
+#     corrupt a long line's keyframe partition where the short one's
+#     extent has faded - the long line's band still terminates at the
+#     pinned window edge (no full-weight press on the Dirichlet cage, no
+#     folds), and each line keeps its own ask where it IS present.
+lg = [(-200.0 + 400.0 * k / 16.0, 50.0) for k in range(17)]
+
+
+def rot_about(points, pivot, deg):
+    c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+    return [(pivot[0] + c * (p[0] - pivot[0]) - s * (p[1] - pivot[1]),
+             pivot[1] + s * (p[0] - pivot[0]) + c * (p[1] - pivot[1]))
+            for p in points]
+sh = [(-40.0 + 80.0 * k / 8.0, 120.0) for k in range(9)]
+mp20 = build([(line_asset(lg, 0), line_asset(rot_about(lg, (0.0, 50.0),
+                                                       25.0), 0)),
+              (line_asset(sh, 1), line_asset(rot_about(sh, (0.0, 120.0),
+                                                       10.0), 1))])
+w20 = mp20.warp
+assert w20._all_positive and w20.fold_loci() == []
+assert abs(w20.apply((160.0, 200.0))[1] - 200.0) < 0.01   # top edge holds
+far = hflow(w20, 160.0, 180.0)      # short line absent here; long fades
+assert abs(far) < 8.0, far
+on_long = hflow(w20, 160.0, 50.0)
+assert 10.0 < on_long, on_long
+on_short = hflow(w20, 50.0, 120.0)  # outside the V-axis boundary layer
+assert 3.0 < on_short < 20.0, on_short
+rt20 = max(math.hypot(*(c - d for c, d in zip(w20.unapply(w20.apply(p)), p)))
+           for p in [(160.0, 50.0), (160.0, 180.0), (50.0, 120.0)])
+assert rt20 < 1e-5, rt20
+assert axis_drift(w20) < 0.01
+print(f"20) mixed spans: partition intact (far {far:+.1f} deg, long "
+      f"{on_long:+.1f}, short {on_short:+.1f}), edge holds, no folds")
+
+# 21) A STROKE CROSSING ITS OWN FAMILY AXIS hands over smoothly: no
+#     one-cell weight cliff, no folds, an ordinary crossing stroke is
+#     not severed, and the field stays exactly invertible.
+diag = [(40.0 + 240.0 * k / 16.0, -60.0 + 120.0 * k / 16.0)
+        for k in range(17)]
+mp21 = build([(line_asset(diag, 0),
+               line_asset(rot_about(diag, (40.0, -60.0), 20.0), 0))])
+w21 = mp21.warp
+assert w21._all_positive and w21.fold_loci() == []
+runs21 = am._split_by_fold(mp21, am._densify([(60.0, 20.0), (280.0, 20.0)]))
+assert {side for _r, side in runs21} == {1}, runs21
+prev = None
+worst_step = 0.0
+for x in [120.0 + 5.0 * k for k in range(13)]:
+    dy = w21.apply((x, 40.0))[1] - 40.0
+    if prev is not None:
+        worst_step = max(worst_step, abs(dy - prev))
+    prev = dy
+assert worst_step < 2.5, worst_step
+rt21 = max(math.hypot(*(c - d for c, d in zip(w21.unapply(w21.apply(p)), p)))
+           for p in [(160.0, 40.0), (120.0, -30.0), (200.0, 20.0)])
+assert rt21 < 1e-5, rt21
+assert axis_drift(w21) < 0.01
+print(f"21) self-axis-crossing stroke: smooth handover (worst step "
+      f"{worst_step:.2f} px), no folds, single run, invertible")
 
 print("t_flowfield: ALL OK")

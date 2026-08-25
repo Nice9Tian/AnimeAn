@@ -2049,26 +2049,45 @@ class _FlowFieldWarp:
             # never interact.
             o_t = np.clip(np.abs(o_pt) / (4.0 * o_cell), 0.0, 1.0)
             relief = o_t * o_t * (3.0 - 2.0 * o_t)
+            cell = dv if fam == "h" else du   # cell size along q
             for f in group:
                 same = (np.sign(f["q_line"]) * sp) > 0.0
                 q_k = np.abs(f["q_line"])
+                # A stroke crossing its OWN parallel axis: (a) the
+                # half-plane handover must be CONTINUOUS - a binary
+                # nearest-station sign test put a 0-to-1 weight cliff one
+                # cell wide along the crossing's perpendicular and folded
+                # the field; (b) the keyframe position is floored at the
+                # boundary-layer width so `rise` cannot saturate to full
+                # strength right against the hard-pinned axis rows.
+                s_t = np.clip(sp * f["q_line"] / (4.0 * cell), 0.0, 1.0)
+                side_f = s_t * s_t * (3.0 - 2.0 * s_t)
+                q_k_eff = np.maximum(q_k, 4.0 * cell)
+                # Neighbour keyframes, ENVELOPE-AWARE (a locally absent
+                # line - extent faded to 0 - must not claim the slot):
+                #   - the ramp foot q_lo is the FARTHEST effective inner
+                #     keyframe, each candidate weighted by its local
+                #     envelope, so an absent middle line hands over to
+                #     the nearest PRESENT inner line, not to the axis;
+                #   - every outer candidate imposes its own fade ceiling
+                #     (1 at the line, 1 - env at the candidate), and the
+                #     ceilings COMBINE by minimum - an absent nearer
+                #     neighbour imposes nothing and can no longer mask
+                #     the pinned-edge / domain keyframes behind it.
                 q_lo = np.zeros_like(qp)          # inner bound (axis = 0)
-                best_in = np.full_like(qp, -1.0)
-                q_hi = np.full_like(qp, np.inf)   # outer neighbour
-                e_hi = np.zeros_like(qp)
+                fade = np.ones_like(qp)
                 for g in group:
                     if g is f:
                         continue
                     g_same = (np.sign(g["q_line"]) * sp) > 0.0
                     q_g = np.abs(g["q_line"])
                     inner = g_same & same & (q_g < q_k - tiny)
-                    take = inner & (q_g > best_in)
-                    best_in = np.where(take, q_g, best_in)
-                    q_lo = np.where(take, g["env"] * q_g, q_lo)
+                    q_lo = np.maximum(q_lo,
+                                      np.where(inner, g["env"] * q_g, 0.0))
                     outer = g_same & same & (q_g > q_k + tiny)
-                    take = outer & (q_g < q_hi)
-                    q_hi = np.where(take, q_g, q_hi)
-                    e_hi = np.where(take, g["env"], e_hi)
+                    g_fade = 1.0 - g["env"] * np.clip(
+                        (qp - q_k) / np.maximum(q_g - q_k, tiny), 0.0, 1.0)
+                    fade = np.minimum(fade, np.where(outer, g_fade, 1.0))
                 # The DOMAIN boundary is always the final implicit
                 # keyframe (it is the numerical frame, Dirichlet D = 0,
                 # NOT the user-visible outline): without it a held band
@@ -2083,19 +2102,15 @@ class _FlowFieldWarp:
                                           (1.0, dom_pos), (-1.0, dom_neg)):
                     if q_edge is None:
                         continue
-                    mask = (same & (sp == side_sign)
-                            & (q_k < q_edge - tiny) & (q_edge < q_hi))
-                    q_hi = np.where(mask, q_edge, q_hi)
-                    e_hi = np.where(mask, 1.0, e_hi)
-                rise = np.clip((qp - q_lo) / np.maximum(q_k - q_lo, tiny),
-                               0.0, 1.0)
+                    applies = same & (sp == side_sign) & (q_k < q_edge - tiny)
+                    e_fade = 1.0 - np.clip(
+                        (qp - q_k) / np.maximum(q_edge - q_k, tiny), 0.0, 1.0)
+                    fade = np.minimum(fade, np.where(applies, e_fade, 1.0))
+                rise = np.clip((qp - q_lo)
+                               / np.maximum(q_k_eff - q_lo, tiny), 0.0, 1.0)
                 if self.falloff == "quadratic":
                     rise = rise * rise
-                span_hi = np.where(np.isfinite(q_hi),
-                                   np.maximum(q_hi - q_k, tiny), np.inf)
-                fade = 1.0 - e_hi * np.clip((qp - q_k) / span_hi, 0.0, 1.0)
-                r = np.where(qp <= q_k, rise, fade)
-                w = np.where(same, r * f["env"], 0.0) * relief
+                w = rise * fade * f["env"] * side_f * relief
                 f["w"] = w.reshape(X.shape)
                 if float(np.max(f["w"])) < 0.05:
                     # Silently ineffective lines are unacceptable: say so.
@@ -2428,6 +2443,17 @@ class _FlowFieldWarp:
             ux, uy = assemble_and_solve()
             det = det_of(ux, uy)
             retreat += 1
+        # FULL retreat must actually be reached: three halvings still
+        # leave 12.5% of the boost, and shipping a fold the UNBOOSTED
+        # blend does not have breaks the contract above. If folds
+        # persist, drop every boost and take the honest pure-blend
+        # answer; a fold that survives even that is intrinsic and stays.
+        if np.any(det <= -self.DET_FOLD_TOL) \
+                and any(field["boost"] is not None for field in fields):
+            for field in fields:
+                field["boost"] = None
+            ux, uy = assemble_and_solve()
+            det = det_of(ux, uy)
 
         # Orientation bookkeeping: per-node det of grad U, marched by
         # fold_loci and read by det_sign - the SAME numbers, so loci and
