@@ -15,6 +15,9 @@ TexturePanel::TexturePanel(QWidget *parent)
     : QWidget(parent)
 {
     setObjectName(QStringLiteral("TexturePanel"));
+    // The board's home inside whichever frame or page holds it: it passes the
+    // offered height down to the container rather than settling at its hint.
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     QVBoxLayout *layout = new QVBoxLayout(this);
     layout->setContentsMargins(4, 4, 4, 4);

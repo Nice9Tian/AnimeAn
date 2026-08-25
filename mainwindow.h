@@ -82,6 +82,36 @@ private:
     // answer has not changed, which matters because moving the panel
     // re-creates the board's GL context.
     void updateTextureHome();
+    // One saved viewpoint per texture home. There is only ever ONE texture
+    // board, and it reparents between the central page and the sub-control
+    // frame - so the view transform cannot simply ride along with it: a board
+    // the size of a panel row and a board the size of the central area want
+    // different zooms of the same drawing. Saved on the way out of a home,
+    // restored on the way into one.
+    struct TextureViewSlot {
+        qreal zoom = 1.0;
+        QPointF pan;
+        // Nothing has been saved for this home yet, so there is nothing to
+        // restore - the control's empty slot is what makes its first visit an
+        // auto-fit rather than an inherited viewpoint.
+        bool valid = false;
+        // The user moved the view by hand while the board was here. Only the
+        // control home reads it, and only until the next home-in.
+        bool autoFitSuspended = false;
+    };
+    // Null for "parked": nobody is looking at the board there, so there is no
+    // viewpoint worth remembering.
+    TextureViewSlot *textureViewSlotFor(QWidget *home);
+    void saveTextureViewSlot(QWidget *home);
+    // Restores the incoming home's viewpoint, and re-fits when that home is the
+    // sub-control. Runs QUEUED from updateTextureHome: the board has only just
+    // been reparented, and both the restore's pan clamp and the fit are
+    // measured against a size the layout has not handed out yet.
+    void restoreTextureViewSlot();
+    // The bleed fit: the current frame's visible artwork COVERS the sub-control
+    // frame. A no-op unless the board is homed there, and unless auto-fit is
+    // still in charge of that home.
+    void autoFitTextureControlView();
     void populateChildViewButtons();
     // Script-defined menu-bar menus: Python describes them, C++ renders them
     // and reports the choice back. Rebuilt on every open so check marks stay
@@ -136,7 +166,15 @@ private:
     void startPlayback();
     void stopPlayback();
     void advancePlaybackFrame();
+    // The texture document's File menu on the TEXTURE panel's own bar.
     void createTextureFileMenu();
+    // The same entries again, as a "Texture" submenu of the application File
+    // menu: the panel's bar is only reachable while the panel is on screen.
+    void createMainTextureMenu();
+    // Builds the entries into whichever menu is given, with its own QActions.
+    // The two menus share the handlers, never the actions - a QAction has one
+    // owner, and the second menu's copy would die with the first.
+    void fillTextureFileMenu(QMenu *menu);
     void createHistoryDock();
     void createForcePadDock();
     void refreshHistoryList();
@@ -224,6 +262,17 @@ private:
     // answer costs nothing. The GL context is re-created on every reparent.
     QWidget *m_textureHome = nullptr;
     bool m_updatingTextureHome = false;
+    TextureViewSlot m_textureViewCentral;
+    TextureViewSlot m_textureViewControl;
+    // How many times the queued restore has found the board still unlaid-out.
+    // Bounded: a home that never gives the board a size would otherwise keep a
+    // timer alive for the life of the session.
+    int m_textureViewRestoreRetries = 0;
+    // The child board's frame the last successful sub-control fit was computed
+    // for. Only the scripted refresh path reads it: ui.refresh() carries a
+    // frame FLAG, not a frame change, and a script raises it dozens of times
+    // per run - without this the board would re-fit on every one of them.
+    int m_textureAutoFitFrame = -1;
     QVector<PaintOpenGLWidget *> m_paintViews;
     LayerPanel *m_mainLayerPanel = nullptr;
     LayerPanel *m_childLayerPanel = nullptr;

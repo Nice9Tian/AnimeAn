@@ -94,6 +94,15 @@ private:
     // Frames leave for the registry's keeper before the controls they sat in
     // are deleted: the registry owns their lifetime, not this panel's layout.
     void parkSubControlFrames();
+    // The column's trailing spacer, traded between its two jobs. Greedy (the
+    // ordinary case) it holds the controls at the top and leaves empty air
+    // below; stood down, the leftover height goes to a greedy ROW instead - a
+    // sub-control frame carrying a live board, whose size hint is a thumbnail
+    // of one. The two cannot both be expansive or they would split it.
+    void setTrailingStretchGreedy(bool greedy);
+    // Re-asks the question after a frame has arrived or left: greedy again as
+    // soon as no frame of ours is actually laid out here.
+    void refreshSubControlGreed();
 
     Ui::ToolOptPanel *ui;
     QVBoxLayout *m_layout = nullptr;
@@ -102,6 +111,9 @@ private:
     QMap<QString, QString> m_controlValues;
     // Every frame currently parented into this panel, however it got here.
     QVector<QPointer<SubControlFrame>> m_subControlFrames;
+    // What the trailing spacer currently is, so a redundant trade does not
+    // delete and rebuild it on every panel refresh.
+    bool m_trailingStretchGreedy = true;
     bool m_isSubControlHost = false;
     PaintOpenGLWidget::Tool m_tool = PaintOpenGLWidget::Tool::Pen;
 };

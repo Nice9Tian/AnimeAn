@@ -13,6 +13,15 @@
 
 namespace {
 const qreal kOverlayHandleSize = 14.0;
+// The zoom limits the wheel has always enforced, named so the programmatic
+// paths (setViewTransform, fitViewToContent) cannot drift away from what a
+// gesture is allowed to reach.
+constexpr qreal kMinZoom = 0.1;
+constexpr qreal kMaxZoom = 8.0;
+qreal clampZoom(qreal zoom)
+{
+    return zoom < kMinZoom ? kMinZoom : (zoom > kMaxZoom ? kMaxZoom : zoom);
+}
 }
 
 #ifdef ANIMEAN_WITH_PYTHON
@@ -216,6 +225,18 @@ void PaintOpenGLWidget::resetHistory(const QString &label)
     m_pythonNotifiedLayerId =
         m_pythonNotifiedLayer >= 0 ? m_model.layerIdAt(m_pythonNotifiedLayer) : 0;
     pythonHookSendMessage(QStringLiteral("historyrestore"));
+    // The onion state is NOT covered by that re-sync: historyrestore carries no
+    // onion state, and the frame pre-sync above is exactly what stops
+    // framechange - and with it the onion notifier - from firing. A restore
+    // moves the PLAYHEAD, which is what a ghost's past/ahead tint is read
+    // against, and a project open swaps the whole document under an onion set
+    // that survives the swap. Sent AFTER historyrestore so the script re-reads
+    // its ghosts against state it has already restored. No baseline
+    // invalidation: the notifier's own compare is against what Python was last
+    // told, which historyrestore does not touch, so this stays silent when
+    // nothing actually moved - including the "onion off" board, whose baseline
+    // is deliberately valid from birth.
+    notifyOnionChangedIfNeeded();
     clearOnionCache();
     emit historyChanged();
 }
@@ -249,6 +270,10 @@ void PaintOpenGLWidget::notifyFrameChangedIfNeeded()
     cancelActiveOverlayDrag();
     m_pythonNotifiedFrame = frame;
     pythonHookSendMessage(QStringLiteral("framechange"));
+    // Which ghosts are past and which are ahead depends on where the playhead
+    // is, so a frame move re-colours the whole ghost set. Guarded inside the
+    // notifier: with onion off this is free.
+    notifyOnionChangedIfNeeded();
 }
 
 void PaintOpenGLWidget::notifyLayerChangedIfNeeded()
@@ -338,6 +363,13 @@ bool PaintOpenGLWidget::goToHistory(int index)
     m_eraseGestureChanged = false;
     m_axisSnapState = AxisSnapState::Inactive;
     pythonHookSendMessage(QStringLiteral("historyrestore"));
+    // Undo/redo can move the playhead (a history entry is a whole-model
+    // snapshot), and past/ahead is read against the playhead - but the frame
+    // pre-sync above is precisely what keeps framechange, and with it the onion
+    // notifier, from firing. Same contract as resetHistory: after the restore,
+    // and the notifier's own compare keeps it silent when the playhead landed
+    // where Python already thinks it is.
+    notifyOnionChangedIfNeeded();
     clearOnionCache();
     update();
     emit historyChanged();
@@ -383,6 +415,25 @@ void PaintOpenGLWidget::setScrollPosition(int horizontal, int vertical)
     m_panOffset = QPointF(-horizontal, -vertical);
     clampPan();
     update();
+    // A scroll bar only ever moves because a hand moved it: syncScrollBars
+    // writes the bars back with its own guard up, so nothing programmatic
+    // reaches here. No notifyViewTransformChanged() though - that would run
+    // straight back into the bar that called this.
+    emit userTransformed();
+}
+
+void PaintOpenGLWidget::setViewTransform(qreal zoom, const QPointF &pan)
+{
+    if (m_playbackActive) {
+        // Same as the wheel: the cached frames are re-mapped onto the new view
+        // and re-rendered once it settles.
+        schedulePlaybackCacheRefresh();
+    }
+    m_zoom = clampZoom(zoom);
+    m_panOffset = pan;
+    clampPan();
+    update();
+    notifyViewTransformChanged();
 }
 
 void PaintOpenGLWidget::paintBackground(QPainter &painter, const QRectF &target) const
@@ -582,6 +633,75 @@ QRectF PaintOpenGLWidget::reachableRect() const
     return reach.adjusted(-padX, -padY, padX, padY);
 }
 
+QRectF PaintOpenGLWidget::visibleContentBounds() const
+{
+    // Same column filter the paint pass uses (invisible columns are skipped)
+    // plus the internal ones, which are machinery rather than artwork - so this
+    // bounds exactly what the user can see on this frame.
+    QRectF bounds;
+    const int frame = m_model.currentFrame();
+    if (frame < 0) {
+        return bounds;
+    }
+    for (int layer = 0; layer < m_model.layerCount(); ++layer) {
+        if (!m_model.layerVisible(layer) || m_model.layerInternal(layer)) {
+            continue;
+        }
+        const VectorImageModel *image = m_model.imageAt(frame, layer);
+        if (!image) {
+            continue;
+        }
+        const QRectF cell = image->bounds();
+        if (cell.isNull()) {
+            continue;
+        }
+        bounds = bounds.isNull() ? cell : bounds.united(cell);
+    }
+    return bounds;
+}
+
+bool PaintOpenGLWidget::fitViewToContent(bool cover)
+{
+    if (width() <= 0 || height() <= 0) {
+        return false;
+    }
+
+    QRectF target = visibleContentBounds();
+    if (target.isNull()) {
+        // An empty frame still has a page worth framing. The page is a property
+        // of the DOCUMENT, so the unbounded board has one too - what "unbounded"
+        // drops is the pan clamp, not the paper.
+        target = documentRect();
+    }
+    if (target.isNull()) {
+        // A document with no canvas size either: nothing to frame, and a guess
+        // would be worse than leaving the view where the user left it.
+        return false;
+    }
+    // A single flat stroke has no height and a dot no size at all; either would
+    // divide the viewport by zero. Give the degenerate axis the other one's
+    // span (or a document unit when both are flat) about the same centre.
+    if (target.width() <= 0.0 || target.height() <= 0.0) {
+        const QPointF centre = target.center();
+        const qreal span = std::max<qreal>(std::max(target.width(), target.height()), 1.0);
+        target.setSize(QSizeF(target.width() > 0.0 ? target.width() : span,
+                              target.height() > 0.0 ? target.height() : span));
+        target.moveCenter(centre);
+    }
+
+    const qreal scaleX = qreal(width()) / target.width();
+    const qreal scaleY = qreal(height()) / target.height();
+    // COVER: the content spans the frame on BOTH axes and the longer one runs
+    // off the edges (bleed). CONTAIN would leave a margin on one axis.
+    const qreal zoom = clampZoom(cover ? std::max(scaleX, scaleY) : std::min(scaleX, scaleY));
+    // Centre it: solve toScreen(centre) == viewport centre for the pan
+    // (algorithm/viewscale.h owns the conversion, here as everywhere else).
+    const QPointF pan = QPointF(width() * 0.5, height() * 0.5)
+                        - AnimeViewScale::toScreen(target.center(), zoom, QPointF());
+    setViewTransform(zoom, pan);
+    return true;
+}
+
 void PaintOpenGLWidget::clampPan()
 {
     if (m_unboundedCanvas) {
@@ -640,7 +760,7 @@ void PaintOpenGLWidget::wheelEvent(QWheelEvent *event)
     }
 
     const qreal factor = std::pow(1.25, steps);
-    const qreal newZoom = std::min<qreal>(8.0, std::max<qreal>(0.1, m_zoom * factor));
+    const qreal newZoom = clampZoom(m_zoom * factor);
     if (qFuzzyCompare(newZoom, m_zoom)) {
         event->accept();
         return;
@@ -655,6 +775,7 @@ void PaintOpenGLWidget::wheelEvent(QWheelEvent *event)
     clampPan();
     update();
     notifyViewTransformChanged();
+    emit userTransformed();
     // The artist-mode key-point filter is zoom-dependent (a perceptual
     // threshold in SCREEN space), so a zoom while handles are up re-asks
     // Python which handles survive at the new magnification. Connect's
@@ -2216,6 +2337,7 @@ void PaintOpenGLWidget::setOnionEnabled(bool enabled)
     }
     m_onionEnabled = enabled;
     clearOnionCache();
+    notifyOnionChangedIfNeeded();
     update();
 }
 
@@ -2231,6 +2353,7 @@ void PaintOpenGLWidget::setOnionFrames(const QSet<int> &frames)
     }
     m_onionFrames = frames;
     clearOnionCache();
+    notifyOnionChangedIfNeeded();
     update();
 }
 
@@ -2246,6 +2369,7 @@ void PaintOpenGLWidget::setOnionGuideLines(bool include)
     }
     m_onionGuideLines = include;
     clearOnionCache();
+    notifyOnionChangedIfNeeded();
     update();
 }
 
@@ -2267,6 +2391,80 @@ void PaintOpenGLWidget::setOnionExcludeProperties(const QStringList &properties)
 QStringList PaintOpenGLWidget::onionExcludeProperties() const
 {
     return m_onionExcludeProperties;
+}
+
+void PaintOpenGLWidget::notifyOnionChangedIfNeeded()
+{
+#ifdef ANIMEAN_WITH_PYTHON
+    // A ghost is a rendering of the LAYER STACK, so everything a Python tool
+    // draws through ui.set_overlay (auto_mapping's H/V axes, additional lines)
+    // is missing from it - Guide Line alone can therefore change nothing
+    // visible. This message is the mechanism that lets the owning script draw
+    // its own ghost overlays: it reports the ghost set and where the playhead
+    // sits, and the script decides what that means.
+    const bool enabled = m_onionEnabled;
+    // OFF collapses to one canonical baseline so scrubbing frames on a board
+    // with no ghosts never crosses the language boundary.
+    const bool guides = enabled && m_onionGuideLines;
+    const int current = enabled ? m_model.currentFrame() : -1;
+    QList<int> frames;
+    if (enabled) {
+        frames = m_onionFrames.values();
+        std::sort(frames.begin(), frames.end());
+    }
+    if (m_pythonNotifiedOnionValid
+        && m_pythonNotifiedOnionEnabled == enabled
+        && m_pythonNotifiedOnionGuides == guides
+        && m_pythonNotifiedOnionCurrent == current
+        && m_pythonNotifiedOnionFrames == frames) {
+        return;
+    }
+    m_pythonNotifiedOnionValid = true;
+    m_pythonNotifiedOnionEnabled = enabled;
+    m_pythonNotifiedOnionGuides = guides;
+    m_pythonNotifiedOnionCurrent = current;
+    m_pythonNotifiedOnionFrames = frames;
+
+    if (!animeanHookEventSubscribed(QStringLiteral("onion"))) {
+        return;
+    }
+
+    const int frameRow = m_model.currentFrame();
+    const int layer = m_model.currentLayer();
+    const AnimeCell cell = m_model.cellAt(frameRow, layer);
+
+    py::gil_scoped_acquire acquire;
+    py::dict cellInfo;
+    cellInfo["row"] = frameRow;
+    cellInfo["layer"] = layer;
+    cellInfo["asset"] = cell.assetIndex;
+    cellInfo["frame_id"] = cell.frameId;
+
+    py::list frameList;
+    for (int frame : frames) {
+        frameList.append(frame);
+    }
+
+    py::dict message;
+    message["event"] = "onion";
+    message["view"] = m_viewName.toStdString();
+    message["tool"] = (m_activePythonTool.isEmpty() ? toolName(m_tool) : m_activePythonTool).toStdString();
+    message["base_tool"] = toolName(m_tool).toStdString();
+    message["property"] = m_strokeProperty.toStdString();
+    message["cell"] = cellInfo;
+    message["stroke"] = py::dict();
+    message["position"] = pointToPythonDict(QPointF());
+    message["delta"] = pointToPythonDict(QPointF());
+    message["enabled"] = enabled;
+    message["guides"] = guides;
+    message["frames"] = frameList;
+    message["current"] = frameRow;
+
+    const QString output = ::pythonHookSendMessage(message);
+    if (!isQuietHookOutput(output)) {
+        emit pythonDebugMessage(output);
+    }
+#endif
 }
 
 void PaintOpenGLWidget::clearOnionCache()
@@ -3086,6 +3284,7 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
         clampPan();
         update();
         notifyViewTransformChanged();
+        emit userTransformed();
         event->accept();
         return;
     }

@@ -112,6 +112,24 @@ public:
     qreal zoom() const;
     QPointF panOffset() const;
     void setScrollPosition(int horizontal, int vertical);
+    // Moves the view PROGRAMMATICALLY: the zoom is clamped to the same limits
+    // the wheel enforces and the pan to the same reachable area, so a restored
+    // viewpoint can never land somewhere a gesture could not. Deliberately
+    // silent on userTransformed() - only a hand on the wheel, the middle button
+    // or a scroll bar counts as manual.
+    void setViewTransform(qreal zoom, const QPointF &pan);
+    // Frames the current frame's visible artwork. `cover` fills the viewport -
+    // the content spans it edge to edge and the shorter axis crops (bleed);
+    // false fits the whole of it inside instead. False when there is nothing to
+    // frame, or the widget has no size yet (a fit measured against an unlaid-out
+    // widget frames the wrong rectangle).
+    bool fitViewToContent(bool cover);
+    // The union of the VISIBLE, non-internal layers' content on the current
+    // frame - what a fit frames. Null when nothing is showing. Deliberately not
+    // reachableRect(): that one answers reachability (page + everything drawn,
+    // hidden layers included, plus half a viewport of slack) and would frame
+    // empty paper.
+    QRectF visibleContentBounds() const;
     // What sits behind the drawing. A VIEW preference, not a document one: it
     // is not saved with the project, and the texture export suppresses it so
     // the choice never reaches a file.
@@ -258,6 +276,11 @@ signals:
     void historyChanged();
     void historyCommitted();
     void viewTransformChanged();
+    // The subset of viewTransformChanged the USER caused: wheel zoom,
+    // middle-button pan, a scroll bar dragged. A shell that re-frames the view
+    // by itself needs to know when to stop doing that, and it cannot tell from
+    // viewTransformChanged - its own fit emits that one too.
+    void userTransformed();
     void playbackInterrupted();
 
 protected:
@@ -345,6 +368,13 @@ private:
     // notifier, and the mechanism layer-focused tools (an auto-mapping
     // layer's overlays) hang their show/hide policy on.
     void notifyLayerChangedIfNeeded();
+    // Emits "onion" when this board's ghost set, the guide-line flag or - while
+    // onion is on - the current frame moved past what Python was last told.
+    // Ghosts render layer-stack CONTENT only; the H/V axes and additional lines
+    // are Python OVERLAYS, so the policy side needs the ghost set to draw its
+    // own ghost guides (auto_mapping). Mechanism only: any view may emit, only
+    // the main board carries onion state today.
+    void notifyOnionChangedIfNeeded();
     // Topmost draggable overlay item within grab range of the screen position.
     // When it returns an id and screenDistance is given, screenDistance is
     // the pointer's screen-space distance to that item's nearest segment.
@@ -524,6 +554,17 @@ private:
     // change entirely.
     int m_pythonNotifiedLayer = -2;
     int m_pythonNotifiedLayerId = -1;
+    // The onion state Python was last told about via "onion". While onion is
+    // OFF the whole family collapses to one canonical baseline (frames empty,
+    // current -1), so plain frame changes on a board with no ghosts cost
+    // nothing. The baseline starts VALID and equal to those defaults: a fresh
+    // board has no ghosts, so the first message a script ever sees is the one
+    // that turns onion on - never a redundant "off".
+    bool m_pythonNotifiedOnionValid = true;
+    bool m_pythonNotifiedOnionEnabled = false;
+    bool m_pythonNotifiedOnionGuides = false;
+    int m_pythonNotifiedOnionCurrent = -1;
+    QList<int> m_pythonNotifiedOnionFrames;
     bool m_unboundedCanvas = false;
     BackgroundMode m_backgroundMode = BackgroundMode::White;
     bool m_contentEditable = true;
