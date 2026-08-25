@@ -225,8 +225,13 @@ public:
     int deleteLayerGroup(int groupId);
     bool moveLayer(int fromIndex, int toIndex);
     int addFrame();
-    // Appends a frame that HOLDS the last one: same cells, so one drawing.
-    int addHoldFrame();
+    // Inserts a frame that HOLDS `row` directly after it: same cells, so one
+    // drawing. Directly after rather than at the end because a hold describes
+    // the frame it was asked for, not the sheet's last row.
+    int insertHoldFrameAfter(int row);
+    // An independent copy of `row` after its hold run: new frame ids, deep
+    // copied drawings, so the copy can be edited without changing the source.
+    int duplicateFrame(int row);
     bool deleteFrame(int frameIndex);
     bool moveFrame(int fromIndex, int toIndex);
     int addAsset(AnimeColumnType type = AnimeColumnType::Vector, const QString &name = QString());

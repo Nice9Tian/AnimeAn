@@ -6,7 +6,7 @@
 #include "childrenpanel/historypanel.h"
 #include "childrenpanel/layerpanel.h"
 #include "childrenpanel/newprojectdialog.h"
-#include "childrenpanel/timelinewidget.h"
+#include "childrenpanel/timelinewindow.h"
 
 #include <QComboBox>
 #include "clipreader.h"
@@ -674,8 +674,8 @@ void MainWindow::setupDocks()
     windowsMenu->addAction(m_childPaintWindow->toggleViewAction());
     windowsMenu->addSeparator();
     // Parent windows: the menu shows ONE line per window, and its pages are
-    // reached by their tabs. The timeline is not one of them - it lives in
-    // the main view, so it carries its own toggle instead.
+    // reached by their tabs. The timeline is not one of them - it has no page
+    // tabs - but it IS a dock, so it carries the same inherited toggle.
     m_parentWindows = {m_toolsDock, m_toolOptDock, m_layerDock, m_assetDock,
                        m_historyDock, m_forcePadDock, m_pythonDebugDock};
     for (ParentWindow *window : m_parentWindows) {
@@ -683,8 +683,8 @@ void MainWindow::setupDocks()
             windowsMenu->addAction(window->toggleViewAction());
         }
     }
-    if (m_timelineAction) {
-        windowsMenu->addAction(m_timelineAction);
+    if (m_timeline) {
+        windowsMenu->addAction(m_timeline->toggleViewAction());
     }
 
     // NOTE: deliberately NO horizontal resizeDocks on the bottom band —
@@ -1809,6 +1809,12 @@ void MainWindow::setupPythonDebugDock()
 
     m_pythonDebugDock->addPage(QStringLiteral("python_debug"), QStringLiteral("Python Debug"), panel);
     addDockWidget(Qt::BottomDockWidgetArea, m_pythonDebugDock);
+    if (m_timeline && dockWidgetArea(m_timeline) == Qt::BottomDockWidgetArea) {
+        // BELOW the timeline, not beside it: the bottom band is where the
+        // timeline earns its full window width, and a second dock sharing the
+        // row would cut the frame strip in half the moment the REPL is shown.
+        splitDockWidget(m_timeline, m_pythonDebugDock, Qt::Vertical);
+    }
     // Hidden by default: a REPL against the running app is a developer
     // surface, not part of drawing. The View menu toggle brings it up.
     m_pythonDebugDock->hide();
@@ -2596,23 +2602,17 @@ void MainWindow::createTimeline()
     // Only the MAIN view gets a timeline. It still DRIVES whichever board
     // framePanelTarget() resolves to, exactly as the frames dock did - one
     // timeline, pointed by the child window's Changable Timeline flag.
-    m_timeline = new TimelineWidget(container, container);
+    //
+    // A real dock window, not chrome inside the container: that is what gives
+    // the bottom layout the full window width, the transport the title-bar
+    // position, the strip a resize splitter and the drag its native preview.
+    m_timeline = new TimelineWindow(container, this);
     m_timeline->setThumbnailProvider([this](int frame, QSize size) {
         return framePanelTarget()->renderFrameThumbnail(frame, size);
     });
+    addDockWidget(Qt::BottomDockWidgetArea, m_timeline);
 
-    m_timelineAction = new QAction(QStringLiteral("Timeline"), this);
-    m_timelineAction->setCheckable(true);
-    m_timelineAction->setChecked(m_timeline->timelineVisible());
-    connect(m_timelineAction, &QAction::triggered, this, [this](bool on) {
-        m_timeline->setTimelineVisible(on);
-    });
-    connect(m_timeline, &TimelineWidget::visibilityChanged, this, [this](bool visible) {
-        const QSignalBlocker blocker(m_timelineAction);
-        m_timelineAction->setChecked(visible);
-    });
-
-    connect(m_timeline, &TimelineWidget::frameActivated, this, [this](int frame) {
+    connect(m_timeline, &TimelineWindow::frameActivated, this, [this](int frame) {
         // Picking a frame by hand means the user is done watching; without
         // this the next tick would snap the highlight back.
         stopPlayback();
@@ -2621,7 +2621,7 @@ void MainWindow::createTimeline()
                                attentionFor(view).layer, attentionFor(view).asset);
     });
 
-    connect(m_timeline, &TimelineWidget::addFrameRequested, this, [this]() {
+    connect(m_timeline, &TimelineWindow::addFrameRequested, this, [this]() {
         stopPlayback();  // editing the timeline invalidates the prerender
         PaintOpenGLWidget *view = framePanelTarget();
         const int frameIndex = view->addFrame();
@@ -2630,16 +2630,34 @@ void MainWindow::createTimeline()
                         frameIndex, attentionFor(view).layer, attentionFor(view).asset);
     });
 
-    connect(m_timeline, &TimelineWidget::addHoldRequested, this, [this]() {
+    // A hold describes the frame it was asked for: the new row goes directly
+    // after the current one and re-exposes it, rather than landing at the end
+    // of the sheet where it would hold whatever happens to be last.
+    connect(m_timeline, &TimelineWindow::addHoldRequested, this, [this]() {
         stopPlayback();
         PaintOpenGLWidget *view = framePanelTarget();
-        const int frameIndex = view->addHoldFrame();
+        const int frameIndex = view->insertHoldFrameAfter(attentionFor(view).frame);
+        if (frameIndex < 0) {
+            return;
+        }
         m_timeline->clearThumbnails();
         updateAttention(view, AttentionChange::FrameChange,
                         frameIndex, attentionFor(view).layer, attentionFor(view).asset);
     });
 
-    connect(m_timeline, &TimelineWidget::deleteFrameRequested, this, [this]() {
+    connect(m_timeline, &TimelineWindow::duplicateFrameRequested, this, [this]() {
+        stopPlayback();
+        PaintOpenGLWidget *view = framePanelTarget();
+        const int frameIndex = view->duplicateFrame(attentionFor(view).frame);
+        if (frameIndex < 0) {
+            return;
+        }
+        m_timeline->clearThumbnails();
+        updateAttention(view, AttentionChange::FrameChange,
+                        frameIndex, attentionFor(view).layer, attentionFor(view).asset);
+    });
+
+    connect(m_timeline, &TimelineWindow::deleteFrameRequested, this, [this]() {
         stopPlayback();
         PaintOpenGLWidget *view = framePanelTarget();
         const int row = attentionFor(view).frame;
@@ -2651,7 +2669,7 @@ void MainWindow::createTimeline()
         }
     });
 
-    connect(m_timeline, &TimelineWidget::moveFrameRequested, this, [this](int from, int to) {
+    connect(m_timeline, &TimelineWindow::moveFrameRequested, this, [this](int from, int to) {
         stopPlayback();  // reordering frames invalidates the prerender
         PaintOpenGLWidget *view = framePanelTarget();
         m_timeline->clearThumbnails();
@@ -2667,9 +2685,9 @@ void MainWindow::createTimeline()
                         to, attentionFor(view).layer, attentionFor(view).asset);
     });
 
-    connect(m_timeline, &TimelineWidget::playRequested, this, &MainWindow::startPlayback);
-    connect(m_timeline, &TimelineWidget::pauseRequested, this, &MainWindow::stopPlayback);
-    connect(m_timeline, &TimelineWidget::loopToggled, this, [this](bool on) {
+    connect(m_timeline, &TimelineWindow::playRequested, this, &MainWindow::startPlayback);
+    connect(m_timeline, &TimelineWindow::pauseRequested, this, &MainWindow::stopPlayback);
+    connect(m_timeline, &TimelineWindow::loopToggled, this, [this](bool on) {
         m_playbackLoop = on;
     });
 
@@ -2681,12 +2699,12 @@ void MainWindow::createTimeline()
         requestAttentionUpdate(view, AttentionChange::FrameChange, frame,
                                attentionFor(view).layer, attentionFor(view).asset);
     };
-    connect(m_timeline, &TimelineWidget::prevRequested, this, [stepFrame]() { stepFrame(-1); });
-    connect(m_timeline, &TimelineWidget::nextRequested, this, [stepFrame]() { stepFrame(1); });
+    connect(m_timeline, &TimelineWindow::prevRequested, this, [stepFrame]() { stepFrame(-1); });
+    connect(m_timeline, &TimelineWindow::nextRequested, this, [stepFrame]() { stepFrame(1); });
 
     // The rate belongs to the document, so both a preset and a typed number
     // land in the model; the timeline then re-reads it.
-    connect(m_timeline, &TimelineWidget::fpsChanged, this, [this](int fps) {
+    connect(m_timeline, &TimelineWindow::fpsChanged, this, [this](int fps) {
         PaintOpenGLWidget *view = framePanelTarget();
         const int current = view->model().playbackFps();
         if (fps != current) {
@@ -2705,7 +2723,7 @@ void MainWindow::createTimeline()
     // listing the child document's frames must not reach them. The transport
     // dims the controls (setOnionAvailable in refreshTimeline); these guards
     // are the second lock, for any path that raises the signal anyway.
-    connect(m_timeline, &TimelineWidget::onionToggled, this, [this](bool on) {
+    connect(m_timeline, &TimelineWindow::onionToggled, this, [this](bool on) {
         if (framePanelTarget() != m_paintWidget) {
             return;
         }
@@ -2727,7 +2745,7 @@ void MainWindow::createTimeline()
         m_timeline->setOnionState(m_onionEnabled, m_onionGuideLines, m_onionFrames);
     });
 
-    connect(m_timeline, &TimelineWidget::onionGuideToggled, this, [this](bool on) {
+    connect(m_timeline, &TimelineWindow::onionGuideToggled, this, [this](bool on) {
         if (framePanelTarget() != m_paintWidget) {
             return;
         }
@@ -2736,7 +2754,7 @@ void MainWindow::createTimeline()
         m_timeline->setOnionState(m_onionEnabled, m_onionGuideLines, m_onionFrames);
     });
 
-    connect(m_timeline, &TimelineWidget::onionLaneToggled, this, [this](int frame, bool on) {
+    connect(m_timeline, &TimelineWindow::onionLaneToggled, this, [this](int frame, bool on) {
         if (framePanelTarget() != m_paintWidget) {
             return;
         }
@@ -2758,6 +2776,10 @@ void MainWindow::createTimeline()
             }
         });
     }
+
+    // After the dock is in the layout: the stored area is applied by
+    // re-docking, which only means anything from inside a dock layout.
+    m_timeline->restoreLayout();
 }
 
 void MainWindow::pullOnionGuideProperties()
@@ -3245,12 +3267,10 @@ void MainWindow::setPythonUiFrozen(bool frozen)
             dock->setEnabled(enabled);
         }
     }
-    // The timeline replaced the Frames dock but hangs off the central widget's
-    // container, so the dock sweep above no longer reaches it - and its
-    // buttons are the ones that mutate the document the script is working on.
-    if (m_timeline) {
-        m_timeline->setEnabled(enabled);
-    }
+    // The timeline is a dock, so the sweep above covers it; its own
+    // changeEvent carries the state on to the pieces that live outside it
+    // (the reopen pill, and the transport while the strip is docked to a
+    // side), which are the buttons that mutate the script's document.
     if (m_pythonDebugDock) {
         m_pythonDebugDock->setEnabled(true);
     }
@@ -3773,13 +3793,19 @@ void MainWindow::refreshTimeline()
     PaintOpenGLWidget *view = framePanelTarget();
     const int frameCount = view->frameCount();
     QVector<bool> holds;
+    QVector<QString> names;
     holds.reserve(frameCount);
+    names.reserve(frameCount);
     for (int i = 0; i < frameCount; ++i) {
         // "Hold" is DERIVED from the cells every refresh, so a row stops
         // reading as held the moment it stops holding.
         holds.append(view->model().isHoldFrame(i));
+        // The chips show the row's NAME, which is its number until a
+        // duplicate gives it one of its own.
+        names.append(view->model().frameName(i));
     }
     m_timeline->setFrameData(frameCount, attentionFor(view).frame, holds);
+    m_timeline->setFrameNames(names);
     // The rate is per document, so it follows whichever view the timeline is
     // pointed at - and it has to resync after a load or an undo too.
     m_timeline->setFps(view->model().playbackFps());

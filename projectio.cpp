@@ -435,6 +435,21 @@ QJsonObject sceneToJson(const AnimeSceneModel &model)
         columns.append(columnObject);
     }
     xsheet[QStringLiteral("columns")] = columns;
+
+    // Frame names. Written only when a row actually carries one, so a file
+    // from a project nobody renamed stays byte-identical to what earlier
+    // builds produced; a reader without the key sees the row numbers.
+    QJsonObject frameNames;
+    for (auto it = scene.xsheet.frameNames.constBegin();
+         it != scene.xsheet.frameNames.constEnd(); ++it) {
+        if (it.key() < 0 || it.key() >= scene.xsheet.frameCount || it.value().isEmpty()) {
+            continue;
+        }
+        frameNames[QString::number(it.key())] = it.value();
+    }
+    if (!frameNames.isEmpty()) {
+        xsheet[QStringLiteral("frameNames")] = frameNames;
+    }
     root[QStringLiteral("xsheet")] = xsheet;
 
     // Layer groups. Internal (script-owned) columns are skipped above and
@@ -535,6 +550,18 @@ bool sceneFromJson(const QJsonObject &root, AnimeSceneModel *model, QString *err
 
     const QJsonObject xsheet = root.value(QStringLiteral("xsheet")).toObject();
     scene.xsheet.frameCount = qMax(1, xsheet.value(QStringLiteral("frameCount")).toInt(1));
+
+    // Optional: a file without the key simply has no named rows.
+    const QJsonObject frameNames = xsheet.value(QStringLiteral("frameNames")).toObject();
+    for (auto it = frameNames.constBegin(); it != frameNames.constEnd(); ++it) {
+        bool ok = false;
+        const int row = it.key().toInt(&ok);
+        const QString name = it.value().toString();
+        if (!ok || row < 0 || row >= scene.xsheet.frameCount || name.isEmpty()) {
+            continue;
+        }
+        scene.xsheet.frameNames.insert(row, name);
+    }
 
     const QJsonArray assets = root.value(QStringLiteral("assets")).toArray();
     scene.assets.reserve(assets.size());

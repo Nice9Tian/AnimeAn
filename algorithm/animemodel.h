@@ -2,6 +2,7 @@
 #define ANIMEMODEL_H
 
 #include <QColor>
+#include <QHash>
 #include <QImage>
 #include <QLineF>
 #include <QMap>
@@ -194,11 +195,22 @@ class AnimeXsheet {
 public:
     QVector<AnimeColumn> columns;
     int frameCount = 1;
+    // Per-row names, SPARSE: a row nobody renamed is absent and reads as its
+    // own number. Sparse rather than a dense vector because the default is a
+    // function of the row index, so storing it would mean rewriting every
+    // entry on every insert instead of only the rows that carry a real name.
+    QHash<int, QString> frameNames;
 
     AnimeCell cellAt(int row, int column) const;
     void setCell(int row, int column, const AnimeCell &cell);
     void ensureColumnCount(int count);
     void ensureFrameCount(int count);
+    // Row bookkeeping for the name table. Rows are addressed by index, so an
+    // insert/delete/move of a ROW has to rekey every name past it or the names
+    // would describe the drawings that used to be there.
+    void shiftFrameNamesForInsert(int row);
+    void shiftFrameNamesForDelete(int row);
+    void shiftFrameNamesForMove(int fromRow, int toRow);
 };
 
 class AnimeScene {
@@ -263,7 +275,16 @@ public:
     QString layerName(int layerIndex) const;
     void setLayerName(int layerIndex, const QString &name);
     QString uniqueLayerName(const QString &baseName, int excludeLayerIndex = -1, int excludeAssetIndex = -1) const;
+    // The row's name: whatever was stored for it, or its 1-based number when
+    // nobody named it.
     QString frameName(int frameIndex) const;
+    // An empty name - or one that spells the row's own default - clears the
+    // entry rather than storing it, so "never renamed" stays one state.
+    void setFrameName(int frameIndex, const QString &name);
+    // The name a duplicate of this row gets: the row's own name stripped of a
+    // trailing "-<letters>" suffix, then the first free suffix in -a, -b, ...
+    // -z, -aa. Free means "no row currently reads as that name".
+    QString nextDuplicateName(int frameIndex) const;
     QString assetName(int assetIndex) const;
     void setAssetName(int assetIndex, const QString &name);
     AnimeColumnType assetType(int assetIndex) const;
@@ -340,11 +361,18 @@ public:
     bool deleteLayer(int layerIndex);
     bool moveLayer(int fromIndex, int toIndex);
     int addFrame();
-    // A HELD frame: the new row reuses the previous row's cells verbatim, so
-    // both rows resolve to the SAME drawing. Editing on either shows on both,
-    // which is the whole point of a hold - it is one exposure shown twice,
-    // not a copy that can drift.
-    int addHoldFrame();
+    // A HELD frame inserted DIRECTLY AFTER `row`: the new row reuses `row`'s
+    // cells verbatim, so both rows resolve to the SAME drawing. Editing on
+    // either shows on both, which is the whole point of a hold - it is one
+    // exposure shown twice, not a copy that can drift. Returns the new row,
+    // or -1.
+    int insertHoldFrameAfter(int row);
+    // An independent COPY of `row`, inserted after the hold run that already
+    // re-exposes it (a duplicate belongs after the exposure it was made from,
+    // not inside it). Every non-empty cell gets a fresh frame id in the same
+    // asset with a deep copy of the drawing, so editing the copy cannot change
+    // the original the way a hold does. Returns the new row, or -1.
+    int duplicateFrame(int row);
     // True when this row holds the one above it: it has content and every
     // non-empty cell is the same cell as the row above. Derived rather than
     // flagged, so it stays honest if the user later repoints a cell.

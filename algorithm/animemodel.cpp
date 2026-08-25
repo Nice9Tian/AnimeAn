@@ -1,6 +1,7 @@
 #include "animemodel.h"
 #include "algorithm/vectorlogic.h"
 
+#include <QRegularExpression>
 #include <QSet>
 
 #include <algorithm>
@@ -37,6 +38,27 @@ QString defaultSceneName(int id)
 int maxInt(int a, int b)
 {
     return a > b ? a : b;
+}
+
+// The duplicate suffix alphabet: 0 -> "a", 25 -> "z", 26 -> "aa". Bijective
+// base 26, so every index has exactly one spelling and no "-" run repeats.
+QString duplicateSuffix(int index)
+{
+    QString suffix;
+    for (int n = index + 1; n > 0; n = (n - 1) / 26) {
+        suffix.prepend(QChar(QLatin1Char('a' + ((n - 1) % 26))));
+    }
+    return suffix;
+}
+
+// The stem a duplicate chain hangs off: a name that already ends in a
+// duplicate suffix names the SAME drawing family, so "3-b" duplicates to
+// "3-c" rather than "3-b-a".
+QString duplicateBaseName(const QString &name)
+{
+    static const QRegularExpression suffixPattern(QStringLiteral("-[a-z]+$"));
+    const QRegularExpressionMatch match = suffixPattern.match(name);
+    return match.hasMatch() ? name.left(match.capturedStart()) : name;
 }
 
 QString nextNumberedColumnName(const QVector<AnimeColumn> &columns, const QString &baseName)
@@ -608,6 +630,62 @@ void AnimeXsheet::ensureFrameCount(int count)
     }
 }
 
+void AnimeXsheet::shiftFrameNamesForInsert(int row)
+{
+    if (row < 0 || frameNames.isEmpty()) {
+        return;
+    }
+    QHash<int, QString> shifted;
+    shifted.reserve(frameNames.size());
+    for (auto it = frameNames.constBegin(); it != frameNames.constEnd(); ++it) {
+        shifted.insert(it.key() >= row ? it.key() + 1 : it.key(), it.value());
+    }
+    frameNames = shifted;
+}
+
+void AnimeXsheet::shiftFrameNamesForDelete(int row)
+{
+    if (row < 0 || frameNames.isEmpty()) {
+        return;
+    }
+    QHash<int, QString> shifted;
+    shifted.reserve(frameNames.size());
+    for (auto it = frameNames.constBegin(); it != frameNames.constEnd(); ++it) {
+        if (it.key() == row) {
+            continue;   // the row is gone, and so is what it was called
+        }
+        shifted.insert(it.key() > row ? it.key() - 1 : it.key(), it.value());
+    }
+    frameNames = shifted;
+}
+
+void AnimeXsheet::shiftFrameNamesForMove(int fromRow, int toRow)
+{
+    if (fromRow < 0 || toRow < 0 || fromRow == toRow || frameNames.isEmpty()) {
+        return;
+    }
+    // Same take-then-insert the cells go through, so the name lands wherever
+    // its row landed: remove `fromRow`, then re-index against the insert slot.
+    const bool named = frameNames.contains(fromRow);
+    const QString moved = frameNames.value(fromRow);
+    QHash<int, QString> shifted;
+    shifted.reserve(frameNames.size());
+    for (auto it = frameNames.constBegin(); it != frameNames.constEnd(); ++it) {
+        if (it.key() == fromRow) {
+            continue;
+        }
+        int row = it.key() > fromRow ? it.key() - 1 : it.key();
+        if (row >= toRow) {
+            ++row;
+        }
+        shifted.insert(row, it.value());
+    }
+    if (named) {
+        shifted.insert(toRow, moved);
+    }
+    frameNames = shifted;
+}
+
 AnimeScene::AnimeScene()
     : m_intId(nextSceneIntId())
 {
@@ -825,7 +903,43 @@ QString AnimeSceneModel::frameName(int frameIndex) const
     if (frameIndex < 0) {
         return QString();
     }
+    const auto stored = m_scene.xsheet.frameNames.constFind(frameIndex);
+    if (stored != m_scene.xsheet.frameNames.constEnd() && !stored->isEmpty()) {
+        return *stored;
+    }
     return QString::number(frameIndex + 1);
+}
+
+void AnimeSceneModel::setFrameName(int frameIndex, const QString &name)
+{
+    if (frameIndex < 0) {
+        return;
+    }
+    const QString trimmed = name.trimmed();
+    if (trimmed.isEmpty() || trimmed == QString::number(frameIndex + 1)) {
+        m_scene.xsheet.frameNames.remove(frameIndex);
+        return;
+    }
+    m_scene.xsheet.frameNames.insert(frameIndex, trimmed);
+}
+
+QString AnimeSceneModel::nextDuplicateName(int frameIndex) const
+{
+    if (frameIndex < 0) {
+        return QString();
+    }
+    const QString base = duplicateBaseName(frameName(frameIndex));
+    QSet<QString> taken;
+    taken.reserve(m_scene.xsheet.frameCount);
+    for (int row = 0; row < m_scene.xsheet.frameCount; ++row) {
+        taken.insert(frameName(row));
+    }
+    for (int index = 0;; ++index) {
+        const QString candidate = base + QLatin1Char('-') + duplicateSuffix(index);
+        if (!taken.contains(candidate)) {
+            return candidate;
+        }
+    }
 }
 
 QString AnimeSceneModel::assetName(int assetIndex) const
@@ -1571,23 +1685,74 @@ int AnimeSceneModel::addFrame()
     return row;
 }
 
-int AnimeSceneModel::addHoldFrame()
+int AnimeSceneModel::insertHoldFrameAfter(int row)
 {
-    const int previous = m_scene.xsheet.frameCount - 1;
-    const int row = addFrame();
-    if (row <= 0 || previous < 0) {
-        return row;
+    if (row < 0 || row >= m_scene.xsheet.frameCount) {
+        return -1;
     }
-    // The SAME cell, not a copy of the drawing: both rows point at one asset
-    // and one frame id, so a stroke drawn on either appears on both.
+    const int target = row + 1;
     for (AnimeColumn &column : m_scene.xsheet.columns) {
-        const AnimeCell held = column.cellAt(previous);
+        const AnimeCell held = column.cellAt(row);
+        column.insertCell(target);
         if (!held.isEmpty()) {
-            column.setCell(row, held);
+            // The SAME cell, not a copy of the drawing: both rows point at one
+            // asset and one frame id, so a stroke drawn on either appears on
+            // both. That is what makes the new row a hold of `row`.
+            column.setCell(target, held);
         }
     }
-    m_currentAsset = assetIndexAt(row, m_currentLayer);
-    return row;
+    ++m_scene.xsheet.frameCount;
+    m_scene.xsheet.shiftFrameNamesForInsert(target);
+    setCurrentFrame(target);
+    return target;
+}
+
+int AnimeSceneModel::duplicateFrame(int row)
+{
+    if (row < 0 || row >= m_scene.xsheet.frameCount) {
+        return -1;
+    }
+    // Past the run that already re-exposes this drawing: dropping the copy
+    // INSIDE the hold run would split one exposure into two.
+    int target = row + 1;
+    while (target < m_scene.xsheet.frameCount && isHoldFrame(target)) {
+        ++target;
+    }
+
+    const QString name = nextDuplicateName(row);
+    for (AnimeColumn &column : m_scene.xsheet.columns) {
+        const AnimeCell source = column.cellAt(row);
+        column.insertCell(target);
+        if (source.isEmpty() || source.assetIndex < 0
+            || source.assetIndex >= m_scene.assets.size()) {
+            continue;   // an empty cell duplicates as an empty cell
+        }
+        AnimeAsset &asset = m_scene.assets[source.assetIndex];
+        const AnimeVectorImageModel *original = asset.frame(source.frameId);
+        if (!original) {
+            continue;
+        }
+        // A fresh frame id in the SAME asset: the copy belongs to the same
+        // layer's drawing set, but nothing else may resolve to it.
+        int frameId = source.frameId;
+        for (int existing : asset.frameIds()) {
+            frameId = maxInt(frameId, existing);
+        }
+        ++frameId;
+        const AnimeVectorImageModel copy = *original;
+        if (AnimeVectorImageModel *created = asset.frame(frameId, true)) {
+            *created = copy;
+        }
+        AnimeCell cell;
+        cell.assetIndex = source.assetIndex;
+        cell.frameId = frameId;
+        column.setCell(target, cell);
+    }
+    ++m_scene.xsheet.frameCount;
+    m_scene.xsheet.shiftFrameNamesForInsert(target);
+    setFrameName(target, name);
+    setCurrentFrame(target);
+    return target;
 }
 
 bool AnimeSceneModel::isHoldFrame(int frameIndex) const
@@ -1634,6 +1799,7 @@ bool AnimeSceneModel::deleteFrame(int frameIndex)
         column.removeCell(frameIndex);
     }
     --m_scene.xsheet.frameCount;
+    m_scene.xsheet.shiftFrameNamesForDelete(frameIndex);
     if (m_currentFrame >= m_scene.xsheet.frameCount) {
         m_currentFrame = m_scene.xsheet.frameCount - 1;
     } else if (m_currentFrame > frameIndex) {
@@ -1654,6 +1820,7 @@ bool AnimeSceneModel::moveFrame(int fromIndex, int toIndex)
     for (AnimeColumn &column : m_scene.xsheet.columns) {
         column.moveCell(fromIndex, toIndex);
     }
+    m_scene.xsheet.shiftFrameNamesForMove(fromIndex, toIndex);
     if (m_currentFrame == fromIndex) {
         m_currentFrame = toIndex;
     } else if (fromIndex < m_currentFrame && m_currentFrame <= toIndex) {

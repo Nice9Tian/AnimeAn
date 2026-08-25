@@ -1,9 +1,11 @@
-#ifndef TIMELINEWIDGET_H
-#define TIMELINEWIDGET_H
+#ifndef TIMELINEWINDOW_H
+#define TIMELINEWINDOW_H
 
+#include <QDockWidget>
 #include <QHash>
 #include <QImage>
 #include <QPoint>
+#include <QRect>
 #include <QSet>
 #include <QSize>
 #include <QString>
@@ -14,13 +16,15 @@
 
 class PaintViewContainer;
 class QLineEdit;
+class QMainWindow;
 
 // What a press on a piece of timeline chrome MEANS. The transport bar, the
-// vertical strip's header and the floating panel all raise the same ids, so a
-// command is wired once however the user reached it.
+// vertical strip's command row and the side title bar all raise the same ids,
+// so a command is wired once however the user reached it.
 enum class TimelineCommand {
     AddFrame,
     AddHold,
+    Duplicate,
     DeleteFrame,
     Onion,
     GuideLines,
@@ -44,6 +48,9 @@ struct TimelineState {
     int currentFrame = 0;
     // Per row, from the model's derived hold test. Empty means "all keys".
     QVector<bool> holds;
+    // Per row, from the model's frame names. A row past the end of this vector
+    // reads as its own number, exactly as the model's default does.
+    QVector<QString> names;
     bool playing = false;
     bool loop = true;
     int fps = 12;
@@ -59,8 +66,8 @@ struct TimelineState {
     // The strip's orientation, which also decides where the collapse chevron
     // points and whether the bar carries the frame commands.
     bool vertical = false;
-    // Which side the vertical strip is on: the collapse control sits on the
-    // transport's inner edge, so the bar has to know.
+    // Which side the vertical strip is docked on: the collapse control sits on
+    // the transport's inner edge, so the bar has to know.
     bool leftAligned = false;
     bool floating = false;
 };
@@ -68,7 +75,11 @@ struct TimelineState {
 // The transport: frame commands at the left, the onion pair + playback +
 // rate + frame field as one centred assembly, window chrome at the right.
 // Custom painted rather than a row of QPushButtons - the design is a flat
-// 34px band of equal cells, which no button style reproduces.
+// band of equal cells, which no button style reproduces.
+//
+// It is also the dock's TITLE BAR when the timeline is docked bottom or
+// floating, so a press that hits no cell is ignored rather than swallowed:
+// that is what lets QDockWidget start its own drag from the empty space.
 class TimelineTransportBar : public QWidget
 {
     Q_OBJECT
@@ -78,6 +89,7 @@ public:
 
     void setState(const TimelineState &state);
     QSize sizeHint() const override;
+    QSize minimumSizeHint() const override;
 
 signals:
     void commandTriggered(TimelineCommand command);
@@ -110,11 +122,18 @@ private:
     QLineEdit *m_frameField = nullptr;
     int m_hoverItem = -1;
     int m_pressedItem = -1;
+    // How many 34px bands the families currently need. A family is never split
+    // across the fold, so this is 1 or 2 rather than a free-flowing wrap.
+    int m_rows = 1;
 };
 
 // The frame cells, horizontally under the canvas or vertically beside it. In
-// the vertical layout it also carries the "ANIMATION" header and the frame
-// commands, because there is no bar left of the canvas to put them on.
+// the vertical layout it also carries the frame commands, because there is no
+// transport left of the canvas to put them on.
+//
+// Cell size is DERIVED from the widget's own cross-axis extent, so dragging
+// the dock's splitter scales the run: the aspect rules (key cell 126:74,
+// preview 4:3, hold sliver a fifth of a key) are what stay fixed.
 class TimelineStrip : public QWidget
 {
     Q_OBJECT
@@ -133,10 +152,6 @@ signals:
     void laneToggled(int frame, bool on);
     void moveFrameRequested(int from, int to);
     void commandTriggered(TimelineCommand command);
-    // The vertical header is the strip's own grip: dragging it re-sides or
-    // detaches the strip, and only the owner knows where the edges are.
-    void headerDragged(const QPoint &globalPos);
-    void headerReleased();
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -163,7 +178,11 @@ private:
     void ensureCurrentVisible();
     int cellAt(const QPoint &pos) const;
     int dropTargetAt(const QPoint &pos) const;
+    // Where the cells start: the vertical layout reserves the command row
+    // above them, the horizontal one starts at the top edge.
+    int cellOrigin() const;
     QRect commandRect(int index) const;
+    QString nameFor(int frame) const;
     QImage thumbnail(int frame, const QSize &size);
 
     TimelineState m_state;
@@ -173,46 +192,44 @@ private:
     std::function<QImage(int, QSize)> m_provider;
     int m_scroll = 0;
     int m_extent = 0;      // total length of the cell run along the axis
+    // Cell metrics for the current widget size, recomputed by relayout.
+    int m_keyExtent = 0;   // key cell length along the run
+    int m_holdExtent = 0;  // hold sliver length along the run
+    int m_cellThickness = 0;   // cell size across the run
     int m_hoverCommand = -1;
     int m_pressedCommand = -1;
     int m_pressedCell = -1;
     bool m_dragging = false;
-    bool m_headerDrag = false;
     QPoint m_pressPos;
 };
 
-// Layout 4: the whole transport plus the horizontal cells as their own
-// frameless window. It owns no controls of its own beyond the title bar -
-// the bar and the strip are the same instances, reparented.
-class TimelineFloatPanel : public QWidget
+// The dock's title bar while the strip is docked left or right: the transport
+// cannot ride there (its assembly is wider than the column), so the side gets
+// a slim named bar and the transport stays under the canvas.
+class TimelineSideTitleBar : public QWidget
 {
     Q_OBJECT
 
 public:
-    explicit TimelineFloatPanel(QWidget *parent = nullptr);
+    explicit TimelineSideTitleBar(QWidget *parent = nullptr);
 
-    // The widgets to stack under the title bar, top first.
-    void setContentWidgets(QWidget *strip, QWidget *bar);
+    QSize sizeHint() const override;
 
 signals:
-    void closeRequested();
-    void titleDragged(const QPoint &globalPos);
-    void titleReleased();
+    void commandTriggered(TimelineCommand command);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
-    void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
     void leaveEvent(QEvent *event) override;
-    void hideEvent(QHideEvent *event) override;
 
 private:
     QRect closeRect() const;
 
-    bool m_dragging = false;
     bool m_hoverClose = false;
-    QPoint m_grabOffset;
+    bool m_pressedClose = false;
 };
 
 // What is left of the timeline when it is closed: one chip at the foot of the
@@ -240,25 +257,23 @@ private:
     bool m_hover = false;
 };
 
-// The timeline itself: the docked bottom chrome AND the owner of every other
-// piece. It holds no model or playback policy - it reports what the user did
-// and redraws what it is told, exactly as the frame panel it replaces did.
-class TimelineWidget : public QWidget
+// The timeline itself: a real dock window whose CONTENT is the strip and whose
+// TITLE BAR is the transport. Docking, floating, the drag preview and the
+// resize splitter are then Qt's, not ours. It holds no model or playback
+// policy - it reports what the user did and redraws what it is told.
+class TimelineWindow : public QDockWidget
 {
     Q_OBJECT
 
 public:
-    enum class Layout {
-        TransportOnly,
-        HorizontalStrip,
-        VerticalStrip,
-        Floating,
-        Hidden
-    };
+    explicit TimelineWindow(PaintViewContainer *container, QMainWindow *mainWindow);
 
-    explicit TimelineWidget(PaintViewContainer *container, QWidget *parent = nullptr);
+    // Called once the dock has been added to the main window: the stored area
+    // is applied by re-docking, which only works from inside a dock layout.
+    void restoreLayout();
 
     void setFrameData(int frameCount, int currentFrame, const QVector<bool> &holds);
+    void setFrameNames(const QVector<QString> &names);
     void setPlaybackActive(bool active);
     void setFps(int fps);
     void setLoop(bool loop);
@@ -268,9 +283,6 @@ public:
     void setOnionAvailable(bool available);
     void setThumbnailProvider(std::function<QImage(int, QSize)> provider);
     void clearThumbnails();
-
-    bool timelineVisible() const;
-    void setTimelineVisible(bool visible);
 
     // The cadence table, moved here from the frame panel: presets first, then
     // a WHOLE-string number. Whole-string on purpose - the preset titles start
@@ -285,6 +297,7 @@ signals:
     void frameActivated(int frame);
     void addFrameRequested();
     void addHoldRequested();
+    void duplicateFrameRequested();
     void deleteFrameRequested();
     void moveFrameRequested(int from, int to);
     void playRequested();
@@ -296,7 +309,6 @@ signals:
     void onionToggled(bool on);
     void onionGuideToggled(bool on);
     void onionLaneToggled(int frame, bool on);
-    void visibilityChanged(bool visible);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -304,28 +316,44 @@ protected:
 
 private:
     void handleCommand(TimelineCommand command);
+    // Re-homes the transport and the title bar for the current dock area, and
+    // shows or hides the strip for the collapsed flag.
     void applyLayout();
+    // Asks the main window for the dock size the current mode wants. Only on
+    // a mode change: at any other moment the size is the user's business.
+    void applyDockExtent();
     void pushState();
     void positionPill();
     void loadSettings();
     void saveSettings();
-    // Where a drag of the strip header or the panel title bar wants to land.
-    // `threshold` is how far from every edge the pointer has to be before the
-    // answer is Floating.
-    Layout dropTargetFor(const QPoint &globalPos, bool *leftAligned, int threshold) const;
-    Layout dropTargetFor(const QPoint &globalPos, bool *leftAligned) const;
+    Qt::DockWidgetArea sideArea() const;
 
     PaintViewContainer *m_container = nullptr;
+    QMainWindow *m_mainWindow = nullptr;
     TimelineTransportBar *m_bar = nullptr;
     TimelineStrip *m_strip = nullptr;
-    TimelineFloatPanel *m_panel = nullptr;
+    TimelineSideTitleBar *m_sideTitle = nullptr;
     TimelineReopenPill *m_pill = nullptr;
     TimelineState m_state;
-    Layout m_layout = Layout::TransportOnly;
-    // What Close and the pill restore; never Hidden or Floating.
-    Layout m_dockedLayout = Layout::HorizontalStrip;
-    bool m_leftAligned = false;
+    // Where the dock last was. Kept alongside QDockWidget's own state because
+    // a floating dock still has to remember which side it came from.
+    Qt::DockWidgetArea m_area = Qt::BottomDockWidgetArea;
+    // Which side the vertical layout goes back to. Kept separately because a
+    // bottom-docked timeline has no side, and the orientation button still has
+    // to answer "which one did you last use".
+    Qt::DockWidgetArea m_sideArea = Qt::RightDockWidgetArea;
+    // What the settings asked for. Separate from m_area because the owner
+    // adds the dock to the bottom area first, which overwrites m_area before
+    // restoreLayout ever runs.
+    Qt::DockWidgetArea m_restoreArea = Qt::BottomDockWidgetArea;
+    QRect m_floatGeometry;
+    // The dock extent the user had before collapsing, so expanding gives back
+    // the strip they sized rather than the default one.
+    int m_expandedExtent = 0;
+    bool m_restoreFloating = false;
+    bool m_restoreVisible = true;
     bool m_applyingLayout = false;
+    bool m_restoring = false;
 };
 
-#endif // TIMELINEWIDGET_H
+#endif // TIMELINEWINDOW_H

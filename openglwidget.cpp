@@ -1701,17 +1701,30 @@ int PaintOpenGLWidget::addFrame()
     return row;
 }
 
-int PaintOpenGLWidget::addHoldFrame()
+int PaintOpenGLWidget::insertHoldFrameAfter(int row)
 {
-    const int row = m_model.addHoldFrame();
+    const int inserted = m_model.insertHoldFrameAfter(row);
     m_points.clear();
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
-    if (row >= 0) {
+    if (inserted >= 0) {
         commitHistory(QStringLiteral("Add Hold Frame"));
     }
     update();
-    return row;
+    return inserted;
+}
+
+int PaintOpenGLWidget::duplicateFrame(int row)
+{
+    const int duplicated = m_model.duplicateFrame(row);
+    m_points.clear();
+    m_hasCurrentStroke = false;
+    m_hasLastEraserPos = false;
+    if (duplicated >= 0) {
+        commitHistory(QStringLiteral("Duplicate Frame"));
+    }
+    update();
+    return duplicated;
 }
 
 bool PaintOpenGLWidget::deleteFrame(int frameIndex)

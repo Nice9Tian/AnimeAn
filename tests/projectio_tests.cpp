@@ -39,6 +39,10 @@ int main(int argc, char *argv[])
     mainModel.setCanvasSize(QSize(1920, 1080));
     mainModel.setLayerName(0, QStringLiteral("Main ink"));
     mainModel.setScriptData(QStringLiteral("{\"owner\":\"main\"}"));
+    // Two named rows, one of them a duplicate-style name, and one row left
+    // alone: the untouched row must still read as its number after a load.
+    mainModel.setFrameName(1, QStringLiteral("key"));
+    mainModel.setFrameName(2, QStringLiteral("2-a"));
 
     AnimeSceneModel textureModel;
     textureModel.initializeScene(2, 7);
@@ -76,6 +80,18 @@ int main(int argc, char *argv[])
                QSize(512, 512),
                7,
                QStringLiteral("Texture ink"));
+
+    check(loadedMain.frameName(1) == QStringLiteral("key"), "frame name did not round-trip");
+    check(loadedMain.frameName(2) == QStringLiteral("2-a"),
+          "duplicate-style frame name did not round-trip");
+    check(loadedMain.frameName(0) == QStringLiteral("1"),
+          "an unnamed row did not fall back to its number");
+    // Names are optional: a scene without any must not write the key at all,
+    // so files from projects nobody renamed stay as they were.
+    check(!project.value(QStringLiteral("textureView")).toObject()
+               .value(QStringLiteral("xsheet")).toObject()
+               .contains(QStringLiteral("frameNames")),
+          "an unnamed scene wrote a frame-name table");
 
     const QJsonObject textureView = textureViewToJson(textureModel);
     check(textureView.value(QStringLiteral("format")).toString()
@@ -132,6 +148,54 @@ int main(int argc, char *argv[])
     error.clear();
     check(!projectFromJson(wrongVersion, &loadedMain, &loadedTexture, &error),
           "a bundle with a non-numeric version was accepted");
+
+    // Frame operations. Not persistence, but the names they move are: a
+    // rekey that drifted would be saved as a row describing another drawing.
+    AnimeSceneModel ops;
+    ops.initializeScene(2, 3);
+    AnimeVectorStroke stroke;
+    stroke.id = 1;
+    AnimeVectorImageModel *drawing = ops.imageAt(0, 0, true);
+    check(drawing != nullptr, "the test scene refused a drawing");
+    drawing->addStroke(stroke);
+    const AnimeCell source = ops.cellAt(0, 0);
+
+    const int held = ops.insertHoldFrameAfter(0);
+    check(held == 1, "a hold did not land directly after the frame it holds");
+    check(ops.frameCount() == 4, "a hold did not grow the sheet");
+    check(ops.isHoldFrame(1), "the inserted row does not read as a hold");
+    check(ops.cellAt(1, 0).assetIndex == source.assetIndex
+              && ops.cellAt(1, 0).frameId == source.frameId,
+          "a hold did not re-expose the same cell");
+
+    const int copy = ops.duplicateFrame(0);
+    check(copy == 2, "a duplicate did not land after the hold run");
+    check(!ops.isHoldFrame(2), "a duplicate reads as a hold");
+    check(ops.cellAt(2, 0).assetIndex == source.assetIndex,
+          "a duplicate left its layer's asset");
+    check(ops.cellAt(2, 0).frameId != source.frameId,
+          "a duplicate reused the source frame id");
+    check(ops.frameName(2) == QStringLiteral("1-a"), "a duplicate was not named after its source");
+    const AnimeVectorImageModel *copiedImage = ops.imageAt(2, 0);
+    check(copiedImage && copiedImage->strokeCount() == 1, "a duplicate lost the drawing");
+    drawing = ops.imageAt(0, 0, true);
+    drawing->addStroke(stroke);
+    copiedImage = ops.imageAt(2, 0);
+    check(copiedImage && copiedImage->strokeCount() == 1,
+          "editing the source changed the duplicate");
+
+    // Rows: 0 "start", 1 hold, 2 "1-a", 3.
+    ops.setFrameName(0, QStringLiteral("start"));
+    ops.deleteFrame(1);
+    check(ops.frameName(0) == QStringLiteral("start"), "a delete moved a name above it");
+    check(ops.frameName(1) == QStringLiteral("1-a"), "a delete did not pull names up");
+    ops.moveFrame(0, 2);
+    check(ops.frameName(2) == QStringLiteral("start"), "a move left the name behind");
+    check(ops.frameName(0) == QStringLiteral("1-a"), "a move did not shift the rows it passed");
+    // A second duplicate of the same base has to find the next free suffix.
+    ops.setFrameName(1, QStringLiteral("7"));
+    check(ops.nextDuplicateName(0) == QStringLiteral("1-b"),
+          "a duplicate chain reused a taken suffix");
 
     check(ensureProjectFileExtension(QStringLiteral("drawing")) == QStringLiteral("drawing.anproj"),
           "project extension was not appended");

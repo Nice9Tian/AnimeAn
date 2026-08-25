@@ -22,7 +22,7 @@ class QAction;
 class QDockWidget;
 class LayerPanel;
 class ParentWindow;
-class TimelineWidget;
+class TimelineWindow;
 class ToolsPanel;
 class PaintOpenGLWidget;
 class QLineEdit;
@@ -178,8 +178,7 @@ private:
     QVector<PaintOpenGLWidget *> m_paintViews;
     LayerPanel *m_mainLayerPanel = nullptr;
     LayerPanel *m_childLayerPanel = nullptr;
-    TimelineWidget *m_timeline = nullptr;
-    QAction *m_timelineAction = nullptr;
+    TimelineWindow *m_timeline = nullptr;
     AssetPanel *m_assetPanel = nullptr;
     ParentWindow *m_layerDock = nullptr;
     ParentWindow *m_assetDock = nullptr;

@@ -92,8 +92,8 @@ set(PROJECT_SOURCES
     childrenpanel/newprojectdialog.h
     childrenpanel/palettecontrol.cpp
     childrenpanel/palettecontrol.h
-    childrenpanel/timelinewidget.cpp
-    childrenpanel/timelinewidget.h
+    childrenpanel/timelinewindow.cpp
+    childrenpanel/timelinewindow.h
     childrenpanel/toolcontrolconfig.cpp
     childrenpanel/toolcontrolconfig.h
     childrenpanel/tooloptpanel.cpp
