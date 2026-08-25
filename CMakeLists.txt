@@ -163,6 +163,9 @@ if(ANIMEAN_WITH_PYTHON)
             "${ANIMEAN_PYFILE_DIR}/bezier.py"
             "$<TARGET_FILE_DIR:AnimeAn>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ANIMEAN_PYFILE_DIR}/three_vendor.py"
+            "$<TARGET_FILE_DIR:AnimeAn>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${ANIMEAN_PYFILE_DIR}/connect_tool.py"
             "$<TARGET_FILE_DIR:AnimeAn>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -293,6 +296,9 @@ if(WIN32 AND QT_VERSION_MAJOR EQUAL 6)
                 "${ANIMEAN_DEPLOYED_EXE}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ANIMEAN_PYFILE_DIR}/bezier.py"
+                "${ANIMEAN_DEPLOY_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ANIMEAN_PYFILE_DIR}/three_vendor.py"
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ANIMEAN_PYFILE_DIR}/connect_tool.py"

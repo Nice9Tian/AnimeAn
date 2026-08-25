@@ -3594,6 +3594,148 @@ def _warp_cubic(map_point, cub, tol=_CURVE_TOL, max_depth=_BEZIER_MAX_DEPTH, dep
             + _warp_cubic(map_point, right, tol, max_depth, depth + 1))
 
 
+# R^3 twins of the exact 2D primitives. They live HERE, not in bezier.py:
+# that file mirrors algorithm/beziersplit.h bit-exactly and must not grow
+# Python-only members. Only evaluation-side helpers need a z - the SOURCE
+# side of a 3D warp stays 2D, so splitting keeps using bezier.split_cubic.
+
+def _dist3(a, b):
+    return math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2
+                     + (a[2] - b[2]) ** 2)
+
+
+def _lerp3(a, b, t):
+    return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t)
+
+
+def _cubic_point3(cub, t):
+    p0, c1, c2, p3 = cub
+    a = _lerp3(p0, c1, t)
+    b = _lerp3(c1, c2, t)
+    c = _lerp3(c2, p3, t)
+    d = _lerp3(a, b, t)
+    e = _lerp3(b, c, t)
+    return _lerp3(d, e, t)
+
+
+def _hull_length3(cub):
+    p0, c1, c2, p3 = cub
+    return _dist3(p0, c1) + _dist3(c1, c2) + _dist3(c2, p3)
+
+
+def _directional_image_3d(map3, base, ctrl):
+    """3D image of the handle vector (ctrl - base) under a lifted warp.
+
+    The codomain-R^3 twin of _directional_image: the same one-sided
+    derivative in the handle's OWN direction, at the same ABSOLUTE step
+    min(_JAC_EPS, 0.25 * length). The step must stay at that scale: map3
+    composes the Newton lift (residual plateau up to _SEVER_RESIDUAL near
+    folds), the piecewise-affine hv (POLY_STEP treads) and a piecewise-
+    linear z off the mesh, and a shrunken step reads those artifacts raw
+    while 1/eps scales them up into the handle.
+    """
+    vx, vy = ctrl[0] - base[0], ctrl[1] - base[1]
+    length = math.hypot(vx, vy)
+    wb = map3(base)
+    if length <= 1e-9:
+        return wb
+    eps = min(_JAC_EPS, 0.25 * length)
+    ux, uy = vx / length, vy / length
+    ahead = map3((base[0] + ux * eps, base[1] + uy * eps))
+    return (wb[0] + (ahead[0] - wb[0]) / eps * length,
+            wb[1] + (ahead[1] - wb[1]) / eps * length,
+            wb[2] + (ahead[2] - wb[2]) / eps * length)
+
+
+def _warp_cubic_3d(map3, cub, tol=_CURVE_TOL, max_depth=_BEZIER_MAX_DEPTH,
+                   depth=0):
+    """Transport one SOURCE (2D) cubic through a lifted warp into R^3.
+
+    _warp_cubic with a z: identical control flow, probe set and bisection -
+    in particular the output-length-scaled probe count plus the golden-
+    section probe. A single midpoint probe cannot stand in for them: any
+    odd-symmetric deviation (a full guide period, an S across one surface
+    wave) is exactly zero at t=0.5 and would be accepted at depth 0 with
+    no second chance. Returns [(out_cubic3, source_sub_cubic)] so callers
+    can trace every leaf back to its source parameters.
+    """
+    p0, c1, c2, p3 = cub
+    w0 = map3(p0)
+    w3 = map3(p3)
+    out_c1 = _directional_image_3d(map3, p0, c1)
+    out_c2 = _directional_image_3d(map3, p3, c2)
+    out = (w0, out_c1, out_c2, w3)
+
+    net = _hull_length3(out)
+    probes = max(3, min(17, int(math.ceil(net / _FORCE_STEP))))
+    ts = [(k + 1.0) / (probes + 1.0) for k in range(probes)] + [_PROBE_T]
+    worst = 0.0
+    for t in ts:
+        worst = max(worst, _dist3(map3(_cubic_point(cub, t)),
+                                  _cubic_point3(out, t)))
+    if worst <= tol or depth >= max_depth:
+        return [(out, cub)]
+    left, right = bezier.split_cubic(cub, 0.5)
+    return (_warp_cubic_3d(map3, left, tol, max_depth, depth + 1)
+            + _warp_cubic_3d(map3, right, tol, max_depth, depth + 1))
+
+
+def _rdp_indices3d(points, tol, protect=()):
+    """Indices _rdp_polyline3d would keep, with `protect`ed indices pinned.
+
+    Protected indices (the original Bezier anchors of a draped stroke) both
+    survive and bound the spans, so decimation never straddles - or drops -
+    an anchor the snapshot metadata points at.
+    """
+    n = len(points)
+    if n <= 2:
+        return list(range(n))
+    keep = [False] * n
+    keep[0] = keep[-1] = True
+    marks = sorted({0, n - 1, *(k for k in protect if 0 <= k < n)})
+    for k in marks:
+        keep[k] = True
+    stack = list(zip(marks, marks[1:]))
+    while stack:
+        lo, hi = stack.pop()
+        if hi - lo < 2:
+            continue
+        ax, ay, az = points[lo]
+        dx = points[hi][0] - ax
+        dy = points[hi][1] - ay
+        dz = points[hi][2] - az
+        norm2 = dx * dx + dy * dy + dz * dz
+        worst = -1.0
+        pick = None
+        for k in range(lo + 1, hi):
+            rx = points[k][0] - ax
+            ry = points[k][1] - ay
+            rz = points[k][2] - az
+            if norm2 <= 1e-12:
+                d2 = rx * rx + ry * ry + rz * rz
+            else:
+                t = (rx * dx + ry * dy + rz * dz) / norm2
+                t = min(max(t, 0.0), 1.0)
+                ex = rx - t * dx
+                ey = ry - t * dy
+                ez = rz - t * dz
+                d2 = ex * ex + ey * ey + ez * ez
+            if d2 > worst:
+                worst = d2
+                pick = k
+        if pick is not None and worst > tol * tol:
+            keep[pick] = True
+            stack.append((lo, pick))
+            stack.append((pick, hi))
+    return [k for k in range(n) if keep[k]]
+
+
+def _anchor_key(point):
+    """1/64-px position key for tracking anchors through clip/sever cuts."""
+    return (round(point[0] * 64.0), round(point[1] * 64.0))
+
+
 def _commands_to_subpaths(commands):
     """Parse stroke `commands` into subpaths, each a list of cubic tuples.
 
@@ -4747,10 +4889,14 @@ def _absorb_legacy_items(view_name, scene, frame):
 # scene scanning + mapping
 # ---------------------------------------------------------------------------
 
-def _collect_pattern_strokes(scene, frame, want_commands=False):
+def _collect_pattern_strokes(scene, frame, want_commands=False,
+                             tag_source=False):
     """Pattern strokes on `frame`. With want_commands the strokes carry their
     real Bezier "commands" (to_poly=False, for bezier mode); otherwise the 4px
-    "polylines" flattening (for polyline / spline modes)."""
+    "polylines" flattening (for polyline / spline modes). tag_source stamps
+    each stroke with its snapshot address "src" = (layer index, stroke index
+    in the cell) - valid only until the document changes (strokes carry no
+    persistent ids; edits renumber)."""
     pattern = []
     structure = scene.get_structure()
     if frame < 0 or frame >= structure["frame_count"]:
@@ -4764,9 +4910,11 @@ def _collect_pattern_strokes(scene, frame, want_commands=False):
         if not layer["visible"] or layer["type"] == "fill":
             continue
         cell = scene.cell_to_dict(layer["index"], frame, to_poly, POLY_STEP)
-        for stroke in cell["image"]["strokes"]:
+        for index, stroke in enumerate(cell["image"]["strokes"]):
             if (stroke.get("property") or "") in skip:
                 continue
+            if tag_source:
+                stroke["src"] = (layer["index"], index)
             pattern.append(stroke)
     return pattern
 
@@ -10329,17 +10477,55 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
             fill_colors.append(rgba)
     stroke_info = []
     for stroke in child_pattern or []:
-        style_color, _w = _stroke_style(stroke, 1.0)
-        for poly in _stroke_polylines(stroke):
-            for piece in _clip_polyline(poly, child_area):
-                # Same severing the 2D emitters apply: only islands whose
-                # lift exists may drape onto the sheet.
-                for island in _sever_source(map_point, piece):
-                    if len(island) >= 2:
-                        stroke_info.append(
-                            ([tuple(map_point.coords(p)) for p in island],
-                             style_color))
-    stroke_third = [poly for poly, _color in stroke_info]
+        style_color, style_width = _stroke_style(stroke, 1.0)
+        entry = {"color": style_color, "width": style_width,
+                 "src": stroke.get("src"), "anchors": {}, "islands": [],
+                 "polys": []}
+        subpaths = _commands_to_subpaths(stroke.get("commands"))
+        if subpaths:
+            # BEZIER route (want_commands collection): the anchors are the
+            # command endpoints, numbered in chain order across the whole
+            # stroke - the same ordering edit_tool walks - and keyed by
+            # position so they survive the curve-space clip and sever
+            # below (de Casteljau cuts preserve the endpoints they keep).
+            ordinal = 0
+            for cubics in subpaths:
+                if not cubics:
+                    continue
+                entry["anchors"][_anchor_key(cubics[0][0])] = ordinal
+                ordinal += 1
+                for cub in cubics:
+                    entry["anchors"][_anchor_key(cub[3])] = ordinal
+                    ordinal += 1
+            # Same gates the 2D emitters apply, in their cubic twins: only
+            # islands whose lift exists may drape onto the sheet.
+            for cubics in subpaths:
+                for piece in _clip_cubics(cubics, child_area):
+                    entry["islands"].extend(
+                        island for island
+                        in _sever_cubics_by_child_fold(map_point, piece)
+                        if island)
+            # The grid-extent polylines flatten from the SEVERED islands,
+            # so the node grid sees exactly the ground the drape will use.
+            for island in entry["islands"]:
+                flat = [island[0][0]]
+                for cub in island:
+                    _flatten_cubic(cub, flat)
+                if len(flat) >= 2:
+                    entry["polys"].append(
+                        [tuple(map_point.coords(p)) for p in flat])
+        else:
+            for poly in _stroke_polylines(stroke):
+                for piece in _clip_polyline(poly, child_area):
+                    # Same severing the 2D emitters apply: only islands
+                    # whose lift exists may drape onto the sheet.
+                    for island in _sever_source(map_point, piece):
+                        if len(island) >= 2:
+                            entry["polys"].append(
+                                [tuple(map_point.coords(p))
+                                 for p in island])
+        stroke_info.append(entry)
+    stroke_third = [poly for entry in stroke_info for poly in entry["polys"]]
     solid_pts = [p for group in rings_third for ring, _b in group
                  for p in ring]
     if not solid_pts:
@@ -11102,32 +11288,137 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
                     + w2 * vertices[c][2])
         return None
 
+    def world_of_third(u, v):
+        q = image_of_third(u, v)
+        zz = z_on_mesh(u, v)
+        if zz is None:
+            zz = z_at(u, v)
+        return (q[0], q[1], zz)
+
+    # The lifted warp for _warp_cubic_3d: ONE Newton lift per distinct
+    # child point (endpoints recur across sibling leaves and handles), then
+    # the pure-forward image + surface lookup, exactly the composition the
+    # polyline drape below uses. The cached (u, v) also feeds the ribbons.
+    lift_cache = {}
+
+    def lift_of(p):
+        key = (p[0], p[1])
+        hit = lift_cache.get(key)
+        if hit is None:
+            u, v = map_point.coords(p)
+            hit = world_of_third(u, v) + (u, v)
+            lift_cache[key] = hit
+        return hit
+
+    def map_point_3d(p):
+        return lift_of(p)[:3]
+
+    def ribbon_for(uvs, width):
+        # Stroke width made it to 3D at last: the ink lives ON the sheet,
+        # so the centerline offsets sideways in THIRD space (the object's
+        # own units - deformation foreshortens the ribbon exactly as it
+        # foreshortens the artwork) and both edges drape through the same
+        # surface lookup as the centerline.
+        half = 0.5 * width
+        count = len(uvs)
+        if count < 2 or half <= 0.0:
+            return None
+        left = []
+        right = []
+        normal = (0.0, 0.0)
+        for k in range(count):
+            a = uvs[max(k - 1, 0)]
+            b = uvs[min(k + 1, count - 1)]
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            length = math.hypot(dx, dy)
+            if length > 1e-9:
+                normal = (-dy / length, dx / length)
+            u, v = uvs[k]
+            left.append(world_of_third(u + normal[0] * half,
+                                       v + normal[1] * half))
+            right.append(world_of_third(u - normal[0] * half,
+                                        v - normal[1] * half))
+        return [left, right]
+
     strokes3d = []
-    stroke_colors = []
-    for poly, style_color in stroke_info:
-        dense = poly
-        cum = _cumulative_lengths(poly)
-        if cum[-1] > 0:
-            # Fine draping step - decoupled from the mesh edge length,
-            # since z now comes off the mesh surface itself; bounded,
-            # because a tiny solid once made du/dv microscopic and a
-            # long stroke exploded.
-            count = max(len(poly),
-                        min(int(cum[-1] / (0.5 * mesh_len)) + 2,
-                            4 * len(poly) + 2048))
-            dense = [_point_at_arc(poly, cum, cum[-1] * k / (count - 1))
-                     for k in range(count)]
-        pts = []
-        for (u, v) in dense:
-            q = image_of_third(u, v)
-            zz = z_on_mesh(u, v)
-            if zz is None:
-                zz = z_at(u, v)
-            pts.append((q[0], q[1], zz))
-        if len(pts) >= 2:
-            strokes3d.append(pts)
-            stroke_colors.append([style_color[0], style_color[1],
-                                  style_color[2]])
+    for entry in stroke_info:
+        color3 = [entry["color"][0], entry["color"][1], entry["color"][2]]
+
+        def emit(pts, uvs, anchor_marks):
+            if len(pts) < 2:
+                return
+            # Decimation runs BETWEEN anchors (the 2D spline-mode rule:
+            # originals are never decimated), and the metadata indices are
+            # remapped onto the surviving points.
+            kept = _rdp_indices3d(pts, 0.25, [i for i, _o in anchor_marks])
+            remap = {old: new for new, old in enumerate(kept)}
+            pts_kept = [pts[i] for i in kept]
+            uvs_kept = [uvs[i] for i in kept]
+            strokes3d.append({
+                "points": pts_kept, "color": color3,
+                "width": entry["width"], "src": entry["src"],
+                "anchors": [[remap[i], o] for i, o in anchor_marks
+                            if i in remap],
+                "ribbon": ribbon_for(uvs_kept, entry["width"])})
+
+        if entry["islands"]:
+            # BEZIER DRAPE: transport each severed island's cubics through
+            # the lifted warp (_warp_cubic_3d - endpoint + handle transport
+            # with the full 2D probe set), flatten the leaves, and tag the
+            # surviving original anchors with their chain ordinals. Leaf
+            # (u, v) evaluates a THIRD-space cubic transported through the
+            # lift with the plane _directional_image - its probe points are
+            # the very ones _warp_cubic_3d just cached, so this costs no
+            # extra Newton. A chord interpolation was wrong here: one leaf
+            # can span a whole curved cubic when the WARP is tame, and the
+            # ribbon then rode the chord instead of the curve.
+            def lift_uv(p):
+                return lift_of(p)[3:5]
+
+            for island in entry["islands"]:
+                leaves = []
+                for cub in island:
+                    leaves.extend(_warp_cubic_3d(map_point_3d, cub))
+                if not leaves:
+                    continue
+                pts = [leaves[0][0][0]]
+                uvs = [lift_uv(leaves[0][1][0])]
+                anchor_marks = []
+                first = entry["anchors"].get(_anchor_key(leaves[0][1][0]))
+                if first is not None:
+                    anchor_marks.append((0, first))
+                for out, src in leaves:
+                    third_cub = (lift_uv(src[0]),
+                                 _directional_image(lift_uv, src[0], src[1]),
+                                 _directional_image(lift_uv, src[3], src[2]),
+                                 lift_uv(src[3]))
+                    samples = max(2, min(64, int(math.ceil(
+                        _hull_length3(out) / max(0.5, POLY_STEP)))))
+                    for k in range(1, samples + 1):
+                        t = k / samples
+                        pts.append(_cubic_point3(out, t))
+                        uvs.append(_cubic_point(third_cub, t))
+                    ordinal = entry["anchors"].get(_anchor_key(src[3]))
+                    if ordinal is not None:
+                        anchor_marks.append((len(pts) - 1, ordinal))
+                emit(pts, uvs, anchor_marks)
+        else:
+            for poly in entry["polys"]:
+                dense = poly
+                cum = _cumulative_lengths(poly)
+                if cum[-1] > 0:
+                    # Fine draping step - decoupled from the mesh edge
+                    # length, since z now comes off the mesh surface
+                    # itself; bounded, because a tiny solid once made
+                    # du/dv microscopic and a long stroke exploded.
+                    count = max(len(poly),
+                                min(int(cum[-1] / (0.5 * mesh_len)) + 2,
+                                    4 * len(poly) + 2048))
+                    dense = [_point_at_arc(poly, cum,
+                                           cum[-1] * k / (count - 1))
+                             for k in range(count)]
+                emit([world_of_third(u, v) for (u, v) in dense],
+                     dense, [])
 
     # TRANSFER GRID: the refer-rect lattice draped on the sheet (the
     # viewer's Transfer Grid button shows the whole deformed reference
@@ -11167,7 +11458,7 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
                 grid3d.append(pts)
 
     return {"vertices": vertices, "faces": faces, "colors": colors,
-            "strokes": strokes3d, "stroke_colors": stroke_colors,
+            "strokes": strokes3d,
             "scale0": scale0, "uv": vertex_uv, "grid": grid3d}
 
 
@@ -11213,12 +11504,20 @@ def run_to_3d():
 
     child_area = (_assets_for("child").get(MAPPING_AREA_PROPERTY)
                   or {}).get("polygons")
-    surface = _reconstruct_surface_3d(map_point, child_fills, child_pattern,
+    # The drape gets the strokes' REAL Bezier commands (with snapshot
+    # addresses for the export metadata); the arc-range sweep above keeps
+    # the 4px flattening it always used. _reconstruct_surface_3d falls
+    # back to polyline draping for any stroke without commands.
+    pattern_bezier = _collect_pattern_strokes(child, child_frame,
+                                              want_commands=True,
+                                              tag_source=True)
+    surface = _reconstruct_surface_3d(map_point, child_fills, pattern_bezier,
                                       child_area=child_area)
     if surface is None or not surface["faces"]:
         print("[auto_mapping] To 3D: no solid (filled) region to "
               "reconstruct - fill the pattern on the child board first.")
         return False
+    surface["frame"] = child_frame
 
     path = os.path.join(tempfile.gettempdir(),
                         f"animean_to3d_{int(time.time())}.html")
@@ -11236,27 +11535,68 @@ def run_to_3d():
     return True
 
 
+def _three_importmap():
+    """Import map for the viewer: the vendored three.js runtime as data:
+    URLs (offline export - the unpkg page was blank without network), the
+    pinned CDN only if the vendor module is missing from this deployment."""
+    try:
+        import three_vendor
+        return {"imports": {
+            "three": "data:text/javascript;base64,"
+                     + three_vendor.THREE_MODULE_B64,
+            "three/addons/controls/OrbitControls.js":
+                "data:text/javascript;base64,"
+                + three_vendor.ORBIT_CONTROLS_B64,
+        }}
+    except Exception as error:
+        print(f"[auto_mapping] To 3D: vendored three.js unavailable "
+              f"({error}); the viewer will need network access.")
+        return {"imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/"
+                     "three.module.min.js",
+            "three/addons/":
+                "https://unpkg.com/three@0.160.0/examples/jsm/",
+        }}
+
+
 def _export_three_html(surface, path):
     """Self-contained Three.js viewer for the reconstructed sheet: the
-    triangulated solid with per-vertex fill colors, draped strokes, orbit
-    controls, a relief-scale slider, and the CONSTANT camera (the user's
-    (0,-100)-style world placement, expressed as a fixed matrix over the
-    normalized scene)."""
+    triangulated solid with per-vertex fill colors, draped strokes (width
+    ribbons + hairline centerlines), orbit controls, a relief-scale slider,
+    and the CONSTANT camera (the user's (0,-100)-style world placement,
+    expressed as a fixed matrix over the normalized scene).
+
+    Each stroke also carries the bidirectional-edit SLOT (display-inert for
+    now): "src" = [layer index, stroke index] on child frame "frame", and
+    "anchors" = [point index, anchor ordinal] pairs marking which polyline
+    points are original Bezier anchors. SNAPSHOT addresses only - the scene
+    has no persistent stroke/vertex ids yet, so they die with the next edit."""
+
+    def rounded(poly):
+        return [[round(x, 2), round(y, 2), round(z, 2)] for x, y, z in poly]
+
     data = {
-        "vertices": [[round(x, 2), round(y, 2), round(z, 2)]
-                     for x, y, z in surface["vertices"]],
+        "vertices": rounded(surface["vertices"]),
         "faces": [list(face) for face in surface["faces"]],
         "colors": [[c[0], c[1], c[2]] for c in surface["colors"]],
-        "strokes": [[[round(x, 2), round(y, 2), round(z, 2)]
-                     for x, y, z in poly]
-                    for poly in surface["strokes"]],
-        "strokeColors": surface.get("stroke_colors") or [],
-        "grid": [[[round(x, 2), round(y, 2), round(z, 2)]
-                  for x, y, z in poly]
-                 for poly in surface.get("grid") or []],
+        "frame": surface.get("frame"),
+        "strokes": [{
+            "points": rounded(stroke["points"]),
+            "color": [stroke["color"][0], stroke["color"][1],
+                      stroke["color"][2]],
+            "width": round(stroke["width"], 2),
+            "src": (list(stroke["src"]) if stroke.get("src") else None),
+            "anchors": [list(mark) for mark in stroke["anchors"]],
+            "ribbon": ([rounded(side) for side in stroke["ribbon"]]
+                       if stroke.get("ribbon") else None),
+        } for stroke in surface["strokes"]],
+        "grid": [rounded(poly) for poly in surface.get("grid") or []],
     }
     payload = json.dumps(data, separators=(",", ":")).replace("</", "<\\/")
-    html = _TO3D_TEMPLATE.replace("__ANIMEAN_DATA__", payload)
+    importmap = json.dumps(_three_importmap()).replace("</", "<\\/")
+    html = (_TO3D_TEMPLATE
+            .replace("__ANIMEAN_IMPORTMAP__", importmap)
+            .replace("__ANIMEAN_DATA__", payload))
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(html)
 
@@ -11291,8 +11631,7 @@ _TO3D_TEMPLATE = r"""<!DOCTYPE html>
        right-drag: pan</div>
 </div>
 <script type="importmap">
-{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js",
-"three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}
+__ANIMEAN_IMPORTMAP__
 </script>
 <script type="module">
 import * as THREE from 'three';
@@ -11347,15 +11686,51 @@ const mesh = new THREE.Mesh(geo, mat);
 group.add(mesh);
 
 const lineObjs = [];
-DATA.strokes.forEach((poly, idx) => {
-  const pts = poly.map(([x, y, z]) =>
+DATA.strokes.forEach(stroke => {
+  const sc = stroke.color || [28, 30, 36];
+  const color = new THREE.Color(sc[0] / 255, sc[1] / 255, sc[2] / 255);
+  // Width ribbon: the stroke's ink as a strip lying IN the sheet surface
+  // (offset + draped Python-side), under a hairline centerline that keeps
+  // sub-pixel strokes visible at any zoom.
+  if (stroke.ribbon) {
+    const [L, R] = stroke.ribbon;
+    const rPos = new Float32Array(L.length * 2 * 3);
+    const rBase = new Float32Array(L.length * 2);
+    for (let i = 0; i < L.length; i++) {
+      for (const [k, p] of [[2 * i, L[i]], [2 * i + 1, R[i]]]) {
+        rPos[3 * k] = (p[0] - cx) * S;
+        rPos[3 * k + 1] = (cy - p[1]) * S;
+        rPos[3 * k + 2] = p[2] * S;
+        rBase[k] = p[2] * S;
+      }
+    }
+    const rIndex = [];
+    for (let i = 0; i + 1 < L.length; i++)
+      rIndex.push(2 * i, 2 * i + 1, 2 * i + 2,
+                  2 * i + 1, 2 * i + 3, 2 * i + 2);
+    const rGeo = new THREE.BufferGeometry();
+    rGeo.setAttribute('position', new THREE.BufferAttribute(rPos, 3));
+    rGeo.setIndex(rIndex);
+    const ribbon = new THREE.Mesh(rGeo, new THREE.MeshBasicMaterial({
+        color, side: THREE.DoubleSide }));
+    ribbon.userData.baseZ = rBase;
+    ribbon.userData.lift = 0.0035;
+    lineObjs.push(ribbon);
+    group.add(ribbon);
+  }
+  const pts = stroke.points.map(([x, y, z]) =>
       new THREE.Vector3((x - cx) * S, (cy - y) * S, z * S));
   const g = new THREE.BufferGeometry().setFromPoints(pts);
-  const sc = DATA.strokeColors[idx] || [28, 30, 36];
-  const line = new THREE.Line(g, new THREE.LineBasicMaterial({
-      color: new THREE.Color(sc[0] / 255, sc[1] / 255, sc[2] / 255) }));
-  line.userData.baseZ = poly.map(p => p[2] * S);
+  const line = new THREE.Line(g, new THREE.LineBasicMaterial({ color }));
+  line.userData.baseZ = stroke.points.map(p => p[2] * S);
   line.userData.lift = 0.004;
+  // Bidirectional-edit slot (metadata only, no interaction yet): src =
+  // [layer index, stroke index] on child frame DATA.frame; anchors =
+  // [point index, anchor ordinal] pairs marking the original Bezier
+  // anchors among the points. Snapshot addresses - valid only for the
+  // document state this file was exported from.
+  line.userData.src = stroke.src;
+  line.userData.anchors = stroke.anchors;
   lineObjs.push(line);
   group.add(line);
 });
