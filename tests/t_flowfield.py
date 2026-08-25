@@ -77,19 +77,32 @@ rt = max(math.hypot(*(c - d for c, d in zip(w2.unapply(w2.apply(p)), p)))
 assert rt < 1e-5, rt
 print(f"4) unapply(apply(p)) == p (worst {rt:.1e})")
 
-# 5) A line CROSSING the V axis still cannot move it: the drawn bend
-#    flattens off-axis, the axes stay put, influence near the axis is
-#    surrendered (the guard halo) by design.
+# 5) A line CROSSING the V axis still cannot move it, but (user refinement
+#    2026-08-25) the halo is void PER HALF-SIDE where the crossing lands:
+#    the bow crosses V in the upper half, so right beside the axis there
+#    the flow follows the drawn unbending ask instead of being muted; the
+#    axis itself stays hard-pinned.
 bow_x = [(-100.0 + 200.0 * k / 32.0,
           50.0 + 40.0 * math.sin(math.pi * k / 32.0)) for k in range(33)]
 mp3 = build([(line_asset(bow_x), line_asset([(-100.0, 50.0), (100.0, 50.0)]))])
 w3 = mp3.warp
 drift = axis_drift(w3)
 assert drift < 0.01, drift
-adj = w3.apply((50.0, 88.0))     # off-axis ground beside the bow's apex
-assert adj[1] < 80.0, adj        # flattens toward the chord
-print(f"5) axis-crossing bow: axes hold ({drift:.4f} px), "
-      f"off-axis ground flattens to y={adj[1]:.1f}")
+
+
+def hflow(warp, x, y):
+    a = warp.apply((x - 4.0, y))
+    b = warp.apply((x + 4.0, y))
+    return math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))
+
+
+left = hflow(w3, -40.0, 88.0)    # bow tangent ~ +20 deg -> ask ~ -20
+right = hflow(w3, 40.0, 88.0)    # bow tangent ~ -20 deg -> ask ~ +20
+assert -25.0 < left < -10.0, left
+assert 10.0 < right < 25.0, right
+assert abs(w3.apply((0.0, 95.0))[0]) < 0.01
+print(f"5) axis-crossing bow: axes hold ({drift:.4f} px); crossed upper "
+      f"half keeps its voice beside V (flow {left:.1f} / {right:+.1f} deg)")
 
 # 6) STAGE I - TENT: a line beyond the frame edge stretches the space; the
 #    axes STILL hold (the tent's cross-axis damping - the spec's separable
@@ -211,7 +224,7 @@ assert loci9 is not w9.fold_loci()          # fresh copies per call
 band = [(x, y) for x in (35.0, 45.0, 60.0) for y in (8.0, 11.0)]
 assert any(w9.det_sign(p) == -1 for p in band), \
     [w9.det_sign(p) for p in band]
-runs9 = am._split_by_fold(mp9, am._densify([(50.0, -40.0), (50.0, 70.0)]))
+runs9 = am._split_by_fold(mp9, am._densify([(30.0, -40.0), (30.0, 70.0)]))
 sides9 = {side for _r, side in runs9}
 assert sides9 == {1, -1}, sides9
 am._crease_curves(mp9, (-250.0, 250.0), (-350.0, 350.0), stitch=False)
@@ -226,15 +239,20 @@ assert ri < 0.05, ri
 print(f"12) honest fold: {len(loci9)} locus, det_sign flips, stroke "
       f"splits {sorted(sides9)}, loci registered, right-inverse {ri:.1e}")
 
-# 13) SILENT NO-OPS SPEAK: a neutral pair and a halo-swallowed line both
+# 13) SILENT NO-OPS SPEAK: a neutral pair and a voiceless line (drawn ON
+#     its own family's axis, where its keyframe weight is zero) both
 #     leave a note for the user instead of looking broken.
 mp10 = build([(line_asset([(60.0, 120.0), (260.0, 120.0)]),
                line_asset([(90.0, 150.0), (290.0, 150.0)]))])
 assert any("neutral" in n for n in mp10.warp.notes), mp10.warp.notes
-mp11 = build([(line_asset([(5.0, -30.0), (5.0, 30.0)]),
-               line_asset([(5.0, -30.0), (25.0, 30.0)]))])
-assert mp11.warp is None or any("halo" in n for n in mp11.warp.notes)
-print("13) neutral and halo-muted lines leave notes")
+mp11 = build([(line_asset([(60.0, 0.0), (260.0, 0.0)]),
+               line_asset([(60.0, 0.0),
+                           (60.0 + 200.0 * math.cos(math.radians(15.0)),
+                            200.0 * math.sin(math.radians(15.0)))]))])
+assert mp11.warp is None or any("no influence" in n
+                                for n in mp11.warp.notes), \
+    None if mp11.warp is None else mp11.warp.notes
+print("13) neutral and on-axis (voiceless) lines leave notes")
 
 # 14) NEAR-CLOSED LINES align by endpoint proximity (their chord's sign is
 #     pen-lift noise): reversing the partner's point order changes nothing.
@@ -280,5 +298,144 @@ am._MAPPING_ASSETS.clear()
 am._MAPPER_CACHE["key"] = None
 am._MAPPER_CACHE["mapper"] = None
 print("15) mapper cache: content-keyed reuse, edits rebuild")
+
+# 16) FAMILY GEODESICS (user restatement 2026-08-25): an additional line
+#     is a drawn iso-line. A V-family line (vertical stroke) keeps its
+#     voice beside the ORTHOGONAL H axis - crossing it or not - because
+#     orthogonal families never interact; its own weight instead dies on
+#     its PARALLEL V axis (the ramp toward the origin O).  The axes stay
+#     immovable throughout.
+cx = line_asset([(120.0, -80.0), (120.0, 80.0)])
+cm = line_asset([(120.0, -80.0),
+                 (120.0 - 160.0 * math.sin(ANG),
+                  -80.0 + 160.0 * math.cos(ANG))])
+w_cross = build([(cx, cm)]).warp
+
+
+def vflow(warp, x, y):
+    a = warp.apply((x, y - 4.0))
+    b = warp.apply((x, y + 4.0))
+    return math.degrees(math.atan2(b[0] - a[0], b[1] - a[1]))
+
+
+# Ask: -25 deg off vertical.  Probes sit just outside the few-cell
+# numerical boundary layer beside the pinned H rows (the layer holds a
+# ~1 px harmonic recoil, not the ask).
+tilt = vflow(w_cross, 120.0, 30.0)
+assert -35.0 < tilt < -12.0, tilt           # voice kept beside H
+# A NON-crossing V-family line keeps it just the same (H never mutes it).
+nx_ = line_asset([(120.0, 20.0), (120.0, 180.0)])
+nm_ = line_asset([(120.0, 20.0),
+                  (120.0 - 160.0 * math.sin(ANG),
+                   20.0 + 160.0 * math.cos(ANG))])
+w_nocross = build([(nx_, nm_)]).warp
+tilt_nc = vflow(w_nocross, 120.0, 40.0)
+assert -35.0 < tilt_nc < -12.0, tilt_nc
+# The ramp toward the parallel V axis: the tilt fades monotonically from
+# the line to the axis and (nearly) vanishes beside it.
+t_line = abs(vflow(w_cross, 120.0, 45.0))
+t_mid = abs(vflow(w_cross, 55.0, 45.0))
+t_axis = abs(vflow(w_cross, 12.0, 45.0))
+assert t_axis < t_mid < t_line, (t_axis, t_mid, t_line)
+assert t_axis < 0.35 * t_line, (t_axis, t_line)
+assert axis_drift(w_cross) < 0.01 and axis_drift(w_nocross) < 0.01
+assert w_cross._all_positive and w_cross.fold_loci() == []
+print(f"16) V-family line: voice beside H kept ({tilt:.1f} deg crossing, "
+      f"{tilt_nc:.1f} not crossing); ramp to its own axis "
+      f"{t_line:.1f} -> {t_mid:.1f} -> {t_axis:.1f} deg; axes hold")
+
+# 17) CONSTRAIN OUTLINE (user 2026-08-25, default ON): with a strictly
+#     interior pair the window outline keeps its SHAPE (component pins -
+#     ground may slide ALONG an edge); unchecked, the field is free and
+#     the outline bends.  The flag is part of the mapper fingerprint.
+ci = line_asset([(60.0, 60.0), (220.0, 60.0)])
+mi = line_asset([(60.0, 60.0),
+                 (60.0 + 160.0 * math.cos(ANG), 60.0 + 160.0 * math.sin(ANG))])
+OUTLINE_PTS = [(300.0, 120.0), (300.0, -150.0), (-300.0, 80.0),
+               (150.0, 200.0), (-200.0, -200.0), (300.0, 200.0)]
+
+
+def shape_dev(warp, p):
+    q = warp.apply(p)
+    devs = []
+    if abs(abs(p[0]) - 300.0) < 1e-9:
+        devs.append(abs(q[0] - p[0]))
+    if abs(abs(p[1]) - 200.0) < 1e-9:
+        devs.append(abs(q[1] - p[1]))
+    return max(devs)
+
+
+assert am._ADDITIONAL["constrain_outline"] is True      # the default
+w_con = build([(ci, mi)]).warp
+dev_on = max(shape_dev(w_con, p) for p in OUTLINE_PTS)
+assert dev_on < 0.01, dev_on
+assert axis_drift(w_con) < 0.01
+am._ADDITIONAL["constrain_outline"] = False
+w_free = build([(ci, mi)]).warp
+dev_off = max(shape_dev(w_free, p) for p in OUTLINE_PTS)
+assert dev_off > 5.0, dev_off
+am._ADDITIONAL["constrain_outline"] = True
+print(f"17) constrain outline: ON holds shape ({dev_on:.4f} px), "
+      f"OFF lets it bend ({dev_off:.1f} px)")
+
+# 18) RELEASED SIDE: a pair drawn OUT across the top edge releases that
+#     side (it follows the tent + flow); the other edges keep their
+#     lines - side edges stay x = const (ground may slide along them,
+#     the corner rides up the pinned edge to meet the released top), the
+#     bottom stays y = const; no folds, exact round trip.
+out_c = line_asset([(-100.0, 250.0), (100.0, 250.0)])
+out_m = line_asset([(-100.0, 250.0),
+                    (-100.0 + 200.0 * math.cos(ANG),
+                     250.0 + 200.0 * math.sin(ANG))])
+w_rel = build([(out_c, out_m)]).warp
+lifted = max(w_rel.apply((x, 200.0))[1] - 200.0 for x in (100.0, 150.0))
+assert lifted > 20.0, lifted
+for p in [(300.0, 150.0), (300.0, 200.0), (-300.0, 180.0)]:
+    assert abs(w_rel.apply(p)[0] - p[0]) < 0.01, p
+for p in [(150.0, -200.0), (-100.0, -200.0)]:
+    assert abs(w_rel.apply(p)[1] - p[1]) < 0.01, p
+assert axis_drift(w_rel) < 0.01
+assert w_rel._all_positive and w_rel.fold_loci() == []
+rt = max(math.hypot(*(c - d for c, d in zip(w_rel.unapply(w_rel.apply(p)), p)))
+         for p in [(50.0, 180.0), (0.0, 250.0), (295.0, 195.0),
+                   (299.0, 199.0)])
+assert rt < 1e-5, rt
+print(f"18) drawn-out side released (top lifts {lifted:.1f} px), other "
+      f"edges hold their lines; round trip exact")
+
+# 19) FAMILY SEPARATION AND OUTWARD HOLD: an untouched V-family line laid
+#     across an H-family band changes NOTHING (orthogonal families never
+#     interact; neutral lines are out of the field entirely), while a
+#     TUNED V-family line and the H line each keep their own family's
+#     ask.  Beyond the outermost line its influence is HELD (until the
+#     released window edge), not cut at a radius.
+hbase = [(60.0 + 200.0 * k / 16.0, 120.0) for k in range(17)]
+hmain = [(60.0 + (p[0] - 60.0) * math.cos(ANG)
+          - (p[1] - 120.0) * math.sin(ANG),
+          120.0 + (p[0] - 60.0) * math.sin(ANG)
+          + (p[1] - 120.0) * math.cos(ANG)) for p in hbase]
+vneutral = [(150.0, -20.0 + 180.0 * k / 16.0) for k in range(17)]
+mp_solo = build([(line_asset(hbase, 0), line_asset(hmain, 0))])
+mp_dual = build([(line_asset(hbase, 0), line_asset(hmain, 0)),
+                 (line_asset(vneutral, 1), line_asset(vneutral, 1))])
+change = max(math.hypot(*(c - d for c, d in zip(mp_dual(p), mp_solo(p))))
+             for p in [(160.0, 120.0), (150.0, 60.0), (100.0, 100.0),
+                       (200.0, 30.0)])
+assert change < 1e-9, change
+w_solo = mp_solo.warp
+
+
+def hflow(warp, x, y):
+    a = warp.apply((x - 4.0, y))
+    b = warp.apply((x + 4.0, y))
+    return math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))
+
+
+held = hflow(w_solo, 160.0, 190.0)     # far above the line, same x-span
+on_line = hflow(w_solo, 160.0, 120.0)
+assert 12.0 < held, (held, on_line)    # held outward, not radius-cut
+assert 18.0 < on_line < 32.0, on_line
+print(f"19) neutral orthogonal line inert ({change:.1e} px); outward hold "
+      f"{held:.1f} deg at 70 px above (on-line {on_line:.1f} deg)")
 
 print("t_flowfield: ALL OK")
