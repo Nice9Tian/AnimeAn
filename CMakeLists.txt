@@ -72,6 +72,8 @@ set(PROJECT_SOURCES
     openglwidget.h
     paintviewcontainer.cpp
     paintviewcontainer.h
+    parentwindow.cpp
+    parentwindow.h
     theme.cpp
     theme.h
     childrenpanel/assetpanel.cpp
@@ -238,6 +240,9 @@ if(ANIMEAN_WITH_PYTHON)
             "${ANIMEAN_PYFILE_DIR}/transfer_tool.py"
             "$<TARGET_FILE_DIR:AnimeAn>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ANIMEAN_PYFILE_DIR}/window_manager.py"
+            "$<TARGET_FILE_DIR:AnimeAn>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${ANIMEAN_PYTHONBIND_DIR}/animemodel.py"
             "$<TARGET_FILE_DIR:AnimeAn>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -362,6 +367,9 @@ if(WIN32 AND QT_VERSION_MAJOR EQUAL 6)
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ANIMEAN_PYFILE_DIR}/transfer_tool.py"
+                "${ANIMEAN_DEPLOY_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ANIMEAN_PYFILE_DIR}/window_manager.py"
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ANIMEAN_PYTHONBIND_DIR}/animemodel.py"

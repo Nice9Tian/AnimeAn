@@ -16,6 +16,7 @@ PYTHON_FILE_MODULES = (
     "transfer_tool",
     "script_store",
     "overlay_stack",
+    "window_manager",
     "pydeps",
     "hook_test",
     "extra_tools",

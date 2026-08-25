@@ -36,6 +36,7 @@ std::function<void(bool frame, bool layer, bool asset, bool widget)> g_uiRefresh
 // should offer (a mode that lives in the menu bar).
 std::function<void()> g_uiToolOptionsCallback;
 std::function<void(bool frozen)> g_uiFreezeCallback;
+AnimeanWindowsApi g_uiWindows;
 std::function<void(const QString &view, const QVector<AnimeanOverlayItem> &items)> g_uiOverlayCallback;
 std::function<void(const QString &view, const QVector<AnimeanEditHandle> &handles)> g_uiEditHandleCallback;
 std::function<void(const QColor &color)> g_uiDrawColorCallback;
@@ -1025,6 +1026,16 @@ void clearAnimeanUiFreezeCallback()
     g_uiFreezeCallback = nullptr;
 }
 
+void registerAnimeanUiWindowsCallback(AnimeanWindowsApi api)
+{
+    g_uiWindows = std::move(api);
+}
+
+void clearAnimeanUiWindowsCallback()
+{
+    g_uiWindows = AnimeanWindowsApi();
+}
+
 void registerAnimeanUiOverlayCallback(std::function<void(const QString &view, const QVector<AnimeanOverlayItem> &items)> callback)
 {
     g_uiOverlayCallback = std::move(callback);
@@ -1371,6 +1382,61 @@ void bindAnimeanPythonModule(py::module_ &m)
            py::arg("frame") = py::none(),
            py::arg("layer") = py::none(),
            py::arg("asset") = py::none());
+
+    // Parent windows: show one, pick one of its pages, ask what is there.
+    // Pure mechanism - the shell owns which windows and pages exist, and a
+    // name it does not know is a no-op rather than a guess.
+    py::module_ uiWindows = ui.def_submodule("windows", "Show, select and inspect AnimeAn parent windows.");
+    uiWindows.def("list", []() {
+        py::list windows;
+        if (!g_uiWindows.list) {
+            return windows;
+        }
+        for (const AnimeanWindowInfo &info : g_uiWindows.list()) {
+            py::dict entry;
+            entry["name"] = info.name.toStdString();
+            entry["title"] = info.title.toStdString();
+            entry["visible"] = info.visible;
+            py::list pages;
+            for (const QString &page : info.pages) {
+                pages.append(page.toStdString());
+            }
+            entry["pages"] = pages;
+            entry["current"] = info.current.toStdString();
+            windows.append(entry);
+        }
+        return windows;
+    });
+    uiWindows.def("show",
+                  [](const std::string &name, bool on) {
+                      if (g_uiWindows.show) {
+                          g_uiWindows.show(QString::fromStdString(name), on);
+                      }
+                  },
+                  py::arg("name"),
+                  py::arg("on") = true);
+    uiWindows.def("select",
+                  [](const std::string &name, const std::string &page) {
+                      if (g_uiWindows.select) {
+                          g_uiWindows.select(QString::fromStdString(name), QString::fromStdString(page));
+                      }
+                  },
+                  py::arg("name"),
+                  py::arg("page"));
+    uiWindows.def("current",
+                  [](const std::string &name) -> py::object {
+                      if (!g_uiWindows.list) {
+                          return py::none();
+                      }
+                      const QString wanted = QString::fromStdString(name);
+                      for (const AnimeanWindowInfo &info : g_uiWindows.list()) {
+                          if (info.name == wanted) {
+                              return py::str(info.current.toStdString());
+                          }
+                      }
+                      return py::none();
+                  },
+                  py::arg("name"));
 
     py::module_ uiMain = ui.def_submodule("main", "Refresh all AnimeAn UI surfaces.");
     uiMain.def("refresh", []() {

@@ -6,9 +6,10 @@
 #include <QtGlobal>
 #include <QVBoxLayout>
 
-ToolsPanel::ToolsPanel(QWidget *parent)
+ToolsPanel::ToolsPanel(QWidget *parent, bool showBuiltIns)
     : QWidget(parent)
     , ui(new Ui::ToolsPanel)
+    , m_showBuiltIns(showBuiltIns)
 {
     ui->setupUi(this);
 
@@ -29,20 +30,35 @@ ToolsPanel::ToolsPanel(QWidget *parent)
     m_transferButton->setMinimumSize(ui->penButton->minimumSize());
     m_transferButton->setStyleSheet(ui->penButton->styleSheet());
 
-    m_layout->addWidget(m_arrowButton);
-    m_layout->addWidget(ui->penButton);
-    m_layout->addWidget(ui->moveButton);
-    m_layout->addWidget(ui->eraserButton);
-    m_layout->addWidget(ui->fillButton);
-    m_layout->addWidget(m_transferButton);
-    m_layout->addWidget(m_connectButton);
+    if (m_showBuiltIns) {
+        m_layout->addWidget(m_arrowButton);
+        m_layout->addWidget(ui->penButton);
+        m_layout->addWidget(ui->moveButton);
+        m_layout->addWidget(ui->eraserButton);
+        m_layout->addWidget(ui->fillButton);
+        m_layout->addWidget(m_transferButton);
+        m_layout->addWidget(m_connectButton);
+    } else {
+        // The .ui parents its four buttons to this widget with absolute
+        // geometry, so leaving them out of the layout is not enough to keep
+        // them off the page - they have to be hidden. They stay alive because
+        // setExtraTools still copies its look from penButton, and setTool
+        // still blocks and clears them.
+        for (QPushButton *button : {m_arrowButton, m_connectButton, m_transferButton,
+                                    ui->penButton, ui->moveButton, ui->eraserButton,
+                                    ui->fillButton}) {
+            button->hide();
+        }
+    }
     m_layout->addStretch();
 
     ui->penButton->setCheckable(true);
     ui->moveButton->setCheckable(true);
     ui->eraserButton->setCheckable(true);
     ui->fillButton->setCheckable(true);
-    setTool(PaintOpenGLWidget::Tool::Pen);
+    if (m_showBuiltIns) {
+        setTool(PaintOpenGLWidget::Tool::Pen);
+    }
 
     connect(m_arrowButton, &QPushButton::clicked, this, [this]() {
         setTool(PaintOpenGLWidget::Tool::Arrow);
@@ -99,6 +115,30 @@ void ToolsPanel::setTool(PaintOpenGLWidget::Tool tool)
                                  tool == PaintOpenGLWidget::Tool::DeleteLine ||
                                  tool == PaintOpenGLWidget::Tool::CutLine);
     ui->fillButton->setChecked(tool == PaintOpenGLWidget::Tool::Fill);
+    for (QPushButton *button : m_extraButtons) {
+        if (button) {
+            button->setChecked(false);
+        }
+    }
+}
+
+void ToolsPanel::clearSelection()
+{
+    const QSignalBlocker arrowBlocker(m_arrowButton);
+    const QSignalBlocker connectBlocker(m_connectButton);
+    const QSignalBlocker transferBlocker(m_transferButton);
+    const QSignalBlocker penBlocker(ui->penButton);
+    const QSignalBlocker moveBlocker(ui->moveButton);
+    const QSignalBlocker eraserBlocker(ui->eraserButton);
+    const QSignalBlocker fillBlocker(ui->fillButton);
+
+    m_arrowButton->setChecked(false);
+    m_connectButton->setChecked(false);
+    m_transferButton->setChecked(false);
+    ui->penButton->setChecked(false);
+    ui->moveButton->setChecked(false);
+    ui->eraserButton->setChecked(false);
+    ui->fillButton->setChecked(false);
     for (QPushButton *button : m_extraButtons) {
         if (button) {
             button->setChecked(false);

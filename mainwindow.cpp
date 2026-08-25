@@ -13,6 +13,7 @@
 #include "openglwidget.h"
 #include "algorithm/beziersplit.h"
 #include "paintviewcontainer.h"
+#include "parentwindow.h"
 #include "projectio.h"
 #include "selectionattention.h"
 #include "theme.h"
@@ -154,6 +155,10 @@ QVector<ToolsPanel::ExtraToolDefinition> parseExtraTools(const QJsonArray &array
         tool.property = object.value(QStringLiteral("property")).toString(tool.name);
         tool.handler = object.value(QStringLiteral("handler")).toString();
         tool.baseTool = object.value(QStringLiteral("base_tool")).toString();
+        // Mapping is the default page: every extra tool that existed before
+        // the Tools window gained pages was a mapping tool, so an undeclared
+        // page means the one they all came from.
+        tool.page = object.value(QStringLiteral("page")).toString(QStringLiteral("mapping"));
         if (!tool.name.isEmpty()) {
             tools.append(tool);
         }
@@ -402,7 +407,7 @@ MainWindow::MainWindow(QWidget *parent)
             refreshFrameList(attentionFor(framePanelTarget()).frame);
         }
         if (layer) {
-            refreshLayerList(attentionFor(layerPanelTarget()).layer);
+            refreshLayerLists();
         }
         if (asset) {
             refreshAssetList(attentionFor(assetPanelTarget()).asset);
@@ -421,6 +426,44 @@ MainWindow::MainWindow(QWidget *parent)
     registerAnimeanUiFreezeCallback([this](bool frozen) {
         setPythonUiFrozen(frozen);
     });
+    // Same shape as freeze: Python asks the shell by name, the shell owns
+    // which windows exist and what a page is. A name that resolves to nothing
+    // is a no-op here and an empty answer in list(), never a guess.
+    AnimeanWindowsApi windows;
+    windows.list = [this]() {
+        QVector<AnimeanWindowInfo> infos;
+        infos.reserve(m_parentWindows.size());
+        for (ParentWindow *window : m_parentWindows) {
+            if (!window) {
+                continue;
+            }
+            AnimeanWindowInfo info;
+            info.name = window->name();
+            info.title = window->windowTitle();
+            // isHidden, not isVisible: the question is whether the user has
+            // this window turned on, and every dock reads as invisible until
+            // the main window itself is shown.
+            info.visible = !window->isHidden();
+            info.pages = window->pageNames();
+            info.current = window->currentPage();
+            infos.append(info);
+        }
+        return infos;
+    };
+    windows.show = [this](const QString &name, bool on) {
+        if (ParentWindow *window = parentWindowNamed(name)) {
+            window->setVisible(on);
+            if (on) {
+                window->raise();
+            }
+        }
+    };
+    windows.select = [this](const QString &name, const QString &page) {
+        if (ParentWindow *window = parentWindowNamed(name)) {
+            window->selectPage(page);
+        }
+    };
+    registerAnimeanUiWindowsCallback(std::move(windows));
     registerAnimeanUiOverlayCallback([this](const QString &view, const QVector<AnimeanOverlayItem> &items) {
         PaintOpenGLWidget *target = m_paintWidget;
         for (PaintOpenGLWidget *paintView : m_paintViews) {
@@ -529,6 +572,7 @@ MainWindow::~MainWindow()
     clearAnimeanUiDrawColorCallback();
     clearAnimeanUiOverlayCallback();
     clearAnimeanUiFreezeCallback();
+    clearAnimeanUiWindowsCallback();
     clearAnimeanUiRefreshCallback();
     unregisterAnimeanUiScene(&m_childPaintWidget->model());
     unregisterAnimeanUiScene(&m_paintWidget->model());
@@ -607,10 +651,13 @@ void MainWindow::setupDocks()
     QMenu *windowsMenu = menuBar()->addMenu(QStringLiteral("Windows"));
     windowsMenu->addAction(m_childPaintWindow->toggleViewAction());
     windowsMenu->addSeparator();
-    for (QDockWidget *dock : {m_toolsDock, m_toolOptDock, m_layerDock, m_assetDock,
-                              m_frameDock, m_historyDock, m_forcePadDock, m_pythonDebugDock}) {
-        if (dock) {
-            windowsMenu->addAction(dock->toggleViewAction());
+    // The same eight entries as before, now parent windows: the menu shows
+    // ONE line per window, and its pages are reached by their tabs.
+    m_parentWindows = {m_toolsDock, m_toolOptDock, m_layerDock, m_assetDock,
+                       m_frameDock, m_historyDock, m_forcePadDock, m_pythonDebugDock};
+    for (ParentWindow *window : m_parentWindows) {
+        if (window) {
+            windowsMenu->addAction(window->toggleViewAction());
         }
     }
 
@@ -730,9 +777,10 @@ void MainWindow::stopPlayback()
 void MainWindow::createForcePadDock()
 {
     m_forcePadPanel = new ForcePadPanel(this);
-    m_forcePadDock = new QDockWidget(QStringLiteral("Repulsion Pad"), this);
-    m_forcePadDock->setObjectName(QStringLiteral("ForcePadDock"));
-    m_forcePadDock->setWidget(m_forcePadPanel);
+    m_forcePadDock = new ParentWindow(QStringLiteral("repulsion_pad"),
+                                      QStringLiteral("Repulsion Pad"), this);
+    m_forcePadDock->addPage(QStringLiteral("repulsion_pad"), QStringLiteral("Repulsion Pad"),
+                            m_forcePadPanel);
     addDockWidget(Qt::RightDockWidgetArea, m_forcePadDock);
     // Hidden by default: it is a special-purpose tool surface; the View menu
     // toggle brings it up.
@@ -765,9 +813,8 @@ void MainWindow::createForcePadDock()
 void MainWindow::createHistoryDock()
 {
     m_historyPanel = new HistoryPanel(this);
-    m_historyDock = new QDockWidget(QStringLiteral("History"), this);
-    m_historyDock->setObjectName(QStringLiteral("HistoryDock"));
-    m_historyDock->setWidget(m_historyPanel);
+    m_historyDock = new ParentWindow(QStringLiteral("history"), QStringLiteral("History"), this);
+    m_historyDock->addPage(QStringLiteral("history"), QStringLiteral("History"), m_historyPanel);
     addDockWidget(Qt::RightDockWidgetArea, m_historyDock);
     // Hidden by default: undo/redo are on the keyboard, so the list is for
     // the times you want to jump around history rather than everyday work.
@@ -1599,6 +1646,10 @@ PaintOpenGLWidget *MainWindow::framePanelTarget() const
     return view;
 }
 
+// Retired for the Layers window: its two pages are bound to a board each and
+// no longer follow focus. It survives as the ASSET panel's redirect, which
+// keeps today's behaviour - one asset list, following the board whose texture
+// is editable.
 PaintOpenGLWidget *MainWindow::layerPanelTarget() const
 {
     PaintOpenGLWidget *view = activePaintWidget();
@@ -1611,6 +1662,16 @@ PaintOpenGLWidget *MainWindow::layerPanelTarget() const
 PaintOpenGLWidget *MainWindow::assetPanelTarget() const
 {
     return layerPanelTarget();
+}
+
+ParentWindow *MainWindow::parentWindowNamed(const QString &name) const
+{
+    for (ParentWindow *window : m_parentWindows) {
+        if (window && window->name() == name) {
+            return window;
+        }
+    }
+    return nullptr;
 }
 
 SelectionAttention &MainWindow::attentionFor(PaintOpenGLWidget *view)
@@ -1650,7 +1711,7 @@ void MainWindow::setActivePaintView(PaintOpenGLWidget *view)
 void MainWindow::refreshPanelTargets()
 {
     refreshFrameList(attentionFor(framePanelTarget()).frame);
-    refreshLayerList(attentionFor(layerPanelTarget()).layer);
+    refreshLayerLists();
     refreshAssetList(attentionFor(assetPanelTarget()).asset);
     // The rate is per document, so it follows whichever view the Frames panel
     // is pointed at - and it has to resync after a load or an undo too.
@@ -1659,11 +1720,15 @@ void MainWindow::refreshPanelTargets()
 
 void MainWindow::setupListDragDrop()
 {
-    m_layerPanel->layerList()->setDragDropMode(QAbstractItemView::DragDrop);
-    m_layerPanel->layerList()->setDefaultDropAction(Qt::MoveAction);
-    m_layerPanel->layerList()->setDragDropOverwriteMode(false);
-    m_layerPanel->layerList()->setDragEnabled(true);
-    m_layerPanel->layerList()->setSelectionMode(QAbstractItemView::SingleSelection);
+    for (LayerPanel *panel : {m_mainLayerPanel, m_childLayerPanel}) {
+        panel->layerList()->setDragDropMode(QAbstractItemView::DragDrop);
+        panel->layerList()->setDefaultDropAction(Qt::MoveAction);
+        panel->layerList()->setDragDropOverwriteMode(false);
+        panel->layerList()->setDragEnabled(true);
+        panel->layerList()->setSelectionMode(QAbstractItemView::SingleSelection);
+        panel->layerList()->viewport()->setAcceptDrops(true);
+        panel->layerList()->viewport()->installEventFilter(this);
+    }
 
     m_framePanel->frameList()->setDragDropMode(QAbstractItemView::InternalMove);
     m_framePanel->frameList()->setDefaultDropAction(Qt::MoveAction);
@@ -1672,16 +1737,14 @@ void MainWindow::setupListDragDrop()
 
     m_assetPanel->assetList()->setDragDropMode(QAbstractItemView::DragOnly);
     m_assetPanel->assetList()->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_layerPanel->layerList()->viewport()->setAcceptDrops(true);
-    m_layerPanel->layerList()->viewport()->installEventFilter(this);
     m_framePanel->frameList()->viewport()->installEventFilter(this);
     m_assetPanel->assetList()->viewport()->installEventFilter(this);
 }
 
 void MainWindow::setupPythonDebugDock()
 {
-    m_pythonDebugDock = new QDockWidget(QStringLiteral("Python Debug"), this);
-    m_pythonDebugDock->setObjectName(QStringLiteral("PythonDebugDock"));
+    m_pythonDebugDock = new ParentWindow(QStringLiteral("python_debug"),
+                                         QStringLiteral("Python Debug"), this);
 
     QWidget *panel = new QWidget(m_pythonDebugDock);
     QVBoxLayout *layout = new QVBoxLayout(panel);
@@ -1709,7 +1772,7 @@ void MainWindow::setupPythonDebugDock()
     layout->addWidget(m_pythonDebugOutput, 1);
     layout->addLayout(commandLayout);
 
-    m_pythonDebugDock->setWidget(panel);
+    m_pythonDebugDock->addPage(QStringLiteral("python_debug"), QStringLiteral("Python Debug"), panel);
     addDockWidget(Qt::BottomDockWidgetArea, m_pythonDebugDock);
     // Hidden by default: a REPL against the running app is a developer
     // surface, not part of drawing. The View menu toggle brings it up.
@@ -1955,87 +2018,8 @@ void MainWindow::setupConnections()
         refreshPanelTargets();
     });
 
-    connect(m_layerPanel->layerList(), &QTreeWidget::currentItemChanged, this,
-            [this](QTreeWidgetItem *item, QTreeWidgetItem *) {
-        if (m_refreshingLists || !item) {
-            return;
-        }
-        int layerIndex = -1;
-        if (item->data(0, kGroupIdRole).toInt() != 0) {
-            // A group row carries no layer of its own; treat selecting it as
-            // selecting its first member layer, so a unit-of-work group (an
-            // auto-mapping layer) behaves like one focusable item. Reading it
-            // as "layer 0" is still wrong - resolve through the children.
-            std::function<int(QTreeWidgetItem *)> firstLayer =
-                [&](QTreeWidgetItem *node) {
-                for (int i = 0; i < node->childCount(); ++i) {
-                    QTreeWidgetItem *child = node->child(i);
-                    if (child->data(0, kGroupIdRole).toInt() > 0) {
-                        const int inner = firstLayer(child);
-                        if (inner >= 0) {
-                            return inner;
-                        }
-                    } else {
-                        const int index = child->data(0, Qt::UserRole).toInt();
-                        if (index >= 0) {
-                            return index;
-                        }
-                    }
-                }
-                return -1;
-            };
-            layerIndex = firstLayer(item);
-        } else {
-            layerIndex = item->data(0, Qt::UserRole).toInt();
-        }
-        if (layerIndex < 0) {
-            return;
-        }
-        PaintOpenGLWidget *view = layerPanelTarget();
-        requestAttentionUpdate(view, AttentionChange::LayerChange,
-                               attentionFor(view).frame, layerIndex, attentionFor(view).asset);
-    });
-
-    // Collapsing a group is a document edit, not a view whim: it is what the
-    // H/V group's "collapsed by default" means, so it has to survive a
-    // refresh, a save and a history restore.
-    auto rememberExpansion = [this](QTreeWidgetItem *item, bool collapsed) {
-        if (m_refreshingLists || !item) {
-            return;
-        }
-        const int groupId = item->data(0, kGroupIdRole).toInt();
-        if (groupId > 0) {
-            layerPanelTarget()->model().setLayerGroupCollapsed(groupId, collapsed);
-        }
-    };
-    connect(m_layerPanel->layerList(), &QTreeWidget::itemExpanded, this,
-            [rememberExpansion](QTreeWidgetItem *item) { rememberExpansion(item, false); });
-    connect(m_layerPanel->layerList(), &QTreeWidget::itemCollapsed, this,
-            [rememberExpansion](QTreeWidgetItem *item) { rememberExpansion(item, true); });
-
-    connect(m_layerPanel->layerList(), &QTreeWidget::itemChanged, this,
-            [this](QTreeWidgetItem *item, int) {
-        if (m_refreshingLists || !item || item->data(0, kGroupIdRole).toInt() != 0) {
-            return;
-        }
-        const int layerIndex = item->data(0, Qt::UserRole).toInt();
-        if (layerIndex < 0) {
-            return;
-        }
-        const bool visible = item->checkState(0) == Qt::Checked;
-        PaintOpenGLWidget *view = layerPanelTarget();
-        // Deferred so the Python hook (which may rebuild this very list) never
-        // runs inside the itemChanged emission.
-        QMetaObject::invokeMethod(this, [this, view, layerIndex, visible]() {
-            // UI click -> Python decides -> commands come back through the
-            // bindings. The direct model write is the no-hook fallback.
-            if (!view->sendPythonLayerVisibilityMessage(layerIndex, visible)) {
-                view->model().setLayerVisible(layerIndex, visible);
-                view->update();
-                refreshLayerList(attentionFor(view).layer);
-            }
-        }, Qt::QueuedConnection);
-    });
+    connectLayerPanel(m_mainLayerPanel, m_paintWidget);
+    connectLayerPanel(m_childLayerPanel, m_childPaintWidget);
 
     connect(m_framePanel->frameList(), &QListWidget::currentRowChanged, this, [this](int row) {
         if (!m_refreshingLists && row >= 0) {
@@ -2046,45 +2030,6 @@ void MainWindow::setupConnections()
             requestAttentionUpdate(view, AttentionChange::FrameChange,
                                    row, attentionFor(view).layer, attentionFor(view).asset);
         }
-    });
-
-    connect(m_layerPanel->layerList(), &QTreeWidget::customContextMenuRequested, this,
-            [this](const QPoint &pos) { showLayerContextMenu(pos); });
-
-    connect(m_layerPanel->addButton(), &QPushButton::clicked, this, [this]() {
-        PaintOpenGLWidget *view = layerPanelTarget();
-        const int layerIndex = view->addLayer();
-        updateAttention(view, AttentionChange::LayerChange,
-                        attentionFor(view).frame, layerIndex, attentionFor(view).asset);
-    });
-
-    connect(m_layerPanel->deleteButton(), &QPushButton::clicked, this, [this]() {
-        QTreeWidgetItem *item = m_layerPanel->layerList()->currentItem();
-        PaintOpenGLWidget *view = layerPanelTarget();
-        if (item && item->data(0, kGroupIdRole).toInt() > 0) {
-            // Remove Layer on a group removes the group AND its layers - that
-            // is what "delete" means for the thing the user is pointing at.
-            // Dropping only the grouping lives on the right-click menu as
-            // "Ungroup", so the non-destructive option is still one click away.
-            const int groupId = item->data(0, kGroupIdRole).toInt();
-            if (view->deleteLayerGroup(groupId) > 0) {
-                const int next = std::min(attentionFor(view).layer, view->layerCount() - 1);
-                updateAttention(view, AttentionChange::LayerChange,
-                                attentionFor(view).frame, next, attentionFor(view).asset);
-            }
-            return;
-        }
-        const int layerIndex = item ? item->data(0, Qt::UserRole).toInt() : -1;
-        if (view->deleteLayer(layerIndex)) {
-            const int nextLayer = layerIndex < view->layerCount() ? layerIndex : view->layerCount() - 1;
-            updateAttention(view, AttentionChange::LayerChange,
-                            attentionFor(view).frame, nextLayer, attentionFor(view).asset);
-        }
-    });
-
-    connect(m_layerPanel->unselectButton(), &QPushButton::clicked, this, [this]() {
-        PaintOpenGLWidget *view = layerPanelTarget();
-        updateAttention(view, AttentionChange::LayerChange, attentionFor(view).frame, -1, -1);
     });
 
     connect(m_framePanel->addButton(), &QPushButton::clicked, this, [this]() {
@@ -2164,40 +2109,6 @@ void MainWindow::setupConnections()
         }
     });
 
-    // NOT rowsMoved. QListModel overrides moveRows, so the old flat list really
-    // did emit it; QTreeModel does not, and QTreeWidget::dropEvent implements
-    // an internal move itself as takeItem + insertItem - which emits
-    // rowsRemoved then rowsInserted and NEVER rowsMoved. Listening for the
-    // signal Qt does not send left the panel reshaping itself on a drop while
-    // the model was never told, so the row snapped back on the next refresh
-    // and layer reordering by drag silently stopped working.
-    connect(m_layerPanel->layerList()->model(), &QAbstractItemModel::rowsInserted,
-            this, [this](const QModelIndex &parent, int first, int last) {
-        if (m_refreshingLists || !m_layerDropInProgress || first != last) {
-            return;
-        }
-        QTreeWidget *tree = m_layerPanel->layerList();
-        QTreeWidgetItem *parentItem = parent.isValid() ? tree->itemFromIndex(parent) : nullptr;
-        const int count = parentItem ? parentItem->childCount() : tree->topLevelItemCount();
-        if (first < 0 || first >= count) {
-            return;
-        }
-        QTreeWidgetItem *movedItem = parentItem ? parentItem->child(first)
-                                                : tree->topLevelItem(first);
-        m_layerDropInProgress = false;
-        // Qt has already reshaped the widget; the model has to be told what
-        // the new shape means. Deferred so the model edit never runs inside
-        // the view's own drop handling - and re-found by column id there,
-        // because a refresh in between would delete this pointer.
-        const int movedColumnId = movedItem && movedItem->data(0, kGroupIdRole).toInt() == 0
-                                      ? layerPanelTarget()->model().layerIdAt(
-                                            movedItem->data(0, Qt::UserRole).toInt())
-                                      : 0;
-        QMetaObject::invokeMethod(this, [this, movedColumnId]() {
-            applyLayerPanelStructure(movedColumnId);
-        }, Qt::QueuedConnection);
-    });
-
     connect(m_framePanel->frameList()->model(), &QAbstractItemModel::rowsMoved,
             this, [this](const QModelIndex &, int sourceStart, int sourceEnd,
                          const QModelIndex &, int destinationChild) {
@@ -2233,9 +2144,181 @@ void MainWindow::setupConnections()
     });
 }
 
+// Every layers page is wired here against the ONE board it shows, so nothing
+// in the layer path has to ask which view is active any more.
+void MainWindow::connectLayerPanel(LayerPanel *panel, PaintOpenGLWidget *view)
+{
+    connect(panel->layerList(), &QTreeWidget::currentItemChanged, this,
+            [this, view](QTreeWidgetItem *item, QTreeWidgetItem *) {
+        if (m_refreshingLists || !item) {
+            return;
+        }
+        int layerIndex = -1;
+        if (item->data(0, kGroupIdRole).toInt() != 0) {
+            // A group row carries no layer of its own; treat selecting it as
+            // selecting its first member layer, so a unit-of-work group (an
+            // auto-mapping layer) behaves like one focusable item. Reading it
+            // as "layer 0" is still wrong - resolve through the children.
+            std::function<int(QTreeWidgetItem *)> firstLayer =
+                [&](QTreeWidgetItem *node) {
+                for (int i = 0; i < node->childCount(); ++i) {
+                    QTreeWidgetItem *child = node->child(i);
+                    if (child->data(0, kGroupIdRole).toInt() > 0) {
+                        const int inner = firstLayer(child);
+                        if (inner >= 0) {
+                            return inner;
+                        }
+                    } else {
+                        const int index = child->data(0, Qt::UserRole).toInt();
+                        if (index >= 0) {
+                            return index;
+                        }
+                    }
+                }
+                return -1;
+            };
+            layerIndex = firstLayer(item);
+        } else {
+            layerIndex = item->data(0, Qt::UserRole).toInt();
+        }
+        if (layerIndex < 0) {
+            return;
+        }
+        requestAttentionUpdate(view, AttentionChange::LayerChange,
+                               attentionFor(view).frame, layerIndex, attentionFor(view).asset);
+    });
+
+    // Collapsing a group is a document edit, not a view whim: it is what the
+    // H/V group's "collapsed by default" means, so it has to survive a
+    // refresh, a save and a history restore.
+    auto rememberExpansion = [this, view](QTreeWidgetItem *item, bool collapsed) {
+        if (m_refreshingLists || !item) {
+            return;
+        }
+        const int groupId = item->data(0, kGroupIdRole).toInt();
+        if (groupId > 0) {
+            view->model().setLayerGroupCollapsed(groupId, collapsed);
+        }
+    };
+    connect(panel->layerList(), &QTreeWidget::itemExpanded, this,
+            [rememberExpansion](QTreeWidgetItem *item) { rememberExpansion(item, false); });
+    connect(panel->layerList(), &QTreeWidget::itemCollapsed, this,
+            [rememberExpansion](QTreeWidgetItem *item) { rememberExpansion(item, true); });
+
+    connect(panel->layerList(), &QTreeWidget::itemChanged, this,
+            [this, panel, view](QTreeWidgetItem *item, int) {
+        if (m_refreshingLists || !item || item->data(0, kGroupIdRole).toInt() != 0) {
+            return;
+        }
+        const int layerIndex = item->data(0, Qt::UserRole).toInt();
+        if (layerIndex < 0) {
+            return;
+        }
+        const bool visible = item->checkState(0) == Qt::Checked;
+        // Deferred so the Python hook (which may rebuild this very list) never
+        // runs inside the itemChanged emission.
+        QMetaObject::invokeMethod(this, [this, panel, view, layerIndex, visible]() {
+            // UI click -> Python decides -> commands come back through the
+            // bindings. The direct model write is the no-hook fallback.
+            if (!view->sendPythonLayerVisibilityMessage(layerIndex, visible)) {
+                view->model().setLayerVisible(layerIndex, visible);
+                view->update();
+                refreshLayerList(panel, view, attentionFor(view).layer);
+            }
+        }, Qt::QueuedConnection);
+    });
+
+    connect(panel->layerList(), &QTreeWidget::customContextMenuRequested, this,
+            [this, panel, view](const QPoint &pos) { showLayerContextMenu(panel, view, pos); });
+
+    connect(panel->addButton(), &QPushButton::clicked, this, [this, view]() {
+        const int layerIndex = view->addLayer();
+        updateAttention(view, AttentionChange::LayerChange,
+                        attentionFor(view).frame, layerIndex, attentionFor(view).asset);
+    });
+
+    connect(panel->deleteButton(), &QPushButton::clicked, this, [this, panel, view]() {
+        QTreeWidgetItem *item = panel->layerList()->currentItem();
+        if (item && item->data(0, kGroupIdRole).toInt() > 0) {
+            // Remove Layer on a group removes the group AND its layers - that
+            // is what "delete" means for the thing the user is pointing at.
+            // Dropping only the grouping lives on the right-click menu as
+            // "Ungroup", so the non-destructive option is still one click away.
+            const int groupId = item->data(0, kGroupIdRole).toInt();
+            if (view->deleteLayerGroup(groupId) > 0) {
+                const int next = std::min(attentionFor(view).layer, view->layerCount() - 1);
+                updateAttention(view, AttentionChange::LayerChange,
+                                attentionFor(view).frame, next, attentionFor(view).asset);
+            }
+            return;
+        }
+        const int layerIndex = item ? item->data(0, Qt::UserRole).toInt() : -1;
+        if (view->deleteLayer(layerIndex)) {
+            const int nextLayer = layerIndex < view->layerCount() ? layerIndex : view->layerCount() - 1;
+            updateAttention(view, AttentionChange::LayerChange,
+                            attentionFor(view).frame, nextLayer, attentionFor(view).asset);
+        }
+    });
+
+    connect(panel->unselectButton(), &QPushButton::clicked, this, [this, view]() {
+        updateAttention(view, AttentionChange::LayerChange, attentionFor(view).frame, -1, -1);
+    });
+
+    // NOT rowsMoved. QListModel overrides moveRows, so the old flat list really
+    // did emit it; QTreeModel does not, and QTreeWidget::dropEvent implements
+    // an internal move itself as takeItem + insertItem - which emits
+    // rowsRemoved then rowsInserted and NEVER rowsMoved. Listening for the
+    // signal Qt does not send left the panel reshaping itself on a drop while
+    // the model was never told, so the row snapped back on the next refresh
+    // and layer reordering by drag silently stopped working.
+    connect(panel->layerList()->model(), &QAbstractItemModel::rowsInserted,
+            this, [this, panel, view](const QModelIndex &parent, int first, int last) {
+        if (m_refreshingLists || m_layerDropPanel != panel || first != last) {
+            return;
+        }
+        QTreeWidget *tree = panel->layerList();
+        QTreeWidgetItem *parentItem = parent.isValid() ? tree->itemFromIndex(parent) : nullptr;
+        const int count = parentItem ? parentItem->childCount() : tree->topLevelItemCount();
+        if (first < 0 || first >= count) {
+            return;
+        }
+        QTreeWidgetItem *movedItem = parentItem ? parentItem->child(first)
+                                                : tree->topLevelItem(first);
+        m_layerDropPanel = nullptr;
+        // Qt has already reshaped the widget; the model has to be told what
+        // the new shape means. Deferred so the model edit never runs inside
+        // the view's own drop handling - and re-found by column id there,
+        // because a refresh in between would delete this pointer.
+        const int movedColumnId = movedItem && movedItem->data(0, kGroupIdRole).toInt() == 0
+                                      ? view->model().layerIdAt(
+                                            movedItem->data(0, Qt::UserRole).toInt())
+                                      : 0;
+        QMetaObject::invokeMethod(this, [this, panel, view, movedColumnId]() {
+            applyLayerPanelStructure(panel, view, movedColumnId);
+        }, Qt::QueuedConnection);
+    });
+}
+
+LayerPanel *MainWindow::layerPanelForView(PaintOpenGLWidget *view) const
+{
+    return view == m_childPaintWidget ? m_childLayerPanel : m_mainLayerPanel;
+}
+
+PaintOpenGLWidget *MainWindow::viewForLayerPanel(LayerPanel *panel) const
+{
+    return panel == m_childLayerPanel ? m_childPaintWidget : m_paintWidget;
+}
+
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 {
-    const bool watchedListViewport = watched == m_layerPanel->layerList()->viewport()
+    LayerPanel *layerPanel = nullptr;
+    for (LayerPanel *candidate : {m_mainLayerPanel, m_childLayerPanel}) {
+        if (candidate && watched == candidate->layerList()->viewport()) {
+            layerPanel = candidate;
+            break;
+        }
+    }
+    const bool watchedListViewport = layerPanel
                                      || watched == m_framePanel->frameList()->viewport()
                                      || watched == m_assetPanel->assetList()->viewport();
     if (watchedListViewport) {
@@ -2269,21 +2352,26 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         }
     }
 
-    if (watched == m_layerPanel->layerList()->viewport() &&
+    if (layerPanel &&
         (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove || event->type() == QEvent::Drop)) {
         QDropEvent *dropEvent = static_cast<QDropEvent *>(event);
+        PaintOpenGLWidget *view = viewForLayerPanel(layerPanel);
         m_listDragActive = true;
-        if (dropEvent->source() == m_layerPanel->layerList()) {
+        if (dropEvent->source() == layerPanel->layerList()) {
             // Arms the rowsInserted handler: QTreeWidget reorders itself with
             // takeItem + insertItem, and an insert only means "a drop landed"
-            // while one is actually in flight.
+            // while one is actually in flight - and only on the page that took
+            // it.
             if (event->type() == QEvent::Drop) {
-                m_layerDropInProgress = true;
+                m_layerDropPanel = layerPanel;
             }
             return QMainWindow::eventFilter(watched, event);
         }
 
-        if (dropEvent->source() != m_assetPanel->assetList()) {
+        // An asset index only means something inside the scene the Assets
+        // panel is currently listing, so a drag into the OTHER board's page is
+        // refused rather than resolved against the wrong document.
+        if (dropEvent->source() != m_assetPanel->assetList() || view != assetPanelTarget()) {
             if (event->type() == QEvent::Drop) {
                 m_hasPendingAttention = false;
                 m_listMousePressed = false;
@@ -2307,7 +2395,6 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         dropEvent->acceptProposedAction();
         if (event->type() == QEvent::Drop) {
             m_hasPendingAttention = false;
-            PaintOpenGLWidget *view = layerPanelTarget();
             const int layerIndex = view->addLayerForAsset(assetIndex);
             if (layerIndex >= 0) {
                 updateAttention(view, AttentionChange::LayerChange,
@@ -2324,15 +2411,24 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 
 void MainWindow::createToolDocks()
 {
-    ToolsPanel *toolsPanel = new ToolsPanel(this);
+    // Three instances, one per page. Only the painting page carries the enum
+    // tools; the other two are lists of script buttons, so a script tool sits
+    // beside its own family instead of at the end of one long column.
+    m_paintingToolsPanel = new ToolsPanel(this, true);
+    m_mappingToolsPanel = new ToolsPanel(this, false);
+    m_fukusatoToolsPanel = new ToolsPanel(this, false);
+    m_toolsPanels = {m_paintingToolsPanel, m_mappingToolsPanel, m_fukusatoToolsPanel};
     ToolOptPanel *toolOptPanel = new ToolOptPanel(this);
 
-    m_toolsDock = new QDockWidget(QStringLiteral("Tools"), this);
-    m_toolsDock->setWidget(toolsPanel);
+    m_toolsDock = new ParentWindow(QStringLiteral("tools"), QStringLiteral("Tools"), this);
+    m_toolsDock->addPage(QStringLiteral("painting"), QStringLiteral("Painting"), m_paintingToolsPanel);
+    m_toolsDock->addPage(QStringLiteral("mapping"), QStringLiteral("Mapping"), m_mappingToolsPanel);
+    m_toolsDock->addPage(QStringLiteral("fukusato"), QStringLiteral("Fukusato"), m_fukusatoToolsPanel);
     addDockWidget(Qt::LeftDockWidgetArea, m_toolsDock);
 
-    m_toolOptDock = new QDockWidget(QStringLiteral("Tool Options"), this);
-    m_toolOptDock->setWidget(toolOptPanel);
+    m_toolOptDock = new ParentWindow(QStringLiteral("tool_options"),
+                                     QStringLiteral("Tool Options"), this);
+    m_toolOptDock->addPage(QStringLiteral("options"), QStringLiteral("Options"), toolOptPanel);
     addDockWidget(Qt::RightDockWidgetArea, m_toolOptDock);
     splitDockWidget(m_toolOptDock, m_layerDock, Qt::Vertical);
     splitDockWidget(m_layerDock, m_assetDock, Qt::Vertical);
@@ -2345,7 +2441,21 @@ void MainWindow::createToolDocks()
         QJsonParseError parseError;
         const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json), &parseError);
         if (parseError.error == QJsonParseError::NoError && document.isArray()) {
-            toolsPanel->setExtraTools(parseExtraTools(document.array()));
+            // The script names a page; the shell owns which pages exist, so a
+            // page it does not have falls back to mapping rather than costing
+            // the tool its button.
+            const QHash<QString, ToolsPanel *> panelForPage = {
+                {QStringLiteral("painting"), m_paintingToolsPanel},
+                {QStringLiteral("mapping"), m_mappingToolsPanel},
+                {QStringLiteral("fukusato"), m_fukusatoToolsPanel},
+            };
+            QHash<ToolsPanel *, QVector<ToolsPanel::ExtraToolDefinition>> byPanel;
+            for (const ToolsPanel::ExtraToolDefinition &tool : parseExtraTools(document.array())) {
+                byPanel[panelForPage.value(tool.page, m_mappingToolsPanel)].append(tool);
+            }
+            for (ToolsPanel *panel : m_toolsPanels) {
+                panel->setExtraTools(byPanel.value(panel));
+            }
         } else {
             setStatusText(QStringLiteral("extra_tools JSON error: %1").arg(parseError.errorString()));
         }
@@ -2392,12 +2502,16 @@ void MainWindow::createToolDocks()
         loadToolOptions(static_cast<PaintOpenGLWidget::Tool>(tool));
     };
 
-    auto applyTool = [this, toolsPanel, toolOptPanel, loadToolOptions](PaintOpenGLWidget::Tool tool, bool reloadOptions) {
+    auto applyTool = [this, toolOptPanel, loadToolOptions](PaintOpenGLWidget::Tool tool, bool reloadOptions) {
         for (PaintOpenGLWidget *view : m_paintViews) {
             view->setTool(tool);
             view->setStrokeProperty(QString());
         }
-        toolsPanel->setTool(tool);
+        // Every page: the armed tool is one per application, so a page that
+        // kept a stale check would offer a second armed tool.
+        for (ToolsPanel *panel : m_toolsPanels) {
+            panel->setTool(tool);
+        }
         toolOptPanel->setTool(tool);
         m_activeExtraTool.clear();   // a plain tool: nothing extra to rebuild
         m_activeExtraToolProperty.clear();
@@ -2412,40 +2526,51 @@ void MainWindow::createToolDocks()
 
     loadToolOptions(PaintOpenGLWidget::Tool::Pen);
 
-    connect(toolsPanel, &ToolsPanel::toolSelected, this, selectTool);
-    connect(toolsPanel, &ToolsPanel::extraToolSelected, this, [this, toolOptPanel](const ToolsPanel::ExtraToolDefinition &tool) {
-        // A script tool declares the BASE tool its canvas gestures mean.
-        // Auto Mapping asks for "arrow": it acts through its own overlay and
-        // handles, and leaving the pen armed under it let a stray click draw
-        // a stroke into the artwork.
-        static const QHash<QString, PaintOpenGLWidget::Tool> baseTools = {
-            {QStringLiteral("fill"), PaintOpenGLWidget::Tool::Fill},
-            {QStringLiteral("arrow"), PaintOpenGLWidget::Tool::Arrow},
-            {QStringLiteral("move"), PaintOpenGLWidget::Tool::Move},
-            {QStringLiteral("transfer"), PaintOpenGLWidget::Tool::Transfer},
-        };
-        const PaintOpenGLWidget::Tool baseTool =
-            baseTools.value(tool.baseTool, PaintOpenGLWidget::Tool::Pen);
-        for (PaintOpenGLWidget *view : m_paintViews) {
-            view->setTool(baseTool);
-            view->setStrokeProperty(tool.property);
-        }
-        activePaintWidget()->sendPythonExtraToolMessage(tool.name, tool.property);
-        toolOptPanel->setTool(baseTool);
-        m_activeExtraTool = tool.name;
-        m_activeExtraToolProperty = tool.property;
-        refreshExtraToolOptions();
-#ifdef ANIMEAN_WITH_PYTHON
-        if (!tool.handler.isEmpty()) {
-            try {
-                py::module_::import("extra_tools")
-                    .attr("run_tool_handler")(tool.handler.toStdString(), tool.name.toStdString(), tool.property.toStdString());
-            } catch (const py::error_already_set &error) {
-                setStatusText(QStringLiteral("extra tool error: %1").arg(QString::fromUtf8(error.what())));
+    for (ToolsPanel *panel : m_toolsPanels) {
+        connect(panel, &ToolsPanel::toolSelected, this, selectTool);
+        connect(panel, &ToolsPanel::extraToolSelected, this,
+                [this, panel, toolOptPanel](const ToolsPanel::ExtraToolDefinition &tool) {
+            // A script tool declares the BASE tool its canvas gestures mean.
+            // Auto Mapping asks for "arrow": it acts through its own overlay and
+            // handles, and leaving the pen armed under it let a stray click draw
+            // a stroke into the artwork.
+            static const QHash<QString, PaintOpenGLWidget::Tool> baseTools = {
+                {QStringLiteral("fill"), PaintOpenGLWidget::Tool::Fill},
+                {QStringLiteral("arrow"), PaintOpenGLWidget::Tool::Arrow},
+                {QStringLiteral("move"), PaintOpenGLWidget::Tool::Move},
+                {QStringLiteral("transfer"), PaintOpenGLWidget::Tool::Transfer},
+            };
+            const PaintOpenGLWidget::Tool baseTool =
+                baseTools.value(tool.baseTool, PaintOpenGLWidget::Tool::Pen);
+            for (PaintOpenGLWidget *view : m_paintViews) {
+                view->setTool(baseTool);
+                view->setStrokeProperty(tool.property);
             }
-        }
+            // The clicked page already cleared itself; the OTHER pages have to
+            // be told, because a check on one page is not exclusive with a
+            // check on another.
+            for (ToolsPanel *other : m_toolsPanels) {
+                if (other != panel) {
+                    other->clearSelection();
+                }
+            }
+            activePaintWidget()->sendPythonExtraToolMessage(tool.name, tool.property);
+            toolOptPanel->setTool(baseTool);
+            m_activeExtraTool = tool.name;
+            m_activeExtraToolProperty = tool.property;
+            refreshExtraToolOptions();
+#ifdef ANIMEAN_WITH_PYTHON
+            if (!tool.handler.isEmpty()) {
+                try {
+                    py::module_::import("extra_tools")
+                        .attr("run_tool_handler")(tool.handler.toStdString(), tool.name.toStdString(), tool.property.toStdString());
+                } catch (const py::error_already_set &error) {
+                    setStatusText(QStringLiteral("extra tool error: %1").arg(QString::fromUtf8(error.what())));
+                }
+            }
 #endif
-    });
+        });
+    }
 
     connect(toolOptPanel, &ToolOptPanel::colorSelected, this, [this, applyTool](const QColor &color) {
         // ARM FIRST, PAINT SECOND, in both branches. Arming announces the
@@ -2492,20 +2617,26 @@ void MainWindow::createToolDocks()
 
 void MainWindow::createListDocks()
 {
-    m_layerPanel = new LayerPanel(this);
+    // Two layer pages, each nailed to one board. The old single panel followed
+    // whichever board was active (through changableTexture), so the layers of
+    // the board you were NOT looking at were simply unreachable; a page each
+    // means both stacks are always on screen, one tab apart.
+    m_mainLayerPanel = new LayerPanel(this);
+    m_childLayerPanel = new LayerPanel(this);
     m_framePanel = new FramePanel(this);
     m_assetPanel = new AssetPanel(this);
 
-    m_layerDock = new QDockWidget(QStringLiteral("Layers"), this);
-    m_layerDock->setWidget(m_layerPanel);
+    m_layerDock = new ParentWindow(QStringLiteral("layers"), QStringLiteral("Layers"), this);
+    m_layerDock->addPage(QStringLiteral("main"), QStringLiteral("Main Layers"), m_mainLayerPanel);
+    m_layerDock->addPage(QStringLiteral("child"), QStringLiteral("Child Layers"), m_childLayerPanel);
     addDockWidget(Qt::RightDockWidgetArea, m_layerDock);
 
-    m_frameDock = new QDockWidget(QStringLiteral("Frames"), this);
-    m_frameDock->setWidget(m_framePanel);
+    m_frameDock = new ParentWindow(QStringLiteral("frames"), QStringLiteral("Frames"), this);
+    m_frameDock->addPage(QStringLiteral("frames"), QStringLiteral("Frames"), m_framePanel);
     addDockWidget(Qt::BottomDockWidgetArea, m_frameDock);
 
-    m_assetDock = new QDockWidget(QStringLiteral("Assets"), this);
-    m_assetDock->setWidget(m_assetPanel);
+    m_assetDock = new ParentWindow(QStringLiteral("assets"), QStringLiteral("Assets"), this);
+    m_assetDock->addPage(QStringLiteral("assets"), QStringLiteral("Assets"), m_assetPanel);
     addDockWidget(Qt::RightDockWidgetArea, m_assetDock);
     // Hidden by default: layers and frames are the everyday surfaces; the
     // asset list is for reorganising what those cells point AT. The View
@@ -3018,8 +3149,10 @@ void MainWindow::updateAttention(PaintOpenGLWidget *view, AttentionChange change
     if (update.frame && view == framePanelTarget()) {
         refreshFrameList(attention.frame);
     }
-    if (update.layer && view == layerPanelTarget()) {
-        refreshLayerList(attention.layer);
+    if (update.layer) {
+        // No target test: the page that shows THIS board is the one to
+        // rebuild, whichever board has focus.
+        refreshLayerList(layerPanelForView(view), view, attention.layer);
     }
     if (update.asset && view == assetPanelTarget()) {
         refreshAssetList(attention.asset);
@@ -3027,7 +3160,7 @@ void MainWindow::updateAttention(PaintOpenGLWidget *view, AttentionChange change
     syncEmbeddedPythonState();
 }
 
-QVector<QTreeWidgetItem *> MainWindow::layerPanelItems() const
+QVector<QTreeWidgetItem *> MainWindow::layerPanelItems(LayerPanel *panel)
 {
     // Display order, depth first, independent of what is expanded.
     QVector<QTreeWidgetItem *> items;
@@ -3037,19 +3170,18 @@ QVector<QTreeWidgetItem *> MainWindow::layerPanelItems() const
             walk(item->child(i));
         }
     };
-    QTreeWidget *tree = m_layerPanel->layerList();
+    QTreeWidget *tree = panel->layerList();
     for (int i = 0; i < tree->topLevelItemCount(); ++i) {
         walk(tree->topLevelItem(i));
     }
     return items;
 }
 
-void MainWindow::showLayerContextMenu(const QPoint &pos)
+void MainWindow::showLayerContextMenu(LayerPanel *panel, PaintOpenGLWidget *view, const QPoint &pos)
 {
 #ifdef ANIMEAN_WITH_PYTHON
-    QTreeWidget *tree = m_layerPanel->layerList();
+    QTreeWidget *tree = panel->layerList();
     QTreeWidgetItem *item = tree->itemAt(pos);
-    PaintOpenGLWidget *view = layerPanelTarget();
 
     // No row under the cursor is still a menu: providers get kind "panel"
     // and typically answer with creation entries (new line / fill /
@@ -3186,15 +3318,16 @@ void MainWindow::showLayerContextMenu(const QPoint &pos)
         menu.exec(tree->viewport()->mapToGlobal(pos));
     }
 #else
+    Q_UNUSED(panel);
+    Q_UNUSED(view);
     Q_UNUSED(pos);
 #endif
 }
 
-void MainWindow::applyLayerPanelStructure(int movedColumnId)
+void MainWindow::applyLayerPanelStructure(LayerPanel *panel, PaintOpenGLWidget *view, int movedColumnId)
 {
-    PaintOpenGLWidget *view = layerPanelTarget();
     AnimeSceneModel &model = view->model();
-    QTreeWidget *tree = m_layerPanel->layerList();
+    QTreeWidget *tree = panel->layerList();
 
     // Capture the widget as a node tree BEFORE touching the columns. Leaves
     // are recorded by stable column id, so the reorder below - which shifts
@@ -3239,7 +3372,7 @@ void MainWindow::applyLayerPanelStructure(int movedColumnId)
     int landedOn = -1;
     const int fromIndex = model.layerIndexForId(movedColumnId);
     if (fromIndex >= 0) {
-        const QVector<QTreeWidgetItem *> items = layerPanelItems();
+        const QVector<QTreeWidgetItem *> items = layerPanelItems(panel);
         int position = -1;
         for (int i = 0; i < items.size(); ++i) {
             if (items[i]->data(0, kGroupIdRole).toInt() == 0
@@ -3271,11 +3404,20 @@ void MainWindow::applyLayerPanelStructure(int movedColumnId)
                     attentionFor(view).asset);
 }
 
-void MainWindow::refreshLayerList(int selectedRow)
+void MainWindow::refreshLayerLists()
 {
-    PaintOpenGLWidget *view = layerPanelTarget();
-    QTreeWidget *tree = m_layerPanel->layerList();
+    for (LayerPanel *panel : {m_mainLayerPanel, m_childLayerPanel}) {
+        PaintOpenGLWidget *view = viewForLayerPanel(panel);
+        refreshLayerList(panel, view, attentionFor(view).layer);
+    }
+}
+
+void MainWindow::refreshLayerList(LayerPanel *panel, PaintOpenGLWidget *view, int selectedRow)
+{
+    QTreeWidget *tree = panel->layerList();
     const AnimeSceneModel &model = view->model();
+    // Row visibility is frame dependent, and each page reads its OWN board's
+    // current frame - the two boards are on different frames all the time.
     const int frame = model.currentFrame();
 
     // Work out what the panel should show BEFORE touching it, so the common
@@ -3335,6 +3477,9 @@ void MainWindow::refreshLayerList(int selectedRow)
     const QTreeWidgetItem *currentItem = tree->currentItem();
     const int previousLayer = currentItem ? currentItem->data(0, Qt::UserRole).toInt() : -1;
 
+    // Saved and restored rather than cleared: the two pages refresh back to
+    // back, and the first one finishing must not unguard the second.
+    const bool wasRefreshing = m_refreshingLists;
     m_refreshingLists = true;
     const QSignalBlocker blocker(tree);
 
@@ -3344,7 +3489,7 @@ void MainWindow::refreshLayerList(int selectedRow)
     // scroll position (and every expanded state), so a user reading row 80 of
     // 100 was thrown to wherever the current layer happened to sit the moment
     // they ticked a checkbox.
-    QVector<QTreeWidgetItem *> existing = layerPanelItems();
+    QVector<QTreeWidgetItem *> existing = layerPanelItems(panel);
     bool sameRows = existing.size() == rows.size();
     for (int i = 0; sameRows && i < rows.size(); ++i) {
         const QTreeWidgetItem *item = existing[i];
@@ -3427,7 +3572,7 @@ void MainWindow::refreshLayerList(int selectedRow)
 
     QTreeWidgetItem *selectedItem = nullptr;
     if (selectedRow >= 0) {
-        for (QTreeWidgetItem *item : layerPanelItems()) {
+        for (QTreeWidgetItem *item : layerPanelItems(panel)) {
             if (item->data(0, kGroupIdRole).toInt() == 0
                 && item->data(0, Qt::UserRole).toInt() == selectedRow) {
                 selectedItem = item;
@@ -3458,7 +3603,7 @@ void MainWindow::refreshLayerList(int selectedRow)
     if (restoreScroll >= 0) {
         tree->verticalScrollBar()->setValue(restoreScroll);
     }
-    m_refreshingLists = false;
+    m_refreshingLists = wasRefreshing;
 }
 
 void MainWindow::refreshFpsCombo()

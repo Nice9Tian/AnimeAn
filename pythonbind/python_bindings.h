@@ -4,11 +4,31 @@
 #include <QColor>
 #include <QPointF>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 #include <functional>
 
 class AnimeSceneModel;
+
+// One parent window, as ui.windows reports it. Names are the stable identity
+// Python addresses ("tools", "layers", ...); titles are what the user reads.
+struct AnimeanWindowInfo {
+    QString name;
+    QString title;
+    bool visible = false;
+    QStringList pages;
+    QString current;
+};
+
+// The window-management surface, registered as one unit like the freeze
+// callback. `current` is not a member: it is list() filtered by name, and two
+// answers to the same question drift.
+struct AnimeanWindowsApi {
+    std::function<QVector<AnimeanWindowInfo>()> list;
+    std::function<void(const QString &name, bool on)> show;
+    std::function<void(const QString &name, const QString &page)> select;
+};
 
 struct AnimeanOverlayItem {
     QString id;
@@ -52,6 +72,8 @@ void registerAnimeanUiToolOptionsCallback(std::function<void()> callback);
 void clearAnimeanUiToolOptionsCallback();
 void registerAnimeanUiFreezeCallback(std::function<void(bool frozen)> callback);
 void clearAnimeanUiFreezeCallback();
+void registerAnimeanUiWindowsCallback(AnimeanWindowsApi api);
+void clearAnimeanUiWindowsCallback();
 void registerAnimeanUiOverlayCallback(std::function<void(const QString &view, const QVector<AnimeanOverlayItem> &items)> callback);
 void clearAnimeanUiOverlayCallback();
 void registerAnimeanUiEditHandleCallback(std::function<void(const QString &view, const QVector<AnimeanEditHandle> &handles)> callback);

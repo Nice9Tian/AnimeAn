@@ -21,6 +21,8 @@ class QAction;
 class QDockWidget;
 class FramePanel;
 class LayerPanel;
+class ParentWindow;
+class ToolsPanel;
 class PaintOpenGLWidget;
 class QLineEdit;
 class QPlainTextEdit;
@@ -80,12 +82,12 @@ private:
     // window and the panel's Smooth slider show the same stabilizer value).
     void refreshToolOptions();
     void refreshFpsCombo();
-    QVector<QTreeWidgetItem *> layerPanelItems() const;
+    static QVector<QTreeWidgetItem *> layerPanelItems(LayerPanel *panel);
     // Writes the panel's current shape back into the model: the layer group
     // tree follows what the user dragged, and the dragged layer's z-order
     // follows the leaf it landed after.
-    void applyLayerPanelStructure(int movedColumnId);
-    void showLayerContextMenu(const QPoint &pos);
+    void applyLayerPanelStructure(LayerPanel *panel, PaintOpenGLWidget *view, int movedColumnId);
+    void showLayerContextMenu(LayerPanel *panel, PaintOpenGLWidget *view, const QPoint &pos);
     void runPythonDebugCommand(const QString &command);
     QString runEmbeddedPythonCommand(const QString &command);
     QString resolvePythonScriptPath(const QString &scriptName) const;
@@ -148,10 +150,19 @@ private:
     void refreshPanelTargets();
     void requestAttentionUpdate(PaintOpenGLWidget *view, AttentionChange change, int frame, int layer, int asset);
     void updateAttention(PaintOpenGLWidget *view, AttentionChange change, int frame, int layer, int asset);
-    void refreshLayerList(int selectedRow);
+    // Each layers page is bound to ONE board for its whole life, so a refresh
+    // names the pair rather than resolving a target: the child page keeps
+    // showing the child board even while the main board has focus.
+    LayerPanel *layerPanelForView(PaintOpenGLWidget *view) const;
+    PaintOpenGLWidget *viewForLayerPanel(LayerPanel *panel) const;
+    void connectLayerPanel(LayerPanel *panel, PaintOpenGLWidget *view);
+    void refreshLayerList(LayerPanel *panel, PaintOpenGLWidget *view, int selectedRow);
+    // Both pages, each against its own board's current selection.
+    void refreshLayerLists();
     void refreshFrameList(int selectedRow);
     void refreshAssetList(int selectedRow);
     void setPythonUiFrozen(bool frozen);
+    ParentWindow *parentWindowNamed(const QString &name) const;
 
     Ui::MainWindow *ui;
     PaintOpenGLWidget *m_paintWidget = nullptr;
@@ -159,19 +170,29 @@ private:
     PaintOpenGLWidget *m_activePaintWidget = nullptr;
     ChildPaintWindow *m_childPaintWindow = nullptr;
     QVector<PaintOpenGLWidget *> m_paintViews;
-    LayerPanel *m_layerPanel = nullptr;
+    LayerPanel *m_mainLayerPanel = nullptr;
+    LayerPanel *m_childLayerPanel = nullptr;
     FramePanel *m_framePanel = nullptr;
     AssetPanel *m_assetPanel = nullptr;
-    QDockWidget *m_layerDock = nullptr;
-    QDockWidget *m_frameDock = nullptr;
-    QDockWidget *m_assetDock = nullptr;
-    QDockWidget *m_toolsDock = nullptr;
-    QDockWidget *m_toolOptDock = nullptr;
-    QDockWidget *m_pythonDebugDock = nullptr;
-    QDockWidget *m_historyDock = nullptr;
+    ParentWindow *m_layerDock = nullptr;
+    ParentWindow *m_frameDock = nullptr;
+    ParentWindow *m_assetDock = nullptr;
+    ParentWindow *m_toolsDock = nullptr;
+    ParentWindow *m_toolOptDock = nullptr;
+    ParentWindow *m_pythonDebugDock = nullptr;
+    ParentWindow *m_historyDock = nullptr;
     HistoryPanel *m_historyPanel = nullptr;
-    QDockWidget *m_forcePadDock = nullptr;
+    ParentWindow *m_forcePadDock = nullptr;
     ForcePadPanel *m_forcePadPanel = nullptr;
+    // Every ParentWindow, in Windows-menu order; also what ui.windows lists
+    // and how a name from Python is resolved.
+    QVector<ParentWindow *> m_parentWindows;
+    // One instance per Tools page. The built-in buttons live on the painting
+    // page only; selection exclusivity spans all three.
+    QVector<ToolsPanel *> m_toolsPanels;
+    ToolsPanel *m_paintingToolsPanel = nullptr;
+    ToolsPanel *m_mappingToolsPanel = nullptr;
+    ToolsPanel *m_fukusatoToolsPanel = nullptr;
     QAction *m_undoAction = nullptr;
     QAction *m_redoAction = nullptr;
     QTimer *m_playbackTimer = nullptr;
@@ -208,8 +229,10 @@ private:
     bool m_historyRefreshQueued = false;
     bool m_listMousePressed = false;
     bool m_listDragActive = false;
-    // True only between a layer-panel drop and the rowsInserted it produces.
-    bool m_layerDropInProgress = false;
+    // The layers page that took a drop, held only between that drop and the
+    // rowsInserted it produces - the other page's tree must not read a
+    // neighbour's drop as its own.
+    LayerPanel *m_layerDropPanel = nullptr;
     bool m_hasPendingAttention = false;
     int m_pythonFreezeDepth = 0;
 };
