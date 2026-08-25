@@ -10,6 +10,11 @@
 PaintViewContainer::PaintViewContainer(QWidget *parent)
     : QWidget(parent)
 {
+    // The last link of the chain that lets a board fill the height a panel row
+    // offers it (SubControlFrame -> TexturePanel -> here): a canvas takes the
+    // room it is given.
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
     // Two nested boxes rather than one grid: the chrome band has to span
     // EVERYTHING (canvas plus scroll bars), and expressing that in the same
     // grid as the scroll bars meant every slot had to know the others' spans.

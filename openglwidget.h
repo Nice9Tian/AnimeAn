@@ -112,6 +112,24 @@ public:
     qreal zoom() const;
     QPointF panOffset() const;
     void setScrollPosition(int horizontal, int vertical);
+    // Moves the view PROGRAMMATICALLY: the zoom is clamped to the same limits
+    // the wheel enforces and the pan to the same reachable area, so a restored
+    // viewpoint can never land somewhere a gesture could not. Deliberately
+    // silent on userTransformed() - only a hand on the wheel, the middle button
+    // or a scroll bar counts as manual.
+    void setViewTransform(qreal zoom, const QPointF &pan);
+    // Frames the current frame's visible artwork. `cover` fills the viewport -
+    // the content spans it edge to edge and the shorter axis crops (bleed);
+    // false fits the whole of it inside instead. False when there is nothing to
+    // frame, or the widget has no size yet (a fit measured against an unlaid-out
+    // widget frames the wrong rectangle).
+    bool fitViewToContent(bool cover);
+    // The union of the VISIBLE, non-internal layers' content on the current
+    // frame - what a fit frames. Null when nothing is showing. Deliberately not
+    // reachableRect(): that one answers reachability (page + everything drawn,
+    // hidden layers included, plus half a viewport of slack) and would frame
+    // empty paper.
+    QRectF visibleContentBounds() const;
     // What sits behind the drawing. A VIEW preference, not a document one: it
     // is not saved with the project, and the texture export suppresses it so
     // the choice never reaches a file.
@@ -258,6 +276,11 @@ signals:
     void historyChanged();
     void historyCommitted();
     void viewTransformChanged();
+    // The subset of viewTransformChanged the USER caused: wheel zoom,
+    // middle-button pan, a scroll bar dragged. A shell that re-frames the view
+    // by itself needs to know when to stop doing that, and it cannot tell from
+    // viewTransformChanged - its own fit emits that one too.
+    void userTransformed();
     void playbackInterrupted();
 
 protected:

@@ -717,6 +717,9 @@ void MainWindow::setupDocks()
     populateChildViewButtons();
     setupPythonDebugDock();
     createTextureFileMenu();
+    // The same entries on the application File menu: the texture board is not
+    // always on screen (it can be parked), and its own bar goes with it.
+    createMainTextureMenu();
     // After the View menu below would be too late to matter, but after the
     // tool modules are imported is what counts: their import-time
     // registrations are what these menus are built from.
@@ -1197,6 +1200,16 @@ void MainWindow::createTexturePanel()
     connect(m_textureFrame, &SubControlFrame::homeChanged, this,
             &MainWindow::updateTextureHome, Qt::QueuedConnection);
 
+    // A hand on the wheel, the middle button or a scroll bar is the user taking
+    // the framing over: auto-fit stands down for this home until the board is
+    // homed into it again. Programmatic moves (the slot restore, the fit
+    // itself) do not emit this, which is the whole reason the signal exists.
+    connect(m_childPaintWidget, &PaintOpenGLWidget::userTransformed, this, [this]() {
+        if (TextureViewSlot *slot = textureViewSlotFor(m_textureHome)) {
+            slot->autoFitSuspended = true;
+        }
+    });
+
     // The panel starts on the central Texture page's side of the rule: parked,
     // because the Drawing page is what comes up first.
     updateTextureHome();
@@ -1235,6 +1248,11 @@ void MainWindow::updateTextureHome()
             return;
         }
 
+        // BEFORE anything moves: the reparent resizes the board into its new
+        // home, and the resize's own pan clamp would rewrite the very transform
+        // this is trying to remember.
+        saveTextureViewSlot(m_textureHome);
+
         if (m_centralArea && m_textureHome == m_centralArea) {
             m_centralArea->setTextureContent(nullptr);
         } else if (m_textureFrame && m_textureHome == m_textureFrame) {
@@ -1262,6 +1280,13 @@ void MainWindow::updateTextureHome()
         if (m_childPaintWidget) {
             m_childPaintWidget->update();
         }
+
+        // QUEUED, for the same reason the save above is not: the board has just
+        // been handed to a new parent and does not have its new size until the
+        // layout has run. A viewpoint restored - or worse, a fit computed -
+        // against the old size frames the wrong rectangle.
+        m_textureViewRestoreRetries = 0;
+        QTimer::singleShot(0, this, &MainWindow::restoreTextureViewSlot);
     }
 
     // The frame always says something: the board when it has it, otherwise
@@ -1272,6 +1297,91 @@ void MainWindow::updateTextureHome()
                                                : QStringLiteral("The texture board is parked"));
     }
     m_updatingTextureHome = false;
+}
+
+MainWindow::TextureViewSlot *MainWindow::textureViewSlotFor(QWidget *home)
+{
+    if (!home) {
+        return nullptr;
+    }
+    if (m_centralArea && home == m_centralArea) {
+        return &m_textureViewCentral;
+    }
+    if (m_textureFrame && home == m_textureFrame) {
+        return &m_textureViewControl;
+    }
+    // Parked. Nothing to remember, and nothing that could have moved it.
+    return nullptr;
+}
+
+void MainWindow::saveTextureViewSlot(QWidget *home)
+{
+    TextureViewSlot *slot = textureViewSlotFor(home);
+    if (!slot || !m_childPaintWidget) {
+        return;
+    }
+    slot->zoom = m_childPaintWidget->zoom();
+    slot->pan = m_childPaintWidget->panOffset();
+    slot->valid = true;
+}
+
+void MainWindow::restoreTextureViewSlot()
+{
+    if (!m_childPaintWidget) {
+        return;
+    }
+    TextureViewSlot *slot = textureViewSlotFor(m_textureHome);
+    if (!slot) {
+        return;
+    }
+
+    if (m_childPaintWidget->width() < 2 || m_childPaintWidget->height() < 2) {
+        // The layout has not sized the new home yet - a fit measured against a
+        // one-pixel board is nonsense and a restored pan would clamp against
+        // it. One more turn of the event loop, a bounded number of times.
+        if (m_textureViewRestoreRetries < 5) {
+            ++m_textureViewRestoreRetries;
+            QTimer::singleShot(16, this, &MainWindow::restoreTextureViewSlot);
+        }
+        return;
+    }
+    m_textureViewRestoreRetries = 0;
+
+    if (slot->valid) {
+        // Even where the fit below is about to overrule it: it costs one
+        // transform and it means a home the fit cannot compute (an empty frame
+        // on the unbounded board) still shows the viewpoint it was left at
+        // rather than the other home's.
+        m_childPaintWidget->setViewTransform(slot->zoom, slot->pan);
+    }
+
+    if (m_textureFrame && m_textureHome == m_textureFrame) {
+        // Homing in ends any suspension: the manual override was scoped to the
+        // visit that made it ("until the next home-in"), and arriving is what
+        // the frame's auto-fit is for.
+        slot->autoFitSuspended = false;
+        autoFitTextureControlView();
+    }
+}
+
+void MainWindow::autoFitTextureControlView()
+{
+    if (!m_childPaintWidget || !m_textureFrame || m_textureHome != m_textureFrame) {
+        return;
+    }
+    if (m_textureViewControl.autoFitSuspended) {
+        return;
+    }
+    // COVER, not contain: the reference fills the frame and the longer axis
+    // runs off the edges, so the panel row never shows a band of empty paper.
+    if (!m_childPaintWidget->fitViewToContent(true)) {
+        return;
+    }
+    // Remember what the fit chose, so the next arrival here has something to
+    // show before its own fit lands.
+    m_textureViewControl.zoom = m_childPaintWidget->zoom();
+    m_textureViewControl.pan = m_childPaintWidget->panOffset();
+    m_textureViewControl.valid = true;
 }
 
 #ifdef ANIMEAN_WITH_PYTHON
@@ -1566,9 +1676,40 @@ void MainWindow::createTextureFileMenu()
         bar->addMenu(textureMenu);
     }
 
+    fillTextureFileMenu(textureMenu);
+}
+
+void MainWindow::createMainTextureMenu()
+{
+    // The texture entries a second time, on the APPLICATION File menu. The
+    // panel's own bar travels with the panel - parked, or on a tab the user has
+    // clicked away from, it is not reachable at all - and these commands
+    // (open, save, import a reference) are ones you reach for from anywhere.
+    QMenu *fileMenu = ui->menuFile;
+    if (!fileMenu) {
+        return;
+    }
+    // Appended, which lands it directly after the Import submenu that closes
+    // the menu today: the two read as a pair of nested entries under the
+    // document's own New/Open/Save.
+    QMenu *textureMenu = fileMenu->addMenu(QStringLiteral("Texture"));
+    fillTextureFileMenu(textureMenu);
+}
+
+void MainWindow::fillTextureFileMenu(QMenu *menu)
+{
+    if (!menu) {
+        return;
+    }
+    // FRESH QActions per menu, deliberately. A QAction added to two menus is
+    // one object owned by whichever menu it was created on, and the entry on
+    // the other menu would go dead - or worse, dangle - the day that one is
+    // rebuilt. What the two menus share is the ROUTES: every lambda below calls
+    // exactly the member the texture panel's own bar calls.
+
     // One Import entry holding the formats, rather than three sibling lines
     // competing with Open/Save for the eye - same shape as the main board's.
-    QMenu *importMenu = textureMenu->addMenu(QStringLiteral("Import"));
+    QMenu *importMenu = menu->addMenu(QStringLiteral("Import"));
 
     QAction *importRasterAction = importMenu->addAction(QStringLiteral("Raster..."));
     connect(importRasterAction, &QAction::triggered, this, [this]() {
@@ -1588,18 +1729,18 @@ void MainWindow::createTextureFileMenu()
         importClipStudioPaint(m_childPaintWidget);
     });
 
-    textureMenu->addSeparator();
+    menu->addSeparator();
 
-    QAction *openAction = textureMenu->addAction(QStringLiteral("Open Texture View..."));
+    QAction *openAction = menu->addAction(QStringLiteral("Open Texture View..."));
     connect(openAction, &QAction::triggered, this, &MainWindow::openTextureView);
 
-    QAction *saveAction = textureMenu->addAction(QStringLiteral("Save Texture View"));
+    QAction *saveAction = menu->addAction(QStringLiteral("Save Texture View"));
     connect(saveAction, &QAction::triggered, this, [this]() { saveTextureView(); });
 
-    QAction *saveAsAction = textureMenu->addAction(QStringLiteral("Save Texture View As..."));
+    QAction *saveAsAction = menu->addAction(QStringLiteral("Save Texture View As..."));
     connect(saveAsAction, &QAction::triggered, this, [this]() { saveTextureViewAs(); });
 
-    QAction *exportImageAction = textureMenu->addAction(QStringLiteral("Export Texture View Image..."));
+    QAction *exportImageAction = menu->addAction(QStringLiteral("Export Texture View Image..."));
     connect(exportImageAction, &QAction::triggered, this, [this]() { exportTextureImage(); });
 }
 
@@ -3707,6 +3848,14 @@ void MainWindow::updateAttention(PaintOpenGLWidget *view, AttentionChange change
 
     if (update.frame && view == framePanelTarget()) {
         refreshTimeline();
+    }
+    if (update.frame && view == m_childPaintWidget) {
+        // The fit frames THIS frame's artwork, so a new frame is a new
+        // rectangle to cover. Hooked here rather than on the timeline: this is
+        // the one funnel every frame change on a board passes through, whatever
+        // moved it. autoFitTextureControlView itself checks that the board is
+        // in the sub-control and that auto-fit still owns that home.
+        autoFitTextureControlView();
     }
     if (update.layer) {
         // No target test: the page that shows THIS board is the one to

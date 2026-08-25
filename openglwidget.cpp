@@ -13,6 +13,15 @@
 
 namespace {
 const qreal kOverlayHandleSize = 14.0;
+// The zoom limits the wheel has always enforced, named so the programmatic
+// paths (setViewTransform, fitViewToContent) cannot drift away from what a
+// gesture is allowed to reach.
+constexpr qreal kMinZoom = 0.1;
+constexpr qreal kMaxZoom = 8.0;
+qreal clampZoom(qreal zoom)
+{
+    return zoom < kMinZoom ? kMinZoom : (zoom > kMaxZoom ? kMaxZoom : zoom);
+}
 }
 
 #ifdef ANIMEAN_WITH_PYTHON
@@ -383,6 +392,25 @@ void PaintOpenGLWidget::setScrollPosition(int horizontal, int vertical)
     m_panOffset = QPointF(-horizontal, -vertical);
     clampPan();
     update();
+    // A scroll bar only ever moves because a hand moved it: syncScrollBars
+    // writes the bars back with its own guard up, so nothing programmatic
+    // reaches here. No notifyViewTransformChanged() though - that would run
+    // straight back into the bar that called this.
+    emit userTransformed();
+}
+
+void PaintOpenGLWidget::setViewTransform(qreal zoom, const QPointF &pan)
+{
+    if (m_playbackActive) {
+        // Same as the wheel: the cached frames are re-mapped onto the new view
+        // and re-rendered once it settles.
+        schedulePlaybackCacheRefresh();
+    }
+    m_zoom = clampZoom(zoom);
+    m_panOffset = pan;
+    clampPan();
+    update();
+    notifyViewTransformChanged();
 }
 
 void PaintOpenGLWidget::paintBackground(QPainter &painter, const QRectF &target) const
@@ -582,6 +610,75 @@ QRectF PaintOpenGLWidget::reachableRect() const
     return reach.adjusted(-padX, -padY, padX, padY);
 }
 
+QRectF PaintOpenGLWidget::visibleContentBounds() const
+{
+    // Same column filter the paint pass uses (invisible columns are skipped)
+    // plus the internal ones, which are machinery rather than artwork - so this
+    // bounds exactly what the user can see on this frame.
+    QRectF bounds;
+    const int frame = m_model.currentFrame();
+    if (frame < 0) {
+        return bounds;
+    }
+    for (int layer = 0; layer < m_model.layerCount(); ++layer) {
+        if (!m_model.layerVisible(layer) || m_model.layerInternal(layer)) {
+            continue;
+        }
+        const VectorImageModel *image = m_model.imageAt(frame, layer);
+        if (!image) {
+            continue;
+        }
+        const QRectF cell = image->bounds();
+        if (cell.isNull()) {
+            continue;
+        }
+        bounds = bounds.isNull() ? cell : bounds.united(cell);
+    }
+    return bounds;
+}
+
+bool PaintOpenGLWidget::fitViewToContent(bool cover)
+{
+    if (width() <= 0 || height() <= 0) {
+        return false;
+    }
+
+    QRectF target = visibleContentBounds();
+    if (target.isNull()) {
+        // An empty frame still has a page worth framing. The page is a property
+        // of the DOCUMENT, so the unbounded board has one too - what "unbounded"
+        // drops is the pan clamp, not the paper.
+        target = documentRect();
+    }
+    if (target.isNull()) {
+        // A document with no canvas size either: nothing to frame, and a guess
+        // would be worse than leaving the view where the user left it.
+        return false;
+    }
+    // A single flat stroke has no height and a dot no size at all; either would
+    // divide the viewport by zero. Give the degenerate axis the other one's
+    // span (or a document unit when both are flat) about the same centre.
+    if (target.width() <= 0.0 || target.height() <= 0.0) {
+        const QPointF centre = target.center();
+        const qreal span = std::max<qreal>(std::max(target.width(), target.height()), 1.0);
+        target.setSize(QSizeF(target.width() > 0.0 ? target.width() : span,
+                              target.height() > 0.0 ? target.height() : span));
+        target.moveCenter(centre);
+    }
+
+    const qreal scaleX = qreal(width()) / target.width();
+    const qreal scaleY = qreal(height()) / target.height();
+    // COVER: the content spans the frame on BOTH axes and the longer one runs
+    // off the edges (bleed). CONTAIN would leave a margin on one axis.
+    const qreal zoom = clampZoom(cover ? std::max(scaleX, scaleY) : std::min(scaleX, scaleY));
+    // Centre it: solve toScreen(centre) == viewport centre for the pan
+    // (algorithm/viewscale.h owns the conversion, here as everywhere else).
+    const QPointF pan = QPointF(width() * 0.5, height() * 0.5)
+                        - AnimeViewScale::toScreen(target.center(), zoom, QPointF());
+    setViewTransform(zoom, pan);
+    return true;
+}
+
 void PaintOpenGLWidget::clampPan()
 {
     if (m_unboundedCanvas) {
@@ -640,7 +737,7 @@ void PaintOpenGLWidget::wheelEvent(QWheelEvent *event)
     }
 
     const qreal factor = std::pow(1.25, steps);
-    const qreal newZoom = std::min<qreal>(8.0, std::max<qreal>(0.1, m_zoom * factor));
+    const qreal newZoom = clampZoom(m_zoom * factor);
     if (qFuzzyCompare(newZoom, m_zoom)) {
         event->accept();
         return;
@@ -655,6 +752,7 @@ void PaintOpenGLWidget::wheelEvent(QWheelEvent *event)
     clampPan();
     update();
     notifyViewTransformChanged();
+    emit userTransformed();
     // The artist-mode key-point filter is zoom-dependent (a perceptual
     // threshold in SCREEN space), so a zoom while handles are up re-asks
     // Python which handles survive at the new magnification. Connect's
@@ -3086,6 +3184,7 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
         clampPan();
         update();
         notifyViewTransformChanged();
+        emit userTransformed();
         event->accept();
         return;
     }

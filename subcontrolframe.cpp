@@ -280,6 +280,11 @@ SubControlFrame::SubControlFrame(const QString &name, const QString &title, QWid
 {
     setObjectName(QStringLiteral("SubControlFrame_%1").arg(name));
     setWindowTitle(title);
+    // A frame holds a working surface, not a label: where a host offers height
+    // it should take it. The hint of a board is a thumbnail of one, so without
+    // this the frame sits at thumbnail size no matter how much room the panel
+    // has. Costs a floating frame nothing - it owns its own geometry there.
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     QVBoxLayout *outer = new QVBoxLayout(this);
     outer->setContentsMargins(1, 1, 1, 1);

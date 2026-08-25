@@ -251,11 +251,61 @@ void ToolOptPanel::embedSubControl(SubControlFrame *frame)
         return;
     }
     frame->setParent(this);
-    // Ahead of the trailing stretch, like every other generated row.
-    m_layout->insertWidget(qMax(0, m_layout->count() - 1), frame);
+    // Ahead of the trailing stretch, like every other generated row - but with
+    // the stretch itself, because the frame holds a live board: a dropped
+    // frame is as greedy as a declared one (createSubWindowControl).
+    setTrailingStretchGreedy(false);
+    m_layout->insertWidget(qMax(0, m_layout->count() - 1), frame, 1);
     if (!m_subControlFrames.contains(frame)) {
         m_subControlFrames.append(frame);
     }
+    // A frame that later floats away or is parked takes its greed with it; the
+    // panel is not otherwise told, and the leftover height would be left to
+    // stretch the ordinary controls.
+    connect(frame, &SubControlFrame::homeChanged, this,
+            &ToolOptPanel::refreshSubControlGreed, Qt::UniqueConnection);
+}
+
+void ToolOptPanel::setTrailingStretchGreedy(bool greedy)
+{
+    if (!m_layout || m_layout->count() < 1) {
+        return;
+    }
+    const int last = m_layout->count() - 1;
+    QLayoutItem *item = m_layout->itemAt(last);
+    if (!item || !item->spacerItem()) {
+        // Not the spacer this panel builds: leave a layout somebody else shaped
+        // exactly as it is.
+        return;
+    }
+    if (m_trailingStretchGreedy == greedy) {
+        return;
+    }
+    m_trailingStretchGreedy = greedy;
+    // Traded rather than re-weighted: whether a spacer is expansive depends on
+    // its size policy as well as its stretch factor, and the greedy case has to
+    // stay byte-for-byte the addStretch() the constructor built - tools with an
+    // expanding control of their own share the leftover height with it today.
+    delete m_layout->takeAt(last);
+    if (greedy) {
+        m_layout->addStretch();
+    } else {
+        m_layout->addSpacing(0);
+    }
+}
+
+void ToolOptPanel::refreshSubControlGreed()
+{
+    bool hosting = false;
+    for (const QPointer<SubControlFrame> &frame : m_subControlFrames) {
+        // Ours only while it is actually laid out in here: a frame the user
+        // dragged out is somewhere else's row now.
+        if (frame && isAncestorOf(frame)) {
+            hosting = true;
+            break;
+        }
+    }
+    setTrailingStretchGreedy(!hosting);
 }
 
 void ToolOptPanel::parkSubControlFrames()
@@ -305,6 +355,10 @@ void ToolOptPanel::configureControls(const QJsonArray &controls, int rowSpacing,
 
     QMap<int, int> nextColumnForRow;
     bool hasWidgets = false;
+    // Set only by a row that really got the FRAME: the same control renders as
+    // a one-line note when the frame is missing or floating, and a note has no
+    // more claim on the column's height than a label does.
+    bool hasSubWindowRow = false;
     for (const QJsonValue &value : controls) {
         if (!value.isObject()) {
             continue;
@@ -371,12 +425,28 @@ void ToolOptPanel::configureControls(const QJsonArray &controls, int rowSpacing,
         nextColumnForRow[row] = qMax(nextColumnForRow.value(row, 0), startColumn + columnSpan);
         gridLayout->addWidget(widget, row, startColumn, 1, columnSpan);
         hasWidgets = true;
+
+        if (qobject_cast<SubControlFrame *>(widget)) {
+            // The row that carries the board takes the leftover height inside
+            // the grid; every other row keeps its hint (stretch 0).
+            gridLayout->setRowStretch(row, 1);
+            hasSubWindowRow = true;
+        }
     }
 
     if (hasWidgets) {
         applyVisibilityRules();
-        m_layout->insertWidget(m_layout->count() - 1, gridContainer);
+        if (hasSubWindowRow) {
+            // Three links of one chain: the row stretches inside the grid, the
+            // grid container stretches inside the option column, and the column
+            // stops holding the height back (setTrailingStretchGreedy). Any one
+            // of them missing and the board stays at its hint.
+            gridContainer->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+        }
+        setTrailingStretchGreedy(!hasSubWindowRow);
+        m_layout->insertWidget(m_layout->count() - 1, gridContainer, hasSubWindowRow ? 1 : 0);
     } else {
+        setTrailingStretchGreedy(true);
         gridContainer->deleteLater();
     }
 }
@@ -683,6 +753,10 @@ QWidget *ToolOptPanel::createSubWindowControl(const QJsonObject &control)
     if (!m_subControlFrames.contains(frame)) {
         m_subControlFrames.append(frame);
     }
+    // Same reason as embedSubControl: the column's greed follows the frame, and
+    // nothing else tells the panel when the frame leaves.
+    connect(frame, &SubControlFrame::homeChanged, this,
+            &ToolOptPanel::refreshSubControlGreed, Qt::UniqueConnection);
     return frame;
 }
 
