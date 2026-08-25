@@ -193,7 +193,35 @@ onion()
 assert ghosts() == []
 print("6) legacy no-unit documents ghost nothing (frame-invariant axes)")
 
-# 7) The unit render path re-pushes the ghosts: _push_overlay is the one
+# 7) A GHOSTED UNIT'S OWN Advanced Settings decide what ghosts. Hiding a
+#    component is a statement about the component, not about which frame the
+#    playhead sits on, so a unit with H Axis switched off must not get its H
+#    axis back as a ghost - while its V axis and additional lines still do.
+scene = fresh_world()
+install_unit(scene, "1", 11, rows=(0,), extra_line=[(10.0, 10.0), (90.0, 90.0)])
+am._UNIT_META["1"]["settings"]["show_h"] = False
+onion()
+ids = {item["id"] for item in ghosts()}
+assert f"{am.ONION_GUIDE_ID}:1:{am.H_PROPERTY}" not in ids, ids
+assert f"{am.ONION_GUIDE_ID}:1:{am.V_PROPERTY}" in ids, ids
+assert any(am.ADDITIONAL_PROPERTY in item for item in ids), ids
+# The gate reads the GHOSTED unit, not the active one: a second unit with the
+# axis still on keeps its H ghost even while unit 1 is the active one.
+install_unit(scene, "3", 33, rows=(2,))
+am._ACTIVE_UNIT["id"] = "1"
+onion()
+ids = {item["id"] for item in ghosts()}
+assert f"{am.ONION_GUIDE_ID}:1:{am.H_PROPERTY}" not in ids, ids
+assert f"{am.ONION_GUIDE_ID}:3:{am.H_PROPERTY}" in ids, ids
+# Every component off leaves that unit out of the push entirely.
+am._UNIT_META["3"]["settings"].update(show_h=False, show_v=False,
+                                      show_additional=False)
+am._UNIT_META["1"]["settings"].update(show_v=False, show_additional=False)
+onion()
+assert ghosts() == [], ghosts()
+print("7) a ghosted unit's own show_h/show_v/show_additional gate its ghosts")
+
+# 8) The unit render path re-pushes the ghosts: _push_overlay is the one
 #    refresh point every run/install/delete already goes through.
 scene = fresh_world()
 install_unit(scene, "1", 11, rows=(0,))
@@ -203,6 +231,6 @@ assert count
 overlay_stack._LAYERS["main"].pop(am.ONION_OVERLAY_OWNER)
 am._push_overlay("main")
 assert len(ghosts()) == count, "a unit re-render must restore the ghost guides"
-print("7) _push_overlay re-pushes the ghost slot")
+print("8) _push_overlay re-pushes the ghost slot")
 
 print("t_onion_guides: ok")

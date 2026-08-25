@@ -225,6 +225,18 @@ void PaintOpenGLWidget::resetHistory(const QString &label)
     m_pythonNotifiedLayerId =
         m_pythonNotifiedLayer >= 0 ? m_model.layerIdAt(m_pythonNotifiedLayer) : 0;
     pythonHookSendMessage(QStringLiteral("historyrestore"));
+    // The onion state is NOT covered by that re-sync: historyrestore carries no
+    // onion state, and the frame pre-sync above is exactly what stops
+    // framechange - and with it the onion notifier - from firing. A restore
+    // moves the PLAYHEAD, which is what a ghost's past/ahead tint is read
+    // against, and a project open swaps the whole document under an onion set
+    // that survives the swap. Sent AFTER historyrestore so the script re-reads
+    // its ghosts against state it has already restored. No baseline
+    // invalidation: the notifier's own compare is against what Python was last
+    // told, which historyrestore does not touch, so this stays silent when
+    // nothing actually moved - including the "onion off" board, whose baseline
+    // is deliberately valid from birth.
+    notifyOnionChangedIfNeeded();
     clearOnionCache();
     emit historyChanged();
 }
@@ -351,6 +363,13 @@ bool PaintOpenGLWidget::goToHistory(int index)
     m_eraseGestureChanged = false;
     m_axisSnapState = AxisSnapState::Inactive;
     pythonHookSendMessage(QStringLiteral("historyrestore"));
+    // Undo/redo can move the playhead (a history entry is a whole-model
+    // snapshot), and past/ahead is read against the playhead - but the frame
+    // pre-sync above is precisely what keeps framechange, and with it the onion
+    // notifier, from firing. Same contract as resetHistory: after the restore,
+    // and the notifier's own compare keeps it silent when the playhead landed
+    // where Python already thinks it is.
+    notifyOnionChangedIfNeeded();
     clearOnionCache();
     update();
     emit historyChanged();

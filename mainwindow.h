@@ -268,6 +268,11 @@ private:
     // Bounded: a home that never gives the board a size would otherwise keep a
     // timer alive for the life of the session.
     int m_textureViewRestoreRetries = 0;
+    // The child board's frame the last successful sub-control fit was computed
+    // for. Only the scripted refresh path reads it: ui.refresh() carries a
+    // frame FLAG, not a frame change, and a script raises it dozens of times
+    // per run - without this the board would re-fit on every one of them.
+    int m_textureAutoFitFrame = -1;
     QVector<PaintOpenGLWidget *> m_paintViews;
     LayerPanel *m_mainLayerPanel = nullptr;
     LayerPanel *m_childLayerPanel = nullptr;

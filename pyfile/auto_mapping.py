@@ -4334,9 +4334,25 @@ def _unit_frames_present(scene, meta, frames):
 
 
 def _onion_ghost_items(assets, uid, color):
-    """One unit's axes + additional lines as non-interactive ghost items."""
+    """One unit's axes + additional lines as non-interactive ghost items.
+
+    Gated on THAT unit's own Advanced Settings, the way overlay_items gates the
+    live overlay - and deliberately not on the ACTIVE unit's (`_unit_settings()`
+    with no argument), which is a different unit entirely here by construction:
+    a ghosted unit is one that is NOT on the frame being drawn. Hiding a
+    component is a statement about the component, not about the frame the
+    playhead happens to sit on, so a hidden H axis must not come back as a
+    coloured ghost.
+    """
+    settings = _unit_settings(uid)
+
+    def wanted(key):
+        return bool(settings.get(key, True))
+
     items = []
     for prop, key in ((H_PROPERTY, "h"), (V_PROPERTY, "v")):
+        if not wanted(f"show_{key}"):
+            continue
         points = ((assets.get(prop) or {}).get("points")) or []
         if len(points) < 2:
             continue
@@ -4352,7 +4368,8 @@ def _onion_ghost_items(assets, uid, color):
             "removable": False,
             "draggable": False,
         })
-    lines = (assets.get(ADDITIONAL_PROPERTY) or {}).get("lines") or []
+    lines = ((assets.get(ADDITIONAL_PROPERTY) or {}).get("lines") or []
+             if wanted("show_additional") else [])
     for index, line in enumerate(lines):
         points = line.get("points") or []
         if len(points) < 2:

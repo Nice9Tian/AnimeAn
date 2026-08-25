@@ -434,6 +434,19 @@ MainWindow::MainWindow(QWidget *parent)
         }
         if (frame) {
             refreshTimeline();
+            // The scripted twin of the fit hook in updateAttention. This
+            // callback re-reads the models directly and never goes through
+            // updateAttention, so a script that moves the child board's frame
+            // (ui.set_current writes the model, scene.set_current_frame writes
+            // it too) and then calls ui.refresh() would otherwise leave the
+            // sub-control covering the PREVIOUS frame's rectangle. Gated on
+            // the frame really having moved since the last fit: `frame` here
+            // is a refresh flag, not a change, and scripts raise it dozens of
+            // times per run.
+            if (m_childPaintWidget
+                && m_childPaintWidget->model().currentFrame() != m_textureAutoFitFrame) {
+                autoFitTextureControlView();
+            }
         }
         if (layer) {
             refreshLayerLists();
@@ -1210,6 +1223,26 @@ void MainWindow::createTexturePanel()
         }
     });
 
+    // The central slot is SEEDED, not left empty. A slot only becomes valid on
+    // the way OUT of a home, so the central one could not be valid until after
+    // the board's first stay there - and the very first arrival would then
+    // restore nothing and silently keep whatever the sub-control's COVER fit
+    // chose for a panel row, on a board the size of the central area. The seed
+    // is the board's construction-time viewpoint, which is exactly what the
+    // central page showed before the per-home slots existed.
+    m_textureViewCentral.zoom = m_childPaintWidget->zoom();
+    m_textureViewCentral.pan = m_childPaintWidget->panOffset();
+    m_textureViewCentral.valid = true;
+
+    // The COVER fit is computed against a viewport SIZE, so growing the
+    // sub-control (a dock drag, or a visible_when control collapsing a row
+    // above the board) leaves the old zoom covering less than the new frame -
+    // the band of empty paper the fit exists to prevent. The board itself
+    // emits no resize signal, so the event is what we listen to;
+    // autoFitTextureControlView already self-gates on the home and on the
+    // suspension, so a resize in any other home costs one comparison.
+    m_childPaintWidget->installEventFilter(this);
+
     // The panel starts on the central Texture page's side of the rule: parked,
     // because the Drawing page is what comes up first.
     updateTextureHome();
@@ -1382,6 +1415,10 @@ void MainWindow::autoFitTextureControlView()
     m_textureViewControl.zoom = m_childPaintWidget->zoom();
     m_textureViewControl.pan = m_childPaintWidget->panOffset();
     m_textureViewControl.valid = true;
+    // Which frame this framing was computed for. The scripted refresh path
+    // (see registerAnimeanUiRefreshCallback) fires many times per run and has
+    // no "did it actually move" of its own, so it asks this.
+    m_textureAutoFitFrame = m_childPaintWidget->model().currentFrame();
 }
 
 #ifdef ANIMEAN_WITH_PYTHON
@@ -2695,6 +2732,23 @@ PaintOpenGLWidget *MainWindow::viewForLayerPanel(LayerPanel *panel) const
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 {
+    if (m_childPaintWidget && watched == m_childPaintWidget) {
+        // FIRST, and with its own return: this filter is installed in
+        // createTexturePanel, before the list panels below it exist, and a
+        // resize can arrive in between.
+        if (event->type() == QEvent::Resize && !m_updatingTextureHome) {
+            // Re-cover the new viewport. Skipped mid-reparent: the move's own
+            // resizes are measured against a size the layout has not settled
+            // yet, and the queued restoreTextureViewSlot re-fits with the
+            // final one anyway. No debounce - the fit is one bounds scan and
+            // one transform, and it cannot feed itself: the scroll bars'
+            // visibility follows the canvas mode, never the transform, so
+            // nothing here changes the board's size.
+            autoFitTextureControlView();
+        }
+        return QMainWindow::eventFilter(watched, event);
+    }
+
     LayerPanel *layerPanel = nullptr;
     for (LayerPanel *candidate : {m_mainLayerPanel, m_childLayerPanel}) {
         if (candidate && watched == candidate->layerList()->viewport()) {
@@ -3852,9 +3906,13 @@ void MainWindow::updateAttention(PaintOpenGLWidget *view, AttentionChange change
     if (update.frame && view == m_childPaintWidget) {
         // The fit frames THIS frame's artwork, so a new frame is a new
         // rectangle to cover. Hooked here rather than on the timeline: this is
-        // the one funnel every frame change on a board passes through, whatever
-        // moved it. autoFitTextureControlView itself checks that the board is
-        // in the sub-control and that auto-fit still owns that home.
+        // where every frame change the SHELL makes lands - the timeline, the
+        // layer/asset lists, a drop, a load. It is NOT the only one: a script
+        // writes the frame onto the model and announces it through
+        // ui.refresh(), which has its own (frame-gated) call in
+        // registerAnimeanUiRefreshCallback. autoFitTextureControlView itself
+        // checks that the board is in the sub-control and that auto-fit still
+        // owns that home.
         autoFitTextureControlView();
     }
     if (update.layer) {
