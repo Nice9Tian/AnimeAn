@@ -2,7 +2,9 @@
 #define TOOLSPANEL_H
 
 #include "openglwidget.h"
+#include "../subcontrolframe.h"
 
+#include <QPointer>
 #include <QVector>
 #include <QWidget>
 
@@ -56,7 +58,7 @@ private:
     bool m_pressed = false;
 };
 
-class ToolsPanel : public QWidget
+class ToolsPanel : public QWidget, public SubControlHost
 {
     Q_OBJECT
 
@@ -85,6 +87,13 @@ public:
     void clearSelection();
     void setExtraTools(const QVector<ExtraToolDefinition> &tools);
 
+    // SubControlHost: a page adopts a dropped frame under its buttons, above
+    // the trailing stretch. Each page is its own host, and only the page the
+    // user can currently see answers a drop.
+    QWidget *subControlHostWidget() override;
+    QRect subControlPreviewRect(const QPoint &globalPos) const override;
+    void embedSubControl(SubControlFrame *frame) override;
+
 signals:
     void toolSelected(PaintOpenGLWidget::Tool tool);
     void extraToolSelected(const ToolsPanel::ExtraToolDefinition &tool);
@@ -107,6 +116,9 @@ private:
     QVector<PaintOpenGLWidget::Tool> m_chipTools;
     QVector<QPushButton *> m_extraButtons;
     QVector<ExtraToolDefinition> m_extraTools;
+    // Frames dropped onto this page. Held only so the destructor can park them
+    // instead of taking them down with the layout.
+    QVector<QPointer<SubControlFrame>> m_subControlFrames;
 };
 
 #endif // TOOLSPANEL_H

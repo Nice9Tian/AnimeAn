@@ -374,11 +374,63 @@ ToolsPanel::ToolsPanel(QWidget *parent, bool showBuiltIns)
     m_layout->addStretch();
 
     connect(AnimeTheme::instance(), &AnimeTheme::themeChanged, this, [this]() { update(); });
+    SubControlRegistry::instance()->registerHost(this);
 }
 
 ToolsPanel::~ToolsPanel()
 {
+    SubControlRegistry::instance()->unregisterHost(this);
+    // A frame outlives the page it was dropped on; the layout must not take
+    // it down on the way out.
+    for (const QPointer<SubControlFrame> &frame : m_subControlFrames) {
+        if (frame && isAncestorOf(frame)) {
+            frame->park();
+        }
+    }
     delete ui;
+}
+
+QWidget *ToolsPanel::subControlHostWidget()
+{
+    return this;
+}
+
+QRect ToolsPanel::subControlPreviewRect(const QPoint &globalPos) const
+{
+    if (!isVisible()) {
+        return QRect();
+    }
+    const QPoint local = mapFromGlobal(globalPos);
+    if (!rect().contains(local)) {
+        return QRect();
+    }
+    // Under the buttons, where an appended row goes. The band is measured from
+    // the lowest thing on the page rather than from the widget's top, so the
+    // preview lands where the frame will.
+    const QMargins margins = m_layout ? m_layout->contentsMargins() : QMargins(0, 0, 0, 0);
+    int top = margins.top();
+    for (int index = 0; m_layout && index < m_layout->count(); ++index) {
+        if (QWidget *widget = m_layout->itemAt(index)->widget()) {
+            top = qMax(top, widget->geometry().bottom() + m_layout->spacing());
+        }
+    }
+    const int bandHeight = qMin(qMax(80, height() / 3), qMax(40, height() - top - margins.bottom()));
+    const QRect band(margins.left(), qMin(top, qMax(0, height() - bandHeight - margins.bottom())),
+                     qMax(40, width() - margins.left() - margins.right()), bandHeight);
+    return QRect(mapToGlobal(band.topLeft()), band.size());
+}
+
+void ToolsPanel::embedSubControl(SubControlFrame *frame)
+{
+    if (!frame || !m_layout) {
+        return;
+    }
+    frame->setParent(this);
+    // Ahead of the trailing stretch: the buttons keep the top of the column.
+    m_layout->insertWidget(qMax(0, m_layout->count() - 1), frame);
+    if (!m_subControlFrames.contains(frame)) {
+        m_subControlFrames.append(frame);
+    }
 }
 
 void ToolsPanel::buildBuiltInRail()

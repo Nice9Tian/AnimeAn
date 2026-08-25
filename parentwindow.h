@@ -1,6 +1,7 @@
 #ifndef PARENTWINDOW_H
 #define PARENTWINDOW_H
 
+#include <QColor>
 #include <QDockWidget>
 #include <QString>
 #include <QStringList>
@@ -21,6 +22,12 @@ public:
     // `name` is the stable identity Python addresses (also the objectName
     // suffix); `title` is what the user reads on the title bar.
     ParentWindow(const QString &name, const QString &title, QWidget *parent = nullptr);
+
+    // The tab chrome, in one place: the central area wears the same strip on a
+    // bare QTabBar, and two copies of these colours would drift the first time
+    // one of them was tuned. `highlightedText` is the caller's palette answer
+    // for "what reads on the accent".
+    static QString tabStyleSheet(const QColor &highlightedText);
 
     QString name() const;
     // Takes ownership of `widget` through the tab widget.

@@ -2,13 +2,16 @@
 #define TOOLOPTPANEL_H
 
 #include "openglwidget.h"
+#include "../subcontrolframe.h"
 
 #include <QColor>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QMap>
+#include <QPointer>
 #include <QString>
 #include <QVariant>
+#include <QVector>
 #include <QWidget>
 
 class QWidget;
@@ -18,12 +21,16 @@ namespace Ui {
 class ToolOptPanel;
 }
 
-class ToolOptPanel : public QWidget
+class ToolOptPanel : public QWidget, public SubControlHost
 {
     Q_OBJECT
 
 public:
-    explicit ToolOptPanel(QWidget *parent = nullptr);
+    // `subControlHost` opts this instance in as a drop target for sub-control
+    // frames. Only the docked options panel takes them: the same class also
+    // renders the modal script-settings window, and a frame dropped in there
+    // would go down with the dialog.
+    explicit ToolOptPanel(QWidget *parent = nullptr, bool subControlHost = false);
     ~ToolOptPanel();
 
     PaintOpenGLWidget::Tool tool() const;
@@ -32,6 +39,13 @@ public:
     void configureControls(const QJsonArray &controls);
     void setFillScope(PaintOpenGLWidget::FillScope scope);
     void setSmoothValue(int value);
+
+    // SubControlHost: a drop lands as one more full-width row of the options
+    // column, which is exactly what the declarative "subwindow" control builds
+    // when a layout asks for the frame by name.
+    QWidget *subControlHostWidget() override;
+    QRect subControlPreviewRect(const QPoint &globalPos) const override;
+    void embedSubControl(SubControlFrame *frame) override;
 
 signals:
     void optionChanged(const QString &hook, const QString &name, const QString &type, const QVariant &value, int row, int startColumn, int endColumn);
@@ -66,16 +80,27 @@ private:
     // The palette: the same #AARRGGBB value on the declared hook, plus
     // add/remove of the saved set on a hook of its own.
     QWidget *createPaletteControl(const QJsonObject &control);
+    // A named SubControlFrame from the registry, embedded at this grid slot.
+    // Returns a thin explanatory row instead when the frame is floating: the
+    // frame's position is the USER's, and a layout rebuild must not yank it
+    // back off their screen.
+    QWidget *createSubWindowControl(const QJsonObject &control);
     void configureControls(const QJsonArray &controls, int rowSpacing, int columnSpacing);
     void emitOptionChanged(const QString &hook, const QString &name, const QString &type, const QVariant &value, int row, int startColumn, int endColumn);
     void applyVisibilityRules();
     void clearControls();
+    // Frames leave for the registry's keeper before the controls they sat in
+    // are deleted: the registry owns their lifetime, not this panel's layout.
+    void parkSubControlFrames();
 
     Ui::ToolOptPanel *ui;
     QVBoxLayout *m_layout = nullptr;
     QMap<QString, QWidget *> m_controls;
     QList<VisibilityRule> m_visibilityRules;
     QMap<QString, QString> m_controlValues;
+    // Every frame currently parented into this panel, however it got here.
+    QVector<QPointer<SubControlFrame>> m_subControlFrames;
+    bool m_isSubControlHost = false;
     PaintOpenGLWidget::Tool m_tool = PaintOpenGLWidget::Tool::Pen;
 };
 

@@ -60,6 +60,8 @@ target_include_directories(animean_core PUBLIC
 target_link_libraries(animean_core PUBLIC Qt${QT_VERSION_MAJOR}::Widgets)
 
 set(PROJECT_SOURCES
+    centralpaintarea.cpp
+    centralpaintarea.h
     clipreader.cpp
     clipreader.h
     main.cpp
@@ -74,13 +76,13 @@ set(PROJECT_SOURCES
     paintviewcontainer.h
     parentwindow.cpp
     parentwindow.h
+    subcontrolframe.cpp
+    subcontrolframe.h
     theme.cpp
     theme.h
     childrenpanel/assetpanel.cpp
     childrenpanel/assetpanel.h
     childrenpanel/assetpanel.ui
-    childrenpanel/childpaintwindow.cpp
-    childrenpanel/childpaintwindow.h
     childrenpanel/forcepad.cpp
     childrenpanel/forcepad.h
     childrenpanel/historypanel.cpp
@@ -92,6 +94,8 @@ set(PROJECT_SOURCES
     childrenpanel/newprojectdialog.h
     childrenpanel/palettecontrol.cpp
     childrenpanel/palettecontrol.h
+    childrenpanel/texturepanel.cpp
+    childrenpanel/texturepanel.h
     childrenpanel/timelinewindow.cpp
     childrenpanel/timelinewindow.h
     childrenpanel/toolcontrolconfig.cpp

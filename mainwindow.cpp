@@ -1,14 +1,15 @@
 ﻿#include "mainwindow.h"
 #include "ui_mainwindow.h"
 #include "childrenpanel/assetpanel.h"
-#include "childrenpanel/childpaintwindow.h"
 #include "childrenpanel/forcepad.h"
 #include "childrenpanel/historypanel.h"
 #include "childrenpanel/layerpanel.h"
 #include "childrenpanel/newprojectdialog.h"
+#include "childrenpanel/texturepanel.h"
 #include "childrenpanel/timelinewindow.h"
 
 #include <QComboBox>
+#include "centralpaintarea.h"
 #include "clipreader.h"
 #include "openglwidget.h"
 #include "algorithm/beziersplit.h"
@@ -16,6 +17,7 @@
 #include "parentwindow.h"
 #include "projectio.h"
 #include "selectionattention.h"
+#include "subcontrolframe.h"
 #include "theme.h"
 #include "childrenpanel/tooloptpanel.h"
 #include "childrenpanel/toolcontrolconfig.h"
@@ -432,7 +434,21 @@ MainWindow::MainWindow(QWidget *parent)
     AnimeanWindowsApi windows;
     windows.list = [this]() {
         QVector<AnimeanWindowInfo> infos;
-        infos.reserve(m_parentWindows.size());
+        infos.reserve(m_parentWindows.size() + 1);
+        // The central area is a window by every measure Python cares about -
+        // it has a name, pages and a current page - and by none of the ones it
+        // does not: it cannot be hidden, so show() on it is a no-op below
+        // rather than an error. It leads the list because it is where the
+        // drawing is.
+        if (m_centralArea) {
+            AnimeanWindowInfo info;
+            info.name = m_centralArea->name();
+            info.title = QStringLiteral("Paint");
+            info.visible = true;
+            info.pages = m_centralArea->pageNames();
+            info.current = m_centralArea->currentPage();
+            infos.append(info);
+        }
         for (ParentWindow *window : m_parentWindows) {
             if (!window) {
                 continue;
@@ -451,6 +467,11 @@ MainWindow::MainWindow(QWidget *parent)
         return infos;
     };
     windows.show = [this](const QString &name, bool on) {
+        // The central area has no hidden state to ask for; a script that says
+        // show("paint") is asking for something that is already true.
+        if (m_centralArea && name == m_centralArea->name()) {
+            return;
+        }
         if (ParentWindow *window = parentWindowNamed(name)) {
             window->setVisible(on);
             if (on) {
@@ -459,6 +480,10 @@ MainWindow::MainWindow(QWidget *parent)
         }
     };
     windows.select = [this](const QString &name, const QString &page) {
+        if (m_centralArea && name == m_centralArea->name()) {
+            m_centralArea->selectPage(page);
+            return;
+        }
         if (ParentWindow *window = parentWindowNamed(name)) {
             window->selectPage(page);
         }
@@ -585,6 +610,26 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    // The sub-control registry's keeper is a top-level widget that outlives
+    // this window, so anything parked in it would outlive the shell that
+    // registered its scene. Take both halves of the texture view back first:
+    // the frame goes now, the panel becomes an ordinary child and dies with
+    // the rest of the window.
+    if (m_texturePanel) {
+        // Out of whichever home it is in FIRST: deleting the frame while the
+        // panel is still parented inside it would take the board with it.
+        if (m_textureFrame) {
+            m_textureFrame->releaseContent();
+        }
+        if (m_centralArea) {
+            m_centralArea->setTextureContent(nullptr);
+        }
+        m_texturePanel->setParent(this);
+        m_texturePanel->hide();
+        m_textureHome = nullptr;
+    }
+    delete m_textureFrame;
+    m_textureFrame = nullptr;
 #ifdef ANIMEAN_WITH_PYTHON
     clearAnimeanUiHistoryCallback();
     clearAnimeanUiDrawColorCallback();
@@ -606,12 +651,14 @@ void MainWindow::setupDocks()
     setCorner(Qt::BottomLeftCorner, Qt::BottomDockWidgetArea);
     setCorner(Qt::BottomRightCorner, Qt::BottomDockWidgetArea);
 
-    // Three-section workspace: child view over Tools on the left, panels on
-    // the right, the main view anchored as the central widget (only a central
-    // widget absorbs window growth correctly), and the timeline (left+middle)
-    // + python debug (right) along the bottom.
+    // Three-section workspace: Tools on the left, panels on the right, the
+    // central paint area anchored as the central widget (only a central widget
+    // absorbs window growth correctly), and the timeline (left+middle) +
+    // python debug (right) along the bottom. The texture board is no longer a
+    // dock of its own - it is the central area's second page, or a sub-control
+    // inside another panel.
     createMainPaintView();
-    createChildPaintDock();
+    createTexturePanel();
     m_activePaintWidget = m_paintWidget;
     m_paintViews = {m_paintWidget, m_childPaintWidget};
     m_paintWidget->setActiveIndicator(true);
@@ -671,7 +718,14 @@ void MainWindow::setupDocks()
     // drawn on the canvas is a different question, and it now has its own
     // View menu (script-provided, per board) so the two cannot be confused.
     QMenu *windowsMenu = menuBar()->addMenu(QStringLiteral("Windows"));
-    windowsMenu->addAction(m_childPaintWindow->toggleViewAction());
+    // Not a dock toggle any more: the texture board rides a SUB-CONTROL, and
+    // what this entry does is bring that control back to where it can be seen
+    // - floating it when it has never been dropped into a panel.
+    QAction *textureViewAction = windowsMenu->addAction(QStringLiteral("Texture View"));
+    textureViewAction->setToolTip(
+        QStringLiteral("Show the texture board's sub-control; drag its title bar onto a "
+                       "panel to dock it."));
+    connect(textureViewAction, &QAction::triggered, this, &MainWindow::showTextureSubControl);
     windowsMenu->addSeparator();
     // Parent windows: the menu shows ONE line per window, and its pages are
     // reached by their tabs. The timeline is not one of them - it has no page
@@ -687,32 +741,49 @@ void MainWindow::setupDocks()
         windowsMenu->addAction(m_timeline->toggleViewAction());
     }
 
-    // NOTE: deliberately NO horizontal resizeDocks on the bottom band —
-    // measured against Qt 6.9.1 it pins the band at its minimum height for
-    // good and stops the right column from recovering after a shrink. The
-    // only sizing nudge is vertical, inside the left column: the child view
-    // gets the larger share above the Tools dock.
-    resizeDocks({m_childPaintWindow}, {380}, Qt::Vertical);
+    // NOTE: deliberately NO resizeDocks anywhere here — measured against Qt
+    // 6.9.1 a horizontal call on the bottom band pins it at its minimum height
+    // for good. The only one that used to survive was the vertical share the
+    // texture DOCK took from the Tools dock, and there is no texture dock any
+    // more: the left column is Tools alone, which needs no nudge.
 }
 
 void MainWindow::createMainPaintView()
 {
-    PaintViewContainer *container = new PaintViewContainer(this);
-    container->setMinimumSize(320, 240);
+    m_centralArea = new CentralPaintArea(this);
     if (QWidget *central = takeCentralWidget()) {
         central->deleteLater();
     }
-    setCentralWidget(container);
+    setCentralWidget(m_centralArea);
 
-    m_paintWidget = container->paintWidget();
+    // The Drawing page's container is still the resize-absorbing centre; the
+    // tab strip above it is 24px of chrome, not a competing layout.
+    m_paintWidget = m_centralArea->mainContainer()->paintWidget();
     m_paintWidget->setViewName(QStringLiteral("main"));
     m_paintWidget->model().setTextId(QStringLiteral("main_paint_view"));
     m_paintWidget->model().setIntId(1);
+
+    connect(m_centralArea, &CentralPaintArea::pageChanged, this, [this](const QString &page) {
+        // The page selection is half of the texture board's ownership rule, so
+        // it has to re-run before anything else reacts.
+        updateTextureHome();
+        if (page == QStringLiteral("texture")) {
+            if (m_childPaintWidget) {
+                setActivePaintView(m_childPaintWidget);
+            }
+        } else if (m_paintWidget) {
+            setActivePaintView(m_paintWidget);
+        }
+    });
 }
 
 void MainWindow::showMainPaintView()
 {
-    // The main view is the central widget: always visible, just activate it.
+    // The main view is the central widget's Drawing page: never hidden, but it
+    // can be behind the Texture tab.
+    if (m_centralArea) {
+        m_centralArea->selectPage(QStringLiteral("drawing"));
+    }
     setActivePaintView(m_paintWidget);
 }
 
@@ -1026,12 +1097,12 @@ void MainWindow::applyHistoryRestore(PaintOpenGLWidget *view)
     // change has to move the view with it.
     view->modelReplaced();
 
-    // Chronological undo/redo may land on the other — possibly hidden — view;
+    // Chronological undo/redo may land on the other — possibly parked — view;
     // surface and activate it so the user sees what just changed instead of
-    // an apparently dead Undo key.
-    if (view == m_childPaintWidget && m_childPaintWindow) {
-        m_childPaintWindow->show();
-        m_childPaintWindow->raise();
+    // an apparently dead Undo key. showTextureView() picks the home the
+    // board currently has rather than forcing one on it.
+    if (view == m_childPaintWidget) {
+        showTextureView();
     }
     setActivePaintView(view);
 
@@ -1052,19 +1123,110 @@ void MainWindow::applyHistoryRestore(PaintOpenGLWidget *view)
     view->update();
 }
 
-void MainWindow::createChildPaintDock()
+void MainWindow::createTexturePanel()
 {
-    m_childPaintWindow = new ChildPaintWindow(this);
-    m_childPaintWidget = m_childPaintWindow->paintWidget();
+    // Born PARKED, not as a loose child of the window: an unlaid-out child of
+    // a QMainWindow paints itself over the top-left corner the moment the
+    // window is shown. The router below gives it a real home.
+    m_texturePanel = new TexturePanel(SubControlRegistry::instance()->keeper());
+    m_childPaintWidget = m_texturePanel->paintWidget();
     m_childPaintWidget->model().setTextId(QStringLiteral("child_paint_view"));
     m_childPaintWidget->model().setIntId(2);
-    // Added to the left area BEFORE the Tools dock, so the left column reads
-    // child view on top, tools underneath.
-    addDockWidget(Qt::LeftDockWidgetArea, m_childPaintWindow);
-    connect(m_childPaintWindow, &ChildPaintWindow::scriptButtonToggled, this,
+    connect(m_texturePanel, &TexturePanel::scriptButtonToggled, this,
             [this](const QString &name, bool on) {
                 m_childPaintWidget->sendPythonViewButtonMessage(name, on);
             });
+
+    // The travelling half: a named frame the tool panels can adopt by
+    // declaration ({"type":"subwindow","name":"texture_view"}) or by drag.
+    // It exists from startup so a layout built before the user has ever
+    // opened the texture view still finds it.
+    m_textureFrame = new SubControlFrame(QStringLiteral("texture_view"),
+                                         QStringLiteral("Texture"), this);
+    m_textureFrame->setPlaceholderText(QStringLiteral("Open in the main view"));
+    // QUEUED on purpose. A tool-options rebuild parks the frame and then puts
+    // it straight back at its declared slot; run inline, that pair would move
+    // the board out and in again - two GL context re-creations per refresh.
+    // Deferred, the second evaluation sees an unchanged answer and does
+    // nothing at all.
+    connect(m_textureFrame, &SubControlFrame::homeChanged, this,
+            &MainWindow::updateTextureHome, Qt::QueuedConnection);
+
+    // The panel starts on the central Texture page's side of the rule: parked,
+    // because the Drawing page is what comes up first.
+    updateTextureHome();
+}
+
+void MainWindow::updateTextureHome()
+{
+    if (!m_texturePanel || m_updatingTextureHome) {
+        return;
+    }
+    // Reparenting the panel moves a QOpenGLWidget, which fires show/hide
+    // events that come straight back here. One pass at a time.
+    m_updatingTextureHome = true;
+
+    // The rule, in priority order: the central Texture page owns the board
+    // whenever it is selected, then a live sub-control frame, then nowhere.
+    const bool centralWantsIt = m_centralArea
+                                && m_centralArea->currentPage() == QStringLiteral("texture");
+    QWidget *wanted = nullptr;
+    if (centralWantsIt) {
+        wanted = m_centralArea;
+    } else if (m_textureFrame && m_textureFrame->isLive()) {
+        wanted = m_textureFrame;
+    }
+
+    if (wanted != m_textureHome) {
+        // Never mid-gesture. A button down anywhere means either a stroke on
+        // this board (a reparent would destroy the context it is drawing into)
+        // or the frame drag that asked for this move in the first place, which
+        // is not finished until the button comes up. Poll rather than
+        // single-shot at zero: a zero timer re-arms itself every event loop
+        // pass and spins for the length of the drag.
+        if (QApplication::mouseButtons() != Qt::NoButton) {
+            m_updatingTextureHome = false;
+            QTimer::singleShot(50, this, &MainWindow::updateTextureHome);
+            return;
+        }
+
+        if (m_centralArea && m_textureHome == m_centralArea) {
+            m_centralArea->setTextureContent(nullptr);
+        } else if (m_textureFrame && m_textureHome == m_textureFrame) {
+            m_textureFrame->releaseContent();
+        }
+
+        m_textureHome = wanted;
+        if (wanted == m_centralArea) {
+            m_texturePanel->setCompact(false);
+            m_centralArea->setTextureContent(m_texturePanel);
+        } else if (wanted == m_textureFrame) {
+            // A board inside a tool-options row cannot hold the full-size
+            // floor open; the frame relaxes it and the container scales.
+            m_texturePanel->setCompact(true);
+            m_textureFrame->setContent(m_texturePanel);
+        } else {
+            m_texturePanel->setParent(SubControlRegistry::instance()->keeper());
+            m_texturePanel->hide();
+        }
+        // No cache invalidation is owed here: the onion cache is a MAIN-board
+        // feature (the texture board is a reference, not a run of drawings),
+        // and the widget owns no GL resources of its own - it is QPainter on
+        // GL, so the context Qt re-creates on a reparent had nothing in it.
+        // A repaint at the new size is all the move costs.
+        if (m_childPaintWidget) {
+            m_childPaintWidget->update();
+        }
+    }
+
+    // The frame always says something: the board when it has it, otherwise
+    // where the board went.
+    if (m_textureFrame) {
+        m_textureFrame->setPlaceholderText(centralWantsIt
+                                               ? QStringLiteral("Open in the main view")
+                                               : QStringLiteral("The texture board is parked"));
+    }
+    m_updatingTextureHome = false;
 }
 
 #ifdef ANIMEAN_WITH_PYTHON
@@ -1212,11 +1374,13 @@ void MainWindow::openScriptSettings(const QString &name, const QString &title)
 void MainWindow::attachChildScriptMenus()
 {
 #ifdef ANIMEAN_WITH_PYTHON
-    // The texture window's own menu bar, filled from host "child". Built here
-    // rather than in ChildPaintWindow because MainWindow owns the Python side
-    // (the interpreter, the dispatch, the panel resync); the window just
-    // provides the bar.
-    QMenu *host = m_childPaintWindow->settingMenu();
+    // The texture panel's own menu bar, filled from host "child". Built here
+    // rather than in TexturePanel because MainWindow owns the Python side
+    // (the interpreter, the dispatch, the panel resync); the panel just
+    // provides the bar. Still called exactly once: the bar is a child of the
+    // panel and travels with it, so moving the panel between homes needs no
+    // re-attach.
+    QMenu *host = m_texturePanel ? m_texturePanel->settingMenu() : nullptr;
     if (!host) {
         return;
     }
@@ -1320,10 +1484,10 @@ void MainWindow::populateChildViewButtons()
             setStatusText(QStringLiteral("view_buttons JSON error: %1").arg(parseError.errorString()));
             return;
         }
-        QVector<ChildPaintWindow::ScriptButtonDefinition> definitions;
+        QVector<TexturePanel::ScriptButtonDefinition> definitions;
         for (const QJsonValue &value : document.array()) {
             const QJsonObject object = value.toObject();
-            ChildPaintWindow::ScriptButtonDefinition definition;
+            TexturePanel::ScriptButtonDefinition definition;
             definition.name = object.value(QStringLiteral("name")).toString();
             definition.title = object.value(QStringLiteral("title")).toString();
             definition.tooltip = object.value(QStringLiteral("tooltip")).toString();
@@ -1332,7 +1496,9 @@ void MainWindow::populateChildViewButtons()
                 definitions.append(definition);
             }
         }
-        m_childPaintWindow->setScriptButtons(definitions);
+        if (m_texturePanel) {
+            m_texturePanel->setScriptButtons(definitions);
+        }
     } catch (const py::error_already_set &error) {
         setStatusText(QStringLiteral("view_buttons error: %1").arg(QString::fromUtf8(error.what())));
     }
@@ -1344,13 +1510,13 @@ void MainWindow::createTextureFileMenu()
     // On the TEXTURE board's own bar. These actions open, save and import the
     // texture document; on the application bar they sat beside the main
     // document's File menu and read as a second, competing File menu.
-    QMenuBar *bar = m_childPaintWindow ? m_childPaintWindow->menuBar() : menuBar();
+    QMenuBar *bar = m_texturePanel ? m_texturePanel->menuBar() : menuBar();
     QMenu *textureMenu = new QMenu(QStringLiteral("File"), bar);
     // INSERTED before Setting, not appended: Setting is added in the child
     // window's constructor, so appending would leave the bar reading
     // "Setting | File".
-    if (m_childPaintWindow && m_childPaintWindow->settingMenu()) {
-        bar->insertMenu(m_childPaintWindow->settingMenu()->menuAction(), textureMenu);
+    if (m_texturePanel && m_texturePanel->settingMenu()) {
+        bar->insertMenu(m_texturePanel->settingMenu()->menuAction(), textureMenu);
     } else {
         bar->addMenu(textureMenu);
     }
@@ -1394,12 +1560,55 @@ void MainWindow::createTextureFileMenu()
 
 void MainWindow::showTextureView()
 {
-    if (!m_childPaintWindow) {
+    if (!m_texturePanel) {
         return;
     }
-    m_childPaintWindow->show();
-    m_childPaintWindow->raise();
+    // Surface the home the board ALREADY has rather than imposing one: a user
+    // who put the texture view in a sub-control does not want an Import to
+    // move it into the central area behind their back. Only when nothing is
+    // showing it does the central Texture page get selected.
+    if (m_textureFrame && m_textureFrame->isLive()
+        && (!m_centralArea || m_centralArea->currentPage() != QStringLiteral("texture"))) {
+        m_textureFrame->surface();
+    } else if (m_centralArea) {
+        m_centralArea->selectPage(QStringLiteral("texture"));
+    }
+    updateTextureHome();
     setActivePaintView(m_childPaintWidget);
+}
+
+void MainWindow::showTextureSubControl()
+{
+    if (!m_textureFrame) {
+        return;
+    }
+    m_textureFrame->surface();
+    updateTextureHome();
+    // Only worth activating the board when the sub-control actually got it;
+    // with the central Texture page selected the frame shows a placeholder and
+    // the board is elsewhere.
+    if (m_textureHome == m_textureFrame && m_childPaintWidget) {
+        setActivePaintView(m_childPaintWidget);
+    }
+}
+
+void MainWindow::ensureTextureBoardMapped()
+{
+    if (!m_childPaintWidget) {
+        return;
+    }
+    if (m_childPaintWidget->isVisible()) {
+        return;
+    }
+    // Parked or behind another tab: it has to be on screen before
+    // grabFramebuffer has anything to return.
+    if (m_textureFrame && m_textureFrame->isLive()) {
+        m_textureFrame->surface();
+    } else if (m_centralArea) {
+        m_centralArea->selectPage(QStringLiteral("texture"));
+    }
+    updateTextureHome();
+    QCoreApplication::processEvents();
 }
 
 void MainWindow::openTextureView()
@@ -1614,17 +1823,17 @@ bool MainWindow::writeJsonToFile(const QJsonObject &object,
 
 bool MainWindow::exportTextureImage()
 {
-    if (!m_childPaintWidget || !m_childPaintWindow) {
+    if (!m_childPaintWidget || !m_texturePanel) {
         return false;
     }
 
     // Make the texture view renderable for the framebuffer grab WITHOUT
     // changing the active editing view: exporting is read-only, and a
-    // cancelled export must leave the active view untouched. The active-view
-    // border is UI chrome — hide it during the grab so it is not baked into
-    // the exported image.
-    m_childPaintWindow->show();
-    m_childPaintWindow->raise();
+    // cancelled export must leave the active view untouched. Already-visible
+    // is the common case and costs nothing. The active-view border is UI
+    // chrome — hide it during the grab so it is not baked into the exported
+    // image.
+    ensureTextureBoardMapped();
     m_childPaintWidget->setActiveIndicator(false);
     // The Background choice is a VIEWING aid, so it is suppressed for the
     // grab the same way the active-view border is. A black board would tint
@@ -1679,7 +1888,7 @@ PaintOpenGLWidget *MainWindow::activePaintWidget() const
 PaintOpenGLWidget *MainWindow::framePanelTarget() const
 {
     PaintOpenGLWidget *view = activePaintWidget();
-    if (view == m_childPaintWidget && m_childPaintWindow && !m_childPaintWindow->changableTimeline()) {
+    if (view == m_childPaintWidget && m_texturePanel && !m_texturePanel->changableTimeline()) {
         return m_paintWidget;
     }
     return view;
@@ -1692,7 +1901,7 @@ PaintOpenGLWidget *MainWindow::framePanelTarget() const
 PaintOpenGLWidget *MainWindow::layerPanelTarget() const
 {
     PaintOpenGLWidget *view = activePaintWidget();
-    if (view == m_childPaintWidget && m_childPaintWindow && !m_childPaintWindow->changableTexture()) {
+    if (view == m_childPaintWidget && m_texturePanel && !m_texturePanel->changableTexture()) {
         return m_paintWidget;
     }
     return view;
@@ -2052,10 +2261,10 @@ void MainWindow::setupConnections()
                 this, &MainWindow::stopPlayback);
     }
 
-    connect(m_childPaintWindow, &ChildPaintWindow::changableTimelineToggled, this, [this](bool) {
+    connect(m_texturePanel, &TexturePanel::changableTimelineToggled, this, [this](bool) {
         refreshPanelTargets();
     });
-    connect(m_childPaintWindow, &ChildPaintWindow::changableTextureToggled, this, [this](bool) {
+    connect(m_texturePanel, &TexturePanel::changableTextureToggled, this, [this](bool) {
         refreshPanelTargets();
     });
 
@@ -2373,7 +2582,10 @@ void MainWindow::createToolDocks()
     m_mappingToolsPanel = new ToolsPanel(this, false);
     m_fukusatoToolsPanel = new ToolsPanel(this, false);
     m_toolsPanels = {m_paintingToolsPanel, m_mappingToolsPanel, m_fukusatoToolsPanel};
-    ToolOptPanel *toolOptPanel = new ToolOptPanel(this);
+    // The docked options panel is a sub-control HOST; the script-settings
+    // dialog builds its own ToolOptPanel and must not be one (a frame dropped
+    // into a modal window would go away with it).
+    ToolOptPanel *toolOptPanel = new ToolOptPanel(this, true);
 
     m_toolsDock = new ParentWindow(QStringLiteral("tools"), QStringLiteral("Tools"), this);
     m_toolsDock->addPage(QStringLiteral("painting"), QStringLiteral("Painting"), m_paintingToolsPanel);
@@ -2595,7 +2807,10 @@ void MainWindow::createListDocks()
 
 void MainWindow::createTimeline()
 {
-    PaintViewContainer *container = qobject_cast<PaintViewContainer *>(centralWidget());
+    // The main board's container, asked for by name rather than found by
+    // being the central widget: the central widget is the tabbed paint AREA
+    // now, and casting it to a container would silently give up the timeline.
+    PaintViewContainer *container = m_centralArea ? m_centralArea->mainContainer() : nullptr;
     if (!container) {
         return;
     }
@@ -3256,9 +3471,22 @@ void MainWindow::setPythonUiFrozen(bool frozen)
 
     const bool enabled = !frozen;
     menuBar()->setEnabled(enabled);
+    // The central area is not a dock, so the sweep below cannot reach it - and
+    // its tab strip is a button that changes which document is on screen.
+    if (m_centralArea) {
+        m_centralArea->setEnabled(enabled);
+    }
     for (PaintOpenGLWidget *view : m_paintViews) {
         if (view) {
             view->setEnabled(enabled);
+        }
+    }
+    // Sub-control frames can be FLOATING top-level windows, which no
+    // findChildren over docks sees; and an embedded one is already covered by
+    // its host, where enabling twice is free.
+    for (SubControlFrame *frame : SubControlRegistry::instance()->frames()) {
+        if (frame) {
+            frame->setEnabled(enabled);
         }
     }
     const QList<QDockWidget *> docks = findChildren<QDockWidget *>();

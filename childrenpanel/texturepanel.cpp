@@ -1,4 +1,4 @@
-#include "childpaintwindow.h"
+#include "texturepanel.h"
 #include "openglwidget.h"
 #include "paintviewcontainer.h"
 
@@ -11,20 +11,20 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
-ChildPaintWindow::ChildPaintWindow(QWidget *parent)
-    : QDockWidget(QStringLiteral("Child Paint View"), parent)
+TexturePanel::TexturePanel(QWidget *parent)
+    : QWidget(parent)
 {
-    setObjectName(QStringLiteral("ChildPaintViewDock"));
+    setObjectName(QStringLiteral("TexturePanel"));
 
-    QWidget *panel = new QWidget(this);
-    QVBoxLayout *layout = new QVBoxLayout(panel);
+    QVBoxLayout *layout = new QVBoxLayout(this);
     layout->setContentsMargins(4, 4, 4, 4);
     layout->setSpacing(4);
 
     // The texture board carries its own menu bar. Its settings are about THIS
     // board, and putting them on the application menu bar would make them
-    // read as global.
-    m_menuBar = new QMenuBar(panel);
+    // read as global. Installed through the layout, so it travels with the
+    // panel to whichever home the shell moves it into.
+    m_menuBar = new QMenuBar(this);
 
     // ONE entry holds everything that configures this board: the two
     // Changable flags directly, then Background and the script-provided View
@@ -41,7 +41,7 @@ ChildPaintWindow::ChildPaintWindow(QWidget *parent)
     m_changableTimelineAction->setToolTip(
         QStringLiteral("Focusing this view switches the Frames panel to its timeline."));
     connect(m_changableTimelineAction, &QAction::toggled,
-            this, &ChildPaintWindow::changableTimelineToggled);
+            this, &TexturePanel::changableTimelineToggled);
 
     m_changableTextureAction = settingMenu->addAction(QStringLiteral("Changable Texture"));
     m_changableTextureAction->setCheckable(true);
@@ -52,13 +52,13 @@ ChildPaintWindow::ChildPaintWindow(QWidget *parent)
                        "the reference. Also governs whether the Layers/Assets panels "
                        "follow this view."));
 
-    PaintViewContainer *container = new PaintViewContainer(panel);
-    m_paintWidget = container->paintWidget();
+    m_container = new PaintViewContainer(this);
+    m_paintWidget = m_container->paintWidget();
     m_paintWidget->setViewName(QStringLiteral("child"));
     // The reference/texture board is an infinite canvas: the mapped pattern
     // is scaled by the center lines anyway, so no page boundary applies.
     m_paintWidget->setUnboundedCanvas(true);
-    container->setMinimumSize(320, 240);
+    setCompact(false);
 
     settingMenu->addSeparator();
     QMenu *backgroundMenu = settingMenu->addMenu(QStringLiteral("Background"));
@@ -81,7 +81,7 @@ ChildPaintWindow::ChildPaintWindow(QWidget *parent)
 
     // Kept for script buttons that ask for a button rather than a menu entry.
     // Hidden while empty so it costs no height.
-    m_optionRow = new QWidget(panel);
+    m_optionRow = new QWidget(this);
     QHBoxLayout *optionLayout = new QHBoxLayout(m_optionRow);
     optionLayout->setContentsMargins(0, 0, 0, 0);
     optionLayout->setSpacing(12);
@@ -91,8 +91,7 @@ ChildPaintWindow::ChildPaintWindow(QWidget *parent)
 
     layout->setMenuBar(m_menuBar);
     layout->addWidget(m_optionRow);
-    layout->addWidget(container, 1);
-    setWidget(panel);
+    layout->addWidget(m_container, 1);
 
     connect(m_changableTextureAction, &QAction::toggled, this, [this](bool on) {
         m_paintWidget->setContentEditable(on);
@@ -101,47 +100,57 @@ ChildPaintWindow::ChildPaintWindow(QWidget *parent)
     m_paintWidget->setContentEditable(true);
 }
 
-QMenuBar *ChildPaintWindow::menuBar() const
+QMenuBar *TexturePanel::menuBar() const
 {
     return m_menuBar;
 }
 
-QMenu *ChildPaintWindow::settingMenu() const
+QMenu *TexturePanel::settingMenu() const
 {
     return m_settingMenu;
 }
 
-void ChildPaintWindow::applyBackgroundMode(int mode)
+void TexturePanel::applyBackgroundMode(int mode)
 {
     m_paintWidget->setBackgroundMode(static_cast<PaintOpenGLWidget::BackgroundMode>(mode));
 }
 
-PaintOpenGLWidget *ChildPaintWindow::paintWidget() const
+PaintOpenGLWidget *TexturePanel::paintWidget() const
 {
     return m_paintWidget;
 }
 
-bool ChildPaintWindow::changableTimeline() const
+PaintViewContainer *TexturePanel::container() const
+{
+    return m_container;
+}
+
+void TexturePanel::setCompact(bool compact)
+{
+    m_container->setMinimumSize(compact ? QSize(240, 180) : QSize(320, 240));
+}
+
+bool TexturePanel::changableTimeline() const
 {
     return m_changableTimelineAction->isChecked();
 }
 
-bool ChildPaintWindow::changableTexture() const
+bool TexturePanel::changableTexture() const
 {
     return m_changableTextureAction->isChecked();
 }
 
-void ChildPaintWindow::setChangableTimeline(bool enabled)
+void TexturePanel::setChangableTimeline(bool enabled)
 {
     m_changableTimelineAction->setChecked(enabled);
 }
 
-void ChildPaintWindow::setChangableTexture(bool enabled)
+void TexturePanel::setChangableTexture(bool enabled)
 {
     m_changableTextureAction->setChecked(enabled);
 }
 
-void ChildPaintWindow::setScriptButtons(const QVector<ScriptButtonDefinition> &definitions)
+void TexturePanel::setScriptButtons(const QVector<ScriptButtonDefinition> &definitions)
 {
     for (QPushButton *button : m_scriptButtons) {
         m_optionLayout->removeWidget(button);
