@@ -160,7 +160,14 @@ NEAREST_HANDLE_COLOR = (230, 45, 45, 255)
 ADDITIONAL_PROPERTY = "additional_line"
 ADDITIONAL_COLOR = (255, 105, 180, 255)
 ADDITIONAL_FALLOFFS = ("linear", "quadratic")
-_ADDITIONAL = {"falloff": "linear", "radius_factor": 0.5}
+# constrain_outline (menu checkbox 约束外轮廓, default ON = the original
+# design): the MainView grid's outer contour - the outline the H/V axes
+# form - is pinned and does not deform under interior additional lines.
+# A side an additional line is drawn OUT across is RELEASED and follows
+# the flow. Unchecked, the contour deforms freely (the nearest line
+# shapes the edge).
+_ADDITIONAL = {"falloff": "linear", "radius_factor": 0.5,
+               "constrain_outline": True}
 
 
 def additional_falloff():
@@ -1935,15 +1942,36 @@ class _FlowFieldWarp:
         px = X.ravel()
         py = Y.ravel()
 
-        # Weight-free halo around both axis lines (see AXIS_GUARD): the
-        # V axis is x = 0, the H axis is y = 0 in Third, and NO line may
-        # weigh on either - smoothstep from 0 on the axis to 1 at the
-        # halo's edge, min over the two axes.
-        guard = np.minimum(cross_x[:, None], cross_y[None, :])
-
-        def guard_at(x, y):
-            return min(self._tent_cross(x, zone_x, pad_x),
-                       self._tent_cross(y, zone_y, pad_y))
+        # FAMILY GEODESIC weights (user 2026-08-25 restatement): an
+        # additional line IS a drawn geodesic - an extra iso-line of the
+        # texture grid.  A line whose child stroke runs more in x than in
+        # y belongs to the H family (a displaced H iso-line) and shapes
+        # ONLY the H flow - the x-column of the target gradient; a V-like
+        # line shapes only the y-column.  ORTHOGONAL FAMILIES NEVER
+        # INTERACT.  Across a line's family the weight is KEYFRAME
+        # INTERPOLATION along its orthogonal coordinate q (y for H-like,
+        # x for V-like), per half-plane:
+        #   - 0 on the PARALLEL axis through the origin O (the family's
+        #     own anchor geodesic; the axes stay hard-pinned),
+        #   - ramping up to 1 at the innermost line,
+        #   - an OUTER line's weight decays to 0 at its inner
+        #     neighbour's position (nested keyframes interpolate; a
+        #     locally absent neighbour - extent faded - hands the ramp
+        #     back toward the axis),
+        #   - HELD outward beyond the outermost line: that is what lets
+        #     the nearest line shape a free edge / released side.
+        # Along the family direction a finite stroke fades over its
+        # radius beyond its span (the extent envelope).  The falloff
+        # option shapes the axis-side ramp and the extent fade; the
+        # interpolation BETWEEN nested lines stays linear.  This replaces
+        # the fixed-width axis halo and its crossing exceptions: a V-like
+        # line crossing the H axis keeps its voice beside H naturally
+        # (H is orthogonal to it and never mutes it), while its own
+        # weight still dies on the V axis.
+        def family_of(pts):
+            run_x = sum(abs(b[0] - a[0]) for a, b in zip(pts[:-1], pts[1:]))
+            run_y = sum(abs(b[1] - a[1]) for a, b in zip(pts[:-1], pts[1:]))
+            return "h" if run_x >= run_y else "v"
 
         fields = []
         for line in active:
@@ -1963,25 +1991,150 @@ class _FlowFieldWarp:
             qy = dys - t * ey[None, :]
             dist2 = qx * qx + qy * qy
             seg = np.argmin(dist2, axis=1)
-            d = np.sqrt(dist2[np.arange(dist2.shape[0]), seg])
-            ratio = d / line["radius"]
-            w = np.where(ratio >= 1.0, 0.0, 1.0 - ratio)
+            fam = family_of(pts)
+            if fam == "h":
+                qmid = 0.5 * (ay + by)
+                s_pt = px
+                s_lo = min(p[0] for p in pts)
+                s_hi = max(p[0] for p in pts)
+            else:
+                qmid = 0.5 * (ax + bx)
+                s_pt = py
+                s_lo = min(p[1] for p in pts)
+                s_hi = max(p[1] for p in pts)
+            d_out = np.maximum(0.0, np.maximum(s_lo - s_pt, s_pt - s_hi))
+            env = np.clip(1.0 - d_out / line["radius"], 0.0, 1.0)
             if self.falloff == "quadratic":
-                w = w * w
+                env = env * env
             fields.append({
-                "w": w.reshape(X.shape) * guard,
+                "fam": fam,
                 "seg": seg,
+                "q_line": qmid[seg],   # the line's LOCAL keyframe position
+                "env": env,
                 "ask": np.array([complex(s[0], s[1]) for s in line["sims"]]),
                 "boost": None,   # filled per round
                 "line": line,
             })
-            if float(np.max(fields[-1]["w"])) < 0.05:
-                # The axis halo ate the whole line: say so instead of
-                # letting the tool look broken.
-                self.notes.append(
-                    f"additional line {line['index'] + 1} lies almost "
-                    "entirely inside the H/V axes' guard halo - the axes "
-                    "may not move, so it has (nearly) no influence")
+
+        # Keyframe interpolation per family and half-plane (flat arrays).
+        tiny = 1e-9
+        constrain = bool(_ADDITIONAL.get("constrain_outline", True))
+        for fam, q_pt in (("h", py), ("v", px)):
+            group = [f for f in fields if f["fam"] == fam]
+            if not group:
+                continue
+            qp = np.abs(q_pt)
+            sp = np.sign(q_pt)
+            # Under CONSTRAIN OUTLINE a pinned window edge is the
+            # family's outermost KEYFRAME (an undrawn iso-line held at
+            # identity): weights ramp down to 0 there instead of pressing
+            # full-strength against the Dirichlet cage (which diluted the
+            # whole outward band and could fold beside the edge).  A
+            # RELEASED side contributes no edge keyframe - influence is
+            # held outward and the nearest line shapes that edge.
+            if fam == "h":
+                edge_pos = v_hi if (constrain and t_top == 0.0) else None
+                edge_neg = -v_lo if (constrain and t_bottom == 0.0) else None
+                o_pt, o_cell = px, du
+            else:
+                edge_pos = h_hi if (constrain and t_right == 0.0) else None
+                edge_neg = -h_lo if (constrain and t_left == 0.0) else None
+                o_pt, o_cell = py, dv
+            # Numerical relief beside the ORTHOGONAL axis: its straddling
+            # rows/cols are hard Dirichlet, and a full-weight ask one
+            # cell away folds the fit against them.  A few CELLS of
+            # smoothstep (resolution-scaled - NOT the old window-scaled
+            # halo) give the pinned band its boundary layer without
+            # muting the line's voice; orthogonal families otherwise
+            # never interact.
+            o_t = np.clip(np.abs(o_pt) / (4.0 * o_cell), 0.0, 1.0)
+            relief = o_t * o_t * (3.0 - 2.0 * o_t)
+            cell = dv if fam == "h" else du   # cell size along q
+            for f in group:
+                same = (np.sign(f["q_line"]) * sp) > 0.0
+                q_k = np.abs(f["q_line"])
+                # side_f is the PARALLEL-axis boundary layer: a
+                # smoothstep of the stroke's LOCAL position over 4 cells.
+                # It makes the half-plane handover of a stroke crossing
+                # its own axis CONTINUOUS (a binary nearest-station sign
+                # test put a 0-to-1 weight cliff one cell wide along the
+                # crossing's perpendicular and folded the field), and for
+                # a stroke hugging its axis it damps the weight so `rise`
+                # cannot press full strength against the hard-pinned axis
+                # rows. One taper only - the final gate measured that an
+                # additional keyframe-position floor doubled the damping
+                # for nothing and notched the partition for sub-cell
+                # separated lines.
+                s_t = np.clip(sp * f["q_line"] / (4.0 * cell), 0.0, 1.0)
+                side_f = s_t * s_t * (3.0 - 2.0 * s_t)
+                # Neighbour keyframes, ENVELOPE-AWARE (a locally absent
+                # line - extent faded to 0 - must not claim the slot):
+                #   - the ramp foot q_lo is the FARTHEST effective inner
+                #     keyframe, each candidate weighted by its local
+                #     envelope, so an absent middle line hands over to
+                #     the nearest PRESENT inner line, not to the axis;
+                #   - every outer candidate imposes its own fade ceiling
+                #     (1 at the line, 1 - env at the candidate), and the
+                #     ceilings COMBINE by minimum - an absent nearer
+                #     neighbour imposes nothing and can no longer mask
+                #     the pinned-edge / domain keyframes behind it.
+                q_lo = np.zeros_like(qp)          # inner bound (axis = 0)
+                fade = np.ones_like(qp)
+                for g in group:
+                    if g is f:
+                        continue
+                    g_same = (np.sign(g["q_line"]) * sp) > 0.0
+                    q_g = np.abs(g["q_line"])
+                    inner = g_same & same & (q_g < q_k - tiny)
+                    q_lo = np.maximum(q_lo,
+                                      np.where(inner, g["env"] * q_g, 0.0))
+                    outer = g_same & same & (q_g > q_k + tiny)
+                    g_fade = 1.0 - g["env"] * np.clip(
+                        (qp - q_k) / np.maximum(q_g - q_k, tiny), 0.0, 1.0)
+                    fade = np.minimum(fade, np.where(outer, g_fade, 1.0))
+                # The DOMAIN boundary is always the final implicit
+                # keyframe (it is the numerical frame, Dirichlet D = 0,
+                # NOT the user-visible outline): without it a held band
+                # pressed the ask against the boundary and folded there.
+                # The margin (>= 1.5 R) keeps this fade gentle and well
+                # beyond any released window edge.
+                if fam == "h":
+                    dom_pos, dom_neg = y1, -y0
+                else:
+                    dom_pos, dom_neg = x1, -x0
+                for side_sign, q_edge in ((1.0, edge_pos), (-1.0, edge_neg),
+                                          (1.0, dom_pos), (-1.0, dom_neg)):
+                    if q_edge is None:
+                        continue
+                    applies = same & (sp == side_sign) & (q_k < q_edge - tiny)
+                    e_fade = 1.0 - np.clip(
+                        (qp - q_k) / np.maximum(q_edge - q_k, tiny), 0.0, 1.0)
+                    fade = np.minimum(fade, np.where(applies, e_fade, 1.0))
+                rise = np.clip((qp - q_lo)
+                               / np.maximum(q_k - q_lo, tiny), 0.0, 1.0)
+                if self.falloff == "quadratic":
+                    rise = rise * rise
+                w = rise * fade * f["env"] * side_f * relief
+                f["w"] = w.reshape(X.shape)
+                # Silently ineffective lines are unacceptable: say so.
+                if float(np.max(f["w"])) < 0.05:
+                    self.notes.append(
+                        f"additional line {f['line']['index'] + 1} has "
+                        "(nearly) no influence - it lies on its own "
+                        "family's axis or its extent fades before any "
+                        "sampled ground")
+                else:
+                    pts_q = ([p[1] for p in f["line"]["child"]]
+                             if fam == "h"
+                             else [p[0] for p in f["line"]["child"]])
+                    med_q = sorted(abs(v) for v in pts_q)[len(pts_q) // 2]
+                    one_side = min(pts_q) >= 0.0 or max(pts_q) <= 0.0
+                    if one_side and med_q < 4.0 * cell:
+                        self.notes.append(
+                            f"additional line {f['line']['index'] + 1} "
+                            "hugs its own family's axis inside the "
+                            "numerical boundary layer - the axis may not "
+                            "move, so its influence is strongly damped")
 
         # Ambient: the tent's own FULL gradient (the cross-axis damping
         # makes it non-separable, so the off-diagonals are no longer
@@ -1996,11 +2149,21 @@ class _FlowFieldWarp:
         amb_xy = np.gradient(ub_x, dv, axis=1)
         amb_yx = np.gradient(ub_y, du, axis=0)
         amb_yy = np.gradient(ub_y, dv, axis=1)
-        wsum = np.zeros_like(X)
+        # Per-COLUMN weight sums: the H family speaks only for the
+        # x-column of G (the H flow), the V family only for the y-column
+        # - orthogonal families never interact, each column blends its
+        # own family's asks with its own ambient share.
+        wsum_x = np.zeros_like(X)
+        wsum_y = np.zeros_like(X)
         for field in fields:
-            wsum += field["w"]
-        w_amb = np.maximum(0.0, 1.0 - wsum) + 1e-9
-        total = wsum + w_amb
+            if field["fam"] == "h":
+                wsum_x += field["w"]
+            else:
+                wsum_y += field["w"]
+        w_amb_x = np.maximum(0.0, 1.0 - wsum_x) + 1e-9
+        w_amb_y = np.maximum(0.0, 1.0 - wsum_y) + 1e-9
+        total_x = wsum_x + w_amb_x
+        total_y = wsum_y + w_amb_y
 
         def edge_x(values):
             return 0.5 * (values[1:, :] + values[:-1, :])
@@ -2012,8 +2175,9 @@ class _FlowFieldWarp:
         # exactly where the lines speak (see FIT_GAIN above) - empty
         # ground is the softest, so incompatible asks bend the empty
         # surroundings smoothly instead of muting the drawn intent.
-        wsum_ex = edge_x(wsum)
-        wsum_ey = edge_y(wsum)
+        # x-edges carry the x-column (H family), y-edges the y-column.
+        wsum_ex = edge_x(wsum_x)
+        wsum_ey = edge_y(wsum_y)
         wamb_ex = np.maximum(0.0, 1.0 - wsum_ex) + 1e-9
         wamb_ey = np.maximum(0.0, 1.0 - wsum_ey) + 1e-9
         total_ex = wsum_ex + wamb_ex
@@ -2026,9 +2190,46 @@ class _FlowFieldWarp:
         # the nearest: with one pinned column the continuum line x = 0
         # interpolates between it and a FREE neighbour and still drifted
         # 19 px.
-        pinned = np.zeros_like(X, dtype=bool)
-        pinned[np.abs(gx) <= du * 0.999, :] = True
-        pinned[:, np.abs(gy) <= dv * 0.999] = True
+        axis_pinned = np.zeros_like(X, dtype=bool)
+        axis_pinned[np.abs(gx) <= du * 0.999, :] = True
+        axis_pinned[:, np.abs(gy) <= dv * 0.999] = True
+
+        # CONSTRAIN OUTLINE (menu 约束外轮廓, user 2026-08-25): the outer
+        # contour the H/V axes form - the frame window's outline - keeps
+        # its SHAPE.  Pinning is COMPONENT-WISE: a left/right edge pins
+        # only x (the edge stays the straight line x = const; ground may
+        # slide ALONG it), a bottom/top edge pins only y.  Corners of two
+        # pinned edges get both components and hold exactly; a corner
+        # between a pinned edge and a RELEASED one slides along the
+        # pinned edge, so the released side's deformation meets the
+        # constraint without a single-cell tear (full pinning fought the
+        # tent's pre-stretch there).  EXCEPTION: a side an additional
+        # line is drawn OUT across (exactly the sides with tent overrun)
+        # is released and follows the flow.  Unchecked, the outline
+        # deforms freely and the nearest line shapes the edge.  The pin
+        # value is identity-minus-base (nonzero Dirichlet) in case the
+        # tent ever leaks onto a pinned edge.
+        pin_x = np.zeros_like(X)
+        pin_y = np.zeros_like(X)
+        pinned_x = axis_pinned.copy()
+        pinned_y = axis_pinned.copy()
+        if _ADDITIONAL.get("constrain_outline", True):
+            in_h = (gx >= h_lo - du) & (gx <= h_hi + du)
+            in_v = (gy >= v_lo - dv) & (gy <= v_hi + dv)
+            edge_v = np.zeros_like(X, dtype=bool)   # left/right edge bands
+            edge_h = np.zeros_like(X, dtype=bool)   # bottom/top edge bands
+            if t_left == 0.0:
+                edge_v[np.abs(gx - h_lo) <= du * 0.999, :] |= in_v[None, :]
+            if t_right == 0.0:
+                edge_v[np.abs(gx - h_hi) <= du * 0.999, :] |= in_v[None, :]
+            if t_bottom == 0.0:
+                edge_h[:, np.abs(gy - v_lo) <= dv * 0.999] |= in_h[:, None]
+            if t_top == 0.0:
+                edge_h[:, np.abs(gy - v_hi) <= dv * 0.999] |= in_h[:, None]
+            pin_x = np.where(edge_v, X - ub_x, 0.0)
+            pin_y = np.where(edge_h, Y - ub_y, 0.0)
+            pinned_x |= edge_v
+            pinned_y |= edge_h
 
         def weighted_div_lap(n_x, n_y, base):
             """div(omega * (G_row - grad base)) with the blend done ON the
@@ -2046,9 +2247,9 @@ class _FlowFieldWarp:
             out[:, 1:-1] += (flux_y[:, 1:] - flux_y[:, :-1]) / dv
             return out
 
-        def apply_A(Z):
+        def apply_A(Z, mask):
             """-div(omega * grad Z); homogeneous Dirichlet on the domain
-            boundary AND on the pinned axis lines."""
+            boundary AND on this component's pinned nodes."""
             flux_x = om_e * (Z[1:, :] - Z[:-1, :]) / du
             flux_y = om_n * (Z[:, 1:] - Z[:, :-1]) / dv
             out = np.zeros_like(Z)
@@ -2056,36 +2257,53 @@ class _FlowFieldWarp:
             out[:, 1:-1] -= (flux_y[:, 1:] - flux_y[:, :-1]) / dv
             out[0, :] = out[-1, :] = 0.0
             out[:, 0] = out[:, -1] = 0.0
-            out[pinned] = 0.0
+            out[mask] = 0.0
             return out
 
-        def solve(rhs):
+        def apply_A_raw(Z):
+            """-div(omega * grad Z) with NO pin/boundary masking - the
+            operator's action on the (nonzero) pin values, folded into
+            the free nodes' right-hand side."""
+            flux_x = om_e * (Z[1:, :] - Z[:-1, :]) / du
+            flux_y = om_n * (Z[:, 1:] - Z[:, :-1]) / dv
+            out = np.zeros_like(Z)
+            out[1:-1, :] -= (flux_x[1:, :] - flux_x[:-1, :]) / du
+            out[:, 1:-1] -= (flux_y[:, 1:] - flux_y[:, :-1]) / dv
+            return out
+
+        def solve(rhs, pin_val, mask):
             # apply_A is MINUS div(omega grad) (SPD), so the equation
-            # div(omega grad D) = rhs becomes A D = -rhs.
-            D = np.zeros_like(rhs)
+            # div(omega grad D) = rhs with D = pin_val on the pinned nodes
+            # becomes, for E = D - pin_val (E = 0 there),
+            # A E = -rhs - A_raw(pin_val).
             R = np.zeros_like(rhs)
-            R[1:-1, 1:-1] = -rhs[1:-1, 1:-1]
-            R[pinned] = 0.0
+            interior = -rhs - apply_A_raw(pin_val)
+            R[1:-1, 1:-1] = interior[1:-1, 1:-1]
+            R[mask] = 0.0
+            E = np.zeros_like(rhs)
             P = R.copy()
             rs = float(np.sum(R * R))
             if rs <= 0.0:
-                return D
+                return E + pin_val
             rs0 = rs
             for _ in range(self.CG_MAX_ITER):
-                AP = apply_A(P)
+                AP = apply_A(P, mask)
                 denom = float(np.sum(P * AP)) or 1e-30
                 alpha = rs / denom
-                D += alpha * P
+                E += alpha * P
                 R -= alpha * AP
                 rs_new = float(np.sum(R * R))
                 if rs_new <= self.CG_TOL * rs0:
                     break
                 P = R + (rs_new / rs) * P
                 rs = rs_new
-            return D
+            return E + pin_val
 
         def numerators(boosted):
-            """The LINE parts of G's numerator per component, at nodes."""
+            """The LINE parts of G's numerator per component, at nodes.
+            An H-family line's similarity ask a+ib fills only the
+            x-column (target dU/dx = (a, b)); a V-family line fills only
+            the y-column (target dU/dy = (-b, a))."""
             n00 = np.zeros_like(X)
             n01 = np.zeros_like(X)
             n10 = np.zeros_like(X)
@@ -2097,16 +2315,20 @@ class _FlowFieldWarp:
                 sa = sims.real[field["seg"]].reshape(X.shape)
                 sb = sims.imag[field["seg"]].reshape(X.shape)
                 w2 = field["w"]
-                n00 += w2 * sa
-                n01 += w2 * -sb
-                n10 += w2 * sb
-                n11 += w2 * sa
+                if field["fam"] == "h":
+                    n00 += w2 * sa
+                    n10 += w2 * sb
+                else:
+                    n01 += w2 * -sb
+                    n11 += w2 * sa
             return n00, n01, n10, n11
 
         def assemble_and_solve():
             n00, n01, n10, n11 = numerators(boosted=True)
-            ux = ub_x + solve(weighted_div_lap(n00, n01, ub_x))
-            uy = ub_y + solve(weighted_div_lap(n10, n11, ub_y))
+            ux = ub_x + solve(weighted_div_lap(n00, n01, ub_x), pin_x,
+                              pinned_x)
+            uy = ub_y + solve(weighted_div_lap(n10, n11, ub_y), pin_y,
+                              pinned_y)
             return ux, uy
 
         def bilinear_np(table, sx, sy):
@@ -2131,10 +2353,10 @@ class _FlowFieldWarp:
         # against the boosted blend chases a target that rises with every
         # round (a single 25 deg ask overshot to 46 deg).
         n00r, n01r, n10r, n11r = numerators(boosted=False)
-        g00m = (n00r + w_amb * amb_xx) / total
-        g01m = (n01r + w_amb * amb_xy) / total
-        g10m = (n10r + w_amb * amb_yx) / total
-        g11m = (n11r + w_amb * amb_yy) / total
+        g00m = (n00r + w_amb_x * amb_xx) / total_x
+        g01m = (n01r + w_amb_y * amb_xy) / total_y
+        g10m = (n10r + w_amb_x * amb_yx) / total_x
+        g11m = (n11r + w_amb_y * amb_yy) / total_y
         ux, uy = assemble_and_solve()
         for _round in range(self.BOOST_ROUNDS):
             duxx = np.gradient(ux, du, axis=0)
@@ -2148,33 +2370,27 @@ class _FlowFieldWarp:
                                for a, b in zip(pts[:-1], pts[1:])])
                 my = np.array([(a[1] + b[1]) * 0.5
                                for a, b in zip(pts[:-1], pts[1:])])
-                tcx = np.array([b[0] - a[0] for a, b in zip(pts[:-1], pts[1:])])
-                tcy = np.array([b[1] - a[1] for a, b in zip(pts[:-1], pts[1:])])
-                denom = np.maximum(tcx * tcx + tcy * tcy, 1e-12)
-
-                def ratio_along(mxx, mxy, myx, myy):
-                    """A 2x2 field's action on the station tangent as a
-                    complex similarity against the tangent itself."""
-                    ox = mxx * tcx + mxy * tcy
-                    oy = myx * tcx + myy * tcy
-                    return ((ox * tcx + oy * tcy) / denom
-                            + 1j * ((oy * tcx - ox * tcy) / denom))
-
-                achieved = ratio_along(bilinear_np(duxx, mx, my),
-                                       bilinear_np(duxy, mx, my),
-                                       bilinear_np(duyx, mx, my),
-                                       bilinear_np(duyy, mx, my))
-                target = ratio_along(bilinear_np(g00m, mx, my),
-                                     bilinear_np(g01m, mx, my),
-                                     bilinear_np(g10m, mx, my),
-                                     bilinear_np(g11m, mx, my))
+                # Measure the line's OWN family column as a complex
+                # similarity (x-column (a,b) <-> a+ib for H; y-column
+                # (-b,a) <-> a+ib for V), against the fixed reference G.
+                if field["fam"] == "h":
+                    achieved = (bilinear_np(duxx, mx, my)
+                                + 1j * bilinear_np(duyx, mx, my))
+                    target = (bilinear_np(g00m, mx, my)
+                              + 1j * bilinear_np(g10m, mx, my))
+                else:
+                    achieved = (bilinear_np(duyy, mx, my)
+                                - 1j * bilinear_np(duxy, mx, my))
+                    target = (bilinear_np(g11m, mx, my)
+                              - 1j * bilinear_np(g01m, mx, my))
                 current = field["ask"] if field["boost"] is None \
                     else field["boost"]
-                # Stations inside the axis halo are weight-free BY DESIGN;
-                # compensating their deficit would crank the target
-                # against the guard, so the correction fades with it.
-                station_guard = np.array([guard_at(x, y)
-                                          for x, y in zip(mx, my)])
+                # Stations whose keyframe weight is small - the stroke
+                # skims its family's axis, or its extent has faded -
+                # cannot express a correction; cranking the target there
+                # would fight the interpolation, so it fades with w.
+                station_guard = np.clip(
+                    bilinear_np(field["w"], mx, my), 0.0, 1.0)
                 worst = max(worst,
                             float(np.max(station_guard
                                          * np.abs(target - achieved))))
@@ -2243,6 +2459,17 @@ class _FlowFieldWarp:
             ux, uy = assemble_and_solve()
             det = det_of(ux, uy)
             retreat += 1
+        # FULL retreat must actually be reached: three halvings still
+        # leave 12.5% of the boost, and shipping a fold the UNBOOSTED
+        # blend does not have breaks the contract above. If folds
+        # persist, drop every boost and take the honest pure-blend
+        # answer; a fold that survives even that is intrinsic and stays.
+        if np.any(det <= -self.DET_FOLD_TOL) \
+                and any(field["boost"] is not None for field in fields):
+            for field in fields:
+                field["boost"] = None
+            ux, uy = assemble_and_solve()
+            det = det_of(ux, uy)
 
         # Orientation bookkeeping: per-node det of grad U, marched by
         # fold_loci and read by det_sign - the SAME numbers, so loci and
@@ -3599,7 +3826,8 @@ def _mapper_fingerprint(child_assets, main_assets, pairs):
             parts.append((item.get("id"),
                           tuple(map(tuple, item.get("points") or ())),
                           tuple(map(tuple, item.get("third") or ()))))
-    parts.append((_ADDITIONAL["falloff"], _ADDITIONAL["radius_factor"]))
+    parts.append((_ADDITIONAL["falloff"], _ADDITIONAL["radius_factor"],
+                  _ADDITIONAL.get("constrain_outline", True)))
     return hash(tuple(parts))
 
 
@@ -9046,6 +9274,8 @@ def _menu_items():
              {"name": "falloff_quadratic", "title": "Quadratic", "kind": "radio",
               "checked": _ADDITIONAL["falloff"] == "quadratic"},
          ]},
+        {"name": "constrain_outline", "title": "约束外轮廓 / Constrain Outline",
+         "kind": "check", "checked": _ADDITIONAL["constrain_outline"]},
         {"kind": "separator"},
         {"name": "to_3d", "title": "To 3D"},
     ]
@@ -9137,6 +9367,18 @@ def _menu_action(message):
             _push_overlay("main")
             print(f"[auto_mapping] additional line falloff -> {falloff} "
                   "(applies on the next run)")
+        return
+    if name == "constrain_outline":
+        _ADDITIONAL["constrain_outline"] = not _ADDITIONAL["constrain_outline"]
+        _invalidate_grid_cache()
+        _push_overlay("child")
+        _push_overlay("main")
+        state = "ON" if _ADDITIONAL["constrain_outline"] else "OFF"
+        print(f"[auto_mapping] constrain outline (约束外轮廓) {state} - "
+              + ("the H/V window outline holds its shape; a side an "
+                 "additional line crosses out of is released"
+                 if _ADDITIONAL["constrain_outline"] else
+                 "the outline deforms freely with the nearest line"))
         return
     if not name.startswith("mode_"):
         return

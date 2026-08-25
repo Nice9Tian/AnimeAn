@@ -214,14 +214,12 @@ assert ground < 0.05, ground
 print(f"5) deletion: survivor's on-line effect moves {kept:.2e} px, the "
       f"removed line's ground relaxes to identity ({ground:.2e} px)")
 
-# 6) CONFLICT COMPROMISE - the spec's conflict-resolution claim. Two pairs
-#    ask OPPOSITE rotations (+10 / -10 deg) over off-axis ground their bands
-#    share (lines 60 px apart, radius 70, and the rotated mains still clear
-#    both axes by 100 px). The old model let the later line win outright; the
-#    blended field minimises internal stress instead:
-#      * the sheet never doubles back (det > 0 everywhere, no fold loci),
-#      * and the settlement sits BETWEEN the two asks - each line still
-#        turns the flow its own way, but by less than it would alone.
+# 6) CONFLICT RESOLUTION under the family-geodesic model (user 2026-08-25):
+#    two parallel H-family lines asking OPPOSITE rotations (+10 / -10 deg)
+#    are NESTED KEYFRAMES - the outer line's weight dies at the inner one,
+#    so each line keeps (nearly) its OWN ask on itself instead of the old
+#    shared-ground dilution, and the ground between them interpolates
+#    through zero. The sheet still never doubles back.
 X_LO, X_HI, ASK = 130.0, 270.0, 10.0
 Y_LOW, Y_HIGH = 115.0, 175.0
 low = straight(X_LO, X_HI, Y_LOW)
@@ -244,18 +242,25 @@ got_high = [flow_angle(w_conflict, (x, Y_HIGH)) for x in stations]
 solo_low = [flow_angle(w_low_solo, (x, Y_LOW)) for x in stations]
 solo_high = [flow_angle(w_high_solo, (x, Y_HIGH)) for x in stations]
 for got, alone in zip(got_low, solo_low):
-    assert 0.0 < got < alone, (got, alone)          # own direction, less of it
+    assert 0.0 < got, (got, alone)                  # own direction kept
 for got, alone in zip(got_high, solo_high):
-    assert alone < got < 0.0, (got, alone)
+    assert got < 0.0, (got, alone)
 mean_low = sum(got_low) / len(got_low)
 mean_high = sum(got_high) / len(got_high)
 mean_solo_low = sum(solo_low) / len(solo_low)
 mean_solo_high = sum(solo_high) / len(solo_high)
-assert 0.10 < mean_low / mean_solo_low < 0.85, mean_low / mean_solo_low
-assert 0.10 < mean_high / mean_solo_high < 0.85, mean_high / mean_solo_high
-print(f"6) conflict: +{ASK:.0f}/-{ASK:.0f} deg over shared ground settle at "
+# Keyframe separation: each line expresses (nearly) its whole solo ask on
+# itself - only integrability, not the other line's weight, dilutes it.
+assert 0.50 < mean_low / mean_solo_low < 1.15, mean_low / mean_solo_low
+assert 0.50 < mean_high / mean_solo_high < 1.15, mean_high / mean_solo_high
+mid_y = 0.5 * (Y_LOW + Y_HIGH)
+mid_flow = [flow_angle(w_conflict, (x, mid_y)) for x in stations]
+mid_mean = sum(mid_flow) / len(mid_flow)
+assert abs(mid_mean) < 0.5 * ASK, mid_mean          # blends through zero
+print(f"6) nested keyframes: +{ASK:.0f}/-{ASK:.0f} deg keep "
       f"{mean_low:+.2f} deg (alone {mean_solo_low:+.2f}) and "
-      f"{mean_high:+.2f} deg (alone {mean_solo_high:+.2f}); "
-      "det > 0 on 49 band probes, no fold loci")
+      f"{mean_high:+.2f} deg (alone {mean_solo_high:+.2f}) on themselves, "
+      f"midpoint {mid_mean:+.2f} deg; det > 0 on 49 band probes, no fold "
+      "loci")
 
 print("t_compose: ALL OK")
