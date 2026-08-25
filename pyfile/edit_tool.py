@@ -1,6 +1,12 @@
-"""Arrow-tool edit mode: direct control points, or perceptual pseudo-handles.
+"""Arrow-tool edit modes: outline and move, perceptual handles, stored points.
 
-Two modes, chosen in the Arrow tool's options:
+Three modes, chosen in the Arrow tool's options. All three describe the SAME
+picked object, so switching between them keeps the pick and re-derives the new
+mode's affordances from it - a mode switch used to end the session and cost a
+re-click, which is the one thing the user could not get back.
+
+DEFAULT is the resting mode: a click OUTLINES whatever it lands on - a stroke
+first, a filled region second - and dragging inside that outline translates it.
 
 DEBUG shows the geometry as it is stored. Every path element grows its true
 handles - a cubic its p1/c1/c2/p4, a line its two end points, a raw polyline
@@ -15,6 +21,14 @@ is fixed in screen pixels and maps through the zoom into document space -
 zooming in reveals more handles, zooming out melts them away. Dragging a
 pseudo-handle deforms the stroke locally with a smooth falloff that reaches
 to the neighbouring key points.
+
+A picked FILL REGION is editable in Artist and Debug too: one handle per
+stored boundary vertex, dragged straight onto the region's path. Both modes
+show the same vertex set - the artist fit is a stroke idea and a region has no
+stroke to fit - and a cubic's control points ride with the vertex they belong
+to instead of becoming handles of their own.
+
+The selection outline is drawn in EVERY mode: it is the pick made visible.
 
 The C++ side is a pure mechanism (render dots, hit-test, report drags as
 "handle" events); everything a handle MEANS lives here.
@@ -707,19 +721,33 @@ def _enforce_chain_constraints(chain, dirty=None):
 
 # --- pushing state to the view ----------------------------------------------
 
+def _overlay_items(session, arms):
+    """The composed overlay: the picked object's outline, then the arms.
+
+    Through overlay_stack: this tool owns ONE slot of the composed display
+    list. Re-merging auto_mapping's items by hand (and calling ui.set_overlay
+    directly) predates the stack and would clobber every other owner's
+    overlays - guides, creases, previews.
+    """
+    items = _selection_items(session) if session is not None else []
+    for arm in arms:
+        items.append({"id": "edit_arm", "points": list(arm), "color": ARM_COLOR,
+                      "width": 1.0, "removable": False})
+    return items
+
+
 def _push(view, handles, arms):
     # Remember each pushed handle's position: the press handler re-anchors a
-    # grab by geometry, since artist ids do not survive a re-flattening.
+    # grab by geometry, since artist ids do not survive a re-flattening. The
+    # arms are remembered too, so a settings change can recompose the overlay
+    # without re-running a fit.
     session = _SESSIONS.get(view)
     if session is not None:
         session["handles_by_id"] = {h["id"]: (h["x"], h["y"]) for h in handles}
+        session["arms"] = [list(arm) for arm in arms]
     animean = _animean()
     animean.ui.set_edit_handles(view, handles)
-    items = []
-    for arm in arms:
-        items.append({"id": "edit_arm", "points": arm, "color": ARM_COLOR,
-                      "width": 1.0, "removable": False})
-    overlay_stack.set_items(view, "edit_tool", items)
+    overlay_stack.set_items(view, "edit_tool", _overlay_items(session, arms))
 
 
 def _clear(view):
@@ -732,8 +760,18 @@ def _clear(view):
 
 
 def _rebuild(view, session, zoom):
-    if session.get("mode") == "default":
-        _push_default(view, session)
+    """The picked object's affordances in the CURRENT mode.
+
+    The session says WHAT is picked, _STATE says HOW it is shown; keeping the
+    mode out of the session is what lets a mode switch redraw the same pick.
+    """
+    if _STATE["mode"] == "default":
+        # Default owns no handles: its only gesture is the body drag the pick
+        # claimed, and the outline rides in the overlay.
+        _push(view, [], [])
+        return
+    if session["kind"] == "fill":
+        _push(view, _fill_handles(session), [])
         return
     geometry = session["geometry"]
     if _STATE["mode"] == "debug":
@@ -900,12 +938,14 @@ def _drag_chain(session, target, pos):
                             anchor[1] + direction[1] * length)
 
 
-# --- default mode: outline an object, drag it ---------------------------------
-# The Arrow's resting mode. A click OUTLINES whatever it lands on - a stroke
-# or a filled region - and dragging inside that outline translates it. No
-# handles, no geometry rewrite: this is the "grab the thing and move it" mode
-# every drawing app opens with, and it is what makes the mapping guides
+# --- picked objects: outlines, fills, and the default drag ---------------------
+# Default is the Arrow's resting mode. A click OUTLINES whatever it lands on -
+# a stroke or a filled region - and dragging inside that outline translates it.
+# No handles, no geometry rewrite: this is the "grab the thing and move it"
+# mode every drawing app opens with, and it is what makes the mapping guides
 # (H/V axes, additional lines) draggable without arming a special tool.
+# The outline itself belongs to the PICK, not to the mode, so Artist and Debug
+# keep it too, under their handles.
 
 def _outline_color():
     return tuple(_OUTLINE["outline_color"])
@@ -973,7 +1013,95 @@ def _fill_geometry(scene, frame, layer, index):
         "commands": commands,
         "polylines": _fill_outline(commands),
         "seed": (float(seed.get("x", 0.0)), float(seed.get("y", 0.0))),
+        # The region's identity: an undo can renumber the fills, and the index
+        # alone would then point at a DIFFERENT region.
+        "id": int(fill.get("id", 0)),
     }
+
+
+# --- fill regions as editable boundaries -------------------------------------
+# Artist and Debug show a picked region the same way: one handle per stored
+# boundary vertex. Control points are not handles of their own - a region's
+# cubics come from the topology it was flooded into, so what an artist wants
+# to move is where the boundary PASSES; the controls ride along with the
+# vertex they belong to, exactly as the debug stroke drag carries its arms.
+
+def _copy_elements(elements):
+    return [(kind, list(pts)) for kind, pts in elements]
+
+
+def _fill_vertex_refs(elements):
+    """Boundary vertices as [position, [(element_index, slot), ...]].
+
+    A ring whose last element lands back on its 'move' point is ONE vertex
+    with two references: dragging those apart would tear the ring open.
+    """
+    refs = []
+    ring_start = None
+    for index, (kind, pts) in enumerate(elements):
+        if kind == "move":
+            refs.append([pts[0], [(index, 0)]])
+            ring_start = len(refs) - 1
+            continue
+        slot = 2 if kind == "cubic" else 0
+        point = pts[slot]
+        if ring_start is not None and _dist(point, refs[ring_start][0]) <= 1e-6:
+            refs[ring_start][1].append((index, slot))
+            continue
+        refs.append([point, [(index, slot)]])
+    return refs
+
+
+def _fill_handles(session):
+    """One square handle per stored boundary vertex."""
+    elements = _elements(session["geometry"]["commands"])
+    session["elements"] = elements
+    return [{"id": f"f{k}", "x": point[0], "y": point[1],
+             "shape": SHAPE_ANCHOR, "color": ANCHOR_COLOR}
+            for k, (point, _slots) in enumerate(_fill_vertex_refs(elements))]
+
+
+def _fill_vertex_index(handle_id, refs, handles_by_id):
+    """Which boundary vertex the press grabbed - resolved by GEOMETRY, like
+    the artist chain does it, because the re-read may have renumbered them."""
+    grabbed_at = handles_by_id.get(handle_id)
+    if grabbed_at is None or not refs:
+        return None
+    return min(range(len(refs)), key=lambda k: _dist(refs[k][0], grabbed_at))
+
+
+def _drag_fill(elements, refs, index, pos):
+    """Put boundary vertex `index` at `pos`, its control points in tow."""
+    if refs is None or not 0 <= index < len(refs):
+        return
+    point, slots = refs[index]
+    delta = (pos[0] - point[0], pos[1] - point[1])
+    for element_index, slot in slots:
+        kind, pts = elements[element_index]
+        pts[slot] = pos
+        if kind == "cubic":
+            pts[1] = (pts[1][0] + delta[0], pts[1][1] + delta[1])
+        following = element_index + 1
+        if following < len(elements):
+            next_kind, next_pts = elements[following]
+            if next_kind == "cubic":
+                next_pts[0] = (next_pts[0][0] + delta[0], next_pts[0][1] + delta[1])
+
+
+def _replace_fill(view, session, commands):
+    """Rewrite the picked region's boundary. False = nothing was written."""
+    if commands == session["geometry"]["commands"]:
+        return False    # no-op guard: an unmoved drag must not touch the model
+    image = _scene_model(view).image_at(session["frame"], session["layer"], True)
+    if image is None:
+        return False
+    # path takes the command SEQUENCE itself (objectToPath iterates it); a
+    # {"commands": ...} wrapper raises TypeError.
+    if not image.set_fill_region(session["index"], path=commands):
+        return False
+    session["geometry"]["commands"] = commands
+    session["outline"] = _fill_outline(commands)
+    return True
 
 
 def _shift_commands(commands, delta):
@@ -991,7 +1119,7 @@ def _shift_commands(commands, delta):
     return out
 
 
-def _default_outline_items(session):
+def _selection_items(session):
     """The highlight: the object's own outline, drawn over itself."""
     color = _outline_color()
     width = float(_OUTLINE.get("outline_width", 2.0))
@@ -1008,18 +1136,12 @@ def _default_outline_items(session):
     return items
 
 
-def _push_default(view, session):
-    # Through overlay_stack: this tool owns ONE slot of the composed display
-    # list. Re-merging auto_mapping's items by hand (and calling
-    # ui.set_overlay directly) predates the stack and would clobber every
-    # other owner's overlays - guides, creases, previews.
-    _animean().ui.set_edit_handles(view, [])
-    items = _default_outline_items(session) if session is not None else []
-    overlay_stack.set_items(view, "edit_tool", items)
+def _pick(view, pos, zoom, message):
+    """Pick whatever is under the cursor and show it in the current mode.
 
-
-def _pick_default(view, pos, zoom, message):
-    """Outline whatever is under the cursor and claim the drag."""
+    Hit-test priority is strokes first, fills second, in EVERY mode: the ink
+    is what the cursor is aimed at, and a region always sits under some of it.
+    """
     scene = _scene_model(view)
     frame = max(scene.current_frame(), 0)
     session = None
@@ -1031,12 +1153,11 @@ def _pick_default(view, pos, zoom, message):
             cell = scene.cell_to_dict(layer, frame, True, POLY_STEP)
             stroke = cell["image"]["strokes"][index]
             session = {
-                "mode": "default", "kind": "stroke", "frame": frame,
+                "kind": "stroke", "frame": frame,
                 "layer": layer, "index": index, "geometry": geometry,
                 "elements": _elements(geometry["commands"]) if geometry["commands"] else None,
                 "points": list(geometry["points"]),
                 "outline": _stroke_polylines(stroke),
-                "moved": False, "changed": False,
             }
     if session is None:
         fill = _find_fill(scene, frame, pos)
@@ -1045,22 +1166,67 @@ def _pick_default(view, pos, zoom, message):
             geometry = _fill_geometry(scene, frame, layer, index)
             if geometry is not None:
                 session = {
-                    "mode": "default", "kind": "fill", "frame": frame,
+                    "kind": "fill", "frame": frame,
                     "layer": layer, "index": index, "geometry": geometry,
+                    "elements": _elements(geometry["commands"]),
                     "outline": geometry["polylines"],
-                    "moved": False, "changed": False,
                 }
     if session is None:
         _clear(view)
         return
-    session["press_pos"] = pos
-    session["applied"] = (0.0, 0.0)
+    session.update({"press_pos": pos, "applied": (0.0, 0.0),
+                    "moved": False, "changed": False,
+                    "chain": None, "chain0": None, "drag_target": None,
+                    "fill_refs": None, "vertex": None})
     _SESSIONS[view] = session
+    # Re-registering moves this hook to the END of the dispatch order, AFTER
+    # auto_mapping's historyrestore hook (which re-pushes the overlay and
+    # would otherwise clobber the tangent arms we re-draw on restore).
     python_hooks.set_hook(_history_restored, historyrestore=True)
-    _push_default(view, session)
-    # Claim the gesture: this press becomes a drag, so click-and-move grabs
-    # the object in one motion, the way every drawing app does it.
-    message["grab"] = "default:body"
+    _rebuild(view, session, zoom)
+    if _STATE["mode"] == "default":
+        # Claim the gesture: this press becomes a drag, so click-and-move grabs
+        # the object in one motion, the way every drawing app does it.
+        message["grab"] = "default:body"
+    print(f"[edit_tool] editing {session['kind']} {session['index']} on layer "
+          f"{session['layer']} ({_STATE['mode']} mode; min spacing "
+          f"{perceptual_min_separation_px():.1f}px on screen)")
+
+
+def _refresh_session(view, session):
+    """Re-read the picked object from the model. False = it is not there.
+
+    Identity, not just presence: an undo can renumber strokes and regions, and
+    the index alone would then describe an innocent bystander.
+    """
+    scene = _scene_model(view)
+    if session["kind"] == "fill":
+        geometry = _fill_geometry(scene, session["frame"], session["layer"],
+                                  session["index"])
+        if geometry is None or geometry["id"] != session["geometry"]["id"]:
+            return False
+        session["geometry"] = geometry
+        session["elements"] = _elements(geometry["commands"])
+        session["outline"] = geometry["polylines"]
+        return True
+    refreshed = _fetch(scene, session["frame"], session["layer"], session["index"])
+    if refreshed is None or refreshed["id"] != session["geometry"]["id"] \
+            or refreshed["property"] != session["geometry"]["property"]:
+        return False
+    cell = scene.cell_to_dict(session["layer"], session["frame"], True, POLY_STEP)
+    session["geometry"] = refreshed
+    session["elements"] = _elements(refreshed["commands"]) if refreshed["commands"] else None
+    session["points"] = list(refreshed["points"])
+    session["outline"] = _stroke_polylines(cell["image"]["strokes"][session["index"]])
+    return True
+
+
+def _revalidate(view, session):
+    """_refresh_session, but a scene that cannot be read counts as gone."""
+    try:
+        return _refresh_session(view, session)
+    except Exception:
+        return False
 
 
 def _translate_default(view, session, delta):
@@ -1123,7 +1289,7 @@ def _default_drag(view, session, phase, pos):
         session["moved"] = True
     if session.get("moved") and _translate_default(view, session, delta):
         session["changed"] = True
-    _push_default(view, session)
+    _push(view, [], [])
     _animean().ui.refresh()
     if phase != "release":
         return
@@ -1137,15 +1303,13 @@ def _default_drag(view, session, phase, pos):
     session["changed"] = False
     session["press_pos"] = pos
     session["applied"] = (0.0, 0.0)
-    if session["kind"] == "stroke":
-        refreshed = _fetch(_scene_model(view), session["frame"],
-                           session["layer"], session["index"])
-        if refreshed is None:
-            _clear(view)
-            return
-        session["geometry"] = refreshed
-        session["elements"] = _elements(refreshed["commands"]) if refreshed["commands"] else None
-        session["points"] = list(refreshed["points"])
+    # Re-read the object as the model now holds it, so the next drag - or a
+    # mode switch - starts from truth rather than from this session's
+    # arithmetic.
+    if not _revalidate(view, session):
+        _clear(view)
+        return
+    _push(view, [], [])
 
 
 # --- hook handlers -----------------------------------------------------------
@@ -1172,10 +1336,7 @@ def _handle_event(message):
             # while the user was aiming at a guide.
             _clear(view)
             return
-        if _STATE["mode"] == "default":
-            _pick_default(view, pos, zoom, message)
-        else:
-            _pick(view, pos, zoom)
+        _pick(view, pos, zoom, message)
         return
     if phase == "arm":
         # Arming the Arrow shows nothing until something is picked; a stale
@@ -1196,23 +1357,21 @@ def _handle_event(message):
         return
 
     handle_id = message.get("handle") or ""
-    if session.get("mode") == "default":
+    if _STATE["mode"] == "default":
         # The default mode owns no handles: its only gesture is the body
         # drag the pick claimed.
         if phase in ("move", "release") and handle_id.startswith("default:"):
             _default_drag(view, session, phase, pos)
+        return
+    if session["kind"] == "fill":
+        _fill_drag(view, session, phase, handle_id, pos, zoom)
         return
     if phase == "press":
         # Between the pick and this press the model may have moved under us -
         # an undo, a redo, another tool. The index alone would then point at a
         # DIFFERENT stroke and the drag would edit an innocent bystander, so
         # re-read and only proceed if it is still the same stroke.
-        current = _fetch(_scene_model(view), session["frame"],
-                         session["layer"], session["index"])
-        if current is None or current["id"] != session["geometry"]["id"] \
-                or current["property"] != session["geometry"]["property"]:
-            _clear(view)
-            return
+        #
         # Where did the user actually grab? Resolved by GEOMETRY, not by the
         # id: ids are positions in a chain the previous drag may have
         # re-shaped. The pushed handle's position is remembered at push time
@@ -1220,9 +1379,9 @@ def _handle_event(message):
         grabbed_at = session.get("handles_by_id", {}).get(handle_id)
         grabbed_kind = "anchor" if handle_id.startswith("a") \
             else "tip" if handle_id.startswith("h") else "any"
-        session["geometry"] = current
-        session["elements"] = _elements(current["commands"]) if current["commands"] else None
-        session["points"] = list(current["points"])
+        if not _revalidate(view, session):
+            _clear(view)
+            return
         session["drag_target"] = None
         if _STATE["mode"] == "artist":
             _rebuild(view, session, zoom)   # refresh the chain from truth
@@ -1279,11 +1438,17 @@ def _handle_event(message):
                 # the stroke visibly snapped back.
                 if _STATE["mode"] == "artist" and session.get("chain"):
                     session["geometry"]["commands"] = _chain_commands(session["chain"])
+                    flat = _chain_flat(session["chain"])
                 elif session["elements"] is not None:
                     session["geometry"]["commands"] = _elements_to_commands(session["elements"])
+                    flat = _flatten_elements(session["elements"])
                 else:
                     session["geometry"]["commands"] = []
                     session["geometry"]["points"] = list(session["points"])
+                    flat = list(session["points"])
+                # The highlight is glued to the ink: left at the pre-drag shape
+                # it would trail the stroke like a ghost of where it was.
+                session["outline"] = [flat] if len(flat) >= 2 else []
         if phase == "release":
             if session.get("changed"):
                 try:
@@ -1292,14 +1457,10 @@ def _handle_event(message):
                     pass
             # Re-read the stroke as the model now holds it, so the next drag
             # starts from truth rather than from this session's arithmetic.
-            refreshed = _fetch(_scene_model(view), session["frame"],
-                               session["layer"], session["index"])
-            if refreshed is None:
+            if not _revalidate(view, session):
                 _clear(view)
                 return
-            session["geometry"] = refreshed
-            session["elements"] = _elements(refreshed["commands"]) if refreshed["commands"] else None
-            session["points"] = list(refreshed["points"])
+            refreshed = session["geometry"]
             if session.get("changed") and _STATE["mode"] == "artist":
                 # The model now holds exactly the chain we wrote; showing that
                 # chain verbatim keeps the anchor set stable instead of
@@ -1333,94 +1494,89 @@ def _rebuild_after_edit(view, session, zoom):
         _push(view, handles, arms)
 
 
-def _pick(view, pos, zoom):
-    scene = _scene_model(view)
-    frame = max(scene.current_frame(), 0)
-    found = _find_stroke(scene, frame, pos, zoom)
-    if found is None:
+def _fill_drag(view, session, phase, handle_id, pos, zoom):
+    """One boundary-vertex gesture on a picked fill region.
+
+    The press snapshots the region as the model holds it; every move re-applies
+    the drag to THAT snapshot, so a long drag never accumulates its own
+    rounding and a drag that returns to the start returns the boundary with it
+    - the same discipline the stroke translate uses.
+    """
+    if phase == "press":
+        grabbed = session.get("handles_by_id", {})
+        if not _revalidate(view, session):
+            _clear(view)
+            return
+        elements = _elements(session["geometry"]["commands"])
+        session["elements"] = elements
+        session["elements0"] = _copy_elements(elements)
+        session["fill_refs"] = _fill_vertex_refs(elements)
+        session["vertex"] = _fill_vertex_index(handle_id, session["fill_refs"], grabbed)
+        session["press_pos"] = pos
+        session["moved"] = False
+        session["changed"] = False
+        _rebuild(view, session, zoom)
+        return
+    if phase not in ("move", "release"):
+        return
+    press_pos = session.get("press_pos") or pos
+    if _dist(pos, press_pos) > 1e-9:
+        session["moved"] = True
+    # A press-and-release without motion must be a NO-OP: rewriting the path
+    # and committing "Edit Fill" for a plain click would burn the redo stack
+    # for nothing.
+    if session.get("moved") and session.get("vertex") is not None:
+        elements = _copy_elements(session["elements0"])
+        _drag_fill(elements, session["fill_refs"], session["vertex"], pos)
+        session["elements"] = elements
+        if _replace_fill(view, session, _elements_to_commands(elements)):
+            session["changed"] = True
+        _animean().ui.refresh()
+    if phase != "release":
+        _rebuild(view, session, zoom)
+        return
+    if session.get("changed"):
+        try:
+            _animean().ui.history_commit("Edit Fill", view)
+        except Exception:
+            pass
+    session["moved"] = False
+    session["changed"] = False
+    session["vertex"] = None
+    session["fill_refs"] = None
+    if not _revalidate(view, session):
         _clear(view)
         return
-    layer, index = found
-    geometry = _fetch(scene, frame, layer, index)
-    if geometry is None:
-        _clear(view)
-        return
-    session = {
-        "frame": frame,
-        "layer": layer,
-        "index": index,
-        "geometry": geometry,
-        "elements": _elements(geometry["commands"]) if geometry["commands"] else None,
-        "points": list(geometry["points"]),
-        "kept": None,
-        "dense": None,
-        "changed": False,
-    }
-    _SESSIONS[view] = session
-    # Re-registering moves this hook to the END of the dispatch order, AFTER
-    # auto_mapping's historyrestore hook (which re-pushes the overlay and
-    # would otherwise clobber the tangent arms we re-draw on restore).
-    python_hooks.set_hook(_history_restored, historyrestore=True)
     _rebuild(view, session, zoom)
-    mode = _STATE["mode"]
-    print(f"[edit_tool] editing stroke {index} on layer {layer} ({mode} mode; "
-          f"min spacing {perceptual_min_separation_px():.1f}px on screen)")
+
+
+def _reset_gesture(session):
+    """Drop everything a live drag was carrying; keep WHAT is picked."""
+    session["chain"] = None
+    session["chain0"] = None
+    session["drag_target"] = None
+    session["fill_refs"] = None
+    session["vertex"] = None
+    session["applied"] = (0.0, 0.0)
+    session["moved"] = False
+    session["changed"] = False
 
 
 def _history_restored(message):
     """Undo/redo/jump replaced the model: the session and the handles on
-    screen still describe the OLD stroke. Left alone, the handles float at
+    screen still describe the OLD object. Left alone, the handles float at
     stale positions and the next press resolves its grab against geometry
     that no longer exists - which is exactly the reported "handles computed
-    wrong after undo". Revalidate against the restored model: same stroke ->
-    rebuild the handles from restored truth; anything else -> clear."""
+    wrong after undo". Revalidate against the restored model: same object ->
+    rebuild from restored truth; anything else -> clear."""
     view = message.get("view") or "main"
     session = _SESSIONS.get(view)
     if session is None:
         return
-    if session.get("mode") == "default":
-        # Undo/redo moved the object (or removed it): re-outline from the
-        # restored model rather than leaving a highlight floating.
-        if session["kind"] == "fill":
-            geometry = _fill_geometry(_scene_model(view), session["frame"],
-                                      session["layer"], session["index"])
-            if geometry is None:
-                _clear(view)
-                return
-            session["geometry"] = geometry
-            session["outline"] = geometry["polylines"]
-        else:
-            refreshed = _fetch(_scene_model(view), session["frame"],
-                               session["layer"], session["index"])
-            if refreshed is None:
-                _clear(view)
-                return
-            cell = _scene_model(view).cell_to_dict(session["layer"],
-                                                   session["frame"], True, POLY_STEP)
-            session["geometry"] = refreshed
-            session["elements"] = _elements(refreshed["commands"]) if refreshed["commands"] else None
-            session["points"] = list(refreshed["points"])
-            session["outline"] = _stroke_polylines(
-                cell["image"]["strokes"][session["index"]])
-        session["applied"] = (0.0, 0.0)
-        _push_default(view, session)
-        return
-    try:
-        refreshed = _fetch(_scene_model(view), session["frame"],
-                           session["layer"], session["index"])
-    except Exception:
-        refreshed = None
-    if refreshed is None or refreshed["id"] != session["geometry"]["id"] \
-            or refreshed["property"] != session["geometry"]["property"]:
+    if not _revalidate(view, session):
         _clear(view)
         return
-    session["geometry"] = refreshed
-    session["elements"] = _elements(refreshed["commands"]) if refreshed["commands"] else None
-    session["points"] = list(refreshed["points"])
-    session["chain0"] = None
-    session["drag_target"] = None
-    session["moved"] = False
-    session["changed"] = False
+    _reset_gesture(session)
     _rebuild(view, session, _STATE["last_zoom"])
 
 
@@ -1491,8 +1647,10 @@ def _outline_setting_changed(message):
     else:
         return
     for view, session in list(_SESSIONS.items()):
-        if session.get("mode") == "default":
-            _push_default(view, session)
+        # Only the overlay changed colour; recompose it from what is already
+        # on screen rather than re-running a fit for a slider tick.
+        overlay_stack.set_items(view, "edit_tool",
+                                _overlay_items(session, session.get("arms") or []))
     print(f"[edit_tool] {name} -> {_OUTLINE[name]}")
 
 
@@ -1502,21 +1660,21 @@ def _option_changed(message):
     value = str(message.get("value", "")).lower()
     if value not in MODES or _STATE["mode"] == value:
         return
-    previous = _STATE["mode"]
     _STATE["mode"] = value
-    # A session built for one mode does not describe another: the default
-    # mode owns an outline and no handles, the others own handles and no
-    # outline. Rebuilding across that boundary left draggable handles over a
-    # default session (whose next release committed a no-op "Edit Stroke"),
-    # so a mode switch ENDS the session; the next click starts the right one.
-    if (previous == "default") != (value == "default"):
-        for view in list(_SESSIONS):
-            _clear(view)
-        print(f"[edit_tool] edit mode -> {value}")
-        return
+    # The pick SURVIVES the switch. The three modes are three views of the same
+    # object - an outline, a fitted chain, the stored vertices - so the new
+    # mode re-derives its own affordances from what is already picked. Ending
+    # the session here (which is what it used to do across the default
+    # boundary) made every mode switch cost a re-click, and the selection the
+    # user was looking at vanished with it. Only the mid-gesture state is
+    # dropped: an option event cannot arrive inside a drag.
     # Option events carry no zoom; the last handle event does.
     zoom = _STATE["last_zoom"]
     for view, session in list(_SESSIONS.items()):
+        if not _revalidate(view, session):
+            _clear(view)
+            continue
+        _reset_gesture(session)
         _rebuild(view, session, zoom)
     print(f"[edit_tool] edit mode -> {value}")
 

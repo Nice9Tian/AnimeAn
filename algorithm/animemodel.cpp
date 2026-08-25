@@ -1073,6 +1073,45 @@ bool AnimeSceneModel::isFillLayer(int layerIndex) const
     return layerType(layerIndex) == AnimeColumnType::Fill;
 }
 
+int AnimeSceneModel::layerParentId(int layerIndex) const
+{
+    if (layerIndex < 0 || layerIndex >= m_scene.xsheet.columns.size()) {
+        return 0;
+    }
+    // Through normalize, so a caller never sees an id that names nothing.
+    const_cast<AnimeSceneModel *>(this)->normalizeLayerTreeInternal();
+    return m_scene.xsheet.columns[layerIndex].parentLayerId;
+}
+
+void AnimeSceneModel::setLayerParentId(int layerIndex, int parentLayerId)
+{
+    if (layerIndex < 0 || layerIndex >= m_scene.xsheet.columns.size()) {
+        return;
+    }
+    // Self-parenting is the one cycle a single assignment can create, and it
+    // would make the panel try to nest a row under itself.
+    if (parentLayerId > 0 && parentLayerId == m_scene.xsheet.columns[layerIndex].id) {
+        return;
+    }
+    m_scene.xsheet.columns[layerIndex].parentLayerId = parentLayerId > 0 ? parentLayerId : 0;
+}
+
+QVector<int> AnimeSceneModel::childLayerIndices(int parentLayerIndex) const
+{
+    QVector<int> children;
+    // layerIdAt normalizes, so dangling parent ids are already zeroed here.
+    const int parentId = layerIdAt(parentLayerIndex);
+    if (parentId <= 0) {
+        return children;
+    }
+    for (int i = 0; i < m_scene.xsheet.columns.size(); ++i) {
+        if (m_scene.xsheet.columns[i].parentLayerId == parentId) {
+            children.append(i);
+        }
+    }
+    return children;
+}
+
 QString AnimeSceneModel::scriptData() const
 {
     return m_scene.scriptData;
@@ -1252,11 +1291,62 @@ void AnimeSceneModel::normalizeLayerTreeInternal()
         m_scene.nextColumnId = std::max(m_scene.nextColumnId, column.id + 1);
     }
     QSet<int> liveLayerIds;
+    bool anyParentLink = false;
     for (AnimeColumn &column : m_scene.xsheet.columns) {
         if (column.id <= 0) {
             column.id = m_scene.nextColumnId++;
         }
         liveLayerIds.insert(column.id);
+        anyParentLink = anyParentLink || column.parentLayerId != 0;
+    }
+
+    // 1b. parent links must name a LIVE column, must not name themselves and
+    //     must not close a loop. Linear (each column is walked once and then
+    //     settled), and skipped outright when nothing is parented - this runs
+    //     on the panel hot path, where every layerTree() and every layerIdAt()
+    //     comes through here, and a scene with no tracked layer must not pay
+    //     an allocation for the feature.
+    if (anyParentLink) {
+        QHash<int, int> indexById;
+        indexById.reserve(m_scene.xsheet.columns.size());
+        for (int i = 0; i < m_scene.xsheet.columns.size(); ++i) {
+            indexById.insert(m_scene.xsheet.columns[i].id, i);
+        }
+        // 0 = not walked yet, 1 = on the chain being walked, 2 = settled.
+        QVector<char> parentState(m_scene.xsheet.columns.size(), 0);
+        QVector<int> chain;
+        for (int start = 0; start < m_scene.xsheet.columns.size(); ++start) {
+            if (parentState[start] != 0) {
+                continue;
+            }
+            chain.clear();
+            int at = start;
+            while (at >= 0 && parentState[at] == 0) {
+                parentState[at] = 1;
+                chain.append(at);
+                AnimeColumn &column = m_scene.xsheet.columns[at];
+                if (column.parentLayerId <= 0 || column.parentLayerId == column.id) {
+                    column.parentLayerId = 0;
+                    at = -1;
+                    break;
+                }
+                const auto it = indexById.constFind(column.parentLayerId);
+                if (it == indexById.constEnd()) {
+                    column.parentLayerId = 0;
+                    at = -1;
+                    break;
+                }
+                at = it.value();
+            }
+            if (at >= 0 && parentState[at] == 1) {
+                // The chain closed back onto itself: cut only the link that
+                // closed it, so every other parenting the user set survives.
+                m_scene.xsheet.columns[chain.last()].parentLayerId = 0;
+            }
+            for (int index : chain) {
+                parentState[index] = 2;
+            }
+        }
     }
 
     // 2. drop dead references, duplicates and emptied groups

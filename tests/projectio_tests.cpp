@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QDebug>
+#include <QJsonArray>
 #include <QJsonObject>
 
 namespace {
@@ -196,6 +197,84 @@ int main(int argc, char *argv[])
     ops.setFrameName(1, QStringLiteral("7"));
     check(ops.nextDuplicateName(0) == QStringLiteral("1-b"),
           "a duplicate chain reused a taken suffix");
+
+    // Layer parenting (AnimeColumn::parentLayerId). A tracked fill layer has
+    // to come back tracking the SAME column after a round-trip, which is the
+    // whole argument for keying the link by stable id.
+    AnimeSceneModel parented;
+    parented.initializeScene(2, 2);
+    parented.setTextId(QStringLiteral("main_paint_view"));
+    parented.setLayerName(0, QStringLiteral("Ink"));
+    parented.setLayerName(1, QStringLiteral("Ink fill"));
+    const int inkId = parented.layerIdAt(0);
+    check(inkId > 0, "the line column never got an id");
+    parented.setLayerParentId(1, inkId);
+    check(parented.layerParentId(1) == inkId, "the parent link did not stick");
+    check(parented.childLayerIndices(0) == QVector<int>{1},
+          "childLayerIndices did not find the tracked layer");
+    check(parented.layerParentId(0) == 0, "an untouched column reads as parented");
+
+    AnimeSceneModel loadedParented;
+    AnimeSceneModel unusedTexture;
+    QJsonObject parentedProject = projectToJson(parented, textureModel);
+    error.clear();
+    check(projectFromJson(parentedProject, &loadedParented, &unusedTexture, &error),
+          qPrintable(QStringLiteral("parented round-trip failed: %1").arg(error)));
+    check(loadedParented.layerParentId(1) == loadedParented.layerIdAt(0),
+          "a tracked layer did not come back tracking its parent");
+    check(loadedParented.childLayerIndices(0) == QVector<int>{1},
+          "a tracked layer is not listed as a child after a load");
+
+    // Optional field: a project where nobody parented anything must not grow
+    // the key, so files from earlier builds stay byte-identical.
+    check(!parentedProject.value(QStringLiteral("textureView")).toObject()
+               .value(QStringLiteral("xsheet")).toObject()
+               .value(QStringLiteral("columns")).toArray().at(0).toObject()
+               .contains(QStringLiteral("parentLayerId")),
+          "an unparented column wrote a parent link");
+
+    // A link to a column that is NOT saved (an internal, script-owned working
+    // layer) is dropped on the way out rather than written dangling - the
+    // same filter treeToJson applies to the layer tree.
+    AnimeSceneModel internalParent;
+    internalParent.initializeScene(2, 2);
+    internalParent.setTextId(QStringLiteral("main_paint_view"));
+    internalParent.setLayerInternal(0, true);
+    const int hiddenId = internalParent.layerIdAt(0);
+    internalParent.setLayerParentId(1, hiddenId);
+    check(internalParent.layerParentId(1) == hiddenId,
+          "the model refused a link to an internal column");
+    const QJsonArray savedColumns =
+        projectToJson(internalParent, textureModel)
+            .value(QStringLiteral("mainView")).toObject()
+            .value(QStringLiteral("xsheet")).toObject()
+            .value(QStringLiteral("columns")).toArray();
+    check(savedColumns.size() == 1, "the internal column was written to the file");
+    check(!savedColumns.at(0).toObject().contains(QStringLiteral("parentLayerId")),
+          "a link to an unsaved column was written dangling");
+
+    // And a link that survives into a file anyway (hand-edited, or a column
+    // deleted since) is zeroed by normalizeLayerTree rather than believed.
+    QJsonObject dangling = parentedProject;
+    QJsonObject danglingMain = dangling.value(QStringLiteral("mainView")).toObject();
+    QJsonObject danglingSheet = danglingMain.value(QStringLiteral("xsheet")).toObject();
+    QJsonArray danglingColumns = danglingSheet.value(QStringLiteral("columns")).toArray();
+    QJsonObject danglingColumn = danglingColumns.at(1).toObject();
+    danglingColumn[QStringLiteral("parentLayerId")] = 99999;
+    danglingColumns.replace(1, danglingColumn);
+    danglingSheet[QStringLiteral("columns")] = danglingColumns;
+    danglingMain[QStringLiteral("xsheet")] = danglingSheet;
+    dangling[QStringLiteral("mainView")] = danglingMain;
+    AnimeSceneModel loadedDangling;
+    error.clear();
+    check(projectFromJson(dangling, &loadedDangling, &unusedTexture, &error),
+          "a file with a dangling parent link was rejected outright");
+    check(loadedDangling.layerParentId(1) == 0,
+          "a dangling parent link survived the load");
+
+    // Self-parenting is refused at the setter, so it can never reach a file.
+    loadedDangling.setLayerParentId(1, loadedDangling.layerIdAt(1));
+    check(loadedDangling.layerParentId(1) == 0, "a column was allowed to parent itself");
 
     check(ensureProjectFileExtension(QStringLiteral("drawing")) == QStringLiteral("drawing.anproj"),
           "project extension was not appended");

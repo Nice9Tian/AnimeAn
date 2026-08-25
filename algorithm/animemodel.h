@@ -142,6 +142,13 @@ public:
     // 0 means "not assigned yet" (legacy project, or a column appended by a
     // path that predates ids); normalizeLayerTree fills those in.
     int id = 0;
+    // The column this one TRACKS, by stable id (0 = independent). Keyed by id
+    // for the same reason the group tree is: adding, deleting or reordering
+    // columns then needs no index fix-up. It is a display + policy relation
+    // (a fill column following a line column's topology), never a z-order or
+    // a grouping - the layer tree stays the only nesting the document stores.
+    // normalizeLayerTree zeroes ids that no longer name a live column.
+    int parentLayerId = 0;
     AnimeColumnType type = AnimeColumnType::Vector;
     bool visible = true;
     bool locked = false;
@@ -301,6 +308,14 @@ public:
     void setLayerOpacity(int layerIndex, qreal opacity);
     AnimeColumnType layerType(int layerIndex) const;
     bool isFillLayer(int layerIndex) const;
+
+    // --- layer parenting (AnimeColumn::parentLayerId) ---------------------
+    // Given and taken as a stable column ID, not an index: the whole point of
+    // the field is that a reorder cannot invalidate it. childLayerIndices
+    // answers in INDICES because every other layer call here does.
+    int layerParentId(int layerIndex) const;
+    void setLayerParentId(int layerIndex, int parentLayerId);
+    QVector<int> childLayerIndices(int parentLayerIndex) const;
 
     QString scriptData() const;
     void setScriptData(const QString &data);

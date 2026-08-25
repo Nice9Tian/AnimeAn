@@ -10,10 +10,18 @@ fill layers (scene.add_fill_layer). This module decides:
 - scope handling (a fill layer cannot bound itself, so Current upgrades to
   ALL - the built-in C++ fallback does the same silently),
 - what a repeated click inside an existing region does (recolor/update the
-  region instead of stacking a duplicate).
+  region instead of stacking a duplicate),
+- which line layer an auto-created fill layer TRACKS, and what tracking
+  means (re-derive the child's regions from their stored seeds whenever the
+  parent's topology changes).
 
 The click is offered through the "fillrequest" hook event BEFORE the
 built-in fill runs; setting message["handled"] suppresses the C++ fallback.
+
+Layer parenting is the C++ mechanism (AnimeColumn::parentLayerId, stored by
+stable column id and validated in normalizeLayerTree); it carries no
+behaviour of its own. Everything a parent link MEANS - when it is set, when
+it is honoured, when the user may cut it - is decided here.
 
 Extension point: a future fuzzy fill (closing small gaps so nearly-closed
 shapes still fill) replaces _region_path() here - snap gap endpoints /
@@ -22,6 +30,20 @@ not a per-frame interaction, so Python-side geometry is acceptable.
 """
 
 import python_hooks
+
+TO_INDEPENDENT_ACTION = "fill_to_independent"
+
+# Events after which a tracked child is re-derived. deletefinish covers both
+# Cut Line and Delete Line (C++ shares the name); historyrestore covers undo,
+# redo and opening a file.
+TOPOLOGY_EVENTS = ("linefinish", "erasefinish", "deletefinish", "historyrestore")
+
+# The re-trace writes fill regions, and a future dispatcher on that write (or
+# a refresh that re-enters through historyrestore) would call us again while
+# we are still inside the first pass. Module level, like auto_mapping's run
+# guard, because the recursion it stops is across hook dispatches, not within
+# one call.
+_RETRACE_GUARD = {"depth": 0}
 
 
 def _animean():
@@ -142,11 +164,26 @@ def _run_fill(scene, structure, frame, message):
     property_value = message.get("property") or ""
 
     target_layer = original_layer
+    created_layer = False
     if not original_is_fill:
         target_layer = scene.add_fill_layer()
+        created_layer = True
     if target_layer < 0:
         return
     scene.set_current_layer(target_layer)
+
+    if created_layer and source_layer >= 0:
+        # This fill layer was BORN from one line layer's topology, so it can
+        # follow it: park the parent link now, while the source is still
+        # unambiguous. Scope All has no single source to follow, and a fill
+        # layer the user already had keeps whatever parenting they chose -
+        # a click must never silently re-home an existing layer.
+        try:
+            scene.set_layer_parent_id(target_layer, scene.layer_id_at(source_layer))
+        except Exception as error:
+            # Never at the cost of the fill itself: the region below is the
+            # artwork, the parent link is only how it keeps up.
+            print(f"[fill] could not track the source layer: {error}")
 
     image = scene.image_at(frame, target_layer, True, "fill")
     if image is None:
@@ -198,8 +235,150 @@ def _run_fill(scene, structure, frame, message):
         animean.ui.history_commit("Fill", view)
 
 
+# --- tracked children: follow the parent layer's topology -------------------
+
+def _child_layer_indices(scene, structure, layer_index):
+    """Layers whose parent link names `layer_index`, in panel order.
+
+    Read off the structure rather than through child_layer_indices() so one
+    snapshot answers for every layer in the pass; the ids in it are stable
+    column ids, so nothing here shifts if a layer moves mid-gesture.
+    """
+    parent_id = scene.layer_id_at(layer_index)
+    if not parent_id:
+        return []
+    return [layer["index"] for layer in structure["layers"]
+            if layer.get("parent_layer_id") == parent_id]
+
+
+def _boundary_bounds(scene, frame, layer_index, cache):
+    """The wall bounds fill_boundary_path_at would trace against, cached per
+    scope for the pass. None when the frame carries no walls at all."""
+    if layer_index in cache:
+        return cache[layer_index]
+    bounds = scene.fill_boundary_bounds(frame, layer_index)
+    if bounds is not None:
+        bounds = (float(bounds["x"]), float(bounds["y"]),
+                  float(bounds["width"]), float(bounds["height"]))
+    cache[layer_index] = bounds
+    return bounds
+
+
+def _retrace_child(scene, frame, parent_index, child_index, cache):
+    """Re-derive every region of one tracked layer from its stored seed.
+
+    A seed that no longer resolves KEEPS its old path: topology tracking may
+    reshape artwork, never delete it. Returns how many regions changed.
+    """
+    image = scene.image_at(frame, child_index, False, "fill")
+    if image is None:
+        return 0
+    changed = 0
+    for info in image.fill_regions_info():
+        # The region's OWN stored scope decides which walls it is re-derived
+        # against, not the parent link: an all-layers fill living in a
+        # tracked layer is still bounded by every visible layer, and tracing
+        # it against one column would shrink it to nothing.
+        if info["based_on_all_layers"]:
+            if info["source_layer_index"] != -1:
+                continue  # flags disagree: leave a record we cannot read alone
+            layer_index = -1
+        elif info["source_layer_index"] not in (-1, parent_index):
+            continue  # bounded by some OTHER column; this event is not about it
+        else:
+            layer_index = parent_index
+        bounds = _boundary_bounds(scene, frame, layer_index, cache)
+        if bounds is None:
+            continue  # no walls left on the frame: keep what is drawn
+        seed_info = info["seed"] or {}
+        seed = (float(seed_info.get("x", 0.0)), float(seed_info.get("y", 0.0)))
+        path = _region_path(scene, frame, seed, bounds, layer_index)
+        if path is None:
+            continue
+        image.set_fill_region(info["index"], path=path)
+        changed += 1
+    return changed
+
+
+def _retrace_children(scene, message):
+    structure = scene.get_structure()
+    frame = scene.current_frame()
+    if frame < 0 or frame >= structure["frame_count"]:
+        return 0
+    cell = message.get("cell") or {}
+    parent_index = cell.get("layer")
+    if not isinstance(parent_index, int) or parent_index < 0:
+        return 0
+    children = _child_layer_indices(scene, structure, parent_index)
+    if not children:
+        return 0
+    cache = {}
+    changed = 0
+    for child_index in children:
+        changed += _retrace_child(scene, frame, parent_index, child_index, cache)
+    return changed
+
+
+def _topology_changed(message):
+    """The parent layer's lines moved; its tracked fills follow.
+
+    Deliberately commits NOTHING: this rides the gesture that caused it, so
+    the stroke and the re-traced fills land in one history entry - and a
+    restore-triggered pass must not push an entry on top of the restore.
+    """
+    if _RETRACE_GUARD["depth"]:
+        return
+    view = message.get("view") or "main"
+    _RETRACE_GUARD["depth"] += 1
+    try:
+        scene = _scene_model(view)
+        if _retrace_children(scene, message):
+            _animean().ui.widget.refresh()
+    except Exception:
+        import traceback
+
+        print(f"[fill] tracked-layer retrace failed:\n{traceback.format_exc()}")
+    finally:
+        _RETRACE_GUARD["depth"] -= 1
+
+
+# --- context menu: cut the link, keep the artwork ---------------------------
+
+def _fill_menu_items(context):
+    """Offer the release entry on a row that tracks another layer."""
+    if context.get("kind") != "layer":
+        return []
+    if not int(context.get("parent_layer_id") or 0):
+        return []
+    return [{"name": TO_INDEPENDENT_ACTION, "title": "To Independent Layer"}]
+
+
+def _fill_menu_action(message):
+    if (message.get("action") or "") != TO_INDEPENDENT_ACTION:
+        return
+    layer = message.get("layer")
+    if not isinstance(layer, int) or layer < 0:
+        return
+    view = message.get("view") or "main"
+    try:
+        scene = _scene_model(view)
+    except Exception as error:
+        print(f"[fill] release skipped: {error}")
+        return
+    # Only the link goes: the regions stay exactly as they are drawn, which
+    # is the whole point of "keep the artwork, stop following".
+    scene.set_layer_parent_id(layer, 0)
+    animean = _animean()
+    animean.ui.layer.refresh()
+    animean.ui.history_commit("To Independent Layer", view)
+
+
 def register_hooks():
     python_hooks.set_hook(_fill_request, fillrequest=True)
+    python_hooks.set_hook(_topology_changed,
+                          **{event: True for event in TOPOLOGY_EVENTS})
+    python_hooks.set_hook(_fill_menu_action, layermenu=True)
+    python_hooks.register_menu_provider(_fill_menu_items)
 
 
 register_hooks()

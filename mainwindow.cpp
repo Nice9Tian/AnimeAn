@@ -29,7 +29,9 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
+#include <QBrush>
 #include <QCoreApplication>
+#include <QHash>
 #include <QDockWidget>
 #include <QDropEvent>
 #include <QDir>
@@ -3638,6 +3640,14 @@ void MainWindow::showLayerContextMenu(LayerPanel *panel, PaintOpenGLWidget *view
         context["owner_tag"] = ownerGroup > 0
             ? view->model().layerGroupTag(ownerGroup).toStdString()
             : std::string();
+        // Layer PARENTING (AnimeColumn::parentLayerId), which the panel
+        // renders as nesting: the id of the layer this row tracks (0 when
+        // independent) and how many rows track THIS one. A provider needs
+        // both to offer "stop tracking" on a child and nothing on a parent.
+        context["parent_layer_id"] =
+            layerIndex >= 0 ? view->model().layerParentId(layerIndex) : 0;
+        context["child_count"] =
+            layerIndex >= 0 ? view->model().childLayerIndices(layerIndex).size() : 0;
         py::list memberList;
         for (int index : members) {
             memberList.append(index);
@@ -3765,6 +3775,15 @@ void MainWindow::applyLayerPanelStructure(LayerPanel *panel, PaintOpenGLWidget *
                 if (node.layerId <= 0) {
                     continue;
                 }
+                nodes.append(node);
+                // A leaf can now HOLD rows: the panel nests a layer under the
+                // one it tracks. That nesting is a column property, so it is
+                // captured FLAT, at this level, never as tree children - a
+                // leaf has nowhere to put children in the model or the file
+                // format, and normalizeLayerTree would re-adopt them to the
+                // top level on the very next read.
+                nodes.append(capture(item));
+                continue;
             }
             nodes.append(node);
         }
@@ -3837,6 +3856,12 @@ void MainWindow::refreshLayerList(LayerPanel *panel, PaintOpenGLWidget *view, in
         bool visible = true;
         bool collapsed = false;
         int depth = 0;
+        // Synthesized from AnimeColumn::parentLayerId, not from the tree:
+        // `child` is "this row is nested under the layer it tracks" (dimmed
+        // and glyph-prefixed), `parent` is "this LEAF hosts rows", which is
+        // what lets a leaf occupy a slot in the parenting stack below.
+        bool child = false;
+        bool parent = false;
     };
     QVector<Row> rows;
     // A layer shows when it is not a script-owned working layer and it has a
@@ -3881,6 +3906,89 @@ void MainWindow::refreshLayerList(LayerPanel *panel, PaintOpenGLWidget *view, in
     };
     collect(model.layerTree(), 0);
 
+    // Nesting by PARENT LINK, synthesized here every refresh. A layer that
+    // tracks another (AnimeColumn::parentLayerId) is re-homed under its
+    // parent's row at depth+1 when that parent is listed on this frame, and
+    // is left where the tree put it otherwise - the relation is a column
+    // property, so it must never reach layerTree (applyLayerPanelStructure's
+    // capture flattens it back out for exactly this reason).
+    {
+        QHash<int, int> rowForLayer;
+        for (int i = 0; i < rows.size(); ++i) {
+            if (!rows[i].group) {
+                rowForLayer.insert(rows[i].layerIndex, i);
+            }
+        }
+        QVector<int> parentRow(rows.size(), -1);
+        QVector<QVector<int>> childRows(rows.size());
+        bool nested = false;
+        for (int i = 0; i < rows.size(); ++i) {
+            if (rows[i].group) {
+                continue;
+            }
+            const int parentId = model.layerParentId(rows[i].layerIndex);
+            if (parentId <= 0) {
+                continue;
+            }
+            const int parentIndex = model.layerIndexForId(parentId);
+            const int at = parentIndex >= 0 ? rowForLayer.value(parentIndex, -1) : -1;
+            if (at < 0 || at == i) {
+                continue;
+            }
+            parentRow[i] = at;
+            childRows[at].append(i);   // children keep their panel order
+            nested = true;
+        }
+        if (nested) {
+            QVector<Row> nestedRows;
+            nestedRows.reserve(rows.size());
+            // `emitted` is belt and braces: normalizeLayerTree already breaks
+            // parent cycles, and a loop here would be an infinite recursion
+            // inside a paint-adjacent path.
+            QVector<char> emitted(rows.size(), 0);
+            std::function<void(int, int)> emitRow = [&](int i, int depth) {
+                if (emitted[i]) {
+                    return;
+                }
+                emitted[i] = 1;
+                Row row = rows[i];
+                row.depth = depth;
+                row.child = parentRow[i] >= 0;
+                row.parent = !childRows[i].isEmpty();
+                if (row.child) {
+                    // Box-drawing rather than a corner-bracket symbol: it is
+                    // the glyph the widest set of installed fonts actually
+                    // carries, so the marker never degrades to a tofu box.
+                    row.name = QStringLiteral("└ ") + row.name;
+                }
+                nestedRows.append(row);
+                for (int childIndex : childRows[i]) {
+                    emitRow(childIndex, depth + 1);
+                }
+            };
+            for (int i = 0; i < rows.size(); ++i) {
+                if (parentRow[i] < 0) {
+                    emitRow(i, rows[i].depth);
+                }
+            }
+            // A group whose only listed member was re-homed elsewhere must not
+            // stay behind as an empty header - the same rule collect() applies
+            // to a group whose members are all off-frame. Backwards, so an
+            // outer group sees the inner one already gone.
+            for (int i = nestedRows.size() - 1; i >= 0; --i) {
+                if (!nestedRows[i].group) {
+                    continue;
+                }
+                const bool hasContent = i + 1 < nestedRows.size()
+                                        && nestedRows[i + 1].depth > nestedRows[i].depth;
+                if (!hasContent) {
+                    nestedRows.remove(i);
+                }
+            }
+            rows = nestedRows;
+        }
+    }
+
     const QTreeWidgetItem *currentItem = tree->currentItem();
     const int previousLayer = currentItem ? currentItem->data(0, Qt::UserRole).toInt() : -1;
 
@@ -3913,6 +4021,11 @@ void MainWindow::refreshLayerList(LayerPanel *panel, PaintOpenGLWidget *view, in
                    && depth == rows[i].depth;
     }
 
+    // A tracked child reads as secondary artwork, so it takes the palette's
+    // disabled text brush rather than a literal colour; an independent row
+    // takes the default brush back.
+    const QBrush childBrush = tree->palette().brush(QPalette::Disabled, QPalette::Text);
+
     int restoreScroll = -1;
     if (sameRows) {
         for (int i = 0; i < rows.size(); ++i) {
@@ -3925,6 +4038,10 @@ void MainWindow::refreshLayerList(LayerPanel *panel, PaintOpenGLWidget *view, in
                     item->setExpanded(!rows[i].collapsed);
                 }
                 continue;
+            }
+            const QBrush wanted = rows[i].child ? childBrush : QBrush();
+            if (item->foreground(0) != wanted) {
+                item->setForeground(0, wanted);
             }
             const Qt::CheckState state = rows[i].visible ? Qt::Checked : Qt::Unchecked;
             if (item->checkState(0) != state) {
@@ -3953,9 +4070,15 @@ void MainWindow::refreshLayerList(LayerPanel *panel, PaintOpenGLWidget *view, in
                 // the model has no way to express a layer inside a layer, and
                 // the widget happily drew one (complete with an expander) that
                 // no refresh could ever repair.
+                // Still not a drop target even when it HOSTS tracked children:
+                // parenting is set by the fill tool and cleared by the context
+                // menu, never by dragging one row onto another.
                 item->setFlags((item->flags() | Qt::ItemIsUserCheckable)
                                & ~Qt::ItemIsDropEnabled);
                 item->setCheckState(0, row.visible ? Qt::Checked : Qt::Unchecked);
+                if (row.child) {
+                    item->setForeground(0, childBrush);
+                }
             }
             if (row.depth > 0 && row.depth - 1 < stack.size() && stack[row.depth - 1]) {
                 stack[row.depth - 1]->addChild(item);
@@ -3963,9 +4086,16 @@ void MainWindow::refreshLayerList(LayerPanel *panel, PaintOpenGLWidget *view, in
                 tree->addTopLevelItem(item);
             }
             stack.resize(row.depth + 1);
-            stack[row.depth] = row.group ? item : nullptr;
+            // A LEAF that hosts tracked children takes a slot too, which is
+            // the one thing the groups-only stack could not express.
+            stack[row.depth] = (row.group || row.parent) ? item : nullptr;
             if (row.group) {
                 item->setExpanded(!row.collapsed);
+            } else if (row.parent) {
+                // No stored collapse state for a parent LEAF (the document
+                // only tracks it for groups), so a tracked child is visible
+                // by default rather than hidden behind an expander.
+                item->setExpanded(true);
             }
         }
         if (previousLayer == selectedRow) {
