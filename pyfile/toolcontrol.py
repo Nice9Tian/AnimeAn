@@ -65,6 +65,134 @@ def _slider(name, title, hook, minimum, maximum, value, row):
     }
 
 
+def _automapping_controls(start_row=0):
+    """The auto-mapping RUN POLICY block, shared by every mapping tool.
+
+    Curve Mode picks how the mapped strokes' geometry is rebuilt after the
+    (non-linear) warp; RDP is the decimation tolerance for the samples
+    inserted between original points (0.1px units; originals are never
+    decimated). The refer grid moved to each board's View menu.
+    MIGRATED OUT of this panel: Curve Mode now lives in the menu bar
+    (Auto Mapping > Calculation Mode) and every DISPLAY setting - the guide
+    axes, the crease and the lining - in Auto Mapping > Line Display
+    Settings. What stays here is what is neither: the sampling tolerance and
+    whether the fold is split at all.
+
+    Every value below is GLOBAL run policy held in module-level state in
+    auto_mapping (_RDP_STATE / _FOLD / _BRIDGE / _CURVE_MODE), so it means
+    the same thing whichever mapping tool is armed - which is why the guide
+    tools (midline, h/v center line, mapping area, additional line) show the
+    identical block instead of sending the user back to auto_mapping_2 to
+    change a setting that governs the run they are preparing.
+
+    `start_row` offsets the block so a caller can put rows of its own above
+    it; returns (controls, next_free_row).
+    """
+    try:
+        import auto_mapping
+        rdp_tenths = int(round(auto_mapping.rdp_eps() * 10))
+        split = "on" if auto_mapping.fold_split_enabled() else "off"
+        seal = "on" if auto_mapping.fold_seal_enabled() else "off"
+        sampled = auto_mapping.curve_mode() in ("polyline", "spline")
+        bridge = "on" if auto_mapping.bridge_enabled() else "off"
+        bridge_k = int(round(auto_mapping.bridge_tension() * 100))
+    except Exception:
+        rdp_tenths = 3
+        split = "on"
+        seal = "on"
+        sampled = False
+        bridge = "off"
+        bridge_k = 33
+    controls = []
+    # RDP decimates the samples inserted between original points, so it
+    # exists in the SAMPLED modes (polyline/spline) only - the bezier route
+    # transports handles instead and has nothing to decimate. The mode is a
+    # menu-bar choice, outside this panel, so the control cannot hide itself
+    # against a sibling: the panel is simply rebuilt when the mode changes
+    # (auto_mapping calls ui.refresh_tool_options) and the slider is only
+    # emitted when it has meaning.
+    if sampled:
+        controls.append(
+            _slider("rdp_eps", "RDP (x0.1px)", "rdp_eps",
+                    1, 20, rdp_tenths, start_row))
+    # Rows follow what was actually emitted: leaving the folds on fixed rows
+    # would open the panel with an empty gap where the slider is not.
+    fold_row = start_row + len(controls)
+    controls += [
+        # Refer Rect used to sit here. It moved onto each board's View
+        # menu: it is a display choice about a BOARD, not a property of
+        # the mapping tool, and a single shared checkbox could not answer
+        # it separately for the texture and the main view.
+        # Where the map turns orientation-reversing (a fold past ~135 deg
+        # or a U-turn) the pattern is mirrored - that is the BACK of the
+        # fold. Split sends it to its own layer; Crease draws the fold
+        # line so hiding the back still reads. Both change WHAT is
+        # produced, so they stay here; their colours do not.
+        {
+            "name": "fold_split",
+            "type": "check",
+            "title": "Front/Back Split",
+            "hook": "fold_split",
+            "value": split,
+            "row": fold_row,
+            "start_column": 0,
+            "end_column": 2,
+        },
+        {
+            "name": "fold_seal",
+            "type": "check",
+            "title": "Crease Line",
+            "hook": "fold_seal",
+            "value": seal,
+            "row": fold_row + 1,
+            "start_column": 0,
+            "end_column": 2,
+            "visible_when": {"name": "fold_split", "values": ["on"]},
+        },
+        # 补全拓扑 (Bezier Bridge): span each severed gap between two UV
+        # islands with a cubic built in Third space from the cut
+        # coordinates and trends (P0=A, P1=A+k*vA, P2=B-k*vB, P3=B).
+        # The slider is the tension k as a percentage of the straight
+        # Third-space distance |AB|; 33 is the classic smooth-join 1/3.
+        {
+            "name": "bridge_topology",
+            "type": "check",
+            "title": "补全拓扑",
+            "hook": "bridge_topology",
+            "value": bridge,
+            "row": fold_row + 2,
+            "start_column": 0,
+            "end_column": 2,
+        },
+    ]
+    bridge_slider = _slider("bridge_tension", "Bridge k (% |AB|)",
+                            "bridge_tension", 5, 100, bridge_k,
+                            fold_row + 3)
+    bridge_slider["visible_when"] = {"name": "bridge_topology",
+                                     "values": ["on"]}
+    controls.append(bridge_slider)
+    return controls, fold_row + 4
+
+
+def _texture_view_control(row):
+    """The texture board itself, embedded as the panel's last row.
+
+    The texture view stopped being a dock of its own (it is a sub-control
+    frame now), and a mapping tool is exactly the situation where the user
+    needs the pattern in front of them while the guide lines are drawn. The
+    shell resolves the name against the sub-control registry; if the frame is
+    floating or missing, ToolOptPanel puts a one-line note here instead.
+    """
+    return {
+        "name": "texture_view",
+        "type": "subwindow",
+        "title": "Texture",
+        "row": row,
+        "start_column": 0,
+        "end_column": 2,
+    }
+
+
 def options_for_tool(tool, state=None):
     state = state or {}
     tool = str(tool).lower()
@@ -246,106 +374,28 @@ def options_for_extra_tool(tool, state=None):
     state = state or {}
     tool = str(tool).lower()
 
-    if tool in ("h_center_line", "v_center_line"):
-        # Center lines are pen strokes, so they honour the same smoothing and
-        # width parameters as the pen tool.
-        controls = [
-            _slider("smooth", "Stabilizer", "smooth", 0, 100, _stabilizer(state), 0),
-            _slider("pen_width", "Width", "pen_width", 1, 50, int(state.get("pen_width", 5)), 1),
-        ]
-    elif tool == "auto_mapping_2":
-        # Curve Mode picks how the mapped strokes' geometry is rebuilt after the
-        # (non-linear) warp; RDP is the decimation tolerance for the samples
-        # inserted between original points (0.1px units; originals are never
-        # decimated). The refer grid moved to each board's View menu.
-        # MIGRATED OUT of this panel: Curve Mode now lives in the menu bar
-        # (Auto Mapping > Calculation Mode) and every DISPLAY setting - the
-        # guide axes, the crease and the lining - in Auto Mapping > Line
-        # Display Settings. What stays here is what is neither: the sampling
-        # tolerance, the debug grid, and whether the fold is split at all.
-        try:
-            import auto_mapping
-            rdp_tenths = int(round(auto_mapping.rdp_eps() * 10))
-            split = "on" if auto_mapping.fold_split_enabled() else "off"
-            seal = "on" if auto_mapping.fold_seal_enabled() else "off"
-            sampled = auto_mapping.curve_mode() in ("polyline", "spline")
-            bridge = "on" if auto_mapping.bridge_enabled() else "off"
-            bridge_k = int(round(auto_mapping.bridge_tension() * 100))
-        except Exception:
-            rdp_tenths = 3
-            split = "on"
-            seal = "on"
-            sampled = False
-            bridge = "off"
-            bridge_k = 33
-        controls = []
-        # RDP decimates the samples inserted between original points, so it
-        # exists in the SAMPLED modes (polyline/spline) only - the bezier route
-        # transports handles instead and has nothing to decimate. The mode is a
-        # menu-bar choice, outside this panel, so the control cannot hide itself
-        # against a sibling: the panel is simply rebuilt when the mode changes
-        # (auto_mapping calls ui.refresh_tool_options) and the slider is only
-        # emitted when it has meaning.
-        if sampled:
-            controls.append(
-                _slider("rdp_eps", "RDP (x0.1px)", "rdp_eps",
-                        1, 20, rdp_tenths, 0))
-        # Rows follow what was actually emitted: leaving the folds on rows 1
-        # and 2 would open the panel with an empty gap where the slider is not.
-        fold_row = len(controls)
-        controls += [
-            # Refer Rect used to sit here. It moved onto each board's View
-            # menu: it is a display choice about a BOARD, not a property of
-            # the mapping tool, and a single shared checkbox could not answer
-            # it separately for the texture and the main view.
-            # Where the map turns orientation-reversing (a fold past ~135 deg
-            # or a U-turn) the pattern is mirrored - that is the BACK of the
-            # fold. Split sends it to its own layer; Crease draws the fold
-            # line so hiding the back still reads. Both change WHAT is
-            # produced, so they stay here; their colours do not.
-            {
-                "name": "fold_split",
-                "type": "check",
-                "title": "Front/Back Split",
-                "hook": "fold_split",
-                "value": split,
-                "row": fold_row,
-                "start_column": 0,
-                "end_column": 2,
-            },
-            {
-                "name": "fold_seal",
-                "type": "check",
-                "title": "Crease Line",
-                "hook": "fold_seal",
-                "value": seal,
-                "row": fold_row + 1,
-                "start_column": 0,
-                "end_column": 2,
-                "visible_when": {"name": "fold_split", "values": ["on"]},
-            },
-            # 补全拓扑 (Bezier Bridge): span each severed gap between two UV
-            # islands with a cubic built in Third space from the cut
-            # coordinates and trends (P0=A, P1=A+k*vA, P2=B-k*vB, P3=B).
-            # The slider is the tension k as a percentage of the straight
-            # Third-space distance |AB|; 33 is the classic smooth-join 1/3.
-            {
-                "name": "bridge_topology",
-                "type": "check",
-                "title": "补全拓扑",
-                "hook": "bridge_topology",
-                "value": bridge,
-                "row": fold_row + 2,
-                "start_column": 0,
-                "end_column": 2,
-            },
-        ]
-        bridge_slider = _slider("bridge_tension", "Bridge k (% |AB|)",
-                                "bridge_tension", 5, 100, bridge_k,
-                                fold_row + 3)
-        bridge_slider["visible_when"] = {"name": "bridge_topology",
-                                         "values": ["on"]}
-        controls.append(bridge_slider)
+    if tool in ("midline", "h_center_line", "v_center_line",
+                "mapping_area", "additional_line", "auto_mapping_2"):
+        # Every mapping tool shows the SAME run-policy block. The settings it
+        # holds are global to auto_mapping, and the guide tools are where the
+        # user stands when they matter - arming h_center_line only to discover
+        # the fold split lives on another tool's panel was the complaint.
+        controls, row = _automapping_controls(0)
+        if tool in ("midline", "h_center_line", "v_center_line",
+                    "additional_line"):
+            # These four are pen strokes, so they honour the same smoothing
+            # and width parameters as the pen tool. They come AFTER the shared
+            # block so the block sits at the same place on every panel.
+            # (mapping_area is a single click - nothing tool-specific.)
+            controls += [
+                _slider("smooth", "Stabilizer", "smooth", 0, 100,
+                        _stabilizer(state), row),
+                _slider("pen_width", "Width", "pen_width", 1, 50,
+                        int(state.get("pen_width", 5)), row + 1),
+            ]
+            row += 2
+        # Last row, full width: the pattern the guide lines are mapping.
+        controls.append(_texture_view_control(row))
     elif tool in ("fukusato_line", "fukusato_cut"):
         # Handle / crease strokes are ordinary drawing: same knobs as the pen.
         controls = [
