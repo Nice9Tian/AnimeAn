@@ -1,16 +1,26 @@
-#ifndef CHILDPAINTWINDOW_H
-#define CHILDPAINTWINDOW_H
+#ifndef TEXTUREPANEL_H
+#define TEXTUREPANEL_H
 
-#include <QDockWidget>
 #include <QVector>
+#include <QWidget>
 
 class PaintOpenGLWidget;
+class PaintViewContainer;
 class QHBoxLayout;
 class QMenu;
 class QMenuBar;
 class QPushButton;
 
-class ChildPaintWindow : public QDockWidget
+// The texture board and everything that configures it, as ONE reparentable
+// widget: its own menu bar (File from the shell, Setting with the Changable
+// flags, Background and the script submenus), the script-button option row and
+// the board's container.
+//
+// It used to be a QDockWidget of its own. It is a plain QWidget now because it
+// has three possible homes - the central area's Texture page, a SubControlFrame
+// in a panel, or the frame floating - and a dock can only ever be one of them.
+// Nothing here knows which home it is in; the shell moves it.
+class TexturePanel : public QWidget
 {
     Q_OBJECT
 
@@ -25,9 +35,10 @@ public:
         bool checkable = true;
     };
 
-    explicit ChildPaintWindow(QWidget *parent = nullptr);
+    explicit TexturePanel(QWidget *parent = nullptr);
 
     PaintOpenGLWidget *paintWidget() const;
+    PaintViewContainer *container() const;
     bool changableTimeline() const;
     // "Changable Texture": when OFF the board's artwork is protected and only
     // the guide tools may draw. Replaces the old "Changable Layer" checkbox,
@@ -37,9 +48,14 @@ public:
     void setChangableTimeline(bool enabled);
     void setChangableTexture(bool enabled);
     void setScriptButtons(const QVector<ScriptButtonDefinition> &definitions);
+    // A board inside a tool-options row cannot ask for the full-size minimum:
+    // it would hold the whole right column open. Compact drops the floor to
+    // something a sub-control can honour; the container scales either way.
+    void setCompact(bool compact);
     // The menu bar and the Setting menu script menus are attached to
     // (MainWindow owns the Python side, so it builds them; this just hands
-    // over the places they go).
+    // over the places they go). Both travel WITH this widget, so a move
+    // between homes needs no re-attach.
     QMenuBar *menuBar() const;
     // Script menus become SUBMENUS of Setting rather than top-level menus:
     // everything that configures this board hangs off one entry.
@@ -56,6 +72,7 @@ private:
     void applyBackgroundMode(int mode);
 
     PaintOpenGLWidget *m_paintWidget = nullptr;
+    PaintViewContainer *m_container = nullptr;
     QMenuBar *m_menuBar = nullptr;
     QMenu *m_settingMenu = nullptr;
     QHBoxLayout *m_optionLayout = nullptr;
@@ -65,4 +82,4 @@ private:
     QAction *m_changableTextureAction = nullptr;
 };
 
-#endif // CHILDPAINTWINDOW_H
+#endif // TEXTUREPANEL_H

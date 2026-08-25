@@ -128,6 +128,15 @@ public:
     // True when the tool currently armed is allowed to modify this view.
     bool editingAllowed() const;
 
+    // Fill-paint mode. A Fill column refuses the pen and the eraser (it has no
+    // strokes for either to work on); this relaxes that ban for the two
+    // GESTURE paths only, and makes the eraser rub out fill REGIONS under the
+    // brush. Generic on purpose: C++ knows how to obey, and WHEN a board
+    // deserves it - which layer is current, what the pen means there - is
+    // policy and lives in pyfile/layer_tool_policy.py.
+    void setFillPaintMode(bool on);
+    bool fillPaintMode() const;
+
     void setUnboundedCanvas(bool unbounded);
     bool unboundedCanvas() const;
     // The page, in document coordinates. Comes from the scene's canvas size,
@@ -225,8 +234,13 @@ public:
     int deleteLayerGroup(int groupId);
     bool moveLayer(int fromIndex, int toIndex);
     int addFrame();
-    // Appends a frame that HOLDS the last one: same cells, so one drawing.
-    int addHoldFrame();
+    // Inserts a frame that HOLDS `row` directly after it: same cells, so one
+    // drawing. Directly after rather than at the end because a hold describes
+    // the frame it was asked for, not the sheet's last row.
+    int insertHoldFrameAfter(int row);
+    // An independent copy of `row` after its hold run: new frame ids, deep
+    // copied drawings, so the copy can be edited without changing the source.
+    int duplicateFrame(int row);
     bool deleteFrame(int frameIndex);
     bool moveFrame(int fromIndex, int toIndex);
     int addAsset(AnimeColumnType type = AnimeColumnType::Vector, const QString &name = QString());
@@ -402,6 +416,15 @@ private:
     AnimeColumn *currentColumn();
     const AnimeColumn *currentColumn() const;
     bool currentColumnEditable() const;
+    // The GESTURE-scoped reading of "may this column be marked on": editable,
+    // or an unlocked Fill column while fill-paint mode is on. Only the pen and
+    // eraser gesture paths ask it; fill, arrow, transfer, cut and delete-line
+    // keep asking currentColumnEditable, so their semantics are untouched.
+    bool columnAcceptsGesture() const;
+    // Fill regions of the current Fill column swept by the eraser brush,
+    // removed. Refuses outside fill-paint mode, so an ordinary erase can never
+    // reach a fill layer's artwork.
+    bool eraseFillRegionsBetween(const QPointF &from, const QPointF &to);
 
     Tool m_tool = Tool::Pen;
     FillScope m_fillScope = FillScope::CurrentLayer;
@@ -504,6 +527,7 @@ private:
     bool m_unboundedCanvas = false;
     BackgroundMode m_backgroundMode = BackgroundMode::White;
     bool m_contentEditable = true;
+    bool m_fillPaintMode = false;
     QStringList m_editableProperties;
     QPointF m_lastPanPos;
     SceneHistory m_history;

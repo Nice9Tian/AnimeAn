@@ -9,6 +9,7 @@
 #include <QPainterPath>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QTabWidget>
 #include <QtGlobal>
 #include <QtMath>
 #include <QVBoxLayout>
@@ -274,13 +275,34 @@ void ToolChip::setChecked(bool checked)
     update();
 }
 
+void ToolChip::setChipEnabled(bool enabled)
+{
+    if (isEnabled() == enabled) {
+        return;
+    }
+    if (!enabled) {
+        // A chip disabled with the pointer on it gets no leaveEvent, so it
+        // would keep painting hovered under the dim branch's nose.
+        m_hovered = false;
+        m_pressed = false;
+    }
+    setEnabled(enabled);
+    update();
+}
+
 void ToolChip::paintEvent(QPaintEvent *event)
 {
     Q_UNUSED(event);
 
     QColor ground;
     QColor ink;
-    if (m_checked) {
+    if (!isEnabled()) {
+        // Locked: the resting ground with dimmed ink. Checked loses to this on
+        // purpose - a locked chip is never the armed tool (the shell switches
+        // to Arrow), and painting it accented would say otherwise.
+        ground = AnimeTheme::color(AnimeTheme::Role::ChipRest);
+        ink = AnimeTheme::color(AnimeTheme::Role::TextDim);
+    } else if (m_checked) {
         ground = AnimeTheme::color(m_pressed ? AnimeTheme::Role::AccentActive
                                              : AnimeTheme::Role::Accent);
         // The armed glyph rides on the accent fill. ChipHoverFg is the near
@@ -374,11 +396,85 @@ ToolsPanel::ToolsPanel(QWidget *parent, bool showBuiltIns)
     m_layout->addStretch();
 
     connect(AnimeTheme::instance(), &AnimeTheme::themeChanged, this, [this]() { update(); });
+    SubControlRegistry::instance()->registerHost(this);
 }
 
 ToolsPanel::~ToolsPanel()
 {
+    SubControlRegistry::instance()->unregisterHost(this);
+    // A frame outlives the page it was dropped on; the layout must not take
+    // it down on the way out.
+    for (const QPointer<SubControlFrame> &frame : m_subControlFrames) {
+        if (frame && isAncestorOf(frame)) {
+            frame->park();
+        }
+    }
     delete ui;
+}
+
+QWidget *ToolsPanel::subControlHostWidget()
+{
+    return this;
+}
+
+QRect ToolsPanel::subControlPreviewRect(const QPoint &globalPos) const
+{
+    if (!isVisible()) {
+        return QRect();
+    }
+    const QPoint local = mapFromGlobal(globalPos);
+    if (!rect().contains(local)) {
+        return QRect();
+    }
+    // Under the buttons, where an appended row goes. The band is measured from
+    // the lowest thing on the page rather than from the widget's top, so the
+    // preview lands where the frame will.
+    const QMargins margins = m_layout ? m_layout->contentsMargins() : QMargins(0, 0, 0, 0);
+    int top = margins.top();
+    for (int index = 0; m_layout && index < m_layout->count(); ++index) {
+        if (QWidget *widget = m_layout->itemAt(index)->widget()) {
+            top = qMax(top, widget->geometry().bottom() + m_layout->spacing());
+        }
+    }
+    const int bandHeight = qMin(qMax(80, height() / 3), qMax(40, height() - top - margins.bottom()));
+    const QRect band(margins.left(), qMin(top, qMax(0, height() - bandHeight - margins.bottom())),
+                     qMax(40, width() - margins.left() - margins.right()), bandHeight);
+    return QRect(mapToGlobal(band.topLeft()), band.size());
+}
+
+void ToolsPanel::embedSubControl(SubControlFrame *frame)
+{
+    if (!frame || !m_layout) {
+        return;
+    }
+    frame->setParent(this);
+    // Ahead of the trailing stretch: the buttons keep the top of the column.
+    m_layout->insertWidget(qMax(0, m_layout->count() - 1), frame);
+    if (!m_subControlFrames.contains(frame)) {
+        m_subControlFrames.append(frame);
+    }
+}
+
+void ToolsPanel::revealSubControl(SubControlFrame *frame)
+{
+    if (!frame || !isAncestorOf(frame)) {
+        return;
+    }
+    // Asked of the tab widget rather than of the ParentWindow: the panel is a
+    // page widget and knows nothing about the dock that owns it, and
+    // setCurrentIndex is what raises the page AND announces the change.
+    for (QWidget *ancestor = parentWidget(); ancestor; ancestor = ancestor->parentWidget()) {
+        if (QTabWidget *tabs = qobject_cast<QTabWidget *>(ancestor)) {
+            const int index = tabs->indexOf(this);
+            if (index >= 0) {
+                tabs->setCurrentIndex(index);
+            }
+            return;
+        }
+        if (ancestor->isWindow()) {
+            return;
+        }
+    }
 }
 
 void ToolsPanel::buildBuiltInRail()
@@ -456,6 +552,15 @@ void ToolsPanel::setTool(PaintOpenGLWidget::Tool tool)
         if (button) {
             const QSignalBlocker blocker(button);
             button->setChecked(false);
+        }
+    }
+}
+
+void ToolsPanel::setToolEnabled(PaintOpenGLWidget::Tool tool, bool enabled)
+{
+    for (int index = 0; index < m_chips.size(); ++index) {
+        if (m_chipTools.at(index) == tool) {
+            m_chips[index]->setChipEnabled(enabled);
         }
     }
 }

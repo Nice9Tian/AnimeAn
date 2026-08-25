@@ -2,7 +2,9 @@
 #define TOOLSPANEL_H
 
 #include "openglwidget.h"
+#include "../subcontrolframe.h"
 
+#include <QPointer>
 #include <QVector>
 #include <QWidget>
 
@@ -38,6 +40,11 @@ public:
     // Silent by design: the shell echoes the armed tool back into every panel,
     // and a chip that re-emitted on that echo would loop.
     void setChecked(bool checked);
+    // Disabled = the tool is locked out on the current layer. Qt already stops
+    // delivering mouse events to a disabled widget, so this only has to drop
+    // the hover/press state the chip was holding when the lock arrived and
+    // repaint dim.
+    void setChipEnabled(bool enabled);
 
 signals:
     void clicked();
@@ -56,7 +63,7 @@ private:
     bool m_pressed = false;
 };
 
-class ToolsPanel : public QWidget
+class ToolsPanel : public QWidget, public SubControlHost
 {
     Q_OBJECT
 
@@ -80,10 +87,24 @@ public:
     ~ToolsPanel();
 
     void setTool(PaintOpenGLWidget::Tool tool);
+    // Locks (or releases) one built-in tool's chip. The shell owns the lock
+    // set; the panel only knows how to show one. Pages without built-ins and
+    // the extra text buttons are untouched.
+    void setToolEnabled(PaintOpenGLWidget::Tool tool, bool enabled);
     // Drops every check in this instance. The shell calls it on the pages that
     // did NOT make the selection, because exclusivity now spans three panels.
     void clearSelection();
     void setExtraTools(const QVector<ExtraToolDefinition> &tools);
+
+    // SubControlHost: a page adopts a dropped frame under its buttons, above
+    // the trailing stretch. Each page is its own host, and only the page the
+    // user can currently see answers a drop.
+    QWidget *subControlHostWidget() override;
+    QRect subControlPreviewRect(const QPoint &globalPos) const override;
+    void embedSubControl(SubControlFrame *frame) override;
+    // This panel IS a page of the Tools window, so a frame it holds is on
+    // screen only while that page is the selected one.
+    void revealSubControl(SubControlFrame *frame) override;
 
 signals:
     void toolSelected(PaintOpenGLWidget::Tool tool);
@@ -107,6 +128,9 @@ private:
     QVector<PaintOpenGLWidget::Tool> m_chipTools;
     QVector<QPushButton *> m_extraButtons;
     QVector<ExtraToolDefinition> m_extraTools;
+    // Frames dropped onto this page. Held only so the destructor can park them
+    // instead of taking them down with the layout.
+    QVector<QPointer<SubControlFrame>> m_subControlFrames;
 };
 
 #endif // TOOLSPANEL_H

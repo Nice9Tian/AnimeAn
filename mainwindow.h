@@ -15,14 +15,16 @@
 #include "selectionattention.h"
 
 class AssetPanel;
-class ChildPaintWindow;
+class CentralPaintArea;
 class ForcePadPanel;
 class HistoryPanel;
 class QAction;
 class QDockWidget;
 class LayerPanel;
 class ParentWindow;
-class TimelineWidget;
+class SubControlFrame;
+class TexturePanel;
+class TimelineWindow;
 class ToolsPanel;
 class PaintOpenGLWidget;
 class QLineEdit;
@@ -58,8 +60,28 @@ private:
     void syncEmbeddedPythonState();
     void runPythonInitializationScript();
     void createToolDocks();
+    // ui.set_locked_tools(view, [...]) landing here: remember the set, dim the
+    // matching painting chips and switch to Arrow when the armed tool has just
+    // been locked out from under the user.
+    void applyLockedTools(const QString &view, const QStringList &tools);
+    // Re-reads the ACTIVE board's lock set onto the shared rail. Also run when
+    // the active board changes: which set governs is a property of the board
+    // the next gesture lands on, not of the set that arrived last.
+    void refreshToolLockState();
+    // The tool travels as its underlying int - PaintOpenGLWidget is only
+    // forward-declared in this header, like m_reloadToolOptions below.
+    bool isToolLocked(int tool) const;
     void createListDocks();
-    void createChildPaintDock();
+    // The texture board's panel plus the sub-control frame that can carry it.
+    // Not a dock any more: the panel has three possible homes and the frame is
+    // the one that travels.
+    void createTexturePanel();
+    // Puts the texture panel wherever the single-ownership rule says it
+    // belongs right now: the central Texture page wins, then a live
+    // sub-control frame, then parked. Cheap to call - it does nothing when the
+    // answer has not changed, which matters because moving the panel
+    // re-creates the board's GL context.
+    void updateTextureHome();
     void populateChildViewButtons();
     // Script-defined menu-bar menus: Python describes them, C++ renders them
     // and reports the choice back. Rebuilt on every open so check marks stay
@@ -122,7 +144,25 @@ private:
     PaintOpenGLWidget *undoTargetView() const;
     PaintOpenGLWidget *redoTargetView() const;
     void applyHistoryRestore(PaintOpenGLWidget *view);
+    // Bring the texture board where the user can see it and make it active.
+    // Surfaces whichever home currently owns it: a live sub-control frame is
+    // raised, otherwise the central Texture page is selected.
     void showTextureView();
+    // The Windows-menu entry: show and raise the sub-control itself, floating
+    // it when it has never been embedded anywhere.
+    void showTextureSubControl();
+    // What mapping the texture board had to disturb, so a read-only caller can
+    // put it back. Empty page means nothing was moved.
+    struct TextureMappingRestore {
+        QString centralPage;
+        PaintOpenGLWidget *activeView = nullptr;
+    };
+    // Makes the texture board renderable for a framebuffer grab without
+    // changing anything the user chose, when it already is. When it cannot, it
+    // reports what it moved through `restore`.
+    void ensureTextureBoardMapped(TextureMappingRestore *restore = nullptr);
+    // Undoes exactly what ensureTextureBoardMapped reported, and nothing else.
+    void restoreTextureBoardMapping(const TextureMappingRestore &restore);
     void openTextureView();
     bool saveTextureView();
     bool saveTextureViewAs();
@@ -174,12 +214,20 @@ private:
     PaintOpenGLWidget *m_paintWidget = nullptr;
     PaintOpenGLWidget *m_childPaintWidget = nullptr;
     PaintOpenGLWidget *m_activePaintWidget = nullptr;
-    ChildPaintWindow *m_childPaintWindow = nullptr;
+    CentralPaintArea *m_centralArea = nullptr;
+    TexturePanel *m_texturePanel = nullptr;
+    // The travelling frame the texture panel rides in when it is not on the
+    // central Texture page. Owned by the sub-control registry, not by whatever
+    // panel it happens to be embedded in.
+    SubControlFrame *m_textureFrame = nullptr;
+    // Where the panel currently is, so a re-evaluation that lands on the same
+    // answer costs nothing. The GL context is re-created on every reparent.
+    QWidget *m_textureHome = nullptr;
+    bool m_updatingTextureHome = false;
     QVector<PaintOpenGLWidget *> m_paintViews;
     LayerPanel *m_mainLayerPanel = nullptr;
     LayerPanel *m_childLayerPanel = nullptr;
-    TimelineWidget *m_timeline = nullptr;
-    QAction *m_timelineAction = nullptr;
+    TimelineWindow *m_timeline = nullptr;
     AssetPanel *m_assetPanel = nullptr;
     ParentWindow *m_layerDock = nullptr;
     ParentWindow *m_assetDock = nullptr;
@@ -235,6 +283,13 @@ private:
     // PaintOpenGLWidget is only forward-declared here, so the tool travels as
     // its underlying int and the lambda casts it back.
     std::function<void(int)> m_reloadToolOptions;
+    // Arming a tool from outside the chip rail (the lock's Arrow fallback).
+    // Same int-carried-tool reason as m_reloadToolOptions.
+    std::function<void(int tool, bool reloadOptions)> m_applyTool;
+    // Locked tool NAMES per view. Kept per view because the binding is, but
+    // only the main board's set governs the rail: one tool is armed for the
+    // whole application, so two boards cannot disagree about it.
+    QHash<QString, QSet<QString>> m_lockedToolsByView;
     int m_currentToolForOptions = 0;
     int m_toolPenWidth = 5;
     bool m_toolFillAllLayers = false;

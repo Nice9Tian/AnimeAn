@@ -82,13 +82,12 @@ QStringList ParentWindow::pageNames() const
     return m_pageNames;
 }
 
-void ParentWindow::applyTheme()
+QString ParentWindow::tabStyleSheet(const QColor &highlightedText)
 {
     // Fusion paints tabs from the palette, but the selected tab has to read as
     // the ACTIVE page rather than as one more button, and that is an accent
     // the palette has no role for.
-    const QString style =
-        QStringLiteral("QTabWidget::pane { border: 0; background: %1; }"
+    return QStringLiteral("QTabWidget::pane { border: 0; background: %1; }"
                        "QTabBar { qproperty-drawBase: 0; background: %2; }"
                        "QTabBar::tab {"
                        " background: %3; color: %4;"
@@ -97,16 +96,20 @@ void ParentWindow::applyTheme()
                        "}"
                        "QTabBar::tab:hover { background: %6; color: %7; }"
                        "QTabBar::tab:selected { background: %8; color: %9; border-color: %8; }")
-            .arg(AnimeTheme::color(AnimeTheme::Role::Surface).name(),
-                 AnimeTheme::color(AnimeTheme::Role::Window).name(),
-                 AnimeTheme::color(AnimeTheme::Role::ChipRest).name(),
-                 AnimeTheme::color(AnimeTheme::Role::ChipRestFg).name(),
-                 AnimeTheme::color(AnimeTheme::Role::Divider).name(),
-                 AnimeTheme::color(AnimeTheme::Role::ChipHover).name(),
-                 AnimeTheme::color(AnimeTheme::Role::ChipHoverFg).name(),
-                 AnimeTheme::color(AnimeTheme::Role::Accent).name(),
-                 // Whatever reads on the accent in this mode - the same
-                 // decision the palette already made for a selected row.
-                 palette().color(QPalette::HighlightedText).name());
-    m_tabs->setStyleSheet(style);
+        .arg(AnimeTheme::color(AnimeTheme::Role::Surface).name(),
+             AnimeTheme::color(AnimeTheme::Role::Window).name(),
+             AnimeTheme::color(AnimeTheme::Role::ChipRest).name(),
+             AnimeTheme::color(AnimeTheme::Role::ChipRestFg).name(),
+             AnimeTheme::color(AnimeTheme::Role::Divider).name(),
+             AnimeTheme::color(AnimeTheme::Role::ChipHover).name(),
+             AnimeTheme::color(AnimeTheme::Role::ChipHoverFg).name(),
+             AnimeTheme::color(AnimeTheme::Role::Accent).name(),
+             // Whatever reads on the accent in this mode - the same decision
+             // the palette already made for a selected row.
+             highlightedText.name());
+}
+
+void ParentWindow::applyTheme()
+{
+    m_tabs->setStyleSheet(tabStyleSheet(palette().color(QPalette::HighlightedText)));
 }

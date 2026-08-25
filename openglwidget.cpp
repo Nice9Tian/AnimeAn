@@ -463,6 +463,16 @@ bool PaintOpenGLWidget::editingAllowed() const
     return m_editableProperties.contains(m_strokeProperty);
 }
 
+void PaintOpenGLWidget::setFillPaintMode(bool on)
+{
+    m_fillPaintMode = on;
+}
+
+bool PaintOpenGLWidget::fillPaintMode() const
+{
+    return m_fillPaintMode;
+}
+
 void PaintOpenGLWidget::setUnboundedCanvas(bool unbounded)
 {
     if (m_unboundedCanvas == unbounded) {
@@ -1701,17 +1711,30 @@ int PaintOpenGLWidget::addFrame()
     return row;
 }
 
-int PaintOpenGLWidget::addHoldFrame()
+int PaintOpenGLWidget::insertHoldFrameAfter(int row)
 {
-    const int row = m_model.addHoldFrame();
+    const int inserted = m_model.insertHoldFrameAfter(row);
     m_points.clear();
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
-    if (row >= 0) {
+    if (inserted >= 0) {
         commitHistory(QStringLiteral("Add Hold Frame"));
     }
     update();
-    return row;
+    return inserted;
+}
+
+int PaintOpenGLWidget::duplicateFrame(int row)
+{
+    const int duplicated = m_model.duplicateFrame(row);
+    m_points.clear();
+    m_hasCurrentStroke = false;
+    m_hasLastEraserPos = false;
+    if (duplicated >= 0) {
+        commitHistory(QStringLiteral("Duplicate Frame"));
+    }
+    update();
+    return duplicated;
 }
 
 bool PaintOpenGLWidget::deleteFrame(int frameIndex)
@@ -2997,13 +3020,22 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
         return;
     }
 
-    if (m_model.currentLayer() >= 0 && !currentColumnEditable()) {
+    if (m_model.currentLayer() >= 0 && !columnAcceptsGesture()) {
         event->accept();
         return;
     }
 
     const int assetCountBefore = m_model.assetCount();
-    if (!currentImage(true, AnimeColumnType::Vector)) {
+    // An EMPTY cell is materialized here, and imageAt stamps the asset type
+    // onto the column - so asking for a Vector cell on a Fill column would
+    // silently turn that column into a line layer. The pen only ever reaches a
+    // Fill column in fill-paint mode, where the stroke is about to become a
+    // region fill on that very layer.
+    const AnimeColumn *pressColumn = currentColumn();
+    const AnimeColumnType pressCellType =
+        (pressColumn && pressColumn->type == AnimeColumnType::Fill) ? AnimeColumnType::Fill
+                                                                   : AnimeColumnType::Vector;
+    if (!currentImage(true, pressCellType)) {
         event->accept();
         return;
     }
@@ -3355,7 +3387,14 @@ void PaintOpenGLWidget::finishCurrentStroke()
     }
     if (!m_currentStroke.points.isEmpty()) {
         const int assetCountBefore = m_model.assetCount();
-        if (VectorImageModel *image = currentImage(true, AnimeColumnType::Vector)) {
+        // Same cell-type care as the press: creating the cell here with the
+        // Vector type would stamp it onto a Fill column the gesture was
+        // deliberately allowed onto (see mousePressEvent).
+        const AnimeColumn *strokeColumn = currentColumn();
+        const AnimeColumnType strokeCellType =
+            (strokeColumn && strokeColumn->type == AnimeColumnType::Fill) ? AnimeColumnType::Fill
+                                                                         : AnimeColumnType::Vector;
+        if (VectorImageModel *image = currentImage(true, strokeCellType)) {
             const int strokeIndex = image->strokeCount();
             m_currentStroke.property = m_strokeProperty;
             image->addStroke(m_currentStroke);
@@ -3442,16 +3481,20 @@ bool PaintOpenGLWidget::pythonHookSendMessage(const QString &event, const QPoint
 
 bool PaintOpenGLWidget::eraseAt(const QPointF &pos)
 {
+    // Fill regions first, and outside the stroke gate: a Fill column carries
+    // no strokes, so the bounds test below would refuse the gesture and the
+    // eraser would come up empty on the very layer it was remapped for.
+    const bool fillsErased = eraseFillRegionsBetween(pos, pos);
     VectorImageModel *image = currentImage(false);
-    if (!image || !editingAllowed() || (m_model.currentLayer() >= 0 && !currentColumnEditable())) {
-        return false;
+    if (!image || !editingAllowed() || (m_model.currentLayer() >= 0 && !columnAcceptsGesture())) {
+        return fillsErased;
     }
 
     const qreal imageRadius = m_eraserRadius + m_penWidth;
     const QRectF eraserBounds(pos.x() - imageRadius, pos.y() - imageRadius,
                               imageRadius * 2.0, imageRadius * 2.0);
     if (!image->bounds().intersects(eraserBounds)) {
-        return false;
+        return fillsErased;
     }
 
     bool changed = false;
@@ -3461,14 +3504,15 @@ bool PaintOpenGLWidget::eraseAt(const QPointF &pos)
     if (changed) {
         removeInvalidFillRegions();
     }
-    return changed;
+    return changed || fillsErased;
 }
 
 bool PaintOpenGLWidget::eraseBetween(const QPointF &from, const QPointF &to)
 {
+    const bool fillsErased = eraseFillRegionsBetween(from, to);
     VectorImageModel *image = currentImage(false);
-    if (!image || !editingAllowed() || (m_model.currentLayer() >= 0 && !currentColumnEditable())) {
-        return false;
+    if (!image || !editingAllowed() || (m_model.currentLayer() >= 0 && !columnAcceptsGesture())) {
+        return fillsErased;
     }
 
     const qreal imageRadius = m_eraserRadius + m_penWidth;
@@ -3478,7 +3522,7 @@ bool PaintOpenGLWidget::eraseBetween(const QPointF &from, const QPointF &to)
     const qreal bottom = std::max(from.y(), to.y()) + imageRadius;
     const QRectF eraserBounds(QPointF(left, top), QPointF(right, bottom));
     if (!image->bounds().intersects(eraserBounds)) {
-        return false;
+        return fillsErased;
     }
 
     bool changed = false;
@@ -3488,7 +3532,7 @@ bool PaintOpenGLWidget::eraseBetween(const QPointF &from, const QPointF &to)
     if (changed) {
         removeInvalidFillRegions();
     }
-    return changed;
+    return changed || fillsErased;
 }
 
 int PaintOpenGLWidget::nearestStrokeToBrush(const VectorImageModel *image,
@@ -4017,4 +4061,59 @@ const AnimeColumn *PaintOpenGLWidget::currentColumn() const
 bool PaintOpenGLWidget::currentColumnEditable() const
 {
     return m_model.currentColumnEditable();
+}
+
+bool PaintOpenGLWidget::columnAcceptsGesture() const
+{
+    if (currentColumnEditable()) {
+        return true;
+    }
+    // The ONE relaxation, and it is opt-in: a Fill column stays uneditable for
+    // every other caller, because pen and erase have no strokes to work on
+    // there. In fill-paint mode the gesture means something else entirely -
+    // the policy that turned the mode on converts the committed stroke into
+    // region fills - so the gesture has to be allowed to happen first.
+    if (!m_fillPaintMode) {
+        return false;
+    }
+    const AnimeColumn *column = currentColumn();
+    return column && !column->locked && column->type == AnimeColumnType::Fill;
+}
+
+bool PaintOpenGLWidget::eraseFillRegionsBetween(const QPointF &from, const QPointF &to)
+{
+    if (!m_fillPaintMode || !editingAllowed()) {
+        return false;
+    }
+    const AnimeColumn *column = currentColumn();
+    if (!column || column->locked || column->type != AnimeColumnType::Fill) {
+        return false;
+    }
+    VectorImageModel *image = currentImage(false);
+    if (!image) {
+        return false;
+    }
+
+    // Sampled ALONG the segment, not tested at its end alone: a move event
+    // covers whatever distance the hand travelled since the last one, and a
+    // small region the cursor crossed in between would otherwise survive a
+    // stroke drawn straight through it.
+    const qreal step = std::max<qreal>(1.0, m_eraserRadius);
+    const qreal length = QLineF(from, to).length();
+    const int steps = length <= step ? 0 : int(length / step);
+    bool changed = false;
+    for (int sample = 0; sample <= steps; ++sample) {
+        const qreal t = steps == 0 ? 1.0 : qreal(sample) / qreal(steps);
+        const QPointF pos = from + (to - from) * t;
+        // Descending: removeFillRegionAt shifts everything above the index it
+        // drops, and the lower ones still to visit keep theirs.
+        for (int index = image->fillCount() - 1; index >= 0; --index) {
+            if (!image->fillRegions().at(index).path.contains(pos)) {
+                continue;
+            }
+            image->removeFillRegionAt(index);
+            changed = true;
+        }
+    }
+    return changed;
 }

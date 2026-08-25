@@ -298,4 +298,215 @@ tt._handle_event({**common, "phase": "release", "handle": "tf:body",
 assert len(image.applied) == 1 and UI.commits == [], (image.applied, UI.commits)
 print("8) one drag: incremental delta, one commit, no-op click commits nothing")
 
+
+# --- the rotation gesture, end to end through the C++ message sequence -------
+#
+# Everything above talks to the policy helpers directly. A rotation was
+# reported as "locked to 90 degrees" in the running app while _target_state
+# provably turns freely, so the gap was in the GESTURE, not the maths: what
+# C++ actually delivers, and which region a press aimed outside a corner lands
+# in. These four sections replay that, exactly as openglwidget.cpp does it.
+
+KEDIT_HANDLE_HIT_PX = 7.0    # kEditHandleHitPx, openglwidget.cpp
+
+
+def cpp_edit_handle_at(handles, screen_pos, zoom):
+    """openglwidget.cpp editHandleAt: a +/-7 SCREEN px square per handle,
+    scanned back to front, tested BEFORE any pick is sent."""
+    for entry in reversed(handles):
+        screen = (entry["x"] * zoom, entry["y"] * zoom)
+        if (abs(screen[0] - screen_pos[0]) <= KEDIT_HANDLE_HIT_PX
+                and abs(screen[1] - screen_pos[1]) <= KEDIT_HANDLE_HIT_PX):
+            return entry["id"]
+    return ""
+
+
+def cpp_press(view, screen_pos, zoom, constrain=False):
+    """mousePressEvent's handle branch: handles first, then a pick that may
+    CLAIM the gesture. Returns m_activeHandleDrag after the press."""
+    doc = (screen_pos[0] / zoom, screen_pos[1] / zoom)
+    common = {"base_tool": "transfer", "view": view, "zoom": zoom,
+              "modifiers": {"shift": constrain, "ctrl": False, "alt": False,
+                            "constrain": constrain},
+              "position": {"x": doc[0], "y": doc[1]}}
+    handle = cpp_edit_handle_at(UI.handles.get(view) or [], screen_pos, zoom)
+    if handle:
+        tt._handle_event({**common, "phase": "press", "handle": handle})
+        return handle
+    message = {**common, "phase": "pick"}
+    tt._handle_event(message)
+    return str(message.get("grab") or "")
+
+
+def cpp_drag(view, handle, screen_points, zoom, constrain=False, handle_on_move=None):
+    """mouseMoveEvent/mouseReleaseEvent for a live handle drag. `handle` is
+    m_activeHandleDrag; `handle_on_move` overrides what the message carries,
+    for the builds that do not echo the claimed id back."""
+    carried = handle if handle_on_move is None else handle_on_move
+    for screen in screen_points:
+        doc = (screen[0] / zoom, screen[1] / zoom)
+        tt._handle_event({"base_tool": "transfer", "view": view, "zoom": zoom,
+                          "modifiers": {"constrain": constrain},
+                          "phase": "move", "handle": carried,
+                          "position": {"x": doc[0], "y": doc[1]}})
+    doc = (screen_points[-1][0] / zoom, screen_points[-1][1] / zoom)
+    tt._handle_event({"base_tool": "transfer", "view": view, "zoom": zoom,
+                      "modifiers": {"constrain": constrain},
+                      "phase": "release", "handle": carried,
+                      "position": {"x": doc[0], "y": doc[1]}})
+
+
+def net_matrix(image):
+    total = tt.IDENTITY
+    for applied in image.applied:
+        total = tt._mat_compose(applied, total)
+    return total
+
+
+def net_degrees(image):
+    total = net_matrix(image)
+    return math.degrees(math.atan2(total[1], total[0]))
+
+
+def arm(view="main", zoom=1.0):
+    tt._handle_event({"base_tool": "transfer", "view": view, "zoom": zoom,
+                      "phase": "arm", "position": {"x": 0.0, "y": 0.0}})
+
+
+def ring_swing(pivot, start_doc, degrees, zoom):
+    """Screen positions swinging `degrees` about the pivot, from start_doc."""
+    radius = math.hypot(start_doc[0] - pivot[0], start_doc[1] - pivot[1])
+    base = math.atan2(start_doc[1] - pivot[1], start_doc[0] - pivot[0])
+    out = []
+    for step in degrees:
+        angle = base + math.radians(step)
+        doc = (pivot[0] + radius * math.cos(angle),
+               pivot[1] + radius * math.sin(angle))
+        out.append((doc[0] * zoom, doc[1] * zoom))
+    return out
+
+
+# 9) a ring drag turns FREELY; only a held modifier snaps, and to 15 degrees.
+for zoom in (1.0, 2.5):
+    image = FakeImage()
+    world(image)
+    arm(zoom=zoom)
+    box = tt._SESSIONS["main"]["box"]
+    pivot = tt._box_centre(box)
+    # aim where a hand aims for a rotation: outside the SE corner
+    press_doc = (box[2] + 18.0 / zoom, box[3] + 18.0 / zoom)
+    press_screen = (press_doc[0] * zoom, press_doc[1] * zoom)
+    grabbed = cpp_press("main", press_screen, zoom)
+    assert grabbed.startswith("tf:rot:"), (zoom, grabbed)
+    path = [3.0, 7.0, 12.0, 19.0, 26.0, 34.0, 41.0]
+    cpp_drag("main", grabbed, ring_swing(pivot, press_doc, path, zoom), zoom)
+    assert close(net_degrees(image), 41.0, 1e-6), (zoom, net_degrees(image))
+    # every move landed its own angle - nothing was quantised on the way
+    assert len(image.applied) == len(path), (zoom, len(image.applied))
+    assert UI.commits == [("Transfer", "main")], UI.commits
+
+# the same swing with a modifier down lands on the 15-degree lattice
+image = FakeImage()
+world(image)
+arm()
+box = tt._SESSIONS["main"]["box"]
+pivot = tt._box_centre(box)
+press_doc = (box[2] + 18.0, box[3] + 18.0)
+grabbed = cpp_press("main", press_doc, 1.0, constrain=True)
+assert grabbed.startswith("tf:rot:"), grabbed
+cpp_drag("main", grabbed, ring_swing(pivot, press_doc, [3.0, 19.0, 41.0], 1.0),
+         1.0, constrain=True)
+assert close(net_degrees(image), 45.0, 1e-6), net_degrees(image)
+# and the option can switch the modifier off entirely
+image = FakeImage()
+world(image)
+tt._option_changed({"hook": "transfer_constrain", "value": "off"})
+arm()
+box = tt._SESSIONS["main"]["box"]
+pivot = tt._box_centre(box)
+press_doc = (box[2] + 18.0, box[3] + 18.0)
+grabbed = cpp_press("main", press_doc, 1.0, constrain=True)
+cpp_drag("main", grabbed, ring_swing(pivot, press_doc, [41.0], 1.0), 1.0,
+         constrain=True)
+assert close(net_degrees(image), 41.0, 1e-6), net_degrees(image)
+tt._STATE["constrain"] = True
+print("9) a ring drag turns freely at any zoom; only a held modifier snaps, to 15")
+
+
+# 10) the ring is REACHABLE: the press a hand aims outside a corner must
+#     rotate, not fall short into the grip's own hit box (a corner scale, which
+#     mirrors - four orientations, the "locked to 90 degrees" report) and not
+#     overshoot into the silent re-frame.
+world(FakeImage())
+arm()
+state = tt._state(tt._SESSIONS["main"])
+corner = tt._grip_positions(state)["se"]
+reached = []
+for out in (10.0, 14.0, 18.0, 22.0, 25.0):
+    point = (corner[0] + out, corner[1] + out)   # SCREEN px at zoom 1
+    assert tt._cursor_name(state, point, 1.0, True) == "rotate", (out, point)
+    probe = {"base_tool": "transfer", "view": "main", "zoom": 1.0,
+             "phase": "pick", "position": {"x": point[0], "y": point[1]}}
+    tt._handle_event(probe)
+    reached.append(probe.get("grab"))
+    tt._SESSIONS["main"]["drag"] = None
+assert all(grab == "tf:rot:se" for grab in reached), reached
+# the grip still owns the middle - no dead ring was carved out of its box
+assert tt._cursor_name(state, (corner[0] + 4.0, corner[1] + 4.0), 1.0, True) \
+    == "size_fdiag"
+# and the ring is a SCREEN-px target: zoomed in it covers less artwork
+assert tt._cursor_name(state, (corner[0] + 18.0, corner[1] + 18.0), 4.0, True) == ""
+print("10) the rotation ring is reachable where the hand aims, at every zoom")
+
+
+# 11) a live gesture rides its DRAG RECORD, not the id on the message: a build
+#     that stops echoing the claimed id back must not freeze the rotation.
+image = FakeImage()
+world(image)
+arm()
+box = tt._SESSIONS["main"]["box"]
+pivot = tt._box_centre(box)
+press_doc = (box[2] + 18.0, box[3] + 18.0)
+grabbed = cpp_press("main", press_doc, 1.0)
+assert grabbed == "tf:rot:se", grabbed
+cpp_drag("main", grabbed, ring_swing(pivot, press_doc, [10.0, 25.0, 41.0], 1.0),
+         1.0, handle_on_move="")          # C++ echoed nothing back
+assert close(net_degrees(image), 41.0, 1e-6), net_degrees(image)
+assert len(image.applied) == 3, image.applied
+# but an id that belongs to ANOTHER tool's drag is still refused
+image = FakeImage()
+world(image)
+arm()
+box = tt._SESSIONS["main"]["box"]
+pivot = tt._box_centre(box)
+press_doc = (box[2] + 18.0, box[3] + 18.0)
+grabbed = cpp_press("main", press_doc, 1.0)
+cpp_drag("main", grabbed, ring_swing(pivot, press_doc, [41.0], 1.0), 1.0,
+         handle_on_move="auto_mapping:guide_x")
+assert image.applied == [], image.applied
+print("11) move/release follow the drag record; a foreign drag id is refused")
+
+
+# 12) WHY missing the ring read as "locked to 90 degrees": a corner grip
+#     mirrors through its anchor, so a circular hand motion walks the artwork
+#     through exactly four orientations, one per quarter turn.
+square = session_of([0.0, 0.0, 200.0, 100.0])
+anchor = (0.0, 0.0)                       # the "se" grip's anchor
+grip_drag = tt._drag_record("se", (200.0, 100.0), square)
+orientations = []
+for step in range(0, 360, 15):
+    swing = ring_swing(anchor, (200.0, 100.0), [float(step)], 1.0)[0]
+    target, _, _ = tt._target_state(grip_drag, swing, True)
+    orientations.append((target[2] - target[0] >= 0.0,
+                         target[3] - target[1] >= 0.0))
+assert len(set(orientations)) == 4, set(orientations)
+# and they change on the quarter turns, not continuously: every flip is 90
+# degrees of hand travel from the last one (6 steps of 15).
+changes = [i for i in range(1, len(orientations))
+           if orientations[i] != orientations[i - 1]]
+assert len(changes) == 4, changes
+assert all(b - a == 6 for a, b in zip(changes, changes[1:])), changes
+print("12) a corner grip mirrors in quarter turns - the 90-degree report, and "
+      "why the ring must be the easier target")
+
 print("t_transfer: ALL OK")

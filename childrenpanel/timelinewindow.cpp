@@ -1,4 +1,4 @@
-#include "timelinewidget.h"
+#include "timelinewindow.h"
 #include "../paintviewcontainer.h"
 #include "../theme.h"
 
@@ -8,13 +8,14 @@
 #include <QIntValidator>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMainWindow>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QRegularExpression>
 #include <QSettings>
-#include <QVBoxLayout>
+#include <QTimer>
 #include <QWheelEvent>
 #include <QWidgetAction>
 
@@ -35,11 +36,16 @@ constexpr int kDividerGap = 6;
 constexpr int kFrameFieldWidth = 42;
 constexpr int kFrameFieldHeight = 22;
 constexpr int kFrameFieldGap = 8;
+// The clear space a family keeps from its neighbours before the transport
+// gives up on one row and folds.
+constexpr int kFamilyGap = 8;
 constexpr int kKeyCellWidth = 126;
 constexpr int kKeyCellHeight = 74;
-constexpr int kPreviewWidth = 98;
-constexpr int kHoldCellWidth = 25;
-constexpr int kHoldRowHeight = 15;
+// A hold sliver is a fifth of a key cell along the run, at every scale: wide
+// enough to click, narrow enough to read as "the same drawing again".
+constexpr qreal kHoldFraction = 0.2;
+// The preview is the PAGE, so it keeps 4:3 whatever the cell does.
+constexpr qreal kPreviewAspect = 4.0 / 3.0;
 constexpr int kLaneThickness = 12;
 constexpr int kLaneDot = 9;
 constexpr int kScrollThickness = 6;
@@ -47,17 +53,19 @@ constexpr int kScrollThickness = 6;
 // follow the playhead: enough to read as "there is more this way".
 constexpr int kScrollIntoViewMargin = 10;
 constexpr int kStripColumnWidth = 126;
-constexpr int kStripHeaderHeight = 32;
 constexpr int kStripCommandHeight = 28;
 constexpr int kStripCommandWidth = 30;
-constexpr int kFloatTitleHeight = 24;
-constexpr int kFloatPanelWidth = 748;
-// How near an edge a dragged panel snaps back, and how far from every edge a
-// dragged strip has to be before it detaches. The two differ on purpose: a
-// snap that reached as far as the detach threshold would make a panel
-// impossible to park along the side of the canvas.
-constexpr int kSnapDistance = 40;
-constexpr int kDetachDistance = 80;
+constexpr int kStripCommandCount = 4;
+// Floors for the resizable strip: below these a cell has no room for a
+// preview and the run stops being readable. The column floor is the COMMAND
+// ROW's own width: the transport drops the frame family while docked to a
+// side, so a narrower strip would put Delete Frame past the widget's edge
+// with nothing else left to reach it by.
+constexpr int kMinStripThickness = 44;
+constexpr int kMinStripColumn = kStripCommandCount * kStripCommandWidth + kScrollThickness;
+constexpr int kSideTitleHeight = 22;
+// What a collapsed side dock shrinks to: the title bar needs its name.
+constexpr int kCollapsedColumnWidth = 132;
 
 // Shooting cadences. "1s with N" reads as one drawing held for N frames of a
 // 24 fps base, so the rate is 24/N.
@@ -73,6 +81,12 @@ const Cadence kCadences[] = {
     {"1s with 1", "1s×1", 24},
 };
 constexpr int kCadenceCount = int(sizeof(kCadences) / sizeof(kCadences[0]));
+
+// The frame commands, in the order both the transport's left family and the
+// vertical strip's command row show them.
+const TimelineCommand kFrameCommands[kStripCommandCount] = {
+    TimelineCommand::AddFrame, TimelineCommand::AddHold, TimelineCommand::Duplicate,
+    TimelineCommand::DeleteFrame};
 
 enum class Glyph {
     Onion,
@@ -90,6 +104,7 @@ enum class Glyph {
     ToHorizontal,
     AddFrame,
     AddHold,
+    Duplicate,
     DeleteFrame,
     PillUp
 };
@@ -237,6 +252,12 @@ QPainterPath glyphPath(Glyph glyph)
         path.moveTo(9, 13);
         path.lineTo(19, 13);
         break;
+    case Glyph::Duplicate:
+        // Two sheets, offset: the copy is a second drawing, not a second
+        // exposure of the first (which is what the hold glyph says).
+        path.addRect(QRectF(8, 3, 12, 12));
+        path.addRect(QRectF(4, 9, 12, 12));
+        break;
     case Glyph::DeleteFrame:
         path.moveTo(4, 7);
         path.lineTo(20, 7);
@@ -348,6 +369,8 @@ Glyph glyphFor(TimelineCommand command, const TimelineState &state)
         return Glyph::AddFrame;
     case TimelineCommand::AddHold:
         return Glyph::AddHold;
+    case TimelineCommand::Duplicate:
+        return Glyph::Duplicate;
     case TimelineCommand::DeleteFrame:
         return Glyph::DeleteFrame;
     case TimelineCommand::Onion:
@@ -380,10 +403,12 @@ QString tooltipFor(TimelineCommand command, const TimelineState &state)
 {
     switch (command) {
     case TimelineCommand::AddFrame:
-        return QStringLiteral("Add frame");
+        return QStringLiteral("Add frame at the end of the sheet");
     case TimelineCommand::AddHold:
-        return QStringLiteral("Add hold frame - it shows the same drawing; "
-                              "editing either one changes both");
+        return QStringLiteral("Hold the current frame - the new row right after it "
+                              "shows the same drawing; editing either one changes both");
+    case TimelineCommand::Duplicate:
+        return QStringLiteral("Duplicate frame - copies the current drawing to a new frame");
     case TimelineCommand::DeleteFrame:
         return QStringLiteral("Delete frame");
     case TimelineCommand::Onion:
@@ -411,10 +436,11 @@ QString tooltipFor(TimelineCommand command, const TimelineState &state)
     case TimelineCommand::Rate:
         return QStringLiteral("Playback rate");
     case TimelineCommand::Orientation:
-        return state.vertical ? QStringLiteral("Horizontal strip layout")
-                              : QStringLiteral("Vertical strip layout");
+        return state.vertical ? QStringLiteral("Dock the strip under the canvas")
+                              : QStringLiteral("Dock the strip beside the canvas");
     case TimelineCommand::Float:
-        return QStringLiteral("Float the strip as a window");
+        return state.floating ? QStringLiteral("Dock the timeline again")
+                              : QStringLiteral("Float the timeline as a window");
     case TimelineCommand::Collapse:
         return state.collapsed ? QStringLiteral("Show the frame strip")
                                : QStringLiteral("Hide the frame strip");
@@ -466,7 +492,14 @@ TimelineTransportBar::TimelineTransportBar(QWidget *parent)
 
 QSize TimelineTransportBar::sizeHint() const
 {
-    return QSize(320, kBarHeight);
+    return QSize(320, kBarHeight * m_rows);
+}
+
+QSize TimelineTransportBar::minimumSizeHint() const
+{
+    // The dock reads the title bar's height from here as well as from the
+    // hint, and a two-row bar that reported one row would be clipped.
+    return QSize(kButtonWidth * 3, kBarHeight * m_rows);
 }
 
 void TimelineTransportBar::setState(const TimelineState &state)
@@ -489,13 +522,11 @@ void TimelineTransportBar::relayout()
 {
     m_items.clear();
     m_dividers.clear();
-    const int h = height();
-    const bool chrome = !m_state.collapsed;
     const QFontMetrics guideMetrics(labelFont(10));
     const int guideWidth = guideMetrics.horizontalAdvance(QStringLiteral("GUIDE")) + 14;
     const QFontMetrics rateMetrics(monoFont(11, true));
     const int rateWidth =
-        rateMetrics.horizontalAdvance(TimelineWidget::shortTextForFps(m_state.fps)) + 9 + 7 + 11 + 9;
+        rateMetrics.horizontalAdvance(TimelineWindow::shortTextForFps(m_state.fps)) + 9 + 7 + 11 + 9;
 
     const auto add = [&](TimelineCommand command, const QRect &rect, bool enabled, bool active) {
         Item item;
@@ -506,76 +537,111 @@ void TimelineTransportBar::relayout()
         m_items.append(item);
     };
 
-    // Left: the frame commands. In the vertical layout the strip's own header
-    // carries them, so the bar must not show a second copy.
-    int x = 0;
+    // The five families. A family is laid out as one contiguous run and never
+    // folds internally: the whole point of the two-row mode is that a control
+    // keeps the neighbours it is read against.
     const bool collapseAtLeft = m_state.vertical && m_state.leftAligned && !m_state.floating;
+    const bool showFrameCommands = !m_state.vertical;
+    const int leftWidth = (collapseAtLeft ? kButtonWidth : 0)
+                          + (showFrameCommands ? kStripCommandCount * kButtonWidth : 0);
+    // Window chrome, from the far edge inwards, so the close box is always the
+    // last thing before the frame.
+    QVector<TimelineCommand> chrome;
+    chrome.append(TimelineCommand::Close);
+    if (!collapseAtLeft && !m_state.floating) {
+        chrome.append(TimelineCommand::Collapse);
+    }
+    chrome.append(TimelineCommand::Orientation);
+    chrome.append(TimelineCommand::Float);
+    const int chromeWidth = chrome.size() * kButtonWidth;
+
+    const int dividerWidth = 1 + 2 * kDividerGap;
+    const int onionWidth = kButtonWidth + guideWidth;
+    const int playbackWidth = kButtonWidth * 4 + kPlayWidth;
+    const int rateFieldWidth = rateWidth + kFrameFieldWidth + 2 * kFrameFieldGap;
+    const int assemblyWidth = onionWidth + dividerWidth + playbackWidth + dividerWidth
+                              + rateFieldWidth;
+
+    // One row while the side families and the centred assembly can all stand
+    // clear of each other; otherwise the assembly drops to a second row and
+    // the window chrome keeps the top-right corner it belongs in.
+    // TWICE the WIDER side, not the sum: the assembly is centred on the whole
+    // bar (below), so it reaches as far towards the narrow side as towards the
+    // wide one - summing them lets the vertical layout (no frame commands at
+    // the left, full chrome at the right) run the frame field over the
+    // float/orientation cells.
+    const int oneRowWidth = 2 * std::max(leftWidth, chromeWidth) + assemblyWidth
+                            + 2 * kFamilyGap;
+    const int rows = width() >= oneRowWidth ? 1 : 2;
+    if (rows != m_rows) {
+        m_rows = rows;
+        // The dock reads the title height from the hint, so the fold has to be
+        // announced rather than just drawn.
+        setFixedHeight(kBarHeight * m_rows);
+        updateGeometry();
+    }
+    // Rows are measured from the band, not from height(): a fold announced
+    // above has not been granted by the parent layout yet.
+    const int h = kBarHeight;
+
+    int x = 0;
     if (collapseAtLeft) {
         add(TimelineCommand::Collapse, QRect(x, 0, kButtonWidth, h), true, false);
         x += kButtonWidth;
     }
-    if (chrome && !m_state.vertical) {
-        for (TimelineCommand command : {TimelineCommand::AddFrame, TimelineCommand::AddHold,
-                                        TimelineCommand::DeleteFrame}) {
+    if (showFrameCommands) {
+        // In the vertical layout the strip's own command row carries these, so
+        // the bar must not show a second copy.
+        for (TimelineCommand command : kFrameCommands) {
             add(command, QRect(x, 0, kButtonWidth, h), true, false);
             x += kButtonWidth;
         }
     }
 
-    // Right: window chrome, laid out from the far edge inwards so the close
-    // box is always the last thing before the frame.
     int right = width();
-    if (!m_state.floating) {
-        if (chrome) {
-            right -= kButtonWidth;
-            add(TimelineCommand::Close, QRect(right, 0, kButtonWidth, h), true, false);
-        }
-        if (!collapseAtLeft) {
-            right -= kButtonWidth;
-            add(TimelineCommand::Collapse, QRect(right, 0, kButtonWidth, h), true, false);
-        }
-        if (chrome) {
-            right -= kButtonWidth;
-            add(TimelineCommand::Orientation, QRect(right, 0, kButtonWidth, h), true, false);
-            right -= kButtonWidth;
-            add(TimelineCommand::Float, QRect(right, 0, kButtonWidth, h), true, false);
-        }
+    for (TimelineCommand command : chrome) {
+        right -= kButtonWidth;
+        add(command, QRect(right, 0, kButtonWidth, h), true, false);
     }
 
     // Centre: one assembly, always the same order, centred on the bar rather
     // than on what is left of it - the design's whole point is that the
     // playback controls do not move when the side groups change.
-    const int assemblyWidth = kButtonWidth + guideWidth + (1 + 2 * kDividerGap)
-                              + kButtonWidth * 3 + kPlayWidth + kButtonWidth
-                              + (1 + 2 * kDividerGap) + rateWidth
-                              + kFrameFieldWidth + 2 * kFrameFieldGap;
-    // Centred, but never underneath the left group: on a narrow bar the
-    // assembly slides right rather than overlapping what it would hide.
-    int cx = std::max(x, (width() - assemblyWidth) / 2);
-    add(TimelineCommand::Onion, QRect(cx, 0, kButtonWidth, h), m_state.onionAvailable,
+    const int assemblyRow = rows == 1 ? 0 : 1;
+    const int assemblyY = assemblyRow * kBarHeight;
+    int cx = std::max(0, (width() - assemblyWidth) / 2);
+    if (rows == 1) {
+        // Both side families are cleared explicitly. The threshold above
+        // already guarantees the room; this is what makes the guarantee local
+        // to the line that places the assembly.
+        cx = std::max(x, std::min(cx, width() - chromeWidth - kFamilyGap - assemblyWidth));
+    }
+    add(TimelineCommand::Onion, QRect(cx, assemblyY, kButtonWidth, h), m_state.onionAvailable,
         m_state.onionAvailable && m_state.onion);
     cx += kButtonWidth;
-    add(TimelineCommand::GuideLines, QRect(cx, 0, guideWidth, h),
+    add(TimelineCommand::GuideLines, QRect(cx, assemblyY, guideWidth, h),
         m_state.onionAvailable && m_state.onion,
         m_state.onionAvailable && m_state.onion && m_state.guideLines);
     cx += guideWidth;
-    m_dividers.append(QRect(cx + kDividerGap, (h - 20) / 2, 1, 20));
-    cx += 1 + 2 * kDividerGap;
-    add(TimelineCommand::Prev, QRect(cx, 0, kButtonWidth, h), true, false);
+    m_dividers.append(QRect(cx + kDividerGap, assemblyY + (h - 20) / 2, 1, 20));
+    cx += dividerWidth;
+    add(TimelineCommand::Prev, QRect(cx, assemblyY, kButtonWidth, h), true, false);
     cx += kButtonWidth;
-    add(TimelineCommand::Pause, QRect(cx, 0, kButtonWidth, h), m_state.playing, false);
+    add(TimelineCommand::Pause, QRect(cx, assemblyY, kButtonWidth, h), m_state.playing, false);
     cx += kButtonWidth;
-    add(TimelineCommand::Play, QRect(cx, 0, kPlayWidth, h), !m_state.playing, m_state.playing);
+    add(TimelineCommand::Play, QRect(cx, assemblyY, kPlayWidth, h), !m_state.playing,
+        m_state.playing);
     cx += kPlayWidth;
-    add(TimelineCommand::Loop, QRect(cx, 0, kButtonWidth, h), true, m_state.loop);
+    add(TimelineCommand::Loop, QRect(cx, assemblyY, kButtonWidth, h), true, m_state.loop);
     cx += kButtonWidth;
-    add(TimelineCommand::Next, QRect(cx, 0, kButtonWidth, h), true, false);
+    add(TimelineCommand::Next, QRect(cx, assemblyY, kButtonWidth, h), true, false);
     cx += kButtonWidth;
-    m_dividers.append(QRect(cx + kDividerGap, (h - 20) / 2, 1, 20));
-    cx += 1 + 2 * kDividerGap;
-    add(TimelineCommand::Rate, QRect(cx, 0, rateWidth, h), true, false);
+    m_dividers.append(QRect(cx + kDividerGap, assemblyY + (h - 20) / 2, 1, 20));
+    cx += dividerWidth;
+    add(TimelineCommand::Rate, QRect(cx, assemblyY, rateWidth, h), true, false);
     cx += rateWidth;
-    m_frameField->setGeometry(cx + kFrameFieldGap, (h - kFrameFieldHeight) / 2,
+    m_frameField->setGeometry(cx + kFrameFieldGap,
+                              assemblyY + (h - kFrameFieldHeight) / 2,
                               kFrameFieldWidth, kFrameFieldHeight);
 }
 
@@ -595,6 +661,9 @@ void TimelineTransportBar::paintEvent(QPaintEvent *)
     painter.fillRect(rect(), role(AnimeTheme::Role::Surface));
     painter.setPen(QPen(role(AnimeTheme::Role::Divider), 1.0));
     painter.drawLine(0, 0, width(), 0);
+    if (m_rows > 1) {
+        painter.drawLine(0, kBarHeight, width(), kBarHeight);
+    }
 
     for (const QRect &divider : m_dividers) {
         painter.fillRect(divider, role(AnimeTheme::Role::Divider));
@@ -621,7 +690,7 @@ void TimelineTransportBar::paintEvent(QPaintEvent *)
             painter.setFont(monoFont(11, true));
             const QRect textRect = item.rect.adjusted(9, 0, -(11 + 9), 0);
             painter.drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft,
-                             TimelineWidget::shortTextForFps(m_state.fps));
+                             TimelineWindow::shortTextForFps(m_state.fps));
             drawGlyph(painter, QRect(item.rect.right() - 9 - 11, item.rect.y(), 11,
                                      item.rect.height()),
                       Glyph::ChevronDown, foreground, 11);
@@ -645,6 +714,13 @@ void TimelineTransportBar::mousePressEvent(QMouseEvent *event)
         return;
     }
     m_pressedItem = itemAt(event->pos());
+    if (m_pressedItem < 0) {
+        // Empty space on a title bar belongs to the WINDOW. Ignoring sends the
+        // press on to the QDockWidget, which starts its own drag with the
+        // native docking preview; swallowing it would pin the dock in place.
+        event->ignore();
+        return;
+    }
     update();
 }
 
@@ -652,7 +728,15 @@ void TimelineTransportBar::mouseReleaseEvent(QMouseEvent *event)
 {
     const int pressed = m_pressedItem;
     m_pressedItem = -1;
-    if (event->button() != Qt::LeftButton || pressed < 0 || pressed >= m_items.size()) {
+    if (event->button() != Qt::LeftButton) {
+        QWidget::mouseReleaseEvent(event);
+        return;
+    }
+    if (pressed < 0) {
+        event->ignore();   // the gesture belongs to the dock, and so does its end
+        return;
+    }
+    if (pressed >= m_items.size()) {
         update();
         return;
     }
@@ -677,6 +761,11 @@ void TimelineTransportBar::mouseMoveEvent(QMouseEvent *event)
         m_hoverItem = hover;
         setToolTip(hover >= 0 ? tooltipFor(m_items[hover].command, m_state) : QString());
         update();
+    }
+    if ((event->buttons() & Qt::LeftButton) && m_pressedItem < 0) {
+        // Mouse tracking is on for the hover, so buttonless moves arrive here
+        // too; only a move that continues an ignored press is the dock's.
+        event->ignore();
     }
 }
 
@@ -719,7 +808,7 @@ void TimelineTransportBar::showRateMenu(const QRect &anchor)
     typedAction->setDefaultWidget(typed);
     menu.addAction(typedAction);
     connect(field, &QLineEdit::returnPressed, &menu, [this, field, &menu]() {
-        const int fps = TimelineWidget::fpsForText(field->text(), m_state.fps);
+        const int fps = TimelineWindow::fpsForText(field->text(), m_state.fps);
         menu.close();
         emit fpsPicked(fps);
     });
@@ -733,14 +822,16 @@ TimelineStrip::TimelineStrip(QWidget *parent)
     : QWidget(parent)
 {
     setMouseTracking(true);
-    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    setFixedHeight(kKeyCellHeight + kScrollThickness);
+    // Both axes expand: the dock's splitter is the handle, and relayout reads
+    // the cell size back off whatever the user left the widget at.
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    setMinimumHeight(kMinStripThickness);
     connect(AnimeTheme::instance(), &AnimeTheme::themeChanged, this, [this]() { update(); });
 }
 
 QSize TimelineStrip::sizeHint() const
 {
-    return m_vertical ? QSize(kStripColumnWidth, 240)
+    return m_vertical ? QSize(kStripColumnWidth + kScrollThickness, 240)
                       : QSize(320, kKeyCellHeight + kScrollThickness);
 }
 
@@ -751,20 +842,20 @@ void TimelineStrip::setVertical(bool vertical)
     }
     m_vertical = vertical;
     m_scroll = 0;
-    // A header drag that ends in a re-orientation has just lost the grip it
-    // started on; keeping the flag would let the next mouse move re-decide.
-    m_headerDrag = false;
     if (vertical) {
-        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
-        setFixedWidth(kStripColumnWidth);
-        setMaximumHeight(QWIDGETSIZE_MAX);
-        setMinimumHeight(0);
-    } else {
-        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        setFixedHeight(kKeyCellHeight + kScrollThickness);
+        setMinimumWidth(kMinStripColumn);
         setMaximumWidth(QWIDGETSIZE_MAX);
+        setMinimumHeight(0);
+        setMaximumHeight(QWIDGETSIZE_MAX);
+    } else {
+        setMinimumHeight(kMinStripThickness);
+        setMaximumHeight(QWIDGETSIZE_MAX);
         setMinimumWidth(0);
+        setMaximumWidth(QWIDGETSIZE_MAX);
     }
+    // A re-orientation re-renders every cell at a new size.
+    m_thumbnails.clear();
+    updateGeometry();
     relayout();
     update();
 }
@@ -793,16 +884,35 @@ void TimelineStrip::clearThumbnails()
 void TimelineStrip::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
+    const int before = m_cellThickness;
     relayout();
+    if (m_cellThickness != before) {
+        // The cache is keyed by frame and validated by size; a resize makes
+        // every entry stale at once, so drop them rather than pay a compare
+        // per cell for the rest of the session.
+        m_thumbnails.clear();
+    }
+}
+
+int TimelineStrip::cellOrigin() const
+{
+    return m_vertical ? kStripCommandHeight : 0;
 }
 
 QRect TimelineStrip::commandRect(int index) const
 {
-    if (!m_vertical || index < 0 || index > 2) {
+    if (!m_vertical || index < 0 || index >= kStripCommandCount) {
         return QRect();
     }
-    return QRect(index * kStripCommandWidth, kStripHeaderHeight, kStripCommandWidth,
-                 kStripCommandHeight);
+    return QRect(index * kStripCommandWidth, 0, kStripCommandWidth, kStripCommandHeight);
+}
+
+QString TimelineStrip::nameFor(int frame) const
+{
+    if (frame >= 0 && frame < m_state.names.size() && !m_state.names[frame].isEmpty()) {
+        return m_state.names[frame];
+    }
+    return QString::number(frame + 1);
 }
 
 void TimelineStrip::relayout()
@@ -811,11 +921,17 @@ void TimelineStrip::relayout()
     const int count = std::max(1, m_state.frameCount);
     int offset = 0;
     if (m_vertical) {
-        const int top = kStripHeaderHeight + kStripCommandHeight;
-        const int rowWidth = std::max(0, width() - kScrollThickness);
+        // Cells scale with the column's width; the key cell keeps 126:74 and
+        // the hold sliver keeps its fifth of the key.
+        const int rowWidth = std::max(1, width() - kScrollThickness);
+        const qreal scale = qreal(rowWidth) / qreal(kStripColumnWidth);
+        m_cellThickness = rowWidth;
+        m_keyExtent = std::max(16, int(std::lround(kKeyCellHeight * scale)));
+        m_holdExtent = std::max(5, int(std::lround(m_keyExtent * kHoldFraction)));
+        const int top = cellOrigin();
         for (int frame = 0; frame < count; ++frame) {
             const bool hold = frame < m_state.holds.size() && m_state.holds[frame];
-            const int rowHeight = hold ? kHoldRowHeight : kKeyCellHeight;
+            const int rowHeight = hold ? m_holdExtent : m_keyExtent;
             Cell cell;
             cell.frame = frame;
             cell.hold = hold;
@@ -826,10 +942,14 @@ void TimelineStrip::relayout()
             offset += rowHeight;
         }
     } else {
-        const int cellHeight = std::max(0, height() - kScrollThickness);
+        const int cellHeight = std::max(1, height() - kScrollThickness);
+        const qreal scale = qreal(cellHeight) / qreal(kKeyCellHeight);
+        m_cellThickness = cellHeight;
+        m_keyExtent = std::max(28, int(std::lround(kKeyCellWidth * scale)));
+        m_holdExtent = std::max(8, int(std::lround(m_keyExtent * kHoldFraction)));
         for (int frame = 0; frame < count; ++frame) {
             const bool hold = frame < m_state.holds.size() && m_state.holds[frame];
-            const int cellWidth = hold ? kHoldCellWidth : kKeyCellWidth;
+            const int cellWidth = hold ? m_holdExtent : m_keyExtent;
             Cell cell;
             cell.frame = frame;
             cell.hold = hold;
@@ -845,9 +965,7 @@ void TimelineStrip::relayout()
 
 void TimelineStrip::clampScroll()
 {
-    const int viewport = m_vertical
-                             ? height() - kStripHeaderHeight - kStripCommandHeight
-                             : width();
+    const int viewport = m_vertical ? height() - cellOrigin() : width();
     const int maximum = std::max(0, m_extent - std::max(0, viewport));
     const int clamped = std::min(std::max(0, m_scroll), maximum);
     if (clamped != m_scroll) {
@@ -870,7 +988,7 @@ void TimelineStrip::ensureCurrentVisible()
     // A drag is the one time the run must hold still: the pointer is measured
     // against the cells it was pressed on, so moving them under it would drop
     // the frame somewhere the user never aimed at.
-    if (m_dragging || m_headerDrag) {
+    if (m_dragging) {
         return;
     }
     if (m_state.currentFrame < 0 || m_state.currentFrame >= m_cells.size()) {
@@ -878,13 +996,11 @@ void TimelineStrip::ensureCurrentVisible()
     }
     // Same axis split as clampScroll: the scroll bar is drawn across the OTHER
     // edge, so it never shortens the run's own axis.
-    const int viewport = m_vertical
-                             ? height() - kStripHeaderHeight - kStripCommandHeight
-                             : width();
+    const int viewport = m_vertical ? height() - cellOrigin() : width();
     if (viewport <= 0) {
         return;
     }
-    const int origin = m_vertical ? kStripHeaderHeight + kStripCommandHeight : 0;
+    const int origin = cellOrigin();
     const QRect &cell = m_cells[m_state.currentFrame].rect;
     const int cellNear = m_vertical ? cell.top() : cell.left();
     const int cellFar = m_vertical ? cell.bottom() : cell.right();
@@ -923,37 +1039,20 @@ void TimelineStrip::paintEvent(QPaintEvent *)
     painter.fillRect(rect(), stripGround());
 
     if (m_vertical) {
-        const QRect header(0, 0, width(), kStripHeaderHeight);
-        painter.fillRect(header, role(AnimeTheme::Role::Surface));
-        painter.setPen(role(AnimeTheme::Role::TextDim));
-        painter.setFont(labelFont(10));
-        painter.drawText(header.adjusted(8, 0, -46, 0), Qt::AlignVCenter | Qt::AlignLeft,
-                         QStringLiteral("ANIMATION"));
-        const QRect commandRow(0, kStripHeaderHeight, width(), kStripCommandHeight);
+        // The dock's title bar carries the name; what is left for the strip is
+        // the frame commands, which no side title bar has room for.
+        const QRect commandRow(0, 0, width(), kStripCommandHeight);
         painter.fillRect(commandRow, role(AnimeTheme::Role::Surface));
         painter.setPen(QPen(role(AnimeTheme::Role::Divider), 1.0));
-        painter.drawLine(0, kStripHeaderHeight, width(), kStripHeaderHeight);
         painter.drawLine(0, commandRow.bottom(), width(), commandRow.bottom());
-        const TimelineCommand commands[] = {TimelineCommand::AddFrame, TimelineCommand::AddHold,
-                                            TimelineCommand::DeleteFrame};
-        for (int i = 0; i < 3; ++i) {
+        for (int i = 0; i < kStripCommandCount; ++i) {
             const QRect box = commandRect(i);
             const bool hover = (i == m_hoverCommand);
             drawChromeCell(painter, box, hover, false, true);
-            drawGlyph(painter, box, glyphFor(commands[i], m_state),
+            drawGlyph(painter, box, glyphFor(kFrameCommands[i], m_state),
                       chromeForeground(hover, false, true), kGlyphPx);
         }
-        // Orientation and float live in the header, where the bar's own right
-        // group cannot reach when the strip is beside the canvas.
-        for (int i = 0; i < 2; ++i) {
-            const QRect box(width() - 8 - (2 - i) * 20, 6, 20, 20);
-            const bool hover = (m_hoverCommand == 3 + i);
-            drawChromeCell(painter, box, hover, false, true);
-            drawGlyph(painter, box, i == 0 ? Glyph::ToHorizontal : Glyph::Float,
-                      chromeForeground(hover, false, true), 14);
-        }
-        painter.setClipRect(QRect(0, kStripHeaderHeight + kStripCommandHeight, width(),
-                                  height() - kStripHeaderHeight - kStripCommandHeight));
+        painter.setClipRect(QRect(0, cellOrigin(), width(), height() - cellOrigin()));
     }
 
     const int current = m_state.currentFrame;
@@ -991,41 +1090,53 @@ void TimelineStrip::paintEvent(QPaintEvent *)
         }
 
         if (!cell.hold) {
-            const int previewWidth = std::min(kPreviewWidth, cell.rect.width() - 4);
-            const int previewHeight = m_vertical ? cell.rect.height() - 8 : cell.rect.height();
-            QRect preview;
-            if (m_vertical) {
-                preview = QRect(cell.rect.x() + (cell.rect.width() - kLaneThickness - 2
-                                                 - previewWidth) / 2,
-                                cell.rect.y() + 4, previewWidth, previewHeight);
-            } else {
-                preview = QRect(cell.rect.x() + (cell.rect.width() - previewWidth) / 2,
-                                cell.rect.y(), previewWidth, previewHeight);
-            }
-            painter.fillRect(preview, Qt::white);
-            const QImage image = thumbnail(cell.frame, preview.size());
-            if (!image.isNull()) {
-                painter.drawImage(preview.topLeft(), image);
-            }
-            painter.setPen(QPen(role(AnimeTheme::Role::Divider), 1.0));
-            painter.setBrush(Qt::NoBrush);
-            painter.drawRect(preview.adjusted(0, 0, -1, -1));
+            // The preview is the PAGE: 4:3 whatever shape the cell took when
+            // the dock was resized.
+            int previewHeight = m_vertical ? cell.rect.height() - 8 : cell.rect.height();
+            const int previewRoom = m_vertical ? cell.rect.width() - kLaneThickness - 2 - 4
+                                               : cell.rect.width() - 4;
+            int previewWidth = std::min(previewRoom, int(std::lround(previewHeight * kPreviewAspect)));
+            if (previewWidth > 0 && previewHeight > 0) {
+                previewHeight = std::min(previewHeight,
+                                         int(std::lround(previewWidth / kPreviewAspect)));
+                QRect preview;
+                if (m_vertical) {
+                    preview = QRect(cell.rect.x() + (cell.rect.width() - kLaneThickness - 2
+                                                     - previewWidth) / 2,
+                                    cell.rect.y() + 4, previewWidth, previewHeight);
+                } else {
+                    preview = QRect(cell.rect.x() + (cell.rect.width() - previewWidth) / 2,
+                                    cell.rect.y() + (cell.rect.height() - previewHeight) / 2,
+                                    previewWidth, previewHeight);
+                }
+                painter.fillRect(preview, Qt::white);
+                const QImage image = thumbnail(cell.frame, preview.size());
+                if (!image.isNull()) {
+                    painter.drawImage(preview.topLeft(), image);
+                }
+                painter.setPen(QPen(role(AnimeTheme::Role::Divider), 1.0));
+                painter.setBrush(Qt::NoBrush);
+                painter.drawRect(preview.adjusted(0, 0, -1, -1));
 
-            // The number is printed ON the drawing, the way a sheet is
-            // numbered in the corner rather than in a column beside it.
-            const bool currentCell = cell.frame == current;
-            const QString number = QString::number(cell.frame + 1);
-            painter.setFont(monoFont(10, true));
-            const QFontMetrics metrics(painter.font());
-            // Under the lane, not behind it: the band is a hit target, and a
-            // number printed inside it would be a click that misses.
-            const QRect chip(preview.x() + 2,
-                             preview.y() + (m_vertical ? 1 : kLaneThickness + 1),
-                             metrics.horizontalAdvance(number) + 10, 13);
-            painter.fillRect(chip, currentCell ? role(AnimeTheme::Role::Accent)
-                                               : role(AnimeTheme::Role::Surface));
-            painter.setPen(currentCell ? QColor(Qt::white) : role(AnimeTheme::Role::TextDim));
-            painter.drawText(chip, Qt::AlignCenter, number);
+                // The name is printed ON the drawing, the way a sheet is
+                // numbered in the corner rather than in a column beside it.
+                const bool currentCell = cell.frame == current;
+                const QString name = nameFor(cell.frame);
+                painter.setFont(monoFont(10, true));
+                const QFontMetrics metrics(painter.font());
+                // Under the lane, not behind it: the band is a hit target, and
+                // a name printed inside it would be a click that misses.
+                const int chipWidth = std::min(preview.width() - 4,
+                                               metrics.horizontalAdvance(name) + 10);
+                const QRect chip(preview.x() + 2,
+                                 preview.y() + (m_vertical ? 1 : kLaneThickness + 1),
+                                 std::max(12, chipWidth), 13);
+                painter.fillRect(chip, currentCell ? role(AnimeTheme::Role::Accent)
+                                                   : role(AnimeTheme::Role::Surface));
+                painter.setPen(currentCell ? QColor(Qt::white) : role(AnimeTheme::Role::TextDim));
+                painter.drawText(chip, Qt::AlignCenter,
+                                 metrics.elidedText(name, Qt::ElideRight, chip.width() - 4));
+            }
         } else {
             // A hold is MARKED, not drawn: the square says "the row above's
             // drawing again" without pretending to be a second frame.
@@ -1076,15 +1187,13 @@ void TimelineStrip::paintEvent(QPaintEvent *)
 
     // The scroll bar is drawn, not a widget: it is a read-out of how much of
     // the run is off screen and never takes a click away from a cell.
-    const int viewport = m_vertical ? height() - kStripHeaderHeight - kStripCommandHeight
-                                    : width();
+    const int viewport = m_vertical ? height() - cellOrigin() : width();
     if (m_extent > viewport && viewport > 0) {
         const qreal fraction = qreal(viewport) / qreal(m_extent);
         const qreal position = qreal(m_scroll) / qreal(m_extent);
         const QColor track = mix(stripGround(), role(AnimeTheme::Role::Text), 0.12);
         if (m_vertical) {
-            const QRect bar(width() - kScrollThickness, kStripHeaderHeight + kStripCommandHeight,
-                            kScrollThickness, viewport);
+            const QRect bar(width() - kScrollThickness, cellOrigin(), kScrollThickness, viewport);
             painter.fillRect(bar, track);
             painter.fillRect(QRect(bar.x(), bar.y() + int(position * viewport), kScrollThickness,
                                    std::max(12, int(fraction * viewport))),
@@ -1144,31 +1253,16 @@ void TimelineStrip::mousePressEvent(QMouseEvent *event)
     m_dragging = false;
     m_pressedCell = -1;
     m_pressedCommand = -1;
-    m_headerDrag = false;
 
-    if (m_vertical) {
-        if (event->pos().y() < kStripHeaderHeight) {
-            for (int i = 0; i < 2; ++i) {
-                const QRect box(width() - 8 - (2 - i) * 20, 6, 20, 20);
-                if (box.contains(event->pos())) {
-                    m_pressedCommand = 3 + i;
-                    update();
-                    return;
-                }
+    if (m_vertical && event->pos().y() < kStripCommandHeight) {
+        for (int i = 0; i < kStripCommandCount; ++i) {
+            if (commandRect(i).contains(event->pos())) {
+                m_pressedCommand = i;
+                update();
+                return;
             }
-            m_headerDrag = true;
-            return;
         }
-        if (event->pos().y() < kStripHeaderHeight + kStripCommandHeight) {
-            for (int i = 0; i < 3; ++i) {
-                if (commandRect(i).contains(event->pos())) {
-                    m_pressedCommand = i;
-                    update();
-                    return;
-                }
-            }
-            return;
-        }
+        return;
     }
 
     m_pressedCell = cellAt(event->pos());
@@ -1176,25 +1270,15 @@ void TimelineStrip::mousePressEvent(QMouseEvent *event)
 
 void TimelineStrip::mouseMoveEvent(QMouseEvent *event)
 {
-    if (m_headerDrag && m_vertical) {
-        emit headerDragged(event->globalPosition().toPoint());
-        return;
-    }
     if (m_pressedCell >= 0 && !m_dragging
         && (event->pos() - m_pressPos).manhattanLength() >= 6) {
         m_dragging = true;
     }
     int hover = -1;
     if (m_vertical) {
-        for (int i = 0; i < 3; ++i) {
+        for (int i = 0; i < kStripCommandCount; ++i) {
             if (commandRect(i).contains(event->pos())) {
                 hover = i;
-            }
-        }
-        for (int i = 0; i < 2; ++i) {
-            const QRect box(width() - 8 - (2 - i) * 20, 6, 20, 20);
-            if (box.contains(event->pos())) {
-                hover = 3 + i;
             }
         }
     }
@@ -1203,10 +1287,7 @@ void TimelineStrip::mouseMoveEvent(QMouseEvent *event)
         update();
     }
     if (hover >= 0) {
-        static const TimelineCommand kCommands[] = {
-            TimelineCommand::AddFrame, TimelineCommand::AddHold, TimelineCommand::DeleteFrame,
-            TimelineCommand::Orientation, TimelineCommand::Float};
-        setToolTip(tooltipFor(kCommands[hover], m_state));
+        setToolTip(tooltipFor(kFrameCommands[hover], m_state));
         return;
     }
     const int cellIndex = cellAt(event->pos());
@@ -1217,13 +1298,16 @@ void TimelineStrip::mouseMoveEvent(QMouseEvent *event)
     const Cell &cell = m_cells[cellIndex];
     if (cell.hold) {
         setToolTip(QStringLiteral("Held: shows the same drawing as frame %1. "
-                                  "Editing either one changes both.").arg(cell.frame));
+                                  "Editing either one changes both.")
+                       .arg(nameFor(cell.frame - 1)));
     } else if (m_state.onionAvailable && cell.lane.contains(event->pos())) {
         setToolTip(m_state.lanes.contains(cell.frame)
-                       ? QStringLiteral("Remove frame %1 from the onion skin").arg(cell.frame + 1)
-                       : QStringLiteral("Ghost frame %1 under the current one").arg(cell.frame + 1));
+                       ? QStringLiteral("Remove frame %1 from the onion skin")
+                             .arg(nameFor(cell.frame))
+                       : QStringLiteral("Ghost frame %1 under the current one")
+                             .arg(nameFor(cell.frame)));
     } else {
-        setToolTip(QStringLiteral("Frame %1").arg(cell.frame + 1));
+        setToolTip(QStringLiteral("Frame %1").arg(nameFor(cell.frame)));
     }
 }
 
@@ -1231,11 +1315,6 @@ void TimelineStrip::mouseReleaseEvent(QMouseEvent *event)
 {
     if (event->button() != Qt::LeftButton) {
         QWidget::mouseReleaseEvent(event);
-        return;
-    }
-    if (m_headerDrag) {
-        m_headerDrag = false;
-        emit headerReleased();
         return;
     }
     const int command = m_pressedCommand;
@@ -1246,11 +1325,8 @@ void TimelineStrip::mouseReleaseEvent(QMouseEvent *event)
     m_dragging = false;
 
     if (command >= 0) {
-        static const TimelineCommand kCommands[] = {
-            TimelineCommand::AddFrame, TimelineCommand::AddHold, TimelineCommand::DeleteFrame,
-            TimelineCommand::Orientation, TimelineCommand::Float};
-        if (command < 5) {
-            emit commandTriggered(kCommands[command]);
+        if (command < kStripCommandCount) {
+            emit commandTriggered(kFrameCommands[command]);
         }
         update();
         return;
@@ -1290,112 +1366,87 @@ void TimelineStrip::leaveEvent(QEvent *event)
     QWidget::leaveEvent(event);
 }
 
-// ------------------------------------------------------------ float panel
+// -------------------------------------------------------- side title bar
 
-TimelineFloatPanel::TimelineFloatPanel(QWidget *parent)
-    : QWidget(parent, Qt::Tool | Qt::FramelessWindowHint)
+TimelineSideTitleBar::TimelineSideTitleBar(QWidget *parent)
+    : QWidget(parent)
 {
     setMouseTracking(true);
-    QVBoxLayout *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(1, kFloatTitleHeight, 1, 1);
-    layout->setSpacing(0);
-    resize(kFloatPanelWidth, kFloatTitleHeight + kKeyCellHeight + kScrollThickness + kBarHeight);
+    setFixedHeight(kSideTitleHeight);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     connect(AnimeTheme::instance(), &AnimeTheme::themeChanged, this, [this]() { update(); });
 }
 
-void TimelineFloatPanel::setContentWidgets(QWidget *strip, QWidget *bar)
+QSize TimelineSideTitleBar::sizeHint() const
 {
-    QVBoxLayout *box = qobject_cast<QVBoxLayout *>(layout());
-    if (!box) {
-        return;
-    }
-    if (strip) {
-        box->addWidget(strip);
-    }
-    if (bar) {
-        box->addWidget(bar);
-    }
+    const QFontMetrics metrics(labelFont(10));
+    return QSize(metrics.horizontalAdvance(QStringLiteral("ANIMATION")) + 48, kSideTitleHeight);
 }
 
-QRect TimelineFloatPanel::closeRect() const
+QRect TimelineSideTitleBar::closeRect() const
 {
-    return QRect(width() - 24, 1, 22, 22);
+    return QRect(width() - kSideTitleHeight, 1, kSideTitleHeight - 2, kSideTitleHeight - 2);
 }
 
-void TimelineFloatPanel::paintEvent(QPaintEvent *)
+void TimelineSideTitleBar::paintEvent(QPaintEvent *)
 {
     QPainter painter(this);
     painter.fillRect(rect(), role(AnimeTheme::Role::Surface));
     painter.setPen(QPen(role(AnimeTheme::Role::Divider), 1.0));
-    painter.drawRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5));
-    painter.drawLine(0, kFloatTitleHeight, width(), kFloatTitleHeight);
+    painter.drawLine(0, height() - 1, width(), height() - 1);
     painter.setPen(role(AnimeTheme::Role::TextDim));
     painter.setFont(labelFont(10));
-    painter.drawText(QRect(9, 0, width() - 40, kFloatTitleHeight),
-                     Qt::AlignVCenter | Qt::AlignLeft, QStringLiteral("TIMELINE"));
+    painter.drawText(rect().adjusted(8, 0, -(kSideTitleHeight + 4), 0),
+                     Qt::AlignVCenter | Qt::AlignLeft, QStringLiteral("ANIMATION"));
     const QRect close = closeRect();
     drawChromeCell(painter, close, m_hoverClose, false, true);
     drawGlyph(painter, close, Glyph::Close, chromeForeground(m_hoverClose, false, true), 13);
 }
 
-void TimelineFloatPanel::mousePressEvent(QMouseEvent *event)
+void TimelineSideTitleBar::mousePressEvent(QMouseEvent *event)
 {
-    if (event->button() != Qt::LeftButton || event->position().y() > kFloatTitleHeight) {
-        QWidget::mousePressEvent(event);
+    if (event->button() == Qt::LeftButton && closeRect().contains(event->position().toPoint())) {
+        m_pressedClose = true;
         return;
     }
-    if (closeRect().contains(event->position().toPoint())) {
-        emit closeRequested();
-        return;
-    }
-    m_dragging = true;
-    m_grabOffset = event->globalPosition().toPoint() - frameGeometry().topLeft();
+    // Everything else is the dock's grip: ignoring hands the press to the
+    // QDockWidget, which drags with the native preview.
+    m_pressedClose = false;
+    event->ignore();
 }
 
-void TimelineFloatPanel::mouseMoveEvent(QMouseEvent *event)
+void TimelineSideTitleBar::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (!m_pressedClose) {
+        event->ignore();
+        return;
+    }
+    m_pressedClose = false;
+    if (event->button() == Qt::LeftButton && closeRect().contains(event->position().toPoint())) {
+        emit commandTriggered(TimelineCommand::Close);
+    }
+}
+
+void TimelineSideTitleBar::mouseMoveEvent(QMouseEvent *event)
 {
     const bool hover = closeRect().contains(event->position().toPoint());
     if (hover != m_hoverClose) {
         m_hoverClose = hover;
+        setToolTip(hover ? tooltipFor(TimelineCommand::Close, TimelineState()) : QString());
         update();
     }
-    // Mouse tracking is on for the close-box hover, so a buttonless move
-    // arrives here too - without the button test a stale drag flag would let
-    // the window follow a pointer that is not holding it.
-    if (!m_dragging || !(event->buttons() & Qt::LeftButton)) {
-        return;
+    if ((event->buttons() & Qt::LeftButton) && !m_pressedClose) {
+        event->ignore();
     }
-    move(event->globalPosition().toPoint() - m_grabOffset);
-    emit titleDragged(event->globalPosition().toPoint());
 }
 
-void TimelineFloatPanel::mouseReleaseEvent(QMouseEvent *event)
-{
-    if (m_dragging && event->button() == Qt::LeftButton) {
-        m_dragging = false;
-        emit titleReleased();
-    }
-    QWidget::mouseReleaseEvent(event);
-}
-
-void TimelineFloatPanel::leaveEvent(QEvent *event)
+void TimelineSideTitleBar::leaveEvent(QEvent *event)
 {
     if (m_hoverClose) {
         m_hoverClose = false;
         update();
     }
     QWidget::leaveEvent(event);
-}
-
-void TimelineFloatPanel::hideEvent(QHideEvent *event)
-{
-    // A drag that ends in a re-dock hides the panel mid-gesture, and hiding a
-    // window drops Qt's implicit grab - the release is then discarded and
-    // never reaches mouseReleaseEvent. Clearing here is the only place the
-    // flags are guaranteed to be reset before the panel is shown again.
-    m_dragging = false;
-    m_hoverClose = false;
-    QWidget::hideEvent(event);
 }
 
 // ------------------------------------------------------------- reopen pill
@@ -1459,77 +1510,115 @@ void TimelineReopenPill::leaveEvent(QEvent *event)
 
 // ----------------------------------------------------------- the timeline
 
-TimelineWidget::TimelineWidget(PaintViewContainer *container, QWidget *parent)
-    : QWidget(parent)
+TimelineWindow::TimelineWindow(PaintViewContainer *container, QMainWindow *mainWindow)
+    : QDockWidget(QStringLiteral("Timeline"), mainWindow)
     , m_container(container)
+    , m_mainWindow(mainWindow)
 {
-    setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-    QVBoxLayout *box = new QVBoxLayout(this);
-    box->setContentsMargins(0, 0, 0, 0);
-    box->setSpacing(0);
+    setObjectName(QStringLiteral("TimelineWindow"));
+    // No top area: the transport is a title bar, and a timeline over the menu
+    // bar would put the playback controls where the document tools belong.
+    setAllowedAreas(Qt::BottomDockWidgetArea | Qt::LeftDockWidgetArea
+                    | Qt::RightDockWidgetArea);
+    setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable
+                | QDockWidget::DockWidgetClosable);
 
     m_bar = new TimelineTransportBar(this);
+    m_sideTitle = new TimelineSideTitleBar(this);
+    m_sideTitle->hide();
     m_strip = new TimelineStrip(this);
-    m_panel = new TimelineFloatPanel(container ? container->window() : nullptr);
+    setWidget(m_strip);
+    setTitleBarWidget(m_bar);
+
     m_pill = new TimelineReopenPill(container ? container->canvasArea() : nullptr);
     if (container) {
-        container->setBottomChrome(this);
         container->canvasArea()->installEventFilter(this);
     }
 
     connect(m_bar, &TimelineTransportBar::commandTriggered,
-            this, &TimelineWidget::handleCommand);
-    connect(m_strip, &TimelineStrip::commandTriggered, this, &TimelineWidget::handleCommand);
+            this, &TimelineWindow::handleCommand);
+    connect(m_strip, &TimelineStrip::commandTriggered, this, &TimelineWindow::handleCommand);
+    connect(m_sideTitle, &TimelineSideTitleBar::commandTriggered,
+            this, &TimelineWindow::handleCommand);
     connect(m_bar, &TimelineTransportBar::fpsPicked, this, [this](int fps) {
         emit fpsChanged(fps);
     });
     connect(m_bar, &TimelineTransportBar::frameTyped, this, [this](int frame) {
         emit frameActivated(std::min(std::max(0, frame), std::max(0, m_state.frameCount - 1)));
     });
-    connect(m_strip, &TimelineStrip::frameActivated, this, &TimelineWidget::frameActivated);
-    connect(m_strip, &TimelineStrip::moveFrameRequested, this, &TimelineWidget::moveFrameRequested);
-    connect(m_strip, &TimelineStrip::laneToggled, this, &TimelineWidget::onionLaneToggled);
-    connect(m_strip, &TimelineStrip::headerDragged, this, [this](const QPoint &globalPos) {
-        bool left = m_leftAligned;
-        const Layout target = dropTargetFor(globalPos, &left);
-        if (target == m_layout && left == m_leftAligned) {
-            return;
+    connect(m_strip, &TimelineStrip::frameActivated, this, &TimelineWindow::frameActivated);
+    connect(m_strip, &TimelineStrip::moveFrameRequested, this, &TimelineWindow::moveFrameRequested);
+    connect(m_strip, &TimelineStrip::laneToggled, this, &TimelineWindow::onionLaneToggled);
+    connect(m_pill, &TimelineReopenPill::clicked, this, [this]() {
+        show();
+        raise();
+    });
+
+    connect(this, &QDockWidget::dockLocationChanged, this, [this](Qt::DockWidgetArea area) {
+        m_area = area;
+        if (area == Qt::LeftDockWidgetArea || area == Qt::RightDockWidgetArea) {
+            m_sideArea = area;
         }
-        if (target == Layout::Floating) {
-            m_panel->move(globalPos - QPoint(m_panel->width() / 2, kFloatTitleHeight / 2));
-        }
-        m_dockedLayout = target;
-        m_layout = target;
-        m_leftAligned = left;
         applyLayout();
         saveSettings();
     });
-    connect(m_strip, &TimelineStrip::headerReleased, this, [this]() { saveSettings(); });
-    connect(m_panel, &TimelineFloatPanel::closeRequested, this, [this]() {
-        setTimelineVisible(false);
-    });
-    connect(m_panel, &TimelineFloatPanel::titleDragged, this, [this](const QPoint &globalPos) {
-        bool left = m_leftAligned;
-        // A floating panel snaps back from CLOSER in than a docked strip
-        // detaches: one threshold for both would make the side of the canvas
-        // an impossible place to park the window.
-        const Layout target = dropTargetFor(globalPos, &left, kSnapDistance);
-        if (target == Layout::Floating) {
-            return;
-        }
-        m_layout = target;
-        m_dockedLayout = target;
-        m_leftAligned = left;
+    connect(this, &QDockWidget::topLevelChanged, this, [this](bool) {
         applyLayout();
         saveSettings();
     });
-    connect(m_pill, &TimelineReopenPill::clicked, this, [this]() { setTimelineVisible(true); });
+    connect(this, &QDockWidget::visibilityChanged, this, [this](bool visible) {
+        // In the vertical layout the transport is NOT inside the dock, so
+        // closing the dock has to take it down by hand.
+        if (m_bar && m_bar->parentWidget() != this) {
+            m_bar->setVisible(visible);
+        }
+        if (m_pill) {
+            m_pill->setVisible(!visible);
+            positionPill();
+        }
+        saveSettings();
+    });
 
     loadSettings();
     applyLayout();
 }
 
-void TimelineWidget::setFrameData(int frameCount, int currentFrame, const QVector<bool> &holds)
+void TimelineWindow::restoreLayout()
+{
+    m_restoring = true;
+    if (m_mainWindow) {
+        // Re-dock even when the area is unchanged: this is what makes the
+        // stored area authoritative over wherever the owner parked it.
+        m_mainWindow->addDockWidget(m_restoreArea, this);
+    } else {
+        m_area = m_restoreArea;
+    }
+    if (m_restoreFloating) {
+        setFloating(true);
+        if (m_floatGeometry.isValid()) {
+            setGeometry(m_floatGeometry);
+        }
+    }
+    applyLayout();
+    setVisible(m_restoreVisible);
+    // Driven by hand rather than through visibilityChanged: the main window has
+    // not been shown yet, so this setVisible takes Qt's deferred path and no
+    // show/hide event - and therefore no signal - is ever delivered. Without
+    // this a timeline restored CLOSED leaves no reopen chip on the canvas.
+    if (m_bar && m_bar->parentWidget() != this) {
+        m_bar->setVisible(!isHidden());
+    }
+    if (m_pill) {
+        m_pill->setVisible(isHidden());
+        positionPill();
+    }
+    m_restoring = false;
+    // No resizeDocks here on purpose: a dock joining the layout for the first
+    // time is given its size hint, which is already title + strip (or title
+    // alone when the strip starts collapsed).
+}
+
+void TimelineWindow::setFrameData(int frameCount, int currentFrame, const QVector<bool> &holds)
 {
     m_state.frameCount = std::max(1, frameCount);
     m_state.currentFrame = std::min(std::max(0, currentFrame), m_state.frameCount - 1);
@@ -1537,7 +1626,16 @@ void TimelineWidget::setFrameData(int frameCount, int currentFrame, const QVecto
     pushState();
 }
 
-void TimelineWidget::setPlaybackActive(bool active)
+void TimelineWindow::setFrameNames(const QVector<QString> &names)
+{
+    if (m_state.names == names) {
+        return;
+    }
+    m_state.names = names;
+    pushState();
+}
+
+void TimelineWindow::setPlaybackActive(bool active)
 {
     if (m_state.playing == active) {
         return;
@@ -1546,7 +1644,7 @@ void TimelineWidget::setPlaybackActive(bool active)
     pushState();
 }
 
-void TimelineWidget::setFps(int fps)
+void TimelineWindow::setFps(int fps)
 {
     if (m_state.fps == fps) {
         return;
@@ -1555,7 +1653,7 @@ void TimelineWidget::setFps(int fps)
     pushState();
 }
 
-void TimelineWidget::setLoop(bool loop)
+void TimelineWindow::setLoop(bool loop)
 {
     if (m_state.loop == loop) {
         return;
@@ -1564,7 +1662,7 @@ void TimelineWidget::setLoop(bool loop)
     pushState();
 }
 
-void TimelineWidget::setOnionState(bool enabled, bool guides, const QSet<int> &lanes)
+void TimelineWindow::setOnionState(bool enabled, bool guides, const QSet<int> &lanes)
 {
     m_state.onion = enabled;
     m_state.guideLines = guides;
@@ -1572,7 +1670,7 @@ void TimelineWidget::setOnionState(bool enabled, bool guides, const QSet<int> &l
     pushState();
 }
 
-void TimelineWidget::setOnionAvailable(bool available)
+void TimelineWindow::setOnionAvailable(bool available)
 {
     if (m_state.onionAvailable == available) {
         return;
@@ -1581,38 +1679,23 @@ void TimelineWidget::setOnionAvailable(bool available)
     pushState();
 }
 
-void TimelineWidget::setThumbnailProvider(std::function<QImage(int, QSize)> provider)
+void TimelineWindow::setThumbnailProvider(std::function<QImage(int, QSize)> provider)
 {
     m_strip->setThumbnailProvider(std::move(provider));
 }
 
-void TimelineWidget::clearThumbnails()
+void TimelineWindow::clearThumbnails()
 {
     m_strip->clearThumbnails();
 }
 
-bool TimelineWidget::timelineVisible() const
+Qt::DockWidgetArea TimelineWindow::sideArea() const
 {
-    return m_layout != Layout::Hidden;
+    return m_sideArea == Qt::LeftDockWidgetArea ? Qt::LeftDockWidgetArea
+                                                : Qt::RightDockWidgetArea;
 }
 
-void TimelineWidget::setTimelineVisible(bool visible)
-{
-    if (visible == timelineVisible()) {
-        return;
-    }
-    if (visible) {
-        m_layout = m_dockedLayout;
-    } else {
-        m_dockedLayout = m_layout;
-        m_layout = Layout::Hidden;
-    }
-    applyLayout();
-    saveSettings();
-    emit visibilityChanged(visible);
-}
-
-void TimelineWidget::handleCommand(TimelineCommand command)
+void TimelineWindow::handleCommand(TimelineCommand command)
 {
     switch (command) {
     case TimelineCommand::AddFrame:
@@ -1620,6 +1703,9 @@ void TimelineWidget::handleCommand(TimelineCommand command)
         break;
     case TimelineCommand::AddHold:
         emit addHoldRequested();
+        break;
+    case TimelineCommand::Duplicate:
+        emit duplicateFrameRequested();
         break;
     case TimelineCommand::DeleteFrame:
         emit deleteFrameRequested();
@@ -1653,117 +1739,125 @@ void TimelineWidget::handleCommand(TimelineCommand command)
         break;
     case TimelineCommand::Rate:
         break;   // the bar opens its own menu and reports the pick
-    case TimelineCommand::Orientation:
-        m_layout = (m_layout == Layout::VerticalStrip) ? Layout::HorizontalStrip
-                                                       : Layout::VerticalStrip;
-        m_dockedLayout = m_layout;
+    case TimelineCommand::Orientation: {
+        // Re-docking IS the orientation switch: the area decides which way the
+        // strip runs, so there is no second source of truth to keep in step.
+        const Qt::DockWidgetArea target = m_state.vertical ? Qt::BottomDockWidgetArea
+                                                           : sideArea();
+        m_area = target;
+        // The remembered extent measured the OTHER axis; carrying it over
+        // would make a tall strip into a wide column.
+        m_expandedExtent = 0;
+        if (m_mainWindow) {
+            m_mainWindow->addDockWidget(target, this);
+        }
         applyLayout();
+        applyDockExtent();
         saveSettings();
         break;
+    }
     case TimelineCommand::Float:
-        if (m_container) {
-            const QRect canvas(m_container->canvasArea()->mapToGlobal(QPoint(0, 0)),
-                               m_container->canvasArea()->size());
-            m_panel->move(canvas.center().x() - m_panel->width() / 2,
-                          canvas.bottom() - m_panel->height() - 26);
-        }
-        m_layout = Layout::Floating;
-        m_dockedLayout = Layout::Floating;
-        applyLayout();
+        setFloating(!isFloating());
         saveSettings();
         break;
     case TimelineCommand::Collapse:
+        if (!m_state.collapsed) {
+            // Remember what the user had sized the strip to; the expand below
+            // is otherwise a reset to the default extent.
+            m_expandedExtent = m_state.vertical ? width() : height();
+        }
         m_state.collapsed = !m_state.collapsed;
         applyLayout();
+        applyDockExtent();
         saveSettings();
         break;
     case TimelineCommand::Close:
-        setTimelineVisible(false);
+        hide();
         break;
     }
 }
 
-void TimelineWidget::applyLayout()
+void TimelineWindow::applyLayout()
 {
     if (m_applyingLayout) {
         return;
     }
     m_applyingLayout = true;
 
-    m_state.vertical = (m_layout == Layout::VerticalStrip);
-    m_state.floating = (m_layout == Layout::Floating);
-    m_state.leftAligned = m_leftAligned;
+    const bool floating = isFloating();
+    const bool vertical = !floating
+                          && (m_area == Qt::LeftDockWidgetArea || m_area == Qt::RightDockWidgetArea);
+    m_state.vertical = vertical;
+    m_state.floating = floating;
+    m_state.leftAligned = (m_area == Qt::LeftDockWidgetArea);
+    // A floating timeline has nothing to collapse INTO - the window would be a
+    // bare title bar - so the flag only applies while docked.
+    const bool stripVisible = !(m_state.collapsed && !floating);
 
-    QVBoxLayout *box = qobject_cast<QVBoxLayout *>(layout());
-    // Reparenting is what removes a widget from its old layout (Qt turns the
-    // ChildRemoved into a layout item removal), so every move starts from
-    // here and the placement below is the only thing that has to be right.
-    if (m_container) {
-        m_container->setSideChrome(nullptr, Qt::LeftEdge);
+    m_strip->setVertical(vertical);
+    if (vertical) {
+        // The transport's assembly is far wider than a side column, so it stays
+        // under the canvas and the dock gets a slim named bar instead. The
+        // title role has to be handed over BEFORE the transport is re-homed:
+        // a widget cannot be in the dock's title layout and the container's
+        // bottom row at once.
+        if (titleBarWidget() != m_sideTitle) {
+            setTitleBarWidget(m_sideTitle);
+        }
+        m_sideTitle->show();
+        if (m_container) {
+            m_container->setBottomChrome(m_bar);
+        }
+        // isHidden, not isVisible: at restore time no ancestor is on screen
+        // yet, and the question is whether the dock was CLOSED.
+        m_bar->setVisible(!isHidden());
+    } else {
+        if (m_container) {
+            m_container->setBottomChrome(nullptr);
+        }
+        if (titleBarWidget() != m_bar) {
+            setTitleBarWidget(m_bar);
+        }
+        m_sideTitle->hide();
+        m_bar->show();
     }
-    m_strip->setParent(this);
-    m_bar->setParent(this);
-
-    const bool stripVisible = (m_layout == Layout::HorizontalStrip
-                               || m_layout == Layout::VerticalStrip
-                               || m_layout == Layout::Floating)
-                              && !(m_state.collapsed && m_layout != Layout::Floating);
-    m_strip->setVertical(m_layout == Layout::VerticalStrip);
-
-    switch (m_layout) {
-    case Layout::TransportOnly:
-    case Layout::HorizontalStrip:
-        if (stripVisible) {
-            box->addWidget(m_strip);
-        }
-        box->addWidget(m_bar);
-        show();
-        m_panel->hide();
-        break;
-    case Layout::VerticalStrip:
-        if (stripVisible && m_container) {
-            m_container->setSideChrome(m_strip, m_leftAligned ? Qt::LeftEdge : Qt::RightEdge);
-        }
-        box->addWidget(m_bar);
-        show();
-        m_panel->hide();
-        break;
-    case Layout::Floating:
-        if (m_panel->pos().isNull() && m_container) {
-            // A panel restored from settings has never been placed; park it
-            // over the foot of the canvas rather than in the screen corner.
-            QWidget *host = m_container->canvasArea();
-            const QRect canvas(host->mapToGlobal(QPoint(0, 0)), host->size());
-            m_panel->move(canvas.center().x() - m_panel->width() / 2,
-                          canvas.bottom() - m_panel->height() - 26);
-        }
-        m_panel->setContentWidgets(m_strip, m_bar);
-        m_panel->show();
-        m_panel->raise();
-        hide();
-        break;
-    case Layout::Hidden:
-        m_panel->hide();
-        hide();
-        break;
-    }
-
     m_strip->setVisible(stripVisible);
-    m_bar->setVisible(m_layout != Layout::Hidden);
-    m_pill->setVisible(m_layout == Layout::Hidden);
-    positionPill();
 
     m_applyingLayout = false;
     pushState();
 }
 
-void TimelineWidget::pushState()
+void TimelineWindow::applyDockExtent()
+{
+    if (!m_mainWindow || isFloating() || isHidden()) {
+        return;
+    }
+    // Only ever called on a MODE change (dock area, collapse, restore): at any
+    // other moment the dock's size is whatever the user dragged it to.
+    if (m_state.vertical) {
+        int width = kCollapsedColumnWidth;
+        if (!m_state.collapsed) {
+            width = std::max({kCollapsedColumnWidth, m_strip->sizeHint().width(),
+                              m_expandedExtent});
+        }
+        m_mainWindow->resizeDocks({this}, {width}, Qt::Horizontal);
+    } else {
+        const int title = m_bar->sizeHint().height();
+        int height = title;
+        if (!m_state.collapsed) {
+            height = std::max(title + m_strip->sizeHint().height(), m_expandedExtent);
+        }
+        m_mainWindow->resizeDocks({this}, {height}, Qt::Vertical);
+    }
+}
+
+void TimelineWindow::pushState()
 {
     m_bar->setState(m_state);
     m_strip->setState(m_state);
 }
 
-void TimelineWidget::positionPill()
+void TimelineWindow::positionPill()
 {
     if (!m_container || !m_pill) {
         return;
@@ -1775,91 +1869,118 @@ void TimelineWidget::positionPill()
     m_pill->raise();
 }
 
-bool TimelineWidget::eventFilter(QObject *watched, QEvent *event)
+bool TimelineWindow::eventFilter(QObject *watched, QEvent *event)
 {
     if (m_container && watched == m_container->canvasArea() && event->type() == QEvent::Resize) {
         positionPill();
     }
-    return QWidget::eventFilter(watched, event);
+    return QDockWidget::eventFilter(watched, event);
 }
 
-void TimelineWidget::changeEvent(QEvent *event)
+void TimelineWindow::moveEvent(QMoveEvent *event)
 {
-    QWidget::changeEvent(event);
+    QDockWidget::moveEvent(event);
+    rememberFloatGeometry();
+}
+
+void TimelineWindow::resizeEvent(QResizeEvent *event)
+{
+    QDockWidget::resizeEvent(event);
+    rememberFloatGeometry();
+}
+
+void TimelineWindow::rememberFloatGeometry()
+{
+    if (m_restoring || !isFloating()) {
+        return;
+    }
+    m_floatGeometry = geometry();
+    if (m_floatGeometryQueued) {
+        return;
+    }
+    m_floatGeometryQueued = true;
+    // One write per gesture rather than one per mouse step; the rect above is
+    // already current, so a settle that lands mid-drag still records what the
+    // dock is at when it fires.
+    QTimer::singleShot(400, this, [this]() {
+        m_floatGeometryQueued = false;
+        if (isFloating()) {
+            m_floatGeometry = geometry();
+            saveSettings();
+        }
+    });
+}
+
+void TimelineWindow::changeEvent(QEvent *event)
+{
+    QDockWidget::changeEvent(event);
     if (event->type() != QEvent::EnabledChange) {
         return;
     }
-    // Depending on the layout the float panel, the pill and the re-sided strip
-    // are NOT children of this widget, so Qt's own enable propagation stops
-    // here. A freeze that reached the timeline would otherwise leave whichever
-    // piece is currently parked elsewhere fully live.
+    // In the vertical layout the transport lives in the canvas container and
+    // the pill always does, so Qt's own enable propagation stops before them.
+    // A freeze that reached the dock would otherwise leave the buttons that
+    // mutate the document the script is working on fully live.
     const bool on = isEnabled();
-    for (QWidget *piece : {static_cast<QWidget *>(m_panel), static_cast<QWidget *>(m_strip),
-                           static_cast<QWidget *>(m_bar), static_cast<QWidget *>(m_pill)}) {
+    for (QWidget *piece : {static_cast<QWidget *>(m_bar), static_cast<QWidget *>(m_pill)}) {
         if (piece && !isAncestorOf(piece)) {
             piece->setEnabled(on);
         }
     }
 }
 
-TimelineWidget::Layout TimelineWidget::dropTargetFor(const QPoint &globalPos,
-                                                     bool *leftAligned) const
-{
-    return dropTargetFor(globalPos, leftAligned, kDetachDistance);
-}
-
-TimelineWidget::Layout TimelineWidget::dropTargetFor(const QPoint &globalPos, bool *leftAligned,
-                                                     int threshold) const
-{
-    if (!m_container) {
-        return Layout::Floating;
-    }
-    QWidget *host = m_container->canvasArea();
-    const QRect canvas(host->mapToGlobal(QPoint(0, 0)), host->size());
-    const int distLeft = globalPos.x() - canvas.left();
-    const int distRight = canvas.right() - globalPos.x();
-    const int distBottom = canvas.bottom() - globalPos.y();
-    if (distLeft >= threshold && distRight >= threshold && distBottom >= threshold) {
-        return Layout::Floating;
-    }
-    if (distBottom <= distLeft && distBottom <= distRight) {
-        return Layout::HorizontalStrip;
-    }
-    if (leftAligned) {
-        // The midline decides the side: whichever edge the pointer is nearer
-        // is the edge the strip wants to live on.
-        *leftAligned = distLeft <= distRight;
-    }
-    return Layout::VerticalStrip;
-}
-
-void TimelineWidget::loadSettings()
+void TimelineWindow::loadSettings()
 {
     QSettings settings(QStringLiteral("AnimeAn"), QStringLiteral("AnimeAn"));
     settings.beginGroup(QStringLiteral("timeline"));
-    const int stored = settings.value(QStringLiteral("layout"), int(Layout::TransportOnly)).toInt();
-    m_dockedLayout = (stored >= int(Layout::TransportOnly) && stored <= int(Layout::Floating))
-                         ? Layout(stored)
-                         : Layout::TransportOnly;
-    m_leftAligned = settings.value(QStringLiteral("leftAligned"), false).toBool();
+    // Round-1 stored a layout enum and an edge flag; the dock area says both,
+    // so the old keys are dropped rather than migrated.
+    settings.remove(QStringLiteral("layout"));
+    settings.remove(QStringLiteral("leftAligned"));
+    const QString area = settings.value(QStringLiteral("dockArea"),
+                                        QStringLiteral("bottom")).toString();
+    if (area == QStringLiteral("left")) {
+        m_restoreArea = Qt::LeftDockWidgetArea;
+        m_sideArea = Qt::LeftDockWidgetArea;
+    } else if (area == QStringLiteral("right")) {
+        m_restoreArea = Qt::RightDockWidgetArea;
+        m_sideArea = Qt::RightDockWidgetArea;
+    } else {
+        m_restoreArea = Qt::BottomDockWidgetArea;
+    }
     m_state.collapsed = settings.value(QStringLiteral("collapsed"), false).toBool();
-    const bool visible = settings.value(QStringLiteral("visible"), true).toBool();
+    m_restoreFloating = settings.value(QStringLiteral("floating"), false).toBool();
+    m_restoreVisible = settings.value(QStringLiteral("visible"), true).toBool();
+    m_floatGeometry = settings.value(QStringLiteral("floatGeometry"), QRect()).toRect();
     settings.endGroup();
-    m_layout = visible ? m_dockedLayout : Layout::Hidden;
 }
 
-void TimelineWidget::saveSettings()
+void TimelineWindow::saveSettings()
 {
+    if (m_restoring) {
+        return;
+    }
+    if (m_mainWindow && !m_mainWindow->isVisible()) {
+        // Startup and shutdown both hide every dock; writing then would record
+        // a state the user never asked for.
+        return;
+    }
     QSettings settings(QStringLiteral("AnimeAn"), QStringLiteral("AnimeAn"));
     settings.beginGroup(QStringLiteral("timeline"));
-    settings.setValue(QStringLiteral("layout"), int(m_dockedLayout));
-    settings.setValue(QStringLiteral("leftAligned"), m_leftAligned);
+    settings.setValue(QStringLiteral("dockArea"),
+                      m_area == Qt::LeftDockWidgetArea    ? QStringLiteral("left")
+                      : m_area == Qt::RightDockWidgetArea ? QStringLiteral("right")
+                                                          : QStringLiteral("bottom"));
+    settings.setValue(QStringLiteral("floating"), isFloating());
     settings.setValue(QStringLiteral("collapsed"), m_state.collapsed);
-    settings.setValue(QStringLiteral("visible"), m_layout != Layout::Hidden);
+    settings.setValue(QStringLiteral("visible"), !isHidden());
+    if (isFloating()) {
+        settings.setValue(QStringLiteral("floatGeometry"), geometry());
+    }
     settings.endGroup();
 }
 
-int TimelineWidget::fpsForText(const QString &text, int fallback)
+int TimelineWindow::fpsForText(const QString &text, int fallback)
 {
     const QString trimmed = text.trimmed();
     for (int i = 0; i < kCadenceCount; ++i) {
@@ -1880,7 +2001,7 @@ int TimelineWidget::fpsForText(const QString &text, int fallback)
     return fallback;
 }
 
-QString TimelineWidget::textForFps(int fps)
+QString TimelineWindow::textForFps(int fps)
 {
     for (int i = 0; i < kCadenceCount; ++i) {
         if (kCadences[i].fps == fps) {
@@ -1891,7 +2012,7 @@ QString TimelineWidget::textForFps(int fps)
     return QStringLiteral("%1 fps").arg(fps);
 }
 
-QString TimelineWidget::shortTextForFps(int fps)
+QString TimelineWindow::shortTextForFps(int fps)
 {
     for (int i = 0; i < kCadenceCount; ++i) {
         if (kCadences[i].fps == fps) {

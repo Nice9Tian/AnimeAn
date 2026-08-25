@@ -181,9 +181,10 @@ void restyleControl(QWidget *widget, const QString &buttonStyle, const QString &
 }
 }
 
-ToolOptPanel::ToolOptPanel(QWidget *parent)
+ToolOptPanel::ToolOptPanel(QWidget *parent, bool subControlHost)
     : QWidget(parent)
     , ui(new Ui::ToolOptPanel)
+    , m_isSubControlHost(subControlHost)
 {
     ui->setupUi(this);
     ui->standardButton->hide();
@@ -196,11 +197,78 @@ ToolOptPanel::ToolOptPanel(QWidget *parent)
     m_layout->setContentsMargins(8, 8, 8, 8);
     m_layout->setSpacing(8);
     m_layout->addStretch();
+
+    if (m_isSubControlHost) {
+        SubControlRegistry::instance()->registerHost(this);
+    }
 }
 
 ToolOptPanel::~ToolOptPanel()
 {
+    // Before the layout takes its children down with it: a frame outlives
+    // every panel it passes through.
+    parkSubControlFrames();
+    if (m_isSubControlHost) {
+        SubControlRegistry::instance()->unregisterHost(this);
+    }
     delete ui;
+}
+
+QWidget *ToolOptPanel::subControlHostWidget()
+{
+    return this;
+}
+
+QRect ToolOptPanel::subControlPreviewRect(const QPoint &globalPos) const
+{
+    if (!isVisible()) {
+        return QRect();
+    }
+    const QPoint local = mapFromGlobal(globalPos);
+    if (!rect().contains(local)) {
+        return QRect();
+    }
+    // The slot is a full-width band at the foot of the option column - where
+    // an appended row actually lands. Its height is what a frame needs to be
+    // readable, not what is left over, so the preview means the same thing on
+    // a crowded panel as on an empty one.
+    const QMargins margins = m_layout ? m_layout->contentsMargins() : QMargins(8, 8, 8, 8);
+    int top = margins.top();
+    for (int index = 0; m_layout && index < m_layout->count(); ++index) {
+        if (QWidget *widget = m_layout->itemAt(index)->widget()) {
+            top = qMax(top, widget->geometry().bottom() + m_layout->spacing());
+        }
+    }
+    const int bandHeight = qMin(qMax(80, height() / 3), qMax(40, height() - top - margins.bottom()));
+    const QRect band(margins.left(), qMin(top, qMax(0, height() - bandHeight - margins.bottom())),
+                     qMax(40, width() - margins.left() - margins.right()), bandHeight);
+    return QRect(mapToGlobal(band.topLeft()), band.size());
+}
+
+void ToolOptPanel::embedSubControl(SubControlFrame *frame)
+{
+    if (!frame || !m_layout) {
+        return;
+    }
+    frame->setParent(this);
+    // Ahead of the trailing stretch, like every other generated row.
+    m_layout->insertWidget(qMax(0, m_layout->count() - 1), frame);
+    if (!m_subControlFrames.contains(frame)) {
+        m_subControlFrames.append(frame);
+    }
+}
+
+void ToolOptPanel::parkSubControlFrames()
+{
+    const QVector<QPointer<SubControlFrame>> frames = m_subControlFrames;
+    m_subControlFrames.clear();
+    for (const QPointer<SubControlFrame> &frame : frames) {
+        // Only what is still ours: a frame the user has since dragged out is
+        // somewhere else's problem, and parking it would take it off screen.
+        if (frame && isAncestorOf(frame)) {
+            frame->park();
+        }
+    }
 }
 
 PaintOpenGLWidget::Tool ToolOptPanel::tool() const
@@ -270,6 +338,8 @@ void ToolOptPanel::configureControls(const QJsonArray &controls, int rowSpacing,
             widget = createColorControl(control);
         } else if (type == QStringLiteral("palette")) {
             widget = createPaletteControl(control);
+        } else if (type == QStringLiteral("subwindow")) {
+            widget = createSubWindowControl(control);
         }
 
         if (!widget) {
@@ -581,6 +651,41 @@ QWidget *ToolOptPanel::createPaletteControl(const QJsonObject &control)
     return palette;
 }
 
+QWidget *ToolOptPanel::createSubWindowControl(const QJsonObject &control)
+{
+    const QString name = textValue(control, QStringLiteral("name"));
+    const QString title = textValue(control, QStringLiteral("title"), name);
+    SubControlFrame *frame = SubControlRegistry::instance()->frame(name);
+    if (!frame) {
+        // A layout naming a frame the shell does not have is a bug in the
+        // layout, not a reason to lose the rest of the panel.
+        QLabel *missing = new QLabel(QStringLiteral("%1 is unavailable").arg(title), this);
+        missing->setObjectName(name);
+        missing->setFont(ui->standardList->font());
+        return missing;
+    }
+
+    if (frame->isFloating()) {
+        // Its position is the user's. One thin line says where it went.
+        QLabel *note = new QLabel(QStringLiteral("%1 is floating — drag it back").arg(title), this);
+        note->setObjectName(name);
+        note->setFont(ui->standardList->font());
+        note->setStyleSheet(
+            QStringLiteral("color: %1;").arg(AnimeTheme::color(AnimeTheme::Role::TextDim).name()));
+        return note;
+    }
+
+    frame->setParent(this);
+    // The caller puts it in the declared grid slot; this only tells the frame
+    // it now lives here, so a drag out of the panel knows where it came from.
+    frame->adoptedBy(this);
+    frame->show();
+    if (!m_subControlFrames.contains(frame)) {
+        m_subControlFrames.append(frame);
+    }
+    return frame;
+}
+
 void ToolOptPanel::applyVisibilityRules()
 {
     for (const VisibilityRule &rule : m_visibilityRules) {
@@ -625,6 +730,9 @@ void ToolOptPanel::emitOptionChanged(const QString &hook, const QString &name, c
 
 void ToolOptPanel::clearControls()
 {
+    // Before anything is deleted: a sub-control frame is the registry's, and
+    // deleteLater on the container it happens to sit in would destroy it.
+    parkSubControlFrames();
     m_controls.clear();
     m_visibilityRules.clear();
     m_controlValues.clear();

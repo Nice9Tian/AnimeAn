@@ -402,6 +402,17 @@ QJsonObject sceneToJson(const AnimeSceneModel &model)
     QJsonObject xsheet;
     xsheet[QStringLiteral("frameCount")] = scene.xsheet.frameCount;
 
+    // Which column ids actually reach the file. Internal columns are skipped
+    // below, so both the layer tree AND a parent link that names one has to
+    // be filtered against this - a saved id nobody writes is a dangling
+    // reference the loader would have to guess about.
+    QSet<int> savedColumnIds;
+    for (const AnimeColumn &column : scene.xsheet.columns) {
+        if (!column.internal) {
+            savedColumnIds.insert(column.id);
+        }
+    }
+
     QJsonArray columns;
     for (int columnIndex = 0; columnIndex < scene.xsheet.columns.size(); ++columnIndex) {
         const AnimeColumn &column = scene.xsheet.columns[columnIndex];
@@ -418,6 +429,12 @@ QJsonObject sceneToJson(const AnimeSceneModel &model)
         columnObject[QStringLiteral("visible")] = column.visible;
         columnObject[QStringLiteral("locked")] = column.locked;
         columnObject[QStringLiteral("opacity")] = column.opacity;
+        // Optional, like penStyle: a project with no parented layer stays
+        // byte-identical to what earlier builds wrote, and a link to a column
+        // that is not being saved is dropped rather than written dangling.
+        if (column.parentLayerId > 0 && savedColumnIds.contains(column.parentLayerId)) {
+            columnObject[QStringLiteral("parentLayerId")] = column.parentLayerId;
+        }
 
         QJsonArray cells;
         for (int row = 0; row < scene.xsheet.frameCount; ++row) {
@@ -435,6 +452,21 @@ QJsonObject sceneToJson(const AnimeSceneModel &model)
         columns.append(columnObject);
     }
     xsheet[QStringLiteral("columns")] = columns;
+
+    // Frame names. Written only when a row actually carries one, so a file
+    // from a project nobody renamed stays byte-identical to what earlier
+    // builds produced; a reader without the key sees the row numbers.
+    QJsonObject frameNames;
+    for (auto it = scene.xsheet.frameNames.constBegin();
+         it != scene.xsheet.frameNames.constEnd(); ++it) {
+        if (it.key() < 0 || it.key() >= scene.xsheet.frameCount || it.value().isEmpty()) {
+            continue;
+        }
+        frameNames[QString::number(it.key())] = it.value();
+    }
+    if (!frameNames.isEmpty()) {
+        xsheet[QStringLiteral("frameNames")] = frameNames;
+    }
     root[QStringLiteral("xsheet")] = xsheet;
 
     // Layer groups. Internal (script-owned) columns are skipped above and
@@ -461,12 +493,6 @@ QJsonObject sceneToJson(const AnimeSceneModel &model)
         groupObject[QStringLiteral("children")] = children;
         return groupObject;
     };
-    QSet<int> savedColumnIds;
-    for (const AnimeColumn &column : scene.xsheet.columns) {
-        if (!column.internal) {
-            savedColumnIds.insert(column.id);
-        }
-    }
     std::function<QJsonArray(const QVector<AnimeLayerNode> &)> treeToJson =
         [&](const QVector<AnimeLayerNode> &nodes) -> QJsonArray {
         QJsonArray array;
@@ -536,6 +562,18 @@ bool sceneFromJson(const QJsonObject &root, AnimeSceneModel *model, QString *err
     const QJsonObject xsheet = root.value(QStringLiteral("xsheet")).toObject();
     scene.xsheet.frameCount = qMax(1, xsheet.value(QStringLiteral("frameCount")).toInt(1));
 
+    // Optional: a file without the key simply has no named rows.
+    const QJsonObject frameNames = xsheet.value(QStringLiteral("frameNames")).toObject();
+    for (auto it = frameNames.constBegin(); it != frameNames.constEnd(); ++it) {
+        bool ok = false;
+        const int row = it.key().toInt(&ok);
+        const QString name = it.value().toString();
+        if (!ok || row < 0 || row >= scene.xsheet.frameCount || name.isEmpty()) {
+            continue;
+        }
+        scene.xsheet.frameNames.insert(row, name);
+    }
+
     const QJsonArray assets = root.value(QStringLiteral("assets")).toArray();
     scene.assets.reserve(assets.size());
     for (const QJsonValue &assetValue : assets) {
@@ -563,6 +601,10 @@ bool sceneFromJson(const QJsonObject &root, AnimeSceneModel *model, QString *err
         AnimeColumn column;
         column.name = columnObject.value(QStringLiteral("name")).toString();
         column.id = columnObject.value(QStringLiteral("id")).toInt(0);
+        // Absent in files from before layer parenting, and in every file where
+        // no layer tracks another: default independent. normalizeLayerTree
+        // zeroes anything that turns out not to name a live column.
+        column.parentLayerId = columnObject.value(QStringLiteral("parentLayerId")).toInt(0);
         column.type = columnTypeFromName(columnObject.value(QStringLiteral("type")).toString());
         column.visible = columnObject.value(QStringLiteral("visible")).toBool(true);
         column.locked = columnObject.value(QStringLiteral("locked")).toBool(false);

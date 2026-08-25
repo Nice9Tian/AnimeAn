@@ -1,14 +1,15 @@
 ﻿#include "mainwindow.h"
 #include "ui_mainwindow.h"
 #include "childrenpanel/assetpanel.h"
-#include "childrenpanel/childpaintwindow.h"
 #include "childrenpanel/forcepad.h"
 #include "childrenpanel/historypanel.h"
 #include "childrenpanel/layerpanel.h"
 #include "childrenpanel/newprojectdialog.h"
-#include "childrenpanel/timelinewidget.h"
+#include "childrenpanel/texturepanel.h"
+#include "childrenpanel/timelinewindow.h"
 
 #include <QComboBox>
+#include "centralpaintarea.h"
 #include "clipreader.h"
 #include "openglwidget.h"
 #include "algorithm/beziersplit.h"
@@ -16,6 +17,7 @@
 #include "parentwindow.h"
 #include "projectio.h"
 #include "selectionattention.h"
+#include "subcontrolframe.h"
 #include "theme.h"
 #include "childrenpanel/tooloptpanel.h"
 #include "childrenpanel/toolcontrolconfig.h"
@@ -27,7 +29,9 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
+#include <QBrush>
 #include <QCoreApplication>
+#include <QHash>
 #include <QDockWidget>
 #include <QDropEvent>
 #include <QDir>
@@ -114,6 +118,31 @@ QString toolControlName(PaintOpenGLWidget::Tool tool)
     }
     return QStringLiteral("pen");
 }
+
+// The lock NAME a tool answers to. Delete Line and Cut Line are eraser
+// sub-modes chosen in the tool options, not tools of their own (the rail draws
+// ONE eraser chip for all three), so one lock covers the family - locking
+// "eraser" and leaving its two sub-modes armable would be no lock at all.
+QString toolLockName(PaintOpenGLWidget::Tool tool)
+{
+    switch (tool) {
+    case PaintOpenGLWidget::Tool::DeleteLine:
+    case PaintOpenGLWidget::Tool::CutLine:
+        return QStringLiteral("eraser");
+    default:
+        return toolControlName(tool);
+    }
+}
+
+// The tools that have a chip on the painting rail, in rail order.
+const PaintOpenGLWidget::Tool kLockableTools[] = {
+    PaintOpenGLWidget::Tool::Arrow,
+    PaintOpenGLWidget::Tool::Pen,
+    PaintOpenGLWidget::Tool::Eraser,
+    PaintOpenGLWidget::Tool::Fill,
+    PaintOpenGLWidget::Tool::Transfer,
+    PaintOpenGLWidget::Tool::Connect,
+};
 
 int frameNameToRow(const QString &frameName)
 {
@@ -432,7 +461,21 @@ MainWindow::MainWindow(QWidget *parent)
     AnimeanWindowsApi windows;
     windows.list = [this]() {
         QVector<AnimeanWindowInfo> infos;
-        infos.reserve(m_parentWindows.size());
+        infos.reserve(m_parentWindows.size() + 1);
+        // The central area is a window by every measure Python cares about -
+        // it has a name, pages and a current page - and by none of the ones it
+        // does not: it cannot be hidden, so show() on it is a no-op below
+        // rather than an error. It leads the list because it is where the
+        // drawing is.
+        if (m_centralArea) {
+            AnimeanWindowInfo info;
+            info.name = m_centralArea->name();
+            info.title = QStringLiteral("Paint");
+            info.visible = true;
+            info.pages = m_centralArea->pageNames();
+            info.current = m_centralArea->currentPage();
+            infos.append(info);
+        }
         for (ParentWindow *window : m_parentWindows) {
             if (!window) {
                 continue;
@@ -451,6 +494,11 @@ MainWindow::MainWindow(QWidget *parent)
         return infos;
     };
     windows.show = [this](const QString &name, bool on) {
+        // The central area has no hidden state to ask for; a script that says
+        // show("paint") is asking for something that is already true.
+        if (m_centralArea && name == m_centralArea->name()) {
+            return;
+        }
         if (ParentWindow *window = parentWindowNamed(name)) {
             window->setVisible(on);
             if (on) {
@@ -459,6 +507,10 @@ MainWindow::MainWindow(QWidget *parent)
         }
     };
     windows.select = [this](const QString &name, const QString &page) {
+        if (m_centralArea && name == m_centralArea->name()) {
+            m_centralArea->selectPage(page);
+            return;
+        }
         if (ParentWindow *window = parentWindowNamed(name)) {
             window->selectPage(page);
         }
@@ -524,6 +576,22 @@ MainWindow::MainWindow(QWidget *parent)
         }
         target->setScriptCursor(name);
     });
+    // ui.set_fill_paint_mode(view, on): routed by view name like the cursor and
+    // overlay channels. An unknown name is a no-op rather than a guess - the
+    // mode changes what a gesture MEANS, and guessing the board would change
+    // it on the wrong one.
+    registerAnimeanUiFillPaintModeCallback([this](const QString &view, bool on) {
+        for (PaintOpenGLWidget *paintView : m_paintViews) {
+            if (paintView->viewName() == view) {
+                paintView->setFillPaintMode(on);
+                return;
+            }
+        }
+        appendPythonDebugMessage(QStringLiteral("[fill paint] unknown view '%1'").arg(view));
+    });
+    registerAnimeanUiLockedToolsCallback([this](const QString &view, const QStringList &tools) {
+        applyLockedTools(view, tools);
+    });
     registerAnimeanUiDrawColorCallback([this](const QColor &color) {
         for (PaintOpenGLWidget *paintView : m_paintViews) {
             paintView->setDrawingColor(color);
@@ -585,8 +653,30 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    // The sub-control registry's keeper is a top-level widget that outlives
+    // this window, so anything parked in it would outlive the shell that
+    // registered its scene. Take both halves of the texture view back first:
+    // the frame goes now, the panel becomes an ordinary child and dies with
+    // the rest of the window.
+    if (m_texturePanel) {
+        // Out of whichever home it is in FIRST: deleting the frame while the
+        // panel is still parented inside it would take the board with it.
+        if (m_textureFrame) {
+            m_textureFrame->releaseContent();
+        }
+        if (m_centralArea) {
+            m_centralArea->setTextureContent(nullptr);
+        }
+        m_texturePanel->setParent(this);
+        m_texturePanel->hide();
+        m_textureHome = nullptr;
+    }
+    delete m_textureFrame;
+    m_textureFrame = nullptr;
 #ifdef ANIMEAN_WITH_PYTHON
     clearAnimeanUiHistoryCallback();
+    clearAnimeanUiLockedToolsCallback();
+    clearAnimeanUiFillPaintModeCallback();
     clearAnimeanUiDrawColorCallback();
     clearAnimeanUiOverlayCallback();
     clearAnimeanUiFreezeCallback();
@@ -606,12 +696,14 @@ void MainWindow::setupDocks()
     setCorner(Qt::BottomLeftCorner, Qt::BottomDockWidgetArea);
     setCorner(Qt::BottomRightCorner, Qt::BottomDockWidgetArea);
 
-    // Three-section workspace: child view over Tools on the left, panels on
-    // the right, the main view anchored as the central widget (only a central
-    // widget absorbs window growth correctly), and the timeline (left+middle)
-    // + python debug (right) along the bottom.
+    // Three-section workspace: Tools on the left, panels on the right, the
+    // central paint area anchored as the central widget (only a central widget
+    // absorbs window growth correctly), and the timeline (left+middle) +
+    // python debug (right) along the bottom. The texture board is no longer a
+    // dock of its own - it is the central area's second page, or a sub-control
+    // inside another panel.
     createMainPaintView();
-    createChildPaintDock();
+    createTexturePanel();
     m_activePaintWidget = m_paintWidget;
     m_paintViews = {m_paintWidget, m_childPaintWidget};
     m_paintWidget->setActiveIndicator(true);
@@ -671,11 +763,18 @@ void MainWindow::setupDocks()
     // drawn on the canvas is a different question, and it now has its own
     // View menu (script-provided, per board) so the two cannot be confused.
     QMenu *windowsMenu = menuBar()->addMenu(QStringLiteral("Windows"));
-    windowsMenu->addAction(m_childPaintWindow->toggleViewAction());
+    // Not a dock toggle any more: the texture board rides a SUB-CONTROL, and
+    // what this entry does is bring that control back to where it can be seen
+    // - floating it when it has never been dropped into a panel.
+    QAction *textureViewAction = windowsMenu->addAction(QStringLiteral("Texture View"));
+    textureViewAction->setToolTip(
+        QStringLiteral("Show the texture board's sub-control; drag its title bar onto a "
+                       "panel to dock it."));
+    connect(textureViewAction, &QAction::triggered, this, &MainWindow::showTextureSubControl);
     windowsMenu->addSeparator();
     // Parent windows: the menu shows ONE line per window, and its pages are
-    // reached by their tabs. The timeline is not one of them - it lives in
-    // the main view, so it carries its own toggle instead.
+    // reached by their tabs. The timeline is not one of them - it has no page
+    // tabs - but it IS a dock, so it carries the same inherited toggle.
     m_parentWindows = {m_toolsDock, m_toolOptDock, m_layerDock, m_assetDock,
                        m_historyDock, m_forcePadDock, m_pythonDebugDock};
     for (ParentWindow *window : m_parentWindows) {
@@ -683,36 +782,53 @@ void MainWindow::setupDocks()
             windowsMenu->addAction(window->toggleViewAction());
         }
     }
-    if (m_timelineAction) {
-        windowsMenu->addAction(m_timelineAction);
+    if (m_timeline) {
+        windowsMenu->addAction(m_timeline->toggleViewAction());
     }
 
-    // NOTE: deliberately NO horizontal resizeDocks on the bottom band —
-    // measured against Qt 6.9.1 it pins the band at its minimum height for
-    // good and stops the right column from recovering after a shrink. The
-    // only sizing nudge is vertical, inside the left column: the child view
-    // gets the larger share above the Tools dock.
-    resizeDocks({m_childPaintWindow}, {380}, Qt::Vertical);
+    // NOTE: deliberately NO resizeDocks anywhere here — measured against Qt
+    // 6.9.1 a horizontal call on the bottom band pins it at its minimum height
+    // for good. The only one that used to survive was the vertical share the
+    // texture DOCK took from the Tools dock, and there is no texture dock any
+    // more: the left column is Tools alone, which needs no nudge.
 }
 
 void MainWindow::createMainPaintView()
 {
-    PaintViewContainer *container = new PaintViewContainer(this);
-    container->setMinimumSize(320, 240);
+    m_centralArea = new CentralPaintArea(this);
     if (QWidget *central = takeCentralWidget()) {
         central->deleteLater();
     }
-    setCentralWidget(container);
+    setCentralWidget(m_centralArea);
 
-    m_paintWidget = container->paintWidget();
+    // The Drawing page's container is still the resize-absorbing centre; the
+    // tab strip above it is 24px of chrome, not a competing layout.
+    m_paintWidget = m_centralArea->mainContainer()->paintWidget();
     m_paintWidget->setViewName(QStringLiteral("main"));
     m_paintWidget->model().setTextId(QStringLiteral("main_paint_view"));
     m_paintWidget->model().setIntId(1);
+
+    connect(m_centralArea, &CentralPaintArea::pageChanged, this, [this](const QString &page) {
+        // The page selection is half of the texture board's ownership rule, so
+        // it has to re-run before anything else reacts.
+        updateTextureHome();
+        if (page == QStringLiteral("texture")) {
+            if (m_childPaintWidget) {
+                setActivePaintView(m_childPaintWidget);
+            }
+        } else if (m_paintWidget) {
+            setActivePaintView(m_paintWidget);
+        }
+    });
 }
 
 void MainWindow::showMainPaintView()
 {
-    // The main view is the central widget: always visible, just activate it.
+    // The main view is the central widget's Drawing page: never hidden, but it
+    // can be behind the Texture tab.
+    if (m_centralArea) {
+        m_centralArea->selectPage(QStringLiteral("drawing"));
+    }
     setActivePaintView(m_paintWidget);
 }
 
@@ -1026,12 +1142,12 @@ void MainWindow::applyHistoryRestore(PaintOpenGLWidget *view)
     // change has to move the view with it.
     view->modelReplaced();
 
-    // Chronological undo/redo may land on the other — possibly hidden — view;
+    // Chronological undo/redo may land on the other — possibly parked — view;
     // surface and activate it so the user sees what just changed instead of
-    // an apparently dead Undo key.
-    if (view == m_childPaintWidget && m_childPaintWindow) {
-        m_childPaintWindow->show();
-        m_childPaintWindow->raise();
+    // an apparently dead Undo key. showTextureView() picks the home the
+    // board currently has rather than forcing one on it.
+    if (view == m_childPaintWidget) {
+        showTextureView();
     }
     setActivePaintView(view);
 
@@ -1052,19 +1168,110 @@ void MainWindow::applyHistoryRestore(PaintOpenGLWidget *view)
     view->update();
 }
 
-void MainWindow::createChildPaintDock()
+void MainWindow::createTexturePanel()
 {
-    m_childPaintWindow = new ChildPaintWindow(this);
-    m_childPaintWidget = m_childPaintWindow->paintWidget();
+    // Born PARKED, not as a loose child of the window: an unlaid-out child of
+    // a QMainWindow paints itself over the top-left corner the moment the
+    // window is shown. The router below gives it a real home.
+    m_texturePanel = new TexturePanel(SubControlRegistry::instance()->keeper());
+    m_childPaintWidget = m_texturePanel->paintWidget();
     m_childPaintWidget->model().setTextId(QStringLiteral("child_paint_view"));
     m_childPaintWidget->model().setIntId(2);
-    // Added to the left area BEFORE the Tools dock, so the left column reads
-    // child view on top, tools underneath.
-    addDockWidget(Qt::LeftDockWidgetArea, m_childPaintWindow);
-    connect(m_childPaintWindow, &ChildPaintWindow::scriptButtonToggled, this,
+    connect(m_texturePanel, &TexturePanel::scriptButtonToggled, this,
             [this](const QString &name, bool on) {
                 m_childPaintWidget->sendPythonViewButtonMessage(name, on);
             });
+
+    // The travelling half: a named frame the tool panels can adopt by
+    // declaration ({"type":"subwindow","name":"texture_view"}) or by drag.
+    // It exists from startup so a layout built before the user has ever
+    // opened the texture view still finds it.
+    m_textureFrame = new SubControlFrame(QStringLiteral("texture_view"),
+                                         QStringLiteral("Texture"), this);
+    m_textureFrame->setPlaceholderText(QStringLiteral("Open in the main view"));
+    // QUEUED on purpose. A tool-options rebuild parks the frame and then puts
+    // it straight back at its declared slot; run inline, that pair would move
+    // the board out and in again - two GL context re-creations per refresh.
+    // Deferred, the second evaluation sees an unchanged answer and does
+    // nothing at all.
+    connect(m_textureFrame, &SubControlFrame::homeChanged, this,
+            &MainWindow::updateTextureHome, Qt::QueuedConnection);
+
+    // The panel starts on the central Texture page's side of the rule: parked,
+    // because the Drawing page is what comes up first.
+    updateTextureHome();
+}
+
+void MainWindow::updateTextureHome()
+{
+    if (!m_texturePanel || m_updatingTextureHome) {
+        return;
+    }
+    // Reparenting the panel moves a QOpenGLWidget, which fires show/hide
+    // events that come straight back here. One pass at a time.
+    m_updatingTextureHome = true;
+
+    // The rule, in priority order: the central Texture page owns the board
+    // whenever it is selected, then a live sub-control frame, then nowhere.
+    const bool centralWantsIt = m_centralArea
+                                && m_centralArea->currentPage() == QStringLiteral("texture");
+    QWidget *wanted = nullptr;
+    if (centralWantsIt) {
+        wanted = m_centralArea;
+    } else if (m_textureFrame && m_textureFrame->isLive()) {
+        wanted = m_textureFrame;
+    }
+
+    if (wanted != m_textureHome) {
+        // Never mid-gesture. A button down anywhere means either a stroke on
+        // this board (a reparent would destroy the context it is drawing into)
+        // or the frame drag that asked for this move in the first place, which
+        // is not finished until the button comes up. Poll rather than
+        // single-shot at zero: a zero timer re-arms itself every event loop
+        // pass and spins for the length of the drag.
+        if (QApplication::mouseButtons() != Qt::NoButton) {
+            m_updatingTextureHome = false;
+            QTimer::singleShot(50, this, &MainWindow::updateTextureHome);
+            return;
+        }
+
+        if (m_centralArea && m_textureHome == m_centralArea) {
+            m_centralArea->setTextureContent(nullptr);
+        } else if (m_textureFrame && m_textureHome == m_textureFrame) {
+            m_textureFrame->releaseContent();
+        }
+
+        m_textureHome = wanted;
+        if (wanted == m_centralArea) {
+            m_texturePanel->setCompact(false);
+            m_centralArea->setTextureContent(m_texturePanel);
+        } else if (wanted == m_textureFrame) {
+            // A board inside a tool-options row cannot hold the full-size
+            // floor open; the frame relaxes it and the container scales.
+            m_texturePanel->setCompact(true);
+            m_textureFrame->setContent(m_texturePanel);
+        } else {
+            m_texturePanel->setParent(SubControlRegistry::instance()->keeper());
+            m_texturePanel->hide();
+        }
+        // No cache invalidation is owed here: the onion cache is a MAIN-board
+        // feature (the texture board is a reference, not a run of drawings),
+        // and the widget owns no GL resources of its own - it is QPainter on
+        // GL, so the context Qt re-creates on a reparent had nothing in it.
+        // A repaint at the new size is all the move costs.
+        if (m_childPaintWidget) {
+            m_childPaintWidget->update();
+        }
+    }
+
+    // The frame always says something: the board when it has it, otherwise
+    // where the board went.
+    if (m_textureFrame) {
+        m_textureFrame->setPlaceholderText(centralWantsIt
+                                               ? QStringLiteral("Open in the main view")
+                                               : QStringLiteral("The texture board is parked"));
+    }
+    m_updatingTextureHome = false;
 }
 
 #ifdef ANIMEAN_WITH_PYTHON
@@ -1212,11 +1419,13 @@ void MainWindow::openScriptSettings(const QString &name, const QString &title)
 void MainWindow::attachChildScriptMenus()
 {
 #ifdef ANIMEAN_WITH_PYTHON
-    // The texture window's own menu bar, filled from host "child". Built here
-    // rather than in ChildPaintWindow because MainWindow owns the Python side
-    // (the interpreter, the dispatch, the panel resync); the window just
-    // provides the bar.
-    QMenu *host = m_childPaintWindow->settingMenu();
+    // The texture panel's own menu bar, filled from host "child". Built here
+    // rather than in TexturePanel because MainWindow owns the Python side
+    // (the interpreter, the dispatch, the panel resync); the panel just
+    // provides the bar. Still called exactly once: the bar is a child of the
+    // panel and travels with it, so moving the panel between homes needs no
+    // re-attach.
+    QMenu *host = m_texturePanel ? m_texturePanel->settingMenu() : nullptr;
     if (!host) {
         return;
     }
@@ -1320,10 +1529,10 @@ void MainWindow::populateChildViewButtons()
             setStatusText(QStringLiteral("view_buttons JSON error: %1").arg(parseError.errorString()));
             return;
         }
-        QVector<ChildPaintWindow::ScriptButtonDefinition> definitions;
+        QVector<TexturePanel::ScriptButtonDefinition> definitions;
         for (const QJsonValue &value : document.array()) {
             const QJsonObject object = value.toObject();
-            ChildPaintWindow::ScriptButtonDefinition definition;
+            TexturePanel::ScriptButtonDefinition definition;
             definition.name = object.value(QStringLiteral("name")).toString();
             definition.title = object.value(QStringLiteral("title")).toString();
             definition.tooltip = object.value(QStringLiteral("tooltip")).toString();
@@ -1332,7 +1541,9 @@ void MainWindow::populateChildViewButtons()
                 definitions.append(definition);
             }
         }
-        m_childPaintWindow->setScriptButtons(definitions);
+        if (m_texturePanel) {
+            m_texturePanel->setScriptButtons(definitions);
+        }
     } catch (const py::error_already_set &error) {
         setStatusText(QStringLiteral("view_buttons error: %1").arg(QString::fromUtf8(error.what())));
     }
@@ -1344,13 +1555,13 @@ void MainWindow::createTextureFileMenu()
     // On the TEXTURE board's own bar. These actions open, save and import the
     // texture document; on the application bar they sat beside the main
     // document's File menu and read as a second, competing File menu.
-    QMenuBar *bar = m_childPaintWindow ? m_childPaintWindow->menuBar() : menuBar();
+    QMenuBar *bar = m_texturePanel ? m_texturePanel->menuBar() : menuBar();
     QMenu *textureMenu = new QMenu(QStringLiteral("File"), bar);
     // INSERTED before Setting, not appended: Setting is added in the child
     // window's constructor, so appending would leave the bar reading
     // "Setting | File".
-    if (m_childPaintWindow && m_childPaintWindow->settingMenu()) {
-        bar->insertMenu(m_childPaintWindow->settingMenu()->menuAction(), textureMenu);
+    if (m_texturePanel && m_texturePanel->settingMenu()) {
+        bar->insertMenu(m_texturePanel->settingMenu()->menuAction(), textureMenu);
     } else {
         bar->addMenu(textureMenu);
     }
@@ -1394,12 +1605,81 @@ void MainWindow::createTextureFileMenu()
 
 void MainWindow::showTextureView()
 {
-    if (!m_childPaintWindow) {
+    if (!m_texturePanel) {
         return;
     }
-    m_childPaintWindow->show();
-    m_childPaintWindow->raise();
+    // Surface the home the board ALREADY has rather than imposing one: a user
+    // who put the texture view in a sub-control does not want an Import to
+    // move it into the central area behind their back. Only when nothing is
+    // showing it does the central Texture page get selected.
+    if (m_textureFrame && m_textureFrame->isLive()
+        && (!m_centralArea || m_centralArea->currentPage() != QStringLiteral("texture"))) {
+        m_textureFrame->surface();
+    } else if (m_centralArea) {
+        m_centralArea->selectPage(QStringLiteral("texture"));
+    }
+    updateTextureHome();
     setActivePaintView(m_childPaintWidget);
+}
+
+void MainWindow::showTextureSubControl()
+{
+    if (!m_textureFrame) {
+        return;
+    }
+    m_textureFrame->surface();
+    updateTextureHome();
+    // Only worth activating the board when the sub-control actually got it;
+    // with the central Texture page selected the frame shows a placeholder and
+    // the board is elsewhere.
+    if (m_textureHome == m_textureFrame && m_childPaintWidget) {
+        setActivePaintView(m_childPaintWidget);
+    }
+}
+
+void MainWindow::ensureTextureBoardMapped(TextureMappingRestore *restore)
+{
+    if (restore) {
+        *restore = TextureMappingRestore();
+    }
+    if (!m_childPaintWidget) {
+        return;
+    }
+    if (m_childPaintWidget->isVisible()) {
+        return;
+    }
+    // Parked or behind another tab: it has to be on screen before
+    // grabFramebuffer has anything to return.
+    if (m_textureFrame && m_textureFrame->isLive()) {
+        // Surfacing the frame shows and raises it; nothing about the workspace
+        // the user chose moves, so there is nothing to give back.
+        m_textureFrame->surface();
+    } else if (m_centralArea && m_centralArea->currentPage() != QStringLiteral("texture")) {
+        // Selecting the central page ALSO re-targets the active view (through
+        // pageChanged), which a read-only caller never asked for: what it
+        // displaced is reported back so the caller can put both halves.
+        if (restore) {
+            restore->centralPage = m_centralArea->currentPage();
+            restore->activeView = activePaintWidget();
+        }
+        m_centralArea->selectPage(QStringLiteral("texture"));
+    }
+    updateTextureHome();
+    QCoreApplication::processEvents();
+}
+
+void MainWindow::restoreTextureBoardMapping(const TextureMappingRestore &restore)
+{
+    if (restore.centralPage.isEmpty()) {
+        return;
+    }
+    if (m_centralArea) {
+        m_centralArea->selectPage(restore.centralPage);
+    }
+    if (restore.activeView) {
+        setActivePaintView(restore.activeView);
+    }
+    updateTextureHome();
 }
 
 void MainWindow::openTextureView()
@@ -1614,17 +1894,18 @@ bool MainWindow::writeJsonToFile(const QJsonObject &object,
 
 bool MainWindow::exportTextureImage()
 {
-    if (!m_childPaintWidget || !m_childPaintWindow) {
+    if (!m_childPaintWidget || !m_texturePanel) {
         return false;
     }
 
     // Make the texture view renderable for the framebuffer grab WITHOUT
     // changing the active editing view: exporting is read-only, and a
-    // cancelled export must leave the active view untouched. The active-view
-    // border is UI chrome — hide it during the grab so it is not baked into
-    // the exported image.
-    m_childPaintWindow->show();
-    m_childPaintWindow->raise();
+    // cancelled export must leave the active view untouched. Already-visible
+    // is the common case and costs nothing. The active-view border is UI
+    // chrome — hide it during the grab so it is not baked into the exported
+    // image.
+    TextureMappingRestore mapping;
+    ensureTextureBoardMapped(&mapping);
     m_childPaintWidget->setActiveIndicator(false);
     // The Background choice is a VIEWING aid, so it is suppressed for the
     // grab the same way the active-view border is. A black board would tint
@@ -1637,6 +1918,9 @@ bool MainWindow::exportTextureImage()
     QCoreApplication::processEvents();
     const QImage image = m_childPaintWidget->grabFramebuffer();
     m_childPaintWidget->setBackgroundMode(savedBackground);
+    // Before every return below, indicator included: the workspace goes back
+    // whether the export succeeded, failed or was cancelled at the dialog.
+    restoreTextureBoardMapping(mapping);
     m_childPaintWidget->setActiveIndicator(activePaintWidget() == m_childPaintWidget);
     if (image.isNull()) {
         QMessageBox::warning(this,
@@ -1679,7 +1963,7 @@ PaintOpenGLWidget *MainWindow::activePaintWidget() const
 PaintOpenGLWidget *MainWindow::framePanelTarget() const
 {
     PaintOpenGLWidget *view = activePaintWidget();
-    if (view == m_childPaintWidget && m_childPaintWindow && !m_childPaintWindow->changableTimeline()) {
+    if (view == m_childPaintWidget && m_texturePanel && !m_texturePanel->changableTimeline()) {
         return m_paintWidget;
     }
     return view;
@@ -1692,7 +1976,7 @@ PaintOpenGLWidget *MainWindow::framePanelTarget() const
 PaintOpenGLWidget *MainWindow::layerPanelTarget() const
 {
     PaintOpenGLWidget *view = activePaintWidget();
-    if (view == m_childPaintWidget && m_childPaintWindow && !m_childPaintWindow->changableTexture()) {
+    if (view == m_childPaintWidget && m_texturePanel && !m_texturePanel->changableTexture()) {
         return m_paintWidget;
     }
     return view;
@@ -1740,6 +2024,9 @@ void MainWindow::setActivePaintView(PaintOpenGLWidget *view)
     refreshPanelTargets();
     scheduleHistoryRefresh();
     syncEmbeddedPythonState();
+    // The rail is enforced against the board the next gesture lands on, and
+    // that board just changed.
+    refreshToolLockState();
     if (m_forcePadDock) {
         // The pad acts on the active view; say so where the user is looking.
         m_forcePadDock->setWindowTitle(QStringLiteral("Repulsion Pad - %1").arg(view->viewName()));
@@ -1809,6 +2096,12 @@ void MainWindow::setupPythonDebugDock()
 
     m_pythonDebugDock->addPage(QStringLiteral("python_debug"), QStringLiteral("Python Debug"), panel);
     addDockWidget(Qt::BottomDockWidgetArea, m_pythonDebugDock);
+    if (m_timeline && dockWidgetArea(m_timeline) == Qt::BottomDockWidgetArea) {
+        // BELOW the timeline, not beside it: the bottom band is where the
+        // timeline earns its full window width, and a second dock sharing the
+        // row would cut the frame strip in half the moment the REPL is shown.
+        splitDockWidget(m_timeline, m_pythonDebugDock, Qt::Vertical);
+    }
     // Hidden by default: a REPL against the running app is a developer
     // surface, not part of drawing. The View menu toggle brings it up.
     m_pythonDebugDock->hide();
@@ -2046,10 +2339,10 @@ void MainWindow::setupConnections()
                 this, &MainWindow::stopPlayback);
     }
 
-    connect(m_childPaintWindow, &ChildPaintWindow::changableTimelineToggled, this, [this](bool) {
+    connect(m_texturePanel, &TexturePanel::changableTimelineToggled, this, [this](bool) {
         refreshPanelTargets();
     });
-    connect(m_childPaintWindow, &ChildPaintWindow::changableTextureToggled, this, [this](bool) {
+    connect(m_texturePanel, &TexturePanel::changableTextureToggled, this, [this](bool) {
         refreshPanelTargets();
     });
 
@@ -2367,7 +2660,10 @@ void MainWindow::createToolDocks()
     m_mappingToolsPanel = new ToolsPanel(this, false);
     m_fukusatoToolsPanel = new ToolsPanel(this, false);
     m_toolsPanels = {m_paintingToolsPanel, m_mappingToolsPanel, m_fukusatoToolsPanel};
-    ToolOptPanel *toolOptPanel = new ToolOptPanel(this);
+    // The docked options panel is a sub-control HOST; the script-settings
+    // dialog builds its own ToolOptPanel and must not be one (a frame dropped
+    // into a modal window would go away with it).
+    ToolOptPanel *toolOptPanel = new ToolOptPanel(this, true);
 
     m_toolsDock = new ParentWindow(QStringLiteral("tools"), QStringLiteral("Tools"), this);
     m_toolsDock->addPage(QStringLiteral("painting"), QStringLiteral("Painting"), m_paintingToolsPanel);
@@ -2452,6 +2748,22 @@ void MainWindow::createToolDocks()
     };
 
     auto applyTool = [this, toolOptPanel, loadToolOptions](PaintOpenGLWidget::Tool tool, bool reloadOptions) {
+        // A locked tool is refused HERE as well as at the chip: the chip is
+        // only one of the ways a tool gets armed - the colour swatch arms Pen
+        // or Fill, and the eraser-mode row arms Delete Line and Cut Line - and
+        // a lock that only dimmed a chip would leave those routes open. Arrow
+        // is never refusable: it is the fallback a lock switches to, so
+        // refusing it would strand the user on a locked tool.
+        if (tool != PaintOpenGLWidget::Tool::Arrow && isToolLocked(int(tool))) {
+            // Re-assert the armed tool so a panel that already checked itself
+            // (the extra-tool buttons clear the chips on click) goes back to
+            // showing what is actually armed.
+            const PaintOpenGLWidget::Tool armed = activePaintWidget()->tool();
+            for (ToolsPanel *panel : m_toolsPanels) {
+                panel->setTool(armed);
+            }
+            return;
+        }
         for (PaintOpenGLWidget *view : m_paintViews) {
             view->setTool(tool);
             view->setStrokeProperty(QString());
@@ -2471,6 +2783,10 @@ void MainWindow::createToolDocks()
 
     auto selectTool = [applyTool](PaintOpenGLWidget::Tool tool) {
         applyTool(tool, true);
+    };
+
+    m_applyTool = [applyTool](int tool, bool reloadOptions) {
+        applyTool(static_cast<PaintOpenGLWidget::Tool>(tool), reloadOptions);
     };
 
     loadToolOptions(PaintOpenGLWidget::Tool::Pen);
@@ -2563,6 +2879,60 @@ void MainWindow::createToolDocks()
     });
 }
 
+bool MainWindow::isToolLocked(int tool) const
+{
+    const PaintOpenGLWidget::Tool value = static_cast<PaintOpenGLWidget::Tool>(tool);
+    if (value == PaintOpenGLWidget::Tool::Arrow) {
+        // The escape hatch. A policy that locked Arrow too would leave the
+        // board with no armable tool at all, so the shell keeps this one.
+        return false;
+    }
+    PaintOpenGLWidget *view = activePaintWidget();
+    if (!view) {
+        return false;
+    }
+    // The set belongs to the board the gesture will LAND on, not to the main
+    // board: a lock pushed for the drawing document must not follow the user
+    // onto the texture board, which has no lock set of its own and is
+    // therefore unrestricted.
+    const QSet<QString> locked = m_lockedToolsByView.value(view->viewName());
+    return locked.contains(toolLockName(value));
+}
+
+void MainWindow::applyLockedTools(const QString &view, const QStringList &tools)
+{
+    QSet<QString> locked;
+    for (const QString &name : tools) {
+        const QString trimmed = name.trimmed().toLower();
+        if (!trimmed.isEmpty()) {
+            locked.insert(trimmed);
+        }
+    }
+    m_lockedToolsByView.insert(view, locked);
+    // A set pushed for a board the user is not on is remembered rather than
+    // applied; refreshToolLockState reads whichever set the ACTIVE board has.
+    refreshToolLockState();
+}
+
+void MainWindow::refreshToolLockState()
+{
+    // One rail for the whole application, so it shows the active board's set.
+    // Called on both edges of the question: a new set arriving, and the active
+    // board changing under the set already stored.
+    PaintOpenGLWidget *view = activePaintWidget();
+    if (!m_paintingToolsPanel || !view) {
+        return;
+    }
+    for (PaintOpenGLWidget::Tool tool : kLockableTools) {
+        m_paintingToolsPanel->setToolEnabled(tool, !isToolLocked(int(tool)));
+    }
+    // The armed tool may have just been locked out from under the user. Arrow
+    // is always available, so it is where the board lands.
+    if (m_applyTool && isToolLocked(int(view->tool()))) {
+        m_applyTool(int(PaintOpenGLWidget::Tool::Arrow), true);
+    }
+}
+
 void MainWindow::createListDocks()
 {
     // Two layer pages, each nailed to one board. The old single panel followed
@@ -2589,30 +2959,27 @@ void MainWindow::createListDocks()
 
 void MainWindow::createTimeline()
 {
-    PaintViewContainer *container = qobject_cast<PaintViewContainer *>(centralWidget());
+    // The main board's container, asked for by name rather than found by
+    // being the central widget: the central widget is the tabbed paint AREA
+    // now, and casting it to a container would silently give up the timeline.
+    PaintViewContainer *container = m_centralArea ? m_centralArea->mainContainer() : nullptr;
     if (!container) {
         return;
     }
     // Only the MAIN view gets a timeline. It still DRIVES whichever board
     // framePanelTarget() resolves to, exactly as the frames dock did - one
     // timeline, pointed by the child window's Changable Timeline flag.
-    m_timeline = new TimelineWidget(container, container);
+    //
+    // A real dock window, not chrome inside the container: that is what gives
+    // the bottom layout the full window width, the transport the title-bar
+    // position, the strip a resize splitter and the drag its native preview.
+    m_timeline = new TimelineWindow(container, this);
     m_timeline->setThumbnailProvider([this](int frame, QSize size) {
         return framePanelTarget()->renderFrameThumbnail(frame, size);
     });
+    addDockWidget(Qt::BottomDockWidgetArea, m_timeline);
 
-    m_timelineAction = new QAction(QStringLiteral("Timeline"), this);
-    m_timelineAction->setCheckable(true);
-    m_timelineAction->setChecked(m_timeline->timelineVisible());
-    connect(m_timelineAction, &QAction::triggered, this, [this](bool on) {
-        m_timeline->setTimelineVisible(on);
-    });
-    connect(m_timeline, &TimelineWidget::visibilityChanged, this, [this](bool visible) {
-        const QSignalBlocker blocker(m_timelineAction);
-        m_timelineAction->setChecked(visible);
-    });
-
-    connect(m_timeline, &TimelineWidget::frameActivated, this, [this](int frame) {
+    connect(m_timeline, &TimelineWindow::frameActivated, this, [this](int frame) {
         // Picking a frame by hand means the user is done watching; without
         // this the next tick would snap the highlight back.
         stopPlayback();
@@ -2621,7 +2988,7 @@ void MainWindow::createTimeline()
                                attentionFor(view).layer, attentionFor(view).asset);
     });
 
-    connect(m_timeline, &TimelineWidget::addFrameRequested, this, [this]() {
+    connect(m_timeline, &TimelineWindow::addFrameRequested, this, [this]() {
         stopPlayback();  // editing the timeline invalidates the prerender
         PaintOpenGLWidget *view = framePanelTarget();
         const int frameIndex = view->addFrame();
@@ -2630,16 +2997,34 @@ void MainWindow::createTimeline()
                         frameIndex, attentionFor(view).layer, attentionFor(view).asset);
     });
 
-    connect(m_timeline, &TimelineWidget::addHoldRequested, this, [this]() {
+    // A hold describes the frame it was asked for: the new row goes directly
+    // after the current one and re-exposes it, rather than landing at the end
+    // of the sheet where it would hold whatever happens to be last.
+    connect(m_timeline, &TimelineWindow::addHoldRequested, this, [this]() {
         stopPlayback();
         PaintOpenGLWidget *view = framePanelTarget();
-        const int frameIndex = view->addHoldFrame();
+        const int frameIndex = view->insertHoldFrameAfter(attentionFor(view).frame);
+        if (frameIndex < 0) {
+            return;
+        }
         m_timeline->clearThumbnails();
         updateAttention(view, AttentionChange::FrameChange,
                         frameIndex, attentionFor(view).layer, attentionFor(view).asset);
     });
 
-    connect(m_timeline, &TimelineWidget::deleteFrameRequested, this, [this]() {
+    connect(m_timeline, &TimelineWindow::duplicateFrameRequested, this, [this]() {
+        stopPlayback();
+        PaintOpenGLWidget *view = framePanelTarget();
+        const int frameIndex = view->duplicateFrame(attentionFor(view).frame);
+        if (frameIndex < 0) {
+            return;
+        }
+        m_timeline->clearThumbnails();
+        updateAttention(view, AttentionChange::FrameChange,
+                        frameIndex, attentionFor(view).layer, attentionFor(view).asset);
+    });
+
+    connect(m_timeline, &TimelineWindow::deleteFrameRequested, this, [this]() {
         stopPlayback();
         PaintOpenGLWidget *view = framePanelTarget();
         const int row = attentionFor(view).frame;
@@ -2651,7 +3036,7 @@ void MainWindow::createTimeline()
         }
     });
 
-    connect(m_timeline, &TimelineWidget::moveFrameRequested, this, [this](int from, int to) {
+    connect(m_timeline, &TimelineWindow::moveFrameRequested, this, [this](int from, int to) {
         stopPlayback();  // reordering frames invalidates the prerender
         PaintOpenGLWidget *view = framePanelTarget();
         m_timeline->clearThumbnails();
@@ -2667,9 +3052,9 @@ void MainWindow::createTimeline()
                         to, attentionFor(view).layer, attentionFor(view).asset);
     });
 
-    connect(m_timeline, &TimelineWidget::playRequested, this, &MainWindow::startPlayback);
-    connect(m_timeline, &TimelineWidget::pauseRequested, this, &MainWindow::stopPlayback);
-    connect(m_timeline, &TimelineWidget::loopToggled, this, [this](bool on) {
+    connect(m_timeline, &TimelineWindow::playRequested, this, &MainWindow::startPlayback);
+    connect(m_timeline, &TimelineWindow::pauseRequested, this, &MainWindow::stopPlayback);
+    connect(m_timeline, &TimelineWindow::loopToggled, this, [this](bool on) {
         m_playbackLoop = on;
     });
 
@@ -2681,12 +3066,12 @@ void MainWindow::createTimeline()
         requestAttentionUpdate(view, AttentionChange::FrameChange, frame,
                                attentionFor(view).layer, attentionFor(view).asset);
     };
-    connect(m_timeline, &TimelineWidget::prevRequested, this, [stepFrame]() { stepFrame(-1); });
-    connect(m_timeline, &TimelineWidget::nextRequested, this, [stepFrame]() { stepFrame(1); });
+    connect(m_timeline, &TimelineWindow::prevRequested, this, [stepFrame]() { stepFrame(-1); });
+    connect(m_timeline, &TimelineWindow::nextRequested, this, [stepFrame]() { stepFrame(1); });
 
     // The rate belongs to the document, so both a preset and a typed number
     // land in the model; the timeline then re-reads it.
-    connect(m_timeline, &TimelineWidget::fpsChanged, this, [this](int fps) {
+    connect(m_timeline, &TimelineWindow::fpsChanged, this, [this](int fps) {
         PaintOpenGLWidget *view = framePanelTarget();
         const int current = view->model().playbackFps();
         if (fps != current) {
@@ -2705,7 +3090,7 @@ void MainWindow::createTimeline()
     // listing the child document's frames must not reach them. The transport
     // dims the controls (setOnionAvailable in refreshTimeline); these guards
     // are the second lock, for any path that raises the signal anyway.
-    connect(m_timeline, &TimelineWidget::onionToggled, this, [this](bool on) {
+    connect(m_timeline, &TimelineWindow::onionToggled, this, [this](bool on) {
         if (framePanelTarget() != m_paintWidget) {
             return;
         }
@@ -2727,7 +3112,7 @@ void MainWindow::createTimeline()
         m_timeline->setOnionState(m_onionEnabled, m_onionGuideLines, m_onionFrames);
     });
 
-    connect(m_timeline, &TimelineWidget::onionGuideToggled, this, [this](bool on) {
+    connect(m_timeline, &TimelineWindow::onionGuideToggled, this, [this](bool on) {
         if (framePanelTarget() != m_paintWidget) {
             return;
         }
@@ -2736,7 +3121,7 @@ void MainWindow::createTimeline()
         m_timeline->setOnionState(m_onionEnabled, m_onionGuideLines, m_onionFrames);
     });
 
-    connect(m_timeline, &TimelineWidget::onionLaneToggled, this, [this](int frame, bool on) {
+    connect(m_timeline, &TimelineWindow::onionLaneToggled, this, [this](int frame, bool on) {
         if (framePanelTarget() != m_paintWidget) {
             return;
         }
@@ -2758,6 +3143,10 @@ void MainWindow::createTimeline()
             }
         });
     }
+
+    // After the dock is in the layout: the stored area is applied by
+    // re-docking, which only means anything from inside a dock layout.
+    m_timeline->restoreLayout();
 }
 
 void MainWindow::pullOnionGuideProperties()
@@ -3234,9 +3623,22 @@ void MainWindow::setPythonUiFrozen(bool frozen)
 
     const bool enabled = !frozen;
     menuBar()->setEnabled(enabled);
+    // The central area is not a dock, so the sweep below cannot reach it - and
+    // its tab strip is a button that changes which document is on screen.
+    if (m_centralArea) {
+        m_centralArea->setEnabled(enabled);
+    }
     for (PaintOpenGLWidget *view : m_paintViews) {
         if (view) {
             view->setEnabled(enabled);
+        }
+    }
+    // Sub-control frames can be FLOATING top-level windows, which no
+    // findChildren over docks sees; and an embedded one is already covered by
+    // its host, where enabling twice is free.
+    for (SubControlFrame *frame : SubControlRegistry::instance()->frames()) {
+        if (frame) {
+            frame->setEnabled(enabled);
         }
     }
     const QList<QDockWidget *> docks = findChildren<QDockWidget *>();
@@ -3245,12 +3647,10 @@ void MainWindow::setPythonUiFrozen(bool frozen)
             dock->setEnabled(enabled);
         }
     }
-    // The timeline replaced the Frames dock but hangs off the central widget's
-    // container, so the dock sweep above no longer reaches it - and its
-    // buttons are the ones that mutate the document the script is working on.
-    if (m_timeline) {
-        m_timeline->setEnabled(enabled);
-    }
+    // The timeline is a dock, so the sweep above covers it; its own
+    // changeEvent carries the state on to the pieces that live outside it
+    // (the reopen pill, and the transport while the strip is docked to a
+    // side), which are the buttons that mutate the script's document.
     if (m_pythonDebugDock) {
         m_pythonDebugDock->setEnabled(true);
     }
@@ -3390,6 +3790,14 @@ void MainWindow::showLayerContextMenu(LayerPanel *panel, PaintOpenGLWidget *view
         context["owner_tag"] = ownerGroup > 0
             ? view->model().layerGroupTag(ownerGroup).toStdString()
             : std::string();
+        // Layer PARENTING (AnimeColumn::parentLayerId), which the panel
+        // renders as nesting: the id of the layer this row tracks (0 when
+        // independent) and how many rows track THIS one. A provider needs
+        // both to offer "stop tracking" on a child and nothing on a parent.
+        context["parent_layer_id"] =
+            layerIndex >= 0 ? view->model().layerParentId(layerIndex) : 0;
+        context["child_count"] =
+            layerIndex >= 0 ? view->model().childLayerIndices(layerIndex).size() : 0;
         py::list memberList;
         for (int index : members) {
             memberList.append(index);
@@ -3491,6 +3899,13 @@ void MainWindow::applyLayerPanelStructure(LayerPanel *panel, PaintOpenGLWidget *
     // Capture the widget as a node tree BEFORE touching the columns. Leaves
     // are recorded by stable column id, so the reorder below - which shifts
     // every index after it - cannot invalidate what we captured.
+    //
+    // Rows a LEAF hosts (a layer nested under the one it tracks) are collected
+    // OUT of the recursion instead of being written next to their parent:
+    // appending them where the leaf sits would put them inside whatever group
+    // the leaf is in, making group membership follow a parent link the user
+    // never dragged. They are put back below, each in its own container.
+    QVector<AnimeLayerNode> hosted;
     std::function<QVector<AnimeLayerNode>(QTreeWidgetItem *)> capture =
         [&](QTreeWidgetItem *parent) {
         QVector<AnimeLayerNode> nodes;
@@ -3517,12 +3932,67 @@ void MainWindow::applyLayerPanelStructure(LayerPanel *panel, PaintOpenGLWidget *
                 if (node.layerId <= 0) {
                     continue;
                 }
+                nodes.append(node);
+                // A leaf can now HOLD rows: the panel nests a layer under the
+                // one it tracks. That nesting is a column property, so it is
+                // captured FLAT, never as tree children - a leaf has nowhere
+                // to put children in the model or the file format, and
+                // normalizeLayerTree would re-adopt them to the top level on
+                // the very next read.
+                hosted.append(capture(item));
+                continue;
             }
             nodes.append(node);
         }
         return nodes;
     };
-    const QVector<AnimeLayerNode> captured = capture(nullptr);
+    QVector<AnimeLayerNode> captured = capture(nullptr);
+
+    // Each hosted row goes back to the container it was in BEFORE the drag,
+    // re-read from the model's own tree by column id: the panel stopped
+    // showing that container the moment the row was nested under its parent,
+    // so the widget cannot answer for it. Top level when it had none, or when
+    // the group it was in no longer has rows in the panel.
+    if (!hosted.isEmpty()) {
+        QHash<int, int> groupForLayer;
+        std::function<void(const QVector<AnimeLayerNode> &, int)> readGroups =
+            [&](const QVector<AnimeLayerNode> &nodes, int groupId) {
+            for (const AnimeLayerNode &node : nodes) {
+                if (node.isGroup()) {
+                    readGroups(node.children, node.groupId);
+                } else {
+                    groupForLayer.insert(node.layerId, groupId);
+                }
+            }
+        };
+        readGroups(model.layerTree(), 0);
+
+        std::function<AnimeLayerNode *(QVector<AnimeLayerNode> &, int)> findGroup =
+            [&](QVector<AnimeLayerNode> &nodes, int groupId) -> AnimeLayerNode * {
+            for (AnimeLayerNode &node : nodes) {
+                if (!node.isGroup()) {
+                    continue;
+                }
+                if (node.groupId == groupId) {
+                    return &node;
+                }
+                if (AnimeLayerNode *found = findGroup(node.children, groupId)) {
+                    return found;
+                }
+            }
+            return nullptr;
+        };
+
+        for (const AnimeLayerNode &node : hosted) {
+            const int groupId = groupForLayer.value(node.layerId, 0);
+            AnimeLayerNode *group = groupId > 0 ? findGroup(captured, groupId) : nullptr;
+            if (group) {
+                group->children.append(node);
+            } else {
+                captured.append(node);
+            }
+        }
+    }
 
     // Z-order follows the panel: the dragged layer lands right after the leaf
     // shown above it, exactly as the flat list behaved. The item is re-found
@@ -3550,9 +4020,40 @@ void MainWindow::applyLayerPanelStructure(LayerPanel *panel, PaintOpenGLWidget *
         if (fromIndex < toIndex) {
             --toIndex;
         }
+        // The rows the panel drew NESTED under the dragged one, by stable id:
+        // the widget moved them along with their parent, and leaving their
+        // columns behind would silently re-stack the drawing (a tracked fill
+        // stranded at index 0 paints over the art it belongs to).
+        QVector<int> childIds;
+        for (int childIndex : model.childLayerIndices(fromIndex)) {
+            childIds.append(model.layerIdAt(childIndex));
+        }
+
         if (position >= 0 && fromIndex != toIndex && model.moveLayer(fromIndex, toIndex)) {
             model.remapFillSourceLayersAfterMove(fromIndex, toIndex);
             landedOn = toIndex;
+
+            // One move each, in panel order, so the children keep theirs. Both
+            // ends are re-resolved per move because every move shifts the
+            // indices between them - the anchor's included.
+            int anchorId = movedColumnId;
+            for (int childId : childIds) {
+                const int anchorIndex = model.layerIndexForId(anchorId);
+                const int childIndex = model.layerIndexForId(childId);
+                if (anchorIndex < 0 || childIndex < 0) {
+                    continue;
+                }
+                // takeAt+insert: a column coming from BELOW the anchor drags
+                // the anchor down one on the way out, so the slot right after
+                // it is the anchor's own index.
+                const int target = childIndex < anchorIndex ? anchorIndex : anchorIndex + 1;
+                if (childIndex != target && model.moveLayer(childIndex, target)) {
+                    model.remapFillSourceLayersAfterMove(childIndex, target);
+                }
+                anchorId = childId;
+            }
+            // The children may have pushed the dragged column along.
+            landedOn = model.layerIndexForId(movedColumnId);
         }
     }
 
@@ -3589,6 +4090,12 @@ void MainWindow::refreshLayerList(LayerPanel *panel, PaintOpenGLWidget *view, in
         bool visible = true;
         bool collapsed = false;
         int depth = 0;
+        // Synthesized from AnimeColumn::parentLayerId, not from the tree:
+        // `child` is "this row is nested under the layer it tracks" (dimmed
+        // and glyph-prefixed), `parent` is "this LEAF hosts rows", which is
+        // what lets a leaf occupy a slot in the parenting stack below.
+        bool child = false;
+        bool parent = false;
     };
     QVector<Row> rows;
     // A layer shows when it is not a script-owned working layer and it has a
@@ -3633,6 +4140,89 @@ void MainWindow::refreshLayerList(LayerPanel *panel, PaintOpenGLWidget *view, in
     };
     collect(model.layerTree(), 0);
 
+    // Nesting by PARENT LINK, synthesized here every refresh. A layer that
+    // tracks another (AnimeColumn::parentLayerId) is re-homed under its
+    // parent's row at depth+1 when that parent is listed on this frame, and
+    // is left where the tree put it otherwise - the relation is a column
+    // property, so it must never reach layerTree (applyLayerPanelStructure's
+    // capture flattens it back out for exactly this reason).
+    {
+        QHash<int, int> rowForLayer;
+        for (int i = 0; i < rows.size(); ++i) {
+            if (!rows[i].group) {
+                rowForLayer.insert(rows[i].layerIndex, i);
+            }
+        }
+        QVector<int> parentRow(rows.size(), -1);
+        QVector<QVector<int>> childRows(rows.size());
+        bool nested = false;
+        for (int i = 0; i < rows.size(); ++i) {
+            if (rows[i].group) {
+                continue;
+            }
+            const int parentId = model.layerParentId(rows[i].layerIndex);
+            if (parentId <= 0) {
+                continue;
+            }
+            const int parentIndex = model.layerIndexForId(parentId);
+            const int at = parentIndex >= 0 ? rowForLayer.value(parentIndex, -1) : -1;
+            if (at < 0 || at == i) {
+                continue;
+            }
+            parentRow[i] = at;
+            childRows[at].append(i);   // children keep their panel order
+            nested = true;
+        }
+        if (nested) {
+            QVector<Row> nestedRows;
+            nestedRows.reserve(rows.size());
+            // `emitted` is belt and braces: normalizeLayerTree already breaks
+            // parent cycles, and a loop here would be an infinite recursion
+            // inside a paint-adjacent path.
+            QVector<char> emitted(rows.size(), 0);
+            std::function<void(int, int)> emitRow = [&](int i, int depth) {
+                if (emitted[i]) {
+                    return;
+                }
+                emitted[i] = 1;
+                Row row = rows[i];
+                row.depth = depth;
+                row.child = parentRow[i] >= 0;
+                row.parent = !childRows[i].isEmpty();
+                if (row.child) {
+                    // Box-drawing rather than a corner-bracket symbol: it is
+                    // the glyph the widest set of installed fonts actually
+                    // carries, so the marker never degrades to a tofu box.
+                    row.name = QStringLiteral("└ ") + row.name;
+                }
+                nestedRows.append(row);
+                for (int childIndex : childRows[i]) {
+                    emitRow(childIndex, depth + 1);
+                }
+            };
+            for (int i = 0; i < rows.size(); ++i) {
+                if (parentRow[i] < 0) {
+                    emitRow(i, rows[i].depth);
+                }
+            }
+            // A group whose only listed member was re-homed elsewhere must not
+            // stay behind as an empty header - the same rule collect() applies
+            // to a group whose members are all off-frame. Backwards, so an
+            // outer group sees the inner one already gone.
+            for (int i = nestedRows.size() - 1; i >= 0; --i) {
+                if (!nestedRows[i].group) {
+                    continue;
+                }
+                const bool hasContent = i + 1 < nestedRows.size()
+                                        && nestedRows[i + 1].depth > nestedRows[i].depth;
+                if (!hasContent) {
+                    nestedRows.remove(i);
+                }
+            }
+            rows = nestedRows;
+        }
+    }
+
     const QTreeWidgetItem *currentItem = tree->currentItem();
     const int previousLayer = currentItem ? currentItem->data(0, Qt::UserRole).toInt() : -1;
 
@@ -3665,6 +4255,11 @@ void MainWindow::refreshLayerList(LayerPanel *panel, PaintOpenGLWidget *view, in
                    && depth == rows[i].depth;
     }
 
+    // A tracked child reads as secondary artwork, so it takes the palette's
+    // disabled text brush rather than a literal colour; an independent row
+    // takes the default brush back.
+    const QBrush childBrush = tree->palette().brush(QPalette::Disabled, QPalette::Text);
+
     int restoreScroll = -1;
     if (sameRows) {
         for (int i = 0; i < rows.size(); ++i) {
@@ -3677,6 +4272,10 @@ void MainWindow::refreshLayerList(LayerPanel *panel, PaintOpenGLWidget *view, in
                     item->setExpanded(!rows[i].collapsed);
                 }
                 continue;
+            }
+            const QBrush wanted = rows[i].child ? childBrush : QBrush();
+            if (item->foreground(0) != wanted) {
+                item->setForeground(0, wanted);
             }
             const Qt::CheckState state = rows[i].visible ? Qt::Checked : Qt::Unchecked;
             if (item->checkState(0) != state) {
@@ -3705,9 +4304,15 @@ void MainWindow::refreshLayerList(LayerPanel *panel, PaintOpenGLWidget *view, in
                 // the model has no way to express a layer inside a layer, and
                 // the widget happily drew one (complete with an expander) that
                 // no refresh could ever repair.
+                // Still not a drop target even when it HOSTS tracked children:
+                // parenting is set by the fill tool and cleared by the context
+                // menu, never by dragging one row onto another.
                 item->setFlags((item->flags() | Qt::ItemIsUserCheckable)
                                & ~Qt::ItemIsDropEnabled);
                 item->setCheckState(0, row.visible ? Qt::Checked : Qt::Unchecked);
+                if (row.child) {
+                    item->setForeground(0, childBrush);
+                }
             }
             if (row.depth > 0 && row.depth - 1 < stack.size() && stack[row.depth - 1]) {
                 stack[row.depth - 1]->addChild(item);
@@ -3715,9 +4320,16 @@ void MainWindow::refreshLayerList(LayerPanel *panel, PaintOpenGLWidget *view, in
                 tree->addTopLevelItem(item);
             }
             stack.resize(row.depth + 1);
-            stack[row.depth] = row.group ? item : nullptr;
+            // A LEAF that hosts tracked children takes a slot too, which is
+            // the one thing the groups-only stack could not express.
+            stack[row.depth] = (row.group || row.parent) ? item : nullptr;
             if (row.group) {
                 item->setExpanded(!row.collapsed);
+            } else if (row.parent) {
+                // No stored collapse state for a parent LEAF (the document
+                // only tracks it for groups), so a tracked child is visible
+                // by default rather than hidden behind an expander.
+                item->setExpanded(true);
             }
         }
         if (previousLayer == selectedRow) {
@@ -3773,13 +4385,19 @@ void MainWindow::refreshTimeline()
     PaintOpenGLWidget *view = framePanelTarget();
     const int frameCount = view->frameCount();
     QVector<bool> holds;
+    QVector<QString> names;
     holds.reserve(frameCount);
+    names.reserve(frameCount);
     for (int i = 0; i < frameCount; ++i) {
         // "Hold" is DERIVED from the cells every refresh, so a row stops
         // reading as held the moment it stops holding.
         holds.append(view->model().isHoldFrame(i));
+        // The chips show the row's NAME, which is its number until a
+        // duplicate gives it one of its own.
+        names.append(view->model().frameName(i));
     }
     m_timeline->setFrameData(frameCount, attentionFor(view).frame, holds);
+    m_timeline->setFrameNames(names);
     // The rate is per document, so it follows whichever view the timeline is
     // pointed at - and it has to resync after a load or an undo too.
     m_timeline->setFps(view->model().playbackFps());

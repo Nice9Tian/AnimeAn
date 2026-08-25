@@ -60,6 +60,8 @@ target_include_directories(animean_core PUBLIC
 target_link_libraries(animean_core PUBLIC Qt${QT_VERSION_MAJOR}::Widgets)
 
 set(PROJECT_SOURCES
+    centralpaintarea.cpp
+    centralpaintarea.h
     clipreader.cpp
     clipreader.h
     main.cpp
@@ -74,13 +76,13 @@ set(PROJECT_SOURCES
     paintviewcontainer.h
     parentwindow.cpp
     parentwindow.h
+    subcontrolframe.cpp
+    subcontrolframe.h
     theme.cpp
     theme.h
     childrenpanel/assetpanel.cpp
     childrenpanel/assetpanel.h
     childrenpanel/assetpanel.ui
-    childrenpanel/childpaintwindow.cpp
-    childrenpanel/childpaintwindow.h
     childrenpanel/forcepad.cpp
     childrenpanel/forcepad.h
     childrenpanel/historypanel.cpp
@@ -92,8 +94,10 @@ set(PROJECT_SOURCES
     childrenpanel/newprojectdialog.h
     childrenpanel/palettecontrol.cpp
     childrenpanel/palettecontrol.h
-    childrenpanel/timelinewidget.cpp
-    childrenpanel/timelinewidget.h
+    childrenpanel/texturepanel.cpp
+    childrenpanel/texturepanel.h
+    childrenpanel/timelinewindow.cpp
+    childrenpanel/timelinewindow.h
     childrenpanel/toolcontrolconfig.cpp
     childrenpanel/toolcontrolconfig.h
     childrenpanel/tooloptpanel.cpp
@@ -207,6 +211,9 @@ if(ANIMEAN_WITH_PYTHON)
             "$<TARGET_FILE_DIR:AnimeAn>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${ANIMEAN_PYFILE_DIR}/fill_tool.py"
+            "$<TARGET_FILE_DIR:AnimeAn>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ANIMEAN_PYFILE_DIR}/layer_tool_policy.py"
             "$<TARGET_FILE_DIR:AnimeAn>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${ANIMEAN_PYFILE_DIR}/edit_tool.py"
@@ -342,6 +349,9 @@ if(WIN32 AND QT_VERSION_MAJOR EQUAL 6)
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ANIMEAN_PYFILE_DIR}/fill_tool.py"
+                "${ANIMEAN_DEPLOY_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ANIMEAN_PYFILE_DIR}/layer_tool_policy.py"
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ANIMEAN_PYFILE_DIR}/edit_tool.py"
