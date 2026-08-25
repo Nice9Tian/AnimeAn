@@ -105,8 +105,6 @@ QString toolControlName(PaintOpenGLWidget::Tool tool)
         return QStringLiteral("cut_line");
     case PaintOpenGLWidget::Tool::Fill:
         return QStringLiteral("fill");
-    case PaintOpenGLWidget::Tool::Move:
-        return QStringLiteral("move");
     case PaintOpenGLWidget::Tool::Arrow:
         return QStringLiteral("arrow");
     case PaintOpenGLWidget::Tool::Connect:
@@ -502,6 +500,19 @@ MainWindow::MainWindow(QWidget *parent)
             converted.append(editHandle);
         }
         target->setEditHandles(converted);
+    });
+    // ui.set_cursor(view, name): the tool decides WHICH affordance sits under
+    // the pointer, the view knows how to draw the name. Routed by view name
+    // like the overlay and handle channels.
+    registerAnimeanUiCursorCallback([this](const QString &view, const QString &name) {
+        PaintOpenGLWidget *target = m_paintWidget;
+        for (PaintOpenGLWidget *paintView : m_paintViews) {
+            if (paintView->viewName() == view) {
+                target = paintView;
+                break;
+            }
+        }
+        target->setScriptCursor(name);
     });
     registerAnimeanUiDrawColorCallback([this](const QColor &color) {
         for (PaintOpenGLWidget *paintView : m_paintViews) {
@@ -2460,7 +2471,6 @@ void MainWindow::createToolDocks()
             static const QHash<QString, PaintOpenGLWidget::Tool> baseTools = {
                 {QStringLiteral("fill"), PaintOpenGLWidget::Tool::Fill},
                 {QStringLiteral("arrow"), PaintOpenGLWidget::Tool::Arrow},
-                {QStringLiteral("move"), PaintOpenGLWidget::Tool::Move},
                 {QStringLiteral("transfer"), PaintOpenGLWidget::Tool::Transfer},
             };
             const PaintOpenGLWidget::Tool baseTool =

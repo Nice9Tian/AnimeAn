@@ -7,6 +7,8 @@
 #include <QCursor>
 #include <QPainter>
 #include <QPixmap>
+#include <QPolygonF>
+#include <QtMath>
 #include <QDebug>
 
 namespace {
@@ -50,8 +52,6 @@ QString toolName(PaintOpenGLWidget::Tool tool)
         return QStringLiteral("cut_line");
     case PaintOpenGLWidget::Tool::Fill:
         return QStringLiteral("fill");
-    case PaintOpenGLWidget::Tool::Move:
-        return QStringLiteral("move");
     case PaintOpenGLWidget::Tool::Arrow:
         return QStringLiteral("arrow");
     case PaintOpenGLWidget::Tool::Connect:
@@ -335,9 +335,7 @@ bool PaintOpenGLWidget::goToHistory(int index)
     m_points.clear();
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
-    m_hasLastMovePos = false;
     m_eraseGestureChanged = false;
-    m_moveGestureChanged = false;
     m_axisSnapState = AxisSnapState::Inactive;
     pythonHookSendMessage(QStringLiteral("historyrestore"));
     clearOnionCache();
@@ -672,13 +670,94 @@ void PaintOpenGLWidget::resizeEvent(QResizeEvent *event)
     notifyViewTransformChanged();
 }
 
+namespace {
+// A circular arrow, ~20 px across: white so it reads over ink, outlined in
+// black so it reads over paper. Painted rather than shipped as a resource -
+// it has to follow the device pixel ratio of whatever screen it lands on.
+QPixmap buildRotateCursorPixmap(qreal dpr)
+{
+    constexpr qreal kSide = 24.0;
+    QPixmap pixmap(int(std::ceil(kSide * dpr)), int(std::ceil(kSide * dpr)));
+    pixmap.setDevicePixelRatio(dpr);
+    pixmap.fill(Qt::transparent);
+
+    const QPointF centre(kSide * 0.5, kSide * 0.5);
+    const qreal radius = 6.5;
+    const QRectF ring(centre.x() - radius, centre.y() - radius, radius * 2.0, radius * 2.0);
+    QPainterPath arc;
+    arc.arcMoveTo(ring, 55.0);
+    arc.arcTo(ring, 55.0, 250.0);
+
+    // Qt's arc angles run counter-clockwise in a y-DOWN pixmap, so the end
+    // point and its tangent are (cos, -sin) and (-sin, -cos).
+    const qreal endAngle = qDegreesToRadians(55.0 + 250.0);
+    const QPointF tip(centre.x() + radius * std::cos(endAngle),
+                      centre.y() - radius * std::sin(endAngle));
+    const QPointF tangent(-std::sin(endAngle), -std::cos(endAngle));
+    const QPointF normal(-tangent.y(), tangent.x());
+    QPolygonF head;
+    head << tip + tangent * 4.2
+         << tip + normal * 3.2 - tangent * 1.4
+         << tip - normal * 3.2 - tangent * 1.4;
+
+    {
+        QPainter painter(&pixmap);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        // Drawn twice, wide black under narrow white: the same halo trick the
+        // pen ring uses, and for the same reason.
+        for (int pass = 0; pass < 2; ++pass) {
+            const QColor color = pass == 0 ? QColor(20, 20, 20, 235)
+                                           : QColor(255, 255, 255, 245);
+            const qreal width = pass == 0 ? 3.4 : 1.4;
+            painter.setPen(QPen(color, width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawPath(arc);
+            painter.setBrush(color);
+            painter.drawPolygon(head);
+        }
+    }
+    return pixmap;
+}
+
+QCursor cursorForScriptName(const QString &name, qreal dpr)
+{
+    if (name == QStringLiteral("rotate")) {
+        return QCursor(buildRotateCursorPixmap(dpr), 12, 12);
+    }
+    static const QHash<QString, Qt::CursorShape> shapes = {
+        {QStringLiteral("arrow"), Qt::ArrowCursor},
+        {QStringLiteral("size_all"), Qt::SizeAllCursor},
+        {QStringLiteral("size_h"), Qt::SizeHorCursor},
+        {QStringLiteral("size_v"), Qt::SizeVerCursor},
+        {QStringLiteral("size_bdiag"), Qt::SizeBDiagCursor},
+        {QStringLiteral("size_fdiag"), Qt::SizeFDiagCursor},
+        {QStringLiteral("cross"), Qt::CrossCursor},
+    };
+    return QCursor(shapes.value(name, Qt::ArrowCursor));
+}
+}   // namespace
+
+void PaintOpenGLWidget::setScriptCursor(const QString &name)
+{
+    if (m_scriptCursor == name) {
+        return;
+    }
+    m_scriptCursor = name;
+    updateBrushCursor();
+}
+
 void PaintOpenGLWidget::updateBrushCursor()
 {
-    // Only the pen wears a custom pointer. Every other tool keeps the arrow,
-    // including the erasers - their dashed ring is a different affordance and
-    // its radius is free to be far larger than a cursor bitmap may be.
+    // Only the pen wears a custom pointer of its own. Every other tool keeps
+    // the arrow - including the erasers, whose dashed ring is a different
+    // affordance and free to be far larger than a cursor bitmap may be -
+    // unless its Python half named one for the region under the cursor.
     if (m_tool != Tool::Pen) {
         m_penRingOnCanvas = false;
+        if (!m_scriptCursor.isEmpty()) {
+            setCursor(cursorForScriptName(m_scriptCursor, devicePixelRatioF()));
+            return;
+        }
         unsetCursor();
         return;
     }
@@ -1188,7 +1267,9 @@ void PaintOpenGLWidget::setTool(Tool tool)
     m_points.clear();
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
-    m_hasLastMovePos = false;
+    // A pointer named by the tool being LEFT must not survive into the next
+    // one: the request belongs to a gesture, not to the widget.
+    m_scriptCursor.clear();
     updateBrushCursor();   // only the pen wears a ring; everything else the arrow
     update();
 }
@@ -1405,7 +1486,6 @@ void PaintOpenGLWidget::setCurrentLayer(int layerIndex)
     m_points.clear();
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
-    m_hasLastMovePos = false;
     notifyLayerChangedIfNeeded();
     update();
 }
@@ -1421,7 +1501,6 @@ void PaintOpenGLWidget::setCurrentFrame(int frameIndex)
     m_points.clear();
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
-    m_hasLastMovePos = false;
     notifyFrameChangedIfNeeded();
     update();
 }
@@ -2810,12 +2889,11 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
 
     // Content lock, first of two layers. This one stops a gesture from
     // STARTING; the mutating helpers (eraseAt, eraseBetween, deleteLineAt,
-    // deleteLineBetween, cutLineAt, fillAt, moveCurrentLayerBy) each check
-    // editingAllowed() too, and that is the layer that actually holds:
-    // gating the press alone did NOT work, because the erase and move
-    // gestures seed themselves in mouseMoveEvent when no press was recorded
-    // and the erase tools also act on release, so a blocked press still let a
-    // click or a drag rub out protected artwork.
+    // deleteLineBetween, cutLineAt, fillAt) each check editingAllowed() too,
+    // and that is the layer that actually holds: gating the press alone did
+    // NOT work, because the erase gestures seed themselves in mouseMoveEvent
+    // when no press was recorded and the erase tools also act on release, so
+    // a blocked press still let a click or a drag rub out protected artwork.
     //
     // Arrow is NOT exempt. It looks like a selection tool but it is the point
     // editor: dragging a handle rewrites and commits stroke geometry, which is
@@ -2882,13 +2960,6 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
             }
         }
         update();
-        event->accept();
-        return;
-    }
-
-    if (m_tool == Tool::Move) {
-        m_lastMovePos = pos;
-        m_hasLastMovePos = true;
         event->accept();
         return;
     }
@@ -2974,10 +3045,12 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
 
     if (!(event->buttons() & Qt::LeftButton)) {
         // Connect snaps on HOVER: Python needs the cursor to show which
-        // vertex a click would take, throttled so a fast mouse does not run
-        // the interpreter at tablet rate. A content-locked board gets no
+        // vertex a click would take. Transfer reads the same phase to name
+        // the pointer for the region under it (a grip, the body, the rotate
+        // ring outside a corner). Both are throttled so a fast mouse does not
+        // run the interpreter at tablet rate. A content-locked board gets no
         // hints - presses are refused there, so advertising targets lies.
-        if (m_tool == Tool::Connect && editingAllowed()
+        if ((m_tool == Tool::Connect || m_tool == Tool::Transfer) && editingAllowed()
             && (!m_hoverHookThrottle.isValid()
                 || m_hoverHookThrottle.elapsed() >= kUpdateHookIntervalMs)) {
             m_hoverHookThrottle.restart();
@@ -3036,20 +3109,6 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
 
         m_lastEraserPos = m_hoverPos;
         update();
-        event->accept();
-        return;
-    }
-
-    if (m_tool == Tool::Move) {
-        if (!m_hasLastMovePos) {
-            m_lastMovePos = m_hoverPos;
-            m_hasLastMovePos = true;
-        }
-        if (moveCurrentLayerBy(m_hoverPos - m_lastMovePos)) {
-            m_moveGestureChanged = true;
-            update();
-        }
-        m_lastMovePos = m_hoverPos;
         event->accept();
         return;
     }
@@ -3165,25 +3224,6 @@ void PaintOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
         update();
         m_hasLastEraserPos = false;
         m_eraseGestureChanged = false;
-        event->accept();
-        return;
-    }
-
-    if (m_tool == Tool::Move) {
-        bool cancelHistory = false;
-        if (m_hasLastMovePos) {
-            const QPointF pos = mapToDocument(event->position());
-            const QPointF delta = pos - m_lastMovePos;
-            m_moveGestureChanged = moveCurrentLayerBy(delta) || m_moveGestureChanged;
-            m_lastMovePos = pos;
-            update();
-            cancelHistory = pythonHookSendMessage(QStringLiteral("movefinish"), pos, delta, m_moveGestureChanged);
-        }
-        if (m_moveGestureChanged && !cancelHistory) {
-            commitHistory(QStringLiteral("Move"));
-        }
-        m_hasLastMovePos = false;
-        m_moveGestureChanged = false;
         event->accept();
         return;
     }
@@ -3796,21 +3836,6 @@ bool PaintOpenGLWidget::fillAt(const QPointF &pos)
         emit assetListChanged(m_model.currentAsset());
         emit layerListChanged(m_model.currentLayer());
     }
-    return true;
-}
-
-bool PaintOpenGLWidget::moveCurrentLayerBy(const QPointF &delta)
-{
-    if (delta.isNull() || !editingAllowed() || (m_model.currentLayer() >= 0 && !currentColumnEditable())) {
-        return false;
-    }
-
-    VectorImageModel *image = currentImage(false);
-    if (!image) {
-        return false;
-    }
-
-    image->translate(delta);
     return true;
 }
 

@@ -42,6 +42,7 @@ std::function<void(const QString &view, const QVector<AnimeanEditHandle> &handle
 std::function<void(const QColor &color)> g_uiDrawColorCallback;
 std::function<void(int stabilizer, int simplify, int corner)> g_uiDrawSettingsCallback;
 std::function<void(const QString &pad, double x, double y)> g_uiPadValueCallback;
+std::function<void(const QString &view, const QString &name)> g_uiCursorCallback;
 std::function<void(const QString &op, const QString &view, const QString &label)> g_uiHistoryCallback;
 
 // Event subscription mask pushed by python_hooks (ui.set_hook_events).
@@ -1082,6 +1083,16 @@ void clearAnimeanUiPadValueCallback()
     g_uiPadValueCallback = nullptr;
 }
 
+void registerAnimeanUiCursorCallback(std::function<void(const QString &view, const QString &name)> callback)
+{
+    g_uiCursorCallback = std::move(callback);
+}
+
+void clearAnimeanUiCursorCallback()
+{
+    g_uiCursorCallback = nullptr;
+}
+
 bool animeanHookEventSubscribed(const QString &event)
 {
     return !g_hookEventMaskValid || g_hookEventMask.contains(event);
@@ -1269,6 +1280,20 @@ void bindAnimeanPythonModule(py::module_ &m)
            py::arg("pad"),
            py::arg("x") = 0.0,
            py::arg("y") = 0.0);
+    ui.def("set_cursor",
+           [](const std::string &view, const std::string &name) {
+               // Generic: name a mouse pointer for one view. "" restores the
+               // default. C++ owns what each name looks like (and refuses to
+               // invent new ones); WHEN a name applies - which region of which
+               // tool's box the cursor sits over - is policy, and lives in
+               // Python. The pen's ring outranks it.
+               if (g_uiCursorCallback) {
+                   g_uiCursorCallback(QString::fromStdString(view),
+                                      QString::fromStdString(name));
+               }
+           },
+           py::arg("view"),
+           py::arg("name") = "");
     ui.def("set_hook_events",
            [](py::sequence events) {
                // python_hooks pushes the set of events that currently have at
@@ -1597,6 +1622,10 @@ void bindAnimeanPythonModule(py::module_ &m)
              py::arg("color") = py::none(),
              py::arg("seed") = py::none())
         .def("clear_raster", &AnimeVectorImageModel::clearRasterImage)
+        // Whether this cell carries a bitmap. A raster is stored as a top-left
+        // plus a QImage, so it can be scaled and moved but NOT rotated or
+        // sheared: a tool that would produce one has to ask first and refuse.
+        .def("has_raster", &AnimeVectorImageModel::hasRaster)
         .def("bounds", [](const AnimeVectorImageModel &image) {
             return rectToTuple(image.bounds());
         })

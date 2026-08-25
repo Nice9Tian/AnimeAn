@@ -36,19 +36,6 @@
     <string>Eraser</string>
    </property>
   </widget>
-  <widget class="QPushButton" name="moveButton">
-   <property name="geometry">
-    <rect>
-     <x>10</x>
-     <y>50</y>
-     <width>140</width>
-     <height>30</height>
-    </rect>
-   </property>
-   <property name="text">
-    <string>Move</string>
-   </property>
-  </widget>
   <widget class="QPushButton" name="fillButton">
    <property name="geometry">
     <rect>

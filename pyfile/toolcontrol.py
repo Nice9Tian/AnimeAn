@@ -204,8 +204,6 @@ def options_for_tool(tool, state=None):
                 "end_column": 2,
             },
         ]
-    elif tool == "move":
-        controls = []
     elif tool == "transfer":
         # The box IS the interface, so the panel carries the one setting the
         # box cannot express: whether a modifier locks the aspect ratio (the

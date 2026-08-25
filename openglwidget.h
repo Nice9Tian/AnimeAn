@@ -35,16 +35,17 @@ public:
         // two places it crosses its neighbours on either side of the click.
         CutLine,
         Fill,
-        Move,
         Arrow,
         // Bridge two snapped vertices with a new stroke. Pure mechanism here
         // (brush ring, hover/click forwarding, handle hints); the snapping
         // and the connection geometry live in pyfile/connect_tool.py.
         Connect,
         // Free transform. Same pure mechanism as Arrow/Connect: handles are
-        // rendered and hit-tested here and every press/drag is reported to
-        // Python; the box, its 8 handles, the scale/stretch/translate maths
-        // and the modifier constraints all live in pyfile/transfer_tool.py.
+        // rendered and hit-tested here and every press/drag/hover is reported
+        // to Python; the box, its 8 handles, the rotation ring outside the
+        // corners, the scale/stretch/translate/rotate maths, the modifier
+        // constraints and which pointer belongs to which region all live in
+        // pyfile/transfer_tool.py.
         Transfer
     };
 
@@ -98,6 +99,12 @@ public:
 
     void setOverlayItems(const QVector<OverlayItem> &items);
     void setEditHandles(const QVector<EditHandle> &handles);
+    // The pointer a script asks for by NAME ("size_all", "rotate", ""); which
+    // affordance sits under the cursor is the tool's decision, drawing the
+    // name is this widget's. Empty restores the default. The pen ignores it:
+    // its ring IS its cursor. Cleared by setTool, so a tool switch can never
+    // leave another tool's pointer behind.
+    void setScriptCursor(const QString &name);
 
     void setViewName(const QString &name);
     QString viewName() const;
@@ -379,7 +386,6 @@ private:
                              const QPointF &from,
                              const QPointF &to) const;
     bool fillAt(const QPointF &pos);
-    bool moveCurrentLayerBy(const QPointF &delta);
     bool currentLayerAcceptsFill() const;
     QVector<QLineF> fillGraphSegments(FillScope scope, int layerIndex) const;
     QPainterPath vectorRegionPathAt(const QPointF &seed, FillScope scope, int layerIndex) const;
@@ -412,14 +418,15 @@ private:
     bool m_hasHoverPos = false;
     QPointF m_lastEraserPos;
     bool m_hasLastEraserPos = false;
-    QPointF m_lastMovePos;
-    bool m_hasLastMovePos = false;
     qreal m_penWidth = 5.0;
     QString m_strokeProperty;
     QString m_activePythonTool;
     bool m_eraseGestureChanged = false;
-    bool m_moveGestureChanged = false;
     qreal m_eraserRadius = 12.0;
+    // The pointer a Python tool asked for (ui.set_cursor). Names only - C++
+    // owns what each name looks like, the tool owns when it applies. Empty =
+    // no request; the pen's ring always wins over it.
+    QString m_scriptCursor;
     qreal m_minPointDistance = 2.0;
     int m_smoothValue = 50;              // stabilizer strength
     AnimeStrokeFitSettings m_fitSettings; // how a committed stroke is fitted

@@ -22,8 +22,6 @@ QString fileNameForTool(PaintOpenGLWidget::Tool tool)
     case PaintOpenGLWidget::Tool::DeleteLine:
     case PaintOpenGLWidget::Tool::CutLine:
         return QStringLiteral("eraser.json");
-    case PaintOpenGLWidget::Tool::Move:
-        return QStringLiteral("move.json");
     case PaintOpenGLWidget::Tool::Arrow:
         return QStringLiteral("arrow.json");
     case PaintOpenGLWidget::Tool::Connect:

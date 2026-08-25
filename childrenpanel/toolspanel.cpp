@@ -33,27 +33,24 @@ ToolsPanel::ToolsPanel(QWidget *parent, bool showBuiltIns)
     if (m_showBuiltIns) {
         m_layout->addWidget(m_arrowButton);
         m_layout->addWidget(ui->penButton);
-        m_layout->addWidget(ui->moveButton);
         m_layout->addWidget(ui->eraserButton);
         m_layout->addWidget(ui->fillButton);
         m_layout->addWidget(m_transferButton);
         m_layout->addWidget(m_connectButton);
     } else {
-        // The .ui parents its four buttons to this widget with absolute
+        // The .ui parents its three buttons to this widget with absolute
         // geometry, so leaving them out of the layout is not enough to keep
         // them off the page - they have to be hidden. They stay alive because
         // setExtraTools still copies its look from penButton, and setTool
         // still blocks and clears them.
         for (QPushButton *button : {m_arrowButton, m_connectButton, m_transferButton,
-                                    ui->penButton, ui->moveButton, ui->eraserButton,
-                                    ui->fillButton}) {
+                                    ui->penButton, ui->eraserButton, ui->fillButton}) {
             button->hide();
         }
     }
     m_layout->addStretch();
 
     ui->penButton->setCheckable(true);
-    ui->moveButton->setCheckable(true);
     ui->eraserButton->setCheckable(true);
     ui->fillButton->setCheckable(true);
     if (m_showBuiltIns) {
@@ -77,10 +74,6 @@ ToolsPanel::ToolsPanel(QWidget *parent, bool showBuiltIns)
         setTool(PaintOpenGLWidget::Tool::Pen);
         emit toolSelected(PaintOpenGLWidget::Tool::Pen);
     });
-    connect(ui->moveButton, &QPushButton::clicked, this, [this]() {
-        setTool(PaintOpenGLWidget::Tool::Move);
-        emit toolSelected(PaintOpenGLWidget::Tool::Move);
-    });
     connect(ui->eraserButton, &QPushButton::clicked, this, [this]() {
         setTool(PaintOpenGLWidget::Tool::Eraser);
         emit toolSelected(PaintOpenGLWidget::Tool::Eraser);
@@ -102,7 +95,6 @@ void ToolsPanel::setTool(PaintOpenGLWidget::Tool tool)
     const QSignalBlocker connectBlocker(m_connectButton);
     const QSignalBlocker transferBlocker(m_transferButton);
     const QSignalBlocker penBlocker(ui->penButton);
-    const QSignalBlocker moveBlocker(ui->moveButton);
     const QSignalBlocker eraserBlocker(ui->eraserButton);
     const QSignalBlocker fillBlocker(ui->fillButton);
 
@@ -110,7 +102,6 @@ void ToolsPanel::setTool(PaintOpenGLWidget::Tool tool)
     m_connectButton->setChecked(tool == PaintOpenGLWidget::Tool::Connect);
     m_transferButton->setChecked(tool == PaintOpenGLWidget::Tool::Transfer);
     ui->penButton->setChecked(tool == PaintOpenGLWidget::Tool::Pen);
-    ui->moveButton->setChecked(tool == PaintOpenGLWidget::Tool::Move);
     ui->eraserButton->setChecked(tool == PaintOpenGLWidget::Tool::Eraser ||
                                  tool == PaintOpenGLWidget::Tool::DeleteLine ||
                                  tool == PaintOpenGLWidget::Tool::CutLine);
@@ -128,7 +119,6 @@ void ToolsPanel::clearSelection()
     const QSignalBlocker connectBlocker(m_connectButton);
     const QSignalBlocker transferBlocker(m_transferButton);
     const QSignalBlocker penBlocker(ui->penButton);
-    const QSignalBlocker moveBlocker(ui->moveButton);
     const QSignalBlocker eraserBlocker(ui->eraserButton);
     const QSignalBlocker fillBlocker(ui->fillButton);
 
@@ -136,7 +126,6 @@ void ToolsPanel::clearSelection()
     m_connectButton->setChecked(false);
     m_transferButton->setChecked(false);
     ui->penButton->setChecked(false);
-    ui->moveButton->setChecked(false);
     ui->eraserButton->setChecked(false);
     ui->fillButton->setChecked(false);
     for (QPushButton *button : m_extraButtons) {
@@ -169,14 +158,12 @@ void ToolsPanel::setExtraTools(const QVector<ExtraToolDefinition> &tools)
             const QSignalBlocker connectBlocker(m_connectButton);
             const QSignalBlocker transferBlocker(m_transferButton);
             const QSignalBlocker penBlocker(ui->penButton);
-            const QSignalBlocker moveBlocker(ui->moveButton);
             const QSignalBlocker eraserBlocker(ui->eraserButton);
             const QSignalBlocker fillBlocker(ui->fillButton);
             m_arrowButton->setChecked(false);
             m_connectButton->setChecked(false);
             m_transferButton->setChecked(false);
             ui->penButton->setChecked(false);
-            ui->moveButton->setChecked(false);
             ui->eraserButton->setChecked(false);
             ui->fillButton->setChecked(false);
             for (int buttonIndex = 0; buttonIndex < m_extraButtons.size(); ++buttonIndex) {

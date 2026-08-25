@@ -86,6 +86,12 @@ void registerAnimeanUiHistoryCallback(std::function<void(const QString &op, cons
 void clearAnimeanUiHistoryCallback();
 void registerAnimeanUiPadValueCallback(std::function<void(const QString &pad, double x, double y)> callback);
 void clearAnimeanUiPadValueCallback();
+// The mouse pointer a tool asks for, by NAME ("", "arrow", "size_all",
+// "size_h", "size_v", "size_bdiag", "size_fdiag", "cross", "rotate"). Generic
+// on purpose: which region of which tool deserves which pointer is policy and
+// lives in Python; C++ only knows how to draw each name.
+void registerAnimeanUiCursorCallback(std::function<void(const QString &view, const QString &name)> callback);
+void clearAnimeanUiCursorCallback();
 
 // The active theme mode ("dark" / "light"), mirrored for Python to read back
 // through animean_python.ui.theme(). C++ pushes it whenever the theme is
