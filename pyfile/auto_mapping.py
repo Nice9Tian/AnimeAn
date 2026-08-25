@@ -2053,16 +2053,20 @@ class _FlowFieldWarp:
             for f in group:
                 same = (np.sign(f["q_line"]) * sp) > 0.0
                 q_k = np.abs(f["q_line"])
-                # A stroke crossing its OWN parallel axis: (a) the
-                # half-plane handover must be CONTINUOUS - a binary
-                # nearest-station sign test put a 0-to-1 weight cliff one
-                # cell wide along the crossing's perpendicular and folded
-                # the field; (b) the keyframe position is floored at the
-                # boundary-layer width so `rise` cannot saturate to full
-                # strength right against the hard-pinned axis rows.
+                # side_f is the PARALLEL-axis boundary layer: a
+                # smoothstep of the stroke's LOCAL position over 4 cells.
+                # It makes the half-plane handover of a stroke crossing
+                # its own axis CONTINUOUS (a binary nearest-station sign
+                # test put a 0-to-1 weight cliff one cell wide along the
+                # crossing's perpendicular and folded the field), and for
+                # a stroke hugging its axis it damps the weight so `rise`
+                # cannot press full strength against the hard-pinned axis
+                # rows. One taper only - the final gate measured that an
+                # additional keyframe-position floor doubled the damping
+                # for nothing and notched the partition for sub-cell
+                # separated lines.
                 s_t = np.clip(sp * f["q_line"] / (4.0 * cell), 0.0, 1.0)
                 side_f = s_t * s_t * (3.0 - 2.0 * s_t)
-                q_k_eff = np.maximum(q_k, 4.0 * cell)
                 # Neighbour keyframes, ENVELOPE-AWARE (a locally absent
                 # line - extent faded to 0 - must not claim the slot):
                 #   - the ramp foot q_lo is the FARTHEST effective inner
@@ -2107,18 +2111,30 @@ class _FlowFieldWarp:
                         (qp - q_k) / np.maximum(q_edge - q_k, tiny), 0.0, 1.0)
                     fade = np.minimum(fade, np.where(applies, e_fade, 1.0))
                 rise = np.clip((qp - q_lo)
-                               / np.maximum(q_k_eff - q_lo, tiny), 0.0, 1.0)
+                               / np.maximum(q_k - q_lo, tiny), 0.0, 1.0)
                 if self.falloff == "quadratic":
                     rise = rise * rise
                 w = rise * fade * f["env"] * side_f * relief
                 f["w"] = w.reshape(X.shape)
+                # Silently ineffective lines are unacceptable: say so.
                 if float(np.max(f["w"])) < 0.05:
-                    # Silently ineffective lines are unacceptable: say so.
                     self.notes.append(
                         f"additional line {f['line']['index'] + 1} has "
                         "(nearly) no influence - it lies on its own "
                         "family's axis or its extent fades before any "
                         "sampled ground")
+                else:
+                    pts_q = ([p[1] for p in f["line"]["child"]]
+                             if fam == "h"
+                             else [p[0] for p in f["line"]["child"]])
+                    med_q = sorted(abs(v) for v in pts_q)[len(pts_q) // 2]
+                    one_side = min(pts_q) >= 0.0 or max(pts_q) <= 0.0
+                    if one_side and med_q < 4.0 * cell:
+                        self.notes.append(
+                            f"additional line {f['line']['index'] + 1} "
+                            "hugs its own family's axis inside the "
+                            "numerical boundary layer - the axis may not "
+                            "move, so its influence is strongly damped")
 
         # Ambient: the tent's own FULL gradient (the cross-axis damping
         # makes it non-separable, so the off-diagonals are no longer
