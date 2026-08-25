@@ -139,8 +139,10 @@ private:
     // refreshFpsCombo: frame data, rate and transport state move together.
     void refreshTimeline();
     void createTimeline();
-    // Which stroke properties the onion pass drops, asked once at startup.
-    void pullOnionGuideProperties();
+    // What the onion pass needs from the policy side, asked once at startup:
+    // which stroke properties read as guide lines, and which layer-group tag
+    // marks an auto-mapping layer for the AM LAYER gate.
+    void pullOnionPolicy();
     static QVector<QTreeWidgetItem *> layerPanelItems(LayerPanel *panel);
     // Writes the panel's current shape back into the model: the layer group
     // tree follows what the user dragged, and the dragged layer's z-order
@@ -309,6 +311,9 @@ private:
     // the child board is a texture reference, not a run of drawings.
     bool m_onionEnabled = false;
     bool m_onionGuideLines = false;
+    bool m_onionLines = true;
+    bool m_onionFills = true;
+    bool m_onionAmLayers = true;
     QSet<int> m_onionFrames;
     QPlainTextEdit *m_pythonDebugOutput = nullptr;
     QLineEdit *m_pythonDebugCommand = nullptr;

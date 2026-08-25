@@ -12373,6 +12373,11 @@ python_hooks.register_protected_properties("child", [H_PROPERTY, V_PROPERTY,
 python_hooks.register_onion_guide_properties([
     H_PROPERTY, V_PROPERTY, ADDITIONAL_PROPERTY,
     H_GUIDE_LAYER_PROPERTY, V_GUIDE_LAYER_PROPERTY, NEAREST_LAYER_PROPERTY])
+# The same ask-don't-assume split one level up: an automapping layer is a
+# TAGGED layer group, and the timeline's AM LAYER toggle drops the whole
+# tagged layer's content (its strokes AND its fills) out of the ghosts. C++
+# owns the gate; which tag marks such a layer is ours to say.
+python_hooks.register_onion_layer_tag(UNIT_TAG)
 # The layer-panel context menu has the same requirement: right-clicking a
 # mapping group must work in a fresh session, before any tool is armed.
 python_hooks.register_menu_provider(_layer_menu_items)

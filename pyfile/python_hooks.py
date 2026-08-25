@@ -64,6 +64,23 @@ def onion_guide_properties_json():
     return json.dumps(_ONION_GUIDE_PROPERTIES)
 
 
+# The layer-group TAG whose groups read as AUTO-MAPPING LAYERS. The onion skin
+# can drop a whole tagged layer's content - strokes and fills alike - from the
+# ghosts (the timeline's AM LAYER toggle). Which tag that is is a tool fact, so
+# C++ asks instead of hardcoding a string it has no business knowing.
+_ONION_LAYER_TAG = ""
+
+
+def register_onion_layer_tag(tag):
+    """Name the layer-group tag the onion skin's per-layer gate applies to."""
+    global _ONION_LAYER_TAG
+    _ONION_LAYER_TAG = str(tag or "")
+
+
+def onion_layer_tag_json():
+    return json.dumps(_ONION_LAYER_TAG)
+
+
 # Context-menu providers. C++ asks at right-click time what the menu for the
 # clicked row should contain, renders whatever it is handed, and reports the
 # choice back as a "layermenu" hook event. It never learns what any entry
@@ -295,10 +312,12 @@ def set_hook(
         "viewbutton": viewbutton,
         "layermenu": layermenu,
         "layerchange": layerchange,
-        # Onion-skin state changed on a board (ghost set, the Guide Line flag,
-        # or the playhead while ghosts are on). Ghosts render the layer stack
-        # only, so a tool that draws through ui.set_overlay has to ghost its
-        # own overlays; this is how it learns which frames are showing.
+        # Onion-skin state changed on a board (ghost set, the content flags
+        # "guides"/"lines"/"fills"/"am_layers", or the playhead while ghosts
+        # are on).
+        # Ghosts render the layer stack only, so a tool that draws through
+        # ui.set_overlay has to ghost its own overlays; this is how it learns
+        # which frames are showing.
         "onion": onion,
         "handle": handle,
         "menu": menu,
