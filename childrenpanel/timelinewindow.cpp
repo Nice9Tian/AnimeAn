@@ -1,6 +1,7 @@
 #include "timelinewindow.h"
 #include "../paintviewcontainer.h"
 #include "../theme.h"
+#include "../windowedgeresize.h"
 
 #include <QBoxLayout>
 #include <QEvent>
@@ -1613,6 +1614,9 @@ TimelineWindow::TimelineWindow(PaintViewContainer *container, QMainWindow *mainW
     m_collapsedBody->hide();
     setWidget(m_strip);
     setTitleBarWidget(m_bar);
+    // A custom title bar makes the floating dock frameless, and Qt then leaves
+    // only its 1px dock frame as the resize edge.
+    WindowEdgeResize::install(this);
 
     m_pill = new TimelineReopenPill(container ? container->canvasArea() : nullptr);
     if (container) {

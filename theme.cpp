@@ -125,13 +125,25 @@ QString appStyleSheet(AnimeTheme::Mode mode)
     // QToolTip is the one common widget the style paints from its own tooltip
     // palette rather than the application palette, so it needs a rule of its
     // own; Fusion reads everything else straight off the palette.
+    // QMainWindow::separator is the splitter between docks: its extent IS the
+    // grab zone for resizing a panel, and the style's default is too thin to
+    // find. The hover wash confirms the cursor is on it before the press.
     return QStringLiteral("QToolTip {"
                           " color: %1;"
                           " background-color: %2;"
                           " border: 1px solid %3;"
                           " padding: 2px 4px;"
+                          "}"
+                          "QMainWindow::separator {"
+                          " background-color: %4;"
+                          " width: 8px;"
+                          " height: 8px;"
+                          "}"
+                          "QMainWindow::separator:hover {"
+                          " background-color: %3;"
                           "}")
-        .arg(colors.text.name(), colors.surfaceAlt.name(), colors.divider.name());
+        .arg(colors.text.name(), colors.surfaceAlt.name(), colors.divider.name(),
+             colors.window.name());
 }
 
 AnimeTheme::Mode g_mode = AnimeTheme::Mode::Dark;

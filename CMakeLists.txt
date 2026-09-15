@@ -80,6 +80,8 @@ set(PROJECT_SOURCES
     subcontrolframe.h
     theme.cpp
     theme.h
+    windowedgeresize.cpp
+    windowedgeresize.h
     childrenpanel/assetpanel.cpp
     childrenpanel/assetpanel.h
     childrenpanel/assetpanel.ui

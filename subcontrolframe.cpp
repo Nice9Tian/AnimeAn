@@ -1,6 +1,7 @@
 #include "subcontrolframe.h"
 
 #include "theme.h"
+#include "windowedgeresize.h"
 
 #include <QApplication>
 #include <QCloseEvent>
@@ -310,6 +311,8 @@ SubControlFrame::SubControlFrame(const QString &name, const QString &title, QWid
     m_grip = new QSizeGrip(this);
     m_grip->setVisible(false);
     outer->addWidget(m_grip, 0, Qt::AlignRight | Qt::AlignBottom);
+    // The grip alone is one corner; every edge resizes while floating.
+    WindowEdgeResize::install(this);
 
     connect(m_titleBar, &SubControlTitleBar::dragStarted, this, &SubControlFrame::beginDrag);
     connect(m_titleBar, &SubControlTitleBar::dragMoved, this, &SubControlFrame::dragTo);
