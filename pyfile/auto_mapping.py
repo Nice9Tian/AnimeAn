@@ -151,6 +151,20 @@ POLY_STEP = 4.0
 NEAREST_PROPERTY = "fold_nearest"
 NEAREST_HANDLE_COLOR = (230, 45, 45, 255)
 
+# The HORIZON (eye level) of the main board: a draggable horizontal line that
+# tells To 3D which way the sheet recedes (two-point perspective - vertical
+# vanishing is not modelled). Stored in the main view's assets as the canvas
+# y it sits at. _HORIZON_BAND: guide points closer to it than this carry no
+# usable cue (every receding line is flat at eye level). _HORIZON_MIN_SIN: the
+# weakest windowed guide slope (sin) still trusted as a verdict.
+HORIZON_PROPERTY = "fold_horizon"
+HORIZON_COLOR = (255, 150, 0, 255)
+_HORIZON_BAND = 8.0
+_HORIZON_MIN_SIN = 0.03
+# Mean guide steepness (sin) above which the H guide is not a horizontal line
+# on the canvas at all and the two-point model does not apply.
+_HORIZON_MAX_SIN = 0.5
+
 # "Additional line": a pink refinement guide drawn on either board on top of
 # the H/V axes. Each line exists as a PAIR (child version, main version) - the
 # side the user did not draw on is synthesized through the current mapping -
@@ -344,6 +358,7 @@ ITEM_LABELS = {
     V_PROPERTY: "V center line",
     MAPPING_AREA_PROPERTY: "mapping area",
     NEAREST_PROPERTY: "nearest point",
+    HORIZON_PROPERTY: "horizon line",
     ADDITIONAL_PROPERTY: "additional line",
 }
 
@@ -460,6 +475,13 @@ def _sanitize_assets(data):
             arc = item.get("arc") or []
             if len(arc) >= 2:
                 assets[prop] = {"arc": [float(arc[0]), float(arc[1])]}
+        elif prop == HORIZON_PROPERTY:
+            try:
+                y = float(item.get("y"))
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(y):
+                assets[prop] = {"y": y}
         elif prop == ADDITIONAL_PROPERTY:
             lines = []
             for line in item.get("lines") or []:
@@ -533,6 +555,7 @@ _UNIT_SETTING_DEFAULTS = {
     "show_additional": True, # pink additional lines
     "show_area": True,       # mapping-area outline
     "show_nearest": True,    # red nearest-point handle (main)
+    "show_horizon": True,    # orange horizon line (main)
     "show_grid": False,      # refer-rect grid
     "grid_divisions": 5,
     "show_occlusion": False, # occluded-areas tint (texture board)
@@ -4274,6 +4297,11 @@ def overlay_items(view_name):
             items[:0] = _occlusion_overlay_items()
         except Exception as error:
             print(f"[auto_mapping] occlusion preview skipped: {error}")
+    if view_name == "main" and wanted("show_horizon"):
+        # BOTTOM of the stack: the page-wide line crosses every guide, and
+        # C++ hit-tests draggable items last-to-first - on top it stole the
+        # press on a guide wherever the two crossed.
+        items[:0] = _horizon_overlay_items()
     if view_name == "main" and wanted("show_nearest"):
         try:
             # ON TOP of the guides: the anchor is the one thing here you grab.
@@ -4997,6 +5025,114 @@ def _nearest_handle_event(message):
     print(f"[auto_mapping] nearest point at arc ({l_h:.1f}, {l_v:.1f}); "
           "the next Auto Mapping stacks fold layers from here.")
     _maybe_auto_run()
+
+
+def _horizon_y():
+    """The main board's horizon (canvas y), or None when none is placed."""
+    item = _assets_for("main").get(HORIZON_PROPERTY) or {}
+    try:
+        return float(item["y"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _horizon_overlay_items():
+    """The horizon as a dashed line across the whole main page - draggable
+    (vertically) and removable, the same overlay family as the guides."""
+    y = _horizon_y()
+    if y is None:
+        return []
+    x0, _y0, x1, _y1 = _canvas_rect("main")
+    return [{
+        "id": HORIZON_PROPERTY,
+        "points": [(x0, y), (x1, y)],
+        "color": HORIZON_COLOR,
+        "width": 2.0,
+        "pen_style": 2,          # Qt::DashLine: a reference, not artwork
+        "removable": True,
+        "draggable": True,
+    }]
+
+
+def _toggle_horizon():
+    """Menu: place a horizon at mid-page, or remove the one there is."""
+    assets = _assets_for("main")
+    if HORIZON_PROPERTY in assets:
+        del assets[HORIZON_PROPERTY]
+        label = "Remove Horizon Line"
+        print("[auto_mapping] horizon line removed; To 3D guesses the "
+              "relief sign again")
+    else:
+        _x0, y0, _x1, y1 = _canvas_rect("main")
+        assets[HORIZON_PROPERTY] = {"y": 0.5 * (y0 + y1)}
+        label = "Add Horizon Line"
+        print("[auto_mapping] horizon line placed at mid-page - drag it to "
+              "the eye level of the main drawing")
+    _save_assets("main")
+    _overlays_changed("main")
+    try:
+        animean = _animean()
+        animean.ui.refresh()
+        animean.ui.history_commit(label, "main")
+    except Exception:
+        pass
+
+
+_HORIZON_DRAG = {}
+
+
+def _horizon_drag_event(message):
+    """Drag the horizon vertically. Same gesture contract as the nearest
+    anchor: a press only grabs, a cancel restores the persisted placement,
+    and only a release that moved commits history."""
+    if message.get("view") != "main":
+        return
+    phase = message.get("phase")
+    assets = _assets_for("main")
+    if phase == "cancel":
+        drag = _HORIZON_DRAG.pop("main", None)
+        if drag is not None and drag["moved"] and HORIZON_PROPERTY in assets:
+            assets[HORIZON_PROPERTY] = {"y": drag["y"]}
+            _push_overlay("main")
+        return
+    if message.get("handle") != HORIZON_PROPERTY:
+        return
+    position = message.get("position") or {}
+    cursor_y = float(position.get("y", 0.0))
+    if phase == "press":
+        y = _horizon_y()
+        if y is not None:
+            _HORIZON_DRAG["main"] = {"origin": cursor_y, "y": y, "moved": False}
+        return
+    if phase not in ("move", "release"):
+        return
+    drag = _HORIZON_DRAG.get("main")
+    item = assets.get(HORIZON_PROPERTY)
+    if drag is None or item is None:
+        _HORIZON_DRAG.pop("main", None)
+        return
+    if abs(cursor_y - drag["origin"]) > 1e-9:
+        drag["moved"] = True
+    item["y"] = drag["y"] + (cursor_y - drag["origin"])
+    if phase == "move":
+        _push_overlay("main")
+        try:
+            _animean().ui.refresh()
+        except Exception:
+            pass
+        return
+    _HORIZON_DRAG.pop("main", None)
+    _push_overlay("main")
+    if not drag["moved"]:
+        return
+    _save_assets("main")
+    try:
+        animean = _animean()
+        animean.ui.refresh()
+        animean.ui.history_commit("Move Horizon Line", "main")
+    except Exception:
+        pass
+    print(f"[auto_mapping] horizon line at y = {item['y']:.1f}")
 
 
 def _detect_region(scene, view_name, frame, seed):
@@ -8751,6 +8887,8 @@ def _history_restored(cell, stroke, message):
     # Same reasoning for an in-flight guide/additional-line drag: the restore
     # replaced the assets the gesture was mutating.
     _GUIDE_DRAG.pop(message.get("view") or "main", None)
+    if (message.get("view") or "main") == "main":
+        _HORIZON_DRAG.pop("main", None)
     _load_assets(message.get("view") or "main")
 
 
@@ -9857,6 +9995,7 @@ def _unit_settings_layout():
         check("back_visible", "Back / Back Lines", 9),
         check("seal_visible", "Crease Lines", 10),
         check("auto_render", "Live Re-render", 11),
+        check("show_horizon", "Horizon Line", 12),
     ]
     return {"controls": controls}
 
@@ -9932,6 +10071,8 @@ def _menu_items():
         {"name": "constrain_outline", "title": "约束外轮廓 / Constrain Outline",
          "kind": "check", "checked": _ADDITIONAL["constrain_outline"]},
         {"kind": "separator"},
+        {"name": "horizon", "title": "视平线 / Horizon Line", "kind": "check",
+         "checked": _horizon_y() is not None},
         {"name": "to_3d", "title": "To 3D"},
     ]
 
@@ -10006,6 +10147,9 @@ def _menu_action(message):
     if message.get("menu") != MENU_NAME:
         return
     name = message.get("name") or ""
+    if name == "horizon":
+        _toggle_horizon()
+        return
     if name == "to_3d":
         try:
             run_to_3d()
@@ -10884,7 +11028,7 @@ def _subdivide_mesh(vertices, triangles, max_edge):
 
 
 def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
-                            grid_target=52, child_area=None):
+                            grid_target=52, child_area=None, horizon_y=None):
     """Isometric shape-from-template over the Third plane.
 
     THE MODEL (user specification): the Third Cartesian plane is the
@@ -11359,6 +11503,115 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
             if found is not None:
                 signs[k] = found
                 break
+    # THE HORIZON DECIDES WHICH WAY EACH COLUMN RECEDES (two-point
+    # perspective, user specification 2026-09-15). The sheet bends about
+    # vertical rulings, so an H-family line is world-horizontal, and a
+    # receding horizontal line converges on the horizon: walking along it,
+    # the end that approaches the horizon is the FAR end. With h = height
+    # above the horizon (canvas px, up positive) and t_y the canvas-down
+    # component of the image tangent along +u,
+    #     +u recedes  <=>  t_y * h > 0,
+    # so sign(dz/du) = -sign(t_y * h). No focal length enters the sign.
+    # The cue is read ON THE H GUIDE ONLY (Third v = 0): hv() = H + V - O
+    # translates the guide to every height, so an off-guide node carries
+    # the guide's slope at the wrong height - reading it there flips the
+    # verdict across the horizon and fabricates a crease. The verdict then
+    # rides the ruling (the node column). The arc-length parametrisation
+    # also flattens the guide's foreshortening into a uniform speed, which
+    # left the image slope as the only shape signal: region segmentation
+    # found no valleys to split a bump at and integrated it as a staircase.
+    # Columns without a usable cue (guide level with the horizon, or
+    # locally parallel to it) inherit the nearest decided column: no sign
+    # change is invented where the image says nothing - minimal deformation.
+    # The verdict belongs to the GUIDE'S FACE: a layer folded back over a
+    # horizontal crease (det J flipped relative to the guide) carries the
+    # opposite physical slope, exactly as the face parity above says.
+    # The model is also checked before it is trusted: a world-horizontal
+    # line can never cross the horizon (y_img = f Y / depth keeps its
+    # sign), so a guide that crosses it - camera roll, a hand-tilted or a
+    # vertical guide - abstains instead of flipping every column at the
+    # crossing and fabricating a crease there.
+    horizon_active = False
+    horizon_note = None
+    if horizon_y is not None:
+        h_neg, h_pos = map_point.child_frame.h_side
+        step = 1.5 * du
+        votes = {}
+        guide_face = {}
+        above = below = 0
+        steepness = []
+        for i in range(nx + 1):
+            u = u0 + du * i
+            if u < -h_neg or u > h_pos:
+                continue
+            here = image_of_third(u, 0.0)
+            ahead = image_of_third(u + step, 0.0)
+            behind = image_of_third(u - step, 0.0)
+            tx = ahead[0] - behind[0]
+            ty = ahead[1] - behind[1]
+            length = math.hypot(tx, ty)
+            if length < 1e-9:
+                continue
+            steepness.append(abs(ty) / length)
+            height = horizon_y - here[1]
+            if abs(height) < _HORIZON_BAND:
+                continue
+            if height > 0.0:
+                above += 1
+            else:
+                below += 1
+            votes[i] = -ty / length * (1.0 if height > 0.0 else -1.0)
+            rise = image_of_third(u, step)
+            fall = image_of_third(u, -step)
+            face = tx * (rise[1] - fall[1]) - ty * (rise[0] - fall[0])
+            guide_face[i] = 1.0 if face >= 0.0 else -1.0
+        if above and below:
+            votes = {}
+            horizon_note = ("ignored - the H guide crosses the horizon (a "
+                            "world-horizontal line never can: camera roll "
+                            "or a non-horizontal guide)")
+        elif steepness and (sum(steepness) / len(steepness)
+                            > _HORIZON_MAX_SIN):
+            votes = {}
+            horizon_note = ("ignored - the H guide is not roughly horizontal "
+                            "on the canvas")
+        column_sign = {}
+        for i in votes:
+            window = [votes[n] for n in (i - 1, i, i + 1) if n in votes]
+            score = sum(window) / len(window)
+            if abs(score) >= _HORIZON_MIN_SIN:
+                column_sign[i] = 1.0 if score > 0.0 else -1.0
+        if column_sign:
+            horizon_active = True
+            decided = sorted(column_sign)
+            horizon_note = (f"used - {len(decided)} of {len(votes)} guide "
+                            "columns decided the relief sign")
+            column_face = {i: guide_face[i] for i in decided}
+            for i in range(nx + 1):
+                if i not in column_sign:
+                    nearest = min(decided, key=lambda n: (abs(n - i), n))
+                    column_sign[i] = column_sign[nearest]
+                    column_face[i] = column_face[nearest]
+            for k, (i, _j, _u, _v) in enumerate(nodes):
+                g = oriented[k]
+                length = math.hypot(*g)
+                # A node tilting mostly along v recedes vertically - the
+                # vertical vanishing point is out of scope, so the priors
+                # above keep it.
+                if length < 1e-9 or abs(g[0]) < 0.25 * length:
+                    continue
+                # Required sign of this node's dz/du: the column verdict,
+                # reversed when the node lies on the other face than the
+                # guide sample that voted.
+                wanted = column_sign[i] * handed[k] * column_face[i]
+                if g[0] * signs[k] * handed[k] * majority * wanted < 0.0:
+                    signs[k] = -signs[k]
+        elif horizon_note is None:
+            horizon_note = ("ignored - no guide column carries a usable "
+                            "slope (guide level with or parallel to the "
+                            "horizon)")
+        if os.environ.get("ANIMEAN_TO3D_DEBUG"):
+            print(f"[to3d-debug] horizon: {horizon_note}")
     target = [(oriented[k][0] * signs[k] * handed[k] * majority,
                oriented[k][1] * signs[k] * handed[k] * majority)
               for k in range(len(nodes))]
@@ -11518,9 +11771,11 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
     # Global concavity: the per-region orientation fixes RELATIVE signs;
     # the remaining all-or-nothing flip is settled the same way - deeper
     # 2D stacking must sit farther from the camera (smaller z).
+    # A horizon already fixed the absolute signs; a stacking covariance must
+    # not flip them back.
     known = [(zv, node_depth[k]) for k, zv in enumerate(z)
              if node_depth[k] is not None]
-    if known:
+    if known and not horizon_active:
         za = sum(v for v, _d in known) / len(known)
         da = sum(d for _v, d in known) / len(known)
         covariance = sum((v - za) * (d - da) for v, d in known)
@@ -11966,7 +12221,8 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
 
     return {"vertices": vertices, "faces": faces, "colors": colors,
             "strokes": strokes3d,
-            "scale0": scale0, "uv": vertex_uv, "grid": grid3d}
+            "scale0": scale0, "uv": vertex_uv, "grid": grid3d,
+            "horizon": horizon_note}
 
 
 def run_to_3d():
@@ -12018,13 +12274,19 @@ def run_to_3d():
     pattern_bezier = _collect_pattern_strokes(child, child_frame,
                                               want_commands=True,
                                               tag_source=True)
+    # The horizon (if placed) decides which way each column recedes; without
+    # one the sign falls back to the stacking votes and minimal-relief prior.
+    horizon_y = _horizon_y()
     surface = _reconstruct_surface_3d(map_point, child_fills, pattern_bezier,
-                                      child_area=child_area)
+                                      child_area=child_area,
+                                      horizon_y=horizon_y)
     if surface is None or not surface["faces"]:
         print("[auto_mapping] To 3D: no solid (filled) region to "
               "reconstruct - fill the pattern on the child board first.")
         return False
     surface["frame"] = child_frame
+    if surface.get("horizon"):
+        print(f"[auto_mapping] To 3D: horizon line {surface['horizon']}")
 
     path = os.path.join(tempfile.gettempdir(),
                         f"animean_to3d_{int(time.time())}.html")
@@ -12411,3 +12673,5 @@ python_hooks.set_hook(_nearest_handle_event, handle=True)
 # Guides and additional lines are draggable overlays; their drag is reported
 # through the same handle events.
 python_hooks.set_hook(_guide_drag_event, handle=True)
+# The horizon line drags the same way, vertically only.
+python_hooks.set_hook(_horizon_drag_event, handle=True)
