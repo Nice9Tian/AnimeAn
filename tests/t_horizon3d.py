@@ -116,18 +116,18 @@ for name, zfun in CASES:
 print(f"1) horizon recovers the relief sign in every case (worst corr "
       f"{worst:+.3f})")
 
-# 2) The decisive pair: a sheet tilting one way and its mirror draw the same
-#    picture up to perspective, with OPPOSITE true relief. Without a horizon
-#    both come back with the same sign - one of them necessarily wrong (the
-#    weak-perspective blindness, not a regression); with it, both are right.
-c_pos, _ = relief_corr(CASES[0][1], -250.0)
-c_neg, _ = relief_corr(CASES[1][1], -250.0)
-assert c_pos > 0.9 and c_neg > 0.9, (c_pos, c_neg)
-blind_pos, _ = relief_corr(CASES[0][1], -250.0, horizon_y=None)
-blind_neg, _ = relief_corr(CASES[1][1], -250.0, horizon_y=None)
-assert blind_pos * blind_neg > 0.0, (blind_pos, blind_neg)
-print(f"2) mirrored tilts: blind without a horizon ({blind_pos:+.2f} / "
-      f"{blind_neg:+.2f}), told apart with one ({c_pos:+.2f} / {c_neg:+.2f})")
+# 2) The horizon is NEEDED: without it the tilt sign is a coin that happens
+#    to land right below eye level and wrong above it (the weak-perspective
+#    blindness, not a regression). With it, both guide heights are right.
+for world_y in (-250.0, 250.0):
+    for name, zfun in CASES[:2]:
+        c, _ = relief_corr(zfun, world_y)
+        assert c > 0.9, (name, world_y, c)
+blind_above = [relief_corr(zfun, 250.0, horizon_y=None)[0]
+               for _name, zfun in CASES[:2]]
+assert all(c < 0.0 for c in blind_above), blind_above
+print(f"2) tilts above eye level: wrong without a horizon "
+      f"({blind_above[0]:+.2f} / {blind_above[1]:+.2f}), right with one")
 
 # 3) A guide AT eye level carries no cue (every receding line is flat
 #    there): the horizon abstains and the reconstruction equals the
@@ -142,3 +142,66 @@ print("3) guide at eye level: horizon abstains, result unchanged")
 c_far, _ = relief_corr(CASES[4][1], -250.0, horizon_y=Y_HZ - 5000.0)
 assert c_far > 0.6, c_far
 print("4) distant horizon on the same side gives the same verdict")
+
+
+def reconstruct(main_h, main_v, horizon_y):
+    mp, note = am.build_mapper(CHILD_H, CHILD_V, main_h, main_v, {})
+    assert mp is not None, note
+    return am._reconstruct_surface_3d(mp, [FILL], [], grid_target=40,
+                                      horizon_y=horizon_y)
+
+
+def slope_z_over_x(res, keep):
+    pts = [(p[0], p[2]) for p, uv in zip(res["vertices"], res["uv"])
+           if keep(uv[1])]
+    mx = sum(x for x, _z in pts) / len(pts)
+    mz = sum(z for _x, z in pts) / len(pts)
+    return (sum((x - mx) * (z - mz) for x, z in pts)
+            / sum((x - mx) ** 2 for x, _z in pts))
+
+
+# 5) FOLD PARITY (review finding): the main V guide folds back over a
+#    horizontal crease at v = +100, so the layer past it faces away and its
+#    relief slope along u is reversed. The horizon verdict is read on the
+#    FRONT guide and must reach the back layer with that reversal - forcing
+#    one sign down the whole column flattened the fold's parity. After the
+#    Poisson solve the reversed back-layer gradient shows as a strongly
+#    damped z slope (front 0.54, back 0.17 with or without the horizon);
+#    the parity-blind override drove the back layer to the FRONT's slope
+#    (0.82 vs 0.84).
+main_h, _mv, _truth = curtain(CASES[0][1], -250.0)
+cx, cy = main_h[len(main_h) // 2]
+main_v = ([(cx, cy - 200.0 + 3.0 * k) for k in range(101)]
+          + [(cx, cy + 100.0 - 3.0 * k) for k in range(1, 34)] + [(cx, cy)])
+res = reconstruct(main_h, main_v, Y_HZ)
+front = slope_z_over_x(res, lambda v: v < 80.0)
+back = slope_z_over_x(res, lambda v: v >= 120.0)
+assert front > 0.0, front
+assert back < 0.5 * front, (front, back)
+print(f"5) folded-back layer keeps its reversed gradient under the horizon "
+      f"(z slope front {front:+.2f}, back {back:+.2f})")
+
+# 6) A guide that CROSSES the horizon cannot be a world-horizontal line
+#    (4 deg camera roll here; also a guide drawn vertically): the horizon
+#    abstains and says so, and the result equals the horizon-free one -
+#    voting there flipped every column at the crossing into a fake crease.
+angle = math.radians(4.0)
+
+
+def roll(p):
+    x, y = p[0] - X0, p[1] - Y_HZ
+    return (X0 + x * math.cos(angle) - y * math.sin(angle),
+            Y_HZ + x * math.sin(angle) + y * math.cos(angle))
+
+
+main_h, main_v, _truth = curtain(CASES[2][1], 0.0)
+main_h = [roll(p) for p in main_h]
+main_v = [roll(p) for p in [(X0, Y_HZ - 200.0), (X0, Y_HZ + 200.0)]]
+rolled = reconstruct(main_h, main_v, Y_HZ)
+assert rolled["horizon"].startswith("ignored"), rolled["horizon"]
+assert rolled["vertices"] == reconstruct(main_h, main_v, None)["vertices"]
+vertical_h = [(500.0 + 60.0 * math.cos((-300.0 + 10.0 * k) / 95.0),
+               500.0 + 0.8 * (-300.0 + 10.0 * k)) for k in range(61)]
+upright = reconstruct(vertical_h, [(700.0, 500.0), (300.0, 500.0)], Y_HZ)
+assert upright["horizon"].startswith("ignored"), upright["horizon"]
+print("6) guide crossing the horizon / vertical guide: horizon abstains")

@@ -161,6 +161,9 @@ HORIZON_PROPERTY = "fold_horizon"
 HORIZON_COLOR = (255, 150, 0, 255)
 _HORIZON_BAND = 8.0
 _HORIZON_MIN_SIN = 0.03
+# Mean guide steepness (sin) above which the H guide is not a horizontal line
+# on the canvas at all and the two-point model does not apply.
+_HORIZON_MAX_SIN = 0.5
 
 # "Additional line": a pink refinement guide drawn on either board on top of
 # the H/V axes. Each line exists as a PAIR (child version, main version) - the
@@ -4295,7 +4298,10 @@ def overlay_items(view_name):
         except Exception as error:
             print(f"[auto_mapping] occlusion preview skipped: {error}")
     if view_name == "main" and wanted("show_horizon"):
-        items.extend(_horizon_overlay_items())
+        # BOTTOM of the stack: the page-wide line crosses every guide, and
+        # C++ hit-tests draggable items last-to-first - on top it stole the
+        # press on a guide wherever the two crossed.
+        items[:0] = _horizon_overlay_items()
     if view_name == "main" and wanted("show_nearest"):
         try:
             # ON TOP of the guides: the anchor is the one thing here you grab.
@@ -11517,11 +11523,23 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
     # Columns without a usable cue (guide level with the horizon, or
     # locally parallel to it) inherit the nearest decided column: no sign
     # change is invented where the image says nothing - minimal deformation.
+    # The verdict belongs to the GUIDE'S FACE: a layer folded back over a
+    # horizontal crease (det J flipped relative to the guide) carries the
+    # opposite physical slope, exactly as the face parity above says.
+    # The model is also checked before it is trusted: a world-horizontal
+    # line can never cross the horizon (y_img = f Y / depth keeps its
+    # sign), so a guide that crosses it - camera roll, a hand-tilted or a
+    # vertical guide - abstains instead of flipping every column at the
+    # crossing and fabricating a crease there.
     horizon_active = False
+    horizon_note = None
     if horizon_y is not None:
         h_neg, h_pos = map_point.child_frame.h_side
         step = 1.5 * du
         votes = {}
+        guide_face = {}
+        above = below = 0
+        steepness = []
         for i in range(nx + 1):
             u = u0 + du * i
             if u < -h_neg or u > h_pos:
@@ -11532,10 +11550,31 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
             tx = ahead[0] - behind[0]
             ty = ahead[1] - behind[1]
             length = math.hypot(tx, ty)
-            height = horizon_y - here[1]
-            if length < 1e-9 or abs(height) < _HORIZON_BAND:
+            if length < 1e-9:
                 continue
+            steepness.append(abs(ty) / length)
+            height = horizon_y - here[1]
+            if abs(height) < _HORIZON_BAND:
+                continue
+            if height > 0.0:
+                above += 1
+            else:
+                below += 1
             votes[i] = -ty / length * (1.0 if height > 0.0 else -1.0)
+            rise = image_of_third(u, step)
+            fall = image_of_third(u, -step)
+            face = tx * (rise[1] - fall[1]) - ty * (rise[0] - fall[0])
+            guide_face[i] = 1.0 if face >= 0.0 else -1.0
+        if above and below:
+            votes = {}
+            horizon_note = ("ignored - the H guide crosses the horizon (a "
+                            "world-horizontal line never can: camera roll "
+                            "or a non-horizontal guide)")
+        elif steepness and (sum(steepness) / len(steepness)
+                            > _HORIZON_MAX_SIN):
+            votes = {}
+            horizon_note = ("ignored - the H guide is not roughly horizontal "
+                            "on the canvas")
         column_sign = {}
         for i in votes:
             window = [votes[n] for n in (i - 1, i, i + 1) if n in votes]
@@ -11545,10 +11584,14 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
         if column_sign:
             horizon_active = True
             decided = sorted(column_sign)
+            horizon_note = (f"used - {len(decided)} of {len(votes)} guide "
+                            "columns decided the relief sign")
+            column_face = {i: guide_face[i] for i in decided}
             for i in range(nx + 1):
                 if i not in column_sign:
                     nearest = min(decided, key=lambda n: (abs(n - i), n))
                     column_sign[i] = column_sign[nearest]
+                    column_face[i] = column_face[nearest]
             for k, (i, _j, _u, _v) in enumerate(nodes):
                 g = oriented[k]
                 length = math.hypot(*g)
@@ -11557,12 +11600,18 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
                 # above keep it.
                 if length < 1e-9 or abs(g[0]) < 0.25 * length:
                     continue
-                if g[0] * signs[k] * handed[k] * majority \
-                        * column_sign[i] < 0.0:
+                # Required sign of this node's dz/du: the column verdict,
+                # reversed when the node lies on the other face than the
+                # guide sample that voted.
+                wanted = column_sign[i] * handed[k] * column_face[i]
+                if g[0] * signs[k] * handed[k] * majority * wanted < 0.0:
                     signs[k] = -signs[k]
-            if os.environ.get("ANIMEAN_TO3D_DEBUG"):
-                print(f"[to3d-debug] horizon: {len(decided)} of "
-                      f"{len(votes)} guide columns decided")
+        elif horizon_note is None:
+            horizon_note = ("ignored - no guide column carries a usable "
+                            "slope (guide level with or parallel to the "
+                            "horizon)")
+        if os.environ.get("ANIMEAN_TO3D_DEBUG"):
+            print(f"[to3d-debug] horizon: {horizon_note}")
     target = [(oriented[k][0] * signs[k] * handed[k] * majority,
                oriented[k][1] * signs[k] * handed[k] * majority)
               for k in range(len(nodes))]
@@ -12172,7 +12221,8 @@ def _reconstruct_surface_3d(map_point, child_fills, child_pattern,
 
     return {"vertices": vertices, "faces": faces, "colors": colors,
             "strokes": strokes3d,
-            "scale0": scale0, "uv": vertex_uv, "grid": grid3d}
+            "scale0": scale0, "uv": vertex_uv, "grid": grid3d,
+            "horizon": horizon_note}
 
 
 def run_to_3d():
@@ -12235,6 +12285,8 @@ def run_to_3d():
               "reconstruct - fill the pattern on the child board first.")
         return False
     surface["frame"] = child_frame
+    if surface.get("horizon"):
+        print(f"[auto_mapping] To 3D: horizon line {surface['horizon']}")
 
     path = os.path.join(tempfile.gettempdir(),
                         f"animean_to3d_{int(time.time())}.html")
