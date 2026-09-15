@@ -80,9 +80,9 @@ public:
         QString page;
     };
 
-    // showBuiltIns false leaves the enum tools out entirely: the mapping and
-    // fukusato pages are lists of script buttons, and a second copy of Pen on
-    // each of them would be three armable Pens.
+    // showBuiltIns false leaves the enum tools out entirely: the mapping page
+    // is a list of script buttons, and a second copy of Pen on it would be
+    // two armable Pens.
     explicit ToolsPanel(QWidget *parent = nullptr, bool showBuiltIns = true);
     ~ToolsPanel();
 

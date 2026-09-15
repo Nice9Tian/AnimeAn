@@ -85,10 +85,10 @@ NEAREST_LAYER_NAME = "Nearest Point"
 MAPPING_GROUP_NAME = "Auto Mapping"
 # Everything a run puts on the board. None of it may act as a wall for region
 # detection, and none of it may be picked up as pattern by the next run.
-# The Fukusato workflow routes its region detection through _detect_region
-# too, so its output properties (literals: importing fukusato_mapping here
-# would be a cycle) must be excluded for exactly the same reason - otherwise
-# the first accepted mapping walls off every later re-detection.
+# The retired Fukusato workflow (archived in old_history/fukusato/) routed its
+# region detection through _detect_region too. Its output properties stay in
+# the list as bare literals so a project saved while that tool still shipped
+# keeps its layers out of the walls and out of the pattern.
 MAPPING_OUTPUT_PROPERTIES = (MAPPED_PROPERTY, BACK_PROPERTY, SEAL_PROPERTY,
                              GUIDE_LAYER_PROPERTY, H_GUIDE_LAYER_PROPERTY,
                              V_GUIDE_LAYER_PROPERTY, NEAREST_LAYER_PROPERTY,

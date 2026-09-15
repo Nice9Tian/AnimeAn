@@ -2,14 +2,12 @@ import importlib
 import json
 
 import auto_mapping
-import crease_line_tool
-import fukusato_workflow
 
 
 def extra_tools():
     # "page" names which Tools page the button belongs on. The shell owns the
-    # pages ("painting" | "mapping" | "fukusato"); this list only says which
-    # family each tool is part of, and an omitted page means "mapping".
+    # pages ("painting" | "mapping"); this list only says which family each
+    # tool is part of, and an omitted page means "mapping".
     return [
         {
             "name": "midline",
@@ -62,27 +60,8 @@ def extra_tools():
             "base_tool": "arrow",
             "page": "mapping",
         },
-        {
-            "name": "fukusato_line",
-            "title": "Fukusato Guide / 引导线",
-            "property": fukusato_workflow.HANDLE_PROPERTY,
-            "handler": "fukusato_workflow.activate_handle_tool",
-            "page": "fukusato",
-        },
-        {
-            "name": "fukusato_cut",
-            "title": "Crease Line / 折角线",
-            "property": crease_line_tool.PROPERTY,
-            "handler": "crease_line_tool.activate_crease_line",
-            "page": "fukusato",
-        },
-        {
-            "name": "fukusato_guide_mapping",
-            "title": "Fukusato Mapping",
-            "property": fukusato_workflow.RUN_TOOL,
-            "handler": "fukusato_workflow.run_mapping",
-            "page": "fukusato",
-        },
+        # The Fukusato guide / crease / mapping trio is archived in
+        # old_history/fukusato/ - it no longer ships a button.
     ]
 
 
@@ -91,8 +70,6 @@ def tools_json():
     # registered unconditionally, which put a print + debug-pane append on
     # every pen move; enable it explicitly with hook_test.enable_verbose().
     auto_mapping.register_hooks()
-    crease_line_tool.register_hooks()
-    fukusato_workflow.register_hooks()
     return json.dumps(extra_tools(), ensure_ascii=False)
 
 

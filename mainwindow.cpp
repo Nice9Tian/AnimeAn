@@ -2849,13 +2849,12 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 
 void MainWindow::createToolDocks()
 {
-    // Three instances, one per page. Only the painting page carries the enum
-    // tools; the other two are lists of script buttons, so a script tool sits
-    // beside its own family instead of at the end of one long column.
+    // Two instances, one per page. Only the painting page carries the enum
+    // tools; the mapping one is a list of script buttons, so a script tool
+    // sits beside its own family instead of at the end of one long column.
     m_paintingToolsPanel = new ToolsPanel(this, true);
     m_mappingToolsPanel = new ToolsPanel(this, false);
-    m_fukusatoToolsPanel = new ToolsPanel(this, false);
-    m_toolsPanels = {m_paintingToolsPanel, m_mappingToolsPanel, m_fukusatoToolsPanel};
+    m_toolsPanels = {m_paintingToolsPanel, m_mappingToolsPanel};
     // The docked options panel is a sub-control HOST; the script-settings
     // dialog builds its own ToolOptPanel and must not be one (a frame dropped
     // into a modal window would go away with it).
@@ -2864,7 +2863,6 @@ void MainWindow::createToolDocks()
     m_toolsDock = new ParentWindow(QStringLiteral("tools"), QStringLiteral("Tools"), this);
     m_toolsDock->addPage(QStringLiteral("painting"), QStringLiteral("Painting"), m_paintingToolsPanel);
     m_toolsDock->addPage(QStringLiteral("mapping"), QStringLiteral("Mapping"), m_mappingToolsPanel);
-    m_toolsDock->addPage(QStringLiteral("fukusato"), QStringLiteral("Fukusato"), m_fukusatoToolsPanel);
     addDockWidget(Qt::LeftDockWidgetArea, m_toolsDock);
 
     m_toolOptDock = new ParentWindow(QStringLiteral("tool_options"),
@@ -2888,7 +2886,6 @@ void MainWindow::createToolDocks()
             const QHash<QString, ToolsPanel *> panelForPage = {
                 {QStringLiteral("painting"), m_paintingToolsPanel},
                 {QStringLiteral("mapping"), m_mappingToolsPanel},
-                {QStringLiteral("fukusato"), m_fukusatoToolsPanel},
             };
             QHash<ToolsPanel *, QVector<ToolsPanel::ExtraToolDefinition>> byPanel;
             for (const ToolsPanel::ExtraToolDefinition &tool : parseExtraTools(document.array())) {

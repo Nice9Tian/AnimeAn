@@ -3265,7 +3265,7 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
             sendPythonHandleMessage(QStringLiteral("press"), handleId, pos, event->modifiers());
         } else if (pressOverlayOrBadge(event->position(), pos, event->modifiers())) {
             // A badge fired, or a draggable overlay item (Auto Mapping's
-            // guides and nearest-point anchor, a Fukusato guide) started its
+            // guides and nearest-point anchor) started its
             // drag - see pressOverlayOrBadge for how an overlapping
             // badge/grab press is decided.
         } else {

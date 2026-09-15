@@ -297,7 +297,6 @@ private:
     QVector<ToolsPanel *> m_toolsPanels;
     ToolsPanel *m_paintingToolsPanel = nullptr;
     ToolsPanel *m_mappingToolsPanel = nullptr;
-    ToolsPanel *m_fukusatoToolsPanel = nullptr;
     QAction *m_undoAction = nullptr;
     QAction *m_redoAction = nullptr;
     QTimer *m_playbackTimer = nullptr;

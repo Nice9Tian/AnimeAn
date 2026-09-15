@@ -226,9 +226,6 @@ if(ANIMEAN_WITH_PYTHON)
             "${ANIMEAN_PYFILE_DIR}/draw_settings.py"
             "$<TARGET_FILE_DIR:AnimeAn>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${ANIMEAN_PYFILE_DIR}/fukusato_mapping.py"
-            "$<TARGET_FILE_DIR:AnimeAn>"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${ANIMEAN_PYFILE_DIR}/script_store.py"
             "$<TARGET_FILE_DIR:AnimeAn>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -236,15 +233,6 @@ if(ANIMEAN_WITH_PYTHON)
             "$<TARGET_FILE_DIR:AnimeAn>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${ANIMEAN_PYFILE_DIR}/overlay_stack.py"
-            "$<TARGET_FILE_DIR:AnimeAn>"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${ANIMEAN_PYFILE_DIR}/fukusato_mesh.py"
-            "$<TARGET_FILE_DIR:AnimeAn>"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${ANIMEAN_PYFILE_DIR}/crease_line_tool.py"
-            "$<TARGET_FILE_DIR:AnimeAn>"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${ANIMEAN_PYFILE_DIR}/fukusato_workflow.py"
             "$<TARGET_FILE_DIR:AnimeAn>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${ANIMEAN_PYFILE_DIR}/visibility_tool.py"
@@ -364,9 +352,6 @@ if(WIN32 AND QT_VERSION_MAJOR EQUAL 6)
                 "${ANIMEAN_PYFILE_DIR}/draw_settings.py"
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${ANIMEAN_PYFILE_DIR}/fukusato_mapping.py"
-                "${ANIMEAN_DEPLOY_DIR}"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ANIMEAN_PYFILE_DIR}/script_store.py"
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -374,15 +359,6 @@ if(WIN32 AND QT_VERSION_MAJOR EQUAL 6)
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ANIMEAN_PYFILE_DIR}/overlay_stack.py"
-                "${ANIMEAN_DEPLOY_DIR}"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${ANIMEAN_PYFILE_DIR}/fukusato_mesh.py"
-                "${ANIMEAN_DEPLOY_DIR}"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${ANIMEAN_PYFILE_DIR}/crease_line_tool.py"
-                "${ANIMEAN_DEPLOY_DIR}"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${ANIMEAN_PYFILE_DIR}/fukusato_workflow.py"
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ANIMEAN_PYFILE_DIR}/visibility_tool.py"

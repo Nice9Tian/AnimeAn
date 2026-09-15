@@ -25,10 +25,8 @@ PYTHON_FILE_MODULES = (
     "extra_tools",
     "midline_tool",
     "auto_mapping",
-    "fukusato_mapping",
-    "fukusato_mesh",
-    "crease_line_tool",
-    "fukusato_workflow",
+    # The Fukusato MLS workflow (fukusato_mapping / _mesh / _workflow and
+    # crease_line_tool) is archived in old_history/fukusato/ - not loaded.
     "repulsion_tool",
     "fill_tool",
     # After window_manager (it asks for the Tools page by name) and after

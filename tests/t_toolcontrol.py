@@ -217,16 +217,12 @@ finally:
 print("9) an unavailable auto_mapping still yields the block, on defaults")
 
 
-# 10) tools outside the mapping family are untouched
-for tool in ("fukusato_line", "fukusato_cut"):
-    assert names(tool) == ["smooth", "pen_width"], tool
-assert names("fukusato_guide_mapping") == [
-    "fk_variant", "fk_alpha", "fk_beta", "fk_grid", "fk_samples"]
+# 10) tools outside the mapping family get no layout at all - the archived
+# fukusato_* names included, so a stale session arming one gets an empty panel
+# rather than a stray block of sliders.
 for tool in ("fukusato_line", "fukusato_cut", "fukusato_guide_mapping", "nonsense"):
-    seen = {c["type"] for c in controls(tool)}
-    assert "subwindow" not in seen, tool
-assert controls("nonsense") == []
-print("10) fukusato tools and unknown tools are unchanged")
+    assert controls(tool) == [], tool
+print("10) unknown tools (archived fukusato names included) yield no controls")
 
 
 # 11) the JSON the shell actually receives carries all of it

@@ -20,7 +20,7 @@ class FakeWindows:
 
     def list(self):
         return [{"name": "tools", "title": "Tools", "visible": self.visible["tools"],
-                 "pages": ["painting", "mapping", "fukusato"], "current": "painting"}]
+                 "pages": ["painting", "mapping"], "current": "painting"}]
 
     def select(self, name, page):
         self.selected.append((name, page))
