@@ -7,3 +7,7 @@ CMakeLists.txt.user
 /refer_code
 out.txt
 build_full.log
+/.history
+/.scratch
+/.archive
+.dag_state.json
