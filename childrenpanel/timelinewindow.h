@@ -364,6 +364,10 @@ private:
     QMainWindow *m_mainWindow = nullptr;
     TimelineTransportBar *m_bar = nullptr;
     TimelineStrip *m_strip = nullptr;
+    // The dock's content while collapsed. Hiding the strip instead is NOT the
+    // same thing: a dock whose content is hidden reports its title bar's
+    // minimum width as its MAXIMUM, so the bottom band shrank to three cells.
+    QWidget *m_collapsedBody = nullptr;
     TimelineSideTitleBar *m_sideTitle = nullptr;
     TimelineReopenPill *m_pill = nullptr;
     TimelineState m_state;

@@ -1606,6 +1606,11 @@ TimelineWindow::TimelineWindow(PaintViewContainer *container, QMainWindow *mainW
     m_sideTitle = new TimelineSideTitleBar(this);
     m_sideTitle->hide();
     m_strip = new TimelineStrip(this);
+    // Zero tall but unbounded across, so a collapsed dock is exactly its title
+    // bar and still spans whatever its area gives it.
+    m_collapsedBody = new QWidget(this);
+    m_collapsedBody->setFixedHeight(0);
+    m_collapsedBody->hide();
     setWidget(m_strip);
     setTitleBarWidget(m_bar);
 
@@ -1919,7 +1924,12 @@ void TimelineWindow::applyLayout()
         m_sideTitle->hide();
         m_bar->show();
     }
-    m_strip->setVisible(stripVisible);
+    // Swapped rather than hidden - see m_collapsedBody. setWidget hides the
+    // outgoing content and shows the incoming one.
+    QWidget *body = stripVisible ? static_cast<QWidget *>(m_strip) : m_collapsedBody;
+    if (widget() != body) {
+        setWidget(body);
+    }
 
     m_applyingLayout = false;
     pushState();
