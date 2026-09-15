@@ -46,6 +46,7 @@ std::function<void(const QString &view, const QString &name)> g_uiCursorCallback
 std::function<void(const QString &view, bool on)> g_uiFillPaintModeCallback;
 std::function<void(const QString &view, const QStringList &tools)> g_uiLockedToolsCallback;
 std::function<void(const QString &op, const QString &view, const QString &label)> g_uiHistoryCallback;
+std::function<void(const AutoMappingData &data)> g_uiAutoMappingStateCallback;
 
 // Event subscription mask pushed by python_hooks (ui.set_hook_events).
 bool g_hookEventMaskValid = false;
@@ -1023,6 +1024,16 @@ void clearAnimeanUiToolOptionsCallback()
     g_uiToolOptionsCallback = nullptr;
 }
 
+void registerAnimeanUiAutoMappingStateCallback(std::function<void(const AutoMappingData &data)> callback)
+{
+    g_uiAutoMappingStateCallback = std::move(callback);
+}
+
+void clearAnimeanUiAutoMappingStateCallback()
+{
+    g_uiAutoMappingStateCallback = nullptr;
+}
+
 void registerAnimeanUiFreezeCallback(std::function<void(bool frozen)> callback)
 {
     g_uiFreezeCallback = std::move(callback);
@@ -1193,6 +1204,18 @@ void bindAnimeanPythonModule(py::module_ &m)
             g_uiToolOptionsCallback();
         }
     });
+
+    ui.def("update_automapping_state", [](py::dict data) {
+        if (g_uiAutoMappingStateCallback) {
+            AutoMappingData mappedData;
+            if (data.contains("state")) {
+                mappedData.state = static_cast<AutoMappingState>(data["state"].cast<int>());
+            }
+            // Add lines and polygons parsing if needed
+            g_uiAutoMappingStateCallback(mappedData);
+        }
+    });
+
     // "dark" / "light". Read-only: a script that paints its own overlay can
     // pick colours that read on the current theme, but the theme itself is
     // the user's choice, made in the menu bar.

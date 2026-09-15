@@ -3724,6 +3724,13 @@ void PaintOpenGLWidget::finishCurrentStroke()
     update();
 }
 
+void PaintOpenGLWidget::onAutoMappingStateChanged(const AutoMappingData &data)
+{
+    // C++ side state sync
+    // For now, just trigger an update so it can redraw overlays if needed
+    update();
+}
+
 bool PaintOpenGLWidget::pythonHookSendMessage(const QString &event, const QPointF &pos, const QPointF &delta, bool changed, int strokeIndex)
 {
 #ifdef ANIMEAN_WITH_PYTHON

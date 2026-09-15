@@ -1,4 +1,4 @@
-﻿#ifndef PYTHON_BINDINGS_H
+#ifndef PYTHON_BINDINGS_H
 #define PYTHON_BINDINGS_H
 
 #include <QColor>
@@ -8,6 +8,8 @@
 #include <QVector>
 
 #include <functional>
+
+#include "algorithm/automappingstate.h"
 
 class AnimeSceneModel;
 
@@ -70,6 +72,8 @@ void registerAnimeanUiRefreshCallback(std::function<void(bool frame, bool layer,
 void clearAnimeanUiRefreshCallback();
 void registerAnimeanUiToolOptionsCallback(std::function<void()> callback);
 void clearAnimeanUiToolOptionsCallback();
+void registerAnimeanUiAutoMappingStateCallback(std::function<void(const AutoMappingData &data)> callback);
+void clearAnimeanUiAutoMappingStateCallback();
 void registerAnimeanUiFreezeCallback(std::function<void(bool frozen)> callback);
 void clearAnimeanUiFreezeCallback();
 void registerAnimeanUiWindowsCallback(AnimeanWindowsApi api);
