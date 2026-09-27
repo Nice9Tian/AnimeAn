@@ -416,11 +416,6 @@ MainWindow::MainWindow(QWidget *parent)
             refreshExtraToolOptions();
         }
     });
-
-    registerAnimeanUiAutoMappingStateCallback([this](const AutoMappingData &data) {
-        updateAutoMappingState(data);
-    });
-
     registerAnimeanUiRefreshCallback([this](bool frame, bool layer, bool asset, bool widget) {
         // EVERY view re-reads its own model, not just the active one: a
         // script can move another board's focus (a live auto-mapping run
@@ -700,8 +695,6 @@ MainWindow::~MainWindow()
     clearAnimeanUiFreezeCallback();
     clearAnimeanUiWindowsCallback();
     clearAnimeanUiRefreshCallback();
-    clearAnimeanUiAutoMappingStateCallback();
-
     unregisterAnimeanUiScene(&m_childPaintWidget->model());
     unregisterAnimeanUiScene(&m_paintWidget->model());
 #endif
@@ -2523,10 +2516,7 @@ void MainWindow::setupConnections()
 
         connect(view, &PaintOpenGLWidget::playbackInterrupted,
                 this, &MainWindow::stopPlayback);
-                
-        connect(this, &MainWindow::autoMappingStateChanged, view, &PaintOpenGLWidget::onAutoMappingStateChanged);
     }
-
 
     connect(m_texturePanel, &TexturePanel::changableTimelineToggled, this, [this](bool) {
         refreshPanelTargets();
@@ -2740,14 +2730,6 @@ PaintOpenGLWidget *MainWindow::viewForLayerPanel(LayerPanel *panel) const
 {
     return panel == m_childLayerPanel ? m_childPaintWidget : m_paintWidget;
 }
-
-
-
-void MainWindow::updateAutoMappingState(const AutoMappingData &data)
-{
-    emit autoMappingStateChanged(data);
-}
-
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 {

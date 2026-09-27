@@ -2,9 +2,7 @@
 #define OPENGLWIDGET_H
 
 #include "algorithm/animemodel.h"
-#include "algorithm/automappingstate.h"
 #include "algorithm/scenehistory.h"
-
 #include "algorithm/vectorlogic.h"
 #include "algorithm/viewscale.h"
 
@@ -286,9 +284,6 @@ public:
     int addLayerForAsset(int assetIndex);
     AnimeSceneModel &model();
     const AnimeSceneModel &model() const;
-
-public slots:
-    void onAutoMappingStateChanged(const AutoMappingData &data);
 
 signals:
     void layerListChanged(int selectedLayer);
