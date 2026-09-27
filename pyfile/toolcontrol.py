@@ -81,7 +81,7 @@ def _automapping_controls(start_row=0):
     Every value below is GLOBAL run policy held in module-level state in
     auto_mapping (_RDP_STATE / _FOLD / _BRIDGE / _CURVE_MODE), so it means
     the same thing whichever mapping tool is armed - which is why the guide
-    tools (midline, h/v center line, mapping area, additional line) show the
+    tools (h/v center line, mapping area, additional line) show the
     identical block instead of sending the user back to auto_mapping_2 to
     change a setting that governs the run they are preparing.
 
@@ -374,16 +374,16 @@ def options_for_extra_tool(tool, state=None):
     state = state or {}
     tool = str(tool).lower()
 
-    if tool in ("midline", "h_center_line", "v_center_line",
+    if tool in ("h_center_line", "v_center_line",
                 "mapping_area", "additional_line", "auto_mapping_2"):
         # Every mapping tool shows the SAME run-policy block. The settings it
         # holds are global to auto_mapping, and the guide tools are where the
         # user stands when they matter - arming h_center_line only to discover
         # the fold split lives on another tool's panel was the complaint.
         controls, row = _automapping_controls(0)
-        if tool in ("midline", "h_center_line", "v_center_line",
+        if tool in ("h_center_line", "v_center_line",
                     "additional_line"):
-            # These four are pen strokes, so they honour the same smoothing
+            # These three are pen strokes, so they honour the same smoothing
             # and width parameters as the pen tool. They come AFTER the shared
             # block so the block sits at the same place on every panel.
             # (mapping_area is a single click - nothing tool-specific.)

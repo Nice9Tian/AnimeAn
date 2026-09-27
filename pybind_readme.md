@@ -120,35 +120,42 @@ while the main UI thread is busy.
 ExtraTool support is currently implemented as a Python-assisted pen workflow.
 Selecting an extra tool keeps the drawing widget in the native Pen tool, sets a
 stroke `property`, and lets Python register hooks that receive drawing events.
-This is enough for post-processing vector algorithms, such as midline
+This is enough for post-processing vector algorithms, such as centerline
 extraction, stroke replacement, cleanup, auto-connection, or region analysis
 after the user finishes a stroke.
 
-The built-in example is `pyfile/midline_tool.py`, registered from
-`pyfile/extra_tools.py`:
+Extra tools are registered from `pyfile/extra_tools.py`. Each entry names
+the button, the stroke `property` the pen stamps on strokes drawn while the
+tool is armed, and the `module.function` handler called when the tool is
+selected; `page` picks the Tools page (`"painting"` or `"mapping"`, omitted
+means `"mapping"`). The `example_tool` below is a placeholder to copy from,
+not a shipped tool - the real entries are the Auto Mapping family in
+`pyfile/auto_mapping.py`:
 
 ```python
 def extra_tools():
     return [
         {
-            "name": "midline",
-            "title": "Midline",
-            "property": "midline",
-            "handler": "midline_tool.activate_midline_tool",
+            "name": "example_tool",
+            "title": "Example Tool",
+            "property": "example_tool",
+            "handler": "example_tool.activate_example_tool",
+            "page": "mapping",
         },
     ]
 ```
 
 The handler is called when the user selects the extra tool. A typical handler
-registers one or more hooks:
+registers one or more hooks; this one redraws every finished stroke as a thin
+red polyline:
 
 ```python
 import python_hooks
 from animemodel import get_current, ui
 
 
-def process_midline(cell, stroke, message):
-    if message.get("property") != "midline":
+def process_example(cell, stroke, message):
+    if message.get("property") != "example_tool":
         return
 
     current = get_current()
@@ -169,9 +176,9 @@ def process_midline(cell, stroke, message):
         ui.widget.refresh()
 
 
-def activate_midline_tool(name="midline", property_value="midline"):
+def activate_example_tool(name="example_tool", property_value="example_tool"):
     python_hooks.set_hook(
-        process_midline,
+        process_example,
         linefinish=True,
         tool="extra",
         property=property_value,

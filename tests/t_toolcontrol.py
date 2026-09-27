@@ -1,7 +1,7 @@
 """The mapping tools' shared options block + the texture sub-control row.
 
-Round-2 G3: arming a guide tool (midline, h/v center line, mapping area,
-additional line) used to give either an empty panel or two pen sliders, so the
+Round-2 G3: arming a guide tool (h/v center line, mapping area, additional
+line) used to give either an empty panel or two pen sliders, so the
 auto-mapping run policy - which is GLOBAL state, not auto_mapping_2's property
 - could only be reached by arming a different tool. Every mapping tool now
 shows the same block, its own extras after it, and the texture board last.
@@ -61,9 +61,9 @@ sys.modules["draw_settings"] = FAKE_DRAW
 
 import toolcontrol  # noqa: E402
 
-MAPPING_TOOLS = ("midline", "h_center_line", "v_center_line",
+MAPPING_TOOLS = ("h_center_line", "v_center_line",
                  "mapping_area", "additional_line")
-PEN_TOOLS = ("midline", "h_center_line", "v_center_line", "additional_line")
+PEN_TOOLS = ("h_center_line", "v_center_line", "additional_line")
 BLOCK_NAMES = ["fold_split", "fold_seal", "bridge_topology", "bridge_tension"]
 
 
@@ -190,11 +190,11 @@ print("7) auto_mapping_2's block is unchanged and the guide tools mirror it")
 
 
 # 8) each call builds fresh dicts: two panels must not share mutable controls
-a = controls("midline")
+a = controls("h_center_line")
 b = controls("mapping_area")
 assert a[0] is not b[0]
 a[0]["value"] = "tampered"
-assert controls("midline")[0]["value"] == "on"
+assert controls("h_center_line")[0]["value"] == "on"
 print("8) panels are rebuilt, never handing out shared control dicts")
 
 
@@ -219,10 +219,12 @@ print("9) an unavailable auto_mapping still yields the block, on defaults")
 
 # 10) tools outside the mapping family get no layout at all - the archived
 # fukusato_* names included, so a stale session arming one gets an empty panel
-# rather than a stray block of sliders.
-for tool in ("fukusato_line", "fukusato_cut", "fukusato_guide_mapping", "nonsense"):
+# rather than a stray block of sliders. "midline" joined that list on
+# 2026-09-28 when the log-only Midline example tool was removed.
+for tool in ("fukusato_line", "fukusato_cut", "fukusato_guide_mapping",
+             "midline", "nonsense"):
     assert controls(tool) == [], tool
-print("10) unknown tools (archived fukusato names included) yield no controls")
+print("10) unknown tools (archived fukusato + removed midline) yield no controls")
 
 
 # 11) the JSON the shell actually receives carries all of it

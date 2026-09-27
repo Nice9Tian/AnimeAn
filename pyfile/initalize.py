@@ -23,7 +23,6 @@ PYTHON_FILE_MODULES = (
     "pydeps",
     "hook_test",
     "extra_tools",
-    "midline_tool",
     "auto_mapping",
     # The Fukusato MLS workflow (fukusato_mapping / _mesh / _workflow and
     # crease_line_tool) is archived in old_history/fukusato/ - not loaded.
