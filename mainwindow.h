@@ -33,8 +33,6 @@ class QTimer;
 class QMenu;
 class QTreeWidgetItem;
 
-#include "algorithm/automappingstate.h"
-
 QT_BEGIN_NAMESPACE
 namespace Ui {
 class MainWindow;
@@ -50,13 +48,7 @@ public:
     ~MainWindow();
     void setStatusText(const QString &text);
 
-    void updateAutoMappingState(const AutoMappingData &data);
-
-signals:
-    void autoMappingStateChanged(const AutoMappingData &data);
-
 protected:
-
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:

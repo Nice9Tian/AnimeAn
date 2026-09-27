@@ -9,8 +9,6 @@
 
 #include <functional>
 
-#include "algorithm/automappingstate.h"
-
 class AnimeSceneModel;
 
 // One parent window, as ui.windows reports it. Names are the stable identity
@@ -72,8 +70,6 @@ void registerAnimeanUiRefreshCallback(std::function<void(bool frame, bool layer,
 void clearAnimeanUiRefreshCallback();
 void registerAnimeanUiToolOptionsCallback(std::function<void()> callback);
 void clearAnimeanUiToolOptionsCallback();
-void registerAnimeanUiAutoMappingStateCallback(std::function<void(const AutoMappingData &data)> callback);
-void clearAnimeanUiAutoMappingStateCallback();
 void registerAnimeanUiFreezeCallback(std::function<void(bool frozen)> callback);
 void clearAnimeanUiFreezeCallback();
 void registerAnimeanUiWindowsCallback(AnimeanWindowsApi api);
