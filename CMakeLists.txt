@@ -192,9 +192,6 @@ if(ANIMEAN_WITH_PYTHON)
             "${ANIMEAN_PYFILE_DIR}/extra_tools.py"
             "$<TARGET_FILE_DIR:AnimeAn>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${ANIMEAN_PYFILE_DIR}/midline_tool.py"
-            "$<TARGET_FILE_DIR:AnimeAn>"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${ANIMEAN_PYFILE_DIR}/auto_mapping.py"
             "$<TARGET_FILE_DIR:AnimeAn>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -316,9 +313,6 @@ if(WIN32 AND QT_VERSION_MAJOR EQUAL 6)
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ANIMEAN_PYFILE_DIR}/extra_tools.py"
-                "${ANIMEAN_DEPLOY_DIR}"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${ANIMEAN_PYFILE_DIR}/midline_tool.py"
                 "${ANIMEAN_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ANIMEAN_PYFILE_DIR}/auto_mapping.py"

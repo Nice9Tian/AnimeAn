@@ -10,13 +10,6 @@ def extra_tools():
     # tool is part of, and an omitted page means "mapping".
     return [
         {
-            "name": "midline",
-            "title": "Midline",
-            "property": "midline",
-            "handler": "midline_tool.activate_midline_tool",
-            "page": "mapping",
-        },
-        {
             "name": "h_center_line",
             "title": "H Center Line",
             "property": auto_mapping.H_PROPERTY,

@@ -107,29 +107,30 @@ finally:
 - Python 端实时绘制 preview overlay。
 - 大量 raster 图像写入或复杂 fill layer 编辑；这些入口目前没有完整 Python API。
 
-ExtraTool 在 `pyfile/extra_tools.py` 中注册：
+ExtraTool 在 `pyfile/extra_tools.py` 中注册。每一项给出按钮名、工具激活期间 Pen 给笔画打上的 `property`、以及选中工具时调用的 `module.function` 处理器；`page` 指定按钮放在 Tools 的哪一页（`"painting"` 或 `"mapping"`，省略即 `"mapping"`）。下面的 `example_tool` 只是供照抄的占位示例，不是随软件发布的工具；实际清单是 `pyfile/auto_mapping.py` 里的 Auto Mapping 一族：
 
 ```python
 def extra_tools():
     return [
         {
-            "name": "midline",
-            "title": "Midline",
-            "property": "midline",
-            "handler": "midline_tool.activate_midline_tool",
+            "name": "example_tool",
+            "title": "Example Tool",
+            "property": "example_tool",
+            "handler": "example_tool.activate_example_tool",
+            "page": "mapping",
         },
     ]
 ```
 
-典型 handler：
+典型 handler（下例把用户画完的每一笔重画成一条细红线）：
 
 ```python
 import python_hooks
 from animemodel import get_current, ui
 
 
-def midline_process(cell, stroke, message):
-    if message.get("property") != "midline":
+def example_process(cell, stroke, message):
+    if message.get("property") != "example_tool":
         return
 
     current = get_current()
@@ -150,9 +151,9 @@ def midline_process(cell, stroke, message):
         ui.widget.refresh()
 
 
-def activate_midline_tool(name="midline", property_value="midline"):
+def activate_example_tool(name="example_tool", property_value="example_tool"):
     python_hooks.set_hook(
-        midline_process,
+        example_process,
         linefinish=True,
         tool="extra",
         property=property_value,
