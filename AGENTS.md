@@ -1,5 +1,7 @@
 # Agent Instructions
 
+开发规则、语义分级、验证基线与提交流程都在 `docs/developer_guide.md`；本文只保留构建验证的执行说明。
+
 ## Purpose
 
 Verify whether the deploy target builds and exits successfully.

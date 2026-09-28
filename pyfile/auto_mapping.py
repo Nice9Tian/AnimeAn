@@ -1405,7 +1405,7 @@ class _Frame:
         number of iterations as before (the first trial is accepted, so there
         is no extra evaluation on the easy path).
 
-        See docs/point_mapping_newton.md for the full derivation, the flow
+        See docs/auto_mapping/point_mapping_newton.md for the full derivation, the flow
         charts and the measurement tables.
 
         Never converging is a legitimate outcome, not a bug: some of those

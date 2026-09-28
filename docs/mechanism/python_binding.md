@@ -1,5 +1,7 @@
 # AnimeAn Python / pybind Design
 
+> 三级机制（Python 绑定，英文参考）。2026-09-28 从仓库根目录 pybind_readme.md 移入。界面与工作流以一级文档为准：`../user-workflow.md`、`../tools_user_workflow/`；事件流总览见 `hook_events.md`。
+
 This document describes how Python code talks to the AnimeAn C++ data model and
 `AnimeVectorLogic` helpers through `pybind11`.
 

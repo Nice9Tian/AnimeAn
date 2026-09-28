@@ -1,5 +1,9 @@
 # AnimeAn
 
+Documentation lives in `docs/` and is organised in semantic tiers; start with
+`docs/developer_guide.md` (rules) and `docs/README.md` (index by tier). The
+product itself is described in `docs/product_purpose.md`.
+
 AnimeAn is a Qt desktop application for animation and vector drawing
 experiments. It includes optional Python support through `pybind11`, so scripts
 can inspect and edit the C++ scene model and use vector geometry helpers.
@@ -30,8 +34,13 @@ can inspect and edit the C++ scene model and use vector geometry helpers.
 - `algorithm/vectorlogic.*`: vector path and geometry algorithms.
 - `pythonbind/python_bindings.cpp`: low-level Python bindings.
 - `pythonbind/animemodel.py`: high-level Python wrapper.
-- `pyfile/`: embedded Python scripts, hooks, and ExtraTool definitions.
+- `pyfile/`: embedded Python scripts, hooks, and ExtraTool definitions (all tool behaviour lives here).
+- `childrenpanel/`: panels and docks (tools, options, layers, assets, history, timeline, texture, palette, force pad).
+- `tests/`: Python regression suites (`t_*.py`, run via `py -m unittest discover -s tests`) and C++ unit tests.
+- `pywheels/`: version-pinned wheels for the embedded runtime's third-party libraries (`pyfile/pydeps.py`).
+- `docs/`: design and rules documentation (see `docs/README.md`).
 - `build_scripts/agent_build.ps1`: release build and deploy verification script.
+- `sync_pyfiles.ps1`: copies edited Python scripts next to every built `AnimeAn.exe` without rebuilding.
 
 ## Build
 
@@ -76,8 +85,8 @@ The expected final log line is:
 
 Python binding and ExtraTool documentation:
 
-- English design and API reference: `pybind_readme.md`
-- Chinese summary and development notes: `python_bind_chinese_readme.md`
+- English design and API reference: `docs/mechanism/python_binding.md`
+- Chinese summary and development notes: `docs/mechanism/python_binding_zh.md`
 - OpenToonz parser notes in English and Chinese: `opentoonz_tools/README.md`
 
 Minimal usage:

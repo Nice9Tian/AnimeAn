@@ -1,10 +1,10 @@
 # 笔画映射管线：从 Child 纹理到 Main 画面的离散、切断与拟合
 
-适用版本：`pyfile/auto_mapping.py`（Auto Mapping 2），核查基准 HEAD `cdea7d0`，文件 3026 行。
+适用版本：`pyfile/auto_mapping.py`（Auto Mapping 2），核查基准 HEAD `cdea7d0`（2026-08-15，当时 3026 行）。2026-09-28 补注：文件已增长到万余行，§0 按现行代码改写（用户授权），其余各节的规则未变，函数名仍是稳定检索键。
 配套文档：
 
-* `docs/point_mapping_newton.md` —— **单个点**如何被预测（阻尼牛顿反解）。本文不重复。
-* `docs/auto_mapping_2_spec.md` —— 算法规格。
+* `point_mapping_newton.md` —— **单个点**如何被预测（阻尼牛顿反解）。本文不重复。
+* `auto_mapping_2_spec.md` —— 算法规格。
 
 本文只讲**曲线/笔画这一层**：`map_point` 是非线性 warp，单个贝塞尔控制点各自变换**无法保持贝塞尔拓扑**，系统是怎么处理的。
 
@@ -12,42 +12,17 @@
 
 ---
 
-## 0. 一个必须先纠正的前提
+## 0. 前提：笔画路径是拟合出来的（2026-09-28 按现行代码改写）
 
-> **代码库里不存在"艺术家画的贝塞尔曲线"。**
+> **代码库里不存在“艺术家手写的贝塞尔曲线”；笔画路径是 C++ 在抬笔时拟合出来的线段加三次贝塞尔的混合路径。**
 
-笔画路径是 C++ 从采样点**合成**的。`AnimeVectorLogic::makeStroke`（`algorithm/vectorlogic.cpp:257`）：
+2026-08-18 起 `AnimeVectorLogic::fitStrokePath`（及其实时增量版 `liveFitStrokePath`）取代了旧的盒式平滑加 `quadTo` 中点链：高斯去噪 → 直线段检测 → Schneider 三次拟合 → 尖角处切向断开，参数来自 Draw Setting 的 Stabilizer / Simplify / Corner（机制见 `../mechanism/stroke_fitting.md`，三级）。由此：
 
-```mermaid
-flowchart LR
-    A["输入点列<br/>手写笔轨迹"] --> B["filteredPoints<br/>当前是恒等映射"]
-    B --> C["stroke.points<br/>== raw_points"]
-    C --> D["盒式平滑 [1,2,1]/4<br/>smoothValue/25 = 2 遍"]
-    D --> E["中点 quadTo 链<br/>control = s[i-1]<br/>end = (s[i-1]+s[i])/2"]
-    E --> F["QPainterPath<br/>stroke.path"]
-    F --> G["Qt 把 quadTo 升格为<br/>CurveToElement"]
-    G --> H["pathCommandsToList<br/>输出 type=cubic"]
+* bezier 模式搬运的控制柄是**拟合器产出的三次段**的控制柄，其锚点落在采样点附近而非采样点本身；直线段经共享轮子（`pyfile/bezier.py`）升阶后走同一条路（`_line_cubic`）。拟合器在尖角处发出的切向断开，是曲线模式关节判定的意图信号（见 `fold_crease_pipeline.md` §11 与 `auto_mapping_2_spec.md` §6.2）。
+* `pathCommandsToList` 只发 `move` / `line` / `cubic`，没有 quad 生产者，所以 `_commands_to_subpaths` 里的 quad 分支对现行笔画是死代码。
+* 本节 2026-08-15 版写的“平滑器合成的二次中点链、控制点是被平滑过的采样点”，只对 2026-08-18 之前保存的工程里的笔画成立；这类笔画载入后同样以 `cubic` 命令进入本管线，规则不变。
 
-    style D fill:#ffe6cc,stroke:#d79b00
-    style H fill:#f8cecc,stroke:#b85450
-```
-
-关键代码（`vectorlogic.cpp:208-214`）：
-
-```cpp
-for (int i = 1; i < smoothed.size(); ++i) {
-    const QPointF control = smoothed[i - 1];
-    const QPointF end = (smoothed[i - 1] + smoothed[i]) / 2.0;
-    path.quadTo(control, end);
-}
-path.lineTo(smoothed.last());
-```
-
-因此：
-
-* `auto_mapping.py` 里 "bezier 模式保留艺术家的 Bezier 段" 这一说法**不准确**——它搬运的是**平滑器合成的二次曲线的控制柄**，其控制点是一个被平滑过的输入**采样点**。
-* `pathCommandsToList` 只发 `move` / `line` / `cubic`，**没有 quad 生产者**，所以 `_commands_to_subpaths` 里的 quad 分支（二次升三次）对来自 `cell_to_dict` 的笔画是死代码。
-* `smoothPath = false` 是可达的（`openglwidget.h:201` 暴露此开关）。此时 `stroke.path` 退化为纯 `lineTo` 链（`makePolylinePath`），bezier 模式只会收到 `line` 命令，全部走 `_line_cubic`，**这条"保曲率"路线一点曲率都没有**。
+本文其余各节讲的离散、切断、拟合规则不依赖笔画路径的来源。
 
 ---
 
