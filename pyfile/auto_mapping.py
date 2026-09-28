@@ -3443,43 +3443,106 @@ def _structural_knots(map_point, a, b):
     coords = getattr(map_point, "coords", None)
     if coords is None:
         return []
-    child, main = map_point.child_frame, map_point.main_frame
     start, end = coords(a), coords(b)
 
     knots = []
-    for axis, (l0, l1) in enumerate(zip(start, end)):
+    for (l0, l1), targets in zip(zip(start, end), _structural_targets(map_point)):
         if abs(l1 - l0) <= 1e-12:
             continue
-        if axis == 0:
-            own_cum, own_arc = child.gh.knots, child.h_arc
-            far_cum, far_arc = main.gh.knots, main.h_arc
-            scale_neg, scale_pos = map_point.h_scales
-        else:
-            own_cum, own_arc = child.gv.knots, child.v_arc
-            far_cum, far_arc = main.gv.knots, main.v_arc
-            scale_neg, scale_pos = map_point.v_scales
+        lo, hi = (l0, l1) if l0 < l1 else (l1, l0)
+        for target in targets:
+            if lo < target < hi:
+                knots.append((target - l0) / (l1 - l0))
+    return _thin_knots(sorted({t for t in knots if 1e-9 < t < 1.0 - 1e-9}))
 
+
+def _structural_targets(map_point):
+    """Per axis (h, v): the child-frame coordinates at which the map kinks -
+    every interior knot of the child guide, plus every interior knot of the
+    main guide pulled back through the per-side scale. For a CURVE guide the
+    knots are its Bezier segment joints, for a polyline guide its vertices.
+    Cached on the mapper: it is rebuilt per run, so the cache never outlives
+    the guides it was computed from."""
+    cached = getattr(map_point, "_structural_targets", None)
+    if cached is not None:
+        return cached
+    child, main = map_point.child_frame, map_point.main_frame
+    result = []
+    for own_cum, own_arc, far_cum, far_arc, (scale_neg, scale_pos) in (
+            (child.gh.knots, child.h_arc, main.gh.knots, main.h_arc, map_point.h_scales),
+            (child.gv.knots, child.v_arc, main.gv.knots, main.v_arc, map_point.v_scales)):
         targets = [value - own_arc for value in own_cum[1:-1]]
         for value in far_cum[1:-1]:
             offset = value - far_arc
             scale = scale_pos if offset >= 0.0 else scale_neg
             if abs(scale) > 1e-12:
                 targets.append(offset / scale)
+        result.append(sorted(targets))
+    try:
+        map_point._structural_targets = result
+    except AttributeError:
+        pass
+    return result
 
-        lo, hi = (l0, l1) if l0 < l1 else (l1, l0)
-        for target in targets:
-            if lo < target < hi:
-                knots.append((target - l0) / (l1 - l0))
-    knots = sorted({t for t in knots if 1e-9 < t < 1.0 - 1e-9})
+
+def _thin_knots(knots):
+    """Safety valve for a folded child frame, where the coordinates run far
+    and sweep hundreds of guide vertices inside one source segment. Thin them
+    evenly rather than dropping the tail; the probes still cover whatever
+    this misses."""
     if len(knots) > _MAX_KNOTS_PER_SPAN:
-        # Safety valve for a folded child frame, where the coordinates run
-        # far and sweep hundreds of guide vertices inside one source segment.
-        # Thin them evenly rather than dropping the tail; the probes still
-        # cover whatever this misses.
         stride = len(knots) / _MAX_KNOTS_PER_SPAN
         knots = [knots[min(len(knots) - 1, int(i * stride))]
                  for i in range(_MAX_KNOTS_PER_SPAN)]
     return knots
+
+
+def _structural_cubic_params(map_point, cub):
+    """_structural_knots for a source CUBIC: the parameters in (0, 1) where
+    `cub` crosses a guide knot, i.e. where the warp's image of it can bend.
+
+    A cubic has no closed-form coordinate along it, so its coordinates are
+    sampled every POLY_STEP of hull length and each knot crossing is placed
+    by linear interpolation between the bracketing samples. The placement
+    only chooses WHERE to split - the transported pieces are still checked
+    against the true warp by _warp_cubic's probes - so sub-sample accuracy
+    is not needed, while a missed knot is exactly the bug this closes: a
+    source line whose single transported cubic lands every probe near the
+    image left the guide's bend out of the output entirely.
+    """
+    coords = getattr(map_point, "coords", None)
+    if coords is None:
+        return []
+    targets = _structural_targets(map_point)
+    if not targets[0] and not targets[1]:
+        return []
+    net = bezier.hull_length(cub)
+    samples = max(4, min(96, int(math.ceil(net / POLY_STEP))))
+    ts = [k / samples for k in range(samples + 1)]
+    values = [coords(_cubic_point(cub, t)) for t in ts]
+
+    params = []
+    for axis in (0, 1):
+        axis_targets = targets[axis]
+        if not axis_targets:
+            continue
+        for k in range(samples):
+            l0, l1 = values[k][axis], values[k + 1][axis]
+            if abs(l1 - l0) <= 1e-12:
+                continue
+            # Half-open [lo, hi): a knot sitting exactly ON a sample (the
+            # common symmetric case - knot at the crossing, line centred on
+            # it) must be claimed by one of its two intervals, not neither.
+            lo, hi = (l0, l1) if l0 < l1 else (l1, l0)
+            first = bisect.bisect_left(axis_targets, lo)
+            last = bisect.bisect_left(axis_targets, hi)
+            for target in axis_targets[first:last]:
+                params.append(ts[k] + (ts[k + 1] - ts[k]) * (target - l0) / (l1 - l0))
+    merged = []
+    for t in sorted(params):
+        if 1e-6 < t < 1.0 - 1e-6 and (not merged or t - merged[-1] > 1e-6):
+            merged.append(t)
+    return _thin_knots(merged)
 
 
 def _flatness_recurse(sample, dlerp, result, tol, max_depth):
@@ -3617,7 +3680,28 @@ def _warp_cubic(map_point, cub, tol=_CURVE_TOL, max_depth=_BEZIER_MAX_DEPTH, dep
     tangent kink) the transported cubic is checked at t=1/4,1/2,3/4 against the
     true warped point and the SOURCE cubic is bisected until it fits or the depth
     cap is hit (which also stops runaway recursion at a genuine discontinuity).
+
+    Before any of that, the top-level call cuts the source cubic where it
+    crosses a guide knot (_structural_cubic_params): those are the points the
+    image bends at, and each becomes an output anchor instead of something the
+    probes may or may not stumble on. (User 2026-09-25: a straight line under
+    two bent H/V guides sometimes came out straight - the endpoints moved but
+    the guides' own Bezier joints were never sampled.)
     """
+    params = _structural_cubic_params(map_point, cub) if depth == 0 else []
+    if not params:
+        return _warp_cubic_piece(map_point, cub, tol, max_depth, depth)
+    bounds = [0.0] + params + [1.0]
+    out = []
+    for t0, t1 in zip(bounds, bounds[1:]):
+        out.extend(_warp_cubic_piece(map_point, _split_cubic(cub, t0, t1),
+                                     tol, max_depth, 0))
+    return out
+
+
+def _warp_cubic_piece(map_point, cub, tol, max_depth, depth):
+    """_warp_cubic's handle transport + probe/bisect loop on one piece that
+    no longer straddles a guide knot."""
     p0, c1, c2, p3 = cub
     w0 = map_point(p0)
     w3 = map_point(p3)
@@ -3640,8 +3724,8 @@ def _warp_cubic(map_point, cub, tol=_CURVE_TOL, max_depth=_BEZIER_MAX_DEPTH, dep
         return [out]
     # One shared-wheel split (pyfile/bezier.py) yields both halves at once.
     left, right = bezier.split_cubic(cub, 0.5)
-    return (_warp_cubic(map_point, left, tol, max_depth, depth + 1)
-            + _warp_cubic(map_point, right, tol, max_depth, depth + 1))
+    return (_warp_cubic_piece(map_point, left, tol, max_depth, depth + 1)
+            + _warp_cubic_piece(map_point, right, tol, max_depth, depth + 1))
 
 
 # R^3 twins of the exact 2D primitives. They live HERE, not in bezier.py:
