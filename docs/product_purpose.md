@@ -4,7 +4,7 @@ AnimeAn 是给动画人的二维线稿动画工具（Windows 桌面），核心�
 
 本文和 `user-workflow.md`（含 `tools_user_workflow/` 每个工具一页）、`architecture.md`、`developer_guide.md` 一起是一级语义。**Auto Mapping 是本软件的核心，它的全部文档（算法规格、各条管线、Auto-Mapping 单元）与本文同级，放在 `auto_mapping/`。** 本文只说目的、承诺和边界；用户怎么用见 `user-workflow.md`，怎么做到见 `architecture.md`。
 
-> 草稿状态：2026-09-28 由现有文档、README、代码文件头注释整理，同日按用户多轮反馈修订（分级、多纹理、发布计划、导入承诺、动画软件定位）；等用户对一级整体拍板。
+> 状态：2026-09-28 用户拍板（一级）。此后按 `developer_guide.md`「语义分级」修改：Agent 只提议，用户定。
 
 ## 要解决什么
 
