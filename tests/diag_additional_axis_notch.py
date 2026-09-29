@@ -1,11 +1,13 @@
-"""Diagnostic (not a test): reproduce the additional-line groove at an axis
-crossing on the user's 2026-09-29 sample.
+"""Diagnostic (not a test): the additional-line groove at an axis crossing
+on the user's 2026-09-29 sample - fixed 2026-09-30, kept as a comparison.
 
-A V-family additional line crosses the H axis. The axis rows are hard-pinned
-in both components and the line's weight is smoothstepped to zero over four
-cells beside the orthogonal axis, so the displacement the line asks for
-collapses to 0 in the band and a groove appears where the pattern (or the
-refer-rect grid) crosses it. Record: docs/plan/2026-09-29-附加线跨轴凹槽.md.
+A V-family additional line crosses the H axis. The axis rows used to be
+hard-pinned in both components, so the displacement the line asks for
+collapsed to 0 in the band and a ~6 px groove appeared where the pattern
+(or the refer-rect grid) crossed it. Since 2026-09-30 the crossed half of
+the axis releases its tangential component and the profile runs smoothly
+across the axis. Record: docs/plan/2026-09-29-附加线跨轴凹槽.md; the
+regression is tests/t_axis_crossing.py.
 
 Run:  py tests\\diag_additional_axis_notch.py
 """
@@ -93,11 +95,18 @@ def main():
         d = math.hypot(f[0] - b[0], f[1] - b[1])
         rows.append((i, d))
         print(f"  l_v {i:4d}  {d:5.2f}  {bar(d)}")
-    shoulders = [d for i, d in rows if 25 <= abs(i) <= 45]
-    at_axis = [d for i, d in rows if abs(i) <= 5]
-    depth = sum(shoulders) / len(shoulders) - sum(at_axis) / len(at_axis)
-    print(f"\ngroove depth ~{depth:.2f} main px "
-          f"(shoulders {sum(shoulders) / len(shoulders):.2f}, axis {sum(at_axis) / len(at_axis):.2f})")
+    def mean(values):
+        return sum(values) / len(values)
+
+    left = mean([d for i, d in rows if -45 <= i <= -25])
+    right = mean([d for i, d in rows if 25 <= i <= 45])
+    at_axis = mean([d for i, d in rows if abs(i) <= 5])
+    # A groove is a local depression: measure the axis band against the
+    # LOWER shoulder. (The shoulder mean reads a profile that ramps across
+    # the axis as depth - the fixed sample reads ~1 px that way.)
+    print(f"\ngroove depth {min(left, right) - at_axis:+.2f} main px below "
+          f"the lower shoulder (shoulders {left:.2f} / {right:.2f}, axis "
+          f"{at_axis:.2f}; <= 0 is no groove)")
 
     # The warp itself, in Third px, on the same iso-line.
     print("\nwarp displacement |U(p) - p| in Third px on the same iso-line:")

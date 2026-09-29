@@ -2,7 +2,9 @@
 texture's FLOW direction; all lines blend into one target gradient field
 integrated by a weighted Poisson solve (_FlowFieldWarp). These cases pin
 the spec's three stages, the paradigm shifts, and the axis sanctity rule
-(user 2026-08-25: no line weight near the H/V axes - they must not move)."""
+(user 2026-08-25: no line weight near the H/V axes; refined 2026-09-30: an
+axis never changes shape, and ground slides along it only on a half an
+additional line crosses - tests/t_axis_crossing.py pins that release)."""
 import math
 import os
 import sys
@@ -34,6 +36,21 @@ def build(pairs):
 def axis_drift(warp):
     return max(math.hypot(*(c - d for c, d in zip(warp.apply(p), p)))
                for p in AXIS_PROBES)
+
+
+def axis_shape_drift(warp):
+    """The axes' SHAPE only: |dy| on the H axis, |dx| on the V axis (the
+    origin both). A crossed half-axis may slide along itself, so this is
+    the check for lines that cross an axis; axis_drift (total) stays the
+    check for lines that do not."""
+    worst = 0.0
+    for p in AXIS_PROBES:
+        q = warp.apply(p)
+        if p[1] == 0.0:
+            worst = max(worst, abs(q[1] - p[1]))
+        if p[0] == 0.0:
+            worst = max(worst, abs(q[0] - p[0]))
+    return worst
 
 
 # 1) PARADIGM: a pure TRANSLATION pair (parallel, equal-length tangents) is
@@ -77,17 +94,23 @@ rt = max(math.hypot(*(c - d for c, d in zip(w2.unapply(w2.apply(p)), p)))
 assert rt < 1e-5, rt
 print(f"4) unapply(apply(p)) == p (worst {rt:.1e})")
 
-# 5) A line CROSSING the V axis still cannot move it, but (user refinement
-#    2026-08-25) the halo is void PER HALF-SIDE where the crossing lands:
-#    the bow crosses V in the upper half, so right beside the axis there
-#    the flow follows the drawn unbending ask instead of being muted; the
-#    axis itself stays hard-pinned.
+# 5) A line CROSSING the V axis (user 2026-09-30): the V axis keeps its
+#    SHAPE, but on the half the bow crosses the ground slides ALONG V
+#    toward where the line was drawn - the apex (0, 90) moves down toward
+#    its chord at y = 50. The uncrossed lower half and the H axis hold in
+#    full. Right beside the axis the flow follows the drawn unbending ask
+#    instead of being muted.
 bow_x = [(-100.0 + 200.0 * k / 32.0,
           50.0 + 40.0 * math.sin(math.pi * k / 32.0)) for k in range(33)]
 mp3 = build([(line_asset(bow_x), line_asset([(-100.0, 50.0), (100.0, 50.0)]))])
 w3 = mp3.warp
-drift = axis_drift(w3)
+drift = axis_shape_drift(w3)
 assert drift < 0.01, drift
+apex_slide = w3.apply((0.0, 90.0))[1] - 90.0
+assert -35.0 < apex_slide < -25.0, apex_slide   # measured -29.6 (drawn -40)
+held = max(math.hypot(*(c - d for c, d in zip(w3.apply(p), p)))
+           for p in AXIS_PROBES if p[1] <= 0.0)
+assert held < 0.01, held
 
 
 def hflow(warp, x, y):
@@ -101,8 +124,10 @@ right = hflow(w3, 40.0, 88.0)    # bow tangent ~ -20 deg -> ask ~ +20
 assert -25.0 < left < -10.0, left
 assert 10.0 < right < 25.0, right
 assert abs(w3.apply((0.0, 95.0))[0]) < 0.01
-print(f"5) axis-crossing bow: axes hold ({drift:.4f} px); crossed upper "
-      f"half keeps its voice beside V (flow {left:.1f} / {right:+.1f} deg)")
+print(f"5) axis-crossing bow: V keeps its shape ({drift:.4f} px), apex "
+      f"slides {apex_slide:.1f} px toward its chord, uncrossed ground holds "
+      f"({held:.4f} px); crossed upper half keeps its voice beside V "
+      f"(flow {left:.1f} / {right:+.1f} deg)")
 
 # 6) STAGE I - TENT: a line beyond the frame edge stretches the space; the
 #    axes STILL hold (the tent's cross-axis damping - the spec's separable
@@ -310,8 +335,9 @@ print("15) mapper cache: content-keyed reuse, edits rebuild")
 #     is a drawn iso-line. A V-family line (vertical stroke) keeps its
 #     voice beside the ORTHOGONAL H axis - crossing it or not - because
 #     orthogonal families never interact; its own weight instead dies on
-#     its PARALLEL V axis (the ramp toward the origin O).  The axes stay
-#     immovable throughout.
+#     its PARALLEL V axis (the ramp toward the origin O).  The axes hold
+#     throughout: the crossing line's pure rotation is symmetric about the
+#     crossing, so the released half of H has nothing to slide.
 cx = line_asset([(120.0, -80.0), (120.0, 80.0)])
 cm = line_asset([(120.0, -80.0),
                  (120.0 - 160.0 * math.sin(ANG),
@@ -481,13 +507,24 @@ assert 3.0 < on_short < 20.0, on_short
 rt20 = max(math.hypot(*(c - d for c, d in zip(w20.unapply(w20.apply(p)), p)))
            for p in [(160.0, 50.0), (160.0, 180.0), (50.0, 120.0)])
 assert rt20 < 1e-5, rt20
-assert axis_drift(w20) < 0.01
+# Both lines cross the V axis (at y = 50 and 120), each rotated about its
+# own crossing: V keeps its shape and its released upper half has nothing
+# to slide (hundredths of a px - this fixture's numerical asymmetry, which
+# the pinned field already showed off-axis); the uncrossed H axis holds.
+assert axis_shape_drift(w20) < 0.01
+slide20 = max(abs(w20.apply(p)[1] - p[1]) for p in AXIS_PROBES
+              if p[0] == 0.0)
+assert slide20 < 0.1, slide20                  # measured 0.03
+assert max(math.hypot(*(c - d for c, d in zip(w20.apply(p), p)))
+           for p in AXIS_PROBES if p[1] == 0.0) < 0.01
 print(f"20) mixed spans: partition intact (far {far:+.1f} deg, long "
       f"{on_long:+.1f}, short {on_short:+.1f}), edge holds, no folds")
 
 # 21) A STROKE CROSSING ITS OWN FAMILY AXIS hands over smoothly: no
 #     one-cell weight cliff, no folds, an ordinary crossing stroke is
-#     not severed, and the field stays exactly invertible.
+#     not severed, and the field stays exactly invertible. The crossed
+#     half of H keeps its shape and slides only slightly along itself;
+#     the uncrossed V axis and left half of H hold in full.
 diag = [(40.0 + 240.0 * k / 16.0, -60.0 + 120.0 * k / 16.0)
         for k in range(17)]
 mp21 = build([(line_asset(diag, 0),
@@ -507,8 +544,16 @@ assert worst_step < 2.5, worst_step
 rt21 = max(math.hypot(*(c - d for c, d in zip(w21.unapply(w21.apply(p)), p)))
            for p in [(160.0, 40.0), (120.0, -30.0), (200.0, 20.0)])
 assert rt21 < 1e-5, rt21
-assert axis_drift(w21) < 0.01
+shape21 = axis_shape_drift(w21)
+assert shape21 < 0.01, shape21
+slide21 = max(abs(w21.apply(p)[0] - p[0]) for p in AXIS_PROBES
+              if p[1] == 0.0)
+assert slide21 < 5.0, slide21                  # measured 0.97
+held21 = max(math.hypot(*(c - d for c, d in zip(w21.apply(p), p)))
+             for p in AXIS_PROBES if p[0] <= 0.0)
+assert held21 < 0.01, held21
 print(f"21) self-axis-crossing stroke: smooth handover (worst step "
-      f"{worst_step:.2f} px), no folds, single run, invertible")
+      f"{worst_step:.2f} px), no folds, single run, invertible; H keeps "
+      f"its shape ({shape21:.4f} px), slides {slide21:.2f} px")
 
 print("t_flowfield: ALL OK")
