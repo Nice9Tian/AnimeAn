@@ -2,9 +2,10 @@
 docs/plan/2026-09-30-附加线跨轴放行施工计划.md): where a line's child
 stations cross an axis, that axis releases its TANGENTIAL component on the
 half the line crosses, so the ground at the crossing slides along the axis
-to where the line was drawn. The axis never changes shape (normal
-component pinned), the origin holds, an uncrossed axis holds in full, and
-a half-axis whose frame side a line is drawn out across keeps its pin.
+as the line's flow asks. The axis never changes shape (normal component
+pinned), the origin holds, an uncrossed axis holds in full, a voiceless
+line releases nothing, and a half-axis whose frame side a line is drawn
+out across keeps its pin.
 Before the release the pinned band swallowed the slide: a 6 px groove and
 ~80% of the line's ask on the user's sample (tests/fixtures/
 additional_line_axis_notch.anproj, diag tests/diag_additional_axis_notch.py).
@@ -83,6 +84,14 @@ def groove(profile):
             - mean(range(-5, 6, 5)))
 
 
+def notch(profile):
+    """The deepest single-sample dip in the axis band below the midpoint
+    of its 5 px neighbours: a narrow notch that the shoulder comparison
+    would average away on a lopsided profile."""
+    return max((profile[l - 5] + profile[l + 5]) / 2.0 - profile[l]
+               for l in (-5, 0, 5))
+
+
 def residuals(warp, index=0):
     pair = warp.pairs[index]
     return [math.hypot(*(a - b for a, b in zip(warp.apply(c), m)))
@@ -119,6 +128,7 @@ def check_crossing(warp, cross, along):
     assert step < 1.0, (step, prof)
     depth = groove(prof)
     assert depth < 0.5, (depth, prof)
+    assert notch(prof) < 1.0, (notch(prof), prof)
     slide = warp.apply(cross)[t] - cross[t]
     assert slide < -0.75 * BOW, slide
     res = residuals(warp)
@@ -194,28 +204,54 @@ assert held_f < 0.01, held_f
 assert w_f._all_positive and w_f.fold_loci() == []
 print(f"5) line drawn out across the top: V stays pinned ({held_f:.0e} px)")
 
-# 6) FLOAT (known trade-off, plan risk): a NON-crossing line rotated about
-#    one end (t_flowfield case 2's) shares the released right half of H
-#    with a crossing line that asks almost nothing (0.5 deg about the
-#    crossing). The non-crossing band's integration constant used to ride
-#    on that half's tangential pin, so the half now slides under it.
-#    Measured 9.2 px; the bound catches it growing.
+# 6) A VOICELESS CROSSING LINE RELEASES NOTHING: this H-family line hugs
+#    its own H axis and crosses it shallowly, so its keyframe weight never
+#    reaches VOICE_MIN (the "(nearly) no influence" note). It asks nothing
+#    and must not free H for its neighbours - it let the rotated V-family
+#    line beside it slide H 41.6 px.
+child_q = [(60.0 + 200.0 * k / 32.0, 1.0 - 2.0 * k / 32.0) for k in range(33)]
+child_n = [(60.0, 20.0 + 160.0 * k / 16.0) for k in range(17)]
+w_q = build([(line_asset(child_q, 0),
+              line_asset(rot_about(child_q, child_q[16], 3.0), 0)),
+             (line_asset(child_n, 1),
+              line_asset(rot_about(child_n, child_n[0], -30.0), 1))])
+assert any("no influence" in n for n in w_q.notes), w_q.notes
+held_q = axis_moves(w_q, "h")
+assert held_q < 0.01, held_q
+print(f"6) voiceless crossing line: H holds ({held_q:.0e} px)")
+
+# 7) FLOAT (known trade-off, plan risk): a NON-crossing line rotated about
+#    one end shares the released right half of H with a crossing line
+#    that asks almost nothing (0.5 deg about the crossing). The
+#    non-crossing band's integration constant used to ride on that half's
+#    tangential pin, so the half now slides under it: 9.2 px under an
+#    H-family line (t_flowfield case 2's), 31.3 px under a V-family one,
+#    whose integration runs straight down to H. The bounds catch growth.
 child_z = [(150.0, -170.0 + 360.0 * k / 48.0) for k in range(49)]
 main_z = rot_about(child_z, (150.0, 0.0), 0.5)
-child_g = [(60.0 + 200.0 * k / 16.0, 120.0) for k in range(17)]
-main_g = rot_about(child_g, child_g[0], 25.0)
 w_z = build([(line_asset(child_z, 0), line_asset(main_z, 0))])
-w_zg = build([(line_asset(child_z, 0), line_asset(main_z, 0)),
-              (line_asset(child_g, 1), line_asset(main_g, 1))])
-float_g = max(abs(w_zg.apply((float(s), 0.0))[0]
-                  - w_z.apply((float(s), 0.0))[0])
-              for s in range(0, 301, 10))
-assert float_g < 12.0, float_g
-assert w_zg._all_positive and w_zg.fold_loci() == []
-print(f"6) a non-crossing band slides the released half of H {float_g:.1f} "
-      "px (known trade-off, bounded)")
 
-# 7) THE USER'S SAMPLE (plan c): a V-family line crossing the H axis.
+
+def float_under(child_g, deg, bound):
+    w_zg = build([(line_asset(child_z, 0), line_asset(main_z, 0)),
+                  (line_asset(child_g, 1),
+                   line_asset(rot_about(child_g, child_g[0], deg), 1))])
+    drift = max(abs(w_zg.apply((float(s), 0.0))[0]
+                    - w_z.apply((float(s), 0.0))[0])
+                for s in range(0, 301, 10))
+    assert drift < bound, drift
+    assert w_zg._all_positive and w_zg.fold_loci() == []
+    return drift
+
+
+float_h = float_under([(60.0 + 200.0 * k / 16.0, 120.0) for k in range(17)],
+                      25.0, 12.0)
+float_v = float_under([(60.0, 20.0 + 160.0 * k / 16.0) for k in range(17)],
+                      -30.0, 40.0)
+print(f"7) non-crossing bands slide the released half of H {float_h:.1f} px "
+      f"(H family) / {float_v:.1f} px (V family) - known trade-off, bounded")
+
+# 8) THE USER'S SAMPLE (plan c): a V-family line crossing the H axis.
 #    Measured through the real pipeline in main-board px, like the diag.
 FIXTURE = os.path.join(HERE, "fixtures", "additional_line_axis_notch.anproj")
 doc = json.load(io.open(FIXTURE, encoding="utf-8"))
@@ -247,6 +283,8 @@ for l in range(-60, 61, 5):
     prof[l] = math.hypot(f[0] - g[0], f[1] - g[1])
 depth_s = groove(prof)
 assert depth_s < 0.5, (depth_s, prof)
+notch_s = notch(prof)
+assert notch_s < 1.0, (notch_s, prof)             # measured 0.44
 res_s = residuals(w_s)
 mean_s = sum(res_s) / len(res_s)
 assert mean_s < 10.0, mean_s
@@ -261,7 +299,7 @@ assert shape_s < 1e-9, shape_s
 held_s = axis_moves(w_s, "v")
 assert held_s < 1e-9, held_s
 am._MAPPING_ASSETS.clear()
-print(f"7) user sample: groove {depth_s:+.2f} px, crossing delivers "
+print(f"8) user sample: groove {depth_s:+.2f} px, crossing delivers "
       f"{ask - res_s[at]:.1f} of {ask:.1f} px, residual mean {mean_s:.2f} / "
       f"max {max(res_s):.2f} px, no folds; H shape {shape_s:.0e}, "
       f"V {held_s:.0e}")

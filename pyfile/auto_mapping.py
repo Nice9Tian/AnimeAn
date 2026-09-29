@@ -1654,27 +1654,25 @@ class _FlowFieldWarp:
     FIT_GAIN = 24.0
     BOOST_ROUNDS = 3
     BOOST_CAP = 4.0
-    # The H/V axes are the ABSOLUTE stable zone (user 2026-08-25: no line
-    # weight near the axes - the axes must not drift). Refined 2026-09-30:
-    # an axis never changes SHAPE (its normal component is pinned, the
-    # origin holds both), but where an additional line crosses it the
-    # ground slides ALONG that half-axis to where the line was drawn (see
-    # the pinning block in _build). Two guards:
-    # every line's influence ramps to ZERO near either axis line
-    # (smoothstep over AXIS_GUARD), and a diagonal anchor pulls the
-    # ground near the axes toward U_base (identity there) with no
-    # exemption. Besides pinning the spine (measured 34 px drift from a
-    # line 250 px away without any anchor), the interior anchor shortens
-    # every harmonic tail.
-    # The axes are pinned as HARD interior Dirichlet lines (the grid
-    # rows/columns nearest x = 0 and y = 0 keep U = U_base exactly, the
-    # tangential component only where no line crosses): a
-    # diagonal penalty was an arms race against the bands' fit weight
-    # (lambda = 8 still lost 19 px of V axis to a neighbouring band), and
-    # elimination costs nothing to tune. AXIS_GUARD is the weight-free
-    # halo that gives the field room to blend around the pinned lines.
-    AXIS_GUARD = 0.12      # weight-free halo, as a fraction of the window
+    # The H/V axes are the stable spine (user 2026-08-25: no line weight
+    # near the axes - the axes must not drift; refined 2026-09-30: an
+    # axis never changes SHAPE, and ground slides ALONG it only on a half
+    # an additional line crosses - see the pinning block in _build).
+    # Without any anchor a line 250 px away dragged the spine 34 px. The
+    # axes are pinned as HARD interior Dirichlet lines (the grid
+    # rows/columns nearest x = 0 and y = 0 keep U = U_base exactly - the
+    # normal component always, the tangential one where no line
+    # crosses): a diagonal penalty was an arms race against the bands'
+    # fit weight (lambda = 8 still lost 19 px of V axis to a
+    # neighbouring band), and elimination costs nothing to tune. Near
+    # the axes the line weights follow the family keyframe model (a line
+    # yields to its own parallel axis, plus a few-cell boundary layer
+    # beside the orthogonal one); the window-scaled weight halo that
+    # AXIS_GUARD once sized is gone, and it now only sizes the tent's
+    # cross-axis damping zone, which keeps the pre-stretch off the axes.
+    AXIS_GUARD = 0.12      # tent cross-damping zone, fraction of the window
     DET_FOLD_TOL = 1e-3    # |det| below this is a graze, not a fold
+    VOICE_MIN = 0.05       # a line whose weight never reaches this is voiceless
 
     def __init__(self, pairs, falloff="linear", radius_factor=0.5,
                  frame_window=None):
@@ -2022,9 +2020,10 @@ class _FlowFieldWarp:
         # the fixed-width axis halo and its crossing exceptions: a V-like
         # line crossing the H axis keeps its voice beside H naturally
         # (H is orthogonal to it and never mutes it), and at the crossing
-        # the ground slides along H to where the line was drawn (the
-        # crossed half of H releases its tangential pin), while its own
-        # weight still dies on the V axis.
+        # the ground may slide along H as the line's flow asks (the
+        # crossed half of H releases its tangential pin unless its frame
+        # side is stretched), while its own weight still dies on the V
+        # axis.
         def family_of(pts):
             run_x = sum(abs(b[0] - a[0]) for a, b in zip(pts[:-1], pts[1:]))
             run_y = sum(abs(b[1] - a[1]) for a, b in zip(pts[:-1], pts[1:]))
@@ -2175,7 +2174,7 @@ class _FlowFieldWarp:
                 w = rise * fade * f["env"] * side_f * relief
                 f["w"] = w.reshape(X.shape)
                 # Silently ineffective lines are unacceptable: say so.
-                if float(np.max(f["w"])) < 0.05:
+                if float(np.max(f["w"])) < self.VOICE_MIN:
                     self.notes.append(
                         f"additional line {f['line']['index'] + 1} has "
                         "(nearly) no influence - it lies on its own "
@@ -2259,25 +2258,34 @@ class _FlowFieldWarp:
         # CROSSED AXES SLIDE (user 2026-09-30): where a line's child
         # stations change sign across an axis, that axis releases its
         # TANGENTIAL component on the half the line crosses, so the ground
-        # at the crossing slides along the axis to where the line was
-        # drawn. Pinned in full, the band swallowed the slide (the user's
-        # sample: a 6 px groove and ~80% of the line's whole ask). The
+        # at the crossing can slide along the axis as the line's flow asks.
+        # Pinned in full, the band swallowed the slide (the user's sample:
+        # a 6 px groove and ~80% of the line's whole ask). The field holds
+        # no absolute positions: the slide is what integrating the flow
+        # gives - near the drawn crossing when the pair's ends agree (the
+        # sample: 41 of 47 px), blind to a rotation's drawn pivot. The
         # normal component stays pinned (the axis keeps its shape), the
         # origin keeps both, and an uncrossed axis keeps both: that
         # tangential pin is what anchors a NON-crossing band's integration
         # constant, and releasing it everywhere let such bands float
-        # 3-53 px. A half-axis whose frame side is STRETCHED (a line drawn
-        # out across it - tent overrun) keeps its tangential pin too: the
-        # tent is damped to zero on the axes, and a released axis there
-        # filled that dip instead of following the drawn ask (+92 px of
-        # slide for a +36 px ask, residual 30 -> 61 px; a line beyond the
-        # frame crossing an axis's EXTENSION slid the axis 84 px at the
-        # frame edge). That also leaves every crossing outside the frame
-        # pinned, since such a line always stretches that side.
-        # Stations exactly ON the axis are stepped over, so a line
-        # through a station at 0 still crosses and one that only touches
-        # the axis does not; a crossing exactly at the origin releases
-        # nothing.
+        # 3-53 px (a band sharing a released half still floats, up to
+        # ~30 px measured). A VOICELESS line (weight never reaching
+        # VOICE_MIN, the note above) releases nothing: it asks nothing,
+        # yet its release let a neighbour's band float 42 px. A half-axis
+        # whose frame side is STRETCHED (a line drawn out across it - tent
+        # overrun) keeps its tangential pin too: the tent is damped to
+        # zero on the axes, and a released axis there filled that dip
+        # instead of following the drawn ask (+92 px of slide for a +36 px
+        # ask, residual 30 -> 61 px; a line beyond the frame crossing an
+        # axis's EXTENSION slid the axis 84 px at the frame edge). That
+        # also leaves every crossing outside the frame pinned, since such
+        # a line always stretches that side. Stations exactly ON the axis
+        # are stepped over, so a line through a station at 0 still
+        # crosses and one that only touches the axis does not; a crossing
+        # exactly at the origin releases nothing.
+        voiced = [f["line"] for f in fields
+                  if float(np.max(f["w"])) >= self.VOICE_MIN]
+
         def crossed_halves(k, t_neg, t_pos):
             """Signs (+1 / -1) of the half-axes the lines cross, for the
             axis where coordinate k is 0 (k = 1: the H axis, halves by x;
@@ -2286,7 +2294,7 @@ class _FlowFieldWarp:
             stretched half is left out."""
             o = 1 - k
             signs = []
-            for line in active:
+            for line in voiced:
                 last = None          # last station off the axis
                 on_axis = []         # stations since then that sit ON it
                 for p in line["child"]:
