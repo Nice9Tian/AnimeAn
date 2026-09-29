@@ -94,7 +94,7 @@
 | 最近端手柄 | nearest-point handle / 红色手柄、`_fold_depth` 的锚 | 现有 | 决定折叠层叠放次序：离它越近越在上。 |
 | 补全拓扑 | Bezier Bridge / `bridge_topology`、Bridge k | 现有 | 用 Third 空间里的三次曲线跨过被裁断的缺口。 |
 | Mapping Area | Mapping Area / `mapping_area`（浅蓝） | 现有 | 油漆桶式圈出的区域：主画板上裁结果，纹理板上筛来源。 |
-| 附加线 | Additional Line / `additional_line`（粉）、`_FlowFieldWarp` | 现有 | 画下的测地线（额外的网格等参线），引导本族纹理的流向；流场加权泊松积分。跨过 H/V 轴线时跨越处不生效。 |
+| 附加线 | Additional Line / `additional_line`（粉）、`_FlowFieldWarp` | 现有 | 画下的测地线（额外的网格等参线），引导本族纹理的流向；流场加权泊松积分。跨过 H/V 轴线时，被跨过的那半条轴线沿自身滑动，轴线不变形。 |
 | 族 | family（H 族 / V 族） | 现有 | 附加线按走向归族；正交族互不影响。 |
 | 约束外轮廓 | Constrain Outline / `constrain_outline` | 现有 | 图案外框钉在参考架上；画出边的那一侧释放。 |
 | Auto-Mapping 单元 | mapping unit / Auto-Mapping Layer、组 tag `automapping`、`mapping_units` | 现有 | 带全套配置的图层组：两边轴线、Mapping Area、附加线、锚点、选项；输出随时可从配置重生成。 |
