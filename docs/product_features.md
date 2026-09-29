@@ -45,7 +45,7 @@
 - **算法**：平移扫掠（Coons 退化形）的纯分级复合 Child→Third→Main，无残差；两边轴线相同时恒等；直轴线下精确仿射。现有。规格（一级）：`auto_mapping/auto_mapping_2_spec.md`、`auto_mapping/point_mapping_newton.md`。
 - **不糊合**：折叠处裁断拓扑，正面、背面、折痕各成一层，背面衬里色，折痕虚线；最近端红色手柄决定叠放次序；补全拓扑用三次曲线跨过缺口。现有。规格（一级）：`auto_mapping/topology_severing.md`、`auto_mapping/fold_crease_pipeline.md`。
 - **Mapping Area**：主画板上裁结果、纹理板上筛来源，每板一个。现有。规格（一级）：`auto_mapping/auto_mapping_2_spec.md` 第 7 节。
-- **Additional Line**：画下的线就是等参线，牵引本族纹理流向；另一侧同步出弦；近处重画即替换；同族嵌套过渡、正交族互不影响；Constrain Outline 与 Falloff 可选。现有。规格（一级）：`auto_mapping/flow_field_warp.md`。
+- **Additional Line**：画下的线就是等参线，牵引本族纹理流向；另一侧同步出弦；近处重画即替换；同族嵌套过渡、正交族互不影响；跨过 H/V 轴线时跨越处不生效（线的引导过不了轴线，画在轴线一侧）；Constrain Outline 与 Falloff 可选。现有。规格（一级）：`auto_mapping/flow_field_warp.md`。
 - **输出几何**：Bezier / Spline / Polyline 三种 Calculation Mode 都跟随形变，原始顶点永远是锚点，RDP 只抽插入的采样点。现有。规格（一级）：`auto_mapping/stroke_mapping_pipeline.md`。Bezier 模式在轴线折点处先劈分再搬运控制柄的修复（2026-09-25，`tests/t_bezier_knots.py`）尚在工作区未提交。待办：提交。
 - **Auto-Mapping 单元**：一个单元一套配置（两边轴线、Mapping Area、附加线、锚点、选项），输出可随时重生成；焦点进入单元显示引导、离开隐藏；拖轴线、改附加线、改选项、改纹理图案都就地重跑（Live Re-render 可关）；Duplicate、To Editable Layer、Convert 旧组；Advanced Settings 管显示开关与 front / back / crease 可见性。现有。规格（一级）：`auto_mapping/layer_units.md`。
 - 无单元的旧文档：引导线常显，按钮手动跑，每次新建一层置顶。现有。
@@ -56,7 +56,7 @@
 - **轮廓模式（Outline Mode）**：任意封闭轮廓代替手画轴线，框内轴线与其他约束线自动生成；多边形边的对应算法与交互未定。规划。
 - Midline 示例按钮：hook 系统遗留示例。已删除（2026-09-28）。
 - AutoMappingState 通道：自动运行留下的无人调用的管道。已删除（2026-09-28，提交 82175f2）。
-- 附加线跨越正交轴（样本里是 H 轴）处出现凹槽：轴带被全分量硬钉、线的权重在正交轴旁 4 格内渐弱到零，线要带过轴的位移被压成 0，深约 5–9 px。2026-09-29 已定位，未修；修法动一级算法，等拍板。待办。记录：`plan/2026-09-29-附加线跨轴凹槽.md`。
+- 附加线跨越正交轴（样本里是 H 轴）处出现凹槽：轴带被全分量硬钉、线的权重在正交轴旁 4 格内渐弱到零，线要带过轴的位移被压成 0，深约 5–9 px。2026-09-29 已定位，未修；2026-09-30 文档已写明"跨过轴时不生效"；修法（只在被跨过的轴放开沿轴滑动）已在草稿副本验证，动一级算法，等拍板。待办。记录：`plan/2026-09-29-附加线跨轴凹槽.md`。
 
 ## 导入与文件
 
