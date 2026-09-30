@@ -46,7 +46,7 @@
 - **不糊合**：折叠处裁断拓扑，正面、背面、折痕各成一层，背面衬里色，折痕虚线；最近端红色手柄决定叠放次序；补全拓扑用三次曲线跨过缺口。现有。规格（一级）：`auto_mapping/topology_severing.md`、`auto_mapping/fold_crease_pipeline.md`。
 - **Mapping Area**：主画板上裁结果、纹理板上筛来源，每板一个。现有。规格（一级）：`auto_mapping/auto_mapping_2_spec.md` 第 7 节。
 - **Additional Line**：画下的线就是等参线，牵引本族纹理流向；另一侧同步出弦；近处重画即替换；同族嵌套过渡、正交族互不影响；跨过 H/V 轴线时照常生效：被跨过的那半条轴线沿自身滑动，轴线形状和原点不动（线同时画出了那一端的版心边时，这半条轴线不滑动）；Constrain Outline 与 Falloff 可选。现有。规格（一级）：`auto_mapping/flow_field_warp.md`。
-- **Ground Line（地线）**：把纹理板上的一段花纹钉到主画板的一条线上，整条线按弧长逐点对应，硬钉；画下即钉在当前位置，选中（发光描边）后重画即移动；移动时影响沿线延长、并推着前方的地面走（前推待确认），范围内的 H/V 轴线跟着让路，外框跟着变（待确认），附加线在它附近让位；附加线可转换为地线；两端画图钉。规划（草稿，待拍板）。计划与可行性实验：`plan/2026-09-30-地线-GroundLine-计划.md`；用法草稿：`tools_user_workflow/groundline.md`。
+- **Ground Line（地线）**：把纹理板上的一段花纹钉到主画板的一条线上，整条线按弧长逐点对应，硬钉；画下即钉在当前位置，选中（发光描边）后重画即移动；移动时影响沿线延长，正交的轴线在它这一半让路、平行的轴线不动，外框跟着变（待确认），附加线在它附近让位；附加线可转换为地线；两端画图钉。规划（草稿，待拍板）。计划与可行性实验：`plan/2026-09-30-地线-GroundLine-计划.md`；用法草稿：`tools_user_workflow/groundline.md`。
 - **输出几何**：Bezier / Spline / Polyline 三种 Calculation Mode 都跟随形变，原始顶点永远是锚点，RDP 只抽插入的采样点。现有。规格（一级）：`auto_mapping/stroke_mapping_pipeline.md`。Bezier 模式在轴线折点处先劈分再搬运控制柄的修复（2026-09-25，`tests/t_bezier_knots.py`）尚在工作区未提交。待办：提交。
 - **Auto-Mapping 单元**：一个单元一套配置（两边轴线、Mapping Area、附加线、锚点、选项），输出可随时重生成；焦点进入单元显示引导、离开隐藏；拖轴线、改附加线、改选项、改纹理图案都就地重跑（Live Re-render 可关）；Duplicate、To Editable Layer、Convert 旧组；Advanced Settings 管显示开关与 front / back / crease 可见性。现有。规格（一级）：`auto_mapping/layer_units.md`。
 - 无单元的旧文档：引导线常显，按钮手动跑，每次新建一层置顶。现有。
