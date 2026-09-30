@@ -96,6 +96,7 @@
 | Mapping Area | Mapping Area / `mapping_area`（浅蓝） | 现有 | 油漆桶式圈出的区域：主画板上裁结果，纹理板上筛来源。 |
 | 附加线 | Additional Line / `additional_line`（粉）、`_FlowFieldWarp` | 现有 | 画下的测地线（额外的网格等参线），引导本族纹理的流向；流场加权泊松积分。跨过 H/V 轴线时，被跨过的那半条轴线沿自身滑动，轴线不变形。 |
 | 族 | family（H 族 / V 族） | 现有 | 附加线按走向归族；正交族互不影响。 |
+| 地线 | Ground Line / `ground_line` | 规划 | 钉住花纹的线：纹理板上的线按弧长逐点落到主画板的伙伴线上，硬钉；优先于 H/V 轴线和附加线；附加线只引导流向，位置由地线负责。用户 2026-09-30 提出。 |
 | 约束外轮廓 | Constrain Outline / `constrain_outline` | 现有 | 图案外框钉在参考架上；画出边的那一侧释放。 |
 | Auto-Mapping 单元 | mapping unit / Auto-Mapping Layer、组 tag `automapping`、`mapping_units` | 现有 | 带全套配置的图层组：两边轴线、Mapping Area、附加线、锚点、选项；输出随时可从配置重生成。 |
 | 实时重跑 | Live Re-render / `auto_render` | 现有 | 单元有焦点时，改引导、改选项、改纹理图案都就地重跑。 |

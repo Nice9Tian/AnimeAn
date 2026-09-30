@@ -18,6 +18,7 @@
 | 中轴线（H / V Center Line） | center_line | Tools ▸ Mapping | `center_line.md` |
 | Mapping Area | mapping_area | Tools ▸ Mapping | `mapping_area.md` |
 | 附加线 | additional_line | Tools ▸ Mapping；菜单 Auto Mapping | `additional_line.md` |
+| 地线（规划，草稿待拍板） | ground_line | Tools ▸ Mapping | `groundline.md` |
 | Auto Mapping（运行与单元） | auto_mapping | Tools ▸ Mapping；Layers 右键；菜单 Auto Mapping | `auto_mapping.md` |
 | 视平线 | horizon_line | 菜单 Auto Mapping | `horizon_line.md` |
 | To 3D | to_3d | 菜单 Auto Mapping | `to_3d.md` |
