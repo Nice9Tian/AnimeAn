@@ -1,0 +1,49 @@
+{
+ "pic-shirt": [
+  {"text": "输入：画两条轴线", "x": 600.0, "y": 70.0, "anchor": "mm", "colour": "#000000", "plate": "white", "bold": true},
+  {"text": "结果：沿衣服形状的坐标网格", "x": 600.0, "y": 780.0, "anchor": "mm", "colour": "#000000", "plate": "white", "bold": true},
+  {"text": "中心轴线 H（蓝）", "x": 830.0, "y": 250.0, "anchor": "lm", "colour": "#2846E6", "plate": "white", "bold": false},
+  {"text": "水平轴线 V（绿）", "x": 830.0, "y": 385.0, "anchor": "lm", "colour": "#14A028", "plate": "white", "bold": false}
+ ],
+ "fig-app": [
+  {"text": "纹理板（Texture 页）", "x": 34.0, "y": 78.0, "anchor": "lm", "colour": "#000000", "plate": "white", "bold": true},
+  {"text": "主画板（Drawing 页）", "x": 1054.0, "y": 78.0, "anchor": "lm", "colour": "#000000", "plate": "white", "bold": true},
+  {"text": "画引导线\n的工具", "x": 34.0, "y": 415.0, "anchor": "la", "colour": "#E61E1E", "plate": null, "bold": false},
+  {"text": "平铺画出的图案“B”\n与两条轴线", "x": 252.0, "y": 225.0, "anchor": "la", "colour": "#E61E1E", "plate": null, "bold": false},
+  {"text": "中心轴线\nH Center Line", "x": 770.0, "y": 381.0, "anchor": "mm", "colour": "#2846E6", "plate": "white", "bold": false},
+  {"text": "水平轴线\nV Center Line", "x": 568.0, "y": 605.0, "anchor": "rm", "colour": "#14A028", "plate": "white", "bold": false},
+  {"text": "附加线\nAdditional Line", "x": 568.0, "y": 729.0, "anchor": "rm", "colour": "#DC3C96", "plate": "white", "bold": false},
+  {"text": "顺着轴线的弯曲\n贴上去的图案", "x": 1075.0, "y": 197.0, "anchor": "la", "colour": "#E61E1E", "plate": null, "bold": false},
+  {"text": "中心轴线\nH Center Line", "x": 1560.0, "y": 420.0, "anchor": "lm", "colour": "#2846E6", "plate": "white", "bold": false},
+  {"text": "水平轴线\nV Center Line", "x": 1081.0, "y": 455.0, "anchor": "lm", "colour": "#14A028", "plate": "white", "bold": false},
+  {"text": "附加线\nAdditional Line", "x": 1081.0, "y": 857.0, "anchor": "lm", "colour": "#DC3C96", "plate": "white", "bold": false}
+ ],
+ "fig-params": [
+  {"text": "O", "x": 373.0, "y": 404.0, "anchor": "rt", "colour": "#000000", "plate": "white", "bold": false},
+  {"text": "s", "x": 371.0, "y": 320.6, "anchor": "rm", "colour": "#2E6EDC", "plate": "white", "bold": false},
+  {"text": "t", "x": 450.0, "y": 237.1, "anchor": "mb", "colour": "#28A05A", "plate": "white", "bold": false},
+  {"text": "点 (s, t)", "x": 514.9, "y": 281.1, "anchor": "mt", "colour": "#E0533D", "plate": "white", "bold": false},
+  {"text": "H", "x": 375.0, "y": 174.0, "anchor": "rt", "colour": "#2E6EDC", "plate": "white", "bold": false},
+  {"text": "V", "x": 601.0, "y": 400.0, "anchor": "rt", "colour": "#28A05A", "plate": "white", "bold": false},
+  {"text": "弧长参数空间：从 O 沿两轴各走 s、t 到达的点", "x": 636.0, "y": 40.0, "anchor": "ma", "colour": "#000000", "plate": "white", "bold": true},
+  {"text": "H：中心轴线", "x": 724.0, "y": 276.0, "anchor": "lm", "colour": "#2E6EDC", "plate": null, "bold": false},
+  {"text": "V：水平轴线", "x": 724.0, "y": 352.0, "anchor": "lm", "colour": "#28A05A", "plate": null, "bold": false},
+  {"text": "O：交点", "x": 724.0, "y": 428.0, "anchor": "lm", "colour": "#000000", "plate": null, "bold": false},
+  {"text": "s, t：自交点起算的弧长", "x": 724.0, "y": 504.0, "anchor": "lm", "colour": "#000000", "plate": null, "bold": false},
+  {"text": "O", "x": 624.0, "y": 1114.0, "anchor": "rt", "colour": "#000000", "plate": "white", "bold": false},
+  {"text": "H(s)", "x": 665.9, "y": 948.1, "anchor": "rm", "colour": "#2E6EDC", "plate": "white", "bold": false},
+  {"text": "V(t)", "x": 783.6, "y": 1093.2, "anchor": "lt", "colour": "#28A05A", "plate": "white", "bold": false},
+  {"text": "H(s) + V(t) − O", "x": 789.5, "y": 905.3, "anchor": "lb", "colour": "#E0533D", "plate": "white", "bold": false},
+  {"text": "s", "x": 647.0, "y": 1024.5, "anchor": "rm", "colour": "#2E6EDC", "plate": "white", "bold": false},
+  {"text": "t", "x": 708.2, "y": 1112.9, "anchor": "mt", "colour": "#28A05A", "plate": "white", "bold": false},
+  {"text": "主画板：沿 H 走 s，再按 V 的走法走 t", "x": 636.0, "y": 680.0, "anchor": "ma", "colour": "#000000", "plate": "white", "bold": true}
+ ],
+ "fig-flow": [
+  {"text": "(a) 原来的附加线：顺着轴线映射的流向", "x": 380.0, "y": 36.0, "anchor": "ma", "colour": "#000000", "plate": "white", "bold": true},
+  {"text": "(b) 把附加线画弯 → 重新计算目标流场 G", "x": 1120.0, "y": 36.0, "anchor": "ma", "colour": "#000000", "plate": "white", "bold": true}
+ ],
+ "fig-outline": [
+  {"text": "A  外框固定为原来的形状：附加线只改内部的流向", "x": 390.0, "y": 36.0, "anchor": "ma", "colour": "#000000", "plate": "white", "bold": true},
+  {"text": "B  外框固定为另一个形状（尚未实现）", "x": 1120.0, "y": 36.0, "anchor": "ma", "colour": "#000000", "plate": "white", "bold": true}
+ ]
+}

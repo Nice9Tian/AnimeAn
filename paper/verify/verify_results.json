@@ -1,0 +1,75 @@
+{
+ "coons_vs_sweep_max_px": 1.797546735911271e-13,
+ "implementation_vs_formula_max_px": 1.6077746776921858e-13,
+ "identity_max_px_by_amplitude": {
+  "0": 2.842170943040401e-14,
+  "10": 8.987733679556355e-14,
+  "30": 1.0247593068766006e-13,
+  "60": 1.537138960314901e-13
+ },
+ "affine_case_max_px": 2.1705707128176245e-11,
+ "endpoint_anchor_max_px": 6.01080938469374e-14,
+ "detJ_spread_over_offaxis": 1.0480505352461478e-13,
+ "detJ_range": [
+  0.9219532056423958,
+  0.9908658973869388
+ ],
+ "mirrored_flag": {
+  "same": false,
+  "main_h_reversed": true
+ },
+ "sever": {
+  "can_fold": true,
+  "islands": 1,
+  "seams": 1,
+  "cut_x": 160.19277205327646
+ },
+ "sever_straight": {
+  "can_fold": false,
+  "islands": 1,
+  "seams": 0
+ },
+ "reconstruction": {
+  "mild": {
+   "image_bend_px": 22.49704603014689,
+   "spline_err_px": 0.029681937507745136,
+   "polyline_err_px": 0.05438865169927568,
+   "anchors": 92,
+   "knots": 92
+  },
+  "strong": {
+   "image_bend_px": 64.58316635632255,
+   "spline_err_px": 0.055019840078223005,
+   "polyline_err_px": 0.13004208261423209,
+   "anchors": 92,
+   "knots": 92
+  },
+  "extreme": {
+   "image_bend_px": 110.8443975446078,
+   "spline_err_px": 0.14516122031645792,
+   "polyline_err_px": 0.25257643464229435,
+   "anchors": 92,
+   "knots": 94
+  }
+ },
+ "flow_field": {
+  "ask_deg": 25.0,
+  "flow_on_line_deg": 24.22773237005006,
+  "axis_drift_px": 5.691666373828197e-14,
+  "round_trip_px": 3.2811768009308335e-11,
+  "no_fold": true,
+  "first_build_ms": 196.00959999661427,
+  "rebuild_ms_median": 162.83190000103787
+ },
+ "translation_pair_inert_px": 5.684341886080802e-14,
+ "per_point_us": {
+  "straight_child": 2.284439999857568,
+  "sine_child": 6.642275000194786
+ },
+ "environment": {
+  "commit": "24c8474",
+  "python": "3.12.10",
+  "machine": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+  "system": "Windows-11-10.0.26200-SP0"
+ }
+}

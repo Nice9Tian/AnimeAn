@@ -1,0 +1,5 @@
+build/
+assets/src/
+output/*.pdf
+output/pages/
+__pycache__/

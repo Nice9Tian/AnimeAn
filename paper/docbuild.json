@@ -1,0 +1,19 @@
+{
+  "template": "build/template_zh.docx",
+  "figures": "figures.json",
+  "alt": "alt.json",
+  "check_dir": "check",
+  "documents": [
+    {
+      "name": "paper",
+      "src": "paper_src.md",
+      "source": "paper.md",
+      "prefix": "a",
+      "equations": "equations/paper.json",
+      "docx": "output/animean_paper.docx",
+      "md": "rendered/paper.md",
+      "title": "引导线驱动的图案赋予：面向手绘二维动画的交互式矢量纹理映射",
+      "h1": "Head1"
+    }
+  ]
+}

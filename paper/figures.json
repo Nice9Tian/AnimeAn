@@ -1,0 +1,11 @@
+{
+  "copies": [
+    ["assets/src/shirt_axes.png", "assets/paper/fig1_shirt_axes.png"],
+    ["assets/src/app_screens.png", "assets/paper/fig2_app_screens.png"],
+    ["assets/src/axis_mapping.png", "assets/paper/fig3_axis_mapping.png"],
+    ["assets/src/fold_layers.png", "assets/paper/fig4_fold_layers.png"],
+    ["assets/src/flow_field.png", "assets/paper/fig5_flow_field.png"],
+    ["assets/src/outline_modes.png", "assets/paper/fig6_outline_modes.png"],
+    ["assets/src/motion_sheet.png", "assets/paper/fig7_motion_sheet.png"]
+  ]
+}
