@@ -4,7 +4,7 @@ Documentation lives in `docs/` and is organised in semantic tiers; start with
 `docs/developer_guide.md` (rules) and `docs/README.md` (index by tier). The
 product itself is described in `docs/product_purpose.md`.
 
-AnimeAn is a Qt desktop application for animation and vector drawing
+AnimeAn (**Anime** + **An**notation — structural guide-line annotations on 2D line art) is a Qt desktop application for animation and vector drawing
 experiments. It includes optional Python support through `pybind11`, so scripts
 can inspect and edit the C++ scene model and use vector geometry helpers.
 
