@@ -11,3 +11,6 @@ build_full.log
 /.scratch
 /.archive
 .dag_state.json
+
+# Local copies of related papers (copyrighted PDFs, not tracked)
+relation_papers/
