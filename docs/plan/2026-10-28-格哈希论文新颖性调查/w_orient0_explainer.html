@@ -61,6 +61,15 @@ code { font: .9em var(--mono); background: var(--eq-bg); padding: 1px 5px; borde
 canvas { width: 100%; aspect-ratio: 1 / 1; max-width: 100%; display: block; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); touch-action: none; }
 canvas.wide { aspect-ratio: 3 / 1; }
 canvas.wide3 { aspect-ratio: 3 / 2; cursor: grab; }
+.off { display: none !important; }
+.cvwrap { position: relative; }
+.vt { position: absolute; top: 8px; right: 8px; display: flex; gap: 6px; align-items: center; font-size: .8rem; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+.vt button { padding: 2px 8px; font-size: .8rem; }
+.vt button.on { background: var(--accent); color: var(--panel); border-color: var(--accent); }
+.vt button:disabled { opacity: .5; }
+.vt3 { display: inline-flex; gap: 8px; align-items: center; margin-left: 4px; }
+.vt3 label { display: inline-flex; gap: 4px; align-items: center; }
+.vt input[type=range] { width: 70px; }
 .controls { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; margin-bottom: 10px; font-size: .92rem; }
 .controls label { display: inline-flex; align-items: center; gap: 6px; }
 select, button, input[type=range] { font: inherit; }
@@ -119,7 +128,7 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
     <span class="cap">一套 H、V 叫一个"装置"（下文也叫"架"）。这个下拉框控制全页的图。在左图里移动或点击鼠标，右图显示那一点的全部原像。</span>
   </div>
   <div class="row">
-    <div class="pane"><h4>画布平面：导引线 H、V（箭头是正方向）张出的面。每对折线段张出一张平行四边形小格，<span class="sw f"></span>正面 <span class="sw b"></span>背面，叠两层颜色更深，<span class="sw c"></span>粗线是折缝；虚线小圈是 H、V 的其它交点（第 2 节）</h4><canvas id="cvA" aria-label="画布平面"></canvas></div>
+    <div class="pane"><h4>画布平面：导引线 H、V（箭头是正方向）张出的面。每对折线段张出一张平行四边形小格，<span class="sw f"></span>正面 <span class="sw b"></span>背面，叠两层颜色更深，<span class="sw c"></span>粗线是折缝；虚线小圈是 H、V 的其它交点（第 2 节）。右上角可切到立体视图（纸面抬起，正背面染色，第 1 节有说明）</h4><div class="cvwrap"><canvas id="cvA" aria-label="画布平面"></canvas><canvas id="cvA3" class="off" aria-label="画布平面（立体）"></canvas><div class="vt"><button type="button" data-v="2" class="on">2D</button><button type="button" data-v="3">3D</button><span class="vt3 off"><label>抬起 <input type="range" class="vlift" min="0" max="100" value="55"></label><label><input type="checkbox" class="vext" checked> 外延</label></span></div></div></div>
     <div class="pane"><h4>参数平面 (ℓ<sub>h</sub>, ℓ<sub>v</sub>)：矩形是画出的面，格线是折线的节点，矩形外是外延；圆点是原像，带虚线环的落在外延上。把鼠标放到一个小格上，左图高亮它的平行四边形</h4><canvas id="cvAp" aria-label="参数平面"></canvas></div>
   </div>
   <div class="readout" id="roA">把鼠标移到左图上。</div>
@@ -216,7 +225,7 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
 <div class="fig" id="figD">
   <div class="controls"><span class="rigname" id="rigD"></span></div>
   <div class="row">
-    <div class="pane"><h4>拖动远处的点 A（蓝点）：亮起的锥是 A 所在的角格外延，各带自己的 orient；细虚线是从 O 指向 A 的射线</h4><canvas id="cvD" aria-label="四个角锥"></canvas></div>
+    <div class="pane"><h4>拖动远处的点 A（蓝点）：亮起的锥是 A 所在的角格外延，各带自己的 orient；细虚线是从 O 指向 A 的射线。右上角可切到立体视图：角格外延是纸的四个角伸出去的部分</h4><div class="cvwrap"><canvas id="cvD" aria-label="四个角锥"></canvas><canvas id="cvD3" class="off" aria-label="四个角锥（立体）"></canvas><div class="vt"><button type="button" data-v="2" class="on">2D</button><button type="button" data-v="3">3D</button><span class="vt3 off"><label>抬起 <input type="range" class="vlift" min="0" max="100" value="55"></label><label><input type="checkbox" class="vext" checked> 外延</label></span></div></div></div>
     <div class="pane"><h4>同一时刻的环：A 的方向是一根射线，哪些弧盖住了它。四段弧错开半径画，是为了看清重叠</h4><canvas id="cvDl" aria-label="环与射线"></canvas></div>
   </div>
   <div class="readout" id="roD"></div>
@@ -239,7 +248,7 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
     <span class="rigname" id="rigE"></span>
   </div>
   <div class="row">
-    <div class="pane"><h4>画布平面：A 的路线（蓝虚线）穿过折缝（粗线）</h4><canvas id="cvE" aria-label="穿折缝的路线"></canvas></div>
+    <div class="pane"><h4>画布平面：A 的路线（蓝虚线）穿过折缝（粗线）。右上角可切到立体视图：路线是地面上的蓝线，单击纸面把 A 挪到那一点在路线上的投影</h4><div class="cvwrap"><canvas id="cvE" aria-label="穿折缝的路线"></canvas><canvas id="cvE3" class="off" aria-label="穿折缝的路线（立体）"></canvas><div class="vt"><button type="button" data-v="2" class="on">2D</button><button type="button" data-v="3">3D</button><span class="vt3 off"><label>抬起 <input type="range" class="vlift" min="0" max="100" value="55"></label><label><input type="checkbox" class="vext" checked> 外延</label></span></div></div></div>
     <div class="pane"><h4>参数平面：当前 A 的原像</h4><canvas id="cvEp" aria-label="参数平面原像"></canvas></div>
   </div>
   <canvas id="cvEs" class="wide" style="margin-top:12px" aria-label="原像个数与带符号和沿路线的变化"></canvas>
@@ -496,10 +505,12 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
 
   // ---- fig A: explorer
   function drawA() {
-    const F = S.F; const { ctx, w, h } = fit($('cvA')); const m = mapper(S.box, w, h);
-    const s = solve(F, S.A);
-    drawCanvasPlane(ctx, w, h, F, m, { rays: $('showRays').checked, hl: S.hl });
-    const [ax, ay] = m.to(S.A[0], S.A[1]); dot(ctx, ax, ay, 5, C.accent, C.panel); label(ctx, 'A', ax + 8, ay - 8, C.accent);
+    const F = S.F; const s = solve(F, S.A);
+    if (VIEWS.A && VIEWS.A.on) VIEWS.A.build(); else {
+      const { ctx, w, h } = fit($('cvA')); const m = mapper(S.box, w, h);
+      drawCanvasPlane(ctx, w, h, F, m, { rays: $('showRays').checked, hl: S.hl });
+      const [ax, ay] = m.to(S.A[0], S.A[1]); dot(ctx, ax, ay, 5, C.accent, C.panel); label(ctx, 'A', ax + 8, ay - 8, C.accent);
+    }
     const p = fit($('cvAp')); const mp = mapper(paramBox(F), p.w, p.h);
     drawParamPlane(p.ctx, p.w, p.h, F, mp, s.rows, { hl: S.hl });
     $('roA').innerHTML = `A = (${S.A[0].toFixed(0)}, ${S.A[1].toFixed(0)})：${rowsText(F, s)}<br>${lawText(F, s)}` + (F.w !== null ? `　→ ${F.w * F.orient0 > 0 ? '这副轴线上每个正则点都至少有一个正面原像' : F.w * F.orient0 < 0 ? '这副轴线上会有只有背面原像的点' : '这副轴线上会有一个原像都没有的点'}` : '');
@@ -593,8 +604,9 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
   function inCone(cn, A) { const dx = A[0] - cn.apex[0], dy = A[1] - cn.apex[1], den = cross(cn.a[0], cn.a[1], cn.b[0], cn.b[1]); if (Math.abs(den) < 1e-12) return false; const s = cross(dx, dy, cn.b[0], cn.b[1]) / den, t = cross(cn.a[0], cn.a[1], dx, dy) / den; return s > 0 && t > 0; }
   function boxD() { const e = (S.box[2] - S.box[0]) * 0.8; return [S.box[0] - e, S.box[1] - e, S.box[2] + e, S.box[3] + e]; }
   function drawD() {
-    const F = S.F; const { ctx, w, h } = fit($('cvD')); const box = boxD(); const m = mapper(box, w, h);
-    const A = S.far; const hits = F.cones.map(cn => inCone(cn, A));
+    const F = S.F; const A = S.far; const hits = F.cones.map(cn => inCone(cn, A));
+    if (VIEWS.D && VIEWS.D.on) VIEWS.D.build(); else {
+    const { ctx, w, h } = fit($('cvD')); const box = boxD(); const m = mapper(box, w, h);
     F.cones.forEach((cn, k) => {
       const [x0, y0] = m.to(cn.apex[0], cn.apex[1]);
       ctx.fillStyle = hexA(cn.orient === F.orient0 ? C.front : C.back, hits[k] ? 0.55 : 0.12);
@@ -606,6 +618,7 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
     polyline(ctx, F.h, m, C.hline, 1.5); polyline(ctx, F.v, m, C.vline, 1.5); crossRings(ctx, F, m, 4);
     polyline(ctx, [F.o, [F.o[0] + (A[0] - F.o[0]) * 50, F.o[1] + (A[1] - F.o[1]) * 50]], m, C.accent, 1, [3, 4]);
     const [ax, ay] = m.to(A[0], A[1]); dot(ctx, ax, ay, 6, C.accent, C.panel); label(ctx, 'A', ax + 9, ay - 9, C.accent);
+    }
     const d = fit($('cvDl')); const dc = [d.w / 2, d.h / 2], rad = Math.min(d.w, d.h) * 0.36;
     d.ctx.strokeStyle = C.line; d.ctx.lineWidth = 1; d.ctx.beginPath(); d.ctx.arc(dc[0], dc[1], rad, 0, 2 * Math.PI); d.ctx.stroke();
     const ux = A[0] - F.o[0], uy = A[1] - F.o[1], un = Math.hypot(ux, uy) || 1, uang = Math.atan2(uy, ux);
@@ -626,11 +639,13 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
     const F = S.F, key = $('rig').value, [P0, P1] = rigs[key].path;
     if (!S.pathData) { const n = 400, cnt = [], sum = []; for (let k = 0; k <= n; k++) { const s = solve(F, [P0[0] + (P1[0] - P0[0]) * k / n, P0[1] + (P1[1] - P0[1]) * k / n]); cnt.push(s.rows.length); sum.push(s.sum); } S.pathData = { cnt, sum }; }
     const A = [P0[0] + (P1[0] - P0[0]) * S.path, P0[1] + (P1[1] - P0[1]) * S.path];
-    const { ctx, w, h } = fit($('cvE')); const m = mapper(S.box, w, h);
     const s = solve(F, A);
-    drawCanvasPlane(ctx, w, h, F, m, { rays: false });
-    polyline(ctx, [P0, P1], m, C.accent, 1.5, [6, 5]);
-    const [ax, ay] = m.to(A[0], A[1]); dot(ctx, ax, ay, 6, C.accent, C.panel);
+    if (VIEWS.E && VIEWS.E.on) VIEWS.E.build(); else {
+      const { ctx, w, h } = fit($('cvE')); const m = mapper(S.box, w, h);
+      drawCanvasPlane(ctx, w, h, F, m, { rays: false });
+      polyline(ctx, [P0, P1], m, C.accent, 1.5, [6, 5]);
+      const [ax, ay] = m.to(A[0], A[1]); dot(ctx, ax, ay, 6, C.accent, C.panel);
+    }
     const p = fit($('cvEp')); drawParamPlane(p.ctx, p.w, p.h, F, mapper(paramBox(F), p.w, p.h), s.rows);
     const g = fit($('cvEs')); const gl = 44, gr = 12, gt = 14, gb = 26, gw = g.w - gl - gr, gh = g.h - gt - gb; const { cnt, sum } = S.pathData;
     const ymax = Math.max(3, ...cnt), ymin = Math.min(-1, ...sum); const ys = v => gt + gh * (ymax - v) / (ymax - ymin);
@@ -643,117 +658,150 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
   }
   $('path').addEventListener('input', ev => { S.path = +ev.target.value / 1000; drawE(); });
 
-  // ---- fig B′: the sheet as a piece of paper lifted along ℓh (three.js r128, global THREE). Lift z = k·0.6·(ℓh − ℓh(O)):
-  // the cell normal's z component is then sign(r × q), so FrontSide seen from above == orient +1 (winding flipped when orient0 = −1).
-  const T3 = { ok: false, az: -1.1, el: 0.9, dist: 1, k: 0.55, ext: true, A: null, center: null };
-  const Z3 = (F, ah) => T3.k * 0.6 * (ah - F.ha);
-  const P3 = (F, ah, av) => { const p = hv(F, ah - F.ha, av - F.va); return [p[0], p[1], Z3(F, ah)]; };
-  function init3() {
-    if (!window.THREE) { $('ro3').textContent = '三维库 three.js 没有加载（这张图需要联网），其余各图不受影响。'; return; }
-    const cv = $('cv3');
-    try { T3.renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: true, alpha: true }); } catch (e) { $('ro3').textContent = '这个浏览器没有 WebGL，立体图略过。'; return; }
-    T3.ok = true;
-    T3.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    T3.scene = new THREE.Scene();
-    T3.camera = new THREE.PerspectiveCamera(36, 1.5, 1, 1e6); T3.camera.up.set(0, 0, 1);
-    T3.scene.add(new THREE.HemisphereLight(0xffffff, 0x808080, 1.05));
-    const dl = new THREE.DirectionalLight(0xffffff, 0.45); dl.position.set(300, -500, 900); T3.scene.add(dl);
-    T3.group = new THREE.Group(); T3.scene.add(T3.group);
+  // ---- 3D views (three.js r128, global THREE): the sheet as a piece of paper lifted along ℓh, z = k·0.6·(ℓh − ℓh(O)).
+  // The cell normal's z component is then sign(r × q), so FrontSide seen from above == orient +1 (winding flipped when orient0 = −1).
+  // view3(canvas, opts) makes one independent view: opts.probe() gives the canvas point A (null → a default), opts.onPick(xy) gets a
+  // click on the paper/ground, opts.extras(F, d) may add geometry, opts.ro names a readout element. Fig B′ owns one; figs A/D/E switch to one.
+  function view3(cv, opts) {
+    const V = { ok: false, az: -1.1, el: 0.9, dist: 1, k: 0.55, ext: true, center: null, faces: [], on: true };
+    if (!window.THREE) { V.fail = '三维库 three.js 没有加载（立体图需要联网），其余各图不受影响。'; return V; }
+    try { V.renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: true, alpha: true }); } catch (e) { V.fail = '这个浏览器没有 WebGL，立体图略过。'; return V; }
+    V.ok = true;
+    V.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    V.scene = new THREE.Scene();
+    V.camera = new THREE.PerspectiveCamera(36, 1.5, 1, 1e6); V.camera.up.set(0, 0, 1);
+    V.scene.add(new THREE.HemisphereLight(0xffffff, 0x808080, 1.05));
+    const dl = new THREE.DirectionalLight(0xffffff, 0.45); dl.position.set(300, -500, 900); V.scene.add(dl);
+    V.group = new THREE.Group(); V.scene.add(V.group);
+    const Z3 = (F, ah) => V.k * 0.6 * (ah - F.ha);
+    const P3 = (F, ah, av) => { const p = hv(F, ah - F.ha, av - F.va); return [p[0], p[1], Z3(F, ah)]; };
     let down = null, moved = false;
-    cv.addEventListener('pointerdown', ev => { down = [ev.clientX, ev.clientY, T3.az, T3.el]; moved = false; cv.setPointerCapture(ev.pointerId); });
-    cv.addEventListener('pointermove', ev => { if (!down) return; const dx = ev.clientX - down[0], dy = ev.clientY - down[1]; if (Math.hypot(dx, dy) > 4) moved = true; if (moved) { T3.az = down[2] - dx * 0.008; T3.el = Math.min(1.5, Math.max(0.03, down[3] + dy * 0.008)); render3(); } });
-    cv.addEventListener('pointerup', ev => { if (down && !moved) pick3(ev); down = null; });
+    cv.addEventListener('pointerdown', ev => { down = [ev.clientX, ev.clientY, V.az, V.el]; moved = false; cv.setPointerCapture(ev.pointerId); });
+    cv.addEventListener('pointermove', ev => { if (!down) return; const dx = ev.clientX - down[0], dy = ev.clientY - down[1]; if (Math.hypot(dx, dy) > 4) moved = true; if (moved) { V.az = down[2] - dx * 0.008; V.el = Math.min(1.5, Math.max(0.03, down[3] + dy * 0.008)); V.render(); } });
+    cv.addEventListener('pointerup', ev => { if (down && !moved) V.pick(ev); down = null; });
     cv.addEventListener('pointercancel', () => { down = null; });
-    cv.addEventListener('wheel', ev => { ev.preventDefault(); T3.dist = Math.min(4, Math.max(0.25, T3.dist * Math.exp(ev.deltaY * 0.0012))); render3(); }, { passive: false });
-    $('lift').addEventListener('input', ev => { T3.k = +ev.target.value / 100; build3(); });
-    $('ext3d').addEventListener('change', ev => { T3.ext = ev.target.checked; build3(); });
-    $('viewTop').addEventListener('click', () => { T3.az = -Math.PI / 2; T3.el = 1.5; render3(); });
-    $('viewSide').addEventListener('click', () => { T3.az = -1.1; T3.el = 0.2; render3(); });
-    $('viewReset').addEventListener('click', () => { T3.az = -1.1; T3.el = 0.9; T3.dist = 1; render3(); });
+    cv.addEventListener('wheel', ev => { ev.preventDefault(); V.dist = Math.min(4, Math.max(0.25, V.dist * Math.exp(ev.deltaY * 0.0012))); V.render(); }, { passive: false });
+    V.view = (az, el, dist) => { V.az = az; V.el = el; if (dist) V.dist = dist; V.render(); };
+    V.build = function () {
+      if (!V.ok || !V.on || !cv.clientWidth) return;
+      const F = S.F, g = V.group;
+      while (g.children.length) { const c = g.children.pop(); if (c.geometry) c.geometry.dispose(); if (c.material) { if (c.material.map) c.material.map.dispose(); c.material.dispose(); } }
+      const L = F.hc[F.nh], M = F.vc[F.nv], span = Math.max(L, M), rr = span * 0.004;
+      const [x0, y0, x1, y1] = F.bbox, cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+      const A = opts.probe() || [cx + 20, cy + 10], s = solve(F, A);
+      // the extension is infinite; draw it far enough to cover every preimage of the probe (plus a margin), per side
+      let e = [0.22 * span, 0.22 * span, 0.22 * span, 0.22 * span];
+      if (V.ext) for (const r of s.rows) { const ah = r.lh + F.ha, av = r.lv + F.va, mg = 0.12 * span; if (ah < 0) e[0] = Math.max(e[0], mg - ah); if (ah > L) e[1] = Math.max(e[1], ah - L + mg); if (av < 0) e[2] = Math.max(e[2], mg - av); if (av > M) e[3] = Math.max(e[3], av - M + mg); }
+      const hs = F.hc.slice(), vs = F.vc.slice(); if (V.ext) { hs.unshift(-e[0]); hs.push(L + e[1]); vs.unshift(-e[2]); vs.push(M + e[3]); }
+      const col = n => new THREE.Color(C[n]);
+      // sheet + extension faces: one planar parallelogram per cell, two triangles
+      const sheetPos = [], extPos = [], flip = F.orient0 < 0, off = V.ext ? 1 : 0;
+      for (let a = 0; a < hs.length - 1; a++) for (let b = 0; b < vs.length - 1; b++) {
+        const i = Math.min(Math.max(a - off, 0), F.nh - 1), j = Math.min(Math.max(b - off, 0), F.nv - 1);
+        if (!F.omap[i][j]) continue;
+        const onSheet = hs[a] >= -1e-9 && hs[a + 1] <= L + 1e-9 && vs[b] >= -1e-9 && vs[b + 1] <= M + 1e-9;
+        const p00 = P3(F, hs[a], vs[b]), p10 = P3(F, hs[a + 1], vs[b]), p11 = P3(F, hs[a + 1], vs[b + 1]), p01 = P3(F, hs[a], vs[b + 1]);
+        const tri = flip ? [p00, p11, p10, p00, p01, p11] : [p00, p10, p11, p00, p11, p01];
+        const dst = onSheet ? sheetPos : extPos; for (const p of tri) dst.push(p[0], p[1], p[2]);
+      }
+      // the drawn sheet keeps the full front/back colours; the extension is the same two colours washed toward the panel
+      const mat = (c, side, op, wash) => new THREE.MeshLambertMaterial({ color: wash ? col(c).lerp(col('panel'), 0.55) : col(c), side, transparent: op < 1, opacity: op, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
+      V.faces = [];
+      for (const [pos, op, wash] of [[sheetPos, 0.97, false], [extPos, 0.6, true]]) { if (!pos.length) continue; const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.computeVertexNormals(); for (const side of [THREE.FrontSide, THREE.BackSide]) { const m = new THREE.Mesh(geo, mat(side === THREE.FrontSide ? 'front' : 'back', side, op, wash)); g.add(m); V.faces.push(m); } }
+      // cell edges
+      const ln = []; const seg = (p, q) => ln.push(p[0], p[1], p[2], q[0], q[1], q[2]);
+      for (let a = 0; a < hs.length; a++) for (let b = 0; b < vs.length - 1; b++) seg(P3(F, hs[a], vs[b]), P3(F, hs[a], vs[b + 1]));
+      for (let b = 0; b < vs.length; b++) for (let a = 0; a < hs.length - 1; a++) seg(P3(F, hs[a], vs[b]), P3(F, hs[a + 1], vs[b]));
+      const lg = new THREE.BufferGeometry(); lg.setAttribute('position', new THREE.Float32BufferAttribute(ln, 3));
+      g.add(new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color: col('fg'), transparent: true, opacity: 0.22 })));
+      // thick lines as cylinders (WebGL line width is always 1 px)
+      const mats = {}; const basic = c => mats[c] || (mats[c] = new THREE.MeshBasicMaterial({ color: col(c) }));
+      const cyl = (a, b, r, c) => { const d = new THREE.Vector3(b[0] - a[0], b[1] - a[1], b[2] - a[2]), len = d.length(); if (len < 1e-9) return; const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, 6, 1), basic(c)); m.position.set((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2); m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize()); g.add(m); };
+      const cone = (a, b, c) => { const d = new THREE.Vector3(b[0] - a[0], b[1] - a[1], b[2] - a[2]); if (d.length() < 1e-9) return; const m = new THREE.Mesh(new THREE.ConeGeometry(rr * 2.6, rr * 7, 8), basic(c)); m.position.set(b[0], b[1], b[2]); m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize()); g.add(m); };
+      const sph = (p, r, c) => { const m = new THREE.Mesh(new THREE.SphereGeometry(r, 14, 10), new THREE.MeshLambertMaterial({ color: col(c) })); m.position.set(p[0], p[1], p[2]); g.add(m); };
+      const sprite = (text, c, p, size) => { const cvs = document.createElement('canvas'); cvs.width = 96; cvs.height = 48; const x = cvs.getContext('2d'); x.font = 'bold 30px ' + css('--sans'); x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillStyle = C[c]; x.fillText(text, 48, 24); const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(cvs), transparent: true, depthTest: false })); sp.position.set(p[0], p[1], p[2]); sp.scale.set(size * 2, size, 1); g.add(sp); };
+      // creases: shared edges of adjacent opposite-orient cells
+      for (let i = 0; i < F.nh; i++) for (let j = 0; j < F.nv; j++) { const o = F.omap[i][j]; if (!o) continue;
+        if (i + 1 < F.nh && F.omap[i + 1][j] === -o) cyl(P3(F, F.hc[i + 1], F.vc[j]), P3(F, F.hc[i + 1], F.vc[j + 1]), rr * 0.9, 'crease');
+        if (j + 1 < F.nv && F.omap[i][j + 1] === -o) cyl(P3(F, F.hc[i], F.vc[j + 1]), P3(F, F.hc[i + 1], F.vc[j + 1]), rr * 0.9, 'crease'); }
+      // guides: H rides the sheet (ℓv = ℓv(O)), V lies flat (ℓh = ℓh(O), z = 0)
+      for (let i = 0; i < F.nh; i++) cyl(P3(F, F.hc[i], F.va), P3(F, F.hc[i + 1], F.va), rr, 'hline'); cone(P3(F, F.hc[F.nh - 1], F.va), P3(F, L, F.va), 'hline');
+      for (let j = 0; j < F.nv; j++) cyl(P3(F, F.ha, F.vc[j]), P3(F, F.ha, F.vc[j + 1]), rr, 'vline'); cone(P3(F, F.ha, F.vc[F.nv - 1]), P3(F, F.ha, M), 'vline');
+      const lab = span * 0.06;
+      sprite('H', 'hline', P3(F, L, F.va).map((v, k) => v + (k === 2 ? lab * 0.8 : 0)), lab); sprite('V', 'vline', P3(F, F.ha, M).map((v, k) => v + (k === 2 ? lab * 0.8 : 0)), lab);
+      sph([F.o[0], F.o[1], 0], rr * 2.4, 'fg'); sprite('O', 'fg', [F.o[0], F.o[1], lab * 0.9], lab);
+      F.crossList.forEach((c, k) => { if (k !== F.oIndex) sph([c.o[0], c.o[1], 0], rr * 1.6, 'muted'); });
+      // ground: the canvas plane
+      const gh = new THREE.GridHelper(span * (V.ext ? 2.6 : 2), 13, col('line'), col('line')); gh.rotation.x = Math.PI / 2; gh.material.transparent = true; gh.material.opacity = 0.35;
+      gh.position.set(cx, cy, 0); g.add(gh);
+      if (opts.extras) opts.extras(F, { cyl, sph, sprite, rr, lab });
+      // probe A: a vertical needle through the canvas point A; every piercing of the paper is one preimage
+      const shown = r => r.onSheet || V.ext;
+      // the needle spans every drawn piercing, and the camera frames them all (zoom in with the wheel for the sheet itself)
+      let zlo = Math.min(0, Z3(F, 0), Z3(F, L)), zhi = Math.max(0, Z3(F, 0), Z3(F, L)); const pad = span * 0.08;
+      for (const r of s.rows) if (shown(r)) { const z = Z3(F, r.lh + F.ha); zlo = Math.min(zlo, z); zhi = Math.max(zhi, z); }
+      cyl([A[0], A[1], zlo - pad], [A[0], A[1], zhi + pad], rr * 0.6, 'accent'); sph([A[0], A[1], 0], rr * 1.8, 'accent'); sprite('A', 'accent', [A[0], A[1], zhi + pad + lab * 0.8], lab);
+      let hidden = 0; for (const r of s.rows) { if (!shown(r)) { hidden++; continue; } sph(P3(F, r.lh + F.ha, r.lv + F.va), rr * 2.2, r.orient === F.orient0 ? 'front' : 'back'); }
+      if (opts.ro) $(opts.ro).innerHTML = `探针 A = (${A[0].toFixed(0)}, ${A[1].toFixed(0)})：${rowsText(F, s)}${hidden ? `（外延没画，其中 ${hidden} 个在外延上）` : ''}<br>${lawText(F, s)}`;
+      let half = Math.max(x1 - x0, y1 - y0) / 2 * (V.ext ? 1.45 : 1.05); const zc = (zlo + zhi) / 2;
+      for (const r of s.rows) if (shown(r)) { const q = P3(F, r.lh + F.ha, r.lv + F.va); half = Math.max(half, Math.hypot(q[0] - cx, q[1] - cy, q[2] - zc) * 1.15); }  // R0 = 3.1·half ≈ half / tan(fov/2): every piercing fits in the frame
+      V.center = [cx, cy, zc]; V.R0 = half * 3.1;
+      V.render();
+    };
+    V.render = function () {
+      if (!V.ok || !V.center || !cv.clientWidth) return;
+      const w = cv.clientWidth, h = cv.clientHeight || w;
+      if (V.w !== w || V.h !== h) { V.renderer.setSize(w, h, false); V.w = w; V.h = h; }
+      const cam = V.camera; cam.aspect = w / h; cam.updateProjectionMatrix();
+      const R = V.R0 * V.dist, c = V.center;
+      cam.position.set(c[0] + R * Math.cos(V.el) * Math.cos(V.az), c[1] + R * Math.cos(V.el) * Math.sin(V.az), c[2] + R * Math.sin(V.el));
+      cam.lookAt(c[0], c[1], c[2]);
+      V.renderer.render(V.scene, cam);
+    };
+    V.pick = function (ev) {
+      const r = cv.getBoundingClientRect(), nd = new THREE.Vector2(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+      const rc = new THREE.Raycaster(); rc.setFromCamera(nd, V.camera); const hit = new THREE.Vector3();
+      // the click lands on the paper first (no perspective parallax: the needle goes through the point you clicked), else on the ground
+      const onPaper = rc.intersectObjects(V.faces, false);
+      if (onPaper.length) { opts.onPick([onPaper[0].point.x, onPaper[0].point.y]); return; }
+      if (rc.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 0, 1), 0), hit)) opts.onPick([hit.x, hit.y]);
+    };
+    return V;
   }
-  function build3() {
-    if (!T3.ok) return;
-    const F = S.F, g = T3.group;
-    while (g.children.length) { const c = g.children.pop(); if (c.geometry) c.geometry.dispose(); if (c.material) { if (c.material.map) c.material.map.dispose(); c.material.dispose(); } }
-    const L = F.hc[F.nh], M = F.vc[F.nv], span = Math.max(L, M), rr = span * 0.004;
-    const [x0, y0, x1, y1] = F.bbox, cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
-    const A = T3.A = T3.A || [cx + 20, cy + 10], s = solve(F, A);
-    // the extension is infinite; draw it far enough to cover every preimage of the probe (plus a margin), per side
-    let e = [0.22 * span, 0.22 * span, 0.22 * span, 0.22 * span];
-    if (T3.ext) for (const r of s.rows) { const ah = r.lh + F.ha, av = r.lv + F.va, mg = 0.12 * span; if (ah < 0) e[0] = Math.max(e[0], mg - ah); if (ah > L) e[1] = Math.max(e[1], ah - L + mg); if (av < 0) e[2] = Math.max(e[2], mg - av); if (av > M) e[3] = Math.max(e[3], av - M + mg); }
-    const hs = F.hc.slice(), vs = F.vc.slice(); if (T3.ext) { hs.unshift(-e[0]); hs.push(L + e[1]); vs.unshift(-e[2]); vs.push(M + e[3]); }
-    const col = n => new THREE.Color(C[n]);
-    // sheet + extension faces: one planar parallelogram per cell, two triangles
-    const sheetPos = [], extPos = [], flip = F.orient0 < 0, off = T3.ext ? 1 : 0;
-    for (let a = 0; a < hs.length - 1; a++) for (let b = 0; b < vs.length - 1; b++) {
-      const i = Math.min(Math.max(a - off, 0), F.nh - 1), j = Math.min(Math.max(b - off, 0), F.nv - 1);
-      if (!F.omap[i][j]) continue;
-      const onSheet = hs[a] >= -1e-9 && hs[a + 1] <= L + 1e-9 && vs[b] >= -1e-9 && vs[b + 1] <= M + 1e-9;
-      const p00 = P3(F, hs[a], vs[b]), p10 = P3(F, hs[a + 1], vs[b]), p11 = P3(F, hs[a + 1], vs[b + 1]), p01 = P3(F, hs[a], vs[b + 1]);
-      const tri = flip ? [p00, p11, p10, p00, p01, p11] : [p00, p10, p11, p00, p11, p01];
-      const dst = onSheet ? sheetPos : extPos; for (const p of tri) dst.push(p[0], p[1], p[2]);
-    }
-    // the drawn sheet keeps the full front/back colours; the extension is the same two colours washed toward the panel
-    const mat = (c, side, op, wash) => new THREE.MeshLambertMaterial({ color: wash ? col(c).lerp(col('panel'), 0.55) : col(c), side, transparent: op < 1, opacity: op, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
-    T3.faces = [];
-    for (const [pos, op, wash] of [[sheetPos, 0.97, false], [extPos, 0.6, true]]) { if (!pos.length) continue; const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.computeVertexNormals(); for (const side of [THREE.FrontSide, THREE.BackSide]) { const m = new THREE.Mesh(geo, mat(side === THREE.FrontSide ? 'front' : 'back', side, op, wash)); g.add(m); T3.faces.push(m); } }
-    // cell edges
-    const ln = []; const seg = (p, q) => ln.push(p[0], p[1], p[2], q[0], q[1], q[2]);
-    for (let a = 0; a < hs.length; a++) for (let b = 0; b < vs.length - 1; b++) seg(P3(F, hs[a], vs[b]), P3(F, hs[a], vs[b + 1]));
-    for (let b = 0; b < vs.length; b++) for (let a = 0; a < hs.length - 1; a++) seg(P3(F, hs[a], vs[b]), P3(F, hs[a + 1], vs[b]));
-    const lg = new THREE.BufferGeometry(); lg.setAttribute('position', new THREE.Float32BufferAttribute(ln, 3));
-    g.add(new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color: col('fg'), transparent: true, opacity: 0.22 })));
-    // thick lines as cylinders (WebGL line width is always 1 px)
-    const mats = {}; const basic = c => mats[c] || (mats[c] = new THREE.MeshBasicMaterial({ color: col(c) }));
-    const cyl = (a, b, r, c) => { const d = new THREE.Vector3(b[0] - a[0], b[1] - a[1], b[2] - a[2]), len = d.length(); if (len < 1e-9) return; const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, 6, 1), basic(c)); m.position.set((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2); m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize()); g.add(m); };
-    const cone = (a, b, c) => { const d = new THREE.Vector3(b[0] - a[0], b[1] - a[1], b[2] - a[2]); if (d.length() < 1e-9) return; const m = new THREE.Mesh(new THREE.ConeGeometry(rr * 2.6, rr * 7, 8), basic(c)); m.position.set(b[0], b[1], b[2]); m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize()); g.add(m); };
-    const sph = (p, r, c) => { const m = new THREE.Mesh(new THREE.SphereGeometry(r, 14, 10), new THREE.MeshLambertMaterial({ color: col(c) })); m.position.set(p[0], p[1], p[2]); g.add(m); };
-    const sprite = (text, c, p, size) => { const cvs = document.createElement('canvas'); cvs.width = 96; cvs.height = 48; const x = cvs.getContext('2d'); x.font = 'bold 30px ' + css('--sans'); x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillStyle = C[c]; x.fillText(text, 48, 24); const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(cvs), transparent: true, depthTest: false })); sp.position.set(p[0], p[1], p[2]); sp.scale.set(size * 2, size, 1); g.add(sp); };
-    // creases: shared edges of adjacent opposite-orient cells
-    for (let i = 0; i < F.nh; i++) for (let j = 0; j < F.nv; j++) { const o = F.omap[i][j]; if (!o) continue;
-      if (i + 1 < F.nh && F.omap[i + 1][j] === -o) cyl(P3(F, F.hc[i + 1], F.vc[j]), P3(F, F.hc[i + 1], F.vc[j + 1]), rr * 0.9, 'crease');
-      if (j + 1 < F.nv && F.omap[i][j + 1] === -o) cyl(P3(F, F.hc[i], F.vc[j + 1]), P3(F, F.hc[i + 1], F.vc[j + 1]), rr * 0.9, 'crease'); }
-    // guides: H rides the sheet (ℓv = ℓv(O)), V lies flat (ℓh = ℓh(O), z = 0)
-    for (let i = 0; i < F.nh; i++) cyl(P3(F, F.hc[i], F.va), P3(F, F.hc[i + 1], F.va), rr, 'hline'); cone(P3(F, F.hc[F.nh - 1], F.va), P3(F, L, F.va), 'hline');
-    for (let j = 0; j < F.nv; j++) cyl(P3(F, F.ha, F.vc[j]), P3(F, F.ha, F.vc[j + 1]), rr, 'vline'); cone(P3(F, F.ha, F.vc[F.nv - 1]), P3(F, F.ha, M), 'vline');
-    const lab = span * 0.06;
-    sprite('H', 'hline', P3(F, L, F.va).map((v, k) => v + (k === 2 ? lab * 0.8 : 0)), lab); sprite('V', 'vline', P3(F, F.ha, M).map((v, k) => v + (k === 2 ? lab * 0.8 : 0)), lab);
-    sph([F.o[0], F.o[1], 0], rr * 2.4, 'fg'); sprite('O', 'fg', [F.o[0], F.o[1], lab * 0.9], lab);
-    F.crossList.forEach((c, k) => { if (k !== F.oIndex) sph([c.o[0], c.o[1], 0], rr * 1.6, 'muted'); });
-    // ground: the canvas plane
-    const gh = new THREE.GridHelper(span * (T3.ext ? 2.6 : 2), 13, col('line'), col('line')); gh.rotation.x = Math.PI / 2; gh.material.transparent = true; gh.material.opacity = 0.35;
-    gh.position.set(cx, cy, 0); g.add(gh);
-    // probe A: a vertical needle through the canvas point A; every piercing of the paper is one preimage
-    const shown = r => r.onSheet || T3.ext;
-    // the needle spans every drawn piercing, and the camera frames them all (zoom in with the wheel for the sheet itself)
-    let zlo = Math.min(0, Z3(F, 0), Z3(F, L)), zhi = Math.max(0, Z3(F, 0), Z3(F, L)); const pad = span * 0.08;
-    for (const r of s.rows) if (shown(r)) { const z = Z3(F, r.lh + F.ha); zlo = Math.min(zlo, z); zhi = Math.max(zhi, z); }
-    cyl([A[0], A[1], zlo - pad], [A[0], A[1], zhi + pad], rr * 0.6, 'accent'); sph([A[0], A[1], 0], rr * 1.8, 'accent'); sprite('A', 'accent', [A[0], A[1], zhi + pad + lab * 0.8], lab);
-    let hidden = 0; for (const r of s.rows) { if (!shown(r)) { hidden++; continue; } sph(P3(F, r.lh + F.ha, r.lv + F.va), rr * 2.2, r.orient === F.orient0 ? 'front' : 'back'); }
-    $('ro3').innerHTML = `探针 A = (${A[0].toFixed(0)}, ${A[1].toFixed(0)})：${rowsText(F, s)}${hidden ? `（外延没画，其中 ${hidden} 个在外延上）` : ''}<br>${lawText(F, s)}`;
-    let half = Math.max(x1 - x0, y1 - y0) / 2 * (T3.ext ? 1.45 : 1.05); const zc = (zlo + zhi) / 2;
-    for (const r of s.rows) if (shown(r)) { const q = P3(F, r.lh + F.ha, r.lv + F.va); half = Math.max(half, Math.hypot(q[0] - cx, q[1] - cy, q[2] - zc) * 1.15); }  // R0 = 3.1·half ≈ half / tan(fov/2): every piercing fits in the frame
-    T3.center = [cx, cy, zc]; T3.R0 = half * 3.1;
-    render3();
+
+  // fig B′: its own view with the page-level lift/extension controls
+  const T3 = view3($('cv3'), { probe: () => T3.A, onPick: xy => { T3.A = xy; T3.build(); }, ro: 'ro3' });
+  T3.A = null;
+  function init3() {
+    if (!T3.ok) { $('ro3').textContent = T3.fail; return; }
+    $('lift').addEventListener('input', ev => { T3.k = +ev.target.value / 100; T3.build(); });
+    $('ext3d').addEventListener('change', ev => { T3.ext = ev.target.checked; T3.build(); });
+    $('viewTop').addEventListener('click', () => T3.view(-Math.PI / 2, 1.5));
+    $('viewSide').addEventListener('click', () => T3.view(-1.1, 0.2));
+    $('viewReset').addEventListener('click', () => T3.view(-1.1, 0.9, 1));
   }
-  function render3() {
-    if (!T3.ok || !T3.center) return;
-    const cv = $('cv3'), w = cv.clientWidth || 600, h = cv.clientHeight || 400;
-    if (T3.w !== w || T3.h !== h) { T3.renderer.setSize(w, h, false); T3.w = w; T3.h = h; }
-    const cam = T3.camera; cam.aspect = w / h; cam.updateProjectionMatrix();
-    const R = T3.R0 * T3.dist, c = T3.center;
-    cam.position.set(c[0] + R * Math.cos(T3.el) * Math.cos(T3.az), c[1] + R * Math.cos(T3.el) * Math.sin(T3.az), c[2] + R * Math.sin(T3.el));
-    cam.lookAt(c[0], c[1], c[2]);
-    T3.renderer.render(T3.scene, cam);
+  function build3() { T3.build(); }
+
+  // 2D/3D switches on figs A, D, E: the pane holds both canvases; the bar picks one, the 3D view rebuilds from the same state
+  const VIEWS = {};
+  function addToggle(key, cv2, cv3, opts) {
+    const V = view3(cv3, opts); VIEWS[key] = V; V.on = false;
+    const bar = cv2.parentElement.querySelector('.vt'), b2 = bar.querySelector('[data-v="2"]'), b3 = bar.querySelector('[data-v="3"]'), more = bar.querySelector('.vt3');
+    const set = on => { V.on = on; cv2.classList.toggle('off', on); cv3.classList.toggle('off', !on); b2.classList.toggle('on', !on); b3.classList.toggle('on', on); more.classList.toggle('off', !on); opts.redraw(); };
+    if (!V.ok) { b3.disabled = true; b3.title = V.fail; }
+    b2.addEventListener('click', () => set(false)); b3.addEventListener('click', () => set(true));
+    bar.querySelector('.vlift').addEventListener('input', ev => { V.k = +ev.target.value / 100; V.build(); });
+    bar.querySelector('.vext').addEventListener('change', ev => { V.ext = ev.target.checked; V.build(); });
+    return V;
   }
-  function pick3(ev) {
-    const cv = $('cv3'), r = cv.getBoundingClientRect(), nd = new THREE.Vector2(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
-    const rc = new THREE.Raycaster(); rc.setFromCamera(nd, T3.camera); const hit = new THREE.Vector3();
-    // the click lands on the paper first (no perspective parallax: the needle goes through the point you clicked), else on the ground
-    const onPaper = rc.intersectObjects(T3.faces || [], false);
-    if (onPaper.length) { T3.A = [onPaper[0].point.x, onPaper[0].point.y]; build3(); return; }
-    if (rc.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 0, 1), 0), hit)) { T3.A = [hit.x, hit.y]; build3(); }
-  }
+  addToggle('A', $('cvA'), $('cvA3'), { probe: () => S.A, onPick: xy => { S.A = xy; S.hl = null; drawA(); }, redraw: () => drawA() });
+  addToggle('D', $('cvD'), $('cvD3'), { probe: () => S.far, onPick: xy => { S.far = xy; drawD(); }, redraw: () => drawD() });
+  addToggle('E', $('cvE'), $('cvE3'), {
+    probe: () => { const [P0, P1] = rigs[$('rig').value].path; return [P0[0] + (P1[0] - P0[0]) * S.path, P0[1] + (P1[1] - P0[1]) * S.path]; },
+    onPick: xy => { const [P0, P1] = rigs[$('rig').value].path, dx = P1[0] - P0[0], dy = P1[1] - P0[1]; S.path = Math.min(1, Math.max(0, ((xy[0] - P0[0]) * dx + (xy[1] - P0[1]) * dy) / (dx * dx + dy * dy))); $('path').value = Math.round(S.path * 1000); drawE(); },
+    extras: (F, d) => { const [P0, P1] = rigs[$('rig').value].path; d.cyl([P0[0], P0[1], 0], [P1[0], P1[1], 0], d.rr * 0.5, 'accent'); },
+    redraw: () => drawE(),
+  });
 
   // ---- table
   function fillTable() {
