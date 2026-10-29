@@ -1,0 +1,783 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>w·orient0 初等解析</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700&display=swap">
+<style>
+/* 版面：一栏长文（约 65 字宽），每节一张或两张并排的画布；画布随窗口缩放，手机上竖排 */
+:root {
+  --bg: #f5f4ef;        /* 微暖的纸底 */
+  --panel: #ffffff;
+  --fg: #22262b;
+  --muted: #68707a;
+  --line: #d8d6ce;
+  --accent: #3d5a99;    /* 靛蓝，只用于强调和当前点 */
+  --front: #1a8f7a;     /* 正面：墨绿 */
+  --back: #d4642a;      /* 背面：赭橙 */
+  --hline: #2a5db0;     /* 导引线 H */
+  --vline: #8a3fb3;     /* 导引线 V */
+  --crease: #5a2d0c;    /* 折缝 */
+  --eq-bg: #ecebe3;
+  --note-bg: #fbf6e6;
+  --note-line: #d9c27a;
+  --serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", serif;
+  --sans: system-ui, "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #16181c; --panel: #1f2227; --fg: #e4e4df; --muted: #9aa0a8; --line: #3a3e45;
+    --accent: #8fa8e8; --front: #4fc3a8; --back: #f09357; --hline: #6f9ae8; --vline: #c48ae0; --crease: #f3d9c2;
+    --eq-bg: #262a31; --note-bg: #2a2718; --note-line: #7d6a2c; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #16181c; --panel: #1f2227; --fg: #e4e4df; --muted: #9aa0a8; --line: #3a3e45;
+  --accent: #8fa8e8; --front: #4fc3a8; --back: #f09357; --hline: #6f9ae8; --vline: #c48ae0; --crease: #f3d9c2;
+  --eq-bg: #262a31; --note-bg: #2a2718; --note-line: #7d6a2c; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.75 var(--sans);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 0 48px; }
+.wrap { max-width: 1040px; margin: 0 auto; }
+header { padding: 40px 0 8px; border-bottom: 1px solid var(--line); margin-bottom: 24px; }
+h1 { font: 700 2rem/1.25 var(--serif); margin: 0 0 10px; text-wrap: balance; letter-spacing: .01em; }
+h2 { font: 700 1.35rem/1.3 var(--serif); margin: 48px 0 12px; text-wrap: balance; }
+h3 { font: 600 1.05rem/1.4 var(--sans); margin: 20px 0 6px; }
+p, li { max-width: 68ch; }
+.lead { color: var(--muted); font-size: 1.02rem; max-width: 72ch; }
+.eq { background: var(--eq-bg); border-radius: 6px; padding: 10px 16px; margin: 14px 0; font: 500 1.15rem/1.5 var(--serif); max-width: 68ch; }
+.eq small { font: 400 .85rem/1.4 var(--sans); color: var(--muted); display: block; margin-top: 4px; }
+i.v { font-family: var(--serif); font-style: italic; }
+code { font: .9em var(--mono); background: var(--eq-bg); padding: 1px 5px; border-radius: 4px; }
+.note { background: var(--note-bg); border-left: 3px solid var(--note-line); padding: 10px 14px; border-radius: 0 6px 6px 0; margin: 14px 0; max-width: 72ch; }
+.fig { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin: 18px 0 8px; }
+.fig .row { display: flex; gap: 14px; flex-wrap: wrap; }
+.fig .pane { flex: 1 1 300px; min-width: 0; }
+.fig .pane h4 { margin: 0 0 6px; font: 600 .9rem/1.3 var(--sans); color: var(--muted); letter-spacing: .02em; }
+canvas { width: 100%; aspect-ratio: 1 / 1; max-width: 100%; display: block; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); touch-action: none; }
+canvas.wide { aspect-ratio: 3 / 1; }
+canvas.wide3 { aspect-ratio: 3 / 2; cursor: grab; }
+.controls { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; margin-bottom: 10px; font-size: .92rem; }
+.controls label { display: inline-flex; align-items: center; gap: 6px; }
+select, button, input[type=range] { font: inherit; }
+select, button { background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; }
+button:hover, select:hover { border-color: var(--accent); }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+input[type=range] { width: 200px; accent-color: var(--accent); }
+.readout { margin-top: 10px; font-size: .93rem; line-height: 1.6; min-height: 1.6em; }
+.readout b { font-weight: 600; }
+.rigname { font-size: .85rem; color: var(--muted); }
+.sw { display: inline-block; width: .8em; height: .8em; border-radius: 2px; vertical-align: -1px; margin-right: 4px; }
+.sw.f { background: var(--front); } .sw.b { background: var(--back); } .sw.c { background: var(--crease); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-top: 10px; }
+.tile { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.tile .k { font-size: .78rem; color: var(--muted); letter-spacing: .02em; }
+.tile .val { font: 600 1.3rem/1.3 var(--serif); font-variant-numeric: tabular-nums; }
+table { border-collapse: collapse; width: 100%; font-size: .92rem; font-variant-numeric: tabular-nums; }
+.tablewrap { overflow-x: auto; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { font-weight: 600; color: var(--muted); font-size: .85rem; }
+td.num { text-align: right; }
+.cap { color: var(--muted); font-size: .86rem; margin: 6px 2px 0; }
+dl { max-width: 72ch; } dt { font-weight: 600; margin-top: 10px; } dd { margin: 2px 0 0 0; color: var(--fg); }
+footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: .86rem; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>w·orient0 是什么：一个正负号怎么预告"有没有正面原像"</h1>
+  <p class="lead">给第一次接触这个问题的读者。w·orient0 是一个只取 +1、0、−1 的正负号，由一副轴线算出来，是这副轴线的一个常数：画布上几乎每一点的"正面原像数减背面原像数"都等于它。所以它是 +1 时，每一点都至少有一个正面原像。读完你应该能说出：orient0 是哪里的旋向，w 数的是什么东西绕了几圈，为什么两者相乘就是那个差。每一节都有一张能动手的图，所有数字由页面现算。</p>
+</header>
+
+<h2>0 · 先说问题出在哪</h2>
+<p>AnimeAn 是给动画师用的工具，核心功能叫 Auto Mapping：动画师画好一张图案，想把它贴到一个会弯、会动的区域上。做法是在图案所在的<b>纹理板</b>上画一对<b>导引线</b>（也叫轴线），一条偏横叫 <i class="v">H</i>，一条偏纵叫 <i class="v">V</i>，交于一点 <i class="v">O</i>；主画板上另画一对导引线对应过去。图案上每一点用两个弧长记位置，到了主画板按同样的弧长找回去。本页只讨论纹理板这一侧的问题，下文把纹理板所在的平面叫<b>画布平面</b>，两个弧长所在的平面叫<b>参数平面</b>。</p>
+<p>先定方向：每条导引线从首端画到末端，这是它的正方向。从 <i class="v">O</i> 沿 <i class="v">H</i> 往末端走弧长记正、往首端走记负，得到 <i class="v">ℓ<sub>h</sub></i>；沿 <i class="v">V</i> 同样得到 <i class="v">ℓ<sub>v</sub></i>。走过首端或末端之后，就分别沿首段的反方向或末段的方向直线走下去，这部分叫<b>外延</b>。把两个弧长变成画布上一点的规则是：从 <i class="v">O</i> 出发，先加上沿 <i class="v">H</i> 走的位移，再加上沿 <i class="v">V</i> 走的位移。</p>
+<div class="eq">hv(ℓ<sub>h</sub>, ℓ<sub>v</sub>) = O + (H(ℓ<sub>h</sub>) − O) + (V(ℓ<sub>v</sub>) − O) = H(ℓ<sub>h</sub>) + V(ℓ<sub>v</sub>) − O<small>H(ℓ) 表示从 O 沿 H 走弧长 ℓ 到达的点。当 ℓ<sub>h</sub>、ℓ<sub>v</sub> 取遍两条线各自的弧长范围时，hv 在画布上张出一张网格状的"面"。</small></div>
+<p>这是正向。实际工作里更常要反着来：画布上给一点 <i class="v">A</i>，问哪些 (ℓ<sub>h</sub>, ℓ<sub>v</sub>) 会落到 <i class="v">A</i>。这些 (ℓ<sub>h</sub>, ℓ<sub>v</sub>) 叫 <i class="v">A</i> 的<b>原像</b>。两条线都是直线时答案只有一个；线一弯，这张面可能在某处折叠，同一个 <i class="v">A</i> 就可能有 3 个原像，也可能一个都没有。</p>
+<p>折叠处的原像又分两种：面没翻过来的那层叫<b>正面</b>，翻过来的那层叫<b>背面</b>。"翻没翻过来"怎么用数学判断，是第 1、2 节的事；这里先记两个数：<i class="v">A</i> 的正面原像有 <i class="v">f</i> 个，背面原像有 <i class="v">b</i> 个（两者都把落在外延上的原像算在内）。<b>裁断规则</b>是：画布上一点连一个正面原像都没有，就不往这一点贴图案，把它裁掉。所以裁断要知道的是 <i class="v">f</i> 是不是 0。</p>
+<p>w·orient0 回答的是：<b>对这副轴线，<i class="v">f</i> − <i class="v">b</i> 是哪个常数。</b>它是 +1 时，每一点都有 <i class="v">f</i> ≥ 1，裁断根本不会发生；它是 −1 或 0 时，一定有些点 <i class="v">f</i> = 0，具体是哪些点仍要逐点算。算这个常数只用六个方向向量（<i class="v">H</i>、<i class="v">V</i> 的四个端点方向，加上 <i class="v">O</i> 处的两个切向）和一次乘法。"几乎每一点"的例外只有小格边界的像，第 4 节叫它们非正则点，它们只占零面积。</p>
+
+<div class="fig" id="figA">
+  <div class="controls">
+    <label>装置 <select id="rig">
+      <option value="straight">两条直线</option>
+      <option value="bow30">正弦弯 30 px</option>
+      <option value="bow60">正弦弯 60 px</option>
+      <option value="bow100" selected>正弦弯 100 px（折叠）</option>
+      <option value="teaching">教学模型</option>
+      <option value="hairpin">发夹形</option>
+      <option value="hook">钩形</option>
+    </select></label>
+    <label>交点 O <select id="oSel"><option value="0">第 1 个交点</option></select></label>
+    <label><input type="checkbox" id="showRays" checked> 画端射线</label>
+    <span class="cap">一套 H、V 叫一个"装置"（下文也叫"架"）。这个下拉框控制全页的图。在左图里移动或点击鼠标，右图显示那一点的全部原像。</span>
+  </div>
+  <div class="row">
+    <div class="pane"><h4>画布平面：导引线 H、V（箭头是正方向）张出的面。每对折线段张出一张平行四边形小格，<span class="sw f"></span>正面 <span class="sw b"></span>背面，叠两层颜色更深，<span class="sw c"></span>粗线是折缝；虚线小圈是 H、V 的其它交点（第 2 节）</h4><canvas id="cvA" aria-label="画布平面"></canvas></div>
+    <div class="pane"><h4>参数平面 (ℓ<sub>h</sub>, ℓ<sub>v</sub>)：矩形是画出的面，格线是折线的节点，矩形外是外延；圆点是原像，带虚线环的落在外延上。把鼠标放到一个小格上，左图高亮它的平行四边形</h4><canvas id="cvAp" aria-label="参数平面"></canvas></div>
+  </div>
+  <div class="readout" id="roA">把鼠标移到左图上。</div>
+  <div class="tiles">
+    <div class="tile"><div class="k">w（缠绕数，第 3 节）</div><div class="val" id="tW">—</div></div>
+    <div class="tile"><div class="k">orient0（O 处旋向，第 2 节）</div><div class="val" id="tO">—</div></div>
+    <div class="tile"><div class="k">w · orient0</div><div class="val" id="tP">—</div></div>
+    <div class="tile"><div class="k">正面数 f − 背面数 b</div><div class="val" id="tLaw">—</div></div>
+  </div>
+</div>
+<p class="cap">弯 100 px 的装置上（O 取默认的第 1 个交点），把鼠标放到面中间颜色最深的地方：共 5 个原像，面内 3 个（两正一背），外延上另有 2 个背面的。放到面外两条不同方向的端射线之间的"翼"里：只有 1 个背面原像。不论放哪，f − b 都是 −1。端射线是面的四角沿导引线首尾方向伸出的射线，每个方向画两条，中间的条带是边格的外延（第 4 节）。</p>
+
+<h2>1 · orient：每个小格自己的旋向</h2>
+<p>导引线在程序里是折线，从首端到末端依次分段编号。<i class="v">H</i> 的第 <i class="v">i</i> 段是一个向量 <i class="v">r<sub>i</sub></i>，<i class="v">V</i> 的第 <i class="v">j</i> 段是向量 <i class="v">q<sub>j</sub></i>，都指向弧长增大的方向。参数平面以 ℓ<sub>h</sub> 为横轴（向右）、ℓ<sub>v</sub> 为纵轴（向上），由这两段围成的小矩形叫<b>小格</b> (<i class="v">i</i>, <i class="v">j</i>)。按 hv 的规则，小格里的点映到画布上是"沿 <i class="v">r<sub>i</sub></i> 走一部分，再沿 <i class="v">q<sub>j</sub></i> 走一部分"，所以小格的像是一张以 <i class="v">r<sub>i</sub></i>、<i class="v">q<sub>j</sub></i> 为边的平行四边形。</p>
+<p>平行四边形有正反两面：先沿 <i class="v">r<sub>i</sub></i> 走再沿 <i class="v">q<sub>j</sub></i> 走，是向左拐还是向右拐。这由二维叉积的符号决定：</p>
+<div class="eq">orient(i, j) = sign( r<sub>i</sub> × q<sub>j</sub> ) = sign( r<sub>ix</sub> q<sub>jy</sub> − r<sub>iy</sub> q<sub>jx</sub> )<small>取 +1 或 −1。叉积为 0 说明两段平行，平行四边形压成一条线段，这种退化小格在求原像（判断 A 落在哪些小格的像里）时直接跳过。</small></div>
+<p>在参数平面里，每个小格都是"先向右再向上"，都朝同一面。像里如果相邻两个小格的 orient 不同，就是面在它们的公共边上<b>翻了过来</b>，那条边的像就是一条<b>折缝</b>（第 0 节左图的粗线）。</p>
+
+<div class="fig" id="figB">
+  <div class="row">
+    <div class="pane"><h4>拖动两个箭头的端点，看平行四边形和叉积的符号。弧线上的箭头是从 r 转到 q 的转向</h4><canvas id="cvB" aria-label="叉积与旋向"></canvas></div>
+    <div class="pane">
+      <div class="readout" id="roB"></div>
+      <p class="cap" style="margin-top:12px">本页按数学习惯把 y 轴画成向上，叉积为正等于逆时针。程序里画布的 y 向下，相当于镜像：每个小格的 orient、orient0 和下面的 w 会一起变号，所以 Σ orient = w 两边同时变号仍然成立，w·orient0 不变。</p>
+    </div>
+  </div>
+</div>
+
+<p>换个更直观的说法：参数平面是一张方格纸，hv 把它贴到画布上。orient = +1 的小格贴的是纸的正面，−1 的小格是纸翻过来、背面朝上，两种小格的交界就是折缝。下面这张图把这张纸沿 ℓ<sub>h</sub> 抬起来，叠在一起的几层就分开了；转到侧面看，能看清纸是怎么翻过去的。颜色按第 2 节的约定：<i class="v">O</i> 所在的小格算正面。</p>
+<div class="fig" id="figB3">
+  <div class="controls">
+    <label>抬起 <input type="range" id="lift" min="0" max="100" value="55"></label>
+    <label><input type="checkbox" id="ext3d" checked> 画外延（画到盖住 A 的全部原像）</label>
+    <button id="viewTop">俯视</button> <button id="viewSide">侧视</button> <button id="viewReset">复位</button>
+    <span class="rigname" id="rigB3"></span>
+  </div>
+  <div class="pane"><h4>拖动旋转，滚轮缩放，单击纸面或地面放探针 A（竖线，经过点中的那一点）。<span class="sw f"></span>纸的正面 <span class="sw b"></span>纸的背面；探针每穿过纸一次就是 A 的一个原像，圆点按穿过的那一面染色。画出的面用实色，外延用同样两色的淡色；外延本是无限的，这里画到盖住 A 的全部原像为止。粗线是导引线 H、V（颜色同第 0 节），细线是小格的边，<span class="sw c"></span>色的是折缝，地面上的小球是其它交点</h4><canvas id="cv3" class="wide3" aria-label="抬起的纸面"></canvas></div>
+  <div class="readout" id="ro3"></div>
+</div>
+<p class="cap">抬起量为 0 时就是第 0 节左图：几层纸压在同一个平面上。抬起后 z 与 ℓ<sub>h</sub> 成正比，只为把层分开，没有几何含义；V 留在地面上，H 跟着纸抬起。弯 100 px 的装置里纸在中间折了两道，面中央三层叠在一起，探针放到那里会穿过三层。</p>
+
+<h2>2 · orient0：以交点 O 为准，定哪一面算正面</h2>
+<p>"正面""背面"需要一个参照。最自然的参照是动画师亲手画的交点 <i class="v">O</i>：图案在 <i class="v">O</i> 附近肯定是正着贴的。于是</p>
+<div class="eq">orient0 = orient 在 O 所在的那个小格 (i<sub>0</sub>, j<sub>0</sub>) 上的值 = sign( r<sub>i₀</sub> × q<sub>j₀</sub> )<small>r<sub>i₀</sub>、q<sub>j₀</sub> 就是 H、V 在 O 处的切向。叉积 ≥ 0 记 +1。O 恰好落在折线节点上时，取弧长增大方向的后一段；本页假定两线在 O 处横截相交。</small></div>
+<p>一个原像落在小格 (<i class="v">i</i>, <i class="v">j</i>) 里，它是正面还是背面，就看 orient(<i class="v">i</i>, <i class="v">j</i>) 是否等于 orient0。第 0 节的 <i class="v">f</i>、<i class="v">b</i> 就是这样数出来的。</p>
+<p>orient0 只是个约定：把 <i class="v">H</i>、<i class="v">V</i> 的角色互换，所有小格的叉积一起变号，orient0 也变号，"同号不同号"一个都不变，正面背面的划分不受影响。第 0 节左图里 <i class="v">O</i> 处的小扇形画的就是 orient0：从 <i class="v">H</i> 的切向（蓝箭头方向）转到 <i class="v">V</i> 的切向（紫箭头方向），逆时针是 +1。</p>
+<p><b>O 在哪个交点。</b>弯得厉害的导引线会交不止一次：弯 60 px 和弯 100 px 的 <i class="v">H</i>、<i class="v">V</i> 各交三次（左下、中央、右上），第 0 节左图用虚线小圈标出了没被选中的交点。正式实现（pyfile/chord_intersect.py 的 polyline_crossing，与 auto_mapping 的 _polyline_intersection 是同一条规则）取<b>沿 <i class="v">H</i> 从首端数第一个碰到的交点</b>，本页默认照此。所以弯 100 px 的 <i class="v">O</i> 在左下角那个交点上，不在图中央最显眼的那个——这一点容易看错。中央颜色最深的地方是三层纸叠在一起，按默认的 <i class="v">O</i>，三层里两层正面一层背面。用第 0 节的"交点 O"下拉框换成中央的交点，全页跟着重算：orient0 变号，正面背面的颜色互换，w·orient0 从 −1 变成 +1。同一副轴线，<i class="v">O</i> 放在哪一层，哪一层就算正面，这正是"orient0 只是个约定"的意思；而 w 只看四个端向，换 <i class="v">O</i> 不变。</p>
+
+<h2>3 · w：四个端向连成的环绕了原点几圈</h2>
+<p>导引线两端外延的方向简称<b>端向</b>：<i class="v">H</i> 末段方向 <i class="v">d₁</i>、首段方向 <i class="v">d₀</i>，<i class="v">V</i> 的 <i class="v">e₁</i>、<i class="v">e₀</i>，都取单位长度，起点都放到同一个原点 (0, 0) 上比较。在参数平面上沿四条坐标轴走到无穷远，画布上的像分别朝四个方向跑出去：</p>
+<ul>
+  <li>ℓ<sub>h</sub> → +∞（东）：像沿 <i class="v">d₁</i></li>
+  <li>ℓ<sub>v</sub> → +∞（北）：像沿 <i class="v">e₁</i></li>
+  <li>ℓ<sub>h</sub> → −∞（西）：像沿 −<i class="v">d₀</i>（走过首端是沿首段反向直走）</li>
+  <li>ℓ<sub>v</sub> → −∞（南）：像沿 −<i class="v">e₀</i></li>
+</ul>
+<p>沿两条坐标轴之间的方向走呢？比如在第一象限朝 θ 方向走到距离 <i class="v">R</i>，ℓ<sub>h</sub>、ℓ<sub>v</sub> 都是正的大数，像大约是 <i class="v">R</i>(cos θ·<i class="v">d₁</i> + sin θ·<i class="v">e₁</i>)，是两个端向的正系数组合。两个向量的正系数组合只会落在它们之间小于 180° 的那个夹角里。所以在参数平面上绕一个很大的圈（逆时针：东、北、西、南），像的方向就依次扫过 <i class="v">d₁</i> → <i class="v">e₁</i> → −<i class="v">d₀</i> → −<i class="v">e₀</i> → 回到 <i class="v">d₁</i>，每一步走的是两个方向之间小于 180° 的那段弧。四段弧接起来是一个闭合的环，它绕原点转的净圈数就是<b>缠绕数 w</b>。</p>
+<div class="eq">w = ( 转角(d₁→e₁) + 转角(e₁→−d₀) + 转角(−d₀→−e₀) + 转角(−e₀→d₁) ) / 360°<small>转角逆时针记正、顺时针记负，每个取 (−180°, 180°) 里的那个。四步走完回到 d₁，总转角一定是 360° 的整数倍；每步不到 180°，总和的绝对值不到 720°，所以 w 只能是 −1、0 或 +1。</small></div>
+<p>w 只看四个端向，<b>与线中间怎么弯无关</b>。两条直线：<i class="v">d₀</i> = <i class="v">d₁</i> = <i class="v">d</i>，<i class="v">e₀</i> = <i class="v">e₁</i> = <i class="v">e</i>，环是 <i class="v">d</i>, <i class="v">e</i>, −<i class="v">d</i>, −<i class="v">e</i>，正好绕一圈，方向与 <i class="v">d</i> × <i class="v">e</i> 同号，而这个符号也正是 orient0。所以直线架上 w·orient0 = +1，永远如此。线一弯，端向就可能转到别的象限去，w 可能变号，也可能变成 0：比如环上四个向量都落在同一个半平面里，方向就在圆上来回折返，净圈数为 0。</p>
+<div class="note">有一种情形 w 没有定义：相邻两个端向正好反向（比如 <i class="v">d₁</i> 与 <i class="v">e₁</i> 相反）。这时参数平面第一象限里有一条射线，沿它走像不跑向无穷远而是缩回 <i class="v">O</i>，方向角突变 180°，不知该算 +180° 还是 −180°。页面显示"—"，后面的守恒式对这种架不成立。</div>
+
+<div class="fig" id="figC">
+  <div class="controls">
+    <label>绕参数平面的角度 θ <input type="range" id="theta" min="0" max="360" value="360" step="1"></label>
+    <button id="playTheta" type="button">重放</button>
+    <span class="cap" id="thetaVal">θ = 360°</span>
+    <span class="rigname" id="rigC"></span>
+  </div>
+  <div class="row">
+    <div class="pane"><h4>参数平面：一个点 P 沿大圆逆时针走，中央小矩形是画出的面</h4><canvas id="cvCp" aria-label="参数平面大圆"></canvas></div>
+    <div class="pane"><h4>P 的像 hv(P) 相对 O 的方向（蓝点）和四个端向。圆外的四段灰弧是环的四步转角；轨迹画成螺旋线是为了看清圈数，半径没有含义</h4><canvas id="cvCd" aria-label="像的方向"></canvas></div>
+  </div>
+  <div class="readout" id="roC"></div>
+  <p class="cap">圈要多大才够：大到把 O 的全部原像都围在里面（页面按这个条件取半径）。半径有限，所以 P 在东、北、西、南四个方向时蓝点只是靠近四个端向，不正好落在上面。弯 100 px 的装置看着怪，是因为它的四个端向两两几乎重合：H 两端都朝右下斜、V 两端都朝左上斜，d₁ 与 −e₀、e₁ 与 −d₀ 各只差 16°，环就成了顺时针摆 163°、走 16°、再摆 163°、再走 16°，合起来顺时针一圈，w = −1。切到弯 30 px 或两条直线对比，四个端向分在四个方向，环就是逆时针规规矩矩绕一圈。</p>
+</div>
+
+<h2>4 · 守恒式：所有原像的旋向之和恒等于 w</h2>
+<p>先把 orient 和 w 连起来（第 5 节再代入 orient0）。要证的是：对画布上任何一个<b>正则点</b> <i class="v">A</i>（不落在任何小格边的像、顶点的像和退化小格的像上，剩下的点都是正则点），</p>
+<div class="eq">Σ<sub>A 的全部原像</sub> orient = w</div>
+<p>这里的"小格"包括外延：参数平面在矩形的面之外被划成四个<b>角格</b>（两个弧长都超出范围）和四条<b>边格</b>（只有一个超出），它们是无限大的小格，整个参数平面就这样无缝拼起来，连面最外圈的边也是面内小格和边格的公共边。外延是沿末段（或首段反向）直走，所以边格、角格的 orient 和它贴着的那个面内小格相同。分两步证，都是初等的。</p>
+
+<h3>第一步：离得很远的点，直接数</h3>
+<p>取一个方向 <i class="v">û</i>，不等于四个端向中的任何一个，把 <i class="v">A</i> 放到从 <i class="v">O</i> 沿 <i class="v">û</i> 走很远的地方。四条边格的外延是沿端向伸出去的半无限条带，宽度有限；<i class="v">A</i> 的方向避开了端向，走得够远后到每条条带的距离都趋于无穷，碰不到它们，也碰不到有限大的面。于是 <i class="v">A</i> 的原像只能在四个角格里。角格 (末, 末) 是两条线都走过了末端，像是以 <i class="v">d₁</i>、<i class="v">e₁</i> 为两边、从面的一角张开的<b>锥</b>；另外三个角格同样是锥，两边按环的顺序分别是 (<i class="v">e₁</i>, −<i class="v">d₀</i>)、(−<i class="v">d₀</i>, −<i class="v">e₀</i>)、(−<i class="v">e₀</i>, <i class="v">d₁</i>)。</p>
+<p>每个锥在远处恰好覆盖它两条边之间那段小于 180° 的弧里的方向。<i class="v">A</i> 落在某个锥里，就在那个角格里有且只有一个原像。这个角格的 orient 按第 1 节是"H 的段 × V 的段"，而<b>按环的顺序取锥的两条边做叉积，得到的正是同一个符号</b>，四个角格逐一验算：</p>
+<ul>
+  <li>(末, 末)：<i class="v">d₁</i> × <i class="v">e₁</i>，就是 orient(末, 末)。</li>
+  <li>(首, 末)：<i class="v">e₁</i> × (−<i class="v">d₀</i>) = −(<i class="v">e₁</i> × <i class="v">d₀</i>) = <i class="v">d₀</i> × <i class="v">e₁</i> = orient(首, 末)。</li>
+  <li>(首, 首)：(−<i class="v">d₀</i>) × (−<i class="v">e₀</i>) = <i class="v">d₀</i> × <i class="v">e₀</i> = orient(首, 首)。</li>
+  <li>(末, 首)：(−<i class="v">e₀</i>) × <i class="v">d₁</i> = −(<i class="v">e₀</i> × <i class="v">d₁</i>) = <i class="v">d₁</i> × <i class="v">e₀</i> = orient(末, 首)。</li>
+</ul>
+<p>往反方向外延时参数也朝负方向走，两个负号抵消，所以每个锥的 orient 正好等于环上对应那段弧的转向：逆时针 +1，顺时针 −1。于是</p>
+<div class="eq">远处的 Σ orient = 环上盖住 û 的各段弧的转向之和 = 环从 û 这根射线上净穿过的次数 = w<small>环每逆时针绕原点一整圈，就从任何一根射线上净穿过一次（来回穿过的一正一负抵消），所以"射线净穿过次数"就是总转角除以 360°。û 避开端向也保证了射线不经过环的顶点。</small></div>
+
+<div class="fig" id="figD">
+  <div class="controls"><span class="rigname" id="rigD"></span></div>
+  <div class="row">
+    <div class="pane"><h4>拖动远处的点 A（蓝点）：亮起的锥是 A 所在的角格外延，各带自己的 orient；细虚线是从 O 指向 A 的射线</h4><canvas id="cvD" aria-label="四个角锥"></canvas></div>
+    <div class="pane"><h4>同一时刻的环：A 的方向是一根射线，哪些弧盖住了它。四段弧错开半径画，是为了看清重叠</h4><canvas id="cvDl" aria-label="环与射线"></canvas></div>
+  </div>
+  <div class="readout" id="roD"></div>
+  <p class="cap">锥的顶点在面的四角，射线从 O 出发，两者在有限距离上有一点偏差，A 越远越一致；A 离面近时锥的计数失效（边格或面也有原像），但精确求交得到的 Σ orient 不变。本节还没讲正背面，颜色按第 5 节的约定预先涂好了。</p>
+</div>
+
+<h3>第二步：从远处往里走，和不会变</h3>
+<p>让 <i class="v">A</i> 从远处连续地移到任何位置。它的原像清单只在 <i class="v">A</i> 穿过某个小格边的像时才会变，而相邻两格共用一条边，只有两种情况：</p>
+<ul>
+  <li><b>两格旋向相同。</b>两张平行四边形在公共边的像的两侧，<i class="v">A</i> 穿过去时原像从一格搬进另一格。个数不变，符号不变。</li>
+  <li><b>两格旋向相反（折缝）。</b>两张平行四边形叠在公共边的像的<b>同一侧</b>，像一张纸折过来。<i class="v">A</i> 从没被这两格盖住的一侧穿到被盖住的一侧，一下多出两个原像，一个 +1 一个 −1；反向穿过就一起消失。和不变。</li>
+</ul>
+<p>"两侧"还是"同一侧"为什么由旋向决定：以竖的公共边为例，它的方向是 <i class="v">q<sub>j</sub></i>。右边小格 (<i class="v">i</i>, <i class="v">j</i>) 的点是从这条边再沿 +<i class="v">r<sub>i</sub></i> 走过去的，相对这条边落在 sign(<i class="v">r<sub>i</sub></i> × <i class="v">q<sub>j</sub></i>) = orient(<i class="v">i</i>, <i class="v">j</i>) 那一侧；左边小格 (<i class="v">i</i>−1, <i class="v">j</i>) 的点是沿 −<i class="v">r<sub>i−1</sub></i> 走过去的，落在 −orient(<i class="v">i</i>−1, <i class="v">j</i>) 那一侧。两格同号就分在两侧，异号就叠在同一侧。横的公共边同理。</p>
+<p>略过的情形：小格顶点的像是孤立的点，退化小格的像是线段或射线，几条边的像也可能重合（穿过时各对相邻格的变化叠加，和仍不变），绕开它们走就行；这就是要求 <i class="v">A</i> 是正则点的原因。于是 Σ orient 在整个平面上处处相同，等于远处算出的 w。</p>
+<p class="cap">这条性质在数学里叫映射的拓扑度（Brouwer 度），"远处的圈数等于每一点的带符号覆盖次数"是它的基本定理。这里的映射逐格仿射（每个小格内部是一个线性变换加平移），所以两步都能手算。</p>
+
+<div class="fig" id="figE">
+  <div class="controls">
+    <label>A 沿虚线从左走到右 <input type="range" id="path" min="0" max="1000" value="500" step="1"></label>
+    <span class="rigname" id="rigE"></span>
+  </div>
+  <div class="row">
+    <div class="pane"><h4>画布平面：A 的路线（蓝虚线）穿过折缝（粗线）</h4><canvas id="cvE" aria-label="穿折缝的路线"></canvas></div>
+    <div class="pane"><h4>参数平面：当前 A 的原像</h4><canvas id="cvEp" aria-label="参数平面原像"></canvas></div>
+  </div>
+  <canvas id="cvEs" class="wide" style="margin-top:12px" aria-label="原像个数与带符号和沿路线的变化"></canvas>
+  <div class="readout" id="roE"></div>
+  <p class="cap">下方曲线：灰线是原像总个数（含外延），每次跨过折缝的像跳 2；蓝线是 Σ orient，始终是一条平线。穿过面和外延的分界时原像只是从外延搬进面内，总数不变。</p>
+</div>
+
+<h2>5 · 换成正面背面，就是 f − b = w·orient0</h2>
+<p>正面原像的 orient 都等于 orient0，背面的都等于 −orient0。把守恒式按正背拆开：</p>
+<div class="eq">f·orient0 + b·(−orient0) = w　⟹　(f − b)·orient0 = w　⟹　f − b = w·orient0<small>最后一步两边乘 orient0，因为 orient0² = 1，乘和除是一回事。</small></div>
+<p>w·orient0 只能取三个值，每个值说一件事（<i class="v">f</i>、<i class="v">b</i> 都计入外延上的原像；软件允许图案沿外延自然延伸，所以正面原像落在外延上也算有）：</p>
+<dl>
+  <dt><span class="sw f"></span>w·orient0 = +1：f = b + 1</dt>
+  <dd>任何正则点至少有一个正面原像。弯 30、弯 60、教学模型、两条直线都是。这种架上<b>裁断不会发生</b>，面上面外都不会。非正则点也不例外：正面小格（含外延）像的并集是有限个闭集的并，是闭集，又包含了稠密的正则点，所以就是整个平面。</dd>
+  <dt><span class="sw b"></span>w·orient0 = −1：b = f + 1</dt>
+  <dd>每个正则点至少有一个背面原像，而正面原像可以是 0 个。弯 100 px 的正弦架就是（w = −1，orient0 = +1）：面外两条端射线之间的"翼"里，点只有一个背面原像，会被裁掉。面上的点（至少有一个原像落在面内的点）实测都至少有一个正面原像，但其中一部分的正面原像在外延上；这是实测，不是守恒式保证的。</dd>
+  <dt>w·orient0 = 0：f = b</dt>
+  <dd>正面背面成对出现，可以都是 0，也就是一个原像都没有。发夹形和钩形是这种：钩形架在右侧折缝边界（画布 x = 160）之外一个原像都没有。</dd>
+</dl>
+<p>−1 和 0 的架上"一定有点被裁掉"也能从环上看出来。设 orient0 = +1，环上逆时针转的弧总共转了 <i class="v">P</i> 度，顺时针的转了 <i class="v">N</i> 度，那么 <i class="v">P</i> − <i class="v">N</i> = 360°·w，<i class="v">P</i> + <i class="v">N</i> &lt; 720°。w = −1 时 <i class="v">P</i> &lt; 180°，w = 0 时 <i class="v">P</i> &lt; 360°：正面的锥盖不满所有方向，没盖到的方向上远处的点 <i class="v">f</i> = 0。这只保证远处某个扇区里的点被裁掉，不是整个面外。</p>
+
+<h2>6 · 实测：每套装置随机 1500 个点</h2>
+<div class="tablewrap">
+<table id="tbl">
+  <thead><tr><th>装置</th><th>w</th><th>orient0</th><th>w·orient0</th><th>f − b 全部符合</th><th>面上：有正面原像</th><th>面上：面内就有正面原像</th><th>面外：有正面原像</th><th>一个原像都没有</th></tr></thead>
+  <tbody></tbody>
+</table>
+</div>
+<p class="cap">点取在交点 O 周围 ±300 px 的方块里，O 按正式实现的规则取第 1 个交点（第 2 节）。"面上"指至少有一个原像落在画出的面内；"面外"指没有任何原像落在面内（原像全在外延上，或没有原像）。w·orient0 = +1 的架两列都是 100%；弯 100 px 的面外只有约三成有正面原像；0 的架有大片点没有任何原像。</p>
+
+<h2>7 · 这个符号的用处和边界</h2>
+<ul>
+  <li><b>画完就能判断。</b>六个向量（四个端向、O 处两条切向）定出 w 和 orient0，不用解任何一点。+1 的架整条裁断计算可以跳过；−1 或 0 的架可以提前提醒"轴线两端折回，面外的图案会有一部分被裁掉"。</li>
+  <li><b>裁断判据有了精确形式。</b>现行实现用牛顿迭代逐点反解，靠"残差不超过阈值"判断该不该裁。+1 的架上牛顿解不出的点并不是没有正面原像，只是没收敛到；换成"存在正面原像"就不会误裁。−1 或 0 的架上，面外确实有一部分点没有正面原像，两种判据在那里都会裁。</li>
+  <li><b>可以当求解器的检验。</b>任何反解算法给出的原像清单，旋向之和必须等于 w；多找一个、漏掉一个都会破坏它。</li>
+  <li><b>边界。</b>只对正则点成立，折缝的像本身上原像会合并；只说"存在"，不说该取哪一个，取哪支由裁断规则定（面上优先、离初值最近）；w 没定义（相邻端向反向）时不适用；它讨论的是纹理板轴线的反解，主画板轴线的折叠另有判定。</li>
+</ul>
+
+<h2>术语对照</h2>
+<dl>
+  <dt>导引线 / 轴线</dt><dd>动画师画的两条折线 H、V，交于 O，各有从首端到末端的正方向。</dd>
+  <dt>画布平面 / 参数平面</dt><dd>本页里画布平面指纹理板所在的平面，H、V 画在上面；参数平面是两个弧长 (ℓ<sub>h</sub>, ℓ<sub>v</sub>) 的平面。</dd>
+  <dt>面（sheet）</dt><dd>参数平面上 ℓ<sub>h</sub>、ℓ<sub>v</sub> 都在画出的线的范围内的那个矩形，以及它在画布上的像。</dd>
+  <dt>外延</dt><dd>走过线的末端沿末段直走、走过首端沿首段反向直走的部分；hv 靠它定义在整个参数平面上。参数平面在面之外分成四个角格和四条边格。</dd>
+  <dt>小格（cell）</dt><dd>H 的第 i 段与 V 的第 j 段围成的参数矩形；像是一张平行四边形。</dd>
+  <dt>原像</dt><dd>映到同一画布点 A 的全部参数点 (ℓ<sub>h</sub>, ℓ<sub>v</sub>)。</dd>
+  <dt>旋向 orient</dt><dd>一个小格的平行四边形朝哪一面：两边向量叉积的符号。</dd>
+  <dt>正则点</dt><dd>不落在任何小格边的像、顶点的像或退化小格的像上的画布点。其余点只占零面积。</dd>
+  <dt>缠绕数 w</dt><dd>四个端向依次相连的闭合环绕原点的净圈数，取 −1、0、+1。</dd>
+  <dt>裁断</dt><dd>软件对没有正面原像的点不贴图案。</dd>
+</dl>
+
+<footer>导引线取 24 段折线（钩形的直线 V 只有 1 段，弧 30 段）。装置与同目录的 fold_severing_map.html、fold_inverse_explainer.html 相同："教学模型"是 AnimeAn 论文图 3 底图那组轴线的参数化，"钩形"是论文表 1 的轴线（paper/verify/verify_claims.py 第 8 节）；读者不必查这些文件。orient0、w 和段对求交的定义与正式实现 pyfile/chord_intersect.py（orient0 在第 183 行）、verify_section_numbers.py 的 winding() 一致；页面里的去重容差放宽到 1e-4 px，避免格边附近的点被算两次。第 1 节的立体图用 three.js r128 画，不联网时只有这一张图不显示。</footer>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function () {
+  'use strict';
+  // ---------------------------------------------------------------- geometry (mirrors pyfile/chord_intersect.py)
+  // EPS is a relative tolerance on the segment parameters; DEDUP is in arc px and must exceed EPS * longest segment,
+  // or a regular point next to a node image is reported by both segments (the Python module keeps 1e-6).
+  const EPS = 1e-7, DEDUP = 1e-4, N = 24;
+  const cross = (ax, ay, bx, by) => ax * by - ay * bx;
+  const cum = pts => { const c = [0]; for (let k = 1; k < pts.length; k++) c.push(c[k - 1] + Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1])); return c; };
+  const unit = (p, q) => { const dx = q[0] - p[0], dy = q[1] - p[1], n = Math.hypot(dx, dy) || 1; return [dx / n, dy / n]; };
+  function sinGuide(amp, axis) { const o = []; for (let k = 0; k <= N; k++) { const s = -200 + 400 * k / N, b = amp * Math.sin(2 * Math.PI * s / 300); o.push(axis === 'h' ? [s, b] : [b, s]); } return o; }
+  function teaching() {
+    const EH = [0.08, 0.86], EV = [0.86, -0.06], CH = [-0.72, -0.30], CV = [-0.40, 0.46], H = [], V = [];
+    for (let k = 0; k <= N; k++) { const x = -1 + 2 * k / N, psi = x >= 0 ? x - x ** 3 : 0.45 * (x - x ** 3); H.push([(EH[0] * x + CH[0] * psi) * 400, (EH[1] * x + CH[1] * psi) * 400]); V.push([(EV[0] * x + CV[0] * psi) * 400, (EV[1] * x + CV[1] * psi) * 400]); }
+    return [H, V];
+  }
+  function hairpin() { const h = [], v = []; for (let k = 0; k <= N; k++) { const x = -200 + 400 * k / N; h.push([x, 120 * (1 - (x / 200) ** 2)]); const y = x; v.push([-120 * (1 - (y / 200) ** 2) + 60, y]); } return [h, v]; }
+  function hook() { const h = [[-300, 0], [100, 0]]; for (let k = 1; k <= 30; k++) { const th = Math.PI * 150 / 180 * k / 30; h.push([100 + 60 * Math.sin(th), 60 * (1 - Math.cos(th))]); } return [h, [[0, -200], [0, 200]]]; }
+  const rigs = {
+    straight: { name: '两条直线', make: () => [sinGuide(0, 'h'), sinGuide(0, 'v')], path: [[-260, 40], [260, 40]] },
+    bow30: { name: '弯 30 px', make: () => [sinGuide(30, 'h'), sinGuide(30, 'v')], path: [[-260, 40], [260, 40]] },
+    bow60: { name: '弯 60 px', make: () => [sinGuide(60, 'h'), sinGuide(60, 'v')], path: [[-260, 40], [260, 40]] },
+    bow100: { name: '弯 100 px（折叠）', make: () => [sinGuide(100, 'h'), sinGuide(100, 'v')], path: [[-300, 80], [300, 80]] },
+    teaching: { name: '教学模型', make: teaching, path: [[-300, 100], [300, 100]] },
+    hairpin: { name: '发夹形', make: hairpin, path: [[-300, 60], [300, 60]] },
+    hook: { name: '钩形', make: hook, path: [[-200, 40], [260, 40]] },
+  };
+  function segI(p, p2, q, q2) { const rx = p2[0] - p[0], ry = p2[1] - p[1], sx = q2[0] - q[0], sy = q2[1] - q[1], den = rx * sy - ry * sx; if (Math.abs(den) <= 1e-12) return null; const dx = q[0] - p[0], dy = q[1] - p[1]; return [(dx * sy - dy * sx) / den, (dx * ry - dy * rx) / den]; }
+  // every crossing of the two guides, in H order (hits that coincide at a shared node merged). The formal code
+  // (chord_intersect.polyline_crossing = auto_mapping._polyline_intersection) takes the first one; build() can take another.
+  function crossings(a, b) {
+    const ca = cum(a), cb = cum(b), out = [];
+    for (let i = 0; i < a.length - 1; i++) for (let j = 0; j < b.length - 1; j++) { const h = segI(a[i], a[i + 1], b[j], b[j + 1]); if (h && h[0] >= -EPS && h[0] <= 1 + EPS && h[1] >= -EPS && h[1] <= 1 + EPS) { const t = Math.min(Math.max(h[0], 0), 1), u = Math.min(Math.max(h[1], 0), 1); const c = { o: [a[i][0] + (a[i + 1][0] - a[i][0]) * t, a[i][1] + (a[i + 1][1] - a[i][1]) * t], ha: ca[i] + (ca[i + 1] - ca[i]) * t, va: cb[j] + (cb[j + 1] - cb[j]) * u }; if (!out.some(q => Math.hypot(q.o[0] - c.o[0], q.o[1] - c.o[1]) < 1e-3)) out.push(c); } }
+    return out.length ? out : [{ o: [0, 0], ha: 0, va: 0 }];
+  }
+  function build(h, v, which) {
+    const F = { h, v, hc: cum(h), vc: cum(v), nh: h.length - 1, nv: v.length - 1 };
+    F.crossList = crossings(h, v); F.oIndex = Math.min(which || 0, F.crossList.length - 1);
+    Object.assign(F, F.crossList[F.oIndex]);
+    F.r = []; for (let i = 0; i < F.nh; i++) F.r.push([h[i + 1][0] - h[i][0], h[i + 1][1] - h[i][1]]);
+    F.q = []; for (let j = 0; j < F.nv; j++) F.q.push([v[j + 1][0] - v[j][0], v[j + 1][1] - v[j][1]]);
+    let i0 = 0; while (i0 < F.nh - 1 && F.hc[i0 + 1] <= F.ha) i0++;
+    let j0 = 0; while (j0 < F.nv - 1 && F.vc[j0 + 1] <= F.va) j0++;
+    F.i0 = i0; F.j0 = j0;
+    F.orient0 = cross(F.r[i0][0], F.r[i0][1], F.q[j0][0], F.q[j0][1]) >= 0 ? 1 : -1;
+    F.cells = []; F.omap = [];
+    for (let i = 0; i < F.nh; i++) { F.omap.push(new Array(F.nv).fill(0)); for (let j = 0; j < F.nv; j++) {
+      const r = F.r[i], q = F.q[j], den = r[0] * (-q[1]) - r[1] * (-q[0]);
+      if (Math.abs(den) <= 1e-12 * (Math.hypot(r[0], r[1]) * Math.hypot(q[0], q[1]) + 1e-300)) continue;
+      const orient = cross(r[0], r[1], q[0], q[1]) >= 0 ? 1 : -1; F.omap[i][j] = orient;
+      F.cells.push({ i, j, nx: h[i][0] + v[j][0], ny: h[i][1] + v[j][1], rx: r[0], ry: r[1], sx: -q[0], sy: -q[1], den, orient });
+    } }
+    // creases: shared edges of adjacent cells with opposite orient, as canvas segments
+    const O = F.o; F.creases = [];
+    for (let i = 0; i < F.nh; i++) for (let j = 0; j < F.nv; j++) {
+      const o = F.omap[i][j]; if (!o) continue;
+      if (i + 1 < F.nh && F.omap[i + 1][j] === -o) F.creases.push([[h[i + 1][0] + v[j][0] - O[0], h[i + 1][1] + v[j][1] - O[1]], [h[i + 1][0] + v[j + 1][0] - O[0], h[i + 1][1] + v[j + 1][1] - O[1]]]);
+      if (j + 1 < F.nv && F.omap[i][j + 1] === -o) F.creases.push([[h[i][0] + v[j + 1][0] - O[0], h[i][1] + v[j + 1][1] - O[1]], [h[i + 1][0] + v[j + 1][0] - O[0], h[i + 1][1] + v[j + 1][1] - O[1]]]);
+    }
+    const d0 = unit(h[0], h[1]), d1 = unit(h[h.length - 2], h[h.length - 1]), e0 = unit(v[0], v[1]), e1 = unit(v[v.length - 2], v[v.length - 1]);
+    F.d0 = d0; F.d1 = d1; F.e0 = e0; F.e1 = e1;
+    F.loop = [d1, e1, [-d0[0], -d0[1]], [-e0[0], -e0[1]]]; F.loopNames = ['d₁', 'e₁', '−d₀', '−e₀'];
+    F.turns = []; let tot = 0; F.w = 0;
+    for (let k = 0; k < 4; k++) { const a = F.loop[k], b = F.loop[(k + 1) % 4], cr = cross(a[0], a[1], b[0], b[1]), dot = a[0] * b[0] + a[1] * b[1]; if (Math.abs(cr) < 1e-12 && dot < 0) { F.w = null; } const ang = Math.atan2(cr, dot); F.turns.push(ang); tot += ang; }
+    if (F.w !== null) F.w = Math.round(tot / (2 * Math.PI));
+    // the four corner cones of the extension: apex (canvas coords), the two edges in loop order, the cell's orient
+    const L = h.length - 1, M = v.length - 1;
+    const apex = (a, b) => [h[a][0] + v[b][0] - O[0], h[a][1] + v[b][1] - O[1]];
+    F.cones = [
+      { name: '角格 (末, 末)', apex: apex(L, M), a: d1, b: e1, orient: cross(d1[0], d1[1], e1[0], e1[1]) >= 0 ? 1 : -1 },
+      { name: '角格 (首, 末)', apex: apex(0, M), a: e1, b: [-d0[0], -d0[1]], orient: cross(d0[0], d0[1], e1[0], e1[1]) >= 0 ? 1 : -1 },
+      { name: '角格 (首, 首)', apex: apex(0, 0), a: [-d0[0], -d0[1]], b: [-e0[0], -e0[1]], orient: cross(d0[0], d0[1], e0[0], e0[1]) >= 0 ? 1 : -1 },
+      { name: '角格 (末, 首)', apex: apex(L, 0), a: [-e0[0], -e0[1]], b: d1, orient: cross(d1[0], d1[1], e0[0], e0[1]) >= 0 ? 1 : -1 },
+    ];
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const hp of h) for (const vp of v) { const x = hp[0] + vp[0] - O[0], y = hp[1] + vp[1] - O[1]; x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+    F.bbox = [x0, y0, x1, y1];
+    return F;
+  }
+  function pointAt(pts, c, arc) { let i = 0; while (i < pts.length - 2 && c[i + 1] <= arc) i++; const span = c[i + 1] - c[i]; const a = span > 0 ? (arc - c[i]) / span : 0; return [pts[i][0] + (pts[i + 1][0] - pts[i][0]) * a, pts[i][1] + (pts[i + 1][1] - pts[i][1]) * a]; }
+  function hv(F, lh, lv) { const ph = pointAt(F.h, F.hc, F.ha + lh), pv = pointAt(F.v, F.vc, F.va + lv); return [ph[0] + pv[0] - F.o[0], ph[1] + pv[1] - F.o[1]]; }
+  // every crossing of one point: rows {i, j, lh, lv, orient, onSheet}
+  function solve(F, A) {
+    const cx = A[0] + F.o[0], cy = A[1] + F.o[1], lastI = F.nh - 1, lastJ = F.nv - 1, rows = [];
+    for (const c of F.cells) {
+      const dx = cx - c.nx, dy = cy - c.ny, t = (dx * c.sy - dy * c.sx) / c.den;
+      if (t < (c.i === 0 ? -Infinity : -EPS) || t > (c.i === lastI ? Infinity : 1 + EPS)) continue;
+      const u = (dx * c.ry - dy * c.rx) / c.den;
+      if (u < (c.j === 0 ? -Infinity : -EPS) || u > (c.j === lastJ ? Infinity : 1 + EPS)) continue;
+      const onSheet = t >= -EPS && t <= 1 + EPS && u >= -EPS && u <= 1 + EPS;
+      let tt = t, uu = u; if (tt < 0) { if (c.i > 0) tt = 0; } else if (tt > 1 && c.i < lastI) tt = 1; if (uu < 0) { if (c.j > 0) uu = 0; } else if (uu > 1 && c.j < lastJ) uu = 1;
+      rows.push({ i: c.i, j: c.j, lh: F.hc[c.i] + tt * (F.hc[c.i + 1] - F.hc[c.i]) - F.ha, lv: F.vc[c.j] + uu * (F.vc[c.j + 1] - F.vc[c.j]) - F.va, orient: c.orient, onSheet });
+    }
+    rows.sort((a, b) => a.lh - b.lh || a.lv - b.lv);
+    const kept = []; for (const r of rows) { const p = kept[kept.length - 1]; if (p && Math.abs(r.lh - p.lh) < DEDUP && Math.abs(r.lv - p.lv) < DEDUP) continue; kept.push(r); }
+    let f = 0, b = 0, fs = 0, anySheet = false, sum = 0;
+    for (const r of kept) { if (r.orient === F.orient0) { f++; if (r.onSheet) fs++; } else b++; if (r.onSheet) anySheet = true; sum += r.orient; }
+    return { f, b, fs, sum, anySheet, rows: kept };
+  }
+
+  // ---------------------------------------------------------------- drawing helpers
+  const $ = id => document.getElementById(id);
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const C = {};
+  function readTheme() { for (const k of ['fg', 'muted', 'line', 'accent', 'front', 'back', 'hline', 'vline', 'panel', 'crease']) C[k] = css('--' + k); }
+  function fit(cv) { const dpr = window.devicePixelRatio || 1, w = cv.clientWidth || 300, h = cv.clientHeight || 300; if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); } const ctx = cv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h); return { ctx, w, h }; }
+  function mapper(box, w, h) { const s = Math.min(w / (box[2] - box[0]), h / (box[3] - box[1])), ox = (w - (box[2] - box[0]) * s) / 2, oy = (h - (box[3] - box[1]) * s) / 2; return { s, to: (x, y) => [ox + (x - box[0]) * s, h - (oy + (y - box[1]) * s)], from: (px, py) => [box[0] + (px - ox) / s, box[1] + (h - py - oy) / s] }; }
+  const sgn = v => v > 0 ? '+1' : v < 0 ? '−1' : '0';
+  const wtxt = F => F.w === null ? '—' : sgn(F.w);
+  const prodtxt = F => F.w === null ? '—' : sgn(F.w * F.orient0);
+  function hexA(hex, a) { const m = /^#([0-9a-f]{6})$/i.exec(hex); if (!m) return hex; const n = parseInt(m[1], 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; }
+  function head(ctx, x1, y1, ang, color) { const L = 9; ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x1 - L * Math.cos(ang - 0.4), y1 - L * Math.sin(ang - 0.4)); ctx.lineTo(x1 - L * Math.cos(ang + 0.4), y1 - L * Math.sin(ang + 0.4)); ctx.closePath(); ctx.fill(); }
+  function arrow(ctx, x0, y0, x1, y1, color, width) { ctx.strokeStyle = color; ctx.lineWidth = width || 2; ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke(); head(ctx, x1, y1, Math.atan2(y1 - y0, x1 - x0), color); }
+  function label(ctx, text, x, y, color, align) { ctx.fillStyle = color || C.fg; ctx.font = '12px ' + css('--sans'); ctx.textAlign = align || 'left'; ctx.textBaseline = 'middle'; ctx.fillText(text, x, y); }
+  function polyline(ctx, pts, m, color, width, dash) { ctx.strokeStyle = color; ctx.lineWidth = width; ctx.setLineDash(dash || []); ctx.beginPath(); pts.forEach((p, k) => { const [x, y] = m.to(p[0], p[1]); if (k) ctx.lineTo(x, y); else ctx.moveTo(x, y); }); ctx.stroke(); ctx.setLineDash([]); }
+  function guideArrow(ctx, pts, m, color) { const a = pts[pts.length - 2], b = pts[pts.length - 1], [x0, y0] = m.to(a[0], a[1]), [x1, y1] = m.to(b[0], b[1]); head(ctx, x1, y1, Math.atan2(y1 - y0, x1 - x0), color); }
+  function dot(ctx, x, y, r, color, stroke) { ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI); ctx.fill(); if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 1.5; ctx.stroke(); } }
+  // arc on screen from direction angle a0 to a1 (math angles, y up), the short way given by ccw flag
+  function fanArc(ctx, cx, cy, rad, a0, a1, ccw) { ctx.beginPath(); ctx.arc(cx, cy, rad, -a0, -a1, ccw); ctx.stroke(); }
+
+  function drawCanvasPlane(ctx, w, h, F, m, opts) {
+    opts = opts || {};
+    const O = F.o;
+    for (const c of F.cells) {
+      const px = c.nx - O[0], py = c.ny - O[1];
+      const pts = [[px, py], [px + c.rx, py + c.ry], [px + c.rx - c.sx, py + c.ry - c.sy], [px - c.sx, py - c.sy]];
+      ctx.fillStyle = hexA(c.orient === F.orient0 ? C.front : C.back, opts.hl && opts.hl.i === c.i && opts.hl.j === c.j ? 0.9 : 0.26);
+      ctx.beginPath(); pts.forEach((p, k) => { const [x, y] = m.to(p[0], p[1]); if (k) ctx.lineTo(x, y); else ctx.moveTo(x, y); }); ctx.closePath(); ctx.fill();
+    }
+    for (const seg of F.creases) polyline(ctx, seg, m, C.crease, 3);
+    if (opts.rays) {
+      ctx.setLineDash([4, 5]); ctx.lineWidth = 1; ctx.strokeStyle = C.muted;
+      for (const cn of F.cones) for (const d of [cn.a, cn.b]) { const [x0, y0] = m.to(cn.apex[0], cn.apex[1]), [x1, y1] = m.to(cn.apex[0] + d[0] * 2000, cn.apex[1] + d[1] * 2000); ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke(); }
+      ctx.setLineDash([]);
+    }
+    polyline(ctx, F.h, m, C.hline, 2.2); polyline(ctx, F.v, m, C.vline, 2.2);
+    guideArrow(ctx, F.h, m, C.hline); guideArrow(ctx, F.v, m, C.vline);
+    crossRings(ctx, F, m, 6);
+    const [ox, oy] = m.to(O[0], O[1]);
+    const rr = F.r[F.i0], qq = F.q[F.j0], a0 = Math.atan2(rr[1], rr[0]), a1 = Math.atan2(qq[1], qq[0]);
+    ctx.fillStyle = hexA(C.accent, 0.35); ctx.beginPath(); ctx.moveTo(ox, oy); ctx.arc(ox, oy, 18, -a0, -a1, F.orient0 > 0); ctx.closePath(); ctx.fill();
+    dot(ctx, ox, oy, 4, C.fg);
+    label(ctx, 'O', ox + 8, oy - 12, C.fg);
+    label(ctx, 'H', ...m.to(F.h[F.h.length - 1][0], F.h[F.h.length - 1][1]).map((v, k) => v + (k ? -10 : 6)), C.hline);
+    label(ctx, 'V', ...m.to(F.v[F.v.length - 1][0], F.v[F.v.length - 1][1]).map((v, k) => v + (k ? -10 : 6)), C.vline);
+  }
+  function crossRings(ctx, F, m, rad) { F.crossList.forEach((c, k) => { if (k === F.oIndex) return; const [x, y] = m.to(c.o[0], c.o[1]); ctx.strokeStyle = C.fg; ctx.lineWidth = 1.2; ctx.setLineDash([2, 2]); ctx.beginPath(); ctx.arc(x, y, rad, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]); }); }
+  function paramBox(F) { const L = F.hc[F.nh], M = F.vc[F.nv], mx = 0.35 * Math.max(L, M); return [-F.ha - mx, -F.va - mx, L - F.ha + mx, M - F.va + mx]; }
+  function drawParamPlane(ctx, w, h, F, m, rows, opts) {
+    opts = opts || {};
+    for (const c of F.cells) {
+      const [x0, y0] = m.to(F.hc[c.i] - F.ha, F.vc[c.j] - F.va), [x1, y1] = m.to(F.hc[c.i + 1] - F.ha, F.vc[c.j + 1] - F.va);
+      ctx.fillStyle = hexA(c.orient === F.orient0 ? C.front : C.back, opts.hl && opts.hl.i === c.i && opts.hl.j === c.j ? 0.9 : 0.3);
+      ctx.fillRect(x0, y1, x1 - x0, y0 - y1);
+    }
+    ctx.strokeStyle = C.line; ctx.lineWidth = 0.6;
+    for (let i = 0; i <= F.nh; i++) { const [x, ya] = m.to(F.hc[i] - F.ha, -F.va), [, yb] = m.to(0, F.vc[F.nv] - F.va); ctx.beginPath(); ctx.moveTo(x, ya); ctx.lineTo(x, yb); ctx.stroke(); }
+    for (let j = 0; j <= F.nv; j++) { const [xa, y] = m.to(-F.ha, F.vc[j] - F.va), [xb] = m.to(F.hc[F.nh] - F.ha, 0); ctx.beginPath(); ctx.moveTo(xa, y); ctx.lineTo(xb, y); ctx.stroke(); }
+    const [bx0, by0] = m.to(-F.ha, -F.va), [bx1, by1] = m.to(F.hc[F.nh] - F.ha, F.vc[F.nv] - F.va);
+    ctx.strokeStyle = C.fg; ctx.lineWidth = 1.2; ctx.strokeRect(bx0, by1, bx1 - bx0, by0 - by1);
+    const [ox, oy] = m.to(0, 0); dot(ctx, ox, oy, 3.5, C.fg); label(ctx, 'O', ox + 6, oy - 10);
+    label(ctx, 'ℓh →', bx1 - 2, by0 + 12, C.hline, 'right'); label(ctx, '↑ ℓv', bx0 - 4, by1 + 6, C.vline, 'right');
+    label(ctx, '外延', bx1 + 6, by1 + 6, C.muted);
+    if (rows) for (const r of rows) { const [x, y] = m.to(r.lh, r.lv); dot(ctx, x, y, 6, r.orient === F.orient0 ? C.front : C.back, C.panel); if (!r.onSheet) { ctx.strokeStyle = C.fg; ctx.lineWidth = 1; ctx.setLineDash([2, 2]); ctx.beginPath(); ctx.arc(x, y, 9, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]); } }
+  }
+  function rowsText(F, s) {
+    if (!s.rows.length) return '原像 0 个';
+    return '原像 ' + s.rows.length + ' 个：' + s.rows.map(r => `<span style="color:${r.orient === F.orient0 ? C.front : C.back}">${r.orient === F.orient0 ? '正' : '背'}${r.onSheet ? '' : '·外延'}</span> 小格(${r.i},${r.j}) 弧长(${r.lh.toFixed(0)}, ${r.lv.toFixed(0)})`).join('，');
+  }
+  function lawText(F, s) {
+    if (F.w === null) return `f − b = ${s.f} − ${s.b} = ${s.f - s.b}；w 无定义`;
+    const ok = s.f - s.b === F.w * F.orient0;
+    return `f − b = ${s.f} − ${s.b} = <b>${s.f - s.b}</b>，w·orient0 = <b>${F.w * F.orient0}</b> ${ok ? '✓' : '✗（A 落在小格边界的像上）'}`;
+  }
+
+  // ---------------------------------------------------------------- state
+  const S = { F: null, box: null, A: null, hl: null, theta: 360, playing: false, far: null, path: 0.5, pathData: null, vec: { r: [120, 20], q: [30, 110 ] } };
+
+  function rebuild() {
+    const key = $('rig').value, [h, v] = rigs[key].make(), os = $('oSel');
+    if (os.dataset.rig !== key) { const cl = crossings(h, v); os.dataset.rig = key; os.innerHTML = cl.map((c, k) => `<option value="${k}">第 ${k + 1} 个交点 (${(Math.abs(c.o[0]) < 0.5 ? 0 : c.o[0]).toFixed(0)}, ${(Math.abs(c.o[1]) < 0.5 ? 0 : c.o[1]).toFixed(0)})${k ? '' : '，正式实现的规则'}</option>`).join(''); os.value = '0'; os.disabled = cl.length < 2; }
+    const F = S.F = build(h, v, +os.value);
+    T3.A = null;
+    const [x0, y0, x1, y1] = F.bbox, cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, half = Math.max(x1 - x0, y1 - y0) / 2 * 1.5;
+    S.box = [cx - half, cy - half, cx + half, cy + half];
+    S.A = S.A || [cx + 20, cy + 10]; S.hl = null;
+    S.far = [cx + half * 1.6, cy + half * 1.1];
+    S.pathData = null;
+    // winding-figure radius: beyond every preimage of O, so the image of the circle winds about O exactly w times
+    const L = F.hc[F.nh], M = F.vc[F.nv]; let far = 0; for (const r of solve(F, F.o).rows) far = Math.max(far, Math.hypot(r.lh, r.lv));
+    F.Rw = Math.max(3.5 * Math.max(L, M), 1.6 * far);
+    $('tW').textContent = wtxt(F); $('tO').textContent = sgn(F.orient0); $('tP').textContent = prodtxt(F);
+    $('tLaw').innerHTML = F.w === null ? '—' : `${F.w * F.orient0}`;
+    for (const id of ['rigB3', 'rigC', 'rigD', 'rigE']) $(id).textContent = '当前装置：' + rigs[key].name + '（在第 0 节切换）';
+    drawAll();
+  }
+  function drawAll() { readTheme(); drawA(); drawB(); drawC(); drawD(); drawE(); build3(); }
+
+  // ---- fig A: explorer
+  function drawA() {
+    const F = S.F; const { ctx, w, h } = fit($('cvA')); const m = mapper(S.box, w, h);
+    const s = solve(F, S.A);
+    drawCanvasPlane(ctx, w, h, F, m, { rays: $('showRays').checked, hl: S.hl });
+    const [ax, ay] = m.to(S.A[0], S.A[1]); dot(ctx, ax, ay, 5, C.accent, C.panel); label(ctx, 'A', ax + 8, ay - 8, C.accent);
+    const p = fit($('cvAp')); const mp = mapper(paramBox(F), p.w, p.h);
+    drawParamPlane(p.ctx, p.w, p.h, F, mp, s.rows, { hl: S.hl });
+    $('roA').innerHTML = `A = (${S.A[0].toFixed(0)}, ${S.A[1].toFixed(0)})：${rowsText(F, s)}<br>${lawText(F, s)}` + (F.w !== null ? `　→ ${F.w * F.orient0 > 0 ? '这副轴线上每个正则点都至少有一个正面原像' : F.w * F.orient0 < 0 ? '这副轴线上会有只有背面原像的点' : '这副轴线上会有一个原像都没有的点'}` : '');
+  }
+  function bindPointer(cv, onMove, onLeave) {
+    const h = ev => { const r = cv.getBoundingClientRect(); onMove([ev.clientX - r.left, ev.clientY - r.top], ev); };
+    cv.addEventListener('pointermove', h); cv.addEventListener('pointerdown', h);
+    if (onLeave) cv.addEventListener('pointerleave', onLeave);
+  }
+  bindPointer($('cvA'), px => { const m = mapper(S.box, $('cvA').clientWidth, $('cvA').clientHeight); S.A = m.from(px[0], px[1]); S.hl = null; drawA(); });
+  bindPointer($('cvAp'), px => {
+    const F = S.F, cv = $('cvAp'), m = mapper(paramBox(F), cv.clientWidth, cv.clientHeight), [lh, lv] = m.from(px[0], px[1]);
+    let hl = null; const ah = lh + F.ha, av = lv + F.va;
+    if (ah >= 0 && ah <= F.hc[F.nh] && av >= 0 && av <= F.vc[F.nv]) { let i = 0; while (i < F.nh - 1 && F.hc[i + 1] <= ah) i++; let j = 0; while (j < F.nv - 1 && F.vc[j + 1] <= av) j++; hl = { i, j }; }
+    S.hl = hl; drawA();
+  }, () => { S.hl = null; drawA(); });
+
+  // ---- fig B: cross product widget
+  function drawB() {
+    const { ctx, w, h } = fit($('cvB')); const box = [-160, -160, 160, 160]; const m = mapper(box, w, h);
+    const r = S.vec.r, q = S.vec.q, cr = cross(r[0], r[1], q[0], q[1]);
+    const [ox, oy] = m.to(0, 0);
+    ctx.strokeStyle = C.line; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, oy); ctx.lineTo(w, oy); ctx.moveTo(ox, 0); ctx.lineTo(ox, h); ctx.stroke();
+    label(ctx, 'x', w - 10, oy - 10, C.muted); label(ctx, 'y', ox + 8, 10, C.muted); label(ctx, '(0, 0)', ox + 6, oy + 12, C.muted);
+    ctx.fillStyle = hexA(cr >= 0 ? C.front : C.back, 0.3); ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(...m.to(r[0], r[1])); ctx.lineTo(...m.to(r[0] + q[0], r[1] + q[1])); ctx.lineTo(...m.to(q[0], q[1])); ctx.closePath(); ctx.fill();
+    const a0 = Math.atan2(r[1], r[0]), a1 = Math.atan2(q[1], q[0]);
+    ctx.strokeStyle = C.accent; ctx.lineWidth = 2; fanArc(ctx, ox, oy, 30, a0, a1, cr >= 0);
+    if (Math.abs(cr) > 1e-9) { const tx = ox + 30 * Math.cos(-a1), ty = oy + 30 * Math.sin(-a1); head(ctx, tx, ty, -a1 + (cr >= 0 ? -Math.PI / 2 : Math.PI / 2), C.accent); }
+    arrow(ctx, ox, oy, ...m.to(r[0], r[1]), C.hline, 2.5); arrow(ctx, ox, oy, ...m.to(q[0], q[1]), C.vline, 2.5);
+    label(ctx, 'r（H 的一段）', ...m.to(r[0], r[1]).map((v, k) => v + (k ? -12 : 8)), C.hline);
+    label(ctx, 'q（V 的一段）', ...m.to(q[0], q[1]).map((v, k) => v + (k ? -12 : 8)), C.vline);
+    for (const p of [r, q]) { const [x, y] = m.to(p[0], p[1]); dot(ctx, x, y, 7, C.panel, C.fg); }
+    $('roB').innerHTML = `r = (${r[0].toFixed(0)}, ${r[1].toFixed(0)})，q = (${q[0].toFixed(0)}, ${q[1].toFixed(0)})<br>r × q = ${r[0].toFixed(0)}·${q[1].toFixed(0)} − ${r[1].toFixed(0)}·${q[0].toFixed(0)} = <b>${cr.toFixed(0)}</b><br>orient = <b style="color:${cr >= 0 ? C.front : C.back}">${cr >= 0 ? '+1（从 r 转到 q 是逆时针）' : '−1（从 r 转到 q 是顺时针）'}</b><br><span class="cap">把 q 拖到 r 的另一侧，平行四边形翻面，符号就变。拖到与 r 平行，面积为 0，这是退化小格。</span>`;
+  }
+  (function () {
+    const cv = $('cvB'); let drag = null;
+    const pos = ev => { const rct = cv.getBoundingClientRect(); const m = mapper([-160, -160, 160, 160], cv.clientWidth, cv.clientHeight); return m.from(ev.clientX - rct.left, ev.clientY - rct.top); };
+    cv.addEventListener('pointerdown', ev => { const p = pos(ev); const dr = Math.hypot(p[0] - S.vec.r[0], p[1] - S.vec.r[1]), dq = Math.hypot(p[0] - S.vec.q[0], p[1] - S.vec.q[1]); drag = dr < dq ? 'r' : 'q'; cv.setPointerCapture(ev.pointerId); S.vec[drag] = p; drawB(); });
+    cv.addEventListener('pointermove', ev => { if (!drag) return; S.vec[drag] = pos(ev); drawB(); });
+    cv.addEventListener('pointerup', () => { drag = null; }); cv.addEventListener('pointercancel', () => { drag = null; });
+  })();
+
+  // ---- fig C: winding animation
+  function drawC() {
+    const F = S.F, L = F.hc[F.nh], M = F.vc[F.nv], R = F.Rw, th = S.theta * Math.PI / 180;
+    const P = [R * Math.cos(th), R * Math.sin(th)];
+    const { ctx, w, h } = fit($('cvCp')); const m = mapper([-R * 1.2, -R * 1.2, R * 1.2, R * 1.2], w, h);
+    const [x0, y0] = m.to(-F.ha, -F.va), [x1, y1] = m.to(L - F.ha, M - F.va);
+    ctx.fillStyle = hexA(C.front, 0.3); ctx.fillRect(x0, y1, x1 - x0, y0 - y1); ctx.strokeStyle = C.fg; ctx.lineWidth = 1; ctx.strokeRect(x0, y1, x1 - x0, y0 - y1);
+    const [cx, cy] = m.to(0, 0);
+    ctx.strokeStyle = C.line; ctx.lineWidth = 1; ctx.setLineDash([3, 4]); ctx.beginPath(); ctx.arc(cx, cy, R * m.s, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+    ctx.strokeStyle = C.accent; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(cx, cy, R * m.s, 0, -th, true); ctx.stroke();
+    const [px, py] = m.to(P[0], P[1]); dot(ctx, px, py, 6, C.accent, C.panel); label(ctx, 'P', px + 9, py - 9, C.accent);
+    const rs = R * m.s;
+    label(ctx, '东：ℓh → +∞，像沿 d₁', cx + rs + 4, cy - 14, C.muted, 'right'); label(ctx, '北：ℓv → +∞，像沿 e₁', cx, cy - rs - 10, C.muted, 'center');
+    label(ctx, '西：ℓh → −∞，像沿 −d₀', cx - rs - 4, cy - 14, C.muted, 'left'); label(ctx, '南：ℓv → −∞，像沿 −e₀', cx, cy + rs + 12, C.muted, 'center');
+    label(ctx, '面', (x0 + x1) / 2, (y0 + y1) / 2, C.fg, 'center');
+    const d = fit($('cvCd')); const dc = [d.w / 2, d.h / 2], rad = Math.min(d.w, d.h) * 0.38;
+    d.ctx.strokeStyle = C.line; d.ctx.lineWidth = 1; d.ctx.beginPath(); d.ctx.arc(dc[0], dc[1], rad, 0, 2 * Math.PI); d.ctx.stroke();
+    dot(d.ctx, dc[0], dc[1], 3, C.fg);
+    let tot = 0, prev = null, marks = []; d.ctx.strokeStyle = C.accent; d.ctx.lineWidth = 2.5; d.ctx.beginPath();
+    const steps = Math.max(1, Math.round(S.theta * 2));
+    for (let k = 0; k <= steps; k++) {
+      const a = (S.theta * k / steps) * Math.PI / 180, q = hv(F, R * Math.cos(a), R * Math.sin(a)), vx = q[0] - F.o[0], vy = q[1] - F.o[1], n = Math.hypot(vx, vy) || 1, ang = Math.atan2(vy, vx);
+      if (prev !== null) { let da = ang - prev; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI; tot += da; } prev = ang;
+      const rr = rad * (0.62 + 0.3 * a / (2 * Math.PI));   // spiral radius: turns stay visible
+      const x = dc[0] + rr * vx / n, y = dc[1] - rr * vy / n; if (k) d.ctx.lineTo(x, y); else d.ctx.moveTo(x, y);
+      if (k === steps) { d.ctx.stroke(); dot(d.ctx, x, y, 6, C.accent, C.panel); }
+      marks.push([x, y, Math.round(a * 180 / Math.PI)]);
+    }
+    // direction arrowheads along the spiral every 90 degrees of theta
+    for (let k = 1; k < marks.length; k++) { const deg = marks[k][2]; if (deg % 90 === 0 && deg > 0 && deg < 360 && marks[k - 1][2] !== deg) head(d.ctx, marks[k][0], marks[k][1], Math.atan2(marks[k][1] - marks[k - 1][1], marks[k][0] - marks[k - 1][0]), C.accent); }
+    // the four end directions; labels of near-coincident pairs sit at different radii
+    const lr = [1.12, 1.12, 1.26, 1.26];
+    for (let k = 0; k < 4; k++) { const v = F.loop[k]; arrow(d.ctx, dc[0], dc[1], dc[0] + rad * 0.98 * v[0], dc[1] - rad * 0.98 * v[1], k % 2 ? C.vline : C.hline, 1.5); label(d.ctx, F.loopNames[k], dc[0] + rad * lr[k] * v[0], dc[1] - rad * lr[k] * v[1], k % 2 ? C.vline : C.hline, 'center'); }
+    // the four arcs of the end-ray loop, outside the circle, each with an arrowhead showing the turn
+    F.turns.forEach((t, k) => { const a0 = Math.atan2(F.loop[k][1], F.loop[k][0]), a1 = a0 + t, r2 = rad * (1.04 + 0.045 * k); d.ctx.strokeStyle = hexA(C.muted, 0.9); d.ctx.lineWidth = 2; fanArc(d.ctx, dc[0], dc[1], r2, a0, a1, t > 0); if (Math.abs(t) > 1e-9) head(d.ctx, dc[0] + r2 * Math.cos(a1), dc[1] - r2 * Math.sin(a1), -a1 + (t > 0 ? -Math.PI / 2 : Math.PI / 2), C.muted); });
+    $('thetaVal').textContent = 'θ = ' + S.theta + '°';
+    const turns = tot / (2 * Math.PI);
+    $('roC').innerHTML = `P 走到 θ = ${S.theta}° 时，像的方向累计转了 <b>${(tot * 180 / Math.PI).toFixed(0)}°</b>（${turns.toFixed(2)} 圈）。P 走满一圈后像的方向净转角应为 ${F.w === null ? '—（w 无定义）' : '<b>' + (F.w * 360) + '°</b>，即 w = ' + sgn(F.w)}。按四个端向算的四段转角：` + F.turns.map((t, k) => `${F.loopNames[k]}→${F.loopNames[(k + 1) % 4]} ${(t * 180 / Math.PI).toFixed(0)}°`).join('，') + `；和 = ${(F.turns.reduce((a, b) => a + b, 0) * 180 / Math.PI).toFixed(0)}°`;
+  }
+  $('theta').addEventListener('input', ev => { S.theta = +ev.target.value; drawC(); });
+  $('playTheta').addEventListener('click', () => {
+    if (S.playing) { S.playing = false; $('playTheta').textContent = '重放'; return; }
+    S.playing = true; $('playTheta').textContent = '暂停'; S.theta = 0;
+    const step = () => { if (!S.playing) return; S.theta = Math.min(360, S.theta + 2); $('theta').value = S.theta; drawC(); if (S.theta >= 360) { S.playing = false; $('playTheta').textContent = '重放'; return; } requestAnimationFrame(step); };
+    requestAnimationFrame(step);
+  });
+
+  // ---- fig D: far point in the corner cones
+  function inCone(cn, A) { const dx = A[0] - cn.apex[0], dy = A[1] - cn.apex[1], den = cross(cn.a[0], cn.a[1], cn.b[0], cn.b[1]); if (Math.abs(den) < 1e-12) return false; const s = cross(dx, dy, cn.b[0], cn.b[1]) / den, t = cross(cn.a[0], cn.a[1], dx, dy) / den; return s > 0 && t > 0; }
+  function boxD() { const e = (S.box[2] - S.box[0]) * 0.8; return [S.box[0] - e, S.box[1] - e, S.box[2] + e, S.box[3] + e]; }
+  function drawD() {
+    const F = S.F; const { ctx, w, h } = fit($('cvD')); const box = boxD(); const m = mapper(box, w, h);
+    const A = S.far; const hits = F.cones.map(cn => inCone(cn, A));
+    F.cones.forEach((cn, k) => {
+      const [x0, y0] = m.to(cn.apex[0], cn.apex[1]);
+      ctx.fillStyle = hexA(cn.orient === F.orient0 ? C.front : C.back, hits[k] ? 0.55 : 0.12);
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(...m.to(cn.apex[0] + cn.a[0] * 9000, cn.apex[1] + cn.a[1] * 9000)); ctx.lineTo(...m.to(cn.apex[0] + (cn.a[0] + cn.b[0]) * 9000, cn.apex[1] + (cn.a[1] + cn.b[1]) * 9000)); ctx.lineTo(...m.to(cn.apex[0] + cn.b[0] * 9000, cn.apex[1] + cn.b[1] * 9000)); ctx.closePath(); ctx.fill();
+      const mid = [cn.a[0] + cn.b[0], cn.a[1] + cn.b[1]], mn = Math.hypot(mid[0], mid[1]) || 1, lab = m.to(cn.apex[0] + mid[0] / mn * (box[2] - box[0]) * 0.25, cn.apex[1] + mid[1] / mn * (box[2] - box[0]) * 0.25);
+      label(ctx, `${cn.name} orient ${sgn(cn.orient)}`, lab[0], lab[1], cn.orient === F.orient0 ? C.front : C.back, 'center');
+    });
+    for (const c of F.cells) { const px = c.nx - F.o[0], py = c.ny - F.o[1]; ctx.fillStyle = hexA(C.fg, 0.07); ctx.beginPath(); [[px, py], [px + c.rx, py + c.ry], [px + c.rx - c.sx, py + c.ry - c.sy], [px - c.sx, py - c.sy]].forEach((p, k) => { const [x, y] = m.to(p[0], p[1]); if (k) ctx.lineTo(x, y); else ctx.moveTo(x, y); }); ctx.closePath(); ctx.fill(); }
+    polyline(ctx, F.h, m, C.hline, 1.5); polyline(ctx, F.v, m, C.vline, 1.5); crossRings(ctx, F, m, 4);
+    polyline(ctx, [F.o, [F.o[0] + (A[0] - F.o[0]) * 50, F.o[1] + (A[1] - F.o[1]) * 50]], m, C.accent, 1, [3, 4]);
+    const [ax, ay] = m.to(A[0], A[1]); dot(ctx, ax, ay, 6, C.accent, C.panel); label(ctx, 'A', ax + 9, ay - 9, C.accent);
+    const d = fit($('cvDl')); const dc = [d.w / 2, d.h / 2], rad = Math.min(d.w, d.h) * 0.36;
+    d.ctx.strokeStyle = C.line; d.ctx.lineWidth = 1; d.ctx.beginPath(); d.ctx.arc(dc[0], dc[1], rad, 0, 2 * Math.PI); d.ctx.stroke();
+    const ux = A[0] - F.o[0], uy = A[1] - F.o[1], un = Math.hypot(ux, uy) || 1, uang = Math.atan2(uy, ux);
+    const covers = F.turns.map((t, k) => { const a = F.loop[k], s0 = Math.atan2(a[1], a[0]); let rel = uang - s0; while (rel > Math.PI) rel -= 2 * Math.PI; while (rel < -Math.PI) rel += 2 * Math.PI; return (t > 0 && rel > 0 && rel < t) || (t < 0 && rel < 0 && rel > t); });
+    F.turns.forEach((t, k) => { const a = F.loop[k], s0 = Math.atan2(a[1], a[0]); const rr = rad * (1 + 0.06 * k); d.ctx.strokeStyle = hexA((t >= 0 ? 1 : -1) === F.orient0 ? C.front : C.back, covers[k] ? 1 : 0.35); d.ctx.lineWidth = covers[k] ? 5 : 2.5; fanArc(d.ctx, dc[0], dc[1], rr, s0, s0 + t, t > 0); });
+    arrow(d.ctx, dc[0], dc[1], dc[0] + rad * 1.3 * ux / un, dc[1] - rad * 1.3 * uy / un, C.accent, 2); label(d.ctx, 'A 的方向', dc[0] + rad * 1.42 * ux / un, dc[1] - rad * 1.42 * uy / un, C.accent, 'center');
+    for (let k = 0; k < 4; k++) { const v = F.loop[k]; dot(d.ctx, dc[0] + rad * v[0], dc[1] - rad * v[1], 4, k % 2 ? C.vline : C.hline); label(d.ctx, F.loopNames[k], dc[0] + rad * 0.78 * v[0], dc[1] - rad * 0.78 * v[1], k % 2 ? C.vline : C.hline, 'center'); }
+    const sumC = F.cones.reduce((s, cn, k) => s + (hits[k] ? cn.orient : 0), 0);
+    const sAll = solve(F, A);
+    const parts = F.cones.map((cn, k) => hits[k] ? `${cn.name} ${sgn(cn.orient)}` : null).filter(Boolean);
+    const arcSum = F.turns.reduce((s, t, k) => s + (covers[k] ? (t > 0 ? 1 : -1) : 0), 0);
+    $('roD').innerHTML = `A 落在 ${parts.length ? parts.length + ' 个锥里：' + parts.join('，') : '0 个锥里'}，锥的 orient 之和 = <b>${sumC}</b>；环上盖住 A 方向的弧 ${covers.filter(Boolean).length} 段，转向之和 = <b>${arcSum}</b>；w = <b>${wtxt(F)}</b>。<br>用全部小格（含边格条带和面）精确求交：${rowsText(F, sAll)}，Σ orient = <b>${sAll.sum}</b>${sumC === sAll.sum ? '' : '（A 还不够远，边格或面也有原像；带符号的和仍是 w）'}。`;
+  }
+  (function () { const cv = $('cvD'); let drag = false; const pos = ev => { const r = cv.getBoundingClientRect(); return mapper(boxD(), cv.clientWidth, cv.clientHeight).from(ev.clientX - r.left, ev.clientY - r.top); }; cv.addEventListener('pointerdown', ev => { drag = true; cv.setPointerCapture(ev.pointerId); S.far = pos(ev); drawD(); }); cv.addEventListener('pointermove', ev => { if (!drag) return; S.far = pos(ev); drawD(); }); cv.addEventListener('pointerup', () => { drag = false; }); cv.addEventListener('pointercancel', () => { drag = false; }); })();
+
+  // ---- fig E: a path across the crease
+  function drawE() {
+    const F = S.F, key = $('rig').value, [P0, P1] = rigs[key].path;
+    if (!S.pathData) { const n = 400, cnt = [], sum = []; for (let k = 0; k <= n; k++) { const s = solve(F, [P0[0] + (P1[0] - P0[0]) * k / n, P0[1] + (P1[1] - P0[1]) * k / n]); cnt.push(s.rows.length); sum.push(s.sum); } S.pathData = { cnt, sum }; }
+    const A = [P0[0] + (P1[0] - P0[0]) * S.path, P0[1] + (P1[1] - P0[1]) * S.path];
+    const { ctx, w, h } = fit($('cvE')); const m = mapper(S.box, w, h);
+    const s = solve(F, A);
+    drawCanvasPlane(ctx, w, h, F, m, { rays: false });
+    polyline(ctx, [P0, P1], m, C.accent, 1.5, [6, 5]);
+    const [ax, ay] = m.to(A[0], A[1]); dot(ctx, ax, ay, 6, C.accent, C.panel);
+    const p = fit($('cvEp')); drawParamPlane(p.ctx, p.w, p.h, F, mapper(paramBox(F), p.w, p.h), s.rows);
+    const g = fit($('cvEs')); const gl = 44, gr = 12, gt = 14, gb = 26, gw = g.w - gl - gr, gh = g.h - gt - gb; const { cnt, sum } = S.pathData;
+    const ymax = Math.max(3, ...cnt), ymin = Math.min(-1, ...sum); const ys = v => gt + gh * (ymax - v) / (ymax - ymin);
+    g.ctx.strokeStyle = C.line; g.ctx.lineWidth = 1; for (let v = ymin; v <= ymax; v++) { g.ctx.beginPath(); g.ctx.moveTo(gl, ys(v)); g.ctx.lineTo(gl + gw, ys(v)); g.ctx.stroke(); label(g.ctx, String(v), gl - 8, ys(v), C.muted, 'right'); }
+    const line = (arr, color, width) => { g.ctx.strokeStyle = color; g.ctx.lineWidth = width; g.ctx.beginPath(); arr.forEach((v, k) => { const x = gl + gw * k / (arr.length - 1), y = ys(v); if (k) g.ctx.lineTo(x, y); else g.ctx.moveTo(x, y); }); g.ctx.stroke(); };
+    line(cnt, C.muted, 2); line(sum, C.accent, 2.5);
+    const xcur = gl + gw * S.path; g.ctx.strokeStyle = C.accent; g.ctx.setLineDash([3, 3]); g.ctx.beginPath(); g.ctx.moveTo(xcur, gt); g.ctx.lineTo(xcur, gt + gh); g.ctx.stroke(); g.ctx.setLineDash([]);
+    label(g.ctx, '灰：原像个数（含外延）　蓝：Σ orient', gl, g.h - 8, C.muted); label(g.ctx, '路线起点', gl, gt + gh + 10, C.muted); label(g.ctx, '终点', gl + gw, gt + gh + 10, C.muted, 'right');
+    $('roE').innerHTML = `${rowsText(F, s)}；Σ orient = <b>${s.sum}</b>${F.w === null ? '' : '，w = <b>' + sgn(F.w) + '</b>'}。` + (key === 'bow100' ? '<span class="cap">这条路线上原像总数 1 → 3 → 5 → 3，面内的原像 0 → 1 → 3 → 1（0 → 1 是从外延搬进面内）。</span>' : key === 'hook' ? '<span class="cap">钩形架 w = 0：右侧折缝边界之内一正一背，之外一个都没有，Σ 始终为 0。</span>' : (key === 'straight' || key === 'bow30' || key === 'teaching') ? '<span class="cap">这套装置没有折缝，整条路线上原像都是 1 个。</span>' : '');
+  }
+  $('path').addEventListener('input', ev => { S.path = +ev.target.value / 1000; drawE(); });
+
+  // ---- fig B′: the sheet as a piece of paper lifted along ℓh (three.js r128, global THREE). Lift z = k·0.6·(ℓh − ℓh(O)):
+  // the cell normal's z component is then sign(r × q), so FrontSide seen from above == orient +1 (winding flipped when orient0 = −1).
+  const T3 = { ok: false, az: -1.1, el: 0.9, dist: 1, k: 0.55, ext: true, A: null, center: null };
+  const Z3 = (F, ah) => T3.k * 0.6 * (ah - F.ha);
+  const P3 = (F, ah, av) => { const p = hv(F, ah - F.ha, av - F.va); return [p[0], p[1], Z3(F, ah)]; };
+  function init3() {
+    if (!window.THREE) { $('ro3').textContent = '三维库 three.js 没有加载（这张图需要联网），其余各图不受影响。'; return; }
+    const cv = $('cv3');
+    try { T3.renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: true, alpha: true }); } catch (e) { $('ro3').textContent = '这个浏览器没有 WebGL，立体图略过。'; return; }
+    T3.ok = true;
+    T3.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    T3.scene = new THREE.Scene();
+    T3.camera = new THREE.PerspectiveCamera(36, 1.5, 1, 1e6); T3.camera.up.set(0, 0, 1);
+    T3.scene.add(new THREE.HemisphereLight(0xffffff, 0x808080, 1.05));
+    const dl = new THREE.DirectionalLight(0xffffff, 0.45); dl.position.set(300, -500, 900); T3.scene.add(dl);
+    T3.group = new THREE.Group(); T3.scene.add(T3.group);
+    let down = null, moved = false;
+    cv.addEventListener('pointerdown', ev => { down = [ev.clientX, ev.clientY, T3.az, T3.el]; moved = false; cv.setPointerCapture(ev.pointerId); });
+    cv.addEventListener('pointermove', ev => { if (!down) return; const dx = ev.clientX - down[0], dy = ev.clientY - down[1]; if (Math.hypot(dx, dy) > 4) moved = true; if (moved) { T3.az = down[2] - dx * 0.008; T3.el = Math.min(1.5, Math.max(0.03, down[3] + dy * 0.008)); render3(); } });
+    cv.addEventListener('pointerup', ev => { if (down && !moved) pick3(ev); down = null; });
+    cv.addEventListener('pointercancel', () => { down = null; });
+    cv.addEventListener('wheel', ev => { ev.preventDefault(); T3.dist = Math.min(4, Math.max(0.25, T3.dist * Math.exp(ev.deltaY * 0.0012))); render3(); }, { passive: false });
+    $('lift').addEventListener('input', ev => { T3.k = +ev.target.value / 100; build3(); });
+    $('ext3d').addEventListener('change', ev => { T3.ext = ev.target.checked; build3(); });
+    $('viewTop').addEventListener('click', () => { T3.az = -Math.PI / 2; T3.el = 1.5; render3(); });
+    $('viewSide').addEventListener('click', () => { T3.az = -1.1; T3.el = 0.2; render3(); });
+    $('viewReset').addEventListener('click', () => { T3.az = -1.1; T3.el = 0.9; T3.dist = 1; render3(); });
+  }
+  function build3() {
+    if (!T3.ok) return;
+    const F = S.F, g = T3.group;
+    while (g.children.length) { const c = g.children.pop(); if (c.geometry) c.geometry.dispose(); if (c.material) { if (c.material.map) c.material.map.dispose(); c.material.dispose(); } }
+    const L = F.hc[F.nh], M = F.vc[F.nv], span = Math.max(L, M), rr = span * 0.004;
+    const [x0, y0, x1, y1] = F.bbox, cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    const A = T3.A = T3.A || [cx + 20, cy + 10], s = solve(F, A);
+    // the extension is infinite; draw it far enough to cover every preimage of the probe (plus a margin), per side
+    let e = [0.22 * span, 0.22 * span, 0.22 * span, 0.22 * span];
+    if (T3.ext) for (const r of s.rows) { const ah = r.lh + F.ha, av = r.lv + F.va, mg = 0.12 * span; if (ah < 0) e[0] = Math.max(e[0], mg - ah); if (ah > L) e[1] = Math.max(e[1], ah - L + mg); if (av < 0) e[2] = Math.max(e[2], mg - av); if (av > M) e[3] = Math.max(e[3], av - M + mg); }
+    const hs = F.hc.slice(), vs = F.vc.slice(); if (T3.ext) { hs.unshift(-e[0]); hs.push(L + e[1]); vs.unshift(-e[2]); vs.push(M + e[3]); }
+    const col = n => new THREE.Color(C[n]);
+    // sheet + extension faces: one planar parallelogram per cell, two triangles
+    const sheetPos = [], extPos = [], flip = F.orient0 < 0, off = T3.ext ? 1 : 0;
+    for (let a = 0; a < hs.length - 1; a++) for (let b = 0; b < vs.length - 1; b++) {
+      const i = Math.min(Math.max(a - off, 0), F.nh - 1), j = Math.min(Math.max(b - off, 0), F.nv - 1);
+      if (!F.omap[i][j]) continue;
+      const onSheet = hs[a] >= -1e-9 && hs[a + 1] <= L + 1e-9 && vs[b] >= -1e-9 && vs[b + 1] <= M + 1e-9;
+      const p00 = P3(F, hs[a], vs[b]), p10 = P3(F, hs[a + 1], vs[b]), p11 = P3(F, hs[a + 1], vs[b + 1]), p01 = P3(F, hs[a], vs[b + 1]);
+      const tri = flip ? [p00, p11, p10, p00, p01, p11] : [p00, p10, p11, p00, p11, p01];
+      const dst = onSheet ? sheetPos : extPos; for (const p of tri) dst.push(p[0], p[1], p[2]);
+    }
+    // the drawn sheet keeps the full front/back colours; the extension is the same two colours washed toward the panel
+    const mat = (c, side, op, wash) => new THREE.MeshLambertMaterial({ color: wash ? col(c).lerp(col('panel'), 0.55) : col(c), side, transparent: op < 1, opacity: op, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
+    T3.faces = [];
+    for (const [pos, op, wash] of [[sheetPos, 0.97, false], [extPos, 0.6, true]]) { if (!pos.length) continue; const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.computeVertexNormals(); for (const side of [THREE.FrontSide, THREE.BackSide]) { const m = new THREE.Mesh(geo, mat(side === THREE.FrontSide ? 'front' : 'back', side, op, wash)); g.add(m); T3.faces.push(m); } }
+    // cell edges
+    const ln = []; const seg = (p, q) => ln.push(p[0], p[1], p[2], q[0], q[1], q[2]);
+    for (let a = 0; a < hs.length; a++) for (let b = 0; b < vs.length - 1; b++) seg(P3(F, hs[a], vs[b]), P3(F, hs[a], vs[b + 1]));
+    for (let b = 0; b < vs.length; b++) for (let a = 0; a < hs.length - 1; a++) seg(P3(F, hs[a], vs[b]), P3(F, hs[a + 1], vs[b]));
+    const lg = new THREE.BufferGeometry(); lg.setAttribute('position', new THREE.Float32BufferAttribute(ln, 3));
+    g.add(new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color: col('fg'), transparent: true, opacity: 0.22 })));
+    // thick lines as cylinders (WebGL line width is always 1 px)
+    const mats = {}; const basic = c => mats[c] || (mats[c] = new THREE.MeshBasicMaterial({ color: col(c) }));
+    const cyl = (a, b, r, c) => { const d = new THREE.Vector3(b[0] - a[0], b[1] - a[1], b[2] - a[2]), len = d.length(); if (len < 1e-9) return; const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, 6, 1), basic(c)); m.position.set((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2); m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize()); g.add(m); };
+    const cone = (a, b, c) => { const d = new THREE.Vector3(b[0] - a[0], b[1] - a[1], b[2] - a[2]); if (d.length() < 1e-9) return; const m = new THREE.Mesh(new THREE.ConeGeometry(rr * 2.6, rr * 7, 8), basic(c)); m.position.set(b[0], b[1], b[2]); m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize()); g.add(m); };
+    const sph = (p, r, c) => { const m = new THREE.Mesh(new THREE.SphereGeometry(r, 14, 10), new THREE.MeshLambertMaterial({ color: col(c) })); m.position.set(p[0], p[1], p[2]); g.add(m); };
+    const sprite = (text, c, p, size) => { const cvs = document.createElement('canvas'); cvs.width = 96; cvs.height = 48; const x = cvs.getContext('2d'); x.font = 'bold 30px ' + css('--sans'); x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillStyle = C[c]; x.fillText(text, 48, 24); const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(cvs), transparent: true, depthTest: false })); sp.position.set(p[0], p[1], p[2]); sp.scale.set(size * 2, size, 1); g.add(sp); };
+    // creases: shared edges of adjacent opposite-orient cells
+    for (let i = 0; i < F.nh; i++) for (let j = 0; j < F.nv; j++) { const o = F.omap[i][j]; if (!o) continue;
+      if (i + 1 < F.nh && F.omap[i + 1][j] === -o) cyl(P3(F, F.hc[i + 1], F.vc[j]), P3(F, F.hc[i + 1], F.vc[j + 1]), rr * 0.9, 'crease');
+      if (j + 1 < F.nv && F.omap[i][j + 1] === -o) cyl(P3(F, F.hc[i], F.vc[j + 1]), P3(F, F.hc[i + 1], F.vc[j + 1]), rr * 0.9, 'crease'); }
+    // guides: H rides the sheet (ℓv = ℓv(O)), V lies flat (ℓh = ℓh(O), z = 0)
+    for (let i = 0; i < F.nh; i++) cyl(P3(F, F.hc[i], F.va), P3(F, F.hc[i + 1], F.va), rr, 'hline'); cone(P3(F, F.hc[F.nh - 1], F.va), P3(F, L, F.va), 'hline');
+    for (let j = 0; j < F.nv; j++) cyl(P3(F, F.ha, F.vc[j]), P3(F, F.ha, F.vc[j + 1]), rr, 'vline'); cone(P3(F, F.ha, F.vc[F.nv - 1]), P3(F, F.ha, M), 'vline');
+    const lab = span * 0.06;
+    sprite('H', 'hline', P3(F, L, F.va).map((v, k) => v + (k === 2 ? lab * 0.8 : 0)), lab); sprite('V', 'vline', P3(F, F.ha, M).map((v, k) => v + (k === 2 ? lab * 0.8 : 0)), lab);
+    sph([F.o[0], F.o[1], 0], rr * 2.4, 'fg'); sprite('O', 'fg', [F.o[0], F.o[1], lab * 0.9], lab);
+    F.crossList.forEach((c, k) => { if (k !== F.oIndex) sph([c.o[0], c.o[1], 0], rr * 1.6, 'muted'); });
+    // ground: the canvas plane
+    const gh = new THREE.GridHelper(span * (T3.ext ? 2.6 : 2), 13, col('line'), col('line')); gh.rotation.x = Math.PI / 2; gh.material.transparent = true; gh.material.opacity = 0.35;
+    gh.position.set(cx, cy, 0); g.add(gh);
+    // probe A: a vertical needle through the canvas point A; every piercing of the paper is one preimage
+    const shown = r => r.onSheet || T3.ext;
+    // the needle spans every drawn piercing, and the camera frames them all (zoom in with the wheel for the sheet itself)
+    let zlo = Math.min(0, Z3(F, 0), Z3(F, L)), zhi = Math.max(0, Z3(F, 0), Z3(F, L)); const pad = span * 0.08;
+    for (const r of s.rows) if (shown(r)) { const z = Z3(F, r.lh + F.ha); zlo = Math.min(zlo, z); zhi = Math.max(zhi, z); }
+    cyl([A[0], A[1], zlo - pad], [A[0], A[1], zhi + pad], rr * 0.6, 'accent'); sph([A[0], A[1], 0], rr * 1.8, 'accent'); sprite('A', 'accent', [A[0], A[1], zhi + pad + lab * 0.8], lab);
+    let hidden = 0; for (const r of s.rows) { if (!shown(r)) { hidden++; continue; } sph(P3(F, r.lh + F.ha, r.lv + F.va), rr * 2.2, r.orient === F.orient0 ? 'front' : 'back'); }
+    $('ro3').innerHTML = `探针 A = (${A[0].toFixed(0)}, ${A[1].toFixed(0)})：${rowsText(F, s)}${hidden ? `（外延没画，其中 ${hidden} 个在外延上）` : ''}<br>${lawText(F, s)}`;
+    let half = Math.max(x1 - x0, y1 - y0) / 2 * (T3.ext ? 1.45 : 1.05); const zc = (zlo + zhi) / 2;
+    for (const r of s.rows) if (shown(r)) { const q = P3(F, r.lh + F.ha, r.lv + F.va); half = Math.max(half, Math.hypot(q[0] - cx, q[1] - cy, q[2] - zc) * 1.15); }  // R0 = 3.1·half ≈ half / tan(fov/2): every piercing fits in the frame
+    T3.center = [cx, cy, zc]; T3.R0 = half * 3.1;
+    render3();
+  }
+  function render3() {
+    if (!T3.ok || !T3.center) return;
+    const cv = $('cv3'), w = cv.clientWidth || 600, h = cv.clientHeight || 400;
+    if (T3.w !== w || T3.h !== h) { T3.renderer.setSize(w, h, false); T3.w = w; T3.h = h; }
+    const cam = T3.camera; cam.aspect = w / h; cam.updateProjectionMatrix();
+    const R = T3.R0 * T3.dist, c = T3.center;
+    cam.position.set(c[0] + R * Math.cos(T3.el) * Math.cos(T3.az), c[1] + R * Math.cos(T3.el) * Math.sin(T3.az), c[2] + R * Math.sin(T3.el));
+    cam.lookAt(c[0], c[1], c[2]);
+    T3.renderer.render(T3.scene, cam);
+  }
+  function pick3(ev) {
+    const cv = $('cv3'), r = cv.getBoundingClientRect(), nd = new THREE.Vector2(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+    const rc = new THREE.Raycaster(); rc.setFromCamera(nd, T3.camera); const hit = new THREE.Vector3();
+    // the click lands on the paper first (no perspective parallax: the needle goes through the point you clicked), else on the ground
+    const onPaper = rc.intersectObjects(T3.faces || [], false);
+    if (onPaper.length) { T3.A = [onPaper[0].point.x, onPaper[0].point.y]; build3(); return; }
+    if (rc.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 0, 1), 0), hit)) { T3.A = [hit.x, hit.y]; build3(); }
+  }
+
+  // ---- table
+  function fillTable() {
+    const tb = $('tbl').querySelector('tbody'); tb.innerHTML = '';
+    const pct = (a, b) => b ? `${a}/${b}（${(100 * a / b).toFixed(0)}%）` : '—';
+    for (const key of Object.keys(rigs)) {
+      const [h, v] = rigs[key].make(), F = build(h, v);
+      let seed = 7; const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+      let sheet = 0, sheetF = 0, sheetFs = 0, off = 0, offF = 0, none = 0, lawOk = 0, n = 1500;
+      for (let k = 0; k < n; k++) { const s = solve(F, [rnd() * 600 - 300, rnd() * 600 - 300]); if (s.anySheet) { sheet++; if (s.f) sheetF++; if (s.fs) sheetFs++; } else { off++; if (s.f) offF++; } if (!s.f && !s.b) none++; if (F.w !== null && s.f - s.b === F.w * F.orient0) lawOk++; }
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${rigs[key].name}</td><td class="num">${wtxt(F)}</td><td class="num">${sgn(F.orient0)}</td><td class="num">${prodtxt(F)}</td><td class="num">${F.w === null ? '—' : lawOk + '/' + n}</td><td class="num">${pct(sheetF, sheet)}</td><td class="num">${pct(sheetFs, sheet)}</td><td class="num">${pct(offF, off)}</td><td class="num">${none}</td>`;
+      tb.appendChild(tr);
+    }
+  }
+
+  $('rig').addEventListener('change', () => { S.A = null; rebuild(); });
+  $('oSel').addEventListener('change', () => { S.A = null; rebuild(); });
+  $('showRays').addEventListener('change', drawA);
+  window.addEventListener('resize', drawAll);
+  if (window.matchMedia) { window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', drawAll); }
+  new MutationObserver(drawAll).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  init3(); rebuild(); fillTable();
+})();
+</script>
+</body>
+</html>
