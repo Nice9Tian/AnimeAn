@@ -1,0 +1,6 @@
+name = "w_orient0_parity"
+version = "0.1.0"
+defaultTargets = ["WOrient0"]
+
+[[lean_lib]]
+name = "WOrient0"
