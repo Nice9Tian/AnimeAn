@@ -128,8 +128,8 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
     <span class="cap">一套 H、V 叫一个"装置"（下文也叫"架"）。这个下拉框控制全页的图。在左图里移动或点击鼠标，右图显示那一点的全部原像。</span>
   </div>
   <div class="row">
-    <div class="pane"><h4>画布平面：导引线 H、V（箭头是正方向）张出的面。每对折线段张出一张平行四边形小格，<span class="sw f"></span>正面 <span class="sw b"></span>背面，叠两层颜色更深，<span class="sw c"></span>粗线是折缝；虚线小圈是 H、V 的其它交点（第 2 节）。右上角可切到立体视图：先从正上方看，与左图同一取景，再慢慢抬起、转到斜视（纸面与正背面的说明在第 1 节）</h4><div class="cvwrap"><canvas id="cvA" aria-label="画布平面"></canvas><canvas id="cvA3" class="off" aria-label="画布平面（立体）"></canvas><div class="vt"><button type="button" data-v="2" class="on">2D</button><button type="button" data-v="3">3D</button><span class="vt3 off"><label>抬起 <input type="range" class="vlift" min="0" max="100" value="55"></label><label><input type="checkbox" class="vext" checked> 外延</label></span></div></div></div>
-    <div class="pane"><h4>参数平面 (ℓ<sub>h</sub>, ℓ<sub>v</sub>)：矩形是画出的面，格线是折线的节点，矩形外是外延；圆点是原像，带虚线环的落在外延上。把鼠标放到一个小格上，左图高亮它的平行四边形</h4><canvas id="cvAp" aria-label="参数平面"></canvas></div>
+    <div class="pane"><h4>画布平面：导引线 H、V（箭头是正方向）张出的面。每对折线段张出一张平行四边形小格，<span class="sw f"></span>正面 <span class="sw b"></span>背面，叠两层颜色更深，<span class="sw c"></span>粗线是折缝；虚线小圈是 H、V 的其它交点（第 2 节）。右上角可切到立体视图：先从正上方看，与左图同一取景，再慢慢抬起、转到斜视；左键拖动旋转，Shift+拖动或右键拖动平移，滚轮缩放（纸面与正背面的说明在第 1 节）</h4><div class="cvwrap"><canvas id="cvA" aria-label="画布平面"></canvas><canvas id="cvA3" class="off" aria-label="画布平面（立体）"></canvas><div class="vt"><button type="button" data-v="2" class="on">2D</button><button type="button" data-v="3">3D</button><span class="vt3 off"><label>抬起 <input type="range" class="vlift" min="0" max="100" value="55"></label><label><input type="checkbox" class="vext" checked> 外延</label></span></div></div></div>
+    <div class="pane"><h4>参数平面 (ℓ<sub>h</sub>, ℓ<sub>v</sub>)：这就是那张纸本身，整张都是正面，所以只用一种颜色；颜色淡的小格是贴到画布后翻成背面的。矩形是画出的面，格线是折线的节点，矩形外是外延；圆点是原像，颜色是它在画布上露出的那一面，带虚线环的落在外延上。把鼠标放到一个小格上，左图（2D 或 3D）和第 1 节的立体图都高亮它</h4><canvas id="cvAp" aria-label="参数平面"></canvas></div>
   </div>
   <div class="readout" id="roA">把鼠标移到左图上。</div>
   <div class="tiles">
@@ -165,7 +165,7 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
     <button id="viewTop">俯视</button> <button id="viewSide">侧视</button> <button id="viewReset">复位</button>
     <span class="rigname" id="rigB3"></span>
   </div>
-  <div class="pane"><h4>拖动旋转，滚轮缩放，单击纸面或地面放探针 A（竖线，经过点中的那一点）。<span class="sw f"></span>纸的正面 <span class="sw b"></span>纸的背面；探针每穿过纸一次就是 A 的一个原像，圆点按穿过的那一面染色。画出的面用实色，外延用同样两色的淡色；外延本是无限的，这里画到盖住 A 的全部原像为止。粗线是导引线 H、V（颜色同第 0 节），细线是小格的边，<span class="sw c"></span>色的是折缝，地面上的小球是其它交点</h4><canvas id="cv3" class="wide3" aria-label="抬起的纸面"></canvas></div>
+  <div class="pane"><h4>左键拖动旋转，Shift+拖动或右键拖动平移，滚轮缩放，单击纸面或地面放探针 A（竖线，经过点中的那一点）。<span class="sw f"></span>纸的正面 <span class="sw b"></span>纸的背面；探针每穿过纸一次就是 A 的一个原像，圆点按穿过的那一面染色。画出的面用实色，外延用同样两色的淡色；外延本是无限的，这里画到盖住 A 的全部原像为止。粗线是导引线 H、V（颜色同第 0 节），细线是小格的边，<span class="sw c"></span>色的是折缝，地面上的小球是其它交点</h4><canvas id="cv3" class="wide3" aria-label="抬起的纸面"></canvas></div>
   <div class="readout" id="ro3"></div>
 </div>
 <p class="cap">抬起量为 0 时就是第 0 节左图：几层纸压在同一个平面上。抬起后 z 与 ℓ<sub>h</sub> 成正比，只为把层分开，没有几何含义；V 留在地面上，H 跟着纸抬起。弯 100 px 的装置里纸在中间折了两道，面中央三层叠在一起，探针放到那里会穿过三层。</p>
@@ -457,8 +457,10 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
     opts = opts || {};
     for (const c of F.cells) {
       const [x0, y0] = m.to(F.hc[c.i] - F.ha, F.vc[c.j] - F.va), [x1, y1] = m.to(F.hc[c.i + 1] - F.ha, F.vc[c.j + 1] - F.va);
-      ctx.fillStyle = hexA(c.orient === F.orient0 ? C.front : C.back, opts.hl && opts.hl.i === c.i && opts.hl.j === c.j ? 0.9 : 0.3);
+      const hl = opts.hl && opts.hl.i === c.i && opts.hl.j === c.j;
+      ctx.fillStyle = hexA(C.front, hl ? 0.7 : c.orient === F.orient0 ? 0.34 : 0.1);
       ctx.fillRect(x0, y1, x1 - x0, y0 - y1);
+      if (hl) { ctx.strokeStyle = C.accent; ctx.lineWidth = 2; ctx.strokeRect(x0, y1, x1 - x0, y0 - y1); }
     }
     ctx.strokeStyle = C.line; ctx.lineWidth = 0.6;
     for (let i = 0; i <= F.nh; i++) { const [x, ya] = m.to(F.hc[i] - F.ha, -F.va), [, yb] = m.to(0, F.vc[F.nv] - F.va); ctx.beginPath(); ctx.moveTo(x, ya); ctx.lineTo(x, yb); ctx.stroke(); }
@@ -506,7 +508,9 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
   // ---- fig A: explorer
   function drawA() {
     const F = S.F; const s = solve(F, S.A);
-    if (VIEWS.A && VIEWS.A.on) VIEWS.A.build(); else {
+    // the 3D views follow the hover: a hover only moves the highlight, a new A rebuilds the view
+    if (T3.ok) T3.setHl(S.hl);
+    if (VIEWS.A && VIEWS.A.on) { if (VIEWS.A.builtFor === S.A) VIEWS.A.setHl(S.hl); else VIEWS.A.build(); } else {
       const { ctx, w, h } = fit($('cvA')); const m = mapper(S.box, w, h);
       drawCanvasPlane(ctx, w, h, F, m, { rays: $('showRays').checked, hl: S.hl });
       const [ax, ay] = m.to(S.A[0], S.A[1]); dot(ctx, ax, ay, 5, C.accent, C.panel); label(ctx, 'A', ax + 8, ay - 8, C.accent);
@@ -664,7 +668,7 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
   // click on the paper/ground, opts.extras(F, d) may add geometry, opts.ro names a readout element. Fig B′ owns one; figs A/D/E switch to one.
   function view3(cv, opts) {
     // fov tweens from 4° (near-orthographic, matching the flat 2D drawing) to 36°; blend ∈ [0, 1] mixes the 2D framing into the natural fit
-    const V = { ok: false, az: -1.1, el: 0.9, dist: 1, k: 0.55, kUser: 0.55, fov: 36, blend: 1, flat: null, anim: null, ext: true, center: null, faces: [], on: true };
+    const V = { ok: false, az: -1.1, el: 0.9, dist: 1, k: 0.55, kUser: 0.55, fov: 36, blend: 1, flat: null, anim: null, ext: true, center: null, faces: [], on: true, pan: [0, 0, 0], hlMesh: null };
     if (!window.THREE) { V.fail = '三维库 three.js 没有加载（立体图需要联网），其余各图不受影响。'; return V; }
     try { V.renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: true, alpha: true }); } catch (e) { V.fail = '这个浏览器没有 WebGL，立体图略过。'; return V; }
     V.ok = true;
@@ -677,12 +681,19 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
     const Z3 = (F, ah) => V.k * 0.6 * (ah - F.ha);
     const P3 = (F, ah, av) => { const p = hv(F, ah - F.ha, av - F.va); return [p[0], p[1], Z3(F, ah)]; };
     let down = null, moved = false;
-    cv.addEventListener('pointerdown', ev => { V.anim = null; down = [ev.clientX, ev.clientY, V.az, V.el]; moved = false; cv.setPointerCapture(ev.pointerId); });
-    cv.addEventListener('pointermove', ev => { if (!down) return; const dx = ev.clientX - down[0], dy = ev.clientY - down[1]; if (Math.hypot(dx, dy) > 4) moved = true; if (moved) { V.az = down[2] - dx * 0.008; V.el = Math.min(1.5607, Math.max(0.03, down[3] + dy * 0.008)); V.render(); } });
+    // left-drag orbits; shift-drag or right-drag pans (moves the view target in the screen plane, scaled so the scene follows the pointer)
+    cv.addEventListener('contextmenu', ev => ev.preventDefault());
+    cv.addEventListener('pointerdown', ev => { V.anim = null; down = [ev.clientX, ev.clientY, V.az, V.el, ev.button === 2 || ev.shiftKey, V.pan.slice()]; moved = false; cv.setPointerCapture(ev.pointerId); });
+    cv.addEventListener('pointermove', ev => {
+      if (!down) return; const dx = ev.clientX - down[0], dy = ev.clientY - down[1]; if (Math.hypot(dx, dy) > 4) moved = true; if (!moved) return;
+      if (down[4]) { const s = 2 * V.half * V.dist / (cv.clientHeight || 1), ca = Math.cos(V.az), sa = Math.sin(V.az), se = Math.sin(V.el), ce = Math.cos(V.el); const right = [-sa, ca, 0], up = [-ca * se, -sa * se, ce]; for (let k = 0; k < 3; k++) V.pan[k] = down[5][k] - right[k] * dx * s + up[k] * dy * s; }
+      else { V.az = down[2] - dx * 0.008; V.el = Math.min(1.5607, Math.max(0.03, down[3] + dy * 0.008)); }
+      V.render();
+    });
     cv.addEventListener('pointerup', ev => { if (down && !moved) V.pick(ev); down = null; });
     cv.addEventListener('pointercancel', () => { down = null; });
     cv.addEventListener('wheel', ev => { ev.preventDefault(); V.anim = null; V.dist = Math.min(4, Math.max(0.25, V.dist * Math.exp(ev.deltaY * 0.0012))); V.render(); }, { passive: false });
-    V.view = (az, el, dist) => { V.anim = null; V.az = az; V.el = el; if (dist) V.dist = dist; V.render(); };
+    V.view = (az, el, dist) => { V.anim = null; V.az = az; V.el = el; if (dist) { V.dist = dist; V.pan = [0, 0, 0]; } V.render(); };
     V.build = function () {
       if (!V.ok || !V.on || !cv.clientWidth) return;
       const F = S.F, g = V.group;
@@ -749,7 +760,22 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
       const b = V.flat ? V.blend : 1, lerp = (u, v) => u + (v - u) * b;
       V.half = V.flat ? lerp(V.flat.half, half) : half;
       V.center = V.flat ? [lerp(V.flat.center[0], cx), lerp(V.flat.center[1], cy), lerp(0, zc)] : [cx, cy, zc];
+      V.builtFor = A; V.hlMesh = null; V.setHl(opts.hl ? opts.hl() : null, true);
       V.render();
+    };
+    // the cell hovered in the parameter plane, drawn on the paper in the accent colour (both sides); quiet = no render
+    V.setHl = function (cell, quiet) {
+      if (!V.ok) return;
+      if (V.hlMesh) { V.group.remove(V.hlMesh); V.hlMesh.geometry.dispose(); V.hlMesh.material.dispose(); V.hlMesh = null; }
+      if (cell && V.on) {
+        const F = S.F, a0 = F.hc[cell.i], a1 = F.hc[cell.i + 1], b0 = F.vc[cell.j], b1 = F.vc[cell.j + 1];
+        const p = [P3(F, a0, b0), P3(F, a1, b0), P3(F, a1, b1), P3(F, a0, b1)], pos = [];
+        for (const q of [p[0], p[1], p[2], p[0], p[2], p[3]]) pos.push(q[0], q[1], q[2]);
+        const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        V.hlMesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: new THREE.Color(C.accent), side: THREE.DoubleSide, transparent: true, opacity: 0.85, depthTest: false }));  // drawn through the other layers so a hidden cell still shows
+        V.hlMesh.renderOrder = 10; V.group.add(V.hlMesh);
+      }
+      if (!quiet) V.render();
     };
     // tween between the flat state (straight above, near-orthographic, layers a hair apart, framed like the 2D canvas) and the lifted
     // oblique view; toward3 = true lifts, false lays the sheet back down. Geometry is rebuilt every frame since the lift moves vertices.
@@ -773,13 +799,13 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
     V.setFlat = function () {
       const box = opts.box && opts.box(); if (!box) return;
       V.flat = { half: (box[2] - box[0]) / 2, center: [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2] };
-      Object.assign(V, { k: 0.015, el: 1.5607, az: -Math.PI / 2, fov: 4, dist: 1, blend: 0, anim: null });
+      Object.assign(V, { k: 0.015, el: 1.5607, az: -Math.PI / 2, fov: 4, dist: 1, blend: 0, anim: null, pan: [0, 0, 0] });
     };
     V.render = function () {
       if (!V.ok || !V.center || !cv.clientWidth) return;
       const w = cv.clientWidth, h = cv.clientHeight || w;
       if (V.w !== w || V.h !== h) { V.renderer.setSize(w, h, false); V.w = w; V.h = h; }
-      const cam = V.camera, R = V.half * V.dist / Math.tan(V.fov * Math.PI / 360), c = V.center;
+      const cam = V.camera, R = V.half * V.dist / Math.tan(V.fov * Math.PI / 360), c = [V.center[0] + V.pan[0], V.center[1] + V.pan[1], V.center[2] + V.pan[2]];
       cam.aspect = w / h; cam.fov = V.fov; cam.near = Math.max(1, R * 0.05); cam.far = R * 20; cam.updateProjectionMatrix();
       cam.position.set(c[0] + R * Math.cos(V.el) * Math.cos(V.az), c[1] + R * Math.cos(V.el) * Math.sin(V.az), c[2] + R * Math.sin(V.el));
       cam.lookAt(c[0], c[1], c[2]);
@@ -797,7 +823,7 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
   }
 
   // fig B′: its own view with the page-level lift/extension controls
-  const T3 = view3($('cv3'), { probe: () => T3.A, onPick: xy => { T3.A = xy; T3.build(); }, ro: 'ro3' });
+  const T3 = view3($('cv3'), { probe: () => T3.A, onPick: xy => { T3.A = xy; T3.build(); }, ro: 'ro3', hl: () => S.hl });
   T3.A = null;
   function init3() {
     if (!T3.ok) { $('ro3').textContent = T3.fail; return; }
@@ -827,7 +853,7 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
     bar.querySelector('.vext').addEventListener('change', ev => { V.ext = ev.target.checked; V.build(); });
     return V;
   }
-  addToggle('A', $('cvA'), $('cvA3'), { probe: () => S.A, onPick: xy => { S.A = xy; S.hl = null; drawA(); }, redraw: () => drawA(), box: () => S.box });
+  addToggle('A', $('cvA'), $('cvA3'), { probe: () => S.A, onPick: xy => { S.A = xy; S.hl = null; drawA(); }, redraw: () => drawA(), box: () => S.box, hl: () => S.hl });
   addToggle('D', $('cvD'), $('cvD3'), { probe: () => S.far, onPick: xy => { S.far = xy; drawD(); }, redraw: () => drawD(), box: () => boxD() });
   addToggle('E', $('cvE'), $('cvE3'), {
     probe: () => { const [P0, P1] = rigs[$('rig').value].path; return [P0[0] + (P1[0] - P0[0]) * S.path, P0[1] + (P1[1] - P0[1]) * S.path]; },
