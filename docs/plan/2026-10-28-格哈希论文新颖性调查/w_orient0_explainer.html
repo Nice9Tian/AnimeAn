@@ -101,7 +101,7 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
 <div class="eq">hv(ℓ<sub>h</sub>, ℓ<sub>v</sub>) = O + (H(ℓ<sub>h</sub>) − O) + (V(ℓ<sub>v</sub>) − O) = H(ℓ<sub>h</sub>) + V(ℓ<sub>v</sub>) − O<small>H(ℓ) 表示从 O 沿 H 走弧长 ℓ 到达的点。当 ℓ<sub>h</sub>、ℓ<sub>v</sub> 取遍两条线各自的弧长范围时，hv 在画布上张出一张网格状的"面"。</small></div>
 <p>这是正向。实际工作里更常要反着来：画布上给一点 <i class="v">A</i>，问哪些 (ℓ<sub>h</sub>, ℓ<sub>v</sub>) 会落到 <i class="v">A</i>。这些 (ℓ<sub>h</sub>, ℓ<sub>v</sub>) 叫 <i class="v">A</i> 的<b>原像</b>。两条线都是直线时答案只有一个；线一弯，这张面可能在某处折叠，同一个 <i class="v">A</i> 就可能有 3 个原像，也可能一个都没有。</p>
 <p>折叠处的原像又分两种：面没翻过来的那层叫<b>正面</b>，翻过来的那层叫<b>背面</b>。"翻没翻过来"怎么用数学判断，是第 1、2 节的事；这里先记两个数：<i class="v">A</i> 的正面原像有 <i class="v">f</i> 个，背面原像有 <i class="v">b</i> 个（两者都把落在外延上的原像算在内）。<b>裁断规则</b>是：画布上一点连一个正面原像都没有，就不往这一点贴图案，把它裁掉。所以裁断要知道的是 <i class="v">f</i> 是不是 0。</p>
-<p>w·orient0 回答的是：<b>对这副轴线，<i class="v">f</i> − <i class="v">b</i> 是哪个常数。</b>它是 +1 时，每一点都有 <i class="v">f</i> ≥ 1，裁断根本不会发生；它是 −1 或 0 时，一定有些点 <i class="v">f</i> = 0，具体是哪些点仍要逐点算。算这个常数只用六个方向向量（<i class="v">H</i>、<i class="v">V</i> 的四个端点方向，加上 <i class="v">O</i> 处的两个切向）和一次乘法。"几乎每一点"的例外只有小格边界的像，第 4 节叫它们非正则点，它们只占零面积。</p>
+<p>w·orient0 回答的是：<b>对这副轴线，<i class="v">f</i> − <i class="v">b</i> 是哪个常数。</b>它是 +1 时，每一点都有 <i class="v">f</i> ≥ 1，裁断根本不会发生；它是 −1 或 0 时，一定有些点 <i class="v">f</i> = 0，具体是哪些点仍要逐点算。算这个常数只用六个方向向量——四条外延伸出去的方向，也就是 <i class="v">H</i>、<i class="v">V</i> 各自首段的反方向和末段的方向；再加上 <i class="v">O</i> 所在那一段 <i class="v">H</i> 和那一段 <i class="v">V</i> 的方向，即 hv 在 <i class="v">O</i> 处的两个偏导数——和一次乘法。准确定义见第 2、3 节。"几乎每一点"的例外只有小格边界的像，第 4 节叫它们非正则点，它们只占零面积。</p>
 
 <div class="fig" id="figA">
   <div class="controls">
