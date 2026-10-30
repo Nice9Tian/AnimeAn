@@ -95,7 +95,7 @@ Mapping 页的按钮：**H Center Line**、**V Center Line**、**Mapping Area**�
 ## 10. 脚本与调试
 
 - **Python Debug** 窗：上半是脚本的输出（Auto Mapping 摘要、警告、异常），下半是一行命令输入，可以直接执行 Python。工具"没反应"时先看这里。
-- 想改工具行为：编辑 `pyfile\` 下的脚本，运行仓库根目录的 `sync_pyfiles.ps1` 把脚本同步到每个 exe 旁，重启程序即生效；没有热重载，重启是唯一支持的方式。改了 C++ 才需要重新构建。
+- 想改工具行为：编辑 `pyfile\` 下的脚本。生效方式：[缺省]代码完成后填入。改了 C++ 只重编后端。
 - 需要更详细的事件日志时在 Python Debug 里执行 `hook_test.enable_verbose()`。
 
 ## 11. 各工具的详细用法

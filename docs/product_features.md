@@ -67,7 +67,7 @@
 
 ## 脚本与调试
 
-- 工具行为在 `pyfile/` 里改，同步脚本后重启即生效，不重新编译；Python Debug 窗看输出、执行命令。现有。机制（三级）：`mechanism/hook_events.md`、`mechanism/build_deploy.md`。
+- 工具行为在 `pyfile/` 里改，不重新编译；Python Debug 窗看输出、执行命令。现有。机制（三级）：`mechanism/hook_events.md`、`mechanism/build_deploy.md`。
 - 脚本注册的菜单、设置窗、选项面板、图层右键项由网页界面按声明渲染。现有。机制（三级）：`mechanism/hook_events.md`。
 
 ## 部署
