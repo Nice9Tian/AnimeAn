@@ -48,10 +48,11 @@
 
 ### 分工
 
-- **C++ 通用，Python 具体。** C++ 只写基础函数：手势与渲染、模型与几何、声明式界面、通用开关、事件派发。功能的含义（工具流程、属性名、颜色、数据结构、菜单内容、图层联动、Auto Mapping 全部算法）在 `pyfile/*.py`。C++ 里出现工具名、属性名、颜色常量或「if 工具 == …」就是放错了地方：抽成机制，语义留在 Python。
+- **C++ 通用，Python 具体。** C++ 只写基础函数：手势、模型与几何、通用开关、事件派发；渲染和声明式界面在网页端。功能的含义（工具流程、属性名、颜色、数据结构、菜单内容、图层联动、Auto Mapping 全部算法）在 `pyfile/*.py`。C++ 里出现工具名、属性名、颜色常量或「if 工具 == …」就是放错了地方：抽成机制，语义留在 Python。
 - **C++ 内建的基础工具只有三个**：Pen、Eraser、视口缩放平移。其余工具一律 Python；不为了性能把功能搬回 C++。
-- **机制 / 策略成对。** 加一个 C++ 机制就要有一个 Python 策略模块用它；handle 事件是工具面。**新工具**只需 `PaintOpenGLWidget::Tool` 一个枚举项、`toolName` / `toolspanel` / `toolcontrolconfig::fileNameForTool` 各一处、加一个 Python 模块；漏一处会静默拿到画笔的选项面板。
+- **机制 / 策略成对。** 加一个 C++ 机制就要有一个 Python 策略模块用它；handle 事件是工具面。**新工具**：[缺省]代码完成后填入。
 - **Python 层装会变的东西。** 实验性算法、随功能扩展变化的逻辑都在 Python。现成的库能省事就用，wheel 入 `pywheels/`、经 `pydeps.ensure()` 加载并保留降级路径；这是不重复造轮子，不是原则。
+- **Rust 只做外壳，不写算法。**
 
 ### 共享与空间
 
@@ -74,10 +75,10 @@
 
 ### 部署与脚本
 
-- 新增 `pyfile/` 模块要进 `CMakeLists.txt` 的**两份**复制清单（构建后复制、`deploy_AnimeAn`），漏了就不进 `dist\AnimeAn\`。
-- 改了 `.py` 不重建时跑 `sync_pyfiles.ps1`；用户测试用的是主仓库的 `dist\AnimeAn\AnimeAn.exe`。
+- 新增 `pyfile/` 模块的部署：[缺省]代码完成后填入。
+- 改了 `.py` 不重建时跑 `sync_pyfiles.ps1`；用户测试的程序：[缺省]代码完成后填入。
 - 系统 PATH 上的 `python` 是无效的 Store 存根；用 `py` 启动器或 `dist\AnimeAn\python312\python.exe`。
-- 程序不落盘用户数据：文档级状态进 scriptData，机器级偏好才进 QSettings。
+- 程序不落盘用户数据：文档级状态进 scriptData；机器级偏好：[缺省]代码完成后填入。
 
 ### 文档
 

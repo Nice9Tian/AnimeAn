@@ -19,7 +19,7 @@
 | 纹理页 | Texture tab | 规划 | 纹理板分页栏里的一页，一页一个纹理、各自独立场景；在「映射纹理」下拉里选用哪一页。 |
 | 映射纹理 | Mapping Texture（下拉） | 规划 | Auto Mapping 工具选项块里的下拉，点开列出纹理页；选中 Auto-Mapping 图层时选项块自动显示，在那里改该单元的目标纹理。 |
 | 目标用户 | 动画人 | 现有 | 用户 2026-09-28 确认的发布对象。 |
-| 基座 | Qt base / Qt framework | 现有 | C++ / Qt 这一层：渲染、窗口、数据模型、文件、嵌入 Python。不变。 |
+| 基座 | Qt base / Qt framework | 现有 | 后端这一层：数据模型、文件、嵌入 Python。 |
 | 基础函数 | generic mechanism / basic function | 现有 | C++ 提供给 Python 的通用能力：手势、覆盖层、模型读写、几何、声明式界面、通用开关。不含任何工具的含义。 |
 | 机制 / 策略 | mechanism / policy | 现有 | 一对概念：C++ 的机制不知道工具是什么，Python 的策略决定它意味着什么。每个机制对应一个 Python 策略模块。 |
 | 功能层 | Python layer / `pyfile/*.py` | 现有 | 放实验性算法和随功能扩展变化的逻辑；改它不重新编译。 |
@@ -31,7 +31,7 @@
 | 快照式历史 | snapshot history / `SceneHistory` | 现有 | 每步整份模型入历史，全局序号排序；两块板各一份。 |
 | 共享轮子 | shared wheel / `beziersplit.h` ↔ `bezier.py`、`viewscale.h` ↔ `viewscale.py` | 现有 | 只有一个家的数学：贝塞尔劈分、屏幕 ↔ 画布换算；C++ 与 Python 各一份镜像。 |
 | 屏幕像素 / 画布像素 | screen px / canvas (document) px | 现有 | 手和眼的量按屏幕像素、随缩放换算；作品的量按画布像素、不换算。 |
-| 自包含文件夹 / 压缩包 | `dist\AnimeAn\` | 现有 | 部署形态：exe、Qt 运行库、`python312\`、脚本、wheel 在一起，离线可用；发布就是这个文件夹打成的压缩包，不做安装器。 |
+| 自包含文件夹 / 压缩包 | `dist\AnimeAn\` | 现有 | 部署形态：Tauri 外壳、后端、`python312\`、脚本、wheel 在一起，离线可用；发布就是这个文件夹打成的压缩包，不做安装器。 |
 | 导入 | Import ▸ Raster / OpenToonz Lines / Clip Studio Paint；`toonz_to_dict.py`、`clipreader` | 现有（承诺，待完整测试） | 别的软件的线稿导进主画板或纹理板。 |
 
 ## 3. 界面与工作区

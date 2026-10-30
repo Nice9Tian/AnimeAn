@@ -23,6 +23,6 @@
 | 视平线 | horizon_line | 菜单 Auto Mapping | `horizon_line.md` |
 | To 3D | to_3d | 菜单 Auto Mapping | `to_3d.md` |
 
-`id` 是代码里的工具名（`PaintOpenGLWidget::Tool` 的小写，或 `pyfile/extra_tools.py` 里的 `name`）。旧版本的 Mapping 页曾有一个 **Midline** 按钮：hook 系统的遗留示例，只打印日志，没有用户功能。用户 2026-09-28 决定删除，同日已从代码中删除，不另立页。
+`id` 是代码里的工具名（画板引擎工具枚举的小写，或 `pyfile/extra_tools.py` 里的 `name`）。旧版本的 Mapping 页曾有一个 **Midline** 按钮：hook 系统的遗留示例，只打印日志，没有用户功能。用户 2026-09-28 决定删除，同日已从代码中删除，不另立页。
 
 图层、时间轴、洋葱皮、历史、纹理板、导入导出不是工具，见 `../user-workflow.md` 第 4、5、8、9 步。
