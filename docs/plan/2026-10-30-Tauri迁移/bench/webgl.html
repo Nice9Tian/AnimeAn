@@ -1,0 +1,166 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>WebGL draw bench</title>
+<style>body{margin:0;background:#fff;font:14px monospace}canvas{width:480px;height:270px;border:1px solid #888;display:block}pre{white-space:pre-wrap;padding:8px}</style>
+</head><body><canvas id="c" width="1920" height="1080"></canvas><pre id="out">running…</pre>
+<script>
+// Same scene and frames as main.cpp, drawn from geometry uploaded once: each
+// flattened stroke segment is one instanced quad, fills are triangle fans, and
+// a frame only changes the view uniform. readPixels forces the GPU to finish.
+const W = 1920, H = 1080, SEGMENTS = 40, SUB = 4;
+function makeStrokes(count) {
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    let x = 960 + 900 * Math.sin(i * 0.7), y = 540 + 500 * Math.cos(i * 1.3);
+    const pts = [x, y];
+    for (let j = 0; j < SEGMENTS; j++) {
+      const a = (i + j) * 0.37, b = (i - j) * 0.53;
+      const x1 = x + 12 * Math.sin(a), y1 = y + 12 * Math.cos(b);
+      const x2 = x1 + 12 * Math.cos(a), y2 = y1 + 12 * Math.sin(b);
+      const x3 = x2 + 12 * Math.sin(b), y3 = y2 + 12 * Math.cos(a);
+      pts.push(x1, y1, x2, y2, x3, y3);
+      x = x3; y = y3;
+    }
+    out.push(pts);
+  }
+  return out;
+}
+function makeFills(count) {
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    const cx = 960 + 880 * Math.sin(i * 1.1), cy = 540 + 480 * Math.cos(i * 0.9);
+    const pts = [cx + 60, cy];
+    for (let j = 1; j <= 6; j++) {
+      const a0 = (j - 1) * Math.PI / 3, a1 = j * Math.PI / 3, r = 60 + 20 * Math.sin(i + j);
+      pts.push(cx + r * Math.cos(a0 + 0.3), cy + r * Math.sin(a0 + 0.3),
+               cx + r * Math.cos(a1 - 0.3), cy + r * Math.sin(a1 - 0.3),
+               cx + r * Math.cos(a1), cy + r * Math.sin(a1));
+    }
+    out.push({ cx, cy, pts });
+  }
+  return out;
+}
+function bez(p0, p1, p2, p3, t) {
+  const u = 1 - t;
+  return u*u*u*p0 + 3*u*u*t*p1 + 3*u*t*t*p2 + t*t*t*p3;
+}
+function flattenStrokes(strokes) {
+  const data = new Float32Array(strokes.length * SEGMENTS * SUB * 4);
+  let n = 0;
+  for (const pts of strokes) {
+    let px = pts[0], py = pts[1];
+    for (let k = 2; k < pts.length; k += 6) {
+      const x0 = pts[k-2], y0 = pts[k-1];
+      for (let s = 1; s <= SUB; s++) {
+        const t = s / SUB;
+        const qx = bez(x0, pts[k], pts[k+2], pts[k+4], t), qy = bez(y0, pts[k+1], pts[k+3], pts[k+5], t);
+        data[n++] = px; data[n++] = py; data[n++] = qx; data[n++] = qy;
+        px = qx; py = qy;
+      }
+    }
+  }
+  return data;
+}
+function fanFills(fills) {
+  const data = [];
+  for (const { cx, cy, pts } of fills) {
+    let px = pts[0], py = pts[1];
+    for (let k = 2; k < pts.length; k += 6) {
+      const x0 = pts[k-2], y0 = pts[k-1];
+      for (let s = 1; s <= 6; s++) {
+        const t = s / 6;
+        const qx = bez(x0, pts[k], pts[k+2], pts[k+4], t), qy = bez(y0, pts[k+1], pts[k+3], pts[k+5], t);
+        data.push(cx, cy, px, py, qx, qy);
+        px = qx; py = qy;
+      }
+    }
+  }
+  return new Float32Array(data);
+}
+const canvas = document.getElementById("c");
+const gl = canvas.getContext("webgl2", { antialias: true, alpha: false, preserveDrawingBuffer: false });
+function program(vs, fs) {
+  const p = gl.createProgram();
+  for (const [type, src] of [[gl.VERTEX_SHADER, vs], [gl.FRAGMENT_SHADER, fs]]) {
+    const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    gl.attachShader(p, s);
+  }
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+const header = `#version 300 es
+precision highp float;
+uniform vec3 view;
+vec4 clip(vec2 p) { vec2 s = p * view.z + view.xy; return vec4(s.x / 960.0 - 1.0, 1.0 - s.y / 540.0, 0.0, 1.0); }
+`;
+const lineProgram = program(header + `
+in vec2 a; in vec2 b;
+void main() {
+  const float half_w = 1.5;
+  float along = float(gl_VertexID == 1 || gl_VertexID == 2 || gl_VertexID == 4);
+  float side = (gl_VertexID == 0 || gl_VertexID == 1 || gl_VertexID == 3) ? -1.0 : 1.0;
+  if (gl_VertexID == 3) { along = 1.0; side = 1.0; }
+  if (gl_VertexID == 4) { along = 1.0; side = -1.0; }
+  if (gl_VertexID == 5) { along = 0.0; side = 1.0; }
+  if (gl_VertexID == 2) { along = 0.0; side = 1.0; }
+  if (gl_VertexID == 1) { along = 1.0; side = -1.0; }
+  if (gl_VertexID == 0) { along = 0.0; side = -1.0; }
+  vec2 d = b - a; float len = max(length(d), 1e-4); d /= len;
+  vec2 n = vec2(-d.y, d.x);
+  vec2 p = mix(a - d * half_w, b + d * half_w, along) + n * side * half_w;
+  gl_Position = clip(p);
+}`, `#version 300 es
+precision highp float; out vec4 c; void main() { c = vec4(20.0, 20.0, 30.0, 255.0) / 255.0; }`);
+const fillProgram = program(header + `
+in vec2 p; void main() { gl_Position = clip(p); }`, `#version 300 es
+precision highp float; out vec4 c; void main() { c = vec4(90.0/255.0, 140.0/255.0, 220.0/255.0, 0.627); }`);
+gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+gl.viewport(0, 0, W, H);
+const px = new Uint8Array(4);
+const median = (a) => a.slice().sort((x, y) => x - y)[a.length >> 1];
+const tick = () => new Promise((r) => setTimeout(r, 0));
+async function run() {
+  const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+  const lines = ["GPU " + gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL), "samples " + gl.getParameter(gl.SAMPLES)];
+  for (const count of [500, 3000, 10000]) {
+    const t0 = performance.now();
+    const lineData = flattenStrokes(makeStrokes(count));
+    const fillData = fanFills(makeFills(count / 10 | 0));
+    const lineVao = gl.createVertexArray(); gl.bindVertexArray(lineVao);
+    const lineBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, lineBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, lineData, gl.STATIC_DRAW);
+    const la = gl.getAttribLocation(lineProgram, "a"), lb = gl.getAttribLocation(lineProgram, "b");
+    gl.enableVertexAttribArray(la); gl.vertexAttribPointer(la, 2, gl.FLOAT, false, 16, 0); gl.vertexAttribDivisor(la, 1);
+    gl.enableVertexAttribArray(lb); gl.vertexAttribPointer(lb, 2, gl.FLOAT, false, 16, 8); gl.vertexAttribDivisor(lb, 1);
+    const fillVao = gl.createVertexArray(); gl.bindVertexArray(fillVao);
+    const fillBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, fillBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, fillData, gl.STATIC_DRAW);
+    const fp = gl.getAttribLocation(fillProgram, "p");
+    gl.enableVertexAttribArray(fp); gl.vertexAttribPointer(fp, 2, gl.FLOAT, false, 0, 0);
+    const buildMs = performance.now() - t0;
+    const frames = 15, times = [];
+    for (let f = 0; f < frames; f++) {
+      const t = performance.now();
+      const s = 1 + 0.002 * f;
+      gl.clearColor(1, 1, 1, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.useProgram(fillProgram); gl.uniform3f(gl.getUniformLocation(fillProgram, "view"), f * 2, f, s);
+      gl.bindVertexArray(fillVao); gl.drawArrays(gl.TRIANGLES, 0, fillData.length / 2);
+      gl.useProgram(lineProgram); gl.uniform3f(gl.getUniformLocation(lineProgram, "view"), f * 2, f, s);
+      gl.bindVertexArray(lineVao); gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, lineData.length / 4);
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      times.push(performance.now() - t);
+      await tick();
+    }
+    lines.push(JSON.stringify({ strokes: count, segments: lineData.length / 4,
+      build_upload_ms: +buildMs.toFixed(1), webgl_cached_ms: +median(times).toFixed(1) }));
+    document.getElementById("out").textContent = lines.join("\n");
+    gl.deleteBuffer(lineBuf); gl.deleteBuffer(fillBuf); gl.deleteVertexArray(lineVao); gl.deleteVertexArray(fillVao);
+    await tick();
+  }
+  lines.push("DONE");
+  window.__result = lines;
+  document.getElementById("out").textContent = lines.join("\n");
+}
+run().catch((e) => { window.__result = ["ERROR " + e]; document.getElementById("out").textContent = "ERROR " + e; });
+</script></body></html>
