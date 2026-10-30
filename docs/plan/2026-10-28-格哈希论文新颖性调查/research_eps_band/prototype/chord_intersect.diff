@@ -1,0 +1,320 @@
+--- /c/Users/admin/AppData/Local/Temp/claude/C--Users-admin-Documents-AnimeAn/5fa6269e-6310-4f26-accb-0c15d47cf5bf/scratchpad/fable_band/py/chord_intersect_orig.py	2026-10-30 16:24:00.180451600 +0900
++++ /c/Users/admin/AppData/Local/Temp/claude/C--Users-admin-Documents-AnimeAn/5fa6269e-6310-4f26-accb-0c15d47cf5bf/scratchpad/fable_band/py/chord_intersect.py	2026-10-30 16:24:00.129786400 +0900
+@@ -43,9 +43,56 @@
+ except Exception:  # the embedded python has numpy; the pure-python path covers the rest
+     _np = None
+ 
+-_EPS = 1e-7           # tolerance on the segment parameters t, u in [0, 1]
++_EPS = 1e-7           # guide ENDS only: the sheet / extension label (on_sheet) uses t, u in [-EPS, 1 + EPS]
+ _DEDUP = 1e-6         # px: two SAME-orientation crossings closer than this in (l_h, l_v) are one preimage
+ 
++# ---- exact cell membership (prototype, fable_band) --------------------------------
++# A cell's INTERIOR sides are no longer tested on the cell's own (t, u) with a
++# band of EPS: each side is the line through the two ROUNDED nodes that bound
++# it (h[a] + v[b] as floats), and the test is the EXACT sign of orient2d on
++# those two nodes and c. The two cells beside a side ask the same question
++# about the same three points, so they get the same answer: the cells are the
++# closed quads of the rounded node mesh, which tile without gap or overlap
++# (a point exactly on a side or node is in every cell around it). Guide-end
++# sides stay open (the extension); the sheet / extension label still reads
++# t, u against [-EPS, 1 + EPS] at the guide ends only.
++#
++# Cost: the old float test is kept as a PREFILTER with a proven margin m per
++# cell (see _cell): |t_float - t| and the offset between the quad side and the
++# parallelogram side are both below m, so t < -m rejects and t > m accepts the
++# left side for certain, and only a point within m of a side (m ~ 1e-12 for
++# these rigs) pays for the side test, itself Shewchuk's stage-A float filter
++# with an exact rational fallback.
++from fractions import Fraction as _Fr
++_U = 2.0 ** -53
++_CCW = (3.0 + 16.0 * _U) * _U         # orient2d stage-A error bound factor (Shewchuk 1997)
++_KM = 64.0 * _U                       # prefilter margin factor (derivation in the fable_band report)
++EXACT_CALLS = [0]
++
++
++def _orient_exact(ax, ay, bx, by, cx, cy):
++    EXACT_CALLS[0] += 1
++    d = (_Fr(ax) - _Fr(cx)) * (_Fr(by) - _Fr(cy)) - (_Fr(ay) - _Fr(cy)) * (_Fr(bx) - _Fr(cx))
++    return (d > 0) - (d < 0)
++
++
++def _orient(ax, ay, bx, by, cx, cy):
++    """Exact sign of orient2d(a, b, c) = (a - c) x (b - c): +1 when a, b, c turn
++    counter-clockwise, 0 when collinear. The float value decides when it is
++    farther from 0 than its proven bound (or both products are exactly 0);
++    otherwise exact rational arithmetic."""
++    dl = (ax - cx) * (by - cy)
++    dr = (ay - cy) * (bx - cx)
++    det = dl - dr
++    bound = _CCW * (abs(dl) + abs(dr))
++    if det > bound:
++        return 1
++    if -det > bound:
++        return -1
++    if bound == 0.0:
++        return 0
++    return _orient_exact(ax, ay, bx, by, cx, cy)
++
+ 
+ def _cross(ax, ay, bx, by):
+     return ax * by - ay * bx
+@@ -380,13 +427,12 @@
+                 if abs(den) <= 1e-12 * (rl * math.hypot(sx, sy) + 1e-300):
+                     continue
+                 nx, ny = h[i][0] + v[j][0], h[i][1] + v[j][1]
+-                orient = 1 if rx * qy - ry * qx >= 0.0 else -1
+-                cand = (i, j, nx, ny, rx, ry, sx, sy, den, t_lo[i], t_hi[i], u_lo[j], u_hi[j], orient)
++                cand = self._cell(i, j, False)
+                 cells[(i, j)] = cand
+                 # the part on the sheet: t, u in [0, 1] whatever the cell, so
+                 # an end cell gets a second tuple with the bounds pinned
+                 if not (0 < i < last_i and 0 < j < last_j):
+-                    cand = (i, j, nx, ny, rx, ry, sx, sy, den, -_EPS, 1.0 + _EPS, -_EPS, 1.0 + _EPS, orient)
++                    cand = self._cell(i, j, True)
+                 xs = (nx, nx + rx, nx + qx, nx + rx + qx)
+                 ys = (ny, ny + ry, ny + qy, ny + ry + qy)
+                 cx0 = max(0, int((min(xs) - x0) * inv - eps))
+@@ -478,25 +524,94 @@
+         return raw
+ 
+     def _test(self, cx, cy, cands, raw):
+-        """The pair test on each candidate cell, appending the hits to raw;
+-        True when one of them has the origin's orientation. The arithmetic
+-        is that of _pairs_python, operation for operation, so the two paths
+-        agree to the last bit."""
++        """The cell test on each candidate, appending the hits to raw; True
++        when one of them has the origin's orientation. A hit is a point in the
++        closed quad of the rounded nodes (interior sides exact, see the module
++        header), within the guide-end bounds t_lo..u_hi of the tuple. Every
++        path (grid, matrix, numpy) ends in this function, so they agree to
++        the last bit; (t, u) are the float values of the old pair test."""
+         orient0 = self.orient0
+         same = False
+-        for i, j, nx, ny, rx, ry, sx, sy, den, t_lo, t_hi, u_lo, u_hi, orient in cands:
+-            dx, dy = cx - nx, cy - ny
++        for i, j, x00, y00, sx, sy, rx, ry, den, tmin, tmax, umin, umax, mb, ma, s, side in cands:
++            dx, dy = cx - x00, cy - y00
+             t = (dx * sy - dy * sx) / den
+-            if t < t_lo or t > t_hi:
++            if t < tmin or t > tmax:          # guide-end bounds and, for a bounded tuple, the margin
+                 continue
+             u = (dx * ry - dy * rx) / den
+-            if u < u_lo or u > u_hi:
++            if u < umin or u > umax:
+                 continue
++            m = ma
++            if mb:
++                # unbounded (extension) tuple: the margin grows with |c - N00|
++                x10, y10, x01, y01, x11, y11, hasL, hasR, hasB, hasT = side
++                m = ma + mb * (abs(dx) + abs(dy))
++                if (hasL and t < -m) or (hasR and t > 1.0 + m) or (hasB and u < -m) or (hasT and u > 1.0 + m):
++                    continue
++            if not (m < t < 1.0 - m and m < u < 1.0 - m):
++                # within m of a side: the exact side-line test decides
++                x10, y10, x01, y01, x11, y11, hasL, hasR, hasB, hasT = side
++                if hasL and t <= m and s * _orient(x00, y00, x01, y01, cx, cy) > 0:
++                    continue
++                if hasR and t >= 1.0 - m and s * _orient(x10, y10, x11, y11, cx, cy) < 0:
++                    continue
++                if hasB and u <= m and s * _orient(x00, y00, x10, y10, cx, cy) < 0:
++                    continue
++                if hasT and u >= 1.0 - m and s * _orient(x01, y01, x11, y11, cx, cy) > 0:
++                    continue
+             raw.append((i, j, t, u))
+-            if orient == orient0:
++            if s == orient0:
+                 same = True
+         return same
+ 
++    def _node_max(self):
++        nm = getattr(self, "_nmax", None)
++        if nm is None:
++            nm = self._nmax = (max(max(abs(p[0]), abs(p[1])) for p in self.h)
++                               + max(max(abs(p[0]), abs(p[1])) for p in self.v))
++        return nm
++
++    def _cell(self, i, j, sheet):
++        """The cell tuple _test reads, or None for a degenerate (parallel)
++        pair. Nodes Nkl = h[i + k] + v[j + l] (the same float sums for every
++        cell that shares them). sheet=True: the grid's sheet tuple, whose
++        guide-end sides are pinned to [-EPS, 1 + EPS] in t / u (what on_sheet
++        means). Prefilter margin m = ma + mb * (|dx| + |dy|) in parameter
++        units; mb = 0 for a bounded tuple (interior cell, or a sheet tuple),
++        whose points lie within |r| + |q| of N00."""
++        h, v = self.h, self.v
++        rx, ry = self._r[i]
++        qx, qy = self._q[j]
++        sx, sy = -qx, -qy
++        den = rx * sy - ry * sx
++        rl, ql = math.hypot(rx, ry), math.hypot(qx, qy)
++        if abs(den) <= 1e-12 * (rl * ql + 1e-300):
++            return None
++        last_i, last_j = self.n_h - 1, self.n_v - 1
++        s = 1 if rx * qy - ry * qx >= 0.0 else -1
++        inf = math.inf
++        t_lo = -_EPS if (sheet and i == 0) else -inf
++        t_hi = 1.0 + _EPS if (sheet and i == last_i) else inf
++        u_lo = -_EPS if (sheet and j == 0) else -inf
++        u_hi = 1.0 + _EPS if (sheet and j == last_j) else inf
++        span = rl + ql
++        scale = self._node_max() + 2.0 * span
++        ad = abs(den) * (1.0 - 1e-3)
++        bounded = sheet or (0 < i < last_i and 0 < j < last_j)
++        ma = _KM * scale * span * 2.0 / ad
++        mb = 0.0 if bounded else _KM * scale / ad
++        hasL, hasR, hasB, hasT = i > 0, i < last_i, j > 0, j < last_j
++        tmin = (-ma if hasL else -inf) if mb == 0.0 else t_lo
++        tmin = t_lo if not hasL else tmin
++        tmax = (1.0 + ma if hasR else inf) if mb == 0.0 else t_hi
++        tmax = t_hi if not hasR else tmax
++        umin = (-ma if hasB else -inf) if mb == 0.0 else u_lo
++        umin = u_lo if not hasB else umin
++        umax = (1.0 + ma if hasT else inf) if mb == 0.0 else u_hi
++        umax = u_hi if not hasT else umax
++        return (i, j, h[i][0] + v[j][0], h[i][1] + v[j][1], sx, sy, rx, ry, den, tmin, tmax, umin, umax, mb, ma, s,
++                (h[i + 1][0] + v[j][0], h[i + 1][1] + v[j][1], h[i][0] + v[j + 1][0], h[i][1] + v[j + 1][1],
++                 h[i + 1][0] + v[j + 1][0], h[i + 1][1] + v[j + 1][1], hasL, hasR, hasB, hasT))
++
+     # ---------------------------------------------------------------- the matrix
+     def _bounds(self, n):
+         """Parameter range per segment: [0, 1] inside, open-ended on the first
+@@ -507,61 +622,84 @@
+         lo[0], hi[-1] = -math.inf, math.inf
+         return lo, hi
+ 
++    def _cells_all(self):
++        cells = getattr(self, "_cell_list", None)
++        if cells is None:
++            cells = self._cell_list = [c for c in (self._cell(i, j, False)
++                                                   for i in range(self.n_h) for j in range(self.n_v)) if c]
++        return cells
++
+     def _pairs_python(self, point):
+         cx, cy = point[0] + self.origin[0], point[1] + self.origin[1]
+         raw = []
+-        h, v = self.h, self.v
+-        t_lo, t_hi = self._bounds(self.n_h)
+-        u_lo, u_hi = self._bounds(self.n_v)
+-        for i, (rx, ry) in enumerate(self._r):
+-            ax, ay = h[i]
+-            for j, (qx, qy) in enumerate(self._q):
+-                sx, sy = -qx, -qy
+-                den = rx * sy - ry * sx
+-                if abs(den) <= 1e-12 * (math.hypot(rx, ry) * math.hypot(sx, sy) + 1e-300):
+-                    continue
+-                dx, dy = cx - (ax + v[j][0]), cy - (ay + v[j][1])
+-                t = (dx * sy - dy * sx) / den
+-                u = (dx * ry - dy * rx) / den
+-                if t_lo[i] <= t <= t_hi[i] and u_lo[j] <= u <= u_hi[j]:
+-                    raw.append((i, j, t, u))
++        self._test(cx, cy, self._cells_all(), raw)
+         return raw
+ 
+     def _prepare_numpy(self):
++        """Arrays for a vectorised PREFILTER that keeps a superset of the
++        cells _test's own prefilter keeps (same float t, u; margins doubled),
++        so running _test on the kept cells gives exactly the matrix answer.
++        Interior cells (bounded) use the constant margin ma; the O(n) end
++        cells carry the |dx| + |dy| term and are filtered in a small block."""
+         np = _np
+-        H, V = np.asarray(self.h, float), np.asarray(self.v, float)
+-        A, R = H[:-1], H[1:] - H[:-1]
+-        B, Q = V[:-1], V[1:] - V[:-1]
+-        S = -Q
+-        N = A[:, None, :] + B[None, :, :]                                  # (n_h, n_v, 2) nodes
+-        den = R[:, None, 0] * S[None, :, 1] - R[:, None, 1] * S[None, :, 0]
+-        self._den = den
+-        self._K1 = N[..., 0] * S[None, :, 1] - N[..., 1] * S[None, :, 0]  # N x S
+-        self._K2 = N[..., 0] * R[:, None, 1] - N[..., 1] * R[:, None, 0]  # N x R
+-        self._R, self._S = R, S
+-        scale = (np.linalg.norm(R, axis=1)[:, None] * np.linalg.norm(S, axis=1)[None, :])
+-        self._ok = np.abs(den) > 1e-12 * (scale + 1e-300)
+-        t_lo, t_hi = self._bounds(self.n_h)
+-        u_lo, u_hi = self._bounds(self.n_v)
+-        self._t_lo, self._t_hi = np.asarray(t_lo)[None, :, None], np.asarray(t_hi)[None, :, None]
+-        self._u_lo, self._u_hi = np.asarray(u_lo)[None, None, :], np.asarray(u_hi)[None, None, :]
++        n_h, n_v = self.n_h, self.n_v
++        cells = self._cells_all()
++        self._np_tup = {(c[0], c[1]): c for c in cells}
++        inner = [c for c in cells if c[13] == 0.0]
++        outer = [c for c in cells if c[13] != 0.0]
++
++        def cols(group):
++            A = np.array([[c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[14], c[13]] for c in group] or
++                         np.zeros((0, 9)), float).reshape(-1, 9)
++            return {k: A[:, n] for n, k in enumerate(("x00", "y00", "sx", "sy", "rx", "ry", "den", "ma", "mb"))}
++
++        ci_, co = cols(inner), cols(outer)
++        ci_["lo"] = -2.0 * ci_["ma"]
++        ci_["hi"] = 1.0 + 2.0 * ci_["ma"]
++        self._np_inner, self._np_outer = ci_, co
++        self._np_inner_ij = [(c[0], c[1]) for c in inner]
++        self._np_outer_ij = [(c[0], c[1]) for c in outer]
++        inf = np.inf
++        self._np_outer_open = (np.array([inf if c[0] == 0 else 1.0 for c in outer]),
++                               np.array([inf if c[0] == n_h - 1 else 1.0 for c in outer]),
++                               np.array([inf if c[1] == 0 else 1.0 for c in outer]),
++                               np.array([inf if c[1] == n_v - 1 else 1.0 for c in outer]))
+         self._np_ready = True
+ 
+     def _pairs_numpy(self, points):
+         np = _np
+-        c = np.asarray(points, float) + np.asarray(self.origin, float)       # (m, 2)
+-        R, S, den = self._R, self._S, self._den
+-        cxS = c[:, 0, None] * S[None, :, 1] - c[:, 1, None] * S[None, :, 0]   # (m, n_v)
+-        cxR = c[:, 0, None] * R[None, :, 1] - c[:, 1, None] * R[None, :, 0]   # (m, n_h)
+-        with np.errstate(divide="ignore", invalid="ignore"):
+-            t = (cxS[:, None, :] - self._K1[None]) / den[None]              # (m, n_h, n_v)
+-            u = (cxR[:, :, None] - self._K2[None]) / den[None]
+-            hit = (self._ok[None] & (t >= self._t_lo) & (t <= self._t_hi)
+-                   & (u >= self._u_lo) & (u <= self._u_hi))
+-        m_idx, i_idx, j_idx = np.nonzero(hit)
++        pts = [(p[0] + self.origin[0], p[1] + self.origin[1]) for p in points]
++        c = np.asarray(pts, float)
++        cx, cy = c[:, 0, None], c[:, 1, None]
++        per = [[] for _ in points]
++        C = self._np_inner
++        if len(self._np_inner_ij):
++            dx = cx - C["x00"][None]
++            dy = cy - C["y00"][None]
++            t = (dx * C["sy"][None] - dy * C["sx"][None]) / C["den"][None]
++            u = (dx * C["ry"][None] - dy * C["rx"][None]) / C["den"][None]
++            keep = (t >= C["lo"][None]) & (t <= C["hi"][None]) & (u >= C["lo"][None]) & (u <= C["hi"][None])
++            ij = self._np_inner_ij
++            for k, n in zip(*[a.tolist() for a in np.nonzero(keep)]):
++                per[k].append(ij[n])
++        C = self._np_outer
++        if len(self._np_outer_ij):
++            dx = cx - C["x00"][None]
++            dy = cy - C["y00"][None]
++            m2 = 2.0 * (C["ma"][None] + C["mb"][None] * (np.abs(dx) + np.abs(dy)))
++            t = (dx * C["sy"][None] - dy * C["sx"][None]) / C["den"][None]
++            u = (dx * C["ry"][None] - dy * C["rx"][None]) / C["den"][None]
++            oL, oR, oB, oT = self._np_outer_open
++            keep = (t >= -oL * m2) & (t <= 1.0 + oR * m2) & (u >= -oB * m2) & (u <= 1.0 + oT * m2)
++            ij = self._np_outer_ij
++            for k, n in zip(*[a.tolist() for a in np.nonzero(keep)]):
++                per[k].append(ij[n])
++        tup = self._np_tup
+         raw = [[] for _ in points]
+-        for m, i, j in zip(m_idx.tolist(), i_idx.tolist(), j_idx.tolist()):
+-            raw[m].append((i, j, float(t[m, i, j]), float(u[m, i, j])))
++        for k, cand in enumerate(per):
++            if cand:
++                cand.sort()                                  # matrix order (i, j)
++                self._test(pts[k][0], pts[k][1], [tup[x] for x in cand], raw[k])
+         return raw
+ 
+     # ---------------------------------------------------------------- bookkeeping
+@@ -570,7 +708,10 @@
+         last_i, last_j = self.n_h - 1, self.n_v - 1
+         rows = []
+         for i, j, t, u in raw:
+-            on_sheet = -_EPS <= t <= 1.0 + _EPS and -_EPS <= u <= 1.0 + _EPS
++            # only the guide-end sides can leave the sheet; an interior side is
++            # decided by the exact side-line test, whatever t, u round to
++            on_sheet = ((i > 0 or t >= -_EPS) and (i < last_i or t <= 1.0 + _EPS)
++                        and (j > 0 or u >= -_EPS) and (j < last_j or u <= 1.0 + _EPS))
+             # inside the guide the parameter is pinned to its segment; past the
+             # first segment's start or the last one's end it runs on - that is
+             # the straight extension (a one-segment guide extends both ways)
