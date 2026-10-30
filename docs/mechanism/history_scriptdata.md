@@ -9,7 +9,7 @@
 - 撤到另一块板上的操作时，主窗口显示并激活那块板，状态栏说明。
 - 恢复是整份拷回模型，Python 侧的场景指针保持有效；恢复后强制重新施加两块板固定的场景身份（main / child），并派发 `historyrestore` 事件让脚本重建自己的缓存（引导线覆盖层、工具锁定、单元焦点）。
 - 打开工程重置两块板的历史；只打开 `.textureview` 重置纹理板。历史不写入文件。
-- Python 改了模型后调 `ui.history_commit(label, view)` 成为一条可撤销记录；`ui.history_undo` / `ui.history_redo` 也可用。手势 hook 里 `message["cancel_history"]` 可阻止 C++ 为这一步提交（避免空记录截断重做尾巴）。
+- Python 改了模型后调 `ui.history_commit(label, view)` 成为一条可撤销记录；`ui.history_undo` / `ui.history_redo` 也可用。交互事件 hook 里 `message["cancel_history"]` 可阻止 C++ 为这一步提交（避免空记录截断重做尾巴）。
 
 ## scriptData
 

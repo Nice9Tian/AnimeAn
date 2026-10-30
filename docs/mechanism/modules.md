@@ -7,11 +7,11 @@
 | 角色 | 位置 | 管什么 | 不管什么 |
 |---|---|---|---|
 | **应用壳** | `main.cpp`、`mainwindow.*`、`parentwindow.*`、`centralpaintarea.*`、`paintviewcontainer.*`、`subcontrolframe.*`、`windowedgeresize.*`、`theme.*`、`selectionattention.*` | 启动、嵌入 Python 解释器、菜单栏、窗口层级（带页签的父窗）、面板归属（纹理板单一所有权路由）、主题、帧 / 层 / 资产的选择约束、导入导出、历史的全局排序 | 工具语义、几何算法 |
-| **画板** | `openglwidget.*` | 渲染场景与覆盖层、视图变换（缩放 / 平移）、手势路由（Tool 枚举）、把手 / 覆盖层 / 视图按钮机制、hook 事件派发、历史提交、播放缓存、轴向吸附与拟合调用 | 任何工具"意味着什么" |
+| **画板** | `openglwidget.*` | 渲染场景与覆盖层、视图变换（缩放 / 平移）、交互事件路由（Tool 枚举）、控制手柄 / 覆盖层 / 视图按钮机制、hook 事件派发、历史提交、播放缓存、轴向吸附与拟合调用 | 任何工具"意味着什么" |
 | **核心模型库** `animean_core` | `algorithm/animemodel.*`、`algorithm/vectorlogic.*`、`algorithm/beziersplit.*`、`algorithm/scenehistory.*`、`algorithm/viewscale.h`、`projectio.*` | 场景 / xsheet 数据模型（列、帧、资产、单元格、图层组与 tag、父层、锁定）、矢量几何与笔画拟合、精确贝塞尔劈分、快照式历史、`.anproj` / `.textureview` 的 JSON 读写 | 界面、Python |
 | **面板** | `childrenpanel/*` | 工具栏、声明式选项面板、图层树、资产表、历史表、时间轴、纹理面板、调色板控件、斥力板、新建对话框 | 工具语义 |
 | **Python 绑定** | `pythonbind/python_bindings.*`（`animean_python` 模块）、`pythonbind/animemodel.py`（高层封装） | 把模型、几何、`ui` 门面暴露给 Python；把 Python 值转成 Qt 类型 | 任何策略 |
-| **工具脚本** | `pyfile/*.py` | 模块装载顺序、hook / 菜单 / 设置 / 视图按钮注册表、工具选项布局、每个工具的行为、Auto Mapping 引擎、第三方库加载 | 渲染、手势采集、模型存储 |
+| **工具脚本** | `pyfile/*.py` | 模块装载顺序、hook / 菜单 / 设置 / 视图按钮注册表、工具选项布局、每个工具的行为、Auto Mapping 引擎、第三方库加载 | 渲染、交互事件采集、模型存储 |
 | **导入器** | `clipreader.*`、`opentoonz_tools/toonz_to_dict.py` | 解 `.clip` 矢量笔画；解 `.tnz` / `.pli` | 栅格数据 |
 | **共享轮子** | `algorithm/beziersplit.h` ↔ `pyfile/bezier.py`；`algorithm/viewscale.h` ↔ `pyfile/viewscale.py` | 贝塞尔劈分与求值；屏幕 ↔ 画布换算。两边镜像、唯一实现 | 步长密度策略（留给调用方） |
 | **第三方与运行时** | `external/pybind11`（子模块）、`tools/python312`（不入库）、`pywheels/`、`pyfile/three_vendor.py` | pybind11；完整 Python 运行时；钉版本的 wheel；离线 three.js | — |
@@ -44,7 +44,7 @@ AnimeAn.exe
 |---|---|
 | `main.cpp` | 启动链 1–4；Python 路径与 DLL 路径 |
 | `mainwindow.*` | 窗口装配、菜单、面板归属、导入导出、撤销 / 重做的全局排序、Python 全局变量同步、播放驱动、脚本菜单 / 设置窗 / 图层右键菜单的构建、工具锁定的应用 |
-| `openglwidget.*` | `PaintOpenGLWidget`：场景渲染、覆盖层、把手、视图变换、手势与工具路由、hook 派发与订阅掩码、历史提交、播放缓存、无边界画布模式、背景模式、活动板指示 |
+| `openglwidget.*` | `PaintOpenGLWidget`：场景渲染、覆盖层、控制手柄、视图变换、交互事件与工具路由、hook 派发与订阅掩码、历史提交、播放缓存、无边界画布模式、背景模式、活动板指示 |
 | `centralpaintarea.*` | 中央区两页（drawing / texture），页签样式与父窗一致；`ui.windows` 名 `paint` |
 | `parentwindow.*` | 带页签的停靠窗：名字给脚本寻址、标题给用户看 |
 | `paintviewcontainer.*` | 画板 + 与视图变换联动的滚动条 + 底部一条可选的时间轴区 |
@@ -81,7 +81,7 @@ AnimeAn.exe
 | `pyfile/tool_colors.py` | 每个工具自己的颜色缓存与策略 |
 | `pyfile/palette_box.py` | 调色板的色块集合（存 scriptData） |
 | `pyfile/edit_tool.py` | Arrow 的三种编辑模式；Arrow 菜单（选中轮廓的显示设置） |
-| `pyfile/transfer_tool.py` | Transfer 的框、把手、旋转与修饰键 |
+| `pyfile/transfer_tool.py` | Transfer 的框、控制手柄、旋转与修饰键 |
 | `pyfile/connect_tool.py` | Connect 的吸附与三种连接 |
 | `pyfile/fill_tool.py` | 填充策略：落在哪层、范围升级、重复点击、跟随线稿层、To Independent Layer |
 | `pyfile/layer_tool_policy.py` | 当前层决定 Tools 页与锁定的工具、填充层上的区域刷 |
@@ -102,7 +102,7 @@ AnimeAn.exe
 ## 代码组织约定
 
 - **共享轮子唯一。** 贝塞尔劈分（`algorithm/beziersplit.h` ↔ `pyfile/bezier.py`）、屏幕 ↔ 画布换算（`algorithm/viewscale.h` ↔ `pyfile/viewscale.py`）只有一个家，C++ 与 Python 各一份镜像，调用处注释指回；劈分永不改变画出的形状，切片不重拟合；步长密度策略留给调用方。
-- **决定空间再写常数。** 手和眼的量（抖动、点选容差、按住不动半径、最小可见宽度）是屏幕像素，经 `viewscale` 换算；作品的量（几何、弧长、步长）是画布像素，不换算。手势预算按屏幕像素一次性换算，几何按真实缩放。
+- **决定空间再写常数。** 手和眼的量（抖动、点选容差、按住不动半径、最小可见宽度）是屏幕像素，经 `viewscale` 换算；作品的量（几何、弧长、步长）是画布像素，不换算。交互事件预算按屏幕像素一次性换算，几何按真实缩放。
 - **省事就用库，不重复造轮子。** Python 侧有现成库能用的（numpy、三角化）就直接用，不是原则，是省事：wheel 入 `pywheels/`，经 `pydeps.ensure()` 加载——首次缺库先从随包 wheel 离线安装，再退网络，全失败返回 None 由调用方降级（例如三角化退回纯 Python 实现）。
 - **新工具**：`PaintOpenGLWidget::Tool` 一个枚举项，`toolName` / `toolspanel` / `toolcontrolconfig::fileNameForTool` 各加一处，其余是一个 Python 模块；漏了任一处会静默拿到画笔的选项面板。
 

@@ -4,7 +4,7 @@
 
 ## 在哪
 
-- Tools ▸ Mapping 的按钮 **Auto Mapping**：手动跑一次（没有单元的旧文档用它）。它的画布手势是 Arrow 的：不画线，只拖引导。
+- Tools ▸ Mapping 的按钮 **Auto Mapping**：手动跑一次（没有单元的旧文档用它）。它的画布交互事件是 Arrow 的：不画线，只拖引导。
 - **Layers（Main Layers）右键**：**New Auto-Mapping Layer**、**Duplicate Auto-Mapping Layer**、**To Editable Layer**、**Advanced Settings…**；旧的手工图层组上有 **Convert to Auto-Mapping Layer**。
 - **Options 面板**（Mapping 页所有工具共用）：**RDP**（只在 Spline / Polyline 模式显示）、**Front/Back Split**、**Crease Line**（拆分开着时显示）、**补全拓扑**、**Bridge k**（补全拓扑开着时显示）；画线类工具再加 Stabilizer、Width；最后一行嵌着纹理板。
 - 菜单 **Auto Mapping**：**Line Display Settings…**、**Calculation Mode**（Bezier / Spline / Polyline）、Additional Line Falloff、约束外轮廓、视平线、To 3D。

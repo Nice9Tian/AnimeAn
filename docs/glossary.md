@@ -20,13 +20,15 @@
 | 映射纹理 | Mapping Texture（下拉） | 规划 | Auto Mapping 工具选项块里的下拉，点开列出纹理页；选中 Auto-Mapping 图层时选项块自动显示，在那里改该单元的目标纹理。 |
 | 目标用户 | 动画人 | 现有 | 用户 2026-09-28 确认的发布对象。 |
 | 基座 | backend base | 现有 | 后端这一层：数据模型、文件、嵌入 Python。 |
-| 基础函数 | generic mechanism / basic function | 现有 | C++ 提供给 Python 的通用能力：手势、覆盖层、模型读写、几何、通用开关。不含任何工具的含义。 |
+| 基础函数 | generic mechanism / basic function | 现有 | C++ 提供给 Python 的通用能力：交互事件、覆盖层、模型读写、几何、通用开关。不含任何工具的含义。 |
 | 机制 / 策略 | mechanism / policy | 现有 | 一对概念：C++ 的机制不知道工具是什么，Python 的策略决定它意味着什么。每个机制对应一个 Python 策略模块。 |
 | 功能层 | Python layer / `pyfile/*.py` | 现有 | 放实验性算法和随功能扩展变化的逻辑；改它不重新编译。 |
 | 嵌入 Python | embedded interpreter / `animean_python` | 现有 | 程序内的解释器与绑定模块；`pythonbind/animemodel.py` 是高层封装。 |
-| 事件缝 / hook 事件 | hook event / `python_hooks.dispatch` | 现有 | C++ 向 Python 派发的事件族（绘制手势、前置请求、把手、界面、状态）。 |
-| 把手事件 | handle event / `"handle"`（arm / pick / press / move / release / cancel / hover / view） | 现有 | 工具面：所有编辑类工具都长在它上面。 |
-| 覆盖层 | overlay / `ui.set_overlay`、`overlay_stack` | 现有 | 画在所有图层之上的显示列表：引导线、把手、网格、视平线；可拖、可删（× 徽章）。 |
+| 事件缝 / hook 事件 | hook event / `python_hooks.dispatch` | 现有 | C++ 向 Python 派发的事件族（绘制交互事件、前置请求、控制手柄、界面、状态）。 |
+| 交互事件 | gesture | 现有 | 画板上一次按下、移动、松开的鼠标或笔操作。不是触屏的多指手势。 |
+| 控制手柄 | handle / `EditHandle`、`ui.set_edit_handles` | 现有 | 画板上可以拖动的小控制点。Python 决定有哪些、代表什么，底层只负责显示、命中和上报。 |
+| 控制手柄事件 | handle event / `"handle"`（arm / pick / press / move / release / cancel / hover / view） | 现有 | 工具面：所有编辑类工具都长在它上面。 |
+| 覆盖层 | overlay / `ui.set_overlay`、`overlay_stack` | 现有 | 画在所有图层之上的显示列表：引导线、控制手柄、网格、视平线；可拖、可删（× 徽章）。 |
 | scriptData | `scene.script_data()`、`script_store` | 现有 | 场景里 C++ 不解释的字符串，按顶层键分命名空间存脚本状态；随快照和工程文件走。 |
 | 快照式历史 | snapshot history / `SceneHistory` | 现有 | 每步整份模型入历史，全局序号排序；两块板各一份。 |
 | 共享轮子 | shared wheel / `beziersplit.h` ↔ `bezier.py`、`viewscale.h` ↔ `viewscale.py` | 现有 | 只有一个家的数学：贝塞尔劈分、屏幕 ↔ 画布换算；C++ 与 Python 各一份镜像。 |
