@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>代理矩形测试台</title>
+<style>
+:root {
+  --bg: #f6f5f1; --surface: #ffffff; --line: #d9d6cd; --ink: #24231f; --muted: #6b685f;
+  --grid: #c9c5b9; --accent: #b4462b; --h: #2f6fbd; --v: #2c8a57; --warn: #a33a1f;
+  --a: #d1432f; --b: #2f6fbd; --c: #2c8a57; --d: #b5820f;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1b1a18; --surface: #252421; --line: #3e3c36; --ink: #ece9e1; --muted: #a3a097;
+    --grid: #4c4a43; --accent: #ec7a5c; --h: #6ea5e8; --v: #5fc28d; --warn: #f0917a;
+    --a: #ef6f5b; --b: #6ea5e8; --c: #5fc28d; --d: #e0b040;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.55 "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif; }
+main { max-width: 1120px; margin: 0 auto; padding: 18px 16px 28px; }
+h1 { font-size: 19px; margin: 0 0 2px; font-weight: 600; }
+.lead { color: var(--muted); margin: 0 0 14px; }
+.boards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.board { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px 10px; min-width: 0; }
+.board h2 { font-size: 13px; font-weight: 600; margin: 0 0 6px; color: var(--muted); }
+canvas { display: block; width: 100%; aspect-ratio: 5 / 4; touch-action: none; cursor: default; border-radius: 4px; }
+.tools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 12px 0 8px; }
+button { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line);
+  border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button:hover { border-color: var(--muted); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.row { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin: 6px 0 12px; }
+.row label { display: inline-flex; gap: 8px; align-items: center; }
+input[type=range] { width: 260px; max-width: 60vw; accent-color: var(--accent); }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+.stat span { display: block; color: var(--muted); font-size: 12px; }
+.stat b { font-weight: 600; font-variant-numeric: tabular-nums; }
+#message { min-height: 22px; margin: 10px 0 0; color: var(--muted); }
+#message.bad { color: var(--warn); font-weight: 600; }
+@media (max-width: 760px) { .boards { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>代理矩形测试台</h1>
+  <p class="lead">拖两块板上的四个角。同色同字母的角是算出来的对应关系。结果全部来自真实的 proxy_rect 和 build_mapper。</p>
+  <div class="boards">
+    <section class="board"><h2>纹理板：图案和轴线固定，矩形只示意映射哪一块</h2><canvas id="child" aria-label="纹理板"></canvas></section>
+    <section class="board"><h2>主画板：图案映射后的样子（虚线是你画的四边形）</h2><canvas id="main" aria-label="主画板"></canvas></section>
+  </div>
+  <div class="tools" id="presets"></div>
+  <div class="row">
+    <label>主画板旋转 <input id="turn" type="range" min="0" max="180" step="0.5" value="0"> <b id="turnValue">0°</b></label>
+    <button id="shuffle" type="button">打乱绘制顺序</button>
+  </div>
+  <div class="row" role="radiogroup" aria-label="曲面">
+    <label><input type="radio" name="mode" value="axes" checked> 只用轴线（现有映射）</label>
+    <label><input type="radio" name="mode" value="edges"> 四条边当附加线（只引导流向）</label>
+  </div>
+  <div class="stats" id="stats"></div>
+  <p id="message" role="status"></p>
+</main>
+<script>
+const W = 500, H = 400, HIT = 16;
+const NAMES = ["A", "B", "C", "D"];
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const canvases = { child: document.getElementById("child"), main: document.getElementById("main") };
+const rectangle = (w, h, cx = 0, cy = 0) => [[cx - w / 2, cy - h / 2], [cx + w / 2, cy - h / 2], [cx + w / 2, cy + h / 2], [cx - w / 2, cy + h / 2]];
+const turned = (q, deg) => {
+  const a = deg * Math.PI / 180, cx = q.reduce((s, p) => s + p[0], 0) / 4, cy = q.reduce((s, p) => s + p[1], 0) / 4;
+  return q.map(([x, y]) => [cx + (x - cx) * Math.cos(a) - (y - cy) * Math.sin(a), cy + (x - cx) * Math.sin(a) + (y - cy) * Math.cos(a)]);
+};
+const PRESETS = [
+  ["相同矩形", () => rectangle(300, 200)],
+  ["转 20° 放大", () => turned(rectangle(390, 260), 20)],
+  ["竖向 200×300", () => rectangle(200, 300)],
+  ["窄长条转 90°", () => turned(rectangle(340, 60), 90), rectangle(340, 60)],
+  ["倒过来 180°", () => turned(rectangle(300, 200), 180)],
+  ["轻度梯形", () => [[-120, -100], [120, -100], [150, 100], [-150, 100]]],
+  ["强梯形", () => [[-40, -100], [40, -100], [190, 100], [-190, 100]]],
+  ["一般四边形", () => [[-170, -60], [90, -130], [210, 120], [-110, 90]]],
+  ["凹四边形", () => [[-170, -130], [170, -130], [20, -10], [-170, 130]]],
+  ["自交", () => [[-150, -100], [150, 100], [150, -100], [-150, 100]]],
+];
+const state = { child: rectangle(300, 200), main: rectangle(300, 200), base: null, answer: null, previous: null };
+state.base = state.main.map(p => p.slice());
+
+function fit(canvas) {
+  const ratio = window.devicePixelRatio || 1, box = canvas.getBoundingClientRect();
+  canvas.width = Math.round(box.width * ratio);
+  canvas.height = Math.round(box.height * ratio);
+  const ctx = canvas.getContext("2d");
+  const k = canvas.width / W;
+  ctx.setTransform(k, 0, 0, k, canvas.width / 2, canvas.height / 2);
+  return ctx;
+}
+function stroke(ctx, points, color, width, dash) {
+  if (!points || points.length < 2) return;
+  ctx.beginPath();
+  points.forEach((p, i) => p && (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
+  ctx.strokeStyle = color; ctx.lineWidth = width; ctx.setLineDash(dash || []); ctx.stroke(); ctx.setLineDash([]);
+}
+function arrow(ctx, line, color) {
+  stroke(ctx, line, color, 2);
+  const a = line[line.length - 2], b = line[line.length - 1], angle = Math.atan2(b[1] - a[1], b[0] - a[0]);
+  ctx.beginPath(); ctx.moveTo(b[0], b[1]);
+  ctx.lineTo(b[0] - 11 * Math.cos(angle - 0.4), b[1] - 11 * Math.sin(angle - 0.4));
+  ctx.lineTo(b[0] - 11 * Math.cos(angle + 0.4), b[1] - 11 * Math.sin(angle + 0.4));
+  ctx.closePath(); ctx.fillStyle = color; ctx.fill();
+}
+function draw(board) {
+  const ctx = fit(canvases[board]), answer = state.answer, quad = state[board];
+  ctx.fillStyle = css("--surface"); ctx.fillRect(-W / 2, -H / 2, W, H);
+  stroke(ctx, [[-W / 2, 0], [W / 2, 0]], css("--line"), 1);
+  stroke(ctx, [[0, -H / 2], [0, H / 2]], css("--line"), 1);
+  stroke(ctx, quad.concat([quad[0]]), css("--muted"), 1.5, board === "main" ? [6, 5] : []);
+  if (answer && answer.pattern) {
+    answer.pattern.filter(l => l.kind === "grid").forEach(l => stroke(ctx, l[board], css("--grid"), 1));
+    answer.pattern.filter(l => l.kind === "letter").forEach(l => stroke(ctx, l[board], css("--accent"), 3.5));
+  }
+  if (answer && answer.guides) {
+    arrow(ctx, answer.guides[board].h, css("--h"));
+    arrow(ctx, answer.guides[board].v, css("--v"));
+  }
+  const order = answer && answer.guides ? answer.guides.alignment[board + "_order"] : [0, 1, 2, 3];
+  order.forEach((index, slot) => {
+    const [x, y] = quad[index], known = answer && answer.guides;
+    ctx.beginPath(); ctx.arc(x, y, 9, 0, 2 * Math.PI);
+    ctx.fillStyle = known ? css("--" + "abcd"[slot]) : css("--muted"); ctx.fill();
+    ctx.fillStyle = "#fff"; ctx.font = "600 12px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(known ? NAMES[slot] : "?", x, y + 0.5);
+  });
+}
+function pairing() {
+  const a = state.answer;
+  if (!a || !a.guides) return "";
+  const al = a.guides.alignment;
+  return al.child_order.map((c, i) => state.child[c].map(v => v.toFixed(3)) + ">" + state.main[al.main_order[i]].map(v => v.toFixed(3))).sort().join("|");
+}
+const fixed = (v, n) => v === undefined || v === null ? "-" : v.toFixed(n);
+function report() {
+  const a = state.answer, cells = a && a.ok ? [
+    ["图案旋转", fixed(a.rotation, 2) + "°"], ["缩放", fixed(a.scale, 3)],
+    ["形状残差", fixed(a.residual, 4)], ["总代价 E", fixed(a.cost, 4)],
+    ["镜像", a.mirrored ? "是" : "否"], ["两侧标定差", fixed(Math.max(a.h_mismatch, a.v_mismatch), 3) + " 倍"],
+    ["轮廓偏差 均值", fixed(a.contour_mean, 2) + " px"], ["轮廓偏差 最大", fixed(a.contour_max, 2) + " px"],
+  ] : [];
+  document.getElementById("stats").innerHTML = cells.map(([k, v]) => `<div class="stat"><span>${k}</span><b>${v}</b></div>`).join("");
+  const message = document.getElementById("message");
+  message.className = a && !a.ok ? "bad" : "";
+  message.textContent = a && !a.ok ? "被拒绝：" + a.reason : "";
+}
+async function ask() {
+  try {
+    const response = await fetch("/", { method: "POST", body: JSON.stringify({
+      child: state.child, main: state.main, mode: document.querySelector("input[name=mode]:checked").value }) });
+    state.answer = await response.json();
+  } catch (error) {
+    state.answer = { ok: false, reason: "连不上测试台后端：" + error.message };
+  }
+  draw("child"); draw("main"); report();
+}
+// One request at a time; a drag's in-between positions collapse into one
+// follow-up, and awaiting compute() always sees the latest state answered.
+let running = null, queued = null;
+function compute() {
+  if (!running) {
+    running = ask().finally(() => { running = null; });
+    return running;
+  }
+  if (!queued) queued = running.then(() => { queued = null; return compute(); });
+  return queued;
+}
+function setTurn(deg) {
+  document.getElementById("turn").value = deg;
+  document.getElementById("turnValue").textContent = deg + "°";
+}
+PRESETS.forEach(([name, make, child]) => {
+  const button = document.createElement("button");
+  button.type = "button"; button.textContent = name;
+  button.onclick = () => {
+    state.child = (child || rectangle(300, 200)).map(p => p.slice());
+    state.main = make(); state.base = state.main.map(p => p.slice());
+    setTurn(0); compute();
+  };
+  document.getElementById("presets").appendChild(button);
+});
+document.getElementById("turn").oninput = event => {
+  setTurn(Number(event.target.value));
+  state.main = turned(state.base, Number(event.target.value));
+  compute();
+};
+document.querySelectorAll("input[name=mode]").forEach(radio => { radio.onchange = () => compute(); });
+document.getElementById("shuffle").onclick = async () => {
+  await compute();
+  const before = pairing();
+  for (const board of ["child", "main"]) {
+    const start = Math.floor(Math.random() * 4), q = state[board];
+    let next = [0, 1, 2, 3].map(i => q[(start + i) % 4]);
+    if (Math.random() < 0.5) next = next.reverse();
+    state[board] = next;
+  }
+  state.base = state.main.map(p => p.slice()); setTurn(0);
+  await compute();
+  document.getElementById("message").textContent = pairing() === before ? "打乱后对应关系不变。" : "打乱后对应关系变了，这是问题，请告诉我。";
+};
+for (const board of ["child", "main"]) {
+  const canvas = canvases[board];
+  let held = null;
+  const at = event => {
+    const box = canvas.getBoundingClientRect();
+    return [(event.clientX - box.left) / box.width * W - W / 2, (event.clientY - box.top) / box.height * H - H / 2];
+  };
+  const nearest = p => {
+    let best = -1, reach = HIT;
+    state[board].forEach((c, i) => { const d = Math.hypot(c[0] - p[0], c[1] - p[1]); if (d < reach) { reach = d; best = i; } });
+    return best;
+  };
+  canvas.onpointerdown = event => {
+    const hit = nearest(at(event));
+    if (hit < 0) return;
+    held = hit; canvas.setPointerCapture(event.pointerId);
+  };
+  canvas.onpointermove = event => {
+    if (held === null) { canvas.style.cursor = nearest(at(event)) >= 0 ? "grab" : "default"; return; }
+    canvas.style.cursor = "grabbing";
+    const p = at(event), q = state[board];
+    if (board === "child") {
+      // The texture shape stays a rectangle: the opposite corner holds, the
+      // two neighbours each follow on the side they share with this corner.
+      const [x, y] = q[held];
+      for (const n of [(held + 1) % 4, (held + 3) % 4]) {
+        q[n] = Math.abs(q[n][0] - x) <= Math.abs(q[n][1] - y) ? [p[0], q[n][1]] : [q[n][0], p[1]];
+      }
+    }
+    q[held] = p;
+    if (board === "main") { state.base = state.main.map(c => c.slice()); setTurn(0); }
+    compute();
+  };
+  canvas.onpointerup = canvas.onpointercancel = () => { held = null; };
+}
+addEventListener("resize", () => { draw("child"); draw("main"); });
+compute();
+</script>
+</body>
+</html>
