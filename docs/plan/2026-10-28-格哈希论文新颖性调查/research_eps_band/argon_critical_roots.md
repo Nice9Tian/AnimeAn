@@ -1,7 +1,7 @@
 # 方案 C 遗留临界根问题研究与组合去重实现报告（`argon/crease-cusp-roots`）
 
 > 关联文档：
-> - [`2026-10-30-w_orient0奇偶校验命题与Lean证明.md`](../2026-10-30-w_orient0奇偶校验命题与Lean证明.md)（第 1 节、第 8.2 / 8.3 / 8.5 / 8.8 节）
+> - [`../2026-10-30-w_orient0奇偶校验命题与Lean证明.md`](../2026-10-30-w_orient0奇偶校验命题与Lean证明.md)（第 1 节、第 8.2 / 8.3 / 8.5 / 8.8 节）
 > - [`PROBLEM.md`](./PROBLEM.md)、[`fable_results_summary.txt`](./fable_results_summary.txt)
 > - [`pyfile/chord_intersect.py`](../../../../pyfile/chord_intersect.py)
 > - [`w_orient0_explainer.html`](../w_orient0_explainer.html)、[`fold_inverse_explainer.html`](../fold_inverse_explainer.html)、[`fold_severing_map.html`](../fold_severing_map.html)
