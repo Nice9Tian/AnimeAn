@@ -301,7 +301,7 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
   <dt>裁断</dt><dd>软件对没有正面原像的点不贴图案。</dd>
 </dl>
 
-<footer>导引线取 24 段折线（钩形的直线 V 只有 1 段，弧 30 段）。装置与同目录的 fold_severing_map.html、fold_inverse_explainer.html 相同："教学模型"是 AnimeAn 论文图 3 底图那组轴线的参数化，"钩形"是论文表 1 的轴线（paper/verify/verify_claims.py 第 8 节）；读者不必查这些文件。orient0、w 和段对求交的定义与正式实现 pyfile/chord_intersect.py（orient0 在第 183 行）、verify_section_numbers.py 的 winding() 一致；页面里的去重容差放宽到 1e-4 px，避免格边附近的点被算两次。第 1 节的立体图用 three.js r128 画，不联网时只有这一张图不显示。</footer>
+<footer>导引线取 24 段折线（钩形的直线 V 只有 1 段，弧 30 段）。装置与同目录的 fold_severing_map.html、fold_inverse_explainer.html 相同："教学模型"是 AnimeAn 论文图 3 底图那组轴线的参数化，"钩形"是论文表 1 的轴线（paper/verify/verify_claims.py 第 8 节）；读者不必查这些文件。orient0、w 和段对求交的定义与正式实现 pyfile/chord_intersect.py（orient0 在第 221 行）、verify_section_numbers.py 的 winding() 一致；页面里的去重容差放宽到 1e-4 px，避免格边附近的点被算两次。第 1 节的立体图用 three.js r128 画，不联网时只有这一张图不显示。</footer>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -399,7 +399,10 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
       rows.push({ i: c.i, j: c.j, lh: F.hc[c.i] + tt * (F.hc[c.i + 1] - F.hc[c.i]) - F.ha, lv: F.vc[c.j] + uu * (F.vc[c.j + 1] - F.vc[c.j]) - F.va, orient: c.orient, onSheet });
     }
     rows.sort((a, b) => a.lh - b.lh || a.lv - b.lv);
-    const kept = []; for (const r of rows) { const p = kept[kept.length - 1]; if (p && Math.abs(r.lh - p.lh) < DEDUP && Math.abs(r.lv - p.lv) < DEDUP) continue; kept.push(r); }
+    // orientation pairing: a report is a duplicate only of a kept report within DEDUP that has the SAME orient
+    // (two near reports of opposite orient are the two roots on either side of a fold crease); every kept
+    // report within reach is checked, not only the last, since rows are sorted by lh alone first
+    const kept = []; for (const r of rows) { let dup = false; for (let k = kept.length - 1; k >= 0 && r.lh - kept[k].lh < DEDUP; k--) { const p = kept[k]; if (p.orient === r.orient && Math.abs(r.lv - p.lv) < DEDUP) { dup = true; break; } } if (!dup) kept.push(r); }
     let f = 0, b = 0, fs = 0, anySheet = false, sum = 0;
     for (const r of kept) { if (r.orient === F.orient0) { f++; if (r.onSheet) fs++; } else b++; if (r.onSheet) anySheet = true; sum += r.orient; }
     return { f, b, fs, sum, anySheet, rows: kept };
