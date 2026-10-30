@@ -36,7 +36,7 @@
 
 | Python 用到的接口 | 规模 | 迁移后 |
 |---|---|---|
-| 模型：`SceneModel`、`VectorImage` 等 | 绑定 112 个，Python 用到约 86 个 | 留在后端进程，绑定不变 |
+| 模型：`SceneModel`、`VectorImage` 等 | 绑定 115 个，Python 用到约 86 个 | 留在后端进程，绑定不变 |
 | 几何：`vectorlogic`、`model_pybind` | 绑定 32 个 | 留在后端进程，绑定不变 |
 | 界面门面 `ui` | 绑定 25 个，几乎都是单向通知 | 名字不变；现有回调槽换一组实现，转发给网页。查询类（主题、窗口列表）由后端缓存作答 |
 | 钩子事件 `python_hooks.dispatch` | 40 处派发，`openglwidget.cpp` 里 141 行写消息字段 | 画板引擎组出**字段完全相同**的消息 |
@@ -51,7 +51,7 @@ Python 仍然嵌在后端进程里，所以 `pydeps` 的 pip 自装、To 3D 的 
 迁移在分支 `claude/tauri-migration` 上做，和代理图形（issue #7 及 #8–#12）并行，找合适的时机合并。Qt 文件可以改。
 
 - **代理图形的 Python 部分直接带过来。** 分支不改 `pyfile/`，`pyfile/proxy_rect.py` 和 `auto_mapping.py` 的改动合进来没有冲突。
-- **定期把 `main` 合进分支。** 这样 `mainwindow.*`、`openglwidget.*` 的冲突不会攒到最后。
+- **定期把 `main` 合进分支。** 这样 `mainwindow.*`、`openglwidget.*` 的冲突不会积压到最后。
 - **盯住接口变化。** `main` 上新增的绑定、`ui` 函数、钩子消息字段或控件类型，每次同步时都要在后端和网页补上。#10（代理矩形的输入工具）如果新增 Qt 工具，就属于这一类。
 - **分支上 Qt 版一直能编译。** 它是录制比对的基准，合并切换时才移除。
 
