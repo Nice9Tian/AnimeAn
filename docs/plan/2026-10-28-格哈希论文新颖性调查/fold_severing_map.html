@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>裁断在哪里发生</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700&family=Noto+Sans+SC:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* layout: a correction first, then the conservation law, then a live map of kept / severed regions; same palette as the fold explainer */
+:root {
+  --bg: #f4f6f3; --panel: #ffffff; --fg: #1c2321; --muted: #5d6763; --line: #cfd6d1; --grid: #e3e8e4;
+  --front: #1f6b86; --front-soft: #9cc7d6; --back: #b2452f; --back-soft: #e3b1a5; --none: #d9ddd9;
+  --crease: #6f4fa3; --guideH: #16342c; --guideV: #3b2d1e; --point: #d19a00; --warn-bg: #fff6df; --warn-line: #e3c56a;
+  --display: "Noto Serif SC", "Source Han Serif SC", "Songti SC", serif;
+  --body: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --mono: "JetBrains Mono", Consolas, "SF Mono", monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #171c1a; --panel: #1f2624; --fg: #e6ebe8; --muted: #9aa6a0; --line: #3a443f; --grid: #2a332f;
+  --front: #6fb6d0; --front-soft: #2e5a69; --back: #e08a72; --back-soft: #6a3328; --none: #2f3734;
+  --crease: #b39ddb; --guideH: #d7e6df; --guideV: #e3d6c3; --point: #f2c14e; --warn-bg: #2b2715; --warn-line: #7a6a2c; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #171c1a; --panel: #1f2624; --fg: #e6ebe8; --muted: #9aa6a0; --line: #3a443f; --grid: #2a332f;
+  --front: #6fb6d0; --front-soft: #2e5a69; --back: #e08a72; --back-soft: #6a3328; --none: #2f3734;
+  --crease: #b39ddb; --guideH: #d7e6df; --guideV: #e3d6c3; --point: #f2c14e; --warn-bg: #2b2715; --warn-line: #7a6a2c; color-scheme: dark }
+* { box-sizing: border-box }
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 15px; line-height: 1.75;
+  padding-block: 0 48px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)) }
+.wrap { max-width: 980px; margin: 0 auto }
+header { padding-block: 36px 18px; border-bottom: 1px solid var(--line) }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin-bottom: 10px }
+h1 { font-family: var(--display); font-weight: 700; font-size: clamp(26px, 4vw, 36px); line-height: 1.25; margin: 0 0 10px; text-wrap: balance }
+h2 { font-family: var(--display); font-weight: 700; font-size: 21px; margin: 40px 0 10px; text-wrap: balance }
+p { margin: 0 0 10px; max-width: 42em }
+.correction { background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: 6px; padding: 12px 16px; margin-top: 20px; max-width: 46em }
+.correction b { font-weight: 500 }
+.eq { font-family: var(--mono); font-size: 14px; padding: 8px 12px; background: var(--panel); border-left: 3px solid var(--front); margin: 10px 0; overflow-x: auto; white-space: nowrap }
+.two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; margin-top: 14px }
+@media (max-width: 720px) { .two { grid-template-columns: 1fr } }
+.pane { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px 12px; min-width: 0 }
+.pane h3 { font-family: var(--display); font-size: 15px; font-weight: 500; margin: 0 0 6px; display: flex; justify-content: space-between; gap: 8px; align-items: baseline }
+.pane h3 small { font-family: var(--mono); font-size: 11px; color: var(--muted); font-weight: 400 }
+canvas { display: block; width: 100%; max-width: 100%; aspect-ratio: 1 / 1; touch-action: none; border-radius: 4px; background: var(--bg) }
+.controls { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-top: 14px; padding: 10px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px }
+.controls span.lbl { font-size: 13px; color: var(--muted) }
+button.preset { font: 500 13px var(--body); padding: 5px 11px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--fg); cursor: pointer }
+button.preset[aria-pressed="true"] { background: var(--front); border-color: var(--front); color: #fff }
+:root[data-theme="dark"] button.preset[aria-pressed="true"], :root:not([data-theme="light"]) button.preset[aria-pressed="true"] { color: #10181c }
+button:focus-visible { outline: 2px solid var(--point); outline-offset: 2px }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 12px }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 9px 12px; min-width: 0 }
+.tile .k { font-size: 12px; color: var(--muted) }
+.tile .v { font-family: var(--mono); font-size: 19px; font-variant-numeric: tabular-nums; line-height: 1.25; margin-top: 2px }
+.tile .v small { font-size: 12px; color: var(--muted) }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: var(--muted); margin-top: 10px }
+.legend i { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: -2px; margin-right: 5px; border: 1px solid var(--line) }
+.readout { font-family: var(--mono); font-size: 13px; margin-top: 10px; min-height: 3.2em; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; overflow-x: auto }
+.readout .f { color: var(--front) } .readout .b { color: var(--back) }
+.tablewrap { overflow-x: auto; margin-top: 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel) }
+table { border-collapse: collapse; font-size: 13px; width: 100%; min-width: 560px; font-variant-numeric: tabular-nums }
+th, td { padding: 6px 10px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap }
+th:first-child, td:first-child { text-align: left } th { color: var(--muted); font-weight: 500; font-size: 12px } tr:last-child td { border-bottom: 0 }
+td.num { font-family: var(--mono) }
+ul { max-width: 42em; padding-left: 1.3em } li { margin-bottom: 6px }
+footer { margin-top: 40px; font-size: 12.5px; color: var(--muted); max-width: 46em }
+code { font-family: var(--mono); font-size: 0.92em }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important } }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="eyebrow">AnimeAn · Auto Mapping · 弦段求交</div>
+  <h1>裁断在哪里发生：旋向守恒式怎么决定一个点有没有正面原像</h1>
+  <p>裁断的判据是"这个点没有与交点同旋向的原像"。全部原像的旋向之和是一个常数 w，所以哪些点会被裁掉，在画导引线的那一刻就定了。下面用真算出来的地图说明。</p>
+  <div class="correction"><b>先更正一句话。</b>我之前说"正弦折叠架上 w·orient0 = +1，面上每个点都有同旋向原像，裁断从不发生"。核过数据后，前半句是错的：弯 100 px 的正弦架 w = −1、交点旋向 orient0 = +1，乘积是 <b>−1</b>。后半句只对<b>面上</b>的点成立，而且是实测结果，不是定理：面外的点在这套架上大多被裁掉。下面的地图里能直接看到。</div>
+</header>
+
+<h2>1 · 守恒式：Σ 旋向 = w</h2>
+<p>把 X(s, t) = H(s) + V(t) − O 沿首末段直线延拓到整个参数平面。参数跑向无穷远时，X 跑向四个方向之一：H 末端方向 d₁、V 末端方向 e₁、H 起点方向的反向 −d₀、V 起点方向的反向 −e₀。把它们依次连成一个环，环绕原点的圈数就是缠绕数 w，只能是 −1、0 或 +1。</p>
+<div class="eq">对每个正则点 A：  Σ<sub>原像</sub> orient = w,   orient = sgn det[r_i, q_j]（原像所在小格两条边的叉积符号）</div>
+<p>"正面"指 orient 等于交点处的旋向 orient0。记正面原像 f 个、背面 b 个，守恒式就是 (f − b)·orient0 = w，也就是</p>
+<div class="eq">f − b = w · orient0</div>
+<ul>
+  <li><b>w·orient0 = +1</b>：f = b + 1，任何正则点至少有一个正面原像。裁断在这种架上永远不发生，面上面外都不。弯 30、弯 60、论文的教学模型都是。</li>
+  <li><b>w·orient0 = −1</b>：b = f + 1。允许 f = 0、b = 1，也就是只有一个背面原像的点，这样的点被裁掉。弯 100 px 的正弦架、手画的 S 线都是这种：面外的点多数只有一个背面的延伸原像。</li>
+  <li><b>w = 0</b>：f = b。可以 f = b = 0，一个原像都没有。发夹形架和论文表 1 的钩形架是这种。</li>
+</ul>
+
+<h2>2 · 地图：哪些点有正面原像</h2>
+<p>每个像素点都按全部段对判定算一遍，含线端之外的直线延伸。颜色是判定结果，数字在右边实时统计。</p>
+<div class="controls" role="group" aria-label="装置">
+  <span class="lbl">装置</span>
+  <button class="preset" data-preset="bow60">弯 60 px</button>
+  <button class="preset" data-preset="bow100" aria-pressed="true">弯 100 px（折叠）</button>
+  <button class="preset" data-preset="teaching">教学模型</button>
+  <button class="preset" data-preset="hairpin">发夹形</button>
+  <button class="preset" data-preset="hook">钩形（论文表 1）</button>
+</div>
+<div class="two">
+  <div class="pane"><h3>画布：正面原像的有无 <small id="mapInfo">—</small></h3><canvas id="map" width="600" height="600" aria-label="裁断地图"></canvas></div>
+  <div class="pane"><h3>端射线环与缠绕数 <small id="loopInfo">—</small></h3><canvas id="loop" width="600" height="600" aria-label="端射线环"></canvas></div>
+</div>
+<div class="legend">
+  <span><i style="background:var(--front)"></i>画出的面上有正面原像</span>
+  <span><i style="background:var(--front-soft)"></i>只在延伸部分有正面原像（仍保留）</span>
+  <span><i style="background:var(--back-soft)"></i>只有背面原像 → 裁断</span>
+  <span><i style="background:var(--none)"></i>没有任何原像 → 裁断</span>
+  <span><i style="background:var(--guideH)"></i>导引线 H　<i style="background:var(--guideV)"></i>V　（细虚线：线端之外的四条端射线；粗虚线：画出的面的轮廓）</span>
+</div>
+<div class="tiles" aria-live="polite">
+  <div class="tile"><div class="k">w · orient0</div><div class="v" id="tProd">—</div></div>
+  <div class="tile"><div class="k">面上的点：有正面原像</div><div class="v" id="tSheet">—</div></div>
+  <div class="tile"><div class="k">面外的点：有正面原像</div><div class="v" id="tOff">—</div></div>
+  <div class="tile"><div class="k">守恒式 f − b = w·orient0</div><div class="v" id="tLaw">—</div></div>
+</div>
+<div class="readout" id="readout">把鼠标移到地图上，看那一点的原像清单。</div>
+
+<h2>3 · 两张图的关系：远处定下总数，交点定下正负，中间的地图只能照办</h2>
+<p>右图画的是<b>无穷远处</b>：参数 (s, t) 朝某个方向走到无穷远，画布上的像 X(s, t) 就沿着四个端向之一跑出去。对所有方向跑一圈，得到环 g(θ)（紫线）；它绕原点几圈，就是 w。这一圈只取决于两条导引线的四个端向，与线中间怎么弯无关。</p>
+<p>左图画的是<b>每一点</b>的结果。两者由同一个数连着：对画布上任何一个正则点，所有原像的旋向之和恒等于 w。原因是拓扑度——延拓后的 X 把整个参数平面映到整个画布平面，它在无穷远处绕原点的圈数（右图）等于它在任何一个点上的"带符号覆盖次数"（左图那一点的 f − b 乘以 orient0）。度是常数，所以左图上走到哪里 f − b 都不变：</p>
+<ul>
+  <li>穿过一条折缝的像（面叠起来的边缘），原像成对出现或消失，一正一背，f 和 b 同加一或同减一，f − b 不变；</li>
+  <li>穿过画出的面的轮廓（虚线），只是原像从"面上"换到"延伸部分"，颜色从深变浅，f − b 也不变。</li>
+</ul>
+<p>交点 O 处的旋向 orient0 是把"旋向之和"翻译成"正面还是背面"的那把尺：正面就是与 O 处同号。于是 w 定了总数的正负，orient0 定了哪一侧算正面，两者相乘就是左图每一点的 f − b。右图里 w 的圈数方向与 O 处两条切向的叉积同号（右图中心的小角标），左图就处处至少一个正面原像；异号，左图就一定有只剩背面原像的区域——它们落在四条端射线之间的"翼"里，因为延伸部分在那里是翻过去的一面。</p>
+<p>所以两张图不是并列的插图，而是同一个数的两种读法：右图一眼看出 w，左图看它落实到每个像素上。切换装置时先看右图的紫环绕不绕原点、绕哪个方向，再看左图有没有砖红色，就能验证这条关系。</p>
+
+<h2>4 · 正弦折叠架上，面上为什么没有裁断</h2>
+<p>弯 100 px 时 w·orient0 = −1，守恒式允许"一个背面原像、零个正面"的点存在，地图上也确实大片都是：它们在画出的面之外，是延伸部分翻过去的那一面。面上的点不同：面是一张连续的矩形贴片，折叠处它叠了三层（两层正面、一层背面），没折叠处一层正面；面上也有"只被背面小格盖住"的点，但它们的正面原像落在延伸部分，判据仍然满足。所以在这套架上沿着面画一笔，一路都保留，只有离开面才被裁掉。</p>
+<p>这是对 2000 个随机点的实测（面上的点全部有正面原像），不是定理：守恒式本身不禁止面上出现 f = 0 的点，换一条导引线就可能出现。要让裁断真的切在面上、切在折叠轮廓上，用论文 3.10 节的钩形架：H 轴折回去，轮廓 x = 160 之外的点一个原像都没有（w = 0，f = b = 0），笔画在那里被裁断。</p>
+
+<h2>5 · 几套装置的数字</h2>
+<div class="tablewrap"><table>
+  <thead><tr><th>装置</th><th>w</th><th>orient0</th><th>w·orient0</th><th>面上：有正面原像</th><th>面外：有正面原像</th><th>没有任何原像</th></tr></thead>
+  <tbody id="tbody"></tbody>
+</table></div>
+<p style="font-size:13px;color:var(--muted);margin-top:8px">表里的数字由本页在浏览器里对每套装置的 2000 个随机点（画出的面附近 ±300 px 内）现算，算法与仓库的 <code>chord_intersect.py</code> 同一公式。</p>
+
+<h2>6 · 这条性质的现实意义</h2>
+<p>它把"这个点有没有正面原像"从一个要逐点求解才知道的事，变成画完导引线就知道的事。四个端向和交点处两条切向，六个向量，O(1) 的计算。</p>
+<ul>
+  <li><b>画完就知道会不会裁断。</b>w·orient0 = +1 的纹理板参考架，平面上每个正则点都有正面原像，纹理板一侧的裁断根本不会发生，整条裁断计算可以跳过。现行实现只有一个"两条轴线都是直线就跳过"的闸门，这条性质给出一个更宽的闸门，而且是精确的，不靠采样。</li>
+  <li><b>可以提前提醒用户。</b>w·orient0 = −1 或 w = 0 的架，画出的面之外一定有大片点没有正面原像：图案超出轴线范围按线性外推的部分会在那里被裁掉，发夹形的架连面上都可能有洞。系统现在已经会在两个参考架旋向相反时提示用户反向重画一条轴线；同一类提示可以加一条"轴线两端折回，面外的图案会被裁掉"，依据就是这个符号。</li>
+  <li><b>裁断判据有了精确的形式。</b>判据从"残差 ≤ 0.4 像素且行列式同号"（靠迭代收敛与否间接判断"原像存在"）改成"存在同旋向原像"后，牛顿没收敛的点不再被误裁：折叠架上牛顿没解到的 316 个点每一个都有正面原像，这条性质解释了为什么——那套架 f = b + 1 恒成立。</li>
+  <li><b>给求解器一个不依赖参考实现的检验。</b>任何一种反解（矩阵、方格、牛顿加枚举）算出的原像清单，旋向之和必须等于 w；少找一个原像和多找一个原像都会破坏它。本页和仓库的复算脚本都用它当测试预言，十套装置各 3000 个随机点无一例外。</li>
+  <li><b>告诉你折叠处叠了几层。</b>f − b 固定，所以原像个数只能按 w·orient0 + 2b 这样跳：+1 的架上是 1、3、5 层，−1 的架上面外 1 层背面、面上 2 或 3 层。层数直接对应输出里正面层与背面层的数目，是"折叠显式保留"这一设计的计数依据。</li>
+</ul>
+<p>边界也要说清：它只对正则点成立，折缝的像本身是非正则点，那里的原像局部度为 0；它说的是"存在正面原像"，不说该取哪一个，分支的选择仍由裁断准则定（面上优先、离弦基初值最近）；它针对纹理板轴线的反解，主画板轴线的折叠是正向映射的事，另有一套判定。</p>
+
+<footer>导引线取 24 段的折线。教学模型是论文图 3 底图那组轴线的参数化；钩形是 paper/verify/verify_claims.py 第 8 节的轴线；发夹形是两条拱形线，四个端向朝同一侧。</footer>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  const EPS = 1e-7, DEDUP = 1e-6;
+  const cross = (ax, ay, bx, by) => ax * by - ay * bx;
+  const cum = pts => { const c = [0]; for (let k = 1; k < pts.length; k++) c.push(c[k - 1] + Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1])); return c; };
+  const unit = (p, q) => { const dx = q[0] - p[0], dy = q[1] - p[1], n = Math.hypot(dx, dy) || 1; return [dx / n, dy / n]; };
+  const N = 24;
+  function sinGuide(amp, axis) { const o = []; for (let k = 0; k <= N; k++) { const s = -200 + 400 * k / N, b = amp * Math.sin(2 * Math.PI * s / 300); o.push(axis === 'h' ? [s, b] : [b, s]); } return o; }
+  function teaching() {
+    const EH = [0.08, 0.86], EV = [0.86, -0.06], CH = [-0.72, -0.30], CV = [-0.40, 0.46], H = [], V = [];
+    for (let k = 0; k <= N; k++) { const x = -1 + 2 * k / N, psi = x >= 0 ? x - x ** 3 : 0.45 * (x - x ** 3); H.push([(EH[0] * x + CH[0] * psi) * 400, (EH[1] * x + CH[1] * psi) * 400]); V.push([(EV[0] * x + CV[0] * psi) * 400, (EV[1] * x + CV[1] * psi) * 400]); }
+    return [H, V];
+  }
+  function hairpin() { const h = [], v = []; for (let k = 0; k <= N; k++) { const x = -200 + 400 * k / N; h.push([x, 120 * (1 - (x / 200) ** 2)]); const y = x; v.push([-120 * (1 - (y / 200) ** 2) + 60, y]); } return [h, v]; }
+  function hook() { const h = [[-300, 0], [100, 0]]; for (let k = 1; k <= 30; k++) { const th = Math.PI * 150 / 180 * k / 30; h.push([100 + 60 * Math.sin(th), 60 * (1 - Math.cos(th))]); } return [h, [[0, -200], [0, 200]]]; }
+  const rigs = {
+    bow60: { name: '弯 60 px', make: () => [sinGuide(60, 'h'), sinGuide(60, 'v')] },
+    bow100: { name: '弯 100 px（折叠）', make: () => [sinGuide(100, 'h'), sinGuide(100, 'v')] },
+    teaching: { name: '教学模型', make: teaching },
+    hairpin: { name: '发夹形', make: hairpin },
+    hook: { name: '钩形（论文表 1）', make: hook },
+  };
+  function segI(p, p2, q, q2) { const rx = p2[0] - p[0], ry = p2[1] - p[1], sx = q2[0] - q[0], sy = q2[1] - q[1], den = rx * sy - ry * sx; if (Math.abs(den) <= 1e-12) return null; const dx = q[0] - p[0], dy = q[1] - p[1]; return [(dx * sy - dy * sx) / den, (dx * ry - dy * rx) / den]; }
+  function crossing(a, b) {
+    const ca = cum(a), cb = cum(b);
+    for (let i = 0; i < a.length - 1; i++) for (let j = 0; j < b.length - 1; j++) { const h = segI(a[i], a[i + 1], b[j], b[j + 1]); if (h && h[0] >= -EPS && h[0] <= 1 + EPS && h[1] >= -EPS && h[1] <= 1 + EPS) { const t = Math.min(Math.max(h[0], 0), 1), u = Math.min(Math.max(h[1], 0), 1); return { o: [a[i][0] + (a[i + 1][0] - a[i][0]) * t, a[i][1] + (a[i + 1][1] - a[i][1]) * t], ha: ca[i] + (ca[i + 1] - ca[i]) * t, va: cb[j] + (cb[j + 1] - cb[j]) * u }; } }
+    return { o: [0, 0], ha: 0, va: 0 };
+  }
+  function build(h, v) {
+    const F = { h, v, hc: cum(h), vc: cum(v), nh: h.length - 1, nv: v.length - 1 };
+    Object.assign(F, crossing(h, v));
+    F.r = []; for (let i = 0; i < F.nh; i++) F.r.push([h[i + 1][0] - h[i][0], h[i + 1][1] - h[i][1]]);
+    F.q = []; for (let j = 0; j < F.nv; j++) F.q.push([v[j + 1][0] - v[j][0], v[j + 1][1] - v[j][1]]);
+    let i0 = 0; while (i0 < F.nh - 1 && F.hc[i0 + 1] <= F.ha) i0++;
+    let j0 = 0; while (j0 < F.nv - 1 && F.vc[j0 + 1] <= F.va) j0++;
+    F.orient0 = cross(F.r[i0][0], F.r[i0][1], F.q[j0][0], F.q[j0][1]) >= 0 ? 1 : -1;
+    F.cells = [];
+    for (let i = 0; i < F.nh; i++) for (let j = 0; j < F.nv; j++) { const r = F.r[i], q = F.q[j], den = r[0] * (-q[1]) - r[1] * (-q[0]); if (Math.abs(den) <= 1e-12 * (Math.hypot(r[0], r[1]) * Math.hypot(q[0], q[1]) + 1e-300)) continue; F.cells.push({ i, j, nx: h[i][0] + v[j][0], ny: h[i][1] + v[j][1], rx: r[0], ry: r[1], sx: -q[0], sy: -q[1], den, orient: cross(r[0], r[1], q[0], q[1]) >= 0 ? 1 : -1 }); }
+    // the end-ray loop and its winding number
+    const d0 = unit(h[0], h[1]), d1 = unit(h[h.length - 2], h[h.length - 1]), e0 = unit(v[0], v[1]), e1 = unit(v[v.length - 2], v[v.length - 1]);
+    F.loop = [d1, e1, [-d0[0], -d0[1]], [-e0[0], -e0[1]]]; F.loopNames = ['d₁', 'e₁', '−d₀', '−e₀'];
+    let tot = 0; F.w = 0;
+    for (let k = 0; k < 4; k++) { const a = F.loop[k], b = F.loop[(k + 1) % 4], cr = cross(a[0], a[1], b[0], b[1]), dot = a[0] * b[0] + a[1] * b[1]; if (Math.abs(cr) < 1e-12 && dot < 0) { F.w = null; break; } tot += Math.atan2(cr, dot); }
+    if (F.w !== null) F.w = Math.round(tot / (2 * Math.PI));
+    return F;
+  }
+  // ---- exact cell membership (fable_band prototype; mirrors chord_intersect.py _test) ----------------------
+  // An interior cell side is the line through its two ROUNDED nodes h[a] + v[b]; the two cells beside it test the
+  // exact sign of orient2d on the same three points and so always agree. The old float (t, u) is only a prefilter
+  // with a proven margin m; within m of a side the side test runs (float filter, exact BigInt fallback).
+  const U53 = 2 ** -53, CCW = (3 + 16 * U53) * U53, KM = 64 * U53, EXACT = { calls: 0 };
+  const _dv = new DataView(new ArrayBuffer(8));
+  function toBig(x) { if (x === 0) return 0n; _dv.setFloat64(0, x); const hi = _dv.getUint32(0), lo = _dv.getUint32(4), e = (hi >>> 20) & 0x7ff; let m = (BigInt(hi & 0xfffff) << 32n) | BigInt(lo); if (e) m = (m | (1n << 52n)) << BigInt(e - 1); return (hi >>> 31) ? -m : m; }
+  function orientExact(ax, ay, bx, by, cx, cy) { EXACT.calls++; const C = toBig(cx), D = toBig(cy), d = (toBig(ax) - C) * (toBig(by) - D) - (toBig(ay) - D) * (toBig(bx) - C); return d > 0n ? 1 : d < 0n ? -1 : 0; }
+  function orient2(ax, ay, bx, by, cx, cy) { const dl = (ax - cx) * (by - cy), dr = (ay - cy) * (bx - cx), det = dl - dr, bound = CCW * (Math.abs(dl) + Math.abs(dr)); if (det > bound) return 1; if (-det > bound) return -1; if (bound === 0) return 0; return orientExact(ax, ay, bx, by, cx, cy); }
+  function prepExact(F) {
+    const h = F.h, v = F.v, lastI = F.nh - 1, lastJ = F.nv - 1;
+    let a = 0, b = 0; for (const p of h) a = Math.max(a, Math.abs(p[0]), Math.abs(p[1])); for (const p of v) b = Math.max(b, Math.abs(p[0]), Math.abs(p[1]));
+    for (const c of F.cells) {
+      const i = c.i, j = c.j, span = Math.hypot(c.rx, c.ry) + Math.hypot(c.sx, c.sy), scale = a + b + 2 * span, ad = Math.abs(c.den) * (1 - 1e-3);
+      c.x10 = h[i + 1][0] + v[j][0]; c.y10 = h[i + 1][1] + v[j][1]; c.x01 = h[i][0] + v[j + 1][0]; c.y01 = h[i][1] + v[j + 1][1];
+      c.x11 = h[i + 1][0] + v[j + 1][0]; c.y11 = h[i + 1][1] + v[j + 1][1];
+      c.hasL = i > 0; c.hasR = i < lastI; c.hasB = j > 0; c.hasT = j < lastJ;
+      c.ma = KM * scale * span * 2 / ad; c.mb = (c.hasL && c.hasR && c.hasB && c.hasT) ? 0 : KM * scale / ad;
+      const pin = c.mb === 0; c.tmin = c.hasL && pin ? -c.ma : -Infinity; c.tmax = c.hasR && pin ? 1 + c.ma : Infinity; c.umin = c.hasB && pin ? -c.ma : -Infinity; c.umax = c.hasT && pin ? 1 + c.ma : Infinity;
+    }
+    F.exact = true;
+  }
+  // (t, u) when c = A + O lies in the closed cell (guide-end sides open), else null
+  const HIT = [0, 0];
+  function cellHit(c, cx, cy) {
+    const dx = cx - c.nx, dy = cy - c.ny, t = (dx * c.sy - dy * c.sx) / c.den;
+    if (t < c.tmin || t > c.tmax) return null;           // the margin of a bounded cell, folded into its bounds
+    const u = (dx * c.ry - dy * c.rx) / c.den;
+    if (u < c.umin || u > c.umax) return null;
+    let m = c.ma;
+    if (c.mb) { m += c.mb * (Math.abs(dx) + Math.abs(dy)); if ((c.hasL && t < -m) || (c.hasR && t > 1 + m) || (c.hasB && u < -m) || (c.hasT && u > 1 + m)) return null; }
+    if (!(m < t && t < 1 - m && m < u && u < 1 - m)) {
+      const s = c.orient;
+      if (c.hasL && t <= m && s * orient2(c.nx, c.ny, c.x01, c.y01, cx, cy) > 0) return null;
+      if (c.hasR && t >= 1 - m && s * orient2(c.x10, c.y10, c.x11, c.y11, cx, cy) < 0) return null;
+      if (c.hasB && u <= m && s * orient2(c.nx, c.ny, c.x10, c.y10, cx, cy) < 0) return null;
+      if (c.hasT && u >= 1 - m && s * orient2(c.x01, c.y01, c.x11, c.y11, cx, cy) > 0) return null;
+    }
+    HIT[0] = t; HIT[1] = u; return HIT;
+  }
+  // every crossing of one point, with bookkeeping: {f, b, fs (front on sheet), rows}
+  function solve(F, A, wantRows) {
+    const cx = A[0] + F.o[0], cy = A[1] + F.o[1], lastI = F.nh - 1, lastJ = F.nv - 1, rows = [];
+    if (!F.exact) prepExact(F);
+    for (const c of F.cells) {
+      const hit = cellHit(c, cx, cy); if (!hit) continue;
+      const t = hit[0], u = hit[1];
+      const onSheet = (c.i > 0 || t >= -EPS) && (c.i < lastI || t <= 1 + EPS) && (c.j > 0 || u >= -EPS) && (c.j < lastJ || u <= 1 + EPS);
+      let tt = t, uu = u; if (tt < 0) { if (c.i > 0) tt = 0; } else if (tt > 1 && c.i < lastI) tt = 1; if (uu < 0) { if (c.j > 0) uu = 0; } else if (uu > 1 && c.j < lastJ) uu = 1;
+      rows.push({ lh: F.hc[c.i] + tt * (F.hc[c.i + 1] - F.hc[c.i]) - F.ha, lv: F.vc[c.j] + uu * (F.vc[c.j + 1] - F.vc[c.j]) - F.va, orient: c.orient, onSheet });
+    }
+    rows.sort((a, b) => a.lh - b.lh || a.lv - b.lv);
+    // orientation pairing: a report is a duplicate only of a kept report within DEDUP that has the SAME orient
+    // (two near reports of opposite orient are the two roots on either side of a fold crease); every kept
+    // report within reach is checked, not only the last, since rows are sorted by lh alone first
+    const kept = []; for (const r of rows) { let dup = false; for (let k = kept.length - 1; k >= 0 && r.lh - kept[k].lh < DEDUP; k--) { const p = kept[k]; if (p.orient === r.orient && Math.abs(r.lv - p.lv) < DEDUP) { dup = true; break; } } if (!dup) kept.push(r); }
+    let f = 0, b = 0, fs = 0, anySheet = false;
+    for (const r of kept) { if (r.orient === F.orient0) { f++; if (r.onSheet) fs++; } else b++; if (r.onSheet) anySheet = true; }
+    return { f, b, fs, anySheet, rows: wantRows ? kept : null };
+  }
+
+  const $ = id => document.getElementById(id);
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const state = { preset: 'bow100', F: null, box: null, raster: null, stats: null, hover: null };
+  const R = 120;   // raster samples per side
+
+  function fit(cv) { const dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight; if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); } const ctx = cv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); return { ctx, w, h }; }
+  function mapper(box, w, h) { const s = Math.min(w / (box[2] - box[0]), h / (box[3] - box[1])), ox = (w - (box[2] - box[0]) * s) / 2, oy = (h - (box[3] - box[1]) * s) / 2; return { s, to: (x, y) => [ox + (x - box[0]) * s, h - (oy + (y - box[1]) * s)], from: (px, py) => [box[0] + (px - ox) / s, box[1] + (h - py - oy) / s] }; }
+
+  function rebuild() {
+    const [h, v] = rigs[state.preset].make();
+    const F = state.F = build(h, v);
+    // view: the sheet's node bounding box plus a wide margin, so the off-sheet behaviour shows
+    let xs = [], ys = []; for (const hp of h) for (const vp of v) { xs.push(hp[0] + vp[0] - F.o[0]); ys.push(hp[1] + vp[1] - F.o[1]); }
+    const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys), m = 0.45 * Math.max(x1 - x0, y1 - y0);
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, half = Math.max(x1 - x0, y1 - y0) / 2 + m;
+    state.box = [cx - half, cy - half, cx + half, cy + half];
+    // raster classes: 3 = front on sheet, 2 = front only on extension, 1 = back only, 0 = none
+    const ras = new Uint8Array(R * R);
+    for (let iy = 0; iy < R; iy++) for (let ix = 0; ix < R; ix++) {
+      const x = state.box[0] + (ix + 0.5) / R * (state.box[2] - state.box[0]), y = state.box[1] + (iy + 0.5) / R * (state.box[3] - state.box[1]);
+      const s = solve(F, [x, y], false);
+      ras[iy * R + ix] = s.fs ? 3 : s.f ? 2 : s.b ? 1 : 0;
+    }
+    state.raster = ras;
+    // the numbers: 2000 random points within ±300 of the crossing, split by on / off the drawn sheet
+    let seed = 7; const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+    const st = { sheet: 0, sheetFront: 0, off: 0, offFront: 0, none: 0, lawOk: 0, lawN: 0 };
+    for (let k = 0; k < 2000; k++) {
+      const s = solve(F, [rnd() * 600 - 300, rnd() * 600 - 300], false);
+      if (s.anySheet) { st.sheet++; if (s.f) st.sheetFront++; } else { st.off++; if (s.f) st.offFront++; }
+      if (!s.f && !s.b) st.none++;
+      if (F.w !== null) { st.lawN++; if (s.f - s.b === F.w * F.orient0) st.lawOk++; }
+    }
+    state.stats = st;
+    draw();
+  }
+
+  function draw() {
+    const F = state.F; drawMap(F); drawLoop(F);
+    const prod = F.w === null ? '—' : (F.w * F.orient0 > 0 ? '+1' : F.w * F.orient0 < 0 ? '−1' : '0');
+    const wt = F.w === null ? '无定义' : (F.w > 0 ? '+1' : F.w < 0 ? '−1' : '0');
+    $('tProd').innerHTML = `${prod} <small>w = ${wt}, orient0 = ${F.orient0 > 0 ? '+1' : '−1'}</small>`;
+    const st = state.stats;
+    $('tSheet').innerHTML = `${st.sheetFront}/${st.sheet} <small>${st.sheet ? Math.round(100 * st.sheetFront / st.sheet) : 0}%</small>`;
+    $('tOff').innerHTML = `${st.offFront}/${st.off} <small>${st.off ? Math.round(100 * st.offFront / st.off) : 0}%</small>`;
+    $('tLaw').innerHTML = F.w === null ? '— <small>环过原点</small>' : `${st.lawOk}/${st.lawN} <small>个随机点成立</small>`;
+    $('mapInfo').textContent = `${rigs[state.preset].name} · ${F.nh}×${F.nv} 小格`;
+    $('loopInfo').textContent = `w = ${wt}`;
+  }
+
+  function drawMap(F) {
+    const cv = $('map'), { ctx, w, h } = fit(cv), M = mapper(state.box, w, h);
+    ctx.clearRect(0, 0, w, h);
+    const col = [css('--none'), css('--back-soft'), css('--front-soft'), css('--front')];
+    const cw = (state.box[2] - state.box[0]) / R * M.s + 0.6;
+    for (let iy = 0; iy < R; iy++) for (let ix = 0; ix < R; ix++) {
+      const x = state.box[0] + ix / R * (state.box[2] - state.box[0]), y = state.box[1] + (iy + 1) / R * (state.box[3] - state.box[1]);
+      const p = M.to(x, y); ctx.fillStyle = col[state.raster[iy * R + ix]]; ctx.fillRect(p[0], p[1], cw, cw);
+    }
+    // sheet outline: the image of the parameter rectangle's boundary
+    const edge = [];
+    for (let i = 0; i <= F.nh; i++) edge.push([F.h[i][0] + F.v[0][0] - F.o[0], F.h[i][1] + F.v[0][1] - F.o[1]]);
+    for (let j = 1; j <= F.nv; j++) edge.push([F.h[F.nh][0] + F.v[j][0] - F.o[0], F.h[F.nh][1] + F.v[j][1] - F.o[1]]);
+    for (let i = F.nh - 1; i >= 0; i--) edge.push([F.h[i][0] + F.v[F.nv][0] - F.o[0], F.h[i][1] + F.v[F.nv][1] - F.o[1]]);
+    for (let j = F.nv - 1; j >= 1; j--) edge.push([F.h[0][0] + F.v[j][0] - F.o[0], F.h[0][1] + F.v[j][1] - F.o[1]]);
+    ctx.strokeStyle = css('--fg'); ctx.lineWidth = 1; ctx.globalAlpha = 0.55; ctx.setLineDash([3, 3]); ctx.beginPath();
+    edge.forEach((p, k) => { const q = M.to(p[0], p[1]); k ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); }); ctx.closePath(); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
+    const guide = (pts, color, label) => { ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 2.2; ctx.beginPath(); pts.forEach((p, k) => { const q = M.to(p[0], p[1]); k ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); }); ctx.stroke(); const a = M.to(pts[pts.length - 2][0], pts[pts.length - 2][1]), b = M.to(pts[pts.length - 1][0], pts[pts.length - 1][1]), ang = Math.atan2(b[1] - a[1], b[0] - a[0]); ctx.beginPath(); ctx.moveTo(b[0], b[1]); ctx.lineTo(b[0] - 9 * Math.cos(ang - 0.45), b[1] - 9 * Math.sin(ang - 0.45)); ctx.lineTo(b[0] - 9 * Math.cos(ang + 0.45), b[1] - 9 * Math.sin(ang + 0.45)); ctx.closePath(); ctx.fill(); ctx.font = '12px ' + css('--mono'); ctx.fillStyle = css('--fg'); ctx.fillText(label, b[0] + 6, b[1] - 6); };
+    // the four end rays: the wings of back-only points lie between them
+    ctx.setLineDash([2, 5]); ctx.lineWidth = 1; ctx.globalAlpha = 0.7;
+    for (const [p, d, color] of [[F.h[0], unit(F.h[1], F.h[0]), css('--guideH')], [F.h[F.nh], unit(F.h[F.nh - 1], F.h[F.nh]), css('--guideH')], [F.v[0], unit(F.v[1], F.v[0]), css('--guideV')], [F.v[F.nv], unit(F.v[F.nv - 1], F.v[F.nv]), css('--guideV')]]) {
+      const a = M.to(p[0], p[1]), b = M.to(p[0] + d[0] * 3000, p[1] + d[1] * 3000); ctx.strokeStyle = color; ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+    }
+    ctx.setLineDash([]); ctx.globalAlpha = 1;
+    guide(F.h, css('--guideH'), 'H'); guide(F.v, css('--guideV'), 'V');
+    const oo = M.to(0, 0); ctx.fillStyle = css('--fg'); ctx.beginPath(); ctx.arc(oo[0], oo[1], 3, 0, Math.PI * 2); ctx.fill(); ctx.fillText('O', oo[0] + 6, oo[1] + 13);
+    if (state.hover) { const p = M.to(state.hover[0], state.hover[1]); ctx.fillStyle = css('--point'); ctx.beginPath(); ctx.arc(p[0], p[1], 5.5, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = css('--bg'); ctx.lineWidth = 1.5; ctx.stroke(); }
+  }
+
+  function drawLoop(F) {
+    const cv = $('loop'), { ctx, w, h } = fit(cv); ctx.clearRect(0, 0, w, h);
+    const c = [w / 2, h / 2], rad = Math.min(w, h) * 0.36;
+    ctx.strokeStyle = css('--grid'); ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(c[0], c[1], rad, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(c[0] - rad * 1.15, c[1]); ctx.lineTo(c[0] + rad * 1.15, c[1]); ctx.moveTo(c[0], c[1] - rad * 1.15); ctx.lineTo(c[0], c[1] + rad * 1.15); ctx.stroke();
+    // the loop g(θ) = |cos θ|·(H end) + |sin θ|·(V end), drawn through the four end directions
+    ctx.strokeStyle = css('--crease'); ctx.lineWidth = 2.5; ctx.beginPath();
+    for (let k = 0; k <= 360; k++) {
+      const th = k / 180 * Math.PI, ch = Math.cos(th), sh = Math.sin(th);
+      const a = ch >= 0 ? F.loop[0] : F.loop[2], b = sh >= 0 ? F.loop[1] : F.loop[3];
+      const gx = Math.abs(ch) * a[0] + Math.abs(sh) * b[0], gy = Math.abs(ch) * a[1] + Math.abs(sh) * b[1];
+      const p = [c[0] + gx * rad, c[1] - gy * rad]; k ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]);
+    }
+    ctx.stroke();
+    const cols = [css('--guideH'), css('--guideV'), css('--guideH'), css('--guideV')];
+    ctx.font = '13px ' + css('--mono');
+    F.loop.forEach((d, k) => { const p = [c[0] + d[0] * rad, c[1] - d[1] * rad]; ctx.strokeStyle = cols[k]; ctx.lineWidth = 1.5; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(c[0], c[1]); ctx.lineTo(p[0], p[1]); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = cols[k]; ctx.beginPath(); ctx.arc(p[0], p[1], 5, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = css('--fg'); ctx.fillText(F.loopNames[k], p[0] + 8 * Math.sign(d[0] || 1) - (d[0] < 0 ? 30 : 0), p[1] + (d[1] < 0 ? 16 : -8)); });
+    ctx.fillStyle = css('--fg'); ctx.beginPath(); ctx.arc(c[0], c[1], 3.5, 0, Math.PI * 2); ctx.fill();
+    // inset: the two tangents at the crossing O, whose cross product sign is orient0
+    let i0 = 0; while (i0 < F.nh - 1 && F.hc[i0 + 1] <= F.ha) i0++;
+    let j0 = 0; while (j0 < F.nv - 1 && F.vc[j0 + 1] <= F.va) j0++;
+    const ro = unit([0, 0], F.r[i0]), qo = unit([0, 0], F.q[j0]), ic = [w - 70, 70], ir = 40;
+    ctx.strokeStyle = css('--line'); ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(ic[0], ic[1], ir + 12, 0, Math.PI * 2); ctx.stroke();
+    for (const [d, color, label] of [[ro, css('--guideH'), 'r'], [qo, css('--guideV'), 'q']]) {
+      const p = [ic[0] + d[0] * ir, ic[1] - d[1] * ir], ang = Math.atan2(p[1] - ic[1], p[0] - ic[0]);
+      ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(ic[0], ic[1]); ctx.lineTo(p[0], p[1]); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(p[0], p[1]); ctx.lineTo(p[0] - 7 * Math.cos(ang - 0.45), p[1] - 7 * Math.sin(ang - 0.45)); ctx.lineTo(p[0] - 7 * Math.cos(ang + 0.45), p[1] - 7 * Math.sin(ang + 0.45)); ctx.closePath(); ctx.fill();
+      ctx.font = '12px ' + css('--mono'); ctx.fillStyle = css('--fg'); ctx.fillText(label, p[0] + 5 * Math.sign(d[0] || 1) - (d[0] < 0 ? 10 : 0), p[1] + (d[1] < 0 ? 13 : -5));
+    }
+    ctx.font = '12px ' + css('--mono'); ctx.fillStyle = css('--fg'); ctx.textAlign = 'center';
+    ctx.fillText('O 处 orient0 = ' + (F.orient0 > 0 ? '+1' : '−1'), ic[0], ic[1] + ir + 28);
+    ctx.font = '12px ' + css('--body'); ctx.fillStyle = css('--muted');
+    const wt = F.w === null ? '无定义' : (F.w > 0 ? '+1（逆时针一圈）' : F.w < 0 ? '−1（顺时针一圈）' : '0（不绕原点）');
+    ctx.fillText('紫环绕原点：w = ' + wt + '；与 orient0 ' + (F.w === null ? '' : F.w * F.orient0 > 0 ? '同号 → 处处有正面原像' : F.w * F.orient0 < 0 ? '异号 → 翼里只剩背面' : '；w = 0 → 可以没有原像'), w / 2, h - 12);
+    ctx.textAlign = 'left';
+  }
+
+  const map = $('map');
+  function at(ev) { const r = map.getBoundingClientRect(), M = mapper(state.box, r.width, r.height); return M.from(ev.clientX - r.left, ev.clientY - r.top); }
+  function show(p) {
+    state.hover = p; drawMap(state.F);
+    const s = solve(state.F, p, true), F = state.F;
+    const parts = s.rows.map(r => `<span class="${r.orient === F.orient0 ? 'f' : 'b'}">${r.orient === F.orient0 ? '正' : '背'}${r.onSheet ? '' : '·延伸'} (${r.lh.toFixed(0)}, ${r.lv.toFixed(0)})</span>`);
+    const verdict = s.f ? '保留' : '裁断';
+    $('readout').innerHTML = `A = (${p[0].toFixed(0)}, ${p[1].toFixed(0)})：原像 ${s.rows.length} 个${parts.length ? '：' + parts.join('，') : ''}<br>f − b = ${s.f} − ${s.b} = ${s.f - s.b}${F.w === null ? '' : `，w·orient0 = ${F.w * F.orient0}`} → <b>${verdict}</b>`;
+  }
+  map.addEventListener('pointermove', ev => show(at(ev)));
+  map.addEventListener('pointerdown', ev => show(at(ev)));
+  document.querySelectorAll('button.preset').forEach(btn => btn.addEventListener('click', () => { state.preset = btn.dataset.preset; document.querySelectorAll('button.preset').forEach(b => b.setAttribute('aria-pressed', b === btn ? 'true' : 'false')); state.hover = null; $('readout').textContent = '把鼠标移到地图上，看那一点的原像清单。'; rebuild(); }));
+  window.addEventListener('resize', draw);
+  if (window.matchMedia) matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+  new MutationObserver(draw).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+  // the table: every rig once
+  const tb = $('tbody');
+  for (const key of Object.keys(rigs)) {
+    const [h, v] = rigs[key].make(), F = build(h, v);
+    let seed = 7; const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+    let sheet = 0, sheetF = 0, off = 0, offF = 0, none = 0;
+    for (let k = 0; k < 2000; k++) { const s = solve(F, [rnd() * 600 - 300, rnd() * 600 - 300], false); if (s.anySheet) { sheet++; if (s.f) sheetF++; } else { off++; if (s.f) offF++; } if (!s.f && !s.b) none++; }
+    const wt = F.w === null ? '—' : (F.w > 0 ? '+1' : F.w < 0 ? '−1' : '0'), pr = F.w === null ? '—' : (F.w * F.orient0 > 0 ? '+1' : F.w * F.orient0 < 0 ? '−1' : '0');
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${rigs[key].name}</td><td class="num">${wt}</td><td class="num">${F.orient0 > 0 ? '+1' : '−1'}</td><td class="num">${pr}</td><td class="num">${sheetF}/${sheet}</td><td class="num">${offF}/${off}</td><td class="num">${none}</td>`;
+    tb.appendChild(tr);
+  }
+  rebuild();
+  show([-120, 160]);
+})();
+</script>
+
+</body>
+</html>

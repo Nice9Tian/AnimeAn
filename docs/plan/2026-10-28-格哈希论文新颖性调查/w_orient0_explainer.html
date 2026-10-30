@@ -386,15 +386,54 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
   }
   function pointAt(pts, c, arc) { let i = 0; while (i < pts.length - 2 && c[i + 1] <= arc) i++; const span = c[i + 1] - c[i]; const a = span > 0 ? (arc - c[i]) / span : 0; return [pts[i][0] + (pts[i + 1][0] - pts[i][0]) * a, pts[i][1] + (pts[i + 1][1] - pts[i][1]) * a]; }
   function hv(F, lh, lv) { const ph = pointAt(F.h, F.hc, F.ha + lh), pv = pointAt(F.v, F.vc, F.va + lv); return [ph[0] + pv[0] - F.o[0], ph[1] + pv[1] - F.o[1]]; }
+  // ---- exact cell membership (fable_band prototype; mirrors chord_intersect.py _test) ----------------------
+  // An interior cell side is the line through its two ROUNDED nodes h[a] + v[b]; the two cells beside it test the
+  // exact sign of orient2d on the same three points and so always agree. The old float (t, u) is only a prefilter
+  // with a proven margin m; within m of a side the side test runs (float filter, exact BigInt fallback).
+  const U53 = 2 ** -53, CCW = (3 + 16 * U53) * U53, KM = 64 * U53, EXACT = { calls: 0 };
+  const _dv = new DataView(new ArrayBuffer(8));
+  function toBig(x) { if (x === 0) return 0n; _dv.setFloat64(0, x); const hi = _dv.getUint32(0), lo = _dv.getUint32(4), e = (hi >>> 20) & 0x7ff; let m = (BigInt(hi & 0xfffff) << 32n) | BigInt(lo); if (e) m = (m | (1n << 52n)) << BigInt(e - 1); return (hi >>> 31) ? -m : m; }
+  function orientExact(ax, ay, bx, by, cx, cy) { EXACT.calls++; const C = toBig(cx), D = toBig(cy), d = (toBig(ax) - C) * (toBig(by) - D) - (toBig(ay) - D) * (toBig(bx) - C); return d > 0n ? 1 : d < 0n ? -1 : 0; }
+  function orient2(ax, ay, bx, by, cx, cy) { const dl = (ax - cx) * (by - cy), dr = (ay - cy) * (bx - cx), det = dl - dr, bound = CCW * (Math.abs(dl) + Math.abs(dr)); if (det > bound) return 1; if (-det > bound) return -1; if (bound === 0) return 0; return orientExact(ax, ay, bx, by, cx, cy); }
+  function prepExact(F) {
+    const h = F.h, v = F.v, lastI = F.nh - 1, lastJ = F.nv - 1;
+    let a = 0, b = 0; for (const p of h) a = Math.max(a, Math.abs(p[0]), Math.abs(p[1])); for (const p of v) b = Math.max(b, Math.abs(p[0]), Math.abs(p[1]));
+    for (const c of F.cells) {
+      const i = c.i, j = c.j, span = Math.hypot(c.rx, c.ry) + Math.hypot(c.sx, c.sy), scale = a + b + 2 * span, ad = Math.abs(c.den) * (1 - 1e-3);
+      c.x10 = h[i + 1][0] + v[j][0]; c.y10 = h[i + 1][1] + v[j][1]; c.x01 = h[i][0] + v[j + 1][0]; c.y01 = h[i][1] + v[j + 1][1];
+      c.x11 = h[i + 1][0] + v[j + 1][0]; c.y11 = h[i + 1][1] + v[j + 1][1];
+      c.hasL = i > 0; c.hasR = i < lastI; c.hasB = j > 0; c.hasT = j < lastJ;
+      c.ma = KM * scale * span * 2 / ad; c.mb = (c.hasL && c.hasR && c.hasB && c.hasT) ? 0 : KM * scale / ad;
+      const pin = c.mb === 0; c.tmin = c.hasL && pin ? -c.ma : -Infinity; c.tmax = c.hasR && pin ? 1 + c.ma : Infinity; c.umin = c.hasB && pin ? -c.ma : -Infinity; c.umax = c.hasT && pin ? 1 + c.ma : Infinity;
+    }
+    F.exact = true;
+  }
+  // (t, u) when c = A + O lies in the closed cell (guide-end sides open), else null
+  const HIT = [0, 0];
+  function cellHit(c, cx, cy) {
+    const dx = cx - c.nx, dy = cy - c.ny, t = (dx * c.sy - dy * c.sx) / c.den;
+    if (t < c.tmin || t > c.tmax) return null;           // the margin of a bounded cell, folded into its bounds
+    const u = (dx * c.ry - dy * c.rx) / c.den;
+    if (u < c.umin || u > c.umax) return null;
+    let m = c.ma;
+    if (c.mb) { m += c.mb * (Math.abs(dx) + Math.abs(dy)); if ((c.hasL && t < -m) || (c.hasR && t > 1 + m) || (c.hasB && u < -m) || (c.hasT && u > 1 + m)) return null; }
+    if (!(m < t && t < 1 - m && m < u && u < 1 - m)) {
+      const s = c.orient;
+      if (c.hasL && t <= m && s * orient2(c.nx, c.ny, c.x01, c.y01, cx, cy) > 0) return null;
+      if (c.hasR && t >= 1 - m && s * orient2(c.x10, c.y10, c.x11, c.y11, cx, cy) < 0) return null;
+      if (c.hasB && u <= m && s * orient2(c.nx, c.ny, c.x10, c.y10, cx, cy) < 0) return null;
+      if (c.hasT && u >= 1 - m && s * orient2(c.x01, c.y01, c.x11, c.y11, cx, cy) > 0) return null;
+    }
+    HIT[0] = t; HIT[1] = u; return HIT;
+  }
   // every crossing of one point: rows {i, j, lh, lv, orient, onSheet}
   function solve(F, A) {
     const cx = A[0] + F.o[0], cy = A[1] + F.o[1], lastI = F.nh - 1, lastJ = F.nv - 1, rows = [];
+    if (!F.exact) prepExact(F);
     for (const c of F.cells) {
-      const dx = cx - c.nx, dy = cy - c.ny, t = (dx * c.sy - dy * c.sx) / c.den;
-      if (t < (c.i === 0 ? -Infinity : -EPS) || t > (c.i === lastI ? Infinity : 1 + EPS)) continue;
-      const u = (dx * c.ry - dy * c.rx) / c.den;
-      if (u < (c.j === 0 ? -Infinity : -EPS) || u > (c.j === lastJ ? Infinity : 1 + EPS)) continue;
-      const onSheet = t >= -EPS && t <= 1 + EPS && u >= -EPS && u <= 1 + EPS;
+      const hit = cellHit(c, cx, cy); if (!hit) continue;
+      const t = hit[0], u = hit[1];
+      const onSheet = (c.i > 0 || t >= -EPS) && (c.i < lastI || t <= 1 + EPS) && (c.j > 0 || u >= -EPS) && (c.j < lastJ || u <= 1 + EPS);
       let tt = t, uu = u; if (tt < 0) { if (c.i > 0) tt = 0; } else if (tt > 1 && c.i < lastI) tt = 1; if (uu < 0) { if (c.j > 0) uu = 0; } else if (uu > 1 && c.j < lastJ) uu = 1;
       rows.push({ i: c.i, j: c.j, lh: F.hc[c.i] + tt * (F.hc[c.i + 1] - F.hc[c.i]) - F.ha, lv: F.vc[c.j] + uu * (F.vc[c.j + 1] - F.vc[c.j]) - F.va, orient: c.orient, onSheet });
     }
