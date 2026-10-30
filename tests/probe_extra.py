@@ -10,7 +10,9 @@ import sys
 import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, "C:/Users/admin/Documents/AnimeAn/pyfile")
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(ROOT, "pyfile"))
+sys.path.insert(0, os.path.join(ROOT, "docs", "plan", "2026-10-28-格哈希论文新颖性调查", "research_eps_band", "prototype"))
 sys.path.insert(0, HERE)
 sys.modules.setdefault("animean_python", types.ModuleType("animean_python"))
 NAME = sys.argv[1] if len(sys.argv) > 1 else "chord_intersect"
@@ -173,11 +175,25 @@ if __name__ == "__main__":
     guide_ends("S1.5", *s_guides(1.5))
     if NAME == "chord_intersect":
         # prefilter ablation: v1 (exact side tests on every side, no prefilter) vs v3
-        v1 = importlib.import_module("chord_intersect_v1_noprefilter")
+        try:
+            v1_cls = importlib.import_module("chord_intersect_v1_noprefilter").ChordIntersect
+        except ModuleNotFoundError:
+            class v1_cls(ci.ChordIntersect):
+                def _cell(self, i, j, sheet):
+                    c = super()._cell(i, j, sheet)
+                    if c is None:
+                        return None
+                    (i, j, x00, y00, sx, sy, rx, ry, den, tmin, tmax, umin, umax, mb, ma, s, side) = c
+                    hasL, hasR, hasB, hasT = side[6], side[7], side[8], side[9]
+                    inf = math.inf
+                    return (i, j, x00, y00, sx, sy, rx, ry, den,
+                            -inf if hasL else tmin, inf if hasR else tmax,
+                            -inf if hasB else umin, inf if hasT else umax,
+                            0.0, inf, s, side)
         rng = random.Random(77)
         for label, (H, V) in (("bow100", (sin_guide(100.0, "h"), sin_guide(100.0, "v"))), ("thin", thin_rig())):
             frame = am._Frame(H, V)
-            a, b = ci.ChordIntersect.from_frame(frame), v1.ChordIntersect.from_frame(frame)
+            a, b = ci.ChordIntersect.from_frame(frame), v1_cls.from_frame(frame)
             _, pts = generic(label + "*", H, V, n_edge=200, far=True)
             diff = sum(sorted(set(a._pairs_grid(p, "all"))) != sorted(set(b._pairs_grid(p, "all"))) for p in pts)
             print("ablation %s: %d probes, prefilter vs none differ on %d" % (label, len(pts), diff))

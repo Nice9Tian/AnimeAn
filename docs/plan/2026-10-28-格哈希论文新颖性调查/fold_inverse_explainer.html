@@ -292,7 +292,8 @@ footer code { font-family: var(--mono); font-size: 12px }
         const lo = alongH ? (c.i === 0 ? -Infinity : 0) : (c.j === 0 ? -Infinity : 0);
         const hi = alongH ? (c.i === lastI ? Infinity : 1) : (c.j === lastJ ? Infinity : 1);
         const ends = [lo, hi].map(w => w === -Infinity ? (k1 > k0 ? -Infinity : Infinity) : w === Infinity ? (k1 > k0 ? Infinity : -Infinity) : (1 - w) * k0 + w * k1);
-        fam.items.push({ c, klo: Math.min(...ends), khi: Math.max(...ends) });
+        const tol = 1e-12 * (Math.abs(k0) + Math.abs(k1));       // k is a different expression from k0, k1: a superset must not lose a tie
+        fam.items.push({ c, klo: Math.min(...ends) - tol, khi: Math.max(...ends) + tol });
       }
       F.families.push(fam);
     };
@@ -337,25 +338,25 @@ footer code { font-family: var(--mono); font-size: 12px }
   // (t, u) when c = A + O lies in the closed cell (guide-end sides open), else null
   const HIT = [0, 0];
   function cellHit(c, cx, cy) {
-    const dx = cx - c.nx, dy = cy - c.ny, t = (dx * c.sy - dy * c.sx) / c.den;
+    const dx = cx - c.nx, dy = cy - c.ny; let t = (dx * c.sy - dy * c.sx) / c.den;
     if (t < c.tmin || t > c.tmax) return null;           // the margin of a bounded cell, folded into its bounds
-    const u = (dx * c.ry - dy * c.rx) / c.den;
+    let u = (dx * c.ry - dy * c.rx) / c.den;
     if (u < c.umin || u > c.umax) return null;
     let m = c.ma;
     if (c.mb) { m += c.mb * (Math.abs(dx) + Math.abs(dy)); if ((c.hasL && t < -m) || (c.hasR && t > 1 + m) || (c.hasB && u < -m) || (c.hasT && u > 1 + m)) return null; }
     if (!(m < t && t < 1 - m && m < u && u < 1 - m)) {
       const s = c.orient;
-      if (c.hasL && t <= m && s * orient2(c.nx, c.ny, c.x01, c.y01, cx, cy) > 0) return null;
-      if (c.hasR && t >= 1 - m && s * orient2(c.x10, c.y10, c.x11, c.y11, cx, cy) < 0) return null;
-      if (c.hasB && u <= m && s * orient2(c.nx, c.ny, c.x10, c.y10, cx, cy) < 0) return null;
-      if (c.hasT && u >= 1 - m && s * orient2(c.x01, c.y01, c.x11, c.y11, cx, cy) > 0) return null;
+      if (c.hasL && t <= m) { const o = s * orient2(c.nx, c.ny, c.x01, c.y01, cx, cy); if (o > 0) return null; t = o === 0 ? 0 : (t > 0 ? t : 1e-300); }
+      if (c.hasR && t >= 1 - m) { const o = s * orient2(c.x10, c.y10, c.x11, c.y11, cx, cy); if (o < 0) return null; t = o === 0 ? 1 : (t < 1 ? t : 1 - U53); }
+      if (c.hasB && u <= m) { const o = s * orient2(c.nx, c.ny, c.x10, c.y10, cx, cy); if (o < 0) return null; u = o === 0 ? 0 : (u > 0 ? u : 1e-300); }
+      if (c.hasT && u >= 1 - m) { const o = s * orient2(c.x01, c.y01, c.x11, c.y11, cx, cy); if (o > 0) return null; u = o === 0 ? 1 : (u < 1 ? u : 1 - U53); }
     }
     HIT[0] = t; HIT[1] = u; return HIT;
   }
   function onSheetOf(F, c, t, u) { return (c.i > 0 || t >= -EPS) && (c.i < F.nh - 1 || t <= 1 + EPS) && (c.j > 0 || u >= -EPS) && (c.j < F.nv - 1 || u <= 1 + EPS); }
   // the cell test on a list of cells (exact interior sides); sheetOnly pins the guide-end sides to [-EPS, 1 + EPS]
   function testCells(F, cx, cy, cells, sheetOnly, raw) {
-    const lastI = F.nh - 1, lastJ = F.nv - 1; let same = false;
+    let same = false;
     for (const c of cells) {
       if (c.degenerate) continue;
       if (!F.exact) prepExact(F);
@@ -386,18 +387,14 @@ footer code { font-family: var(--mono); font-size: 12px }
         for (const e of extRaw) if (!onSheetOf(F, e.c, e.t, e.u)) raw.push(e); // the sheet part is already in raw
       }
     }
-    const lastI = F.nh - 1, lastJ = F.nv - 1;
     let rows = raw.map(({ c, t, u }) => {
       const onSheet = onSheetOf(F, c, t, u);
-      if (t < 0) { if (c.i > 0) t = 0; } else if (t > 1 && c.i < lastI) t = 1;
-      if (u < 0) { if (c.j > 0) u = 0; } else if (u > 1 && c.j < lastJ) u = 1;
-      return { lh: F.hc[c.i] + t * (F.hc[c.i + 1] - F.hc[c.i]) - F.ha, lv: F.vc[c.j] + u * (F.vc[c.j + 1] - F.vc[c.j]) - F.va, c, t, u, orient: c.orient, onSheet };
+      return { lh: (t === 1 ? F.hc[c.i + 1] : F.hc[c.i] + t * (F.hc[c.i + 1] - F.hc[c.i])) - F.ha, lv: (u === 1 ? F.vc[c.j + 1] : F.vc[c.j] + u * (F.vc[c.j + 1] - F.vc[c.j])) - F.va, i: c.i, j: c.j, c, t, u, orient: c.orient, onSheet };
     });
     rows.sort((a, b) => a.lh - b.lh || a.lv - b.lv);
-    // orientation pairing: a report is a duplicate only of a kept report within DEDUP that has the SAME orient
-    // (two near reports of opposite orient are the two roots on either side of a fold crease); every kept
-    // report within reach is checked, not only the last, since rows are sorted by lh alone first
-    const kept = []; for (const r of rows) { let dup = false; for (let k = kept.length - 1; k >= 0 && r.lh - kept[k].lh < DEDUP; k--) { const p = kept[k]; if (p.orient === r.orient && Math.abs(r.lv - p.lv) < DEDUP) { dup = true; break; } } if (!dup) kept.push(r); }
+    // combinatorial orientation pairing: under exact cell membership, two same-orient reports are one root iff
+    // they are the same cell or meet across a shared interior edge/node where orient2 === 0 (t / u pinned to 0 / 1)
+    const kept = []; for (const r of rows) { let dup = false; for (let k = kept.length - 1; k >= 0; k--) { const p = kept[k]; if (DEDUP && p.orient === r.orient && (r.i === p.i || (p.i < r.i && p.t === 1 && r.t === 0 && (r.i - p.i === 1 || r.lh === p.lh)) || (r.i < p.i && p.t === 0 && r.t === 1 && (p.i - r.i === 1 || r.lh === p.lh))) && (r.j === p.j || (p.j < r.j && p.u === 1 && r.u === 0 && (r.j - p.j === 1 || r.lv === p.lv)) || (r.j < p.j && p.u === 0 && r.u === 1 && (p.j - r.j === 1 || r.lv === p.lv)))) { dup = true; break; } } if (!dup) kept.push(r); }
     rows = kept;
     let same = rows.filter(r => r.orient === F.orient0), principal = null;
     if (same.length) {

@@ -44,7 +44,7 @@ except Exception:  # the embedded python has numpy; the pure-python path covers 
     _np = None
 
 _EPS = 1e-7           # guide ENDS only: the sheet / extension label (on_sheet) uses t, u in [-EPS, 1 + EPS]
-_DEDUP = 1e-6         # px: two SAME-orientation crossings closer than this in (l_h, l_v) are one preimage
+_DEDUP = 1e-6         # legacy reference distance (px); _merge_duplicates uses exact combinatorial edge/node matching
 
 # ---- exact cell membership (prototype, fable_band) --------------------------------
 # A cell's INTERIOR sides are no longer tested on the cell's own (t, u) with a
@@ -205,42 +205,42 @@ class Result:
 
 
 def _merge_duplicates(rows):
-    """One preimage reported by several cells -> one row (orientation pairing).
+    """One preimage reported by several cells -> one row (combinatorial pairing).
 
-    A root on a shared cell edge or node is accepted by every cell around it
-    (the [-EPS, 1 + EPS] band), so near-equal reports must be merged. Distance
-    alone cannot tell such a duplicate from the two genuine roots on either
-    side of a fold crease, which come arbitrarily close as the point nears the
-    crease's image. The orientation can: two cells sharing an edge with the
-    SAME orient map their union one-to-one, so two near reports of the same
-    orient are one root; with OPPOSITE orients the edge is a crease and the
-    reports are two roots (for a point off the crease image and off the EPS
-    band on the crease's uncovered side, where the two cells each report a
-    slightly out-of-range false root - opposite orients, so the signed sum
-    still holds; where only one cell's band reaches, one false root remains
-    and no merge rule can remove it). So a row is
-    dropped only when an already kept row lies within _DEDUP in both arcs AND
-    has the same orient - compared against every kept row in reach, not just
-    the last one, since an opposite-orient row may sort between two duplicates.
-
-    Blind spots (docs/plan/2026-10-28-格哈希论文新颖性调查/
-    2026-10-30-w_orient0奇偶校验命题与Lean证明.md §8): within ~_DEDUP of a
-    cusp corner image two genuine same-orient roots get merged (one root
-    short: the signed sum of orients misses w by one), and at a double-crease
-    corner two such pairs (the signed sum stays w). Rows are sorted by
-    (l_h, l_v) on return.
+    Under exact cell membership on the rounded node mesh, two same-orientation
+    cells can both accept the same canvas point if and only if the point lies on
+    a shared interior edge or corner node (exact orient2d == 0). In _test, an
+    interior side pins t or u to 0.0 / 1.0 if and only if orient2d == 0 (points
+    strictly inside the cell keep 0.0 < t, u < 1.0). Thus two same-orient rows
+    are duplicates of one root iff they are the same cell or meet across a shared
+    interior edge/node where both sides have orient2d == 0 (including across a
+    culled zero-length segment, where cumulative arc lengths match). Opposite-
+    orient rows across a fold crease are two roots coming together and are both
+    kept; two genuine same-orient roots in diagonally opposite cells of a cusp
+    or double-crease wedge (c != corner node) have 0.0 < t, u < 1.0 and are
+    never merged, eliminating the _DEDUP cusp blind spot regardless of proximity.
+    Rows are sorted by (l_h, l_v) on return.
     """
     rows.sort()
     kept = []
     for row in rows:
+        l_h, l_v, i, j, t, u, s, _ = row
         dup = False
-        k = len(kept) - 1
-        while k >= 0 and row[0] - kept[k][0] < _DEDUP:     # sorted by l_h: older rows are further left
-            prev = kept[k]
-            if prev[6] == row[6] and abs(row[1] - prev[1]) < _DEDUP:
+        for prev in kept:
+            if prev[6] != s:
+                continue
+            pl_h, pl_v, pi, pj, pt, pu, _, _ = prev
+            same_h = (i == pi
+                      or (pi < i and pt == 1.0 and t == 0.0 and (i - pi == 1 or l_h == pl_h))
+                      or (i < pi and pt == 0.0 and t == 1.0 and (pi - i == 1 or l_h == pl_h)))
+            if not same_h:
+                continue
+            same_v = (j == pj
+                      or (pj < j and pu == 1.0 and u == 0.0 and (j - pj == 1 or l_v == pl_v))
+                      or (j < pj and pu == 0.0 and u == 1.0 and (pj - j == 1 or l_v == pl_v)))
+            if same_v:
                 dup = True
                 break
-            k -= 1
         if not dup:
             kept.append(row)
     return kept
@@ -496,17 +496,27 @@ class ChordIntersect:
             c1 = min(n - 1, int((min(khi, kmax) - kmin) * winv + 1e-7))
             for c in range(c0, c1 + 1):
                 bins[c].append(cand)
-        return (ex, ey, dx, dy, kmin, winv, n, bins, below, above)
+        # a point's k can equal kmin / kmax (a corner of the strip family) or
+        # round past them, so the lookup must not skip the end bins there
+        tol = 1e-12 * (abs(kmin) + abs(kmax) + (kmax - kmin))
+        return (ex, ey, dx, dy, kmin, kmax, tol, winv, n, bins, below, above)
 
     def _extension_candidates(self, cx, cy):
         out = []
-        for ex, ey, dx, dy, kmin, winv, n, bins, below, above in self._families:
+        for ex, ey, dx, dy, kmin, kmax, tol, winv, n, bins, below, above in self._families:
             k = dx * (cy - ey) - dy * (cx - ex)
             if k < kmin:
                 out.extend(below)
+                if k >= kmin - tol:
+                    out.extend(bins[0])
             else:
                 idx = int((k - kmin) * winv)
-                out.extend(above if idx >= n else bins[idx])
+                if idx < n:
+                    out.extend(bins[idx])
+                else:
+                    out.extend(above)
+                    if k <= kmax + tol:
+                        out.extend(bins[n - 1])
         return out
 
     def _pairs_grid(self, point, extensions="lazy"):
@@ -548,16 +558,29 @@ class ChordIntersect:
                 if (hasL and t < -m) or (hasR and t > 1.0 + m) or (hasB and u < -m) or (hasT and u > 1.0 + m):
                     continue
             if not (m < t < 1.0 - m and m < u < 1.0 - m):
-                # within m of a side: the exact side-line test decides
+                # within m of a side: the exact side-line test decides, and pins
+                # t / u to 0.0 or 1.0 on an interior side iff _orient == 0
                 x10, y10, x01, y01, x11, y11, hasL, hasR, hasB, hasT = side
-                if hasL and t <= m and s * _orient(x00, y00, x01, y01, cx, cy) > 0:
-                    continue
-                if hasR and t >= 1.0 - m and s * _orient(x10, y10, x11, y11, cx, cy) < 0:
-                    continue
-                if hasB and u <= m and s * _orient(x00, y00, x10, y10, cx, cy) < 0:
-                    continue
-                if hasT and u >= 1.0 - m and s * _orient(x01, y01, x11, y11, cx, cy) > 0:
-                    continue
+                if hasL and t <= m:
+                    o = s * _orient(x00, y00, x01, y01, cx, cy)
+                    if o > 0:
+                        continue
+                    t = 0.0 if o == 0 else (t if t > 0.0 else 1e-300)
+                if hasR and t >= 1.0 - m:
+                    o = s * _orient(x10, y10, x11, y11, cx, cy)
+                    if o < 0:
+                        continue
+                    t = 1.0 if o == 0 else (t if t < 1.0 else 1.0 - _U)
+                if hasB and u <= m:
+                    o = s * _orient(x00, y00, x10, y10, cx, cy)
+                    if o < 0:
+                        continue
+                    u = 0.0 if o == 0 else (u if u > 0.0 else 1e-300)
+                if hasT and u >= 1.0 - m:
+                    o = s * _orient(x01, y01, x11, y11, cx, cy)
+                    if o > 0:
+                        continue
+                    u = 1.0 if o == 0 else (u if u < 1.0 else 1.0 - _U)
             raw.append((i, j, t, u))
             if s == orient0:
                 same = True
@@ -709,24 +732,13 @@ class ChordIntersect:
         rows = []
         for i, j, t, u in raw:
             # only the guide-end sides can leave the sheet; an interior side is
-            # decided by the exact side-line test, whatever t, u round to
+            # decided by the exact side-line test in _test, which already pins
+            # t / u to 0.0 or 1.0 iff _orient == 0 and keeps strictly interior
+            # hits inside (0.0, 1.0)
             on_sheet = ((i > 0 or t >= -_EPS) and (i < last_i or t <= 1.0 + _EPS)
                         and (j > 0 or u >= -_EPS) and (j < last_j or u <= 1.0 + _EPS))
-            # inside the guide the parameter is pinned to its segment; past the
-            # first segment's start or the last one's end it runs on - that is
-            # the straight extension (a one-segment guide extends both ways)
-            if t < 0.0:
-                if i > 0:
-                    t = 0.0
-            elif t > 1.0 and i < last_i:
-                t = 1.0
-            if u < 0.0:
-                if j > 0:
-                    u = 0.0
-            elif u > 1.0 and j < last_j:
-                u = 1.0
-            l_h = h_cum[i] + t * (h_cum[i + 1] - h_cum[i]) - self.h_arc
-            l_v = v_cum[j] + u * (v_cum[j + 1] - v_cum[j]) - self.v_arc
+            l_h = (h_cum[i + 1] if t == 1.0 else h_cum[i] + t * (h_cum[i + 1] - h_cum[i])) - self.h_arc
+            l_v = (v_cum[j + 1] if u == 1.0 else v_cum[j] + u * (v_cum[j + 1] - v_cum[j])) - self.v_arc
             ri, qj = r[i], q[j]
             o = ri[0] * qj[1] - ri[1] * qj[0]
             rows.append((l_h, l_v, i, j, t, u, 1 if o >= 0.0 else -1, on_sheet))

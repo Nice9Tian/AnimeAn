@@ -7,12 +7,17 @@ import time
 import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, "C:/Users/admin/Documents/AnimeAn/pyfile")
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(ROOT, "pyfile"))
+sys.path.insert(0, os.path.join(ROOT, "docs", "plan", "2026-10-28-格哈希论文新颖性调查", "research_eps_band", "prototype"))
 sys.path.insert(0, HERE)
 sys.modules.setdefault("animean_python", types.ModuleType("animean_python"))
 import auto_mapping as am  # noqa: E402
 import chord_intersect as new  # noqa: E402
-import chord_intersect_orig as old  # noqa: E402
+try:
+    import chord_intersect_orig as old  # noqa: E402
+except ModuleNotFoundError:
+    import chord_intersect_C as old  # noqa: E402
 
 
 def sin_guide(amp, axis, n=101, half=200.0, period=300.0):

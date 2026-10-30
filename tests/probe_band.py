@@ -28,15 +28,16 @@ import types
 from fractions import Fraction as Fr
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = "C:/Users/admin/Documents/AnimeAn"
+ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "pyfile"))
+sys.path.insert(0, os.path.join(ROOT, "docs", "plan", "2026-10-28-格哈希论文新颖性调查", "research_eps_band", "prototype"))
 sys.path.insert(0, HERE)
 sys.modules.setdefault("animean_python", types.ModuleType("animean_python"))
 import numpy as np  # noqa: E402
 
 NAME = sys.argv[1] if len(sys.argv) > 1 else "chord_intersect"
 ci = importlib.import_module(NAME)
-OUT = open(os.path.join(HERE, "probe_detail_%s.txt" % NAME), "w", encoding="utf-8")
+OUT = open(os.devnull, "w", encoding="utf-8")
 
 
 def sin_guide(amp, axis, n=101, half=200.0, period=300.0):

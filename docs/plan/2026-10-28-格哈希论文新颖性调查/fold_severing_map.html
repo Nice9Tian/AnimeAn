@@ -224,18 +224,18 @@ code { font-family: var(--mono); font-size: 0.92em }
   // (t, u) when c = A + O lies in the closed cell (guide-end sides open), else null
   const HIT = [0, 0];
   function cellHit(c, cx, cy) {
-    const dx = cx - c.nx, dy = cy - c.ny, t = (dx * c.sy - dy * c.sx) / c.den;
+    const dx = cx - c.nx, dy = cy - c.ny; let t = (dx * c.sy - dy * c.sx) / c.den;
     if (t < c.tmin || t > c.tmax) return null;           // the margin of a bounded cell, folded into its bounds
-    const u = (dx * c.ry - dy * c.rx) / c.den;
+    let u = (dx * c.ry - dy * c.rx) / c.den;
     if (u < c.umin || u > c.umax) return null;
     let m = c.ma;
     if (c.mb) { m += c.mb * (Math.abs(dx) + Math.abs(dy)); if ((c.hasL && t < -m) || (c.hasR && t > 1 + m) || (c.hasB && u < -m) || (c.hasT && u > 1 + m)) return null; }
     if (!(m < t && t < 1 - m && m < u && u < 1 - m)) {
       const s = c.orient;
-      if (c.hasL && t <= m && s * orient2(c.nx, c.ny, c.x01, c.y01, cx, cy) > 0) return null;
-      if (c.hasR && t >= 1 - m && s * orient2(c.x10, c.y10, c.x11, c.y11, cx, cy) < 0) return null;
-      if (c.hasB && u <= m && s * orient2(c.nx, c.ny, c.x10, c.y10, cx, cy) < 0) return null;
-      if (c.hasT && u >= 1 - m && s * orient2(c.x01, c.y01, c.x11, c.y11, cx, cy) > 0) return null;
+      if (c.hasL && t <= m) { const o = s * orient2(c.nx, c.ny, c.x01, c.y01, cx, cy); if (o > 0) return null; t = o === 0 ? 0 : (t > 0 ? t : 1e-300); }
+      if (c.hasR && t >= 1 - m) { const o = s * orient2(c.x10, c.y10, c.x11, c.y11, cx, cy); if (o < 0) return null; t = o === 0 ? 1 : (t < 1 ? t : 1 - U53); }
+      if (c.hasB && u <= m) { const o = s * orient2(c.nx, c.ny, c.x10, c.y10, cx, cy); if (o < 0) return null; u = o === 0 ? 0 : (u > 0 ? u : 1e-300); }
+      if (c.hasT && u >= 1 - m) { const o = s * orient2(c.x01, c.y01, c.x11, c.y11, cx, cy); if (o > 0) return null; u = o === 0 ? 1 : (u < 1 ? u : 1 - U53); }
     }
     HIT[0] = t; HIT[1] = u; return HIT;
   }
@@ -247,14 +247,12 @@ code { font-family: var(--mono); font-size: 0.92em }
       const hit = cellHit(c, cx, cy); if (!hit) continue;
       const t = hit[0], u = hit[1];
       const onSheet = (c.i > 0 || t >= -EPS) && (c.i < lastI || t <= 1 + EPS) && (c.j > 0 || u >= -EPS) && (c.j < lastJ || u <= 1 + EPS);
-      let tt = t, uu = u; if (tt < 0) { if (c.i > 0) tt = 0; } else if (tt > 1 && c.i < lastI) tt = 1; if (uu < 0) { if (c.j > 0) uu = 0; } else if (uu > 1 && c.j < lastJ) uu = 1;
-      rows.push({ lh: F.hc[c.i] + tt * (F.hc[c.i + 1] - F.hc[c.i]) - F.ha, lv: F.vc[c.j] + uu * (F.vc[c.j + 1] - F.vc[c.j]) - F.va, orient: c.orient, onSheet });
+      rows.push({ i: c.i, j: c.j, t, u, lh: (t === 1 ? F.hc[c.i + 1] : F.hc[c.i] + t * (F.hc[c.i + 1] - F.hc[c.i])) - F.ha, lv: (u === 1 ? F.vc[c.j + 1] : F.vc[c.j] + u * (F.vc[c.j + 1] - F.vc[c.j])) - F.va, orient: c.orient, onSheet });
     }
     rows.sort((a, b) => a.lh - b.lh || a.lv - b.lv);
-    // orientation pairing: a report is a duplicate only of a kept report within DEDUP that has the SAME orient
-    // (two near reports of opposite orient are the two roots on either side of a fold crease); every kept
-    // report within reach is checked, not only the last, since rows are sorted by lh alone first
-    const kept = []; for (const r of rows) { let dup = false; for (let k = kept.length - 1; k >= 0 && r.lh - kept[k].lh < DEDUP; k--) { const p = kept[k]; if (p.orient === r.orient && Math.abs(r.lv - p.lv) < DEDUP) { dup = true; break; } } if (!dup) kept.push(r); }
+    // combinatorial orientation pairing: under exact cell membership, two same-orient reports are one root iff
+    // they are the same cell or meet across a shared interior edge/node where orient2 === 0 (t / u pinned to 0 / 1)
+    const kept = []; for (const r of rows) { let dup = false; for (let k = kept.length - 1; k >= 0; k--) { const p = kept[k]; if (DEDUP && p.orient === r.orient && (r.i === p.i || (p.i < r.i && p.t === 1 && r.t === 0 && (r.i - p.i === 1 || r.lh === p.lh)) || (r.i < p.i && p.t === 0 && r.t === 1 && (p.i - r.i === 1 || r.lh === p.lh))) && (r.j === p.j || (p.j < r.j && p.u === 1 && r.u === 0 && (r.j - p.j === 1 || r.lv === p.lv)) || (r.j < p.j && p.u === 0 && r.u === 1 && (p.j - r.j === 1 || r.lv === p.lv)))) { dup = true; break; } } if (!dup) kept.push(r); }
     let f = 0, b = 0, fs = 0, anySheet = false;
     for (const r of kept) { if (r.orient === F.orient0) { f++; if (r.onSheet) fs++; } else b++; if (r.onSheet) anySheet = true; }
     return { f, b, fs, anySheet, rows: wantRows ? kept : null };

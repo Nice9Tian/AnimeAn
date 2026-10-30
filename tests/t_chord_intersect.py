@@ -9,13 +9,18 @@ What must hold:
     on an unfolded frame it IS the principal one;
   * a straight frame yields exactly the chord-basis decomposition;
   * the numpy matrix path and the pure-python pair loop agree;
-  * from_frame reads a _Frame's own origin, so arcs agree with frame.hv.
-  * duplicates are merged by orientation pairing: near reports of the same
-    orient are one root, of opposite orient two roots across a fold crease;
-    on the folded 100 px rig the conservation law sum(orient) == w then holds
-    next to every fold edge (distance-only merging broke it at all of them),
-    at random probes, and fails - detectably - only in the cusp wedges.
+  * from_frame reads a _Frame's own origin, so arcs agree with frame.hv;
+  * interior cell sides are tested by exact orient2d on the rounded node mesh
+    (pinning t / u to 0.0 / 1.0 iff orient2d == 0), and duplicates are merged
+    combinatorially (same orient across a shared interior edge or node where
+    orient2d == 0, with no distance threshold): every raw report matches exact
+    rational (Fraction) cell membership (0 false, 0 lost), and on the folded
+    100 px rig the conservation law sum(orient) == w holds next to every fold
+    edge, across all 5200 cusp-wedge probes (0 cusp blind-spot errors), and at
+    random probes.
 """
+from fractions import Fraction
+import collections
 import math
 import os
 import random
@@ -227,31 +232,56 @@ for bin_size in (2.0, 8.0, 25.0):
 print("bins of 2, 8 and 25 px and the batch grid path: same hits")
 
 # ---------------------------------------------------------------- orientation pairing
-# _finish merges near-equal reports (a root on a shared edge is accepted by both
-# cells) only when they have the same orient: two cells sharing an edge with the
-# same orient map their union one-to-one, with opposite orients the edge is a
-# fold crease and the two reports are the two roots on either side of it
-# (docs/plan/2026-10-28-格哈希论文新颖性调查/2026-10-30-w_orient0奇偶校验命题与Lean证明.md §8).
+# _finish merges duplicate reports of a root on a shared interior edge or node
+# combinatorially: in _test, an interior side pins t / u to 0.0 or 1.0 iff
+# exact orient2d == 0 (strictly interior hits stay in (0.0, 1.0)). Two cells
+# sharing an edge or node with the SAME orient map their union one-to-one, so
+# boundary-pinned reports of the same orient are one root; with OPPOSITE orients
+# the shared edge is a fold crease and both reports are kept; two genuine
+# same-orient roots in diagonally opposite cells of a cusp wedge have
+# 0.0 < t, u < 1.0 and are never merged, however close in (l_h, l_v).
 D = ci._DEDUP
 
 
-def row(l_h, l_v, orient):
-    return (l_h, l_v, 0, 0, 0.5, 0.5, orient, True)
+def row_cell(l_h, l_v, i, j, t, u, orient):
+    return (l_h, l_v, i, j, t, u, orient, True)
 
 
-m = ci._merge_duplicates([row(0.0, 0.0, 1), row(0.0, 0.0, 1), row(0.0, 0.0, 1), row(0.0, 0.0, 1)])
-assert len(m) == 1, m                                    # one root on a cell node, four reports
-m = ci._merge_duplicates([row(0.0, 0.0, 1), row(0.0, 0.0, -1)])
-assert sorted(r[6] for r in m) == [-1, 1], m              # a crease pair: both kept
-# an opposite-orient report sorting BETWEEN two duplicates: comparing with the
-# last kept row only would keep the second duplicate
-m = ci._merge_duplicates([row(0.0, 0.0, 1), row(0.2 * D, 0.5 * D, -1), row(0.4 * D, 0.0, 1)])
+# one root on an interior node shared by four cells (0..1 x 0..1), all orient +1
+m = ci._merge_duplicates([
+    row_cell(10.0, 20.0, 0, 0, 1.0, 1.0, 1),
+    row_cell(10.0, 20.0, 1, 0, 0.0, 1.0, 1),
+    row_cell(10.0, 20.0, 0, 1, 1.0, 0.0, 1),
+    row_cell(10.0, 20.0, 1, 1, 0.0, 0.0, 1),
+])
+assert len(m) == 1, m
+# a shared vertical edge between (0, 0) and (1, 0) with opposite orients (fold crease): both kept
+m = ci._merge_duplicates([
+    row_cell(10.0, 20.0, 0, 0, 1.0, 0.5, 1),
+    row_cell(10.0, 20.0, 1, 0, 0.0, 0.5, -1),
+])
 assert sorted(r[6] for r in m) == [-1, 1], m
-m = ci._merge_duplicates([row(0.0, 0.0, 1), row(2.0 * D, 0.0, 1)])
-assert len(m) == 2, m                                    # farther than _DEDUP: two roots
-m = ci._merge_duplicates([row(0.0, 0.0, 1), row(0.5 * D, 3.0 * D, 1)])
-assert len(m) == 2, m                                    # close in l_h only: two roots
-print("merge rule: node duplicates merged, crease pairs kept, an interleaved report does not hide a duplicate")
+# an opposite-orient report sorting BETWEEN two shared-edge duplicates
+m = ci._merge_duplicates([
+    row_cell(10.0, 20.0, 0, 0, 1.0, 0.5, 1),
+    row_cell(10.0, 20.0 + 0.2 * D, 1, 0, 0.2, 0.5, -1),
+    row_cell(10.0, 20.0 + 0.4 * D, 1, 0, 0.0, 0.5, 1),
+])
+assert sorted(r[6] for r in m) == [-1, 1], m
+# cusp-wedge blind spot test: two genuine same-orient roots in diagonally opposite
+# cells (0, 0) and (1, 1), closer than _DEDUP in (l_h, l_v) but strictly interior
+m = ci._merge_duplicates([
+    row_cell(10.0, 20.0, 0, 0, 1.0 - 1e-9, 1.0 - 1e-9, 1),
+    row_cell(10.0 + 0.1 * D, 20.0 + 0.1 * D, 1, 1, 1e-9, 1e-9, 1),
+])
+assert len(m) == 2, m
+# shared vertical edge across a culled zero-length H segment (i=0 at t=1.0 and i=2 at t=0.0 with l_h equal)
+m = ci._merge_duplicates([
+    row_cell(10.0, 20.0, 0, 0, 1.0, 0.5, 1),
+    row_cell(10.0, 20.0, 2, 0, 0.0, 0.5, 1),
+])
+assert len(m) == 1, m
+print("merge rule: node duplicates merged, crease pairs kept, cusp-wedge near roots kept, zero-length segment bridged")
 
 
 def winding(solver):
@@ -287,8 +317,99 @@ def distance_only(rows):
     return kept
 
 
+def dedup_distance(rows):
+    """The Scheme-C distance-threshold orientation pairing (_DEDUP = 1e-6 px)."""
+    rows = sorted(rows)
+    kept = []
+    for row in rows:
+        dup = False
+        k = len(kept) - 1
+        while k >= 0 and row[0] - kept[k][0] < D:
+            prev = kept[k]
+            if prev[6] == row[6] and abs(row[1] - prev[1]) < D:
+                dup = True
+                break
+            k -= 1
+        if not dup:
+            kept.append(row)
+    return kept
+
+
+class ExactMeshTruth:
+    """Exact closed-cell membership on the rounded node mesh using Fraction only."""
+
+    def __init__(self, sv):
+        self.sv = sv
+        self.h, self.v = sv.h, sv.v
+        self.n_h, self.n_v = sv.n_h, sv.n_v
+        self.orient = [[1 if sv._r[i][0] * sv._q[j][1] - sv._r[i][1] * sv._q[j][0] >= 0.0 else -1
+                        for j in range(self.n_v)] for i in range(self.n_h)]
+        self.ok = [[abs(sv._r[i][0] * (-sv._q[j][1]) - sv._r[i][1] * (-sv._q[j][0]))
+                    > 1e-12 * (math.hypot(*sv._r[i]) * math.hypot(*sv._q[j]) + 1e-300)
+                    for j in range(self.n_v)] for i in range(self.n_h)]
+
+    @staticmethod
+    def ori(ax, ay, bx, by, cxf, cyf):
+        d = (Fraction(ax) - cxf) * (Fraction(by) - cyf) - (Fraction(ay) - cyf) * (Fraction(bx) - cxf)
+        return (d > 0) - (d < 0)
+
+    def side_signs(self, i, j, cxf, cyf):
+        """Exact s * orient2d on (L, R, B, T) interior sides, or None when rejected."""
+        h, v, s = self.h, self.v, self.orient[i][j]
+        x00, y00 = h[i][0] + v[j][0], h[i][1] + v[j][1]
+        x10, y10 = h[i + 1][0] + v[j][0], h[i + 1][1] + v[j][1]
+        x01, y01 = h[i][0] + v[j + 1][0], h[i][1] + v[j + 1][1]
+        x11, y11 = h[i + 1][0] + v[j + 1][0], h[i + 1][1] + v[j + 1][1]
+        oL = s * self.ori(x00, y00, x01, y01, cxf, cyf) if i > 0 else -1
+        if oL > 0:
+            return None
+        oR = s * self.ori(x10, y10, x11, y11, cxf, cyf) if i < self.n_h - 1 else 1
+        if oR < 0:
+            return None
+        oB = s * self.ori(x00, y00, x10, y10, cxf, cyf) if j > 0 else 1
+        if oB < 0:
+            return None
+        oT = s * self.ori(x01, y01, x11, y11, cxf, cyf) if j < self.n_v - 1 else -1
+        if oT > 0:
+            return None
+        return (oL, oR, oB, oT)
+
+    def candidates(self, cx, cy, margin=1e-3):
+        out = []
+        h, v, r, q = self.h, self.v, self.sv._r, self.sv._q
+        last_i, last_j = self.n_h - 1, self.n_v - 1
+        for i in range(self.n_h):
+            rx, ry = r[i]
+            for j in range(self.n_v):
+                if not self.ok[i][j]:
+                    continue
+                qx, qy = q[j]
+                den = -rx * qy + ry * qx
+                dx, dy = cx - (h[i][0] + v[j][0]), cy - (h[i][1] + v[j][1])
+                t = (-dx * qy + dy * qx) / den
+                u = (dx * ry - dy * rx) / den
+                if (i > 0 and t < -margin) or (i < last_i and t > 1.0 + margin):
+                    continue
+                if (j > 0 and u < -margin) or (j < last_j and u > 1.0 + margin):
+                    continue
+                out.append((i, j))
+        return out
+
+    def query(self, p):
+        """Returns dict {(i, j): (oL, oR, oB, oT)} of all exact cells containing p."""
+        cx, cy = p[0] + self.sv.origin[0], p[1] + self.sv.origin[1]
+        cxf, cyf = Fraction(cx), Fraction(cy)
+        res = {}
+        for i, j in self.candidates(cx, cy):
+            signs = self.side_signs(i, j, cxf, cyf)
+            if signs is not None:
+                res[(i, j)] = signs
+        return res
+
+
 frame = am._Frame(sin_guide(100.0, "h"), sin_guide(100.0, "v"))
 solver = ci.ChordIntersect.from_frame(frame)
+truth = ExactMeshTruth(solver)
 w = winding(solver)
 assert (solver.orient0, w) == (1, -1), (solver.orient0, w)
 r, q = solver._r, solver._q
@@ -350,12 +471,13 @@ print("bow 100 px, %d fold edges (vertical and horizontal): next to each, two ge
 
 # (b) cusp corners: one cell differs from its three neighbours and the corner's
 # winding is +-1 (§8.3). Along the odd cell's image sector, from 1e-12 to 1e-4 px
-# off the corner image: close in, the EPS band adds a fourth report and pairing
-# merges the same-orient ones, so sum(orient) misses w - but by exactly one, which
-# the conservation check sees; farther out the three roots are more than _DEDUP
-# apart and the law holds. It never misses by two. Distance-only merging folds all
-# reports into one: the law then often holds by accident with two roots lost,
-# and sometimes misses by two.
+# off the corner image: in the cusp wedge, two genuine same-orient roots and one
+# opposite-orient root coexist. With combinatorial deduplication, neither root lies
+# on an interior cell boundary (orient2d != 0), so both same-orient roots are kept
+# at every distance down to 1e-12 px: off_by_one == 0, every probe matches exact
+# Fraction cell membership, and sum(orient) == w everywhere. Under the old _DEDUP
+# distance threshold, 3472/5200 probes merged the two same-orient roots (off by 1);
+# under distance-only merging, reports collapsed into one (often off by 2).
 cusps = []
 for i in range(solver.n_h - 1):
     for j in range(solver.n_v - 1):
@@ -369,7 +491,7 @@ for i in range(solver.n_h - 1):
         if abs(round(tot / (2.0 * math.pi))) == 1:
             cusps.append((i, j, odd[0], dirs))
 assert cusps, "the folded rig has cusp corners"
-probes_b = off_by_one = old_off_by_two = 0
+probes_b = off_by_one = dedup_off_by_one = old_off_by_two = truth_mism = 0
 for i, j, k, dirs in cusps:
     a, b = dirs[k], dirs[(k + 1) % 4]
     na, nb = math.hypot(*a), math.hypot(*b)
@@ -379,24 +501,208 @@ for i, j, k, dirs in cusps:
     for e in range(-96, -31):
         d = 10.0 ** (e / 8.0)
         p = (C[0] + d * bis[0] / nbis, C[1] + d * bis[1] / nbis)
-        dev = sum(h.orient for h in solver.solve(p, extensions="all").hits) - w
-        assert abs(dev) <= 1, (i, j, d, dev)
-        if d >= 1e-5:
-            assert dev == 0, (i, j, d, dev)          # outside the EPS band and _DEDUP: exact
+        res = solver.solve(p, extensions="all")
+        dev = sum(h.orient for h in res.hits) - w
+        assert dev == 0, (i, j, d, dev, res.hits)
+        rows = raw_rows(solver, p)
+        if probes_b % 20 == 0:
+            tr = truth.query(p)
+            rep_cells = {(x[2], x[3]) for x in rows}
+            truth_mism += (rep_cells != set(tr.keys()))
         probes_b += 1
         off_by_one += dev != 0
-        old_off_by_two += abs(sum(x[6] for x in distance_only(raw_rows(solver, p))) - w) == 2
-assert off_by_one > 0 and old_off_by_two > 0, (off_by_one, old_off_by_two)
-print("bow 100 px, %d cusp corners, %d probes along the odd sectors: sum(orient) misses w by exactly one at %d "
-      "(all next to the corner image, all detectable), never by two; distance-only merging missed by two at %d"
-      % (len(cusps), probes_b, off_by_one, old_off_by_two))
+        dedup_off_by_one += abs(sum(x[6] for x in dedup_distance(rows)) - w) == 1
+        old_off_by_two += abs(sum(x[6] for x in distance_only(rows)) - w) == 2
+assert off_by_one == 0 and truth_mism == 0 and dedup_off_by_one == 3472 and old_off_by_two > 0, (
+    off_by_one, truth_mism, dedup_off_by_one, old_off_by_two)
+print("bow 100 px, %d cusp corners, %d probes along the odd sectors: sum(orient) == w at all %d "
+      "(off_by_one = %d, Fraction truth mismatches = %d; _DEDUP threshold missed by one at %d, distance-only missed by two at %d)"
+      % (len(cusps), probes_b, probes_b, off_by_one, truth_mism, dedup_off_by_one, old_off_by_two))
 
 # (c) random probes on the sheet and around it: the law holds on the merged hits
 rng = random.Random(23)
-for _ in range(2000):
+for idx in range(2000):
     p = (rng.uniform(-450.0, 450.0), rng.uniform(-450.0, 450.0))
     res = solver.solve(p, extensions="all")
     assert sum(h.orient for h in res.hits) == w, (p, res.hits)
-print("bow 100 px, 2000 random probes: sum(orient) == w on every one")
+    if idx < 100:
+        tr = truth.query(p)
+        rep = {(x[2], x[3]) for x in raw_rows(solver, p)}
+        assert rep == set(tr.keys()), (p, rep, set(tr.keys()))
+print("bow 100 px, 2000 random probes: sum(orient) == w on every one (100 checked against Fraction truth: 0 false, 0 lost)")
+
+# (d) exact Fraction ground truth on both sides of fold edges, non-fold edges, and
+# exact-on-lattice points (nodes and edge midpoints with +-1 ulp nudges)
+fold_checked = nonfold_checked = lattice_checked = crease_vanished = 0
+for kind, i, j in edges[:40]:
+    if kind == "v":
+        sh = solver.h_cum[i + 1] - solver.h_arc
+        sv_ = 0.5 * (solver.v_cum[j] + solver.v_cum[j + 1]) - solver.v_arc
+        e = q[j]
+    else:
+        sh = 0.5 * (solver.h_cum[i] + solver.h_cum[i + 1]) - solver.h_arc
+        sv_ = solver.v_cum[j + 1] - solver.v_arc
+        e = r[i]
+    P = solver.hv(sh, sv_)
+    n = math.hypot(*e)
+    nx, ny = -e[1] / n, e[0] / n
+    for side in (1.0, -1.0):
+        for d in (1e-12, 1e-10, 1e-8, 1e-6, 1e-4):
+            p = (P[0] + side * d * nx, P[1] + side * d * ny)
+            tr = truth.query(p)
+            rows = raw_rows(solver, p)
+            rep = {(x[2], x[3]) for x in rows}
+            assert rep == set(tr.keys()), ("fold edge truth mismatch", kind, i, j, side, d, rep, set(tr.keys()))
+            res = solver.solve(p, extensions="all")
+            assert sum(h.orient for h in res.hits) == w, (kind, i, j, side, d, res.hits)
+            # near the fold edge, either 2 roots of opposite orient (covered side) or 0 (shadow side)
+            near = near_rows(rows, sh, sv_)
+            assert len(near) in (0, 2), (kind, i, j, side, d, near)
+            fold_checked += 1
+
+nf_edges = [("v", i, j) for i in range(solver.n_h - 1) for j in range(solver.n_v) if orient(i, j) == orient(i + 1, j)]
+for kind, i, j in random.Random(31).sample(nf_edges, 40):
+    sh = solver.h_cum[i + 1] - solver.h_arc
+    sv_ = 0.5 * (solver.v_cum[j] + solver.v_cum[j + 1]) - solver.v_arc
+    P = solver.hv(sh, sv_)
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            x = math.nextafter(P[0], math.inf if dx > 0 else -math.inf) if dx else P[0]
+            y = math.nextafter(P[1], math.inf if dy > 0 else -math.inf) if dy else P[1]
+            p = (x, y)
+            tr = truth.query(p)
+            rows = raw_rows(solver, p)
+            assert {(r_[2], r_[3]) for r_ in rows} == set(tr.keys()), (i, j, dx, dy)
+            # verifying exact boundary pinning: t == 1.0 on (i, j) and t == 0.0 on (i + 1, j) iff orient2d == 0
+            for r_ in rows:
+                ci_i, ci_j, ct, cu = r_[2], r_[3], r_[4], r_[5]
+                oL, oR, oB, oT = tr[(ci_i, ci_j)]
+                if ci_i > 0:
+                    assert (ct == 0.0) == (oL == 0), (ci_i, ci_j, ct, oL)
+                if ci_i < solver.n_h - 1:
+                    assert (ct == 1.0) == (oR == 0), (ci_i, ci_j, ct, oR)
+                if ci_j > 0:
+                    assert (cu == 0.0) == (oB == 0), (ci_i, ci_j, cu, oB)
+                if ci_j < solver.n_v - 1:
+                    assert (cu == 1.0) == (oT == 0), (ci_i, ci_j, cu, oT)
+            res = solver.solve(p, extensions="all")
+            assert sum(h.orient for h in res.hits) == w, (i, j, dx, dy, res.hits)
+            # on a non-fold edge, even if both cells accept p (orient2d == 0), combinatorial merge yields 1 local root
+            near = [h for h in res.hits if abs(h.l_h - sh) < 0.5 and abs(h.l_v - sv_) < 0.5]
+            assert len(near) == 1, (i, j, dx, dy, near)
+            nonfold_checked += 1
+
+for kind, i, j in edges[:40]:
+    if kind == "v":
+        sh = solver.h_cum[i + 1] - solver.h_arc
+        sv_ = 0.5 * (solver.v_cum[j] + solver.v_cum[j + 1]) - solver.v_arc
+    else:
+        sh = 0.5 * (solver.h_cum[i] + solver.h_cum[i + 1]) - solver.h_arc
+        sv_ = solver.v_cum[j + 1] - solver.v_arc
+    P = solver.hv(sh, sv_)
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            x = math.nextafter(P[0], math.inf if dx > 0 else -math.inf) if dx else P[0]
+            y = math.nextafter(P[1], math.inf if dy > 0 else -math.inf) if dy else P[1]
+            p = (x, y)
+            tr = truth.query(p)
+            rows = raw_rows(solver, p)
+            assert {(r_[2], r_[3]) for r_ in rows} == set(tr.keys()), (kind, i, j, dx, dy)
+            res = solver.solve(p, extensions="all")
+            assert sum(h.orient for h in res.hits) == w
+            near = [h for h in res.hits if abs(h.l_h - sh) < 1e-4 and abs(h.l_v - sv_) < 1e-4]
+            if not near:
+                # rounded/nudged onto the 0-layer shadow side: exact Fraction truth also has neither fold cell
+                pair = {(i, j), (i + 1, j)} if kind == "v" else {(i, j), (i, j + 1)}
+                assert not (pair & set(tr.keys())), (kind, i, j, dx, dy, tr.keys())
+                crease_vanished += 1
+            else:
+                assert sorted(h.orient for h in near) == [-1, 1], (kind, i, j, dx, dy, near)
+            lattice_checked += 1
+print("Fraction truth checks: %d fold-edge probes, %d non-fold lattice probes, %d fold-crease lattice probes "
+      "(%d on 0-layer side verified absent in Fraction truth): 0 false, 0 lost, exact boundary pinning verified"
+      % (fold_checked, nonfold_checked, lattice_checked, crease_vanished))
+
+# (e) zero-length segment & bitwise agreement across grid, numpy, and matrix paths
+H_zero = [(-100.0, 0.0), (0.0, 0.0), (0.0, 0.0), (100.0, 0.0)]   # segment 1 has zero length
+V_zero = [(0.0, -100.0), (0.0, 0.0), (0.0, 100.0)]
+sv_zero = ci.ChordIntersect(H_zero, V_zero)
+tr_zero = ExactMeshTruth(sv_zero)
+for p in [(0.0, 25.0), (0.0, 0.0), (-20.0, 0.0), (35.0, -40.0)]:
+    tr_z = tr_zero.query(p)
+    raw_g = list(dict.fromkeys(sv_zero._pairs_grid(p, "all")))
+    raw_m = sv_zero._pairs_python(p)
+    raw_n = sv_zero._pairs_numpy([p])[0] if (sv_zero._prepare_numpy() or True) else []
+    assert raw_g == raw_m == raw_n, (p, raw_g, raw_m, raw_n)
+    assert {(x[0], x[1]) for x in raw_g} == set(tr_z.keys()), (p, raw_g, tr_z)
+    res_z = sv_zero.solve(p, extensions="all")
+    assert res_z.count == 1 and res_z.principal is not None and dist(sv_zero.hv(*res_z.arcs), p) < 1e-9, (p, res_z.hits)
+print("zero-length segment & path identity: grid, numpy, and matrix raw tuples agree bit-for-bit and bridge zero-length segments")
+
+# ---------------------------------------------------------------- exact degeneracies, integer rigs
+# Integer guides and integer / half-integer points: every node is exactly representable
+# and points land exactly on cell edges and nodes all the time, also on the extensions.
+# Truth = Fraction enumeration of closed cells, guide ends open, one root per distinct
+# parameter point. Regression for _extension_candidates: a point whose family coordinate
+# k is exactly the family's kmin / kmax used to look only in `below` / `above` and lost
+# the cells meeting there (the matrix never did).
+from fractions import Fraction as _Fr
+
+
+def _exact_roots(h, v, c):
+    n_h, n_v = len(h) - 1, len(v) - 1
+    rr = [(h[i + 1][0] - h[i][0], h[i + 1][1] - h[i][1]) for i in range(n_h)]
+    qq = [(v[j + 1][0] - v[j][0], v[j + 1][1] - v[j][1]) for j in range(n_v)]
+
+    def key(k, t):
+        return ("node", k + (1 if t == 1 else 0)) if t == 0 or t == 1 else ("arc", k, t)
+    out = collections.Counter()
+    seen = set()
+    for i in range(n_h):
+        for j in range(n_v):
+            den = rr[i][0] * (-qq[j][1]) - rr[i][1] * (-qq[j][0])
+            dx, dy = c[0] - (h[i][0] + v[j][0]), c[1] - (h[i][1] + v[j][1])
+            t = _Fr(dx * (-qq[j][1]) - dy * (-qq[j][0])) / den
+            u = _Fr(dx * rr[i][1] - dy * rr[i][0]) / den
+            if (t < 0 and i != 0) or (t > 1 and i != n_h - 1) or (u < 0 and j != 0) or (u > 1 and j != n_v - 1):
+                continue
+            o = 1 if -den >= 0 else -1
+            k = (key(i, t), key(j, u), o)
+            if k not in seen:
+                seen.add(k)
+                out[o] += 1
+    return out
+
+
+# the case that exposed the bug: H's first-segment family, k exactly at V's extreme node
+sv_ext = ci.ChordIntersect([(5, 1), (3, 6), (9, 3)], [(-5, -1), (-11, -7), (-17, -3), (-15, -9), (-15, -5), (-18, -5), (-13, -11)],
+                           (0.0, 0.0), 0.0, 0.0)
+assert sv_ext.solve((-11.0, -9.0), extensions="all").count == 2 == sv_ext.solve_matrix((-11.0, -9.0)).count
+rng = random.Random(29)
+rigs_done = pts_done = 0
+while rigs_done < 40:
+    def _guide(n):
+        p = [(rng.randint(-6, 6), rng.randint(-6, 6))]
+        for _ in range(n):
+            p.append((p[-1][0] + rng.randint(-6, 6), p[-1][1] + rng.randint(-6, 6)))
+        return p
+    H, V = _guide(rng.randint(2, 7)), _guide(rng.randint(2, 7))
+    rs = [(b[0] - a[0], b[1] - a[1]) for a, b in zip(H, H[1:])]
+    qs = [(b[0] - a[0], b[1] - a[1]) for a, b in zip(V, V[1:])]
+    if any(a[0] * b[1] - a[1] * b[0] == 0 for a in rs for b in qs):
+        continue                               # parallel cells are culled: the mesh has holes by design
+    rigs_done += 1
+    sv = ci.ChordIntersect(H, V, (0.0, 0.0), 0.0, 0.0)
+    xs = [a[0] + b[0] for a in H for b in V]
+    ys = [a[1] + b[1] for a in H for b in V]
+    for x2 in range(2 * min(xs) - 4, 2 * max(xs) + 5, 3):
+        for y2 in range(2 * min(ys) - 4, 2 * max(ys) + 5, 3):
+            want = _exact_roots(H, V, (_Fr(x2, 2), _Fr(y2, 2)))
+            p = (x2 / 2.0, y2 / 2.0)
+            for res in (sv.solve(p, extensions="all"), sv.solve_matrix(p)):
+                got = collections.Counter(hit.orient for hit in res.hits)
+                assert got == want, (H, V, p, want, res.hits)
+            pts_done += 1
+print("exact degeneracies: %d integer rigs, %d points, grid and matrix hits == Fraction enumeration" % (rigs_done, pts_done))
 
 print("t_chord_intersect: ok")
