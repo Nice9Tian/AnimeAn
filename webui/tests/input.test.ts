@@ -206,8 +206,8 @@ describe("Board Input conversions & event binding", () => {
     listeners.get("blur")?.({});
     assert.deepEqual(messages[5], { t: "input", view: "main", kind: "enter", x: 50, y: 40 });
     assert.deepEqual(messages[6], { t: "input", view: "main", kind: "leave" });
-    assert.deepEqual(messages[7], { t: "input", view: "main", kind: "focus", in: true });
-    assert.deepEqual(messages[8], { t: "input", view: "main", kind: "focus", in: false });
+    assert.deepEqual(messages[7], { t: "input", view: "main", kind: "focus", focused: true });
+    assert.deepEqual(messages[8], { t: "input", view: "main", kind: "focus", focused: false });
 
     // 6. resend() 重发当前尺寸
     handle.resend();

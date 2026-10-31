@@ -467,7 +467,13 @@ fn parse_webview_url(url: &str) -> Result<tauri::WebviewUrl, String> {
         let parsed: tauri::Url = trimmed
             .parse()
             .map_err(|e| format!("Invalid panel URL '{trimmed}': {e}"))?;
-        Ok(tauri::WebviewUrl::External(parsed))
+        // Panels are our own pages: the dev server or the bundled app.
+        match parsed.host_str() {
+            Some("localhost") | Some("127.0.0.1") | Some("tauri.localhost") => {
+                Ok(tauri::WebviewUrl::External(parsed))
+            }
+            other => Err(format!("Refusing panel URL on host {other:?}")),
+        }
     } else {
         let rel = trimmed.trim_start_matches('/');
         let target = if rel.is_empty() { "index.html" } else { rel };

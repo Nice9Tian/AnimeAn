@@ -253,7 +253,7 @@ export function attachBoardInput(
       t: "input",
       view,
       kind: "focus",
-      in: true,
+      focused: true,
     });
   };
 
@@ -262,7 +262,7 @@ export function attachBoardInput(
       t: "input",
       view,
       kind: "focus",
-      in: false,
+      focused: false,
     });
   };
 

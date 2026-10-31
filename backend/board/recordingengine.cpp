@@ -574,9 +574,16 @@ void RecordingPaintEngine::updateClip(const QPaintEngineState &state)
     out.append(path.fillRule() == Qt::WindingFill ? '1' : '0');
     out.append(']');
 
-    if (!m_emittedClipEnabled || out != m_emittedClipBytes) {
+    // The page binds a clip to the transform current when K arrives, so the
+    // same local path under a new transform is a different clip.
+    QByteArray key = out;
+    for (const qreal value : {m_currentTransform.m11(), m_currentTransform.m12(), m_currentTransform.m21(),
+                              m_currentTransform.m22(), m_currentTransform.dx(), m_currentTransform.dy()}) {
+        key.append(',').append(QByteArray::number(value, 'g', 17));
+    }
+    if (!m_emittedClipEnabled || key != m_emittedClipBytes) {
         m_emittedClipEnabled = true;
-        m_emittedClipBytes = out;
+        m_emittedClipBytes = key;
         appendOp(std::move(out));
     }
 }
