@@ -1597,6 +1597,106 @@ QJsonObject BackendSession::dispatchCall(const QString &method, const QJsonObjec
         return handleFileTextureCall(params);
     }
 
+    if (method == QStringLiteral("layer.contextMenu")) {
+        // Same order as MainWindow::showLayerContextMenu: the group's own two
+        // actions, then whatever Python registered for this target.
+        const QString viewName = params.value(QStringLiteral("view")).toString(QStringLiteral("main"));
+        PaintOpenGLWidget *board = boardForView(viewName);
+        if (!board) {
+            return makeError(QStringLiteral("Unknown view"));
+        }
+        const int groupId = params.value(QStringLiteral("groupId")).toInt(0);
+        const int layerIndex = groupId > 0 ? -1 : params.value(QStringLiteral("layer")).toInt(-1);
+        const bool hasItem = groupId > 0 || layerIndex >= 0;
+        QJsonArray entries;
+#ifdef ANIMEAN_WITH_PYTHON
+        py::dict context;
+        context["view"] = viewName.toStdString();
+        context["kind"] = !hasItem ? "panel" : (groupId > 0 ? "group" : "layer");
+        context["group"] = groupId;
+        context["group_name"] = params.value(QStringLiteral("groupName")).toString().toStdString();
+        context["layer"] = layerIndex;
+        context["layer_name"] = layerIndex >= 0 ? board->layerName(layerIndex).toStdString() : std::string();
+        context["layer_id"] = layerIndex >= 0 ? board->model().layerIdAt(layerIndex) : 0;
+        context["tag"] = groupId > 0 ? board->model().layerGroupTag(groupId).toStdString() : std::string();
+        const int ownerGroup = layerIndex >= 0 ? board->model().groupIdForLayer(layerIndex) : 0;
+        context["owner_group"] = ownerGroup;
+        context["owner_tag"] = ownerGroup > 0 ? board->model().layerGroupTag(ownerGroup).toStdString() : std::string();
+        context["parent_layer_id"] = layerIndex >= 0 ? board->model().layerParentId(layerIndex) : 0;
+        context["child_count"] = layerIndex >= 0 ? board->model().childLayerIndices(layerIndex).size() : 0;
+        py::list memberList;
+        for (const QJsonValue &member : params.value(QStringLiteral("members")).toArray()) {
+            memberList.append(member.toInt());
+        }
+        context["members"] = memberList;
+        const std::string json = py::module_::import("python_hooks").attr("menu_items_json")(context).cast<std::string>();
+        entries = QJsonDocument::fromJson(QByteArray::fromStdString(json)).array();
+#endif
+        QJsonArray items;
+        const auto addItem = [&items](const QString &id, const QString &text, const QString &kind, bool enabled) {
+            items.append(QJsonObject{{QStringLiteral("id"), id}, {QStringLiteral("text"), text},
+                                     {QStringLiteral("kind"), kind}, {QStringLiteral("enabled"), enabled}});
+        };
+        if (groupId > 0) {
+            addItem(QStringLiteral("ungroup"), QStringLiteral("Ungroup (keep the layers)"), QStringLiteral("action"), true);
+            addItem(QStringLiteral("deleteGroup"), QStringLiteral("Delete Group and Layers"), QStringLiteral("action"), true);
+            if (!entries.isEmpty()) {
+                addItem(QStringLiteral("sep"), QString(), QStringLiteral("separator"), true);
+            }
+        }
+        for (const QJsonValue &value : entries) {
+            const QJsonObject object = value.toObject();
+            const QString kind = object.value(QStringLiteral("kind")).toString(QStringLiteral("action"));
+            if (kind == QStringLiteral("separator")) {
+                addItem(QStringLiteral("sep"), QString(), kind, true);
+                continue;
+            }
+            const QString name = object.value(QStringLiteral("name")).toString();
+            if (name.isEmpty()) {
+                continue;
+            }
+            const QString title = object.value(QStringLiteral("title")).toString(name);
+            const bool enabled = object.value(QStringLiteral("enabled")).toBool(true);
+            if (kind == QStringLiteral("settings")) {
+                addItem(QStringLiteral("settings:") + object.value(QStringLiteral("settings")).toString(name), title,
+                        QStringLiteral("action"), enabled);
+            } else {
+                addItem(QStringLiteral("script:") + name, title, QStringLiteral("action"), enabled);
+            }
+        }
+        return QJsonObject{{QStringLiteral("items"), items}};
+    }
+
+    if (method == QStringLiteral("layer.contextAction")) {
+        const QString viewName = params.value(QStringLiteral("view")).toString(QStringLiteral("main"));
+        PaintOpenGLWidget *board = boardForView(viewName);
+        if (!board) {
+            return makeError(QStringLiteral("Unknown view"));
+        }
+        const QString id = params.value(QStringLiteral("id")).toString();
+        const int groupId = params.value(QStringLiteral("groupId")).toInt(0);
+        const int layerIndex = groupId > 0 ? -1 : params.value(QStringLiteral("layer")).toInt(-1);
+        if (id == QStringLiteral("ungroup")) {
+            m_business->dissolveLayerGroup(groupId, viewName);
+        } else if (id == QStringLiteral("deleteGroup")) {
+            m_business->deleteLayerGroup(groupId, viewName);
+        } else if (id.startsWith(QStringLiteral("settings:"))) {
+            openScriptSettings(id.mid(9), params.value(QStringLiteral("title")).toString());
+        } else if (id.startsWith(QStringLiteral("script:"))) {
+            QVector<int> members;
+            for (const QJsonValue &member : params.value(QStringLiteral("members")).toArray()) {
+                members.append(member.toInt());
+            }
+            board->sendPythonLayerMenuMessage(id.mid(7), groupId, params.value(QStringLiteral("groupName")).toString(),
+                                              layerIndex, layerIndex >= 0 ? board->layerName(layerIndex) : QString(), members);
+        } else {
+            return makeError(QStringLiteral("Unknown layer action"));
+        }
+        markDirty(viewName == QStringLiteral("child") ? QStringLiteral("layers/child") : QStringLiteral("layers/main"));
+        markDirty(QStringLiteral("timeline"));
+        return QJsonObject{};
+    }
+
     if (method == QStringLiteral("layer.add")) {
         const int layerIndex = m_business->addLayer(view);
         return QJsonObject{{QStringLiteral("layer"), layerIndex}};

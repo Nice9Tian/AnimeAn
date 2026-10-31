@@ -109,3 +109,11 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 | `cursor/main`、`cursor/child` | 光标：形状名，或者图片 `key` 加热点 |
 | `freeze` | Python 冻结界面的开关 |
 | `pad` | Repulsion Pad 的值 |
+| `viewport/main`、`viewport/child` | 滚动条：`h`、`v` 各含 `min`、`max`、`page`、`value`、`enabled`，算法同 `PaintViewContainer::syncScrollBars` |
+| `event` | 一次性通知，`{ name, args }`，不合并、不重发：`dialog.*`、`menu.action`、`settings.open`、`window.show`、`window.select`、`textureView.surface` |
+
+## 调用
+
+方法名在 `backend/session/backendsession.cpp` 的 `dispatchCall`。图层右键走 `layer.contextMenu`（返回菜单项，含 Python 注册的项）和 `layer.contextAction`。网页发 `input` 时带 `time`（毫秒），后端写进事件时间戳，稳定器要用它。
+
+Qt 版打开时先弹 New Project 对话框，网页版同样在收到第一个 `window` 状态后弹出。

@@ -96,7 +96,18 @@ export function panelFactories(store, client) {
         onMove: (view, from, to) => {
           if (from.layer !== undefined && to.layer !== undefined) call("layer.move", { view, fromIndex: from.layer, toIndex: to.layer });
         },
-        onContext: () => {},
+        onContext: async (view, row, members, x, y) => {
+          const target = {
+            view,
+            groupId: row?.group ? row.group_id : 0,
+            groupName: row?.group ? row.name : "",
+            layer: row && !row.group ? row.layer : -1,
+            members,
+          };
+          const reply = await call("layer.contextMenu", target);
+          if (!reply?.items?.length) return;
+          popupMenu(reply.items, x, y, (item) => call("layer.contextAction", { ...target, id: item.id, title: item.text }));
+        },
       });
       on("layers/main", (value) => panel.update("main", value));
       on("layers/child", (value) => panel.update("child", value));

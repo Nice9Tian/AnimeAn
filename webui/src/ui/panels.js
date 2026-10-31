@@ -164,6 +164,12 @@ export function createLayers(root, handlers) {
     return { page, tree, view };
   });
   root.append(tabs.el, ...pages.map((p) => p.page));
+  for (const p of pages) {
+    p.tree.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      handlers.onContext(p.view, null, [], e.clientX, e.clientY);
+    });
+  }
   function show(i) {
     tabs.select(i);
     pages.forEach((p, k) => { p.page.style.display = k === i ? "" : "none"; });
@@ -196,7 +202,17 @@ export function createLayers(root, handlers) {
       const name = div("layer-name", (row.child ? "↳ " : "") + row.name);
       r.append(name);
       if (!row.group) r.addEventListener("click", () => handlers.onSelect(p.view, row.layer));
-      r.addEventListener("contextmenu", (e) => { e.preventDefault(); handlers.onContext(p.view, row, e.clientX, e.clientY); });
+      r.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const members = [];
+        if (row.group) {
+          for (let i = index + 1; i < state.rows.length && state.rows[i].depth > row.depth; i++) {
+            if (!state.rows[i].group) members.push(state.rows[i].layer);
+          }
+        }
+        handlers.onContext(p.view, row, members, e.clientX, e.clientY);
+      });
       r.draggable = true;
       r.addEventListener("dragstart", (e) => { e.dataTransfer.setData("text/plain", String(index)); });
       r.addEventListener("dragover", (e) => e.preventDefault());
