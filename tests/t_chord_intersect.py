@@ -739,4 +739,32 @@ assert sorted(h.orient for h in sv_c.solve((-9.0, -22.0), extensions="all").hits
 sv_z = ci.ChordIntersect(H_c[:2] + H_c[1:], V_c, (0.0, 0.0), 0.0, 0.0)
 assert sorted(h.orient for h in sv_z.solve((-15.0, -19.0), extensions="all").hits) == [-1, -1, 1]
 
+# ---------------------------------------------------------------- the lazy grid
+# Bin lists are made on first use by walking the two box trees: nothing per cell
+# up front, and on guides that make loose boxes (rotated, jittered, folded, with
+# segment lengths far apart) a bin must still hold every cell the matrix accepts.
+rng = random.Random(41)
+
+
+def _rotated(points, deg):
+    c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+    return [(x * c - y * s, x * s + y * c) for x, y in points]
+
+
+rigs_lazy = []
+for deg, fold, jitter in ((0.0, 30.0, 0.0), (45.0, 30.0, 0.0), (20.0, 200.0, 0.0), (33.0, 30.0, 1.5), (71.0, 200.0, 1.5)):
+    H_l = [(-600.0 + 6.0 * k + rng.uniform(-jitter, jitter), fold * math.sin(k * 0.08) + rng.uniform(-jitter, jitter)) for k in range(201)]
+    V_l = [(fold * math.sin(k * 0.07) + rng.uniform(-jitter, jitter), -450.0 + 6.0 * k + rng.uniform(-jitter, jitter)) for k in range(151)]
+    rigs_lazy.append((_rotated(H_l, deg), _rotated(V_l, deg)))
+rigs_lazy.append(([(-500.0, 0.0), (-499.0, 1.0), (-498.0, 0.0), (500.0, 40.0)], [(0.0, -500.0), (1.0, -499.0), (40.0, 500.0)]))
+for H_l, V_l in rigs_lazy:
+    sv_l = ci.ChordIntersect(H_l, V_l)
+    sv_l.prepare_grid()
+    assert not sv_l._cell_tuples and not sv_l._grid[5] and sv_l._families is None
+    pts = [(rng.uniform(-900.0, 900.0), rng.uniform(-900.0, 900.0)) for _ in range(500)]
+    for a, b in zip(sv_l.solve_many(pts, method="grid", extensions="all"), sv_l.solve_many(pts)):
+        assert same_hits(a, b), (a.point, a.hits, b.hits)
+    assert len(sv_l._grid[5]) <= len(pts)                  # a list only for a bin a point asked for
+print("lazy grid: %d rigs, 500 points each, hits == matrix, cell tuples only for the bins touched" % len(rigs_lazy))
+
 print("t_chord_intersect: ok")

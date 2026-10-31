@@ -242,6 +242,33 @@ def _merge_duplicates(rows):
     return kept
 
 
+def _box_tree(points):
+    """Bounding boxes of a polyline's segments as an implicit binary tree. Node
+    k has children 2k and 2k + 1, segment i is leaf m + i, and leaves past the
+    last segment keep an inverted box that no overlap test passes. Returns
+    (lo_x, hi_x, lo_y, hi_y, size, m); size is the box's half perimeter."""
+    n = len(points) - 1
+    m = 1
+    while m < n:
+        m *= 2
+    inf = math.inf
+    lo_x, hi_x = [inf] * (2 * m), [-inf] * (2 * m)
+    lo_y, hi_y = [inf] * (2 * m), [-inf] * (2 * m)
+    for i in range(n):
+        (x0, y0), (x1, y1) = points[i], points[i + 1]
+        k = m + i
+        lo_x[k], hi_x[k] = (x0, x1) if x0 < x1 else (x1, x0)
+        lo_y[k], hi_y[k] = (y0, y1) if y0 < y1 else (y1, y0)
+    for k in range(m - 1, 0, -1):
+        a, b = 2 * k, 2 * k + 1
+        lo_x[k] = lo_x[a] if lo_x[a] < lo_x[b] else lo_x[b]
+        hi_x[k] = hi_x[a] if hi_x[a] > hi_x[b] else hi_x[b]
+        lo_y[k] = lo_y[a] if lo_y[a] < lo_y[b] else lo_y[b]
+        hi_y[k] = hi_y[a] if hi_y[a] > hi_y[b] else hi_y[b]
+    size = [hi_x[k] - lo_x[k] + hi_y[k] - lo_y[k] for k in range(2 * m)]
+    return lo_x, hi_x, lo_y, hi_y, size, m
+
+
 def _hit_args(row):
     l_h, l_v, i, j, t, u, orient, on_sheet = row
     return i, j, t, u, l_h, l_v, orient, on_sheet
@@ -277,6 +304,9 @@ class ChordIntersect:
         self._seed_det = _cross(*self._eh, *self._ev)
         self._np_ready = False
         self._grid = None
+        self._families = None
+        self._trees = None
+        self._cell_tuples = {}
 
     @classmethod
     def from_frame(cls, frame):
@@ -383,7 +413,8 @@ class ChordIntersect:
           all the parallelograms plus `pad` px around it; each bin lists every
           cell whose parallelogram touches it (by bounding box, a superset).
           A point inside the grid tests its bin's list - a handful of cells
-          instead of n_h * n_v.
+          instead of n_h * n_v. The lists are not built here: no pass over the
+          cells, a list is made when its bin is first asked for (_bin_cells).
         * the extensions: past a guide's end hv continues straight, so the
           end cells are strips along the four end rays (cones at the corners,
           where both guides run out). Across such a ray the coordinate
@@ -396,70 +427,93 @@ class ChordIntersect:
 
         bin_size defaults to the median segment length (about one cell per
         bin), pad to two bins. Returns the grid and keeps it; solve builds it
-        on first use. Cost: one pass over the n_h * n_v cells, about 25 ms
-        for 100 x 100 in pure Python, which is what _Frame already spends on
-        the crossing.
+        on first use. Cost: O(n_h + n_v), a box tree over each guide, so it
+        does not grow with the number of cells. What a frame pays afterwards
+        is proportional to the bins its points really touch.
         """
-        h, v, r, q = self.h, self.v, self._r, self._q
-        n_h, n_v = self.n_h, self.n_v
+        r, q = self._r, self._q
         lengths = sorted([math.hypot(*s) for s in r] + [math.hypot(*s) for s in q])
         med = lengths[len(lengths) // 2] or 1.0
         b = float(bin_size) if bin_size else med
         inv = 1.0 / b
         if pad is None:
             pad = 2.0 * b
+        if self._trees is None:
+            self._trees = (_box_tree(self.h), _box_tree(self.v))
+        th, tv = self._trees
         # the grid lives in the c = A + O coordinates the pair test uses, where
         # the parallelograms' corners are the nodes H_i + V_j
-        hx = [p[0] for p in h]
-        hy = [p[1] for p in h]
-        vx = [p[0] for p in v]
-        vy = [p[1] for p in v]
-        x0, y0 = min(hx) + min(vx) - pad, min(hy) + min(vy) - pad
-        nbx = max(1, int(math.ceil((max(hx) + max(vx) + pad - x0) * inv)))
-        nby = max(1, int(math.ceil((max(hy) + max(vy) + pad - y0) * inv)))
-        sheet = [[] for _ in range(nbx * nby)]
+        x0, y0 = th[0][1] + tv[0][1] - pad, th[2][1] + tv[2][1] - pad
+        nbx = max(1, int(math.ceil((th[1][1] + tv[1][1] + pad - x0) * inv)))
+        nby = max(1, int(math.ceil((th[3][1] + tv[3][1] + pad - y0) * inv)))
+        self._grid = (x0, y0, inv, nbx, nby, {})
+        return self._grid
+
+    def _bin_cells(self, bx, by):
+        """The cells touching bin (bx, by), by walking the two box trees in
+        pairs: the box of a stretch of H plus the box of a stretch of V bounds
+        every cell of the two stretches, so a pair of stretches that misses
+        the bin is dropped whole, and the larger stretch of a pair that does
+        not is split. A leaf pair is one cell. Bin order is (i, j), as the
+        matrix has it. The slack of a millionth of a bin covers the rounding
+        of the sums and of the bin's own edges."""
+        x0, y0, inv, _nbx, _nby, _sheet = self._grid
+        b = 1.0 / inv
+        slack = 1e-6 * b
+        x_lo, x_hi = x0 + bx * b - slack, x0 + (bx + 1) * b + slack
+        y_lo, y_hi = y0 + by * b - slack, y0 + (by + 1) * b + slack
+        (hx0, hx1, hy0, hy1, hs, mh), (vx0, vx1, vy0, vy1, vs, mv) = self._trees
+        found = []
+        stack = [(1, 1)]
+        pop, push = stack.pop, stack.append
+        while stack:
+            a, c = pop()
+            if (hx0[a] + vx0[c] > x_hi or hx1[a] + vx1[c] < x_lo
+                    or hy0[a] + vy0[c] > y_hi or hy1[a] + vy1[c] < y_lo):
+                continue
+            if a < mh and (c >= mv or hs[a] >= vs[c]):
+                push((2 * a, c))
+                push((2 * a + 1, c))
+            elif c < mv:
+                push((a, 2 * c))
+                push((a, 2 * c + 1))
+            else:
+                found.append((a - mh, c - mv))
+        found.sort()
+        memo = self._cell_tuples
+        last_i, last_j = self.n_h - 1, self.n_v - 1
+        cells = []
+        for pair in found:
+            if pair in memo:
+                cand = memo[pair]
+            else:
+                # the part on the sheet: t, u in [0, 1] whatever the cell, so
+                # an end cell gets the tuple with the bounds pinned
+                i, j = pair
+                cand = memo[pair] = self._cell(i, j, not (0 < i < last_i and 0 < j < last_j))
+            if cand is not None:
+                cells.append(cand)
+        return cells
+
+    def _extension_index(self):
+        """The 1-D index of the four end rays, built when a point first needs
+        it: O(n_h + n_v) cells, the strips along the guide ends."""
+        h, v, r, q = self.h, self.v, self._r, self._q
+        n_h, n_v = self.n_h, self.n_v
         t_lo, t_hi = self._bounds(n_h)
         u_lo, u_hi = self._bounds(n_v)
         last_i, last_j = n_h - 1, n_v - 1
-        eps = 1e-6
-        cells = {}
-        for i, (rx, ry) in enumerate(r):
-            rl = math.hypot(rx, ry)
-            for j, (qx, qy) in enumerate(q):
-                sx, sy = -qx, -qy
-                den = rx * sy - ry * sx
-                if abs(den) <= 1e-12 * (rl * math.hypot(sx, sy) + 1e-300):
-                    continue
-                nx, ny = h[i][0] + v[j][0], h[i][1] + v[j][1]
-                cand = self._cell(i, j, False)
-                cells[(i, j)] = cand
-                # the part on the sheet: t, u in [0, 1] whatever the cell, so
-                # an end cell gets a second tuple with the bounds pinned
-                if not (0 < i < last_i and 0 < j < last_j):
-                    cand = self._cell(i, j, True)
-                xs = (nx, nx + rx, nx + qx, nx + rx + qx)
-                ys = (ny, ny + ry, ny + qy, ny + ry + qy)
-                cx0 = max(0, int((min(xs) - x0) * inv - eps))
-                cx1 = min(nbx - 1, int((max(xs) - x0) * inv + eps))
-                cy0 = max(0, int((min(ys) - y0) * inv - eps))
-                cy1 = min(nby - 1, int((max(ys) - y0) * inv + eps))
-                for by in range(cy0, cy1 + 1):
-                    row = by * nbx
-                    for bx in range(cx0, cx1 + 1):
-                        sheet[row + bx].append(cand)
         families = []
         for i in sorted({0, last_i}):
-            families.append(self._family(cells, h[i], r[i], v, [(i, j) for j in range(n_v)], u_lo, u_hi, False))
+            families.append(self._family(h[i], r[i], v, [(i, j) for j in range(n_v)], u_lo, u_hi, False))
         for j in sorted({0, last_j}):
             inner = [(i, j) for i in range(1, last_i)]      # the corner cells are in the H families
             if inner:
-                families.append(self._family(cells, v[j], q[j], h, inner, t_lo, t_hi, True))
-        self._grid = (x0, y0, inv, nbx, nby, sheet)
+                families.append(self._family(v[j], q[j], h, inner, t_lo, t_hi, True))
         self._families = families
-        return self._grid
+        return families
 
-    @staticmethod
-    def _family(cells, end, ray, other, pairs, lo, hi, along_h):
+    def _family(self, end, ray, other, pairs, lo, hi, along_h):
         """The strip of cells along one guide end's ray, indexed by the
         coordinate k = cross(ray, c - end) across the ray: inside cell (i, j)
         k runs linearly between its values at the two ends of the OTHER
@@ -478,7 +532,7 @@ class ChordIntersect:
         bins = [[] for _ in range(n)]
         below, above = [], []
         for pair in pairs:
-            cand = cells.get(pair)
+            cand = self._cell(pair[0], pair[1], False)
             if cand is None:
                 continue
             m = pair[0] if along_h else pair[1]          # index along `other`
@@ -507,7 +561,10 @@ class ChordIntersect:
 
     def _extension_candidates(self, cx, cy):
         out = []
-        for ex, ey, dx, dy, kmin, kmax, tol, winv, n, bins, below, above in self._families:
+        families = self._families
+        if families is None:
+            families = self._extension_index()
+        for ex, ey, dx, dy, kmin, kmax, tol, winv, n, bins, below, above in families:
             k = dx * (cy - ey) - dy * (cx - ex)
             if k < kmin:
                 out.extend(below)
@@ -532,7 +589,12 @@ class ChordIntersect:
         fx, fy = (cx - x0) * inv, (cy - y0) * inv
         raw = []
         if 0.0 <= fx < nbx and 0.0 <= fy < nby:
-            if self._test(cx, cy, sheet[int(fy) * nbx + int(fx)], raw) and extensions == "lazy":
+            bx, by = int(fx), int(fy)
+            key = by * nbx + bx
+            cells = sheet.get(key)
+            if cells is None:
+                cells = sheet[key] = self._bin_cells(bx, by)
+            if self._test(cx, cy, cells, raw) and extensions == "lazy":
                 return raw
         self._test(cx, cy, self._extension_candidates(cx, cy), raw)
         return raw

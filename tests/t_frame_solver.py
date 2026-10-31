@@ -4,6 +4,7 @@ import math
 import os
 import random
 import sys
+import time
 import types
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -76,4 +77,47 @@ print("3) foldable frames: the descent, bit for bit")
 mp, _ws = am.build_mapper(H, V, hook, V, {})
 assert not mp.can_fold() and mp.main_frame.can_fold() and not mp.child_frame.can_fold()
 print("4) can_fold is each frame's own")
+# 5) the gate's sorted lookup is the minimum over every pair of directions
+rng = random.Random(8)
+seen = {True: 0, False: 0}
+for _ in range(300):
+    spread = rng.choice((0.3, 0.6, 1.0, 1.5, 2.5))
+
+    def guide(base):
+        p = [(0.0, 0.0)]
+        for _ in range(rng.randint(1, 30)):
+            a = base + rng.uniform(-spread, spread)
+            p.append((p[-1][0] + 9.0 * math.cos(a), p[-1][1] + 9.0 * math.sin(a)))
+        return p
+
+    frame = am._Frame(guide(0.0), guide(rng.choice((1.5708, -1.5708))))
+    hand = frame.hand()
+
+    def unit(g):
+        return [((b[0] - a[0]) / 9.0, (b[1] - a[1]) / 9.0) for a, b in zip(g.points, g.points[1:])]
+
+    lowest = min((a[0] * b[1] - a[1] * b[0]) * hand for a in unit(frame.gh) for b in unit(frame.gv))
+    if abs(lowest - am._SEVER_GATE_SIN) > 1e-9:
+        assert frame.can_fold() == (lowest <= am._SEVER_GATE_SIN), lowest
+        seen[frame.can_fold()] += 1
+assert seen[True] and seen[False], seen
+print("5) can_fold == the brute minimum over all direction pairs (%d folding, %d not)" % (seen[True], seen[False]))
+
+# 6) the budget: at 3000 x 3000 everything a frame adds before its answers, with
+#    a point on the sheet and one on the extensions, stays under 200 ms
+n = 3000
+big_h = [(-6000.0 + 4.0 * k, 25.0 * math.sin(k / n * 6.0)) for k in range(n + 1)]
+big_v = [(20.0 * math.sin(k / n * 5.0), -6000.0 + 4.0 * k) for k in range(n + 1)]
+frame = am._Frame(big_h, big_v)
+assert not frame.can_fold()
+best = None
+for _ in range(3):
+    frame._fold_gate = frame._locator = None
+    start = time.perf_counter()
+    for p in ((1.0, 2.0), (7000.0, 3.0)):
+        assert frame.solve_full(p, 0.0, 0.0)[2] <= 1e-9
+    spent = time.perf_counter() - start
+    best = spent if best is None else min(best, spent)
+assert best < 0.2, best
+print("6) 3000 x 3000: gate, locator, grid and two first solves in %.1f ms" % (best * 1e3))
 print("t_frame_solver: ok")

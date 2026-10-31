@@ -1423,11 +1423,23 @@ class _Frame:
                         dirs.append(curve.dir_at(side))
                 return dirs
 
-            h_dirs = gate_dirs(self.gh)
+            # hand * cross(h, v) is hand * sin(angle of v - angle of h), least
+            # at the h direction nearest (angle of v + hand * 90 deg): a sorted
+            # lookup per v direction instead of every pair, 3000 x 3000 guides
+            # would be nine million products
+            h_dirs = sorted((math.atan2(y, x), x, y) for x, y in gate_dirs(self.gh))
             v_dirs = gate_dirs(self.gv)
+            angles = [d[0] for d in h_dirs]
+            count = len(h_dirs)
             lowest = None
-            for hx, hy in h_dirs:
-                for vx, vy in v_dirs:
+            for vx, vy in (v_dirs if h_dirs else ()):
+                target = math.atan2(vy, vx) + hand * 0.5 * math.pi
+                if target > math.pi:
+                    target -= 2.0 * math.pi
+                elif target < -math.pi:
+                    target += 2.0 * math.pi
+                k = bisect.bisect_left(angles, target)
+                for _angle, hx, hy in (h_dirs[k % count], h_dirs[k - 1]):
                     value = (hx * vy - hy * vx) * hand
                     if lowest is None or value < lowest:
                         lowest = value
