@@ -49,6 +49,7 @@ public:
     ~BoardSurface() override;
 
     void setFrameSink(FrameSink sink);
+    void setCanSendFrame(std::function<bool()> canSend);
     void setImageSink(std::function<void(const QString &key, const QImage &)> sink);
     void setCursorSink(std::function<void(const QCursor &)> sink);
 
@@ -56,7 +57,8 @@ public:
                      QPointF pos,
                      Qt::MouseButton button,
                      Qt::MouseButtons buttons,
-                     Qt::KeyboardModifiers modifiers = Qt::NoModifier);
+                     Qt::KeyboardModifiers modifiers = Qt::NoModifier,
+                     quint64 timestamp = 0);
     void injectWheel(QPointF pos,
                      QPoint angleDelta,
                      Qt::KeyboardModifiers modifiers = Qt::NoModifier,
@@ -66,6 +68,8 @@ public:
     void injectFocus();
     void resizeSurface(int w, int h, qreal dpr);
     void acknowledgeFrame(quint64 frame);
+    bool isWaitingForAck() const { return m_waitingForAck; }
+    bool forceFullFrame() const { return m_forceFullFrame; }
 
     void update();
     int width() const { return m_width; }
@@ -111,6 +115,7 @@ private:
     QTimer *m_updateTimer = nullptr;
 
     FrameSink m_frameSink;
+    std::function<bool()> m_canSendFrame;
     std::function<void(const QCursor &)> m_cursorSink;
 
     int m_width = 0;
@@ -127,6 +132,7 @@ private:
     bool m_forceFullFrame = true;
     quint64 m_nextFrameId = 1;
     quint64 m_lastSentFrame = 0;
+    quint64 m_lastMouseTimestamp = 0;
     QVector<RecordedOp> m_prevOps;
 };
 

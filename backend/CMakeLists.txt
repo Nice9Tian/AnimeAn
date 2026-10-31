@@ -75,6 +75,7 @@ add_executable(board_headless_test
     board/tests/board_headless_test.cpp
 )
 target_link_libraries(board_headless_test PRIVATE animean_core_headless)
+add_dependencies(AnimeAnBackend board_headless_test)
 
 if(WIN32)
     find_program(ANIMEAN_BACKEND_WINDEPLOYQT windeployqt HINTS "${Qt6_DIR}/../../../bin")

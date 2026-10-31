@@ -360,6 +360,8 @@ void RecordingPaintEngine::resetFrame()
     m_currentMode = QPainter::CompositionMode_SourceOver;
     m_currentHints = QPainter::RenderHints();
     m_lastClipPath = QPainterPath();
+    m_lastClipTransform = QTransform();
+    m_hasLastClip = false;
 
     m_hasEmittedTransform = false;
     m_emittedTransformBytes.clear();
@@ -509,9 +511,15 @@ void RecordingPaintEngine::syncStateForImage()
 void RecordingPaintEngine::updateClip(const QPaintEngineState &state)
 {
     const QPaintEngine::DirtyFlags flags = state.state();
+    const bool hasClipChange = bool(flags & (QPaintEngine::DirtyClipPath | QPaintEngine::DirtyClipRegion));
+    if (hasClipChange && state.clipOperation() == Qt::NoClip) {
+        m_lastClipPath = QPainterPath();
+        m_lastClipTransform = QTransform();
+        m_hasLastClip = false;
+    }
+
     const bool clipDisabled = !state.isClipEnabled()
-                              || ((flags & (QPaintEngine::DirtyClipPath | QPaintEngine::DirtyClipRegion))
-                                  && state.clipOperation() == Qt::NoClip);
+                              || (hasClipChange && state.clipOperation() == Qt::NoClip);
     if (clipDisabled) {
         if (m_emittedClipEnabled) {
             m_emittedClipEnabled = false;
@@ -522,14 +530,39 @@ void RecordingPaintEngine::updateClip(const QPaintEngineState &state)
     }
 
     QPainterPath path;
-    if (flags & QPaintEngine::DirtyClipPath) {
-        path = state.clipPath();
+    if (hasClipChange) {
+        QPainterPath incoming;
+        if (flags & QPaintEngine::DirtyClipPath) {
+            incoming = state.clipPath();
+        } else {
+            incoming.addRegion(state.clipRegion());
+        }
+
+        if (state.clipOperation() == Qt::IntersectClip && m_hasLastClip) {
+            QPainterPath prev = m_lastClipPath;
+            if (m_lastClipTransform != m_currentTransform) {
+                bool invertible = false;
+                const QTransform inv = m_currentTransform.inverted(&invertible);
+                if (invertible) {
+                    prev = (m_lastClipTransform * inv).map(prev);
+                }
+            }
+            path = prev.intersected(incoming);
+        } else {
+            path = incoming;
+        }
         m_lastClipPath = path;
-    } else if (flags & QPaintEngine::DirtyClipRegion) {
-        path.addRegion(state.clipRegion());
-        m_lastClipPath = path;
+        m_lastClipTransform = m_currentTransform;
+        m_hasLastClip = true;
     } else {
         path = m_lastClipPath;
+        if (m_lastClipTransform != m_currentTransform) {
+            bool invertible = false;
+            const QTransform inv = m_currentTransform.inverted(&invertible);
+            if (invertible) {
+                path = (m_lastClipTransform * inv).map(path);
+            }
+        }
     }
 
     syncTransform();

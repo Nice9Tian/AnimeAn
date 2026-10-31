@@ -8,6 +8,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
+#include <QPainter>
+#include <QPainterPath>
 #include <QStringList>
 
 #ifdef ANIMEAN_WITH_PYTHON
@@ -24,7 +26,236 @@
 namespace py = pybind11;
 #endif
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
+#include <limits>
+#include <stdexcept>
+
+namespace {
+
+class ClipAndFlushTestSurface : public BoardSurface
+{
+public:
+    bool throwInPaint = false;
+    QVector<quint64> observedMouseTimestamps;
+
+protected:
+    void paintGL() override
+    {
+        QPainter painter(this);
+        painter.fillRect(QRectF(0, 0, 100, 100), Qt::white);
+        if (throwInPaint) {
+            throw std::runtime_error("simulated python callback error in paintGL");
+        }
+
+        // 1. setClipRect with ReplaceClip then IntersectClip
+        painter.setClipRect(QRectF(10, 20, 100, 80), Qt::ReplaceClip);
+        painter.fillRect(QRectF(0, 0, 200, 200), Qt::red);
+        painter.setClipRect(QRectF(50, 40, 100, 80), Qt::IntersectClip);
+        painter.fillRect(QRectF(0, 0, 200, 200), Qt::blue);
+
+        // 2. setClipPath with ReplaceClip then IntersectClip
+        QPainterPath p1;
+        p1.addRect(QRectF(0, 0, 90, 90));
+        QPainterPath p2;
+        p2.addRect(QRectF(30, 25, 90, 90));
+        painter.setClipPath(p1, Qt::ReplaceClip);
+        painter.setClipPath(p2, Qt::IntersectClip);
+        painter.fillRect(QRectF(0, 0, 200, 200), Qt::green);
+
+        painter.setClipping(false);
+        painter.fillRect(QRectF(0, 0, 10, 10), Qt::black);
+    }
+
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        observedMouseTimestamps.append(event->timestamp());
+        event->accept();
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        observedMouseTimestamps.append(event->timestamp());
+        event->accept();
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        observedMouseTimestamps.append(event->timestamp());
+        event->accept();
+    }
+};
+
+QRectF clipPathBounds(const QJsonArray &flatPath)
+{
+    double minX = std::numeric_limits<double>::infinity();
+    double minY = std::numeric_limits<double>::infinity();
+    double maxX = -std::numeric_limits<double>::infinity();
+    double maxY = -std::numeric_limits<double>::infinity();
+    bool any = false;
+
+    int i = 0;
+    while (i < flatPath.size()) {
+        const int cmd = flatPath.at(i++).toInt(-1);
+        if (cmd == 0 || cmd == 1) {
+            if (i + 1 >= flatPath.size()) {
+                break;
+            }
+            const double x = flatPath.at(i++).toDouble();
+            const double y = flatPath.at(i++).toDouble();
+            minX = std::min(minX, x);
+            minY = std::min(minY, y);
+            maxX = std::max(maxX, x);
+            maxY = std::max(maxY, y);
+            any = true;
+        } else if (cmd == 2) {
+            if (i + 5 >= flatPath.size()) {
+                break;
+            }
+            for (int k = 0; k < 3; ++k) {
+                const double x = flatPath.at(i++).toDouble();
+                const double y = flatPath.at(i++).toDouble();
+                minX = std::min(minX, x);
+                minY = std::min(minY, y);
+                maxX = std::max(maxX, x);
+                maxY = std::max(maxY, y);
+            }
+            any = true;
+        } else if (cmd == 3) {
+            // close subpath
+        } else {
+            break;
+        }
+    }
+    if (!any) {
+        return QRectF();
+    }
+    return QRectF(QPointF(minX, minY), QPointF(maxX, maxY));
+}
+
+bool runClipAndFlushUnitTests()
+{
+    ClipAndFlushTestSurface surface;
+    surface.resizeSurface(200, 200, 1.0);
+
+    // Flush with no client (no FrameSink attached): must not set waitingForAck or consume forceFullFrame.
+    QCoreApplication::processEvents();
+    if (surface.isWaitingForAck()) {
+        std::fprintf(stderr, "Expected isWaitingForAck() == false when no client is connected\n");
+        return false;
+    }
+    if (!surface.forceFullFrame()) {
+        std::fprintf(stderr, "Expected forceFullFrame() == true when no client is connected\n");
+        return false;
+    }
+
+    bool clientPresent = false;
+    int sinkCallCount = 0;
+    BoardFrame receivedFrame;
+    surface.setCanSendFrame([&]() { return clientPresent; });
+    surface.setFrameSink([&](const BoardFrame &frame) {
+        ++sinkCallCount;
+        receivedFrame = frame;
+    });
+
+    // Still no client because canSendFrame returns false.
+    surface.update();
+    QCoreApplication::processEvents();
+    if (sinkCallCount != 0 || surface.isWaitingForAck() || !surface.forceFullFrame()) {
+        std::fprintf(stderr, "Expected no frame sent and forceFullFrame preserved when canSendFrame is false\n");
+        return false;
+    }
+
+    // Client connects, but paintGL throws an exception mid-frame.
+    clientPresent = true;
+    surface.throwInPaint = true;
+    surface.update();
+    QCoreApplication::processEvents();
+    if (sinkCallCount != 0 || surface.isWaitingForAck() || !surface.forceFullFrame()) {
+        std::fprintf(stderr, "Expected exception in paintGL to abort flush without setting waitingForAck or consuming forceFullFrame\n");
+        return false;
+    }
+
+    // Now paintGL succeeds: should send full frame (keep == 0) and set waitingForAck.
+    surface.throwInPaint = false;
+    surface.update();
+    QCoreApplication::processEvents();
+    if (sinkCallCount != 1 || !surface.isWaitingForAck() || surface.forceFullFrame()) {
+        std::fprintf(stderr, "Expected successful flush to send frame and set waitingForAck\n");
+        return false;
+    }
+    if (receivedFrame.keep != 0) {
+        std::fprintf(stderr, "Expected full frame keep == 0 after aborted frame, got %d\n", receivedFrame.keep);
+        return false;
+    }
+
+    // Verify K ops in receivedFrame.ops have intersected clip bounds.
+    QJsonParseError err;
+    const QJsonDocument doc = QJsonDocument::fromJson(receivedFrame.ops, &err);
+    if (err.error != QJsonParseError::NoError || !doc.isArray()) {
+        std::fprintf(stderr, "Failed to parse clip test ops JSON\n");
+        return false;
+    }
+    QVector<QRectF> nonNullClipBounds;
+    int nullClipCount = 0;
+    for (const QJsonValue &val : doc.array()) {
+        const QJsonArray op = val.toArray();
+        if (op.isEmpty() || op.at(0).toString() != QStringLiteral("K")) {
+            continue;
+        }
+        if (op.at(1).isNull()) {
+            ++nullClipCount;
+        } else if (op.at(1).isArray()) {
+            nonNullClipBounds.append(clipPathBounds(op.at(1).toArray()));
+        }
+    }
+    if (nonNullClipBounds.size() < 3 || nullClipCount < 1) {
+        std::fprintf(stderr, "Expected at least 3 non-null K ops and 1 null K op, got %d and %d\n",
+                     int(nonNullClipBounds.size()), nullClipCount);
+        return false;
+    }
+    // K[0]: ReplaceClip (10, 20, 100, 80)
+    // K[1]: IntersectClip with (50, 40, 100, 80) -> intersection is (50, 40, 60, 60)
+    const QRectF rectIntersect = nonNullClipBounds.at(1);
+    if (std::abs(rectIntersect.left() - 50.0) > 1e-3
+        || std::abs(rectIntersect.top() - 40.0) > 1e-3
+        || std::abs(rectIntersect.width() - 60.0) > 1e-3
+        || std::abs(rectIntersect.height() - 60.0) > 1e-3) {
+        std::fprintf(stderr, "Unexpected setClipRect IntersectClip bounds: (%f, %f, %f, %f), expected (50, 40, 60, 60)\n",
+                     rectIntersect.left(), rectIntersect.top(), rectIntersect.width(), rectIntersect.height());
+        return false;
+    }
+    // K[2]: setClipPath ReplaceClip (0,0,90,90) + IntersectClip (30,25,90,90) -> intersection is (30, 25, 60, 65)
+    const QRectF pathIntersect = nonNullClipBounds.last();
+    if (std::abs(pathIntersect.left() - 30.0) > 1e-3
+        || std::abs(pathIntersect.top() - 25.0) > 1e-3
+        || std::abs(pathIntersect.width() - 60.0) > 1e-3
+        || std::abs(pathIntersect.height() - 65.0) > 1e-3) {
+        std::fprintf(stderr, "Unexpected setClipPath IntersectClip bounds: (%f, %f, %f, %f), expected (30, 25, 60, 65)\n",
+                     pathIntersect.left(), pathIntersect.top(), pathIntersect.width(), pathIntersect.height());
+        return false;
+    }
+
+    // Verify injectMouse timestamps are set and monotonically non-decreasing.
+    surface.injectMouse(QEvent::MouseButtonPress, QPointF(10, 10), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier, 1000);
+    surface.injectMouse(QEvent::MouseMove, QPointF(20, 20), Qt::NoButton, Qt::LeftButton, Qt::NoModifier, 950); // out-of-order, clamped to 1000
+    surface.injectMouse(QEvent::MouseButtonRelease, QPointF(30, 30), Qt::LeftButton, Qt::NoButton, Qt::NoModifier, 1050);
+    if (surface.observedMouseTimestamps.size() != 3
+        || surface.observedMouseTimestamps[0] != 1000
+        || surface.observedMouseTimestamps[1] != 1000
+        || surface.observedMouseTimestamps[2] != 1050) {
+        std::fprintf(stderr, "Unexpected mouse timestamps: [%llu, %llu, %llu]\n",
+                     static_cast<unsigned long long>(surface.observedMouseTimestamps.value(0)),
+                     static_cast<unsigned long long>(surface.observedMouseTimestamps.value(1)),
+                     static_cast<unsigned long long>(surface.observedMouseTimestamps.value(2)));
+        return false;
+    }
+
+    return true;
+}
+
+} // namespace
 
 int main(int argc, char *argv[])
 {
@@ -33,6 +264,10 @@ int main(int argc, char *argv[])
     }
 
     QGuiApplication app(argc, argv);
+
+    if (!runClipAndFlushUnitTests()) {
+        return 1;
+    }
 
 #ifdef ANIMEAN_WITH_PYTHON
     const QString appDir = QCoreApplication::applicationDirPath();
