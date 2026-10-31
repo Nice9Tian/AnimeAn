@@ -16,6 +16,13 @@ pub struct BackendEndpoint {
     pub url: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct FileFilter {
+    pub name: String,
+    #[serde(default)]
+    pub extensions: Vec<String>,
+}
+
 /// Pure function to parse `ANIMEAN_BACKEND_PORT=<port>` from a single stdout line.
 pub fn parse_port_line(line: &str) -> Option<u16> {
     let trimmed = line.trim();
@@ -531,6 +538,75 @@ async fn close_panel_window(app: tauri::AppHandle, label: String) -> Result<(), 
     Ok(())
 }
 
+fn file_path_to_string(fp: tauri_plugin_dialog::FilePath) -> String {
+    match fp {
+        tauri_plugin_dialog::FilePath::Path(p) => p.to_string_lossy().into_owned(),
+        tauri_plugin_dialog::FilePath::Url(u) => u
+            .to_file_path()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| u.to_string()),
+    }
+}
+
+#[tauri::command]
+async fn pick_files(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    mode: String,
+    title: Option<String>,
+    filters: Option<Vec<FileFilter>>,
+    multiple: Option<bool>,
+) -> Result<Vec<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let normalized_mode = mode.trim().to_ascii_lowercase();
+    if normalized_mode != "open" && normalized_mode != "save" {
+        return Err(format!(
+            "Unsupported pick_files mode '{mode}': expected 'open' or 'save'"
+        ));
+    }
+
+    let mut builder = app.dialog().file().set_parent(&window);
+    if let Some(t) = title {
+        if !t.is_empty() {
+            builder = builder.set_title(t);
+        }
+    }
+    for filter in filters.unwrap_or_default() {
+        let exts: Vec<&str> = filter
+            .extensions
+            .iter()
+            .map(|ext| ext.trim_start_matches('.'))
+            .filter(|ext| !ext.is_empty())
+            .collect();
+        if !exts.is_empty() {
+            builder = builder.add_filter(&filter.name, &exts);
+        }
+    }
+
+    let is_multiple = multiple.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || {
+        if normalized_mode == "save" {
+            Ok(builder
+                .blocking_save_file()
+                .map(|p| vec![file_path_to_string(p)])
+                .unwrap_or_default())
+        } else if is_multiple {
+            Ok(builder
+                .blocking_pick_files()
+                .map(|list| list.into_iter().map(file_path_to_string).collect())
+                .unwrap_or_default())
+        } else {
+            Ok(builder
+                .blocking_pick_file()
+                .map(|p| vec![file_path_to_string(p)])
+                .unwrap_or_default())
+        }
+    })
+    .await
+    .map_err(|e| format!("File dialog task failed: {e}"))?
+}
+
 pub fn run() {
     let (backend_manager, wait_handle) = BackendManager::spawn_and_wait();
     let manager_for_setup = Arc::clone(&backend_manager);
@@ -538,6 +614,7 @@ pub fn run() {
     let manager_for_run = Arc::clone(&backend_manager);
 
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(backend_manager)
         .setup(move |app| {
             #[cfg(windows)]
@@ -559,6 +636,7 @@ pub fn run() {
             set_window_title,
             open_panel_window,
             close_panel_window,
+            pick_files,
         ])
         .build(tauri::generate_context!())
         .expect("error while building AnimeAn Tauri shell");
@@ -621,5 +699,19 @@ mod tests {
             url,
             "ws://127.0.0.1:9876/?token=0123456789abcdef0123456789abcdef"
         );
+    }
+
+    #[test]
+    fn test_file_filter_deserialize_and_path_conversion() {
+        let raw = r#"[{"name":"Images","extensions":["png","jpg"]},{"name":"All"}]"#;
+        let filters: Vec<FileFilter> = serde_json::from_str(raw).unwrap();
+        assert_eq!(filters.len(), 2);
+        assert_eq!(filters[0].name, "Images");
+        assert_eq!(filters[0].extensions, vec!["png", "jpg"]);
+        assert_eq!(filters[1].name, "All");
+        assert!(filters[1].extensions.is_empty());
+
+        let fp = tauri_plugin_dialog::FilePath::Path(PathBuf::from(r"C:\test\sample.png"));
+        assert_eq!(file_path_to_string(fp), r"C:\test\sample.png");
     }
 }
