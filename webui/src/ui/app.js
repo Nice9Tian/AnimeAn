@@ -165,9 +165,10 @@ export function panelFactories(store, client) {
           guideLines: value.onionGuideLines,
           onionAvailable: value.onionAvailable,
           lanes: value.onionFrames ?? [],
-          vertical: false,
-          collapsed: false,
-          floating: false,
+          vertical: Boolean(value.vertical),
+          leftAligned: Boolean(value.leftAligned),
+          collapsed: Boolean(value.collapsed),
+          floating: Boolean(value.floating),
         });
       });
     },
@@ -181,6 +182,7 @@ export function panelFactories(store, client) {
       });
       const boards = createBoards(panel.host, client, store);
       store.boards = boards;
+      on("windows", (value) => { panel.pill.style.display = value?.timeline?.visible ? "none" : ""; });
       on("event", (event) => {
         if (event?.name === "board.page") panel.show(event.args?.view === "child" ? 1 : 0);
       });
