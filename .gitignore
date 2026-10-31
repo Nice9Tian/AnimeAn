@@ -11,3 +11,8 @@ build_full.log
 /.scratch
 /.archive
 .dag_state.json
+
+node_modules/
+/webui/dist
+/src-tauri/target
+/src-tauri/gen
