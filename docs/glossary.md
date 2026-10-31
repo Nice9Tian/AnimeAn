@@ -84,6 +84,7 @@
 | 中轴线 / 轴线 | Center line / `h_center_line`（蓝）、`v_center_line`（绿） | 现有 | 每块板一对 H、V，必须相交；定义坐标系和范围。不进图层。 |
 | 参考架 | frame / `_Frame` | 现有 | 一对轴线张成的坐标架；`hv` 是它的正问题。 |
 | 子系 / 主系 | child frame / main frame | 现有 | 纹理侧与主画板侧的参考架。 |
+| 代理矩形 | proxy rectangle / `pyfile/proxy_rect.py` | 规划 | 纹理板和主画板上各一个矩形。纹理板的矩形只示意映射范围，不动纹理板的轴线；由两者的角点对应算出主画板的轴线和额外辅助线。对应算法已实现，界面未接入。 |
 | Third 空间 | Third space / 子系弧坐标平面 $(\ell_h,\ell_v)$；`third_of`、`main_of_third` | 现有 | 两条轴线被拉直的中间空间；Auto Mapping 是 Child→Third→Main。 |
 | 弧长参数化 | arc-length parametrisation / `_point_at_arc` | 现有 | 沿轴线按弧长取点，弯轴线让图案跟着弯。端点对端点、交点对交点。 |
 | 阻尼牛顿 | damped Newton / `_Frame.solve` | 现有 | 从画布点反解子系坐标。 |

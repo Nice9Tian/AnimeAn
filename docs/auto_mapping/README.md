@@ -10,10 +10,11 @@
 | `fold_crease_pipeline.md` | 折痕：折缝轨迹的数学、切断点、双向扫描、合并与缝合、锚定发射、不变量 | 2026-08-18；§11 补入 2026-08-19 的角点注入与双空间深度计数 |
 | `topology_severing.md` | 拓扑裁断：无残差的 Child→Third→Main、两半判定、笔画与填充的裁断、贝塞尔桥、闸门 | 2026-08-24 重构，2026-08-25 审查修复 |
 | `flow_field_warp.md` | 附加线：族测地线关键帧模型、帐篷、加权泊松积分、约束外轮廓 | 2026-08-25 |
+| `proxy_rect.md` | 代理矩形：两个矩形的角点对应、损失函数、λ、由纹理轴线带到主画板的轴线和边；未接入界面 | 2026-10-30 |
 | `layer_units.md` | 属性图层与 Auto-Mapping 单元：焦点语义、实时重跑、Advanced Settings、C++ 通用机制 | 2026-08-25 |
 
 不糊合、拓扑裁断、Third 空间、族、约束外轮廓等名词见 `../glossary.md`。
 
 归档（不再据此施工）：`../../old_history/auto_mapping_algorithms.md`（AM1 与 AM2 的比较，AM1 已移除）、`../../old_history/fukusato/`（Fukusato MLS 工作流，已退役）。
 
-回归套件（`tests/`）：`t_sever.py`、`t_bridge.py`（裁断与桥）、`t_flowfield.py`、`t_additional.py`、`t_compose.py`、`t_twofix.py`、`t_third_invalidate.py`、`t_removal.py`（附加线）、`t_units.py`、`t_unit_bake.py`、`t_layer_policy.py`（单元）、`t_fill_children.py`（填充）、`t_onion_guides.py`（洋葱皮引导）、`t_warp3d.py`、`t_horizon3d.py`（To 3D）、`t_bezier_knots.py`（bezier 模式折点劈分）。改 `pyfile/auto_mapping.py` 必跑：`py -m unittest discover -s tests`。
+回归套件（`tests/`）：`t_sever.py`、`t_bridge.py`（裁断与桥）、`t_flowfield.py`、`t_additional.py`、`t_compose.py`、`t_twofix.py`、`t_third_invalidate.py`、`t_removal.py`（附加线）、`t_units.py`、`t_unit_bake.py`、`t_layer_policy.py`（单元）、`t_fill_children.py`（填充）、`t_onion_guides.py`（洋葱皮引导）、`t_warp3d.py`、`t_horizon3d.py`（To 3D）、`t_bezier_knots.py`（bezier 模式折点劈分）、`t_proxy_rect.py`（代理矩形）。改 `pyfile/auto_mapping.py` 必跑：`py -m unittest discover -s tests`。
