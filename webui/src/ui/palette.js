@@ -285,7 +285,7 @@ const toRgba = (c) => `rgba(${c.r},${c.g},${c.b},${c.a / 255})`;
 
 // Returns { el, update(control), layout(width) }. emit(kind, value):
 // "color" with #aarrggbb when a colour is committed, "box" with add:/remove:.
-export function createPalette(emit) {
+export function createPalette(emit, { pickersOnly = false } = {}) {
   const el = document.createElement("div");
   el.className = "pal";
   const row = document.createElement("div");
@@ -300,23 +300,25 @@ export function createPalette(emit) {
 
   let color = { r: 0, g: 0, b: 0, a: 255 };
   let swatches = [];
-  let page = 0;
+  let page = pickersOnly ? 1 : 0;
 
   const labels = ["Box", "Circle", "HSV", "RGB"];
-  labels.forEach((text, i) => {
+  (pickersOnly ? labels.slice(1) : labels).forEach((text, n) => {
+    const i = pickersOnly ? n + 1 : n;
     const t = document.createElement("div");
     t.className = "pal-tab";
     t.textContent = text;
     t.addEventListener("click", () => show(i));
     // Same integer split as PaletteTabStrip::tabRect, so the dividers land on
     // the same columns at any width.
-    t.style.left = `calc((100% + 2px) * ${i} / 4 - 1px)`;
-    t.style.width = "calc((100% + 2px) / 4)";
+    const count = pickersOnly ? 3 : 4;
+    t.style.left = `calc((100% + 2px) * ${n} / ${count} - 1px)`;
+    t.style.width = `calc((100% + 2px) / ${count})`;
     tabs.append(t);
   });
   function show(i) {
     page = i;
-    [...tabs.children].forEach((t, k) => t.classList.toggle("sel", k === i));
+    [...tabs.children].forEach((t, k) => t.classList.toggle("sel", k === (pickersOnly ? i - 1 : i)));
     box.style.display = i === 0 ? "" : "none";
     pickers.forEach((p, k) => { p.canvas.style.display = k + 1 === i ? "block" : "none"; if (k + 1 === i) { p.layout(el.clientWidth - 34); p.setColor(color); } });
   }

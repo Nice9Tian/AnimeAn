@@ -9,7 +9,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
+// Long enough for pydeps to install wheels on a first run.
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct BackendEndpoint {

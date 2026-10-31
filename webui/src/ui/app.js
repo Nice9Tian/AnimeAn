@@ -4,6 +4,7 @@ import { BoardRenderer } from "../board/renderer.ts";
 import { attachBoardInput } from "../board/input.ts";
 import { createCentral, createLayers, createMenuBar, createTools, popupMenu } from "./panels.js";
 import { createToolOptions } from "./options.js";
+import { createPalette, toHexArgb } from "./palette.js";
 import { createAssets, createForcePad, createHistory, createNewProjectDialog, createPythonDebug } from "./panels2.js";
 import { createTimeline } from "./timeline.js";
 
@@ -26,7 +27,17 @@ export function createStore(client) {
     if (values.has(key)) fn(values.get(key));
   };
   const call = (method, params = {}) => client.call(method, params).catch(fail);
-  return { on, call, get: (key) => values.get(key) };
+  const cursors = new Map();
+  client.onImage((meta, data) => {
+    if (!meta.key.startsWith("cur_")) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = meta.w;
+    canvas.height = meta.h;
+    const pixels = new ImageData(new Uint8ClampedArray(data), meta.w, meta.h);
+    canvas.getContext("2d").putImageData(pixels, 0, 0);
+    cursors.set(meta.key, canvas.toDataURL());
+  });
+  return { on, call, get: (key) => values.get(key), cursorUrl: (key) => cursors.get(key) };
 }
 
 const activeView = (store) => store.get("window")?.activeView ?? "main";
@@ -65,8 +76,8 @@ export function panelFactories(store, client) {
           hook: "palette_box", name: control.name, type: "palette", value: action,
           row: control.row ?? 0, startColumn: control.start_column ?? 0, endColumn: control.end_column ?? 0,
         }),
-        onNewColor: () => {},
-        onSubWindow: () => null,
+        onNewColor: (palette) => openNewColor(palette),
+        onSubWindow: () => subWindowNote(),
       });
       on("toolOptions", (value) => panel.build(value));
     },
@@ -145,6 +156,9 @@ export function panelFactories(store, client) {
         onLoop: (on) => call("playback.setLoop", { loop: on }),
         onRate: (fps) => call("frame.setFps", { fps }),
         onClose: () => call("menu.trigger", { id: "windows.timeline" }),
+        onCollapse: (collapsed) => call("timeline.setCollapsed", { collapsed }),
+        onFloat: (floating) => call("timeline.setFloating", { floating }),
+        onOrientation: (vertical) => call("timeline.setDockArea", { dockArea: vertical ? "right" : "bottom" }),
         onSelectFrame: (frameIndex) => call("frame.select", { frameIndex }),
         onMoveFrame: (fromIndex, toIndex) => call("frame.move", { fromIndex, toIndex }),
         onFrameTyped: (frameIndex) => call("frame.select", { frameIndex }),
@@ -184,7 +198,12 @@ export function panelFactories(store, client) {
       store.boards = boards;
       on("windows", (value) => { panel.pill.style.display = value?.timeline?.visible ? "none" : ""; });
       on("event", (event) => {
-        if (event?.name === "board.page") panel.show(event.args?.view === "child" ? 1 : 0);
+        if (event?.name === "textureView.surface") { panel.show(1); boards.show("child"); }
+        if (event?.name === "window.select" && event.args?.name === "paint") {
+          const child = event.args.page === "texture";
+          panel.show(child ? 1 : 0);
+          boards.show(child ? "child" : "main");
+        }
       });
       const syncScroll = (view) => (value) => {
         if (view !== boards.current || !value) return;
@@ -197,6 +216,31 @@ export function panelFactories(store, client) {
   };
 }
 
+function subWindowNote() {
+  const note = document.createElement("div");
+  note.className = "opt-title";
+  note.textContent = "Texture view: on the Texture page";
+  return note;
+}
+
+function openNewColor(palette) {
+  const shade = document.createElement("div");
+  shade.className = "qdialog-shade";
+  const dialog = document.createElement("div");
+  dialog.className = "qdialog newcolor-dialog";
+  const inner = createPalette(() => {}, { pickersOnly: true });
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "qbutton";
+  add.textContent = "Add";
+  add.addEventListener("click", () => { palette.addSwatch(toHexArgb(inner.color())); shade.remove(); });
+  shade.addEventListener("pointerdown", (e) => { if (e.target === shade) shade.remove(); });
+  dialog.append(inner.el, add);
+  shade.append(dialog);
+  document.body.append(shade);
+  inner.update({ value: toHexArgb(palette.color()), swatches: [] });
+}
+
 function createBoards(host, client, store) {
   const inputs = [];
   const make = (view) => {
@@ -206,7 +250,9 @@ function createBoards(host, client, store) {
     new BoardRenderer(canvas, { view, client });
     inputs.push(attachBoardInput(canvas, { view, client }));
     store.on(`cursor/${view}`, (value) => {
-      canvas.style.cursor = value?.css ?? "default";
+      const url = value?.key ? store.cursorUrl(value.key) : null;
+      const fallback = value?.css ?? "default";
+      canvas.style.cursor = url ? `url(${url}) ${value.hx ?? 0} ${value.hy ?? 0}, ${fallback}` : fallback;
     });
     return canvas;
   };
@@ -236,7 +282,11 @@ export function syncDocks(runtime, store) {
 
 // The chrome outside the docked scene: menu bar and status bar.
 export function createChrome(menuEl, statusEl, store) {
-  const bar = createMenuBar(menuEl, { onTrigger: (item) => store.call("menu.trigger", { id: item.id }) });
+  const trigger = (item) => store.call("menu.trigger", {
+    id: item.id,
+    checked: item.kind === "check" ? !item.checked : item.kind === "radio" ? true : undefined,
+  });
+  const bar = createMenuBar(menuEl, { onTrigger: trigger });
   store.on("menus", (value) => bar.update(value));
   const text = document.createElement("div");
   text.className = "status-text";
@@ -284,7 +334,10 @@ export function createChrome(menuEl, statusEl, store) {
     const args = event?.args ?? {};
     switch (event?.name) {
       case "contextMenu":
-        popupMenu(args.items ?? [], args.x, args.y, (item) => store.call("menu.trigger", { id: item.id }));
+        popupMenu(args.items ?? [], args.x, args.y, trigger);
+        break;
+      case "settings.open":
+        openSettings(store, args);
         break;
       case "dialog.canvasSize":
         canvasDialog.update({ width: args.width, height: args.height, open: true });
@@ -330,6 +383,32 @@ export function createChrome(menuEl, statusEl, store) {
     const id = shortcuts.get(keyName(e));
     if (id) { e.preventDefault(); store.call("menu.trigger", { id }); }
   });
+}
+
+// A script's settings window: the same declarative controls as the options panel.
+function openSettings(store, { name, title, layout }) {
+  const shade = document.createElement("div");
+  shade.className = "qdialog-shade";
+  const dialog = document.createElement("div");
+  dialog.className = "qdialog settings-dialog";
+  const head = document.createElement("div");
+  head.className = "qdialog-title";
+  head.textContent = title ?? name ?? "";
+  const body = document.createElement("div");
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "qbutton settings-close";
+  close.textContent = "Close";
+  close.addEventListener("click", () => shade.remove());
+  dialog.append(head, body, close);
+  shade.append(dialog);
+  document.body.append(shade);
+  createToolOptions(body, {
+    onOption: (option) => store.call("settings.option", { ...option, menu: name }),
+    onPalette: () => {},
+    onNewColor: () => {},
+    onSubWindow: () => null,
+  }).build(layout);
 }
 
 function normalizeKey(text) {

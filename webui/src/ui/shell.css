@@ -39,3 +39,9 @@ html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background:
 /* Qt's stems come out a touch heavier than the browser's at this size. */
 body { -webkit-text-stroke: 0.1px currentColor; }
 canvas { -webkit-text-stroke: 0; }
+
+.qdialog-shade { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: rgba(0, 0, 0, 0.2); }
+.settings-dialog, .newcolor-dialog { min-width: 300px; padding: 12px; background: var(--window); color: var(--text); border: 1px solid var(--divider); display: flex; flex-direction: column; gap: 8px; }
+.newcolor-dialog { width: 320px; box-sizing: border-box; }
+.qdialog-title { font-weight: 600; }
+.settings-close { align-self: flex-end; }

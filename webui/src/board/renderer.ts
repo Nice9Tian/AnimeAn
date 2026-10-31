@@ -358,6 +358,16 @@ export class BoardRenderer {
   }
 
   renderFrame(msg: BoardMessage): void {
+    try {
+      this.drawFrame(msg);
+    } finally {
+      // Without this ack the backend stops sending frames for this board.
+      this.client?.sendAck(msg.view, msg.frame);
+      this.onAck?.(msg.view, msg.frame);
+    }
+  }
+
+  private drawFrame(msg: BoardMessage): void {
     const dpr = Math.max(0.1, Number(this.getDpr()) || 1);
     const w = Math.max(1, Math.round(msg.w));
     const h = Math.max(1, Math.round(msg.h));
@@ -438,9 +448,6 @@ export class BoardRenderer {
         this.executeOps(this.ctx, this.fullOps, 0, this.fullOps.length, mainState, dpr);
       }
     }
-
-    this.client?.sendAck(msg.view, msg.frame);
-    this.onAck?.(msg.view, msg.frame);
   }
 
   destroy(): void {

@@ -74,6 +74,8 @@ html, body { margin: 0; padding: 0; background: var(--window); overflow: hidden;
 .sb-v .sb-handle { left: 0; width: 14px; background: linear-gradient(90deg, var(--sb-top), var(--sb-bottom)); }
 /* ---- flow versions of the same controls, used inside docks ---- */
 [data-theme="dark"] {
+  --dock-float-svg: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTQiIHZpZXdCb3g9IjAgMCAxOCAxNCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB4PSI0IiB5PSIyIiB3aWR0aD0iMTAiIGhlaWdodD0iMTAiIHJ4PSIxIiBmaWxsPSIjMzgzOTM5Ii8+PHJlY3QgeD0iNiIgeT0iNCIgd2lkdGg9IjYiIGhlaWdodD0iNiIgZmlsbD0iIzUzNTI1MCIvPjxyZWN0IHg9IjciIHk9IjUiIHdpZHRoPSIzIiBoZWlnaHQ9IjMiIGZpbGw9IiMxZDFmMjAiLz48L3N2Zz4=");
+  --dock-close-svg: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTQiIHZpZXdCb3g9IjAgMCAxOCAxNCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB4PSI0IiB5PSIyIiB3aWR0aD0iMTAiIGhlaWdodD0iMTAiIHJ4PSIxIiBmaWxsPSIjMzgzOTM5Ii8+PHJlY3QgeD0iNiIgeT0iNCIgd2lkdGg9IjYiIGhlaWdodD0iNiIgZmlsbD0iIzFkMWYyMCIvPjxwYXRoIGQ9Ik02LjUgNC41IEwxMS41IDkuNSBNMTEuNSA0LjUgTDYuNSA5LjUiIHN0cm9rZT0iI2FlYWZiMiIgc3Ryb2tlLXdpZHRoPSIxLjYiLz48L3N2Zz4=");
   --window: #1d1f20; --surface: #232526; --surface-alt: #2a2c2e;
   --text: #f5f5f8; --text-dim: #b4b6bc; --divider: #575a5c;
   --accent: #3d8ec9; --accent-hover: #58a5dd; --accent-active: #2f74a6;
