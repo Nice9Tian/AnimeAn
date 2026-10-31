@@ -1,23 +1,32 @@
 #include "session/backendsession.h"
 
+#include "algorithm/beziersplit.h"
 #include "board/boardsurface.h"
 #include "business/animeanbusiness.h"
+#include "clipreader.cpp"
 #include "net/wsserver.h"
 #include "openglwidget.h"
 #include "theme.h"
 
 #include <QColor>
 #include <QCoreApplication>
+#include <QDir>
 #include <QEvent>
 #include <QFileInfo>
+#include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
+#include <QLineF>
 #include <QMetaObject>
 #include <QPixmap>
+#include <QRectF>
+#include <QSettings>
 #include <QSize>
+#include <QSizeF>
 #include <QTimer>
+#include <QTransform>
 #include <QtGlobal>
 
 #include <algorithm>
@@ -274,6 +283,237 @@ const QStringList &allStateKeys()
     return keys;
 }
 
+int frameNameToRow(const QString &frameName)
+{
+    QString digits;
+    for (const QChar ch : frameName) {
+        if (!ch.isDigit()) {
+            break;
+        }
+        digits.append(ch);
+    }
+
+    bool ok = false;
+    const int frameNumber = digits.toInt(&ok);
+    return ok && frameNumber > 0 ? frameNumber - 1 : 0;
+}
+
+#ifdef ANIMEAN_WITH_PYTHON
+qreal dictNumber(const py::dict &data, const char *key, qreal fallback = 0.0)
+{
+    if (!data.contains(py::str(key))) {
+        return fallback;
+    }
+    try {
+        return data[py::str(key)].cast<qreal>();
+    } catch (const py::cast_error &) {
+        return fallback;
+    }
+}
+
+QPointF pointFromDict(const py::dict &data)
+{
+    return QPointF(dictNumber(data, "x"), dictNumber(data, "y"));
+}
+
+qreal thicknessFromDict(const py::dict &data)
+{
+    return dictNumber(data, "thick", 3.0);
+}
+
+void appendQuadraticMetricPoints(QVector<QPointF> *points,
+                                 const QPointF &p0,
+                                 const QPointF &p1,
+                                 const QPointF &p2,
+                                 int sampleCount)
+{
+    if (points->isEmpty()) {
+        points->append(p0);
+    }
+
+    QPointF cubic[4];
+    AnimeBezierSplit::quadToCubic(p0, p1, p2, cubic);
+    sampleCount = std::max(2, sampleCount);
+    for (int i = 1; i <= sampleCount; ++i) {
+        points->append(AnimeBezierSplit::evaluateCubic(cubic, static_cast<qreal>(i) / sampleCount));
+    }
+}
+
+QVector<PaintOpenGLWidget::ImportedVectorFrame> importedFramesFromOpenToonzLevel(const py::dict &levelData)
+{
+    QVector<PaintOpenGLWidget::ImportedVectorFrame> importedFrames;
+    if (!levelData.contains(py::str("frames"))) {
+        return importedFrames;
+    }
+
+    py::iterable frames = levelData[py::str("frames")];
+    for (py::handle frameHandle : frames) {
+        if (!py::isinstance<py::dict>(frameHandle)) {
+            continue;
+        }
+        py::dict frameDict = py::reinterpret_borrow<py::dict>(frameHandle);
+        PaintOpenGLWidget::ImportedVectorFrame importedFrame;
+        QString frameName = QStringLiteral("1");
+        if (frameDict.contains(py::str("frame"))) {
+            const std::string frameNameText = frameDict[py::str("frame")].cast<std::string>();
+            frameName = QString::fromUtf8(frameNameText.c_str());
+        }
+        importedFrame.row = frameNameToRow(frameName);
+
+        if (!frameDict.contains(py::str("strokes"))) {
+            continue;
+        }
+        py::iterable strokes = frameDict[py::str("strokes")];
+        for (py::handle strokeHandle : strokes) {
+            if (!py::isinstance<py::dict>(strokeHandle)) {
+                continue;
+            }
+            py::dict strokeDict = py::reinterpret_borrow<py::dict>(strokeHandle);
+            if (!strokeDict.contains(py::str("quadratics"))) {
+                continue;
+            }
+
+            PaintOpenGLWidget::ImportedVectorStroke importedStroke;
+            bool hasPathStart = false;
+            qreal thicknessTotal = 0.0;
+            int thicknessCount = 0;
+            py::iterable quadratics = strokeDict[py::str("quadratics")];
+            for (py::handle quadraticHandle : quadratics) {
+                if (!py::isinstance<py::dict>(quadraticHandle)) {
+                    continue;
+                }
+                py::dict quadratic = py::reinterpret_borrow<py::dict>(quadraticHandle);
+                if (!quadratic.contains(py::str("p0")) ||
+                    !quadratic.contains(py::str("p1")) ||
+                    !quadratic.contains(py::str("p2"))) {
+                    continue;
+                }
+
+                py::dict p0Dict = py::reinterpret_borrow<py::dict>(quadratic[py::str("p0")]);
+                py::dict p1Dict = py::reinterpret_borrow<py::dict>(quadratic[py::str("p1")]);
+                py::dict p2Dict = py::reinterpret_borrow<py::dict>(quadratic[py::str("p2")]);
+                const QPointF p0 = pointFromDict(p0Dict);
+                const QPointF p1 = pointFromDict(p1Dict);
+                const QPointF p2 = pointFromDict(p2Dict);
+                if (!hasPathStart) {
+                    importedStroke.path.moveTo(p0);
+                    hasPathStart = true;
+                } else if (!qFuzzyCompare(importedStroke.path.currentPosition().x(), p0.x()) ||
+                           !qFuzzyCompare(importedStroke.path.currentPosition().y(), p0.y())) {
+                    importedStroke.path.lineTo(p0);
+                }
+                importedStroke.path.quadTo(p1, p2);
+                const qreal approxLength = QLineF(p0, p1).length() + QLineF(p1, p2).length();
+                appendQuadraticMetricPoints(&importedStroke.points,
+                                            p0,
+                                            p1,
+                                            p2,
+                                            std::max(4, static_cast<int>(std::ceil(approxLength / 6.0))));
+                thicknessTotal += thicknessFromDict(p0Dict) + thicknessFromDict(p1Dict) + thicknessFromDict(p2Dict);
+                thicknessCount += 3;
+            }
+
+            if (importedStroke.points.size() >= 2) {
+                importedStroke.width = thicknessCount > 0
+                                           ? std::max(qreal(1.0), thicknessTotal / thicknessCount)
+                                           : std::max(qreal(1.0), dictNumber(strokeDict, "max_thickness", 3.0) * 0.2);
+                importedFrame.strokes.append(importedStroke);
+            }
+        }
+
+        if (!importedFrame.strokes.isEmpty()) {
+            importedFrames.append(importedFrame);
+        }
+    }
+    return importedFrames;
+}
+#endif
+
+QRectF importedVectorFramesBounds(const QVector<PaintOpenGLWidget::ImportedVectorFrame> &frames)
+{
+    QRectF bounds;
+    bool hasBounds = false;
+    for (const PaintOpenGLWidget::ImportedVectorFrame &frame : frames) {
+        for (const PaintOpenGLWidget::ImportedVectorStroke &stroke : frame.strokes) {
+            const QRectF strokeBounds = stroke.path.isEmpty()
+                                            ? QRectF()
+                                            : stroke.path.boundingRect();
+            if (!strokeBounds.isValid()) {
+                continue;
+            }
+            if (!hasBounds) {
+                bounds = strokeBounds;
+                hasBounds = true;
+            } else {
+                bounds = bounds.united(strokeBounds);
+            }
+        }
+    }
+    return bounds;
+}
+
+void scaleImportedVectorFramesToCanvas(QVector<PaintOpenGLWidget::ImportedVectorFrame> *frames, const QSizeF &targetSize)
+{
+    if (!frames || targetSize.width() <= 0.0 || targetSize.height() <= 0.0) {
+        return;
+    }
+
+    const QRectF sourceBounds = importedVectorFramesBounds(*frames);
+    if (!sourceBounds.isValid() || sourceBounds.width() <= 0.0 || sourceBounds.height() <= 0.0) {
+        return;
+    }
+
+    const qreal scaleX = targetSize.width() / sourceBounds.width();
+    const qreal scaleY = targetSize.height() / sourceBounds.height();
+    const qreal scale = std::min(scaleX, scaleY);
+    const QPointF sourceCenter = sourceBounds.center();
+    const QPointF targetCenter(targetSize.width() * 0.5, targetSize.height() * 0.5);
+
+    for (PaintOpenGLWidget::ImportedVectorFrame &frame : *frames) {
+        for (PaintOpenGLWidget::ImportedVectorStroke &stroke : frame.strokes) {
+            for (QPointF &point : stroke.points) {
+                point = targetCenter + (point - sourceCenter) * scale;
+            }
+            const qreal dx = targetCenter.x() - sourceCenter.x() * scale;
+            const qreal dy = targetCenter.y() - sourceCenter.y() * scale;
+            const QTransform transform(scale, 0.0, 0.0, scale, dx, dy);
+            stroke.path = transform.map(stroke.path);
+            stroke.width = std::max(qreal(1.0), stroke.width * scale);
+        }
+    }
+}
+
+QStringList extractPathsParam(const QJsonObject &params)
+{
+    QStringList out;
+    if (params.contains(QStringLiteral("paths"))) {
+        const QJsonValue v = params.value(QStringLiteral("paths"));
+        if (v.isArray()) {
+            for (const QJsonValue &item : v.toArray()) {
+                const QString s = item.toString().trimmed();
+                if (!s.isEmpty()) {
+                    out.append(s);
+                }
+            }
+        } else if (v.isString()) {
+            const QString s = v.toString().trimmed();
+            if (!s.isEmpty()) {
+                out.append(s);
+            }
+        }
+    }
+    if (out.isEmpty()) {
+        const QString single = params.value(QStringLiteral("path"))
+                                   .toString(params.value(QStringLiteral("fileName"))
+                                                 .toString(params.value(QStringLiteral("filePath")).toString()))
+                                   .trimmed();
+        if (!single.isEmpty()) {
+            out.append(single);
+        }
+    }
+    return out;
+}
+
 } // namespace
 
 BackendSession::BackendSession(WsServer *ws, QObject *parent)
@@ -285,6 +525,7 @@ BackendSession::BackendSession(WsServer *ws, QObject *parent)
     , m_lastEvent(QJsonObject{{QStringLiteral("name"), QString()}, {QStringLiteral("args"), QJsonObject()}})
 {
     initWindowInfos();
+    loadTimelineSettings();
     m_cursors.insert(QStringLiteral("main"), CursorState());
     m_cursors.insert(QStringLiteral("child"), CursorState());
     m_padValues.insert(QStringLiteral("force_pad"), m_forcePadValue);
@@ -359,12 +600,102 @@ void BackendSession::initializePythonStartup()
     appendPythonDebug(QStringLiteral(
         "[python register] animean_python, animemodel, ui, model, current, model_pybind, vectorlogic, canvas_width, canvas_height, "
         "main_model, child_model, active_view"));
+
+    // Match MainWindow::setupDocks() -> createToolDocks() -> createScriptMenus() -> attachChildScriptMenus()
+    // before runPythonInitializationScript() runs initalize.py.
+    m_business->loadExtraTools();
+    m_business->refreshToolOptions();
+    captureScriptMenuNames();
+    loadProtectedPropertiesForChild();
+
     m_business->runPythonInitializationScript();
     loadProtectedPropertiesForChild();
     m_mainBoard->resetHistory(QStringLiteral("Initial"));
     m_childBoard->resetHistory(QStringLiteral("Initial"));
     m_business->refreshToolOptions();
 #endif
+}
+
+void BackendSession::loadTimelineSettings()
+{
+    QSettings settings(QStringLiteral("AnimeAn"), QStringLiteral("AnimeAn"));
+    settings.beginGroup(QStringLiteral("timeline"));
+
+    const QString area = settings.value(QStringLiteral("dockArea"), QStringLiteral("bottom")).toString();
+    if (area == QStringLiteral("left") || area == QStringLiteral("right") || area == QStringLiteral("bottom")) {
+        m_timelineDockArea = area;
+    } else {
+        m_timelineDockArea = QStringLiteral("bottom");
+    }
+
+    m_timelineCollapsed = settings.value(QStringLiteral("collapsed"), false).toBool();
+    m_timelineFloating = settings.value(QStringLiteral("floating"), false).toBool();
+    m_timelineVisible = settings.value(QStringLiteral("visible"), true).toBool();
+
+    settings.endGroup();
+}
+
+void BackendSession::saveTimelineSettings() const
+{
+    QSettings settings(QStringLiteral("AnimeAn"), QStringLiteral("AnimeAn"));
+    settings.beginGroup(QStringLiteral("timeline"));
+    settings.setValue(QStringLiteral("dockArea"), m_timelineDockArea);
+    settings.setValue(QStringLiteral("floating"), m_timelineFloating);
+    settings.setValue(QStringLiteral("collapsed"), m_timelineCollapsed);
+    settings.setValue(QStringLiteral("visible"), m_timelineVisible);
+    settings.endGroup();
+}
+
+void BackendSession::captureScriptMenuNames()
+{
+    m_mainScriptMenus.clear();
+    m_childScriptMenus.clear();
+#ifdef ANIMEAN_WITH_PYTHON
+    if (!Py_IsInitialized()) {
+        return;
+    }
+    auto captureForHost = [this](const char *host, QVector<QPair<QString, QString>> *out) {
+        try {
+            py::gil_scoped_acquire acquire;
+            const std::string json = py::module_::import("python_hooks")
+                                         .attr("menus_json")(std::string(host))
+                                         .cast<std::string>();
+            QJsonParseError parseError;
+            const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json), &parseError);
+            if (parseError.error != QJsonParseError::NoError || !document.isArray()) {
+                return;
+            }
+            for (const QJsonValue &value : document.array()) {
+                const QJsonObject object = value.toObject();
+                const QString name = object.value(QStringLiteral("name")).toString();
+                if (name.isEmpty()) {
+                    continue;
+                }
+                const QString title = object.value(QStringLiteral("title")).toString(name);
+                out->append(qMakePair(name, title));
+            }
+        } catch (const py::error_already_set &error) {
+            m_business->setStatusMessage(QStringLiteral("menus error: %1").arg(QString::fromUtf8(error.what())));
+        }
+    };
+    captureForHost("main", &m_mainScriptMenus);
+    captureForHost("child", &m_childScriptMenus);
+#endif
+}
+
+void BackendSession::surfaceTextureView()
+{
+    if (!m_textureSubControlVisible) {
+        for (AnimeanWindowInfo &info : m_windowInfos) {
+            if (info.name == QStringLiteral("paint")) {
+                info.current = QStringLiteral("texture");
+                break;
+            }
+        }
+        markDirty(QStringLiteral("windows"));
+    }
+    emitUiEvent(QStringLiteral("textureView.surface"));
+    m_business->setActiveViewName(QStringLiteral("child"));
 }
 
 void BackendSession::initWindowInfos()
@@ -806,6 +1137,16 @@ void BackendSession::registerPythonUiCallbacks()
         if (name == QStringLiteral("paint")) {
             return;
         }
+        if (name == QStringLiteral("timeline")) {
+            m_timelineVisible = on;
+            saveTimelineSettings();
+            markDirty(QStringLiteral("windows"));
+            markDirty(QStringLiteral("timeline"));
+            markDirty(QStringLiteral("menus"));
+            emitUiEvent(QStringLiteral("window.show"),
+                        QJsonObject{{QStringLiteral("name"), name}, {QStringLiteral("visible"), on}});
+            return;
+        }
         for (AnimeanWindowInfo &info : m_windowInfos) {
             if (info.name == name) {
                 info.visible = on;
@@ -1158,11 +1499,11 @@ QJsonObject BackendSession::dispatchCall(const QString &method, const QJsonObjec
     }
 
     if (method == QStringLiteral("project.open")) {
-        const QString fileName = params.value(QStringLiteral("fileName"))
-                                     .toString(params.value(QStringLiteral("path"))
+        const QString fileName = params.value(QStringLiteral("path"))
+                                     .toString(params.value(QStringLiteral("fileName"))
                                                    .toString(params.value(QStringLiteral("filePath")).toString()));
         if (fileName.isEmpty()) {
-            return makeError(QStringLiteral("fileName is required"));
+            return makeError(QStringLiteral("path is required"));
         }
         QString error;
         const bool ok = (view == QStringLiteral("child"))
@@ -1171,12 +1512,18 @@ QJsonObject BackendSession::dispatchCall(const QString &method, const QJsonObjec
         if (!ok) {
             return makeError(error.isEmpty() ? QStringLiteral("Failed to open file") : error);
         }
-        return QJsonObject{{QStringLiteral("fileName"), fileName}};
+        const QString openedPath = (view == QStringLiteral("child"))
+                                       ? m_business->childFilePath()
+                                       : m_business->currentFilePath();
+        return QJsonObject{
+            {QStringLiteral("path"), openedPath},
+            {QStringLiteral("fileName"), openedPath},
+        };
     }
 
     if (method == QStringLiteral("project.save")) {
-        QString fileName = params.value(QStringLiteral("fileName"))
-                               .toString(params.value(QStringLiteral("path"))
+        QString fileName = params.value(QStringLiteral("path"))
+                               .toString(params.value(QStringLiteral("fileName"))
                                              .toString(params.value(QStringLiteral("filePath")).toString()));
         if (fileName.isEmpty()) {
             fileName = (view == QStringLiteral("child"))
@@ -1193,17 +1540,21 @@ QJsonObject BackendSession::dispatchCall(const QString &method, const QJsonObjec
         if (!ok) {
             return makeError(error.isEmpty() ? QStringLiteral("Failed to save file") : error);
         }
+        const QString savedPath = (view == QStringLiteral("child"))
+                                      ? m_business->childFilePath()
+                                      : m_business->currentFilePath();
         return QJsonObject{
-            {QStringLiteral("fileName"),
-             view == QStringLiteral("child") ? m_business->childFilePath() : m_business->currentFilePath()}};
+            {QStringLiteral("path"), savedPath},
+            {QStringLiteral("fileName"), savedPath},
+        };
     }
 
     if (method == QStringLiteral("project.saveAs")) {
-        const QString fileName = params.value(QStringLiteral("fileName"))
-                                     .toString(params.value(QStringLiteral("path"))
+        const QString fileName = params.value(QStringLiteral("path"))
+                                     .toString(params.value(QStringLiteral("fileName"))
                                                    .toString(params.value(QStringLiteral("filePath")).toString()));
         if (fileName.isEmpty()) {
-            return makeError(QStringLiteral("fileName is required"));
+            return makeError(QStringLiteral("path is required"));
         }
         QString error;
         const bool ok = (view == QStringLiteral("child"))
@@ -1212,9 +1563,21 @@ QJsonObject BackendSession::dispatchCall(const QString &method, const QJsonObjec
         if (!ok) {
             return makeError(error.isEmpty() ? QStringLiteral("Failed to save file") : error);
         }
+        const QString savedPath = (view == QStringLiteral("child"))
+                                      ? m_business->childFilePath()
+                                      : m_business->currentFilePath();
         return QJsonObject{
-            {QStringLiteral("fileName"),
-             view == QStringLiteral("child") ? m_business->childFilePath() : m_business->currentFilePath()}};
+            {QStringLiteral("path"), savedPath},
+            {QStringLiteral("fileName"), savedPath},
+        };
+    }
+
+    if (method == QStringLiteral("file.import")) {
+        return handleFileImportCall(params);
+    }
+
+    if (method == QStringLiteral("file.texture")) {
+        return handleFileTextureCall(params);
     }
 
     if (method == QStringLiteral("layer.add")) {
@@ -1702,7 +2065,420 @@ QJsonObject BackendSession::dispatchCall(const QString &method, const QJsonObjec
         };
     }
 
+    if (method == QStringLiteral("timeline.setVisible")) {
+        m_timelineVisible = params.contains(QStringLiteral("visible"))
+                                ? params.value(QStringLiteral("visible")).toBool()
+                                : params.value(QStringLiteral("on")).toBool(!m_timelineVisible);
+        saveTimelineSettings();
+        markDirty(QStringLiteral("windows"));
+        markDirty(QStringLiteral("timeline"));
+        markDirty(QStringLiteral("menus"));
+        return QJsonObject{{QStringLiteral("visible"), m_timelineVisible}};
+    }
+
+    if (method == QStringLiteral("timeline.setCollapsed")) {
+        m_timelineCollapsed = params.contains(QStringLiteral("collapsed"))
+                                  ? params.value(QStringLiteral("collapsed")).toBool()
+                                  : params.value(QStringLiteral("on")).toBool(!m_timelineCollapsed);
+        saveTimelineSettings();
+        markDirty(QStringLiteral("windows"));
+        markDirty(QStringLiteral("timeline"));
+        return QJsonObject{{QStringLiteral("collapsed"), m_timelineCollapsed}};
+    }
+
+    if (method == QStringLiteral("timeline.setFloating")) {
+        m_timelineFloating = params.contains(QStringLiteral("floating"))
+                                 ? params.value(QStringLiteral("floating")).toBool()
+                                 : params.value(QStringLiteral("on")).toBool(!m_timelineFloating);
+        saveTimelineSettings();
+        markDirty(QStringLiteral("windows"));
+        markDirty(QStringLiteral("timeline"));
+        return QJsonObject{{QStringLiteral("floating"), m_timelineFloating}};
+    }
+
+    if (method == QStringLiteral("timeline.setDockArea") || method == QStringLiteral("timeline.setLayout")) {
+        if (params.contains(QStringLiteral("dockArea")) || params.contains(QStringLiteral("area"))) {
+            const QString area = params.value(QStringLiteral("dockArea"))
+                                     .toString(params.value(QStringLiteral("area")).toString())
+                                     .trimmed()
+                                     .toLower();
+            if (area == QStringLiteral("left") || area == QStringLiteral("right") || area == QStringLiteral("bottom")) {
+                m_timelineDockArea = area;
+            }
+        }
+        if (params.contains(QStringLiteral("visible"))) {
+            m_timelineVisible = params.value(QStringLiteral("visible")).toBool();
+        }
+        if (params.contains(QStringLiteral("collapsed"))) {
+            m_timelineCollapsed = params.value(QStringLiteral("collapsed")).toBool();
+        }
+        if (params.contains(QStringLiteral("floating"))) {
+            m_timelineFloating = params.value(QStringLiteral("floating")).toBool();
+        }
+        saveTimelineSettings();
+        markDirty(QStringLiteral("windows"));
+        markDirty(QStringLiteral("timeline"));
+        markDirty(QStringLiteral("menus"));
+        return QJsonObject{
+            {QStringLiteral("visible"), m_timelineVisible},
+            {QStringLiteral("collapsed"), m_timelineCollapsed},
+            {QStringLiteral("floating"), m_timelineFloating},
+            {QStringLiteral("dockArea"), m_timelineDockArea},
+        };
+    }
+
     return makeError(QStringLiteral("Unknown method: %1").arg(method));
+}
+
+QJsonObject BackendSession::handleFileImportCall(const QJsonObject &params)
+{
+    auto makeError = [](const QString &err) {
+        return QJsonObject{
+            {QStringLiteral("__error__"), true},
+            {QStringLiteral("error"), err},
+        };
+    };
+
+    const QString rawKind = params.value(QStringLiteral("kind"))
+                                .toString(params.value(QStringLiteral("type")).toString())
+                                .trimmed();
+    QString normKind = rawKind.toLower();
+
+    bool isTextureImport = false;
+    if (normKind.startsWith(QStringLiteral("file.texture.import."))) {
+        normKind = normKind.mid(QStringLiteral("file.texture.import.").size());
+        isTextureImport = true;
+    } else if (normKind.startsWith(QStringLiteral("texture.import."))) {
+        normKind = normKind.mid(QStringLiteral("texture.import.").size());
+        isTextureImport = true;
+    } else if (normKind.startsWith(QStringLiteral("file.texture."))) {
+        normKind = normKind.mid(QStringLiteral("file.texture.").size());
+        isTextureImport = true;
+    } else if (normKind.startsWith(QStringLiteral("texture."))) {
+        normKind = normKind.mid(QStringLiteral("texture.").size());
+        isTextureImport = true;
+    } else if (normKind.startsWith(QStringLiteral("file.import."))) {
+        normKind = normKind.mid(QStringLiteral("file.import.").size());
+    } else if (normKind.startsWith(QStringLiteral("import."))) {
+        normKind = normKind.mid(QStringLiteral("import.").size());
+    }
+
+    const QString requestedView = params.value(QStringLiteral("view"))
+                                      .toString(params.value(QStringLiteral("viewName")).toString());
+    if (isTextureImport || requestedView == QStringLiteral("child")) {
+        surfaceTextureView();
+    }
+    const QString targetView = (isTextureImport || requestedView == QStringLiteral("child"))
+                                   ? QStringLiteral("child")
+                                   : resolveViewName(requestedView.isEmpty() ? QStringLiteral("main") : requestedView);
+    PaintOpenGLWidget *board = boardForView(targetView);
+    if (!board) {
+        return makeError(QStringLiteral("Board not found"));
+    }
+
+    const QStringList paths = extractPathsParam(params);
+    if (paths.isEmpty()) {
+        return makeError(QStringLiteral("paths is required"));
+    }
+
+    const bool fitToCanvas = params.value(QStringLiteral("fitToCanvas"))
+                                 .toBool(params.value(QStringLiteral("scaleToCanvas")).toBool(true));
+
+    QJsonArray importedLayers;
+
+    if (normKind == QStringLiteral("raster") || normKind == QStringLiteral("image")) {
+        for (const QString &fileName : paths) {
+            QImageReader reader(fileName);
+            reader.setAutoTransform(true);
+            QImage image = reader.read();
+            if (image.isNull()) {
+                return makeError(QStringLiteral("Failed to load image:\n%1").arg(reader.errorString()));
+            }
+            image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+            const QFileInfo fileInfo(fileName);
+            const int layerIndex = board->importRasterLayer(image, fileInfo.completeBaseName());
+            if (layerIndex < 0) {
+                return makeError(QStringLiteral("Failed to import raster layer."));
+            }
+            importedLayers.append(layerIndex);
+            m_business->updateAttention(targetView,
+                                        AttentionChange::LayerChange,
+                                        board->model().currentFrame(),
+                                        layerIndex,
+                                        board->model().currentAsset());
+            m_business->setStatusMessage(QStringLiteral("Imported raster into %1: %2 (%3 x %4)")
+                                             .arg(board->viewName())
+                                             .arg(fileInfo.fileName())
+                                             .arg(image.width())
+                                             .arg(image.height()));
+        }
+    } else if (normKind == QStringLiteral("opentoonz")
+               || normKind == QStringLiteral("opentoonzlines")
+               || normKind == QStringLiteral("opentoonz_lines")
+               || normKind == QStringLiteral("pli")
+               || normKind == QStringLiteral("toonz")) {
+#ifndef ANIMEAN_WITH_PYTHON
+        return makeError(QStringLiteral("Python support is disabled, so OpenToonz line import is unavailable."));
+#else
+        for (const QString &fileName : paths) {
+            try {
+                py::gil_scoped_acquire acquire;
+                py::module_ toonzTool = py::module_::import("toonz_to_dict");
+                py::object level = toonzTool.attr("read_vector_level")(QDir::toNativeSeparators(fileName).toStdString());
+                py::dict levelData = level.attr("to_dict")().cast<py::dict>();
+                QVector<PaintOpenGLWidget::ImportedVectorFrame> frames = importedFramesFromOpenToonzLevel(levelData);
+                if (frames.isEmpty()) {
+                    return makeError(QStringLiteral("No strokes were found in this .pli file."));
+                }
+                const QRectF sourceBounds = importedVectorFramesBounds(frames);
+                const QSizeF canvasSize = board->documentRect().size();
+                const QRectF canvasBounds(QPointF(0.0, 0.0), canvasSize);
+                const bool needsScale = sourceBounds.isValid()
+                                        && sourceBounds.width() > 0.0
+                                        && sourceBounds.height() > 0.0
+                                        && (!canvasBounds.contains(sourceBounds)
+                                            || !qFuzzyCompare(sourceBounds.width(), canvasSize.width())
+                                            || !qFuzzyCompare(sourceBounds.height(), canvasSize.height()));
+                if (needsScale && fitToCanvas) {
+                    scaleImportedVectorFramesToCanvas(&frames, canvasSize);
+                }
+                const QFileInfo fileInfo(fileName);
+                const int layerIndex = board->importVectorLineLayer(frames, fileInfo.completeBaseName());
+                if (layerIndex < 0) {
+                    return makeError(QStringLiteral("Failed to import OpenToonz line layer."));
+                }
+                importedLayers.append(layerIndex);
+                m_business->updateAttention(targetView,
+                                            AttentionChange::LayerChange,
+                                            board->model().currentFrame(),
+                                            layerIndex,
+                                            board->model().currentAsset());
+                m_business->setStatusMessage(QStringLiteral("Imported OpenToonz lines into %1: %2 (%3 frame(s))")
+                                                 .arg(board->viewName())
+                                                 .arg(fileInfo.fileName())
+                                                 .arg(frames.size()));
+            } catch (const py::error_already_set &error) {
+                return makeError(QStringLiteral("OpenToonz import failed:\n%1").arg(QString::fromUtf8(error.what())));
+            }
+        }
+#endif
+    } else if (normKind == QStringLiteral("csp")
+               || normKind == QStringLiteral("clip")
+               || normKind == QStringLiteral("clipstudio")
+               || normKind == QStringLiteral("clipstudiopaint")
+               || normKind == QStringLiteral("clip_studio_paint")) {
+        for (const QString &fileName : paths) {
+            const ClipReader::ClipDocument document = ClipReader::readClipFile(fileName);
+            if (!document.valid) {
+                return makeError(document.error.isEmpty()
+                                     ? QStringLiteral("Unable to read this .clip file.")
+                                     : document.error);
+            }
+            QVector<PaintOpenGLWidget::ImportedVectorFrame> frames;
+            PaintOpenGLWidget::ImportedVectorFrame frame;
+            frame.row = 0;
+            for (const ClipReader::ClipStroke &clipStroke : document.strokes) {
+                if (clipStroke.points.size() < 2) {
+                    continue;
+                }
+                PaintOpenGLWidget::ImportedVectorStroke stroke;
+                stroke.points = clipStroke.points;
+                stroke.color = clipStroke.color;
+                stroke.width = std::max(qreal(1.0), clipStroke.width);
+                stroke.path.moveTo(clipStroke.points.first());
+                for (int i = 1; i < clipStroke.points.size(); ++i) {
+                    stroke.path.lineTo(clipStroke.points[i]);
+                }
+                frame.strokes.append(stroke);
+            }
+            if (frame.strokes.isEmpty()) {
+                return makeError(QStringLiteral("No usable vector strokes were found in this .clip file."));
+            }
+            frames.append(frame);
+            const QRectF sourceBounds = importedVectorFramesBounds(frames);
+            const QSizeF canvasSize = board->documentRect().size();
+            const QRectF canvasBounds(QPointF(0.0, 0.0), canvasSize);
+            const bool needsScale = sourceBounds.isValid()
+                                    && sourceBounds.width() > 0.0
+                                    && sourceBounds.height() > 0.0
+                                    && (!canvasBounds.contains(sourceBounds)
+                                        || !qFuzzyCompare(sourceBounds.width(), canvasSize.width())
+                                        || !qFuzzyCompare(sourceBounds.height(), canvasSize.height()));
+            if (needsScale && fitToCanvas) {
+                scaleImportedVectorFramesToCanvas(&frames, canvasSize);
+            }
+            const QFileInfo fileInfo(fileName);
+            const int layerIndex = board->importVectorLineLayer(frames, fileInfo.completeBaseName());
+            if (layerIndex < 0) {
+                return makeError(QStringLiteral("Failed to import the Clip Studio Paint vector layer."));
+            }
+            int strokeCount = 0;
+            for (const PaintOpenGLWidget::ImportedVectorFrame &imported : frames) {
+                strokeCount += imported.strokes.size();
+            }
+            importedLayers.append(layerIndex);
+            m_business->updateAttention(targetView,
+                                        AttentionChange::LayerChange,
+                                        board->model().currentFrame(),
+                                        layerIndex,
+                                        board->model().currentAsset());
+            m_business->setStatusMessage(QStringLiteral("Imported Clip Studio Paint into %1: %2 (%3 stroke(s))")
+                                             .arg(board->viewName())
+                                             .arg(fileInfo.fileName())
+                                             .arg(strokeCount));
+        }
+    } else {
+        return makeError(QStringLiteral("Unknown import kind: %1").arg(rawKind));
+    }
+
+    markDirty(targetView == QStringLiteral("child") ? QStringLiteral("layers/child")
+                                                    : QStringLiteral("layers/main"));
+    markDirty(targetView == QStringLiteral("child") ? QStringLiteral("assets/child")
+                                                    : QStringLiteral("assets/main"));
+    markDirty(QStringLiteral("timeline"));
+    markDirty(QStringLiteral("history"));
+    markDirty(QStringLiteral("menus"));
+    markDirty(QStringLiteral("window"));
+
+    return QJsonObject{
+        {QStringLiteral("kind"), normKind},
+        {QStringLiteral("view"), targetView},
+        {QStringLiteral("layers"), importedLayers},
+        {QStringLiteral("layer"), importedLayers.isEmpty() ? -1 : importedLayers.last().toInt(-1)},
+        {QStringLiteral("count"), importedLayers.size()},
+    };
+}
+
+QJsonObject BackendSession::handleFileTextureCall(const QJsonObject &params)
+{
+    auto makeError = [](const QString &err) {
+        return QJsonObject{
+            {QStringLiteral("__error__"), true},
+            {QStringLiteral("error"), err},
+        };
+    };
+
+    const QString rawKind = params.value(QStringLiteral("kind"))
+                                .toString(params.value(QStringLiteral("action")).toString())
+                                .trimmed();
+    QString normKind = rawKind.toLower();
+    if (normKind.startsWith(QStringLiteral("file.texture."))) {
+        normKind = normKind.mid(QStringLiteral("file.texture.").size());
+    } else if (normKind.startsWith(QStringLiteral("texture."))) {
+        normKind = normKind.mid(QStringLiteral("texture.").size());
+    }
+
+    if (normKind.startsWith(QStringLiteral("import."))
+        || normKind == QStringLiteral("raster")
+        || normKind == QStringLiteral("image")
+        || normKind == QStringLiteral("opentoonz")
+        || normKind == QStringLiteral("pli")
+        || normKind == QStringLiteral("csp")
+        || normKind == QStringLiteral("clip")) {
+        QJsonObject forwarded = params;
+        forwarded.insert(QStringLiteral("view"), QStringLiteral("child"));
+        forwarded.insert(QStringLiteral("kind"), normKind);
+        return handleFileImportCall(forwarded);
+    }
+
+    const QStringList paths = extractPathsParam(params);
+    QString fileName = paths.isEmpty() ? QString() : paths.first();
+
+    if (normKind == QStringLiteral("open") || normKind == QStringLiteral("opentextureview")) {
+        if (fileName.isEmpty()) {
+            return makeError(QStringLiteral("path is required"));
+        }
+        QString error;
+        if (!m_business->openTextureViewFrom(fileName, &error)) {
+            return makeError(error.isEmpty() ? QStringLiteral("Failed to open texture view") : error);
+        }
+        surfaceTextureView();
+        return QJsonObject{
+            {QStringLiteral("kind"), QStringLiteral("open")},
+            {QStringLiteral("path"), m_business->childFilePath()},
+            {QStringLiteral("fileName"), m_business->childFilePath()},
+        };
+    }
+
+    if (normKind == QStringLiteral("save") || normKind == QStringLiteral("savetextureview")) {
+        if (fileName.isEmpty()) {
+            const QString current = m_business->childFilePath();
+            if (!current.isEmpty()
+                && QFileInfo(current).suffix().compare(QStringLiteral("textureview"), Qt::CaseInsensitive) == 0) {
+                fileName = current;
+            }
+        }
+        if (fileName.isEmpty()) {
+            return makeError(QStringLiteral("path is required"));
+        }
+        QString error;
+        if (!m_business->saveTextureViewTo(fileName, &error)) {
+            return makeError(error.isEmpty() ? QStringLiteral("Failed to save texture view") : error);
+        }
+        return QJsonObject{
+            {QStringLiteral("kind"), QStringLiteral("save")},
+            {QStringLiteral("path"), m_business->childFilePath()},
+            {QStringLiteral("fileName"), m_business->childFilePath()},
+        };
+    }
+
+    if (normKind == QStringLiteral("saveas")
+        || normKind == QStringLiteral("save_as")
+        || normKind == QStringLiteral("savetextureviewas")) {
+        if (fileName.isEmpty()) {
+            return makeError(QStringLiteral("path is required"));
+        }
+        QString error;
+        if (!m_business->saveTextureViewTo(fileName, &error)) {
+            return makeError(error.isEmpty() ? QStringLiteral("Failed to save texture view") : error);
+        }
+        return QJsonObject{
+            {QStringLiteral("kind"), QStringLiteral("saveAs")},
+            {QStringLiteral("path"), m_business->childFilePath()},
+            {QStringLiteral("fileName"), m_business->childFilePath()},
+        };
+    }
+
+    if (normKind == QStringLiteral("exportimage")
+        || normKind == QStringLiteral("export_image")
+        || normKind == QStringLiteral("export")
+        || normKind == QStringLiteral("exporttextureimage")
+        || normKind == QStringLiteral("image")
+        || normKind == QStringLiteral("png")) {
+        if (fileName.isEmpty()) {
+            return makeError(QStringLiteral("path is required"));
+        }
+        if (!m_childBoard) {
+            return makeError(QStringLiteral("Texture board not found"));
+        }
+        if (QFileInfo(fileName).suffix().isEmpty()) {
+            fileName += QStringLiteral(".png");
+        }
+        QSize exportSize = m_childBoard->size();
+        if (exportSize.width() <= 0 || exportSize.height() <= 0) {
+            exportSize = m_childBoard->model().canvasSize();
+        }
+        const QImage image = m_childBoard->renderFrameThumbnail(m_childBoard->model().currentFrame(), exportSize);
+        if (image.isNull()) {
+            return makeError(QStringLiteral("The texture view could not be captured."));
+        }
+        if (!image.save(fileName, "PNG")) {
+            return makeError(QStringLiteral("Failed to write the image to:\n%1").arg(fileName));
+        }
+        m_business->setStatusMessage(QStringLiteral("Exported texture image: %1 (%2 x %3)")
+                                         .arg(QFileInfo(fileName).fileName())
+                                         .arg(image.width())
+                                         .arg(image.height()));
+        return QJsonObject{
+            {QStringLiteral("kind"), QStringLiteral("exportImage")},
+            {QStringLiteral("path"), fileName},
+            {QStringLiteral("fileName"), fileName},
+            {QStringLiteral("width"), image.width()},
+            {QStringLiteral("height"), image.height()},
+        };
+    }
+
+    return makeError(QStringLiteral("Unknown texture kind: %1").arg(rawKind));
 }
 
 bool BackendSession::triggerMenuById(const QString &id, const QJsonObject &params, QString *errorOut)
@@ -1743,7 +2519,8 @@ bool BackendSession::triggerMenuById(const QString &id, const QJsonObject &param
         return true;
     }
     if (id == QStringLiteral("file.save")) {
-        if (m_business->currentFilePath().isEmpty()) {
+        if (m_business->currentFilePath().isEmpty()
+            || QFileInfo(m_business->currentFilePath()).suffix().compare(QStringLiteral("anproj"), Qt::CaseInsensitive) != 0) {
             emitUiEvent(QStringLiteral("dialog.saveProjectAs"));
             return true;
         }
@@ -1751,6 +2528,14 @@ bool BackendSession::triggerMenuById(const QString &id, const QJsonObject &param
     }
     if (id == QStringLiteral("file.saveAs")) {
         emitUiEvent(QStringLiteral("dialog.saveProjectAs"));
+        return true;
+    }
+    if (id == QStringLiteral("file.texture.save")) {
+        if (!m_business->childFilePath().isEmpty()
+            && QFileInfo(m_business->childFilePath()).suffix().compare(QStringLiteral("textureview"), Qt::CaseInsensitive) == 0) {
+            return m_business->saveTextureViewTo(m_business->childFilePath(), errorOut);
+        }
+        emitUiEvent(QStringLiteral("menu.action"), QJsonObject{{QStringLiteral("id"), id}});
         return true;
     }
     if (id.startsWith(QStringLiteral("file.import."))
@@ -1794,7 +2579,9 @@ bool BackendSession::triggerMenuById(const QString &id, const QJsonObject &param
         m_timelineVisible = params.contains(QStringLiteral("checked"))
                                 ? params.value(QStringLiteral("checked")).toBool()
                                 : !m_timelineVisible;
+        saveTimelineSettings();
         markDirty(QStringLiteral("windows"));
+        markDirty(QStringLiteral("timeline"));
         markDirty(QStringLiteral("menus"));
         return true;
     }
@@ -2337,13 +3124,18 @@ QJsonArray BackendSession::buildMenusState() const
                                          .attr("menus_json")(std::string("child"))
                                          .cast<std::string>();
             const QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(json));
+            QHash<QString, QJsonObject> liveChildMenus;
             for (const QJsonValue &val : doc.array()) {
                 const QJsonObject obj = val.toObject();
                 const QString mName = obj.value(QStringLiteral("name")).toString();
-                if (mName.isEmpty()) {
-                    continue;
+                if (!mName.isEmpty()) {
+                    liveChildMenus.insert(mName, obj);
                 }
-                const QString mTitle = obj.value(QStringLiteral("title")).toString(mName);
+            }
+            for (const QPair<QString, QString> &entry : m_childScriptMenus) {
+                const QString &mName = entry.first;
+                const QJsonObject obj = liveChildMenus.value(mName);
+                const QString mTitle = obj.value(QStringLiteral("title")).toString(entry.second);
                 const QJsonArray items =
                     buildScriptMenuItems(QStringLiteral("child"), mName, obj.value(QStringLiteral("items")).toArray());
                 childSettingChildren.append(makeMenuItem(QStringLiteral("child.menu.%1").arg(mName),
@@ -2422,7 +3214,7 @@ QJsonArray BackendSession::buildMenusState() const
     };
     menus.append(makeMenuItem(QStringLiteral("edit"), QStringLiteral("Edit"), QString(), QStringLiteral("submenu"), false, true, editChildren));
 
-    // 3..5. Python script menus for "main" (View, Auto Mapping, Draw)
+    // 3..5. Python script menus for "main" (captured at createScriptMenus time: View, Auto Mapping, Draw)
 #ifdef ANIMEAN_WITH_PYTHON
     if (Py_IsInitialized()) {
         try {
@@ -2431,13 +3223,18 @@ QJsonArray BackendSession::buildMenusState() const
                                          .attr("menus_json")(std::string("main"))
                                          .cast<std::string>();
             const QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(json));
+            QHash<QString, QJsonObject> liveMainMenus;
             for (const QJsonValue &val : doc.array()) {
                 const QJsonObject obj = val.toObject();
                 const QString mName = obj.value(QStringLiteral("name")).toString();
-                if (mName.isEmpty()) {
-                    continue;
+                if (!mName.isEmpty()) {
+                    liveMainMenus.insert(mName, obj);
                 }
-                const QString mTitle = obj.value(QStringLiteral("title")).toString(mName);
+            }
+            for (const QPair<QString, QString> &entry : m_mainScriptMenus) {
+                const QString &mName = entry.first;
+                const QJsonObject obj = liveMainMenus.value(mName);
+                const QString mTitle = obj.value(QStringLiteral("title")).toString(entry.second);
                 const QJsonArray items =
                     buildScriptMenuItems(QStringLiteral("main"), mName, obj.value(QStringLiteral("items")).toArray());
                 menus.append(makeMenuItem(mName, mTitle, QString(), QStringLiteral("submenu"), false, true, items));
@@ -2663,8 +3460,18 @@ QJsonObject BackendSession::buildTimelineState() const
         {QStringLiteral("frames"), onionFramesArr},
     };
 
+    const bool vertical = (m_timelineDockArea == QStringLiteral("left")
+                           || m_timelineDockArea == QStringLiteral("right"));
+    const bool leftAligned = (m_timelineDockArea == QStringLiteral("left"));
+
     return QJsonObject{
         {QStringLiteral("view"), st.viewName},
+        {QStringLiteral("visible"), m_timelineVisible},
+        {QStringLiteral("collapsed"), m_timelineCollapsed},
+        {QStringLiteral("floating"), m_timelineFloating},
+        {QStringLiteral("dockArea"), m_timelineDockArea},
+        {QStringLiteral("vertical"), vertical},
+        {QStringLiteral("leftAligned"), leftAligned},
         {QStringLiteral("frameCount"), st.frameCount},
         {QStringLiteral("frames"), framesArr},
         {QStringLiteral("holds"), holdsArr},
@@ -2724,10 +3531,18 @@ QJsonObject BackendSession::buildWindowsState() const
         out.insert(info.name, winObj);
         listArr.append(winObj);
     }
+    const bool vertical = (m_timelineDockArea == QStringLiteral("left")
+                           || m_timelineDockArea == QStringLiteral("right"));
+    const bool leftAligned = (m_timelineDockArea == QStringLiteral("left"));
     const QJsonObject timelineObj{
         {QStringLiteral("name"), QStringLiteral("timeline")},
         {QStringLiteral("title"), QStringLiteral("Timeline")},
         {QStringLiteral("visible"), m_timelineVisible},
+        {QStringLiteral("collapsed"), m_timelineCollapsed},
+        {QStringLiteral("floating"), m_timelineFloating},
+        {QStringLiteral("dockArea"), m_timelineDockArea},
+        {QStringLiteral("vertical"), vertical},
+        {QStringLiteral("leftAligned"), leftAligned},
         {QStringLiteral("pages"), QJsonArray()},
         {QStringLiteral("current"), QString()},
     };

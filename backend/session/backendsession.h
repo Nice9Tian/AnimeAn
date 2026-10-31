@@ -8,6 +8,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QObject>
+#include <QPair>
 #include <QPointF>
 #include <QSet>
 #include <QString>
@@ -53,7 +54,11 @@ private:
     void setupBusinessConnections();
     void registerPythonUiCallbacks();
     void initWindowInfos();
+    void loadTimelineSettings();
+    void saveTimelineSettings() const;
+    void captureScriptMenuNames();
     void loadProtectedPropertiesForChild();
+    void surfaceTextureView();
 
     PaintOpenGLWidget *boardForView(const QString &viewName) const;
     QString resolveViewName(const QString &viewName) const;
@@ -67,6 +72,8 @@ private:
     void handleAckMessage(const QJsonObject &msg);
 
     QJsonObject dispatchCall(const QString &method, const QJsonObject &params);
+    QJsonObject handleFileImportCall(const QJsonObject &params);
+    QJsonObject handleFileTextureCall(const QJsonObject &params);
     bool triggerMenuById(const QString &id, const QJsonObject &params, QString *errorOut);
     void openScriptSettings(const QString &name, const QString &title);
     void emitUiEvent(const QString &name, const QJsonObject &args = QJsonObject());
@@ -119,7 +126,13 @@ private:
 
     QVector<AnimeanWindowInfo> m_windowInfos;
     bool m_timelineVisible = true;
+    bool m_timelineCollapsed = false;
+    bool m_timelineFloating = false;
+    QString m_timelineDockArea = QStringLiteral("bottom");
     bool m_textureSubControlVisible = false;
+
+    QVector<QPair<QString, QString>> m_mainScriptMenus;
+    QVector<QPair<QString, QString>> m_childScriptMenus;
 
     QPointF m_forcePadValue{0.0, 0.0};
     QHash<QString, QPointF> m_padValues;
