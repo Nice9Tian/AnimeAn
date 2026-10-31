@@ -47,6 +47,7 @@ import tempfile
 import time
 
 import bezier
+import chord_intersect
 import python_hooks
 import overlay_stack
 import script_store
@@ -1350,6 +1351,8 @@ class _Frame:
         # fold off the corner the artwork actually creases at.)
         self.h_window = max(2.0 * POLY_STEP, 0.03 * self.h_total)
         self.v_window = max(2.0 * POLY_STEP, 0.03 * self.v_total)
+        self._locator = None       # chord_intersect, built on the first solve
+        self._fold_gate = None     # can_fold, cached
 
     def directions(self, l_h, l_v):
         """Window-smoothed guide directions, for ORIENTATION tests only.
@@ -1373,13 +1376,70 @@ class _Frame:
         return (self.gh.dir_at(self.h_arc + l_h),
                 self.gv.dir_at(self.v_arc + l_v))
 
-    def solve(self, point, guess_h, guess_v, iterations=24, tol=1e-7):
+    def hand(self):
+        """+1 / -1: the crossing's handedness, from the windowed directions
+        (see child_hand in build_mapper for why they are the windowed ones)."""
+        t_h, t_v = self.directions(0.0, 0.0)
+        return 1 if t_h[0] * t_v[1] - t_h[1] * t_v[0] >= 0.0 else -1
+
+    def can_fold(self):
+        """Can this frame fold ANYWHERE? Cached frame-global gate.
+
+        Min over all pairs of flattened guide segment directions of the
+        signed sin(angle) against the crossing handedness. RAW directions on
+        purpose - jitter only makes the gate more conservative (it opens the
+        per-point severing machinery, whose verdicts are then windowed and
+        stable). Above the margin no cell can flip, hv_child is a global
+        homeomorphism onto its (linearly extended) sweep, and severing
+        short-circuits to "one island" without a single extra solve - in
+        particular straight guides never pay anything.
+
+        The chords alone are NOT the whole field the verdict samples: the
+        exact one-sided tangents at a sharp corner (tangent_at's clamp
+        jumps to them) and the exact end tangents (point_at extends
+        linearly along them beyond the guide) can both leave the chord
+        cone - a 120-degree turn confined to one chord-short terminal
+        cubic passed the chord gate at +0.50 while the windowed cell
+        genuinely reached -0.36, silently disabling severing on a frame
+        that folds. Those few extra directions join the sets; adding
+        directions only ever OPENS the gate, so the conservative claim
+        survives.
+        """
+        if self._fold_gate is None:
+            hand = self.hand()
+
+            def gate_dirs(curve):
+                dirs = []
+                for a, b in zip(curve.points, curve.points[1:]):
+                    length = math.hypot(b[0] - a[0], b[1] - a[1])
+                    if length > 1e-9:
+                        dirs.append(((b[0] - a[0]) / length,
+                                     (b[1] - a[1]) / length))
+                eps = 1e-6
+                extremes = [0.0, curve.total]
+                extremes.extend(getattr(curve, "sharp_arcs", None) or ())
+                for arc in extremes:
+                    for side in (arc - eps, arc + eps):
+                        dirs.append(curve.dir_at(side))
+                return dirs
+
+            h_dirs = gate_dirs(self.gh)
+            v_dirs = gate_dirs(self.gv)
+            lowest = None
+            for hx, hy in h_dirs:
+                for vx, vy in v_dirs:
+                    value = (hx * vy - hy * vx) * hand
+                    if lowest is None or value < lowest:
+                        lowest = value
+            self._fold_gate = lowest is None or lowest <= _SEVER_GATE_SIN
+        return self._fold_gate
+
+    def solve(self, point, guess_h, guess_v):
         """Invert hv; see solve_full. Kept for callers that only want arcs."""
-        l_h, l_v, _error = self.solve_full(point, guess_h, guess_v,
-                                           iterations, tol)
+        l_h, l_v, _error = self.solve_full(point, guess_h, guess_v)
         return l_h, l_v
 
-    def solve_full(self, point, guess_h, guess_v, iterations=24, tol=1e-7):
+    def solve_full(self, point, guess_h, guess_v):
         """Invert hv: find (l_h, l_v) with hv(l_h, l_v) == point.
 
         Returns (l_h, l_v, residual). The residual is the achieved
@@ -1387,6 +1447,35 @@ class _Frame:
         exactly where the frame folds over and `point` has no preimage on
         the reachable sheet - which is the divergence half of the severing
         verdict (see third_of in build_mapper).
+
+        An unfoldable frame is a homeomorphism: its one preimage is the
+        segment-pair crossing of pyfile/chord_intersect.py, no seed and no
+        iteration, and _descend only refines it where the guides are real
+        curves (the crossing is on their flattening).
+
+        A FOLDABLE frame stays on _descend from the guess. Its severing
+        verdict is defined by the branch that descent reaches
+        (docs/auto_mapping/topology_severing.md, 2.3): the locator would find
+        a same-handed preimage on ground the verdict cuts, and taking it was
+        measured to erase the cuts and jump between sheets inside a stroke.
+        """
+        if self.can_fold():
+            return self._descend(point, guess_h, guess_v)
+        locator = self._locator
+        if locator is None:
+            locator = self._locator = chord_intersect.ChordIntersect.from_frame(self)
+        found = locator.solve(point)
+        if not found.count:
+            return self._descend(point, guess_h, guess_v)
+        l_h, l_v = found.hits[0].arcs()
+        if self.gh.curved or self.gv.curved:
+            return self._descend(point, l_h, l_v)
+        rebuilt = self.hv(l_h, l_v)
+        return l_h, l_v, math.hypot(rebuilt[0] - point[0], rebuilt[1] - point[1])
+
+    def _descend(self, point, guess_h, guess_v, iterations=24, tol=1e-7):
+        """Walk (guess_h, guess_v) downhill onto hv(l_h, l_v) == point.
+        Returns (l_h, l_v, residual); see solve_full for where it is used.
 
         DAMPED Newton (the descent variant). hv is piecewise affine - an
         arc-length lookup on two polylines - so an undamped step lands exactly
@@ -2961,61 +3050,7 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
     # an additional line's Third coordinates - binding the gate later made
     # that path a NameError (a pink line without a cached third, crossing
     # plateau ground, killed the whole mapper build).
-    _fold_gate = {}
-
-    def can_fold():
-        """Can the child frame fold ANYWHERE? Cached frame-global gate.
-
-        Min over all pairs of flattened guide segment directions of the
-        signed sin(angle) against the crossing handedness. RAW directions on
-        purpose - jitter only makes the gate more conservative (it opens the
-        per-point severing machinery, whose verdicts are then windowed and
-        stable). Above the margin no cell can flip, hv_child is a global
-        homeomorphism onto its (linearly extended) sweep, and severing
-        short-circuits to "one island" without a single extra solve - in
-        particular straight guides never pay anything.
-
-        The chords alone are NOT the whole field the verdict samples: the
-        exact one-sided tangents at a sharp corner (tangent_at's clamp
-        jumps to them) and the exact end tangents (point_at extends
-        linearly along them beyond the guide) can both leave the chord
-        cone - a 120-degree turn confined to one chord-short terminal
-        cubic passed the chord gate at +0.50 while the windowed cell
-        genuinely reached -0.36, silently disabling severing on a frame
-        that folds. Those few extra directions join the sets; adding
-        directions only ever OPENS the gate, so the conservative claim
-        survives.
-        """
-        cached = _fold_gate.get("value")
-        if cached is not None:
-            return cached
-
-        def gate_dirs(curve):
-            dirs = []
-            for a, b in zip(curve.points, curve.points[1:]):
-                length = math.hypot(b[0] - a[0], b[1] - a[1])
-                if length > 1e-9:
-                    dirs.append(((b[0] - a[0]) / length,
-                                 (b[1] - a[1]) / length))
-            eps = 1e-6
-            extremes = [0.0, curve.total]
-            extremes.extend(getattr(curve, "sharp_arcs", None) or ())
-            for arc in extremes:
-                for side in (arc - eps, arc + eps):
-                    dirs.append(curve.dir_at(side))
-            return dirs
-
-        h_dirs = gate_dirs(child.gh)
-        v_dirs = gate_dirs(child.gv)
-        lowest = None
-        for hx, hy in h_dirs:
-            for vx, vy in v_dirs:
-                value = (hx * vy - hy * vx) * child_hand
-                if lowest is None or value < lowest:
-                    lowest = value
-        result = lowest is None or lowest <= _SEVER_GATE_SIN
-        _fold_gate["value"] = result
-        return result
+    can_fold = child.can_fold
 
     def _lift(point, seed=None):
         """Newton lift Child -> Third, with the achieved residual.

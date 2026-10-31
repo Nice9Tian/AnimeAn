@@ -94,6 +94,7 @@ AnimeAn.exe
 | `pyfile/viewscale.py`、`pyfile/bezier.py` | 两只共享轮子的 Python 镜像 |
 | `pyfile/pydeps.py` | 第三方库自愈安装 |
 | `pyfile/extra_tools.py` | Mapping 页按钮清单与处理器解析 |
+| `pyfile/chord_intersect.py` | HV 架的段对求交反解：`_Frame.solve_full` 在不可折的架上用它，`auto_mapping.py` 启动时就 import |
 | `pyfile/auto_mapping.py` | Auto Mapping 引擎全体：轴线 / Mapping Area / 附加线 / 视平线资产、映射器、曲线重建、裁断、折痕、单元与实时重跑、参考网格、遮挡染色、洋葱皮引导、To 3D、Auto Mapping 菜单与两块板的 View 菜单、设置窗、图层右键菜单 |
 | `pyfile/hook_test.py`、`hello_world.py`、`linefinish.py`、`bind_test.py` | 示例、调试与兼容垫片 |
 | `pyfile/three_vendor.py` | 离线 three.js（以 `.py` 形式随脚本通道部署） |
