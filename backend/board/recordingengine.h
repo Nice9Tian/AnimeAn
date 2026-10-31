@@ -85,6 +85,8 @@ private:
     QPainter::CompositionMode m_currentMode = QPainter::CompositionMode_SourceOver;
     QPainter::RenderHints m_currentHints;
     QPainterPath m_lastClipPath;
+    QTransform m_lastClipTransform;
+    bool m_hasLastClip = false;
 
     bool m_hasEmittedTransform = false;
     QByteArray m_emittedTransformBytes;

@@ -22,6 +22,16 @@ BoardSurface::~BoardSurface() = default;
 void BoardSurface::setFrameSink(FrameSink sink)
 {
     m_frameSink = std::move(sink);
+    if (!m_frameSink) {
+        m_waitingForAck = false;
+    } else if (m_dirty && !m_waitingForAck) {
+        scheduleFlush();
+    }
+}
+
+void BoardSurface::setCanSendFrame(std::function<bool()> canSend)
+{
+    m_canSendFrame = std::move(canSend);
     if (m_dirty && !m_waitingForAck) {
         scheduleFlush();
     }
@@ -57,9 +67,16 @@ void BoardSurface::injectMouse(QEvent::Type type,
                                QPointF pos,
                                Qt::MouseButton button,
                                Qt::MouseButtons buttons,
-                               Qt::KeyboardModifiers modifiers)
+                               Qt::KeyboardModifiers modifiers,
+                               quint64 timestamp)
 {
+    if (timestamp < m_lastMouseTimestamp) {
+        timestamp = m_lastMouseTimestamp;
+    } else {
+        m_lastMouseTimestamp = timestamp;
+    }
     QMouseEvent ev(type, pos, pos, button, buttons, modifiers);
+    ev.setTimestamp(timestamp);
     if (type == QEvent::MouseButtonPress) {
         mousePressEvent(&ev);
     } else if (type == QEvent::MouseMove) {
@@ -139,10 +156,27 @@ void BoardSurface::flushFrame()
     if (!m_dirty || m_waitingForAck || m_width <= 0 || m_height <= 0) {
         return;
     }
+    const bool canSend = m_frameSink && (!m_canSendFrame || m_canSendFrame());
+    if (!canSend) {
+        m_dirty = false;
+        return;
+    }
     m_dirty = false;
 
     m_engine->resetFrame();
-    paintGL();
+    try {
+        paintGL();
+    } catch (...) {
+        if (m_engine->isActive()) {
+            m_engine->end();
+        }
+        m_engine->resetFrame();
+        return;
+    }
+
+    if (!m_frameSink || (m_canSendFrame && !m_canSendFrame())) {
+        return;
+    }
 
     const QVector<RecordedOp> &currOps = m_engine->ops();
     int keep = 0;
@@ -187,11 +221,9 @@ void BoardSurface::flushFrame()
     outFrame.keep = keep;
     outFrame.ops = std::move(opsJson);
 
-    if (m_frameSink) {
-        m_waitingForAck = true;
-        m_lastSentFrame = outFrame.frame;
-        m_frameSink(outFrame);
-    }
+    m_waitingForAck = true;
+    m_lastSentFrame = outFrame.frame;
+    m_frameSink(outFrame);
 }
 
 QPaintEngine *BoardSurface::paintEngine() const

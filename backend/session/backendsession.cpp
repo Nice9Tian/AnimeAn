@@ -561,8 +561,17 @@ BackendSession::BackendSession(WsServer *ws, QObject *parent)
         connect(m_ws, &WsServer::textReceived, this, [this](const QByteArray &data) {
             QJsonParseError err;
             const QJsonDocument doc = QJsonDocument::fromJson(data, &err);
-            if (err.error == QJsonParseError::NoError && doc.isObject()) {
+            if (err.error != QJsonParseError::NoError || !doc.isObject()) {
+                return;
+            }
+            try {
                 onMessageReceived(doc.object());
+            } catch (const std::exception &error) {
+                m_business->setStatusMessage(QString::fromUtf8(error.what()));
+                markDirty(QStringLiteral("window"));
+            } catch (...) {
+                m_business->setStatusMessage(QStringLiteral("Backend error while handling a message"));
+                markDirty(QStringLiteral("window"));
             }
         });
     }
@@ -796,6 +805,7 @@ void BackendSession::setupBoardSinks(const QString &viewName, PaintOpenGLWidget 
     if (!paintView) {
         return;
     }
+    paintView->setCanSendFrame([this]() { return m_ws && m_ws->hasClient(); });
     paintView->setFrameSink([this, viewName](const BoardFrame &frame) {
         handleFrameSink(viewName, frame);
     });
@@ -1413,6 +1423,7 @@ void BackendSession::handleInputMessage(const QJsonObject &msg)
     const qreal y = msg.value(QStringLiteral("y")).toDouble(0.0);
     const Qt::KeyboardModifiers modifiers =
         static_cast<Qt::KeyboardModifiers>(msg.value(QStringLiteral("modifiers")).toInt(0));
+    const quint64 timestamp = quint64(std::max(0.0, msg.value(QStringLiteral("time")).toDouble(0.0)));
 
     if (kind == QStringLiteral("press")) {
         Qt::MouseButton button = static_cast<Qt::MouseButton>(msg.value(QStringLiteral("button")).toInt(int(Qt::LeftButton)));
@@ -1423,25 +1434,25 @@ void BackendSession::handleInputMessage(const QJsonObject &msg)
         if (buttons == Qt::NoButton && !msg.contains(QStringLiteral("buttons"))) {
             buttons = button;
         }
-        board->injectMouse(QEvent::MouseButtonPress, QPointF(x, y), button, buttons, modifiers);
+        board->injectMouse(QEvent::MouseButtonPress, QPointF(x, y), button, buttons, modifiers, timestamp);
     } else if (kind == QStringLiteral("move")) {
         Qt::MouseButton button = static_cast<Qt::MouseButton>(msg.value(QStringLiteral("button")).toInt(int(Qt::NoButton)));
         Qt::MouseButtons buttons = static_cast<Qt::MouseButtons>(msg.value(QStringLiteral("buttons")).toInt(int(Qt::LeftButton)));
         if (msg.contains(QStringLiteral("buttons"))) {
             buttons = static_cast<Qt::MouseButtons>(msg.value(QStringLiteral("buttons")).toInt(0));
         }
-        board->injectMouse(QEvent::MouseMove, QPointF(x, y), button, buttons, modifiers);
+        board->injectMouse(QEvent::MouseMove, QPointF(x, y), button, buttons, modifiers, timestamp);
     } else if (kind == QStringLiteral("release")) {
         Qt::MouseButton button = static_cast<Qt::MouseButton>(msg.value(QStringLiteral("button")).toInt(int(Qt::LeftButton)));
         if (button == Qt::NoButton && !msg.contains(QStringLiteral("button"))) {
             button = Qt::LeftButton;
         }
         Qt::MouseButtons buttons = static_cast<Qt::MouseButtons>(msg.value(QStringLiteral("buttons")).toInt(int(Qt::NoButton)));
-        board->injectMouse(QEvent::MouseButtonRelease, QPointF(x, y), button, buttons, modifiers);
+        board->injectMouse(QEvent::MouseButtonRelease, QPointF(x, y), button, buttons, modifiers, timestamp);
     } else if (kind == QStringLiteral("doubleClick") || kind == QStringLiteral("dblclick")) {
         Qt::MouseButton button = static_cast<Qt::MouseButton>(msg.value(QStringLiteral("button")).toInt(int(Qt::LeftButton)));
         Qt::MouseButtons buttons = static_cast<Qt::MouseButtons>(msg.value(QStringLiteral("buttons")).toInt(int(button)));
-        board->injectMouse(QEvent::MouseButtonDblClick, QPointF(x, y), button, buttons, modifiers);
+        board->injectMouse(QEvent::MouseButtonDblClick, QPointF(x, y), button, buttons, modifiers, timestamp);
     } else if (kind == QStringLiteral("wheel")) {
         const int dx = msg.value(QStringLiteral("dx")).toInt(0);
         const int dy = msg.value(QStringLiteral("dy")).toInt(0);
@@ -1692,7 +1703,7 @@ QJsonObject BackendSession::dispatchCall(const QString &method, const QJsonObjec
         return QJsonObject{{QStringLiteral("activeExtraTool"), m_business->activeExtraTool()}};
     }
 
-    if (method == QStringLiteral("tool.option")) {
+    if (method == QStringLiteral("tool.option") || method == QStringLiteral("settings.option")) {
         const QString hook = params.value(QStringLiteral("hook")).toString();
         const QString name = params.value(QStringLiteral("name"))
                                  .toString(params.value(QStringLiteral("optionName")).toString());
