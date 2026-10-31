@@ -3,7 +3,7 @@
 适用版本：`pyfile/auto_mapping.py`（Auto Mapping 2），核查基准 HEAD `cdea7d0`（2026-08-15，当时 3026 行）。2026-09-28 补注：文件已增长到万余行，§0 按现行代码改写（用户授权），其余各节的规则未变，函数名仍是稳定检索键。
 配套文档：
 
-* `point_mapping_newton.md` —— **单个点**如何被预测（阻尼牛顿反解）。本文不重复。
+* `point_mapping_newton.md` —— **单个点**如何被预测（反解）。本文不重复。
 * `auto_mapping_2_spec.md` —— 算法规格。
 
 本文只讲**曲线/笔画这一层**：`map_point` 是非线性 warp，单个贝塞尔控制点各自变换**无法保持贝塞尔拓扑**，系统是怎么处理的。
@@ -125,7 +125,7 @@ spline 模式的 Catmull-Rom 于是是在插值一张至少这么密的网格。
 
     若 map_point 无 coords 属性:  返回 []        # 静默失效，只剩探针兜底
 
-    start ← coords(a)                            # 2 次牛顿反解
+    start ← coords(a)                            # 2 次反解
     end   ← coords(b)
 
     对每个轴 axis ∈ {H, V}:
