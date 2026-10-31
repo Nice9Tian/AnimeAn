@@ -1,0 +1,34 @@
+/* The window frame around the docked scene, and the player's dock chrome
+   redrawn as Fusion draws QDockWidget. Loaded after the player's own rules. */
+html, body { width: 100%; height: 100%; }
+#qt-menubar { position: fixed; left: 0; top: 0; right: 0; height: 21px; z-index: 10; }
+#app { position: fixed; left: 0; top: 21px; right: 0; bottom: 22px; width: auto; height: auto; }
+#qt-statusbar { position: fixed; left: 0; right: 0; bottom: 0; height: 22px; background: var(--window); color: var(--text);
+  font-family: "Segoe UI", sans-serif; font-size: 12px; }
+#qt-statusbar .status-text { left: 6px; top: 3px; }
+#qt-statusbar .size-grip { position: absolute; right: 0; bottom: 0; width: 17px; height: 17px; }
+
+.vf-player-stage { position: absolute !important; inset: 0; transform: none !important; left: 0 !important; top: 0 !important;
+  width: 100% !important; height: 100% !important; background: var(--window) !important; box-shadow: none !important; }
+.vf-player-stage .vf-node { background: var(--window) !important; box-shadow: none !important; }
+.vf-player-stage .vf-body { background: transparent; }
+.qt-panel { position: absolute; inset: 0; color: var(--text); font: 12px/16px "Segoe UI", sans-serif; }
+
+.vf-player-stage .vf-dock-header { height: 18px !important; padding: 0 !important; background: var(--window) !important; border: 0 !important;
+  color: var(--text) !important; font: 12px/19px "Segoe UI", sans-serif !important; cursor: default !important; }
+.vf-player-stage .vf-dock-header:active { cursor: default !important; }
+.vf-player-stage .vf-dock-header .dock-title { padding-left: 4.5px; white-space: nowrap; }
+.vf-player-stage .vf-dock-header .dock-actions { position: absolute; right: 1px; top: 1px; gap: 1px; }
+.vf-player-stage .vf-dock-header .dock-action-btn { width: 18px; height: 14px; border-radius: 0; font-size: 0; color: transparent; background: transparent no-repeat center; }
+.vf-player-stage .vf-dock-header .dock-action-btn:hover { background-color: var(--surface-alt); }
+.vf-player-stage .vf-dock-header .dock-btn-float { background-image: var(--dock-float-svg); }
+.vf-player-stage .vf-dock-header .dock-btn-close { background-image: var(--dock-close-svg); }
+
+.dock-page { display: flex; flex-direction: column; }
+.opt-body { flex: 1; min-height: 0; overflow: auto; }
+.board-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+/* Fusion's main window keeps an 8px separator between the central widget and
+   the docks; here the central panel carries it. */
+.central { left: 8px !important; right: 8px !important; }
+.toolopt-gap { bottom: 8px; }

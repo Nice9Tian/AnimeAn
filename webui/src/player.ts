@@ -73,9 +73,7 @@ const PLAYER_BASE_CSS = `
   --bg: #f3f4f6;
   --panel: #ffffff;
   --line: #d9dce1;
-  --text: #1f2430;
   --muted: #6b7280;
-  --accent: #2563eb;
   --accent-soft: #dbe7ff;
   --preview: #d9480f;
   --error: #c62828;

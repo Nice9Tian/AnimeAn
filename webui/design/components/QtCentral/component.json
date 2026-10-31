@@ -1,0 +1,13 @@
+{
+  "type": "QtCentral",
+  "label": "中央画板区",
+  "description": "中央画板区，实现在 webui/src/ui",
+  "defaultSize": {
+    "width": 200,
+    "height": 200
+  },
+  "entry": "index.js",
+  "style": "style.css",
+  "props": {},
+  "children": false
+}

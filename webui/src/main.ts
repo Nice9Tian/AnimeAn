@@ -1,11 +1,11 @@
 /// <reference types="vite/client" />
 import { invoke } from "@tauri-apps/api/core";
 import { loadProject, type ProjectIO } from "../vf/src/project.ts";
-import { attachBoardInput } from "./board/input.ts";
-import { BoardRenderer } from "./board/renderer.ts";
-import { attachBridge, DEFAULT_STATE_MAPPING } from "./bridge.ts";
 import { BackendClient } from "./net.ts";
 import { createPlayer } from "./player.ts";
+import { createChrome, createStore, panelFactories } from "./ui/app.js";
+import "./ui/qt.css";
+import "./ui/shell.css";
 
 const rawDesignFiles = import.meta.glob(
   [
@@ -79,14 +79,19 @@ async function bootstrap(): Promise<void> {
   const io = createGlobProjectIO(rawDesignFiles);
   const project = await loadProject(io);
   const client = new BackendClient();
-  const player = createPlayer(appEl, project);
-  attachBridge(player.runtime, client, DEFAULT_STATE_MAPPING);
-
-  const canvas = document.createElement("canvas");
-  canvas.style.cssText = "display:block;width:100%;height:100%;";
-  new BoardRenderer(canvas, { view: "main", client });
-  attachBoardInput(canvas, { view: "main", client });
-  player.setExternal("canvasHost", canvas);
+  const store = createStore(client);
+  const factories = panelFactories(store, client);
+  for (const [type, create] of Object.entries(factories)) {
+    const component = project.components.get(type);
+    if (!component) throw new Error(`design 里缺少 ${type}`);
+    component.create = (el) => {
+      el.classList.add("qt-panel");
+      create(el);
+      return { update() {}, destroy() { el.replaceChildren(); } };
+    };
+  }
+  createPlayer(appEl, project);
+  createChrome(document.getElementById("qt-menubar")!, document.getElementById("qt-statusbar")!, store);
 
   const wsUrl = await resolveBackendWsUrl();
   if (wsUrl) {
