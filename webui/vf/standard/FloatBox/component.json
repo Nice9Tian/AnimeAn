@@ -1,0 +1,35 @@
+{
+  "type": "FloatBox",
+  "label": "浮动嵌入框",
+  "description": "可在嵌入布局与窗口内浮动面板之间切换的标准容器",
+  "defaultSize": { "width": 220, "height": 120 },
+  "entry": "index.js",
+  "style": "style.css",
+  "props": {
+    "title":        { "type": "string",  "default": "浮动嵌入框", "logic": true },
+    "floating":     { "type": "boolean", "default": false,        "logic": true },
+    "floatX":       { "type": "number",  "default": 60,           "logic": true },
+    "floatY":       { "type": "number",  "default": 80,           "logic": true },
+    "floatWidth":   { "type": "number",  "default": 220,          "logic": true },
+    "floatHeight":  { "type": "number",  "default": 120,          "logic": true },
+    "headerHeight": { "type": "number",  "default": 24 },
+    "enabled":      { "type": "boolean", "default": true,         "logic": true }
+  },
+  "events": ["toggle", "change", "move"],
+  "children": true,
+  "qt": {
+    "widget": "QFrame",
+    "props": {
+      "title": "vfTitle",
+      "floating": "vfFloating",
+      "floatX": "vfFloatX",
+      "floatY": "vfFloatY",
+      "floatWidth": "vfFloatWidth",
+      "floatHeight": "vfFloatHeight"
+    },
+    "events": {
+      "toggle": { "signal": "toggled", "type": "boolean" },
+      "change": { "signal": "toggled", "type": "boolean" }
+    }
+  }
+}

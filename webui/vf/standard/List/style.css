@@ -1,0 +1,79 @@
+.vf-std-list {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  height: 100%;
+  padding: 4px;
+  border: 1px solid var(--color-border, #cbd5e1);
+  border-radius: 6px;
+  background: var(--color-surface, #ffffff);
+  overflow-y: auto;
+}
+
+.vf-std-list[data-disabled="true"] {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.vf-std-list-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--color-muted, #64748b);
+  font-size: 12px;
+}
+
+.vf-std-list-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 0 8px;
+  border-radius: 4px;
+  color: var(--color-text, #1e293b);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.vf-std-list-row:hover {
+  background: #f1f5f9;
+}
+
+.vf-std-list-row.selected {
+  background: #eff6ff;
+  color: var(--color-primary, #2563eb);
+  font-weight: 500;
+}
+
+.vf-std-list-row.muted {
+  opacity: 0.45;
+}
+
+.vf-std-list-check {
+  font-size: 12px;
+  color: #94a3b8;
+  cursor: pointer;
+}
+
+.vf-std-list-check.on {
+  color: var(--color-primary, #2563eb);
+}
+
+.vf-std-list-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vf-std-list-badge {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #f1f5f9;
+  color: #64748b;
+  font-size: 11px;
+}

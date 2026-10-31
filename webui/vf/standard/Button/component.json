@@ -1,0 +1,31 @@
+{
+  "type": "Button",
+  "label": "按钮",
+  "description": "标准按钮，支持图标、主次样式与可勾选状态",
+  "defaultSize": { "width": 100, "height": 32 },
+  "entry": "index.js",
+  "style": "style.css",
+  "props": {
+    "text":      { "type": "string",  "default": "按钮", "logic": true },
+    "icon":      { "type": "string",  "default": "", "logic": true },
+    "variant":   { "type": "string",  "default": "secondary", "logic": true },
+    "checkable": { "type": "boolean", "default": false },
+    "checked":   { "type": "boolean", "default": false, "logic": true },
+    "enabled":   { "type": "boolean", "default": true,  "logic": true }
+  },
+  "events": ["toggle"],
+  "children": false,
+  "qt": {
+    "widget": "QPushButton",
+    "props": {
+      "text": "text",
+      "icon": "vfIcon",
+      "variant": "vfVariant",
+      "checkable": "checkable",
+      "checked": "checked"
+    },
+    "events": {
+      "toggle": { "signal": "toggled", "type": "boolean" }
+    }
+  }
+}

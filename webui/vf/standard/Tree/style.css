@@ -1,0 +1,87 @@
+.vf-std-tree {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  height: 100%;
+  padding: 4px;
+  border: 1px solid var(--color-border, #cbd5e1);
+  border-radius: 6px;
+  background: var(--color-surface, #ffffff);
+  overflow-y: auto;
+  user-select: none;
+}
+
+.vf-std-tree[data-disabled="true"] {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.vf-std-tree-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--color-muted, #64748b);
+  font-size: 12px;
+}
+
+.vf-std-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  padding-right: 6px;
+  border-radius: 4px;
+  color: var(--color-text, #1e293b);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.vf-std-tree-row.selected {
+  background: var(--color-primary, #2563eb);
+  color: #ffffff;
+}
+
+.vf-std-tree-row.unchecked .vf-std-tree-text {
+  opacity: 0.55;
+}
+
+.vf-std-tree-caret {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.vf-std-tree-check {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--color-primary, #2563eb);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.vf-std-tree-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vf-std-tree-text.group {
+  font-weight: 600;
+}
+
+.vf-std-tree-badge {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(148, 163, 184, 0.2);
+  font-size: 10px;
+  flex-shrink: 0;
+}
