@@ -1,0 +1,39 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AnimeAn",
+  "version": "0.1.0",
+  "identifier": "com.animean.app",
+  "build": {
+    "beforeDevCommand": "",
+    "devUrl": "http://localhost:1430",
+    "beforeBuildCommand": "",
+    "frontendDist": "../webui/dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "AnimeAn - Untitled",
+        "width": 1027,
+        "height": 775,
+        "resizable": true,
+        "decorations": true
+      }
+    ],
+    "security": {
+      "csp": null,
+      "capabilities": [
+        "default"
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico"
+    ]
+  }
+}
