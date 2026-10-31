@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 const exePath = process.argv[2];
@@ -250,17 +252,37 @@ try {
         );
     }
 
-    // 2. Check menus contain File, Edit, View, Auto Mapping, Draw, Theme, Windows
+    // 2. Check menus are strictly ["File", "Edit", "View", "Auto Mapping", "Draw", "Theme", "Windows"] in exact order
     const menus = stateMap.get("menus");
     assert(Array.isArray(menus), "menus state should be an array");
     const menuTitles = menus.map((m) => String(m.text ?? "").replace(/&/g, ""));
     const expectedMenus = ["File", "Edit", "View", "Auto Mapping", "Draw", "Theme", "Windows"];
-    for (const expected of expectedMenus) {
-        assert(
-            menuTitles.includes(expected),
-            `Expected menus to include "${expected}", got [${menuTitles.join(", ")}]`
-        );
-    }
+    assert.deepEqual(
+        menuTitles,
+        expectedMenus,
+        `Expected top-level menus to be exactly [${expectedMenus.join(", ")}], got [${menuTitles.join(", ")}]`
+    );
+
+    // 2b. Check timeline and windows state reflect timeline open/collapse/float/dock settings
+    const initialTimeline = stateMap.get("timeline");
+    const initialWindows = stateMap.get("windows");
+    assert(initialTimeline && typeof initialTimeline === "object", "timeline state must be an object");
+    assert.equal(typeof initialTimeline.visible, "boolean", "timeline.visible must be boolean");
+    assert.equal(typeof initialTimeline.collapsed, "boolean", "timeline.collapsed must be boolean");
+    assert.equal(typeof initialTimeline.floating, "boolean", "timeline.floating must be boolean");
+    assert.equal(typeof initialTimeline.vertical, "boolean", "timeline.vertical must be boolean");
+    assert.equal(typeof initialTimeline.leftAligned, "boolean", "timeline.leftAligned must be boolean");
+    assert(
+        initialWindows &&
+            initialWindows.timeline &&
+            typeof initialWindows.timeline === "object",
+        "windows.timeline must be an object"
+    );
+    assert.equal(initialWindows.timeline.visible, initialTimeline.visible);
+    assert.equal(initialWindows.timeline.collapsed, initialTimeline.collapsed);
+    assert.equal(initialWindows.timeline.floating, initialTimeline.floating);
+    assert.equal(initialWindows.timeline.vertical, initialTimeline.vertical);
+    assert.equal(initialWindows.timeline.leftAligned, initialTimeline.leftAligned);
 
     // 3. Check board frame arrives
     const firstBoardFrame = await waitForBoard(
@@ -427,6 +449,50 @@ try {
     assert.equal(twoEvents.length, 2, "Expected two distinct event state messages");
     assert.equal(twoEvents[0].name, "dialog.openProject");
     assert.equal(twoEvents[1].name, "dialog.saveProjectAs");
+
+    // 10. Verify project.saveAs, project.open, file.texture, file.import with explicit paths
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "animean-smoke-"));
+    try {
+        const projPath = path.join(tmpDir, "test_proj.anproj");
+        const projSaveReply = await callBackend("project.saveAs", { path: projPath });
+        assert.equal(projSaveReply.ok, true, `project.saveAs failed: ${projSaveReply.error}`);
+        assert(fs.existsSync(projPath), "project.saveAs did not write project file");
+
+        const projOpenReply = await callBackend("project.open", { path: projPath });
+        assert.equal(projOpenReply.ok, true, `project.open failed: ${projOpenReply.error}`);
+
+        const texImgPath = path.join(tmpDir, "texture_export.png");
+        const texExportReply = await callBackend("file.texture", {
+            kind: "exportImage",
+            path: texImgPath,
+        });
+        assert.equal(texExportReply.ok, true, `file.texture exportImage failed: ${texExportReply.error}`);
+        assert(fs.existsSync(texImgPath), "file.texture exportImage did not write PNG file");
+
+        const importRasterReply = await callBackend("file.import", {
+            kind: "raster",
+            paths: [texImgPath],
+        });
+        assert.equal(importRasterReply.ok, true, `file.import raster failed: ${importRasterReply.error}`);
+
+        const texProjPath = path.join(tmpDir, "texture_view.textureview");
+        const texSaveAsReply = await callBackend("file.texture", {
+            kind: "saveAs",
+            path: texProjPath,
+        });
+        assert.equal(texSaveAsReply.ok, true, `file.texture saveAs failed: ${texSaveAsReply.error}`);
+        assert(fs.existsSync(texProjPath), "file.texture saveAs did not write file");
+
+        const texOpenReply = await callBackend("file.texture", {
+            kind: "open",
+            path: texProjPath,
+        });
+        assert.equal(texOpenReply.ok, true, `file.texture open failed: ${texOpenReply.error}`);
+    } finally {
+        try {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+        } catch {}
+    }
 
     ws.close();
     clearTimeout(globalTimeout);
