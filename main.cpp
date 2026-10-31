@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "theme.h"
+#include "uidump.h"
 
 #include <QApplication>
 #include <QSurfaceFormat>
@@ -103,5 +104,6 @@ int main(int argc, char *argv[])
     window.setStatusText(QStringLiteral("Python disabled"));
 #endif
     window.show();
+    scheduleUiDump(&window);
     return app.exec();
 }

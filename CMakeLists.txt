@@ -79,7 +79,9 @@ set(PROJECT_SOURCES
     subcontrolframe.cpp
     subcontrolframe.h
     theme.cpp
+    uidump.cpp
     theme.h
+    uidump.h
     windowedgeresize.cpp
     windowedgeresize.h
     childrenpanel/assetpanel.cpp
