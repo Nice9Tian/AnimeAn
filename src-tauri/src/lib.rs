@@ -326,7 +326,7 @@ impl BackendManager {
                 let _ = child.wait();
                 return (
                     Arc::new(Self::new_failed(
-                        "Timed out waiting 15s for ANIMEAN_BACKEND_PORT from backend".to_string(),
+                        "Timed out waiting for ANIMEAN_BACKEND_PORT from backend".to_string(),
                     )),
                     None,
                 );
