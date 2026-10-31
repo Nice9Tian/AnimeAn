@@ -209,7 +209,76 @@ describe("Board Input conversions & event binding", () => {
     assert.deepEqual(messages[7], { t: "input", view: "main", kind: "focus", in: true });
     assert.deepEqual(messages[8], { t: "input", view: "main", kind: "focus", in: false });
 
+    // 6. resend() 重发当前尺寸
+    handle.resend();
+    assert.deepEqual(messages[9], {
+      t: "input",
+      view: "main",
+      kind: "resize",
+      w: 500,
+      h: 400,
+      dpr: 1,
+    });
+
     handle.destroy();
     assert.equal(listeners.size, 0);
+  });
+
+  it("re-sends current size via resend() after ResizeObserver fires before connection", () => {
+    const prevRO = globalThis.ResizeObserver;
+    let roCallback: ((entries: Array<{ contentRect: { width: number; height: number } }>) => void) | null = null;
+
+    globalThis.ResizeObserver = class MockResizeObserver {
+      constructor(cb: (entries: Array<{ contentRect: { width: number; height: number } }>) => void) {
+        roCallback = cb;
+      }
+      observe() {
+        // 模拟连接建立前 ResizeObserver 立即触发了 1280×720
+        roCallback?.([{ contentRect: { width: 1280, height: 720 } }]);
+      }
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver;
+
+    try {
+      let connected = false;
+      const sentToBackend: InputMessage[] = [];
+
+      const fakeCanvas = {
+        style: { touchAction: "", userSelect: "" },
+        tabIndex: -1,
+        getBoundingClientRect: () => ({ left: 0, top: 0, width: 1280, height: 720 }),
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      } as unknown as HTMLElement;
+
+      const handle = attachBoardInput(fakeCanvas, {
+        view: "main",
+        getDpr: () => 1.5,
+        onInput: (msg) => {
+          if (connected) sentToBackend.push(msg);
+        },
+      });
+
+      // 连接前触发的 resize 被丢弃
+      assert.equal(sentToBackend.length, 0);
+
+      // 连接成功后调用 resend()，重发当前尺寸 1280×720
+      connected = true;
+      handle.resend();
+      assert.equal(sentToBackend.length, 1);
+      assert.deepEqual(sentToBackend[0], {
+        t: "input",
+        view: "main",
+        kind: "resize",
+        w: 1280,
+        h: 720,
+        dpr: 1.5,
+      });
+
+      handle.destroy();
+    } finally {
+      globalThis.ResizeObserver = prevRO;
+    }
   });
 });

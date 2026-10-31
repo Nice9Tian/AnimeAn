@@ -1,0 +1,17 @@
+{
+  "type": "ColorPicker",
+  "label": "HSV 调色盘",
+  "description": "自绘 HSV 拾色器控件，包含饱和度-明度方块、色相条、当前颜色预览条；其绘制效果 ColorPickerDraw 需要在客户端 ui_effects/ 中翻译",
+  "entry": "index.js",
+  "defaultSize": { "width": 228, "height": 112 },
+  "effects": {
+    "paint": "ColorPickerDraw"
+  },
+  "props": {
+    "hue": { "type": "number", "label": "色相 (0-360)", "default": 210, "logic": true },
+    "saturation": { "type": "number", "label": "饱和度 (0-100)", "default": 78, "logic": true },
+    "brightness": { "type": "number", "label": "明度 (0-100)", "default": 92, "logic": true },
+    "hexColor": { "type": "string", "label": "颜色值", "default": "#3394eb", "logic": true }
+  },
+  "events": ["change"]
+}
