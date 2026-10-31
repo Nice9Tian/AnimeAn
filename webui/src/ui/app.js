@@ -257,6 +257,13 @@ export function createChrome(menuEl, statusEl, store) {
     onCancel: () => {},
   });
   canvasDialog.update({ open: false });
+  // The Qt build opens on this dialog too (MainWindow::promptForNewCanvasOnStartup).
+  let asked = false;
+  store.on("window", (value) => {
+    if (asked || !value?.canvasWidth) return;
+    asked = true;
+    canvasDialog.update({ width: value.canvasWidth, height: value.canvasHeight, open: true });
+  });
 
   // Native pickers live in the shell; the page only says what to pick.
   const pick = (mode, title, filters, multiple = false) =>

@@ -14,7 +14,7 @@ $env:PATH = "C:\Qt\6.9.1\mingw_64\bin;C:\Qt\Tools\mingw1310_64\bin;$env:PATH"
 $p = Start-Process -PassThru -FilePath (Resolve-Path $Shell).Path
 try {
     Start-Sleep -Seconds $WaitSeconds
-    py "$PSScriptRoot\capture_window.py" $p.Id "$OutDir\web.png"
+    py "$PSScriptRoot\capture_window.py" $p.Id "$OutDir\web.png" --dismiss
 } finally {
     Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
 }
