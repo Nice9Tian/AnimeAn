@@ -4,7 +4,7 @@ import { BoardRenderer } from "../board/renderer.ts";
 import { attachBoardInput } from "../board/input.ts";
 import { createCentral, createLayers, createMenuBar, createTools, popupMenu } from "./panels.js";
 import { createToolOptions } from "./options.js";
-import { createAssets, createForcePad, createHistory, createPythonDebug } from "./panels2.js";
+import { createAssets, createForcePad, createHistory, createNewProjectDialog, createPythonDebug } from "./panels2.js";
 import { createTimeline } from "./timeline.js";
 
 function fail(error) {
@@ -248,9 +248,90 @@ export function createChrome(menuEl, statusEl, store) {
   store.on("theme", (value) => {
     document.documentElement.dataset.theme = value?.mode === "dark" ? "dark" : "light";
   });
-  store.on("event", (event) => {
-    if (event?.name === "contextMenu") {
-      popupMenu(event.args.items ?? [], event.args.x, event.args.y, (item) => store.call("menu.trigger", { id: item.id }));
+  const dialogRoot = document.createElement("div");
+  document.body.append(dialogRoot);
+  const canvasDialog = createNewProjectDialog(dialogRoot, {
+    onCreate: (size) => store.call("project.new", size),
+    onCancel: () => {},
+  });
+  canvasDialog.update({ open: false });
+
+  // Native pickers live in the shell; the page only says what to pick.
+  const pick = (mode, title, filters, multiple = false) =>
+    window.__TAURI__?.core.invoke("pick_files", { mode, title, filters, multiple }) ?? Promise.resolve([]);
+  const PROJECT = [{ name: "AnimeAn Projects", extensions: ["anproj"] }];
+  const TEXTURE = [{ name: "AnimeAn Texture Views", extensions: ["textureview"] }];
+  const IMPORTS = {
+    "file.import.raster": ["raster", "Import Raster", [{ name: "Images", extensions: ["png", "jpg", "jpeg", "bmp", "gif", "webp", "tif", "tiff"] }]],
+    "file.import.opentoonz": ["opentoonz", "Import OpenToonz Lines", [{ name: "OpenToonz Vector Levels", extensions: ["pli"] }]],
+    "file.import.csp": ["csp", "Import Clip Studio Paint", [{ name: "Clip Studio Paint", extensions: ["clip"] }]],
+  };
+  const TEXTURE_ACTIONS = {
+    "file.texture.open": ["open", "open", "Open Texture View", TEXTURE],
+    "file.texture.saveAs": ["saveAs", "save", "Save Texture View As", TEXTURE],
+    "file.texture.exportImage": ["exportImage", "save", "Export Texture View Image", [{ name: "PNG Image", extensions: ["png"] }]],
+  };
+  store.on("event", async (event) => {
+    const args = event?.args ?? {};
+    switch (event?.name) {
+      case "contextMenu":
+        popupMenu(args.items ?? [], args.x, args.y, (item) => store.call("menu.trigger", { id: item.id }));
+        break;
+      case "dialog.canvasSize":
+        canvasDialog.update({ width: args.width, height: args.height, open: true });
+        break;
+      case "dialog.openProject": {
+        const [path] = await pick("open", "Open Project", PROJECT);
+        if (path) store.call("project.open", { path });
+        break;
+      }
+      case "dialog.saveProjectAs": {
+        const [path] = await pick("save", "Save Project As", PROJECT);
+        if (path) store.call("project.saveAs", { path });
+        break;
+      }
+      case "menu.action": {
+        if (IMPORTS[args.id]) {
+          const [kind, title, filters] = IMPORTS[args.id];
+          const paths = await pick("open", title, filters);
+          if (paths.length) store.call("file.import", { kind, paths });
+        } else if (TEXTURE_ACTIONS[args.id]) {
+          const [kind, mode, title, filters] = TEXTURE_ACTIONS[args.id];
+          const [path] = await pick(mode, title, filters);
+          if (path) store.call("file.texture", { kind, path });
+        } else if (args.id?.startsWith("file.texture.")) {
+          store.call("file.texture", { kind: args.id.slice("file.texture.".length) });
+        }
+        break;
+      }
     }
   });
+
+  // Menu shortcuts: the menus state carries them, so Python-added ones work too.
+  const shortcuts = new Map();
+  const collect = (items) => {
+    for (const item of items ?? []) {
+      if (item.shortcut && item.enabled !== false) shortcuts.set(normalizeKey(item.shortcut), item.id);
+      collect(item.children);
+    }
+  };
+  store.on("menus", (value) => { shortcuts.clear(); collect(value); });
+  window.addEventListener("keydown", (e) => {
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+    const id = shortcuts.get(keyName(e));
+    if (id) { e.preventDefault(); store.call("menu.trigger", { id }); }
+  });
+}
+
+function normalizeKey(text) {
+  return text.toLowerCase().replace(/\s+/g, "");
+}
+
+function keyName(e) {
+  const parts = [];
+  if (e.ctrlKey) parts.push("ctrl");
+  if (e.altKey) parts.push("alt");
+  if (e.shiftKey) parts.push("shift");
+  parts.push(e.key.length === 1 ? e.key.toLowerCase() : e.key.toLowerCase());
+  return parts.join("+");
 }
