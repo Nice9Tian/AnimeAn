@@ -24,12 +24,14 @@
 
 namespace py = pybind11;
 
-static void runPythonHelloWorld()
+static QString pythonStartupText()
 {
     try {
         py::module_::import("animean_python");
-        (void)py::module_::import("hello_world").attr("hello_world")();
-    } catch (const py::error_already_set &) {
+        const std::string text = py::module_::import("hello_world").attr("hello_world")().cast<std::string>();
+        return QString::fromUtf8(text.c_str());
+    } catch (const py::error_already_set &error) {
+        return QStringLiteral("Python error: %1").arg(QString::fromUtf8(error.what()));
     }
 }
 #endif
@@ -110,7 +112,7 @@ int main(int argc, char *argv[])
     session.initializePythonStartup();
 
 #ifdef ANIMEAN_WITH_PYTHON
-    runPythonHelloWorld();
+    session.setStatusText(pythonStartupText());
 #endif
 
     if (!ws.listen(port)) {

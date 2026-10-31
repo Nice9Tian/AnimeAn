@@ -32,3 +32,10 @@ html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background:
    the docks; here the central panel carries it. */
 .central { left: 8px !important; right: 8px !important; }
 .toolopt-gap { bottom: 8px; }
+
+/* QSizeGrip as Fusion dots it. */
+#qt-statusbar .size-grip { background-image: radial-gradient(circle at 1px 1px, var(--btn-border) 0.8px, transparent 0.9px); background-size: 4px 4px; clip-path: polygon(100% 0, 100% 100%, 0 100%); }
+
+/* Qt's stems come out a touch heavier than the browser's at this size. */
+body { -webkit-text-stroke: 0.1px currentColor; }
+canvas { -webkit-text-stroke: 0; }

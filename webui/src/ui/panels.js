@@ -94,12 +94,13 @@ export function scrollBar(vertical, onValue) {
   const metrics = () => {
     const length = (vertical ? s.clientHeight : s.clientWidth) - 2 * BTN;
     const span = max - min + page;
-    const size = span > 0 ? Math.max(MIN_HANDLE, Math.round((length * page) / span)) : length;
+    // QCommonStyle's integer arithmetic, so the handle lands on the same pixels.
+    const size = span > 0 ? Math.min(length, Math.max(MIN_HANDLE, Math.floor((length * page) / span))) : length;
     return { length, size, free: Math.max(0, length - size) };
   };
   const draw = () => {
     const { size, free } = metrics();
-    const pos = max > min ? Math.round(((value - min) / (max - min)) * free) : 0;
+    const pos = max > min ? Math.floor(((value - min) * free) / (max - min)) : 0;
     handle.style[vertical ? "top" : "left"] = `${BTN + pos}px`;
     handle.style[vertical ? "height" : "width"] = `${size}px`;
   };

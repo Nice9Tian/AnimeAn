@@ -592,6 +592,12 @@ BackendSession::~BackendSession()
 #endif
 }
 
+void BackendSession::setStatusText(const QString &text)
+{
+    m_business->setStatusMessage(text);
+    markDirty(QStringLiteral("window"));
+}
+
 void BackendSession::initializePythonStartup()
 {
 #ifdef ANIMEAN_WITH_PYTHON

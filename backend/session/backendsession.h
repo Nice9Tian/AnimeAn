@@ -32,6 +32,7 @@ public:
     ~BackendSession() override;
 
     void initializePythonStartup();
+    void setStatusText(const QString &text);
 
     WsServer *wsServer() const { return m_ws; }
     AnimeanBusiness *business() const { return m_business; }

@@ -240,7 +240,9 @@ export function createChrome(menuEl, statusEl, store) {
   store.on("menus", (value) => bar.update(value));
   const text = document.createElement("div");
   text.className = "status-text";
-  statusEl.append(text);
+  const grip = document.createElement("div");
+  grip.className = "size-grip";
+  statusEl.append(text, grip);
   store.on("window", (value) => {
     text.textContent = value?.status ?? "";
     if (value?.title) window.__TAURI__?.core.invoke("set_window_title", { title: value.title });
