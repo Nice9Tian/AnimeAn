@@ -85,7 +85,8 @@
 | 代理矩形 | proxy rectangle / `pyfile/proxy_rect.py` | 规划 | 纹理板和主画板上各一个矩形。纹理板的矩形只示意映射范围，不动纹理板的轴线；由两者的角点对应算出主画板的轴线和额外辅助线。对应算法已实现，界面未接入。 |
 | Third 空间 | Third space / 子系弧坐标平面 $(\ell_h,\ell_v)$；`third_of`、`main_of_third` | 现有 | 两条轴线被拉直的中间空间；Auto Mapping 是 Child→Third→Main。 |
 | 弧长参数化 | arc-length parametrisation / `_point_at_arc` | 现有 | 沿轴线按弧长取点，弯轴线让图案跟着弯。端点对端点、交点对交点。 |
-| 阻尼牛顿 | damped Newton / `_Frame.solve` | 现有 | 从画布点反解子系坐标。 |
+| 段对求交 | segment-pair crossing / `chord_intersect.py` | 现有 | 不可折的架上，从画布点直接算出子系坐标。 |
+| 阻尼牛顿 | damped Newton / `_Frame._descend` | 现有 | 可折的架上从画布点反解子系坐标；曲线架上精修段对求交的结果。 |
 | 折叠 | fold / foldover、$\det J<0$ | 现有 | 轴线弯到两切向平行时一个纹理点对应主画板两处（一对多）；折叠的另一侧是背面。 |
 | **不糊合** | no residual blending / 残差项已移除 | 现有 | **用户点名的核心态度**：Auto Mapping 一对多（折叠）的地方，不用残差项把正反面"糊"成连续的一张，而是裁断拓扑——正面、背面、折痕各成一层，图案看起来绕到了背面。旧公式的残差项 $p-\mathrm{HV}[C](\ell)$ 于 2026-08-24 彻底移除。 |
 | 糊合 / 残差兜底 | residual patching / `p − HV[C](ℓ)` | 归档 | 不糊合的反面：旧 AM2 用残差项把反解失败的点强行连起来。只在归档与历史注记里出现。 |
