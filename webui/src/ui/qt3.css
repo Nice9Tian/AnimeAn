@@ -1,0 +1,172 @@
+/* Colours the hidden panels add to the table in qt.css / qt2.css. mix() results from
+   timelinewindow.cpp are written out, since a stylesheet cannot run them. */
+:root {
+  --accent-wash: #d4e6f3;   /* mix(Surface, Accent, 0.22) */
+  --strip-hold: #dfe0e1;    /* mix(Window, Text, 0.10) */
+  --strip-track: #dbdbdc;   /* mix(Window, Text, 0.12) */
+  --chrome-off: rgba(107, 109, 114, 0.431);  /* TextDim, alpha 110 */
+  --onion-past: #b3392f; --onion-ahead: #2f7a4f;
+  --onion-past-line: rgba(179, 57, 47, 0.667); --onion-ahead-line: rgba(47, 122, 79, 0.667);  /* alpha 170 */
+  --disabled-text: #a6a7ab;
+  --focus-outline: #5eabe2; /* Fusion highlightedOutline */
+  --pad-handle: #54b7ff;    /* QColor(61,142,201).lighter(130) */
+  --check-outline: #c0c0c1; --check-top: #dedede; --check-mark: #18191a;
+  --grip-dark: #c3c3c3; --grip-light: #ffffff;
+  --menu-ground: #ffffff; --menu-frame: #99999a; --menu-sep: #c3c3c3;
+  --default-top: #fcfdfd; --default-bottom: #dee4e9;
+  --spin-top: #fefefe; --spin-bottom: #e9e9e9;
+}
+[data-theme="dark"] {
+  --accent-wash: #293c4a;
+  --strip-hold: #333436;
+  --strip-track: #37393a;
+  --chrome-off: rgba(180, 182, 188, 0.431);
+  --disabled-text: #6f7175;
+  --check-outline: #171819; --check-top: #1e2021; --check-mark: #cbcbce;
+  --grip-dark: #565758; --grip-light: #717273;
+  --menu-ground: #262829; --menu-frame: #121314; --menu-sep: #1d1f1f;
+  --default-top: #464f57; --default-bottom: #3b434a;
+  --spin-top: #3e4042; --spin-bottom: #343638;
+}
+
+/* ---- timeline ---- */
+.tl-root { display: flex; flex-direction: column; box-sizing: border-box; overflow: hidden; background: var(--window); color: var(--text); }
+.tl-root.floating { border: 1px solid var(--window); }
+
+.tl-bar { position: relative; flex: none; height: 34px; overflow: hidden;
+  background: linear-gradient(var(--divider), var(--divider)) 0 0 / 100% 1px no-repeat, var(--surface); }
+.tl-bar-rule { position: absolute; left: 0; right: 0; top: 34px; height: 1px; background: var(--divider); }
+.tl-divider { position: absolute; width: 1px; height: 20px; background: var(--divider); }
+.tl-cell { position: absolute; height: 34px; color: var(--text-dim); }
+.tl-cell svg { position: absolute; left: 0; top: 0; display: block; overflow: visible; }
+.tl-mask { position: absolute; left: 0; top: 0; background: currentColor; }
+.tl-cell:hover { background: var(--accent-wash); color: var(--text); }
+.tl-cell.off, .tl-cell.off:hover { background: none; color: var(--chrome-off); }
+.tl-cell.on, .tl-cell.on:hover { background: var(--accent); color: #fff; }
+.tl-label { position: absolute; left: 0; right: 0; top: 0; height: 34px; text-align: center; white-space: nowrap;
+  font: bold 10px/34px "Segoe UI", sans-serif; letter-spacing: 0.7px; }
+.tl-upper { top: 7px; height: 11px; line-height: 11px; }
+.tl-lower { top: 18px; height: 11px; line-height: 11px; }
+.tl-nudge { left: -1px; right: 1px; }
+.tl-rate-text { position: absolute; left: 9px; top: 0; white-space: nowrap; font: bold 11px/36px Consolas, monospace; letter-spacing: -0.05px; }
+.tl-rate-chevron { position: absolute; right: 10px; top: 0; width: 11px; height: 34px; }
+.tl-field { position: absolute; box-sizing: border-box; width: 42px; height: 22px; margin: 0; padding: 0; border: 0; outline: 0; background: transparent;
+  text-align: center; color: var(--text); font: bold 12px/22px Consolas, monospace; letter-spacing: 0.4px; }
+.tl-field::selection { background: var(--accent); color: #fff; }
+
+.tl-strip { position: relative; flex: 1; min-height: 0; min-width: 0; overflow: hidden; background: var(--window); }
+.tl-canvas { position: absolute; left: 0; top: 0; display: block; }
+
+.tl-side { position: relative; flex: none; height: 22px; box-sizing: border-box; background: var(--surface); border-bottom: 1px solid var(--divider); }
+.tl-side-text { left: 8px; right: 26px; height: 22px; text-align: left; line-height: 22px; color: var(--text-dim); }
+.tl-side-close { position: absolute; top: 1px; right: 2px; width: 20px; height: 20px; color: var(--text-dim); }
+.tl-side-close svg { display: block; }
+.tl-side-close:hover { background: var(--accent-wash); color: var(--text); }
+
+.qtooltip { position: fixed; z-index: 1100; box-sizing: border-box; padding: 2px 4px; border: 1px solid var(--divider); background: var(--surface-alt); color: var(--text);
+  font: 12px/16px "Segoe UI", sans-serif; white-space: nowrap; pointer-events: none; }
+
+/* the rate menu, Fusion's QMenu with its checkable rows */
+.rate-menu { position: fixed; z-index: 1000; box-sizing: border-box; width: 169px; background: var(--menu-ground); outline: 1px solid var(--menu-frame); outline-offset: -1px; color: var(--text); font: 12px/16px "Segoe UI", sans-serif; }
+.rate-item { position: relative; height: 24px; }
+.rate-item:hover { background: var(--accent); box-shadow: inset 0 0 0 1px var(--focus-outline); color: #fff; }
+.rate-check { position: absolute; left: 8px; top: 5px; width: 14px; height: 14px; }
+.rate-check svg { display: block; }
+.rate-text { position: absolute; left: 28px; top: 0; line-height: 24px; white-space: pre; }
+.rate-sep { height: 1px; margin: 0 5px 1px; background: var(--menu-sep); }
+.rate-typed { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 9px; box-sizing: border-box; }
+.rate-note { white-space: pre; }
+.rate-field { box-sizing: border-box; width: 46px; height: 24px; margin: 0; padding: 0 2px 0 0; border: 1px solid var(--btn-border); border-radius: 2px; outline: 0; background: var(--surface); color: var(--text); text-align: center; font: 12px "Segoe UI", sans-serif; box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.07); }
+.rate-field:focus { border-color: var(--focus-outline); box-shadow: inset 0 0 0 1px rgba(94, 171, 226, 0.2); }
+
+/* ---- Fusion's stock widgets ---- */
+.qframe { position: relative; box-sizing: border-box; border: 1px solid var(--frame); background: var(--surface); color: var(--text); overflow: hidden; }
+.qframe-view { position: absolute; inset: 0; overflow-y: scroll; scrollbar-width: none; outline: 0; }
+.qframe .sb-v { position: absolute; right: 0; top: 0; bottom: 0; width: 14px; display: none; }
+.qframe.scrolls .sb-v { display: block; }
+.qframe.scrolls .qframe-view { right: 14px; }
+.qitem { box-sizing: border-box; height: 16px; line-height: 16px; padding-left: 3px; white-space: nowrap; overflow: hidden; color: var(--text); }
+.qitem.dim { color: var(--disabled-text); }
+.qitem.sel { background: var(--accent); color: #fff; }
+
+.qlineedit { box-sizing: border-box; height: 24px; margin: 0; padding: 0 2px; border: 1px solid var(--btn-border); border-radius: 2px; outline: 0; background: var(--surface); color: var(--text); font: 12px "Segoe UI", sans-serif; box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.07); }
+.qlineedit:focus { border-color: var(--focus-outline); box-shadow: inset 0 0 0 1px rgba(94, 171, 226, 0.2); }
+.qlineedit::selection { background: var(--accent); color: #fff; }
+
+/* ---- History, Assets, Repulsion Pad, Python Debug ---- */
+.history-page { position: relative; box-sizing: border-box; height: calc(100% - 23px); padding: 4px; display: flex; flex-direction: column; }
+.history-page .qframe { flex: 1; min-height: 0; }
+.assets-page { position: relative; box-sizing: border-box; height: calc(100% - 23px); padding: 9px; display: flex; flex-direction: column; gap: 6px; }
+.assets-page .qframe { flex: 1; min-height: 0; }
+.assets-buttons { display: flex; gap: 6px; }
+.assets-buttons .qbutton { flex: 1; }
+.pad-page { position: relative; height: calc(100% - 23px); overflow: hidden; cursor: pointer; }
+.pad-page canvas { position: absolute; left: 0; top: 0; display: block; }
+.debug-page { position: relative; box-sizing: border-box; height: calc(100% - 23px); padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.debug-page .qframe { flex: 1; min-height: 0; }
+.debug-row { display: flex; gap: 6px; height: 24px; flex: none; }
+.debug-label { box-sizing: border-box; width: 57px; padding-left: 1px; line-height: 24px; color: var(--text); flex: none; }
+.debug-row .qlineedit { flex: 1; min-width: 0; }
+.debug-row .qbutton { width: 80px; flex: none; padding: 0 9px 0 7px; }
+.qplaintext-line { min-height: 16px; }
+.qplaintext-doc { padding: 4px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); user-select: text; cursor: text; }
+.qplaintext-hint { position: absolute; left: 4px; top: 4px; color: var(--text-dim); }
+
+/* ---- New Project ---- */
+.qdialog-shade { position: absolute; inset: 0; z-index: 900; }
+.qdialog { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); box-sizing: content-box; width: 234px; border: 1px solid var(--frame); background: var(--window); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3); }
+.qdialog-title { position: relative; height: 31px; background: var(--window); user-select: none; }
+.qdialog-caption { position: absolute; left: 10px; top: 0; line-height: 31px; color: var(--text); }
+.qdialog-close { position: absolute; right: 0; top: 0; width: 46px; height: 31px; color: var(--text); }
+.qdialog-close svg { position: absolute; left: 18px; top: 10px; }
+.qdialog-close:hover { background: #e81123; color: #fff; }
+.qdialog-body { position: relative; width: 234px; height: 180px; background: var(--window); color: var(--text); }
+.qdialog-body > * { position: absolute; }
+.qdialog-caption-text { line-height: 16px; }
+.qdialog-label { white-space: nowrap; }
+.qdialog-body > .qbutton { padding: 0; height: 24px; }
+.qbutton, .qcombo { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.118); }  /* Fusion's inner contrast line */
+.qbutton.qdefault { border-color: var(--focus-outline); background: linear-gradient(var(--default-top), var(--default-bottom)); }
+
+.qcombo { box-sizing: border-box; height: 24px; border: 1px solid var(--btn-border); border-radius: 2px; background: linear-gradient(var(--btn-top), var(--btn-bottom)); color: var(--text); }
+.qcombo-text { position: absolute; left: 2px; top: 0; right: 20px; line-height: 22px; white-space: pre; overflow: hidden; }
+.qcombo-arrow { position: absolute; right: 5px; top: 8px; width: 9px; height: 5px; color: var(--sb-arrow); }
+.qcombo-arrow svg, .qspin-up svg, .qspin-down svg { display: block; }
+.qcombo-popup { position: fixed; z-index: 1000; box-sizing: border-box; width: 171px; padding: 1px; background: var(--window); border: 1px solid var(--menu-frame); color: var(--text); font: 12px/24px "Segoe UI", sans-serif; }
+.qcombo-item { height: 24px; padding-left: 6px; white-space: pre; }
+.qcombo-item.sel { background: var(--accent); box-shadow: inset 0 0 0 1px var(--focus-outline); color: #fff; }
+
+.qspin { box-sizing: border-box; height: 27px; border: 1px solid var(--btn-border); border-radius: 2px; background: var(--surface); box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.07); }
+.qspin:focus-within { border-color: var(--focus-outline); box-shadow: inset 0 0 0 1px rgba(94, 171, 226, 0.2); }
+.qspin-edit { position: absolute; left: 2px; top: 2px; width: 150px; height: 21px; box-sizing: border-box; margin: 0; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: 12px "Segoe UI", sans-serif; }
+.qspin-edit::selection { background: var(--accent); color: #fff; }
+/* one gradient runs down both arrows: Fusion draws the column as a single button */
+.qspin-column { position: absolute; right: 0; top: 0; bottom: 0; width: 14px; box-sizing: border-box; border-left: 1px solid var(--btn-border); border-radius: 0 1px 1px 0; background: linear-gradient(var(--spin-top), var(--spin-bottom)); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.118); }
+.qspin-up, .qspin-down { position: absolute; right: 0; width: 14px; height: 12px; color: var(--sb-arrow); }
+.qspin-up { top: 0; height: 13px; }
+.qspin-down { bottom: 0; }
+.qspin-up svg { position: absolute; left: 3px; top: 5px; }
+.qspin-down svg { position: absolute; left: 3px; top: 3px; }
+
+/* ---- texture board frame ---- */
+.subframe { box-sizing: border-box; display: flex; flex-direction: column; padding: 0; background: var(--surface); border: 1px solid var(--divider); color: var(--text); }
+.subframe-title { position: relative; flex: none; height: 20px; box-sizing: border-box; background: var(--surface-alt); border-bottom: 1px solid var(--divider); cursor: move; }
+.subframe-text { position: absolute; left: 6px; right: 26px; top: 0; font: 11.33px/21px "Segoe UI", sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.subframe-glyph { position: absolute; right: 6px; top: 3px; width: 14px; height: 14px; color: var(--text-dim); cursor: default; }
+.subframe-glyph svg { display: block; overflow: visible; }
+.subframe-glyph:hover { color: var(--accent); }
+.subframe-glyph:active { color: var(--accent-active); }
+.subframe-body { position: relative; flex: 1; min-height: 0; }
+.subframe-body:empty { display: none; }
+.subframe-placeholder { flex: 1; display: flex; align-items: center; justify-content: center; text-align: center; padding: 8px 10px 8px 8px; color: var(--text-dim); }
+.subframe-grip { flex: none; align-self: flex-end; width: 17px; height: 17px; cursor: nwse-resize; }
+.subframe-grip svg { display: block; }
+.subframe-wash { position: fixed; z-index: 800; box-sizing: border-box; background: rgba(61, 142, 201, 0.25); border: 1px solid var(--accent); pointer-events: none; }
+
+.texture-panel { display: flex; flex-direction: column; background: var(--surface); }
+.texture-menu { position: relative; flex: none; height: 21px; }
+.texture-options { display: flex; gap: 12px; margin: 4px 4px 0; }
+.texture-stage { position: relative; flex: 1; min-height: 0; margin: 4px; }
+.texture-stage .sb-h { position: absolute; left: 0; right: 14px; bottom: 0; height: 14px; }
+.texture-stage .sb-v { position: absolute; right: 0; top: 0; bottom: 14px; width: 14px; }
+.texture-stage .board-host { background: #fff; }

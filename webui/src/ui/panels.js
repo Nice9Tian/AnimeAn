@@ -31,8 +31,8 @@ export function tabBar(labels, onSelect) {
 }
 
 // ---- Tools dock -------------------------------------------------------------
-const CHIPS = [["Arrow", "arrow"], ["Pen", "pen"], ["Eraser", "eraser"], ["Fill", "fill"], ["Transfer", "transfer"], ["Connect", "connect"]];
-const ERASERS = new Set(["Eraser", "DeleteLine", "CutLine"]);
+const CHIPS = ["arrow", "pen", "eraser", "fill", "transfer", "connect"];
+const ERASERS = new Set(["eraser", "delete_line", "cut_line"]);
 
 export function createTools(root, { onTool, onExtra }) {
   const tabs = tabBar(["Painting", "Mapping"], (i) => show(i));
@@ -41,9 +41,9 @@ export function createTools(root, { onTool, onExtra }) {
 
   const rail = div("rail");
   pages[0].append(rail);
-  const chips = CHIPS.map(([tool, glyph]) => {
+  const chips = CHIPS.map((tool) => {
     const c = div("chip");
-    c.innerHTML = glyphSvg(glyph);
+    c.innerHTML = glyphSvg(tool);
     c.addEventListener("click", () => { if (!c.classList.contains("locked")) onTool(tool); });
     rail.append(c);
     return { c, tool };
@@ -60,19 +60,19 @@ export function createTools(root, { onTool, onExtra }) {
   return {
     update(state) {
       if (!state) return;
-      const locked = new Set(state.locked ?? []);
+      const locked = new Set(state.lockedTools ?? []);
       for (const { c, tool } of chips) {
-        const armed = !state.extra_active && (tool === state.current || (tool === "Eraser" && ERASERS.has(state.current)));
+        const armed = !state.activeExtraTool && (tool === state.current || (tool === "eraser" && ERASERS.has(state.current)));
         c.classList.toggle("on", armed && !locked.has(tool));
         c.classList.toggle("locked", locked.has(tool));
       }
       extraBoxes.forEach((b) => b.replaceChildren());
-      for (const tool of state.extra ?? []) {
+      for (const tool of state.extraTools ?? []) {
         const b = document.createElement("button");
         b.type = "button";
         b.className = "qbutton";
         b.textContent = tool.title ?? tool.name;
-        b.classList.toggle("checked", state.extra_active === tool.name);
+        b.classList.toggle("checked", state.activeExtraTool === tool.name);
         b.disabled = locked.has(tool.name);
         b.addEventListener("click", () => onExtra(tool.name));
         extraBoxes[tool.page === "painting" ? 0 : 1].append(b);

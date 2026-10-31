@@ -384,10 +384,6 @@ export class BoardRenderer {
       this.currentDpr = dpr;
       this.canvas.width = pw;
       this.canvas.height = ph;
-      if (this.canvas.style) {
-        this.canvas.style.width = `${w}px`;
-        this.canvas.style.height = `${h}px`;
-      }
       this.cacheCanvas = this.createCacheCanvas(pw, ph);
       this.cacheCanvas.width = pw;
       this.cacheCanvas.height = ph;
