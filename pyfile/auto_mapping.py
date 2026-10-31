@@ -1562,6 +1562,35 @@ def _resample_fractions(points, count):
             for k in range(count)]
 
 
+def _partner_aligned(child, main):
+    """`main` walked the same way as `child`, reversed if need be: station k
+    pairs with station k, so a line redrawn BACKWARDS against its untouched
+    partner must not read as a ~180 degree ask (measured 71 px of drift
+    without the flip). The chord dot decides, except for near-CLOSED lines,
+    whose chord is a few percent of their arc and its sign is decided by
+    where the user happened to lift the pen: those align by endpoint
+    proximity instead."""
+    chord_c = (child[-1][0] - child[0][0], child[-1][1] - child[0][1])
+    chord_m = (main[-1][0] - main[0][0], main[-1][1] - main[0][1])
+    arc_c_raw = _cumulative_lengths(child)[-1]
+    arc_m_raw = _cumulative_lengths(main)[-1]
+    if (math.hypot(*chord_c) < 0.05 * max(arc_c_raw, 1e-9)
+            or math.hypot(*chord_m) < 0.05 * max(arc_m_raw, 1e-9)):
+        same = (math.hypot(child[0][0] - main[0][0],
+                           child[0][1] - main[0][1])
+                + math.hypot(child[-1][0] - main[-1][0],
+                             child[-1][1] - main[-1][1]))
+        cross = (math.hypot(child[0][0] - main[-1][0],
+                            child[0][1] - main[-1][1])
+                 + math.hypot(child[-1][0] - main[0][0],
+                              child[-1][1] - main[0][1]))
+        if cross < same:
+            return list(reversed(main))
+    elif chord_c[0] * chord_m[0] + chord_c[1] * chord_m[1] < 0.0:
+        return list(reversed(main))
+    return main
+
+
 class _FlowFieldWarp:
     """The influence field of the additional (pink) refinement lines, as a
     GLOBAL flow field integrated by Poisson (user spec 2026-08-25).
@@ -1623,6 +1652,14 @@ class _FlowFieldWarp:
     comes from the child frame (severing) and the main frame (front/back
     split), and a Poisson-integrated field resolves conflicting asks by
     stress minimisation instead of doubling the sheet back.
+
+    GROUND LINES (user 2026-09-30; spec docs/auto_mapping/ground_line.md)
+    are the other kind of line. An additional line guides flow and promises
+    no position; a ground line pins a stretch of pattern to where it was
+    drawn: U(child station) = main station, on the line itself rather than on
+    the grid nodes near it. They write no target gradient and ask for no
+    tent: the pins are absolute, so a line outside the window needs no
+    pre-stretch.
     """
 
     SAMPLES = 65
@@ -1673,12 +1710,20 @@ class _FlowFieldWarp:
     AXIS_GUARD = 0.12      # tent cross-damping zone, fraction of the window
     DET_FOLD_TOL = 1e-3    # |det| below this is a graze, not a fold
     VOICE_MIN = 0.05       # a line whose weight never reaches this is voiceless
+    GROUND_STATIONS = 65
+    GROUND_PAGE = 0.15     # solve-domain margin, fraction of the window
+    GROUND_PUSH = 2.0      # ... and at least this many times the largest move
+    GROUND_STIFFNESS = 400.0   # tail stiffness at full strength, / cell area
+    GROUND_ANCHOR = 400.0      # per station on the line itself, / cell area
+    GROUND_EASE = 4.0          # cells over which a tail's stiffness eases in
+    GROUND_STILL = 0.1         # a move below this (Third px) is no move
 
     def __init__(self, pairs, falloff="linear", radius_factor=0.5,
-                 frame_window=None):
+                 frame_window=None, grounds=()):
         self.falloff = falloff if falloff in ADDITIONAL_FALLOFFS else "linear"
         self.has_faces = False
         self.pairs = []
+        self.grounds = []
         self.notes = []
         self._loci = None
         self._grid = None
@@ -1704,38 +1749,19 @@ class _FlowFieldWarp:
                         f"additional line {index + 1} is neutral (both "
                         "sides ask for the identity flow) - bend or "
                         "rotate either side to shape the mapping")
-        if self.pairs:
+        for child_third, main_third, index in grounds:
+            line = self._prepare_ground([tuple(p) for p in child_third],
+                                        [tuple(p) for p in main_third], index)
+            if line is not None:
+                self.grounds.append(line)
+        if self.pairs or self.grounds:
             self._build(frame_window)
 
     # ---------------------------------------------------------------- prep
 
     def _prepare(self, child, main, radius_factor):
         """One drawn pair -> stations, per-segment similarities, radius."""
-        # Direction alignment: station k pairs with station k, so a line
-        # redrawn BACKWARDS against its untouched partner must not read
-        # as a ~180 degree flow ask (measured 71 px of drift without the
-        # flip). The chord dot decides, exactly like the old sweep did -
-        # except for near-CLOSED lines, whose chord is a few percent of
-        # their arc and its sign is decided by where the user happened to
-        # lift the pen: those align by endpoint proximity instead.
-        chord_c = (child[-1][0] - child[0][0], child[-1][1] - child[0][1])
-        chord_m = (main[-1][0] - main[0][0], main[-1][1] - main[0][1])
-        arc_c_raw = _cumulative_lengths(child)[-1]
-        arc_m_raw = _cumulative_lengths(main)[-1]
-        if (math.hypot(*chord_c) < 0.05 * max(arc_c_raw, 1e-9)
-                or math.hypot(*chord_m) < 0.05 * max(arc_m_raw, 1e-9)):
-            same = (math.hypot(child[0][0] - main[0][0],
-                               child[0][1] - main[0][1])
-                    + math.hypot(child[-1][0] - main[-1][0],
-                                 child[-1][1] - main[-1][1]))
-            cross = (math.hypot(child[0][0] - main[-1][0],
-                                child[0][1] - main[-1][1])
-                     + math.hypot(child[-1][0] - main[0][0],
-                                  child[-1][1] - main[0][1]))
-            if cross < same:
-                main = list(reversed(main))
-        elif chord_c[0] * chord_m[0] + chord_c[1] * chord_m[1] < 0.0:
-            main = list(reversed(main))
+        main = _partner_aligned(child, main)
         c = _resample_fractions(child, self.SAMPLES)
         m = _resample_fractions(main, self.SAMPLES)
         cum = _cumulative_lengths(c)
@@ -1783,6 +1809,27 @@ class _FlowFieldWarp:
         return {"child": c, "main": m, "cum": cum, "sims": sims,
                 "radius": radius, "chord": chord, "arc": arc,
                 "neutral": neutral}
+
+    def _prepare_ground(self, child, main, index):
+        """One ground pair. Its stations are already paired, on the CANVAS
+        (see build_mapper): resampling here, in Third, would slide them
+        wherever the two sides of an axis scale differently (37.5 px along
+        an edge measured on a bent quad)."""
+        if len(child) != len(main):        # a fold clipped the two unevenly
+            child = _resample_fractions(child, self.GROUND_STATIONS)
+            main = _resample_fractions(main, self.GROUND_STATIONS)
+        if _cumulative_lengths(child)[-1] <= 1e-9:
+            return None
+        # In Third, like _prepare: on the canvas a main frame turned past 90
+        # degrees reads every unmoved partner as drawn backwards.
+        return {"child": child, "main": _partner_aligned(child, main),
+                "index": index}
+
+    @staticmethod
+    def _family_of(points):
+        run_x = sum(abs(b[0] - a[0]) for a, b in zip(points[:-1], points[1:]))
+        run_y = sum(abs(b[1] - a[1]) for a, b in zip(points[:-1], points[1:]))
+        return "h" if run_x >= run_y else "v"
 
     def _weight(self, x):
         if x >= 1.0:
@@ -1898,26 +1945,31 @@ class _FlowFieldWarp:
         # Neutral lines (identity asks) stay out of the field entirely -
         # they are drawn markers awaiting an edit, not requests.
         active = [line for line in self.pairs if not line.get("neutral")]
-        if not active:
+        grounds = self.grounds
+        if not active and not grounds:
             return
         xs = [p[0] for line in active
               for p in line["child"] + line["main"]]
         ys = [p[1] for line in active
               for p in line["child"] + line["main"]]
+        ground_xs = [p[0] for line in grounds for p in line["child"]]
+        ground_ys = [p[1] for line in grounds for p in line["child"]]
         if frame_window is not None:
             (h_lo, h_hi), (v_lo, v_hi) = frame_window
         else:
-            h_lo, h_hi = min(xs), max(xs)
-            v_lo, v_hi = min(ys), max(ys)
+            h_lo, h_hi = min(xs + ground_xs), max(xs + ground_xs)
+            v_lo, v_hi = min(ys + ground_ys), max(ys + ground_ys)
         b_left = max(abs(h_lo), 1e-6)
         b_right = max(abs(h_hi), 1e-6)
         b_bottom = max(abs(v_lo), 1e-6)
         b_top = max(abs(v_hi), 1e-6)
         # Stage I - overrun scan: how far the lines escape the frame window.
-        t_left = max(0.0, h_lo - min(xs))
-        t_right = max(0.0, max(xs) - h_hi)
-        t_bottom = max(0.0, v_lo - min(ys))
-        t_top = max(0.0, max(ys) - v_hi)
+        # Ground lines stay out of it: their pins are absolute, and a tent
+        # under them only adds a base field for the pins to fight.
+        t_left = max(0.0, h_lo - min(xs, default=h_lo))
+        t_right = max(0.0, max(xs, default=h_hi) - h_hi)
+        t_bottom = max(0.0, v_lo - min(ys, default=v_lo))
+        t_top = max(0.0, max(ys, default=v_hi) - v_hi)
         zone_x = max(1e-6, self.AXIS_GUARD * (b_left + b_right))
         zone_y = max(1e-6, self.AXIS_GUARD * (b_bottom + b_top))
         # Solve domain: the stretched window plus 1.5x every band's radius
@@ -1925,7 +1977,19 @@ class _FlowFieldWarp:
         # into a violent one-cell gradient there (a 138 px tear across the
         # boundary seam on a small frame); the extra half radius lets the
         # field decay before the clamp.
-        margin = 1.5 * max(line["radius"] for line in active)
+        margin = 1.5 * max((line["radius"] for line in active), default=0.0)
+        if grounds:
+            # A ground line has no band to decay, only a move, and the page
+            # around it sets the cell size that resolves it: wide enough to
+            # take the move back to the Dirichlet boundary, no wider.
+            over = max(0.0, h_lo - min(ground_xs), max(ground_xs) - h_hi,
+                       v_lo - min(ground_ys), max(ground_ys) - v_hi)
+            push = max(math.hypot(m[0] - c[0], m[1] - c[1])
+                       for line in grounds
+                       for c, m in zip(line["child"], line["main"]))
+            margin = max(margin, over + max(
+                self.GROUND_PAGE * max(h_hi - h_lo, v_hi - v_lo),
+                self.GROUND_PUSH * push))
         x0 = h_lo - t_left - margin
         x1 = h_hi + t_right + margin
         y0 = v_lo - t_bottom - margin
@@ -1939,6 +2003,16 @@ class _FlowFieldWarp:
         ny = max(48, int(round(self.GRID * span_y / longest)))
         du = span_x / nx
         dv = span_y / ny
+        if grounds:
+            # A node exactly on each axis: otherwise the axis pin falls on the
+            # two rows straddling it, a one-cell plateau every grid line
+            # creases over (3 degrees on a keystone, by luck of the parity).
+            x0 = du * math.floor(x0 / du)
+            y0 = dv * math.floor(y0 / dv)
+            nx = int(math.ceil((x1 - x0) / du - 1e-9))
+            ny = int(math.ceil((y1 - y0) / dv - 1e-9))
+            x1 = x0 + du * nx
+            y1 = y0 + dv * ny
 
         # Tent sides as (T, rise_end, fade_start, fade_end): full
         # translation holds exactly to the domain edge (the Dirichlet
@@ -2024,11 +2098,7 @@ class _FlowFieldWarp:
         # crossed half of H releases its tangential pin unless its frame
         # side is stretched), while its own weight still dies on the V
         # axis.
-        def family_of(pts):
-            run_x = sum(abs(b[0] - a[0]) for a, b in zip(pts[:-1], pts[1:]))
-            run_y = sum(abs(b[1] - a[1]) for a, b in zip(pts[:-1], pts[1:]))
-            return "h" if run_x >= run_y else "v"
-
+        family_of = self._family_of
         fields = []
         for line in active:
             pts = line["child"]
@@ -2074,7 +2144,13 @@ class _FlowFieldWarp:
 
         # Keyframe interpolation per family and half-plane (flat arrays).
         tiny = 1e-9
-        constrain = bool(_ADDITIONAL.get("constrain_outline", True))
+        # A ground line that moves is the user reshaping the sheet, so the
+        # outline goes with it instead of caging it (plan decision 11, A).
+        ground_moved = any(
+            math.hypot(m[0] - c[0], m[1] - c[1]) >= self.GROUND_STILL
+            for line in grounds for c, m in zip(line["child"], line["main"]))
+        constrain = (bool(_ADDITIONAL.get("constrain_outline", True))
+                     and not ground_moved)
         for fam, q_pt in (("h", py), ("v", px)):
             group = [f for f in fields if f["fam"] == fam]
             if not group:
@@ -2339,7 +2415,7 @@ class _FlowFieldWarp:
         pinned_y[np.ix_(on_v, rel_v)] = False   # crossed V half slides in y
         pinned_x[on_v, :] = True                # the V axis keeps its shape
         pinned_y[:, on_h] = True                # the H axis keeps its shape
-        if _ADDITIONAL.get("constrain_outline", True):
+        if constrain:
             in_h = (gx >= h_lo - du) & (gx <= h_hi + du)
             in_v = (gy >= v_lo - dv) & (gy <= v_hi + dv)
             edge_v = np.zeros_like(X, dtype=bool)   # left/right edge bands
@@ -2356,6 +2432,35 @@ class _FlowFieldWarp:
             pin_y = np.where(edge_h, Y - ub_y, 0.0)
             pinned_x |= edge_v
             pinned_y |= edge_h
+        ground = None
+        if grounds:
+            ground = self._pin_grounds(np, X, Y, gx, gy, on_v, on_h, ub_x, ub_y,
+                                       pinned_x, pinned_y, (x0, x1, y0, y1))
+
+        def anchored(Z):
+            """The anchor stations' bilinear values of Z."""
+            return np.sum(Z.ravel()[ground["nodes"]] * ground["weights"], axis=1)
+
+        def spread(values):
+            """Anchor station values back onto the nodes (the transpose)."""
+            out = np.zeros(X.size)
+            np.add.at(out, ground["nodes"], ground["weights"] * values[:, None])
+            return out.reshape(X.shape)
+
+        # Jacobi preconditioner, ground lines only: their stiff terms are
+        # hundreds of times the grid's, and scaling by the diagonal puts both
+        # on one footing (build time drops about threefold). Without ground
+        # lines the iteration is bit-identical.
+        jacobi = None
+        if ground is not None:
+            jacobi = np.zeros_like(X)
+            jacobi[1:-1, :] += (om_e[1:, :] + om_e[:-1, :]) / (du * du)
+            jacobi[:, 1:-1] += (om_n[:, 1:] + om_n[:, :-1]) / (dv * dv)
+            jacobi += ground["kappa"]
+            on_nodes = np.zeros(X.size)
+            np.add.at(on_nodes, ground["nodes"], ground["weights"] ** 2)
+            jacobi += ground["anchor"] * on_nodes.reshape(X.shape)
+            jacobi = np.maximum(jacobi, 1e-30)
 
         def weighted_div_lap(n_x, n_y, base):
             """div(omega * (G_row - grad base)) with the blend done ON the
@@ -2381,6 +2486,9 @@ class _FlowFieldWarp:
             out = np.zeros_like(Z)
             out[1:-1, :] -= (flux_x[1:, :] - flux_x[:-1, :]) / du
             out[:, 1:-1] -= (flux_y[:, 1:] - flux_y[:, :-1]) / dv
+            if ground is not None:
+                out += ground["kappa"] * Z
+                out += ground["anchor"] * spread(anchored(Z))
             out[0, :] = out[-1, :] = 0.0
             out[:, 0] = out[:, -1] = 0.0
             out[mask] = 0.0
@@ -2397,18 +2505,26 @@ class _FlowFieldWarp:
             out[:, 1:-1] -= (flux_y[:, 1:] - flux_y[:, :-1]) / dv
             return out
 
-        def solve(rhs, pin_val, mask):
+        def solve(rhs, pin_val, mask, component=0):
             # apply_A is MINUS div(omega grad) (SPD), so the equation
             # div(omega grad D) = rhs with D = pin_val on the pinned nodes
             # becomes, for E = D - pin_val (E = 0 there),
-            # A E = -rhs - A_raw(pin_val).
+            # A E = -rhs - A_raw(pin_val). Ground lines add the soft tails
+            # kappa * (D - target) and the anchors P^T a (P D - goal) to the
+            # left; both are SPD, so CG still applies.
             R = np.zeros_like(rhs)
             interior = -rhs - apply_A_raw(pin_val)
+            if ground is not None:
+                interior = interior + ground["kappa"] * (
+                    ground["target"][component] - pin_val)
+                interior = interior + ground["anchor"] * spread(
+                    ground["goal"][component] - anchored(pin_val))
             R[1:-1, 1:-1] = interior[1:-1, 1:-1]
             R[mask] = 0.0
             E = np.zeros_like(rhs)
-            P = R.copy()
-            rs = float(np.sum(R * R))
+            Z = R if jacobi is None else R / jacobi
+            P = Z.copy()
+            rs = float(np.sum(R * Z))
             if rs <= 0.0:
                 return E + pin_val
             rs0 = rs
@@ -2418,10 +2534,11 @@ class _FlowFieldWarp:
                 alpha = rs / denom
                 E += alpha * P
                 R -= alpha * AP
-                rs_new = float(np.sum(R * R))
+                Z = R if jacobi is None else R / jacobi
+                rs_new = float(np.sum(R * Z))
                 if rs_new <= self.CG_TOL * rs0:
                     break
-                P = R + (rs_new / rs) * P
+                P = Z + (rs_new / rs) * P
                 rs = rs_new
             return E + pin_val
 
@@ -2452,9 +2569,9 @@ class _FlowFieldWarp:
         def assemble_and_solve():
             n00, n01, n10, n11 = numerators(boosted=True)
             ux = ub_x + solve(weighted_div_lap(n00, n01, ub_x), pin_x,
-                              pinned_x)
+                              pinned_x, 0)
             uy = ub_y + solve(weighted_div_lap(n10, n11, ub_y), pin_y,
-                              pinned_y)
+                              pinned_y, 1)
             return ux, uy
 
         def bilinear_np(table, sx, sy):
@@ -2603,11 +2720,200 @@ class _FlowFieldWarp:
         # last-bit graze of zero from registering a phantom locus (and
         # from making the retreat count vary between runs).
         self._all_positive = bool(np.all(det > -self.DET_FOLD_TOL))
+        if ground_moved and not self._all_positive:
+            self.notes.append(
+                "ground lines fold the mapping: they cross their own parallel "
+                "axis, or ask for more than the ground between them can give")
         self._grid = {
             "x0": x0, "y0": y0, "du": du, "dv": dv, "nx": nx, "ny": ny,
             "ux": ux.tolist(), "uy": uy.tolist(),
             "det": None if self._all_positive else det.tolist(),
         }
+
+    def _pin_grounds(self, np, X, Y, gx, gy, on_v, on_h, ub_x, ub_y,
+                     pinned_x, pinned_y, domain):
+        """Release the axes the ground lines reach and return what the solve
+        must add: the soft tails and the anchors holding the lines.
+
+        A line belongs to the family of its run. Its PARALLEL axis is a
+        central ground line itself and never moves (plan decision 10): a line
+        lying on it loses to it. Its ORTHOGONAL axis yields, both components,
+        on a half the line reaches: the half it lives on when it runs on past
+        a free end, a half it crosses where it moved at the crossing, a half
+        its tail crosses. The origin holds while any half-axis does.
+
+        A CLOSED contour around the origin decides everything inside it, so
+        its axes have nothing left to hold there: the moment any crossing
+        moves, all four half-axes and the origin let go. While no crossing
+        moves (straight edges, midline axes) the axes stay pinned, and the
+        field is the same bilinear patch either way.
+
+        An end that moved runs on along its tangent, its move fading out over
+        the way: the ground has to come back to zero somewhere, and the domain
+        edge is where the field already is zero. Stopping short of that hooks
+        the tip backwards (plan, decision 10). Only what the plan lets stop a
+        line stops the tail: its parallel axis, where the move fades to zero,
+        and another ground line, where it fades to that line's move. A corner
+        of a closed contour runs on as well, for the ground outside it: left
+        alone that is a 270 degree re-entrant corner, where a harmonic field's
+        gradient diverges and folds a few nodes."""
+        du = float(gx[1] - gx[0])
+        dv = float(gy[1] - gy[0])
+        cell = max(du, dv)
+        x0, x1, y0, y1 = domain
+        still = self.GROUND_STILL
+        ends = [(line["child"][e], position, e)
+                for position, line in enumerate(self.grounds) for e in (0, -1)]
+
+        def joined(position, e, point):
+            """Another line ends here, or this one closes on itself."""
+            long_enough = (_cumulative_lengths(self.grounds[position]["child"])[-1]
+                           > 4.0 * cell)
+            return any(math.hypot(point[0] - other[0], point[1] - other[1]) <= cell
+                       and (other_line != position
+                            or (other_e != e and long_enough))
+                       for other, other_line, other_e in ends)
+
+        released = set()
+        crossed = set()
+
+        def release(k, sign):
+            """Free half of the axis where coordinate k is 0, both components."""
+            released.add((k, sign))
+            if k == 1:
+                half = (np.sign(gx) == sign) & ~on_v
+                pinned_x[np.ix_(half, on_h)] = False
+                pinned_y[np.ix_(half, on_h)] = False
+            else:
+                half = (np.sign(gy) == sign) & ~on_h
+                pinned_x[np.ix_(on_v, half)] = False
+                pinned_y[np.ix_(on_v, half)] = False
+
+        kappa = np.zeros_like(X)
+        target_x = np.zeros_like(X)
+        target_y = np.zeros_like(X)
+        stiffness = self.GROUND_STIFFNESS / (du * dv)
+        for position, line in enumerate(self.grounds):
+            c, m = line["child"], line["main"]
+            k_orth = 1 if self._family_of(c) == "v" else 0   # axis it crosses
+            k_side = 1 - k_orth                              # side it lives on
+            for a, b, ma, mb in zip(c, c[1:], m, m[1:]):
+                if a[k_orth] == b[k_orth] or a[k_orth] * b[k_orth] > 0.0:
+                    continue
+                t = a[k_orth] / (a[k_orth] - b[k_orth])
+                spot = a[k_side] + (b[k_side] - a[k_side]) * t
+                if spot == 0.0:
+                    continue
+                sign = math.copysign(1.0, spot)
+                crossed.add((k_orth, sign))
+                moved = math.hypot(ma[0] - a[0] + (mb[0] - b[0] - ma[0] + a[0]) * t,
+                                   ma[1] - a[1] + (mb[1] - b[1] - ma[1] + a[1]) * t)
+                if moved >= still:
+                    release(k_orth, sign)
+            side_sign = np.sign(sum(p[k_side] for p in c) / len(c))
+            for e, inner in ((0, min(3, len(c) - 1)), (-1, max(-4, -len(c)))):
+                dx, dy = m[e][0] - c[e][0], m[e][1] - c[e][1]
+                if math.hypot(dx, dy) < still:
+                    continue
+                if side_sign != 0.0 and not joined(position, e, c[e]):
+                    release(k_orth, float(side_sign))
+                tangent = (c[e][0] - c[inner][0], c[e][1] - c[inner][1])
+                norm = math.hypot(*tangent)
+                if norm <= 1e-9:
+                    continue
+                tangent = (tangent[0] / norm, tangent[1] / norm)
+                tx, ty = tangent
+                reach = []
+                if tx != 0.0:
+                    reach.append(((x1 if tx > 0.0 else x0) - c[e][0]) / tx)
+                if ty != 0.0:
+                    reach.append(((y1 if ty > 0.0 else y0) - c[e][1]) / ty)
+                length = min(reach)
+                far_x = far_y = 0.0
+                if tangent[k_side] != 0.0:
+                    at_axis = -c[e][k_side] / tangent[k_side]
+                    if 0.0 < at_axis < length:
+                        length = at_axis
+                for other, other_line in enumerate(self.grounds):
+                    if other == position:
+                        continue
+                    for p, q in zip(other_line["child"], other_line["main"]):
+                        along = (p[0] - c[e][0]) * tx + (p[1] - c[e][1]) * ty
+                        across = abs((p[0] - c[e][0]) * ty - (p[1] - c[e][1]) * tx)
+                        if 2.0 * cell < along < length and across <= cell:
+                            length = along
+                            far_x, far_y = q[0] - p[0], q[1] - p[1]
+                if length <= 1e-9:
+                    continue
+                if tangent[k_orth] != 0.0:
+                    at_axis = -c[e][k_orth] / tangent[k_orth]
+                    spot = c[e][k_side] + tangent[k_side] * at_axis
+                    if 0.0 < at_axis < length and spot != 0.0:
+                        release(k_orth, math.copysign(1.0, spot))
+                s = (X - c[e][0]) * tx + (Y - c[e][1]) * ty
+                off = np.abs((X - c[e][0]) * ty - (Y - c[e][1]) * tx)
+                u = np.clip(s / length, 0.0, 1.0)
+                fade = 1.0 - u * u * (3.0 - 2.0 * u)
+                tail = (s > 0.0) & (s <= length) & (off <= cell)
+                # Eases in from the end: beside a corner the tail's band also
+                # covers nodes next to the OTHER edge, whose line wants another
+                # move there (18 units apart inside one cell on a keystone,
+                # which folded those cells).
+                ease = np.clip(s / (self.GROUND_EASE * cell), 0.0, 1.0)
+                stiff = stiffness * fade * ease * ease * (3.0 - 2.0 * ease)
+                stronger = tail & (stiff > kappa)
+                kappa[stronger] = stiff[stronger]
+                goal_x = X + far_x + (dx - far_x) * fade - ub_x
+                goal_y = Y + far_y + (dy - far_y) * fade - ub_y
+                target_x[stronger] = goal_x[stronger]
+                target_y[stronger] = goal_y[stronger]
+
+        if len(crossed) == 4 and released:
+            for k, sign in tuple(crossed):
+                release(k, sign)
+        if len(released) == 4:
+            # All four half-axes gone: an origin left pinned would be a lone
+            # node holding the whole sheet, a needle every line through it
+            # kinks over.
+            pinned_x[np.ix_(on_v, on_h)] = False
+            pinned_y[np.ix_(on_v, on_h)] = False
+
+        # The pin itself holds the LINE, not the nodes around it: each station
+        # asks that the bilinear value of U there be the drawn point. Pinning
+        # the nodes of a one-cell band instead gave every one of them the
+        # line's move, a two-cell plateau where the normal slope drops to
+        # zero, and every grid line crossed it with a crease (7-26 degrees on
+        # a keystone; the slope there is the plateau's whole cost).
+        rows = []
+        for line in self.grounds:
+            c, m = line["child"], line["main"]
+            for a, b, ma, mb in zip(c, c[1:], m, m[1:]):
+                steps = max(1, int(math.ceil(
+                    math.hypot(b[0] - a[0], b[1] - a[1]) / (0.5 * min(du, dv)))))
+                for i in range(steps):
+                    t = i / steps
+                    rows.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t,
+                                 ma[0] + (mb[0] - ma[0]) * t, ma[1] + (mb[1] - ma[1]) * t))
+            rows.append((c[-1][0], c[-1][1], m[-1][0], m[-1][1]))
+        table = np.array(rows)
+        nx, ny = X.shape[0] - 1, X.shape[1] - 1
+        fx = (table[:, 0] - x0) / du
+        fy = (table[:, 1] - y0) / dv
+        i = np.clip(np.floor(fx).astype(int), 0, nx - 1)
+        j = np.clip(np.floor(fy).astype(int), 0, ny - 1)
+        tx = fx - i
+        ty = fy - j
+        tall = ny + 1
+        nodes = np.stack([i * tall + j, i * tall + j + 1,
+                          (i + 1) * tall + j, (i + 1) * tall + j + 1], axis=1)
+        weights = np.stack([(1.0 - tx) * (1.0 - ty), (1.0 - tx) * ty,
+                            tx * (1.0 - ty), tx * ty], axis=1)
+        base_x = np.sum(ub_x.ravel()[nodes] * weights, axis=1)
+        base_y = np.sum(ub_y.ravel()[nodes] * weights, axis=1)
+        return {"kappa": kappa, "target": (target_x, target_y),
+                "nodes": nodes, "weights": weights,
+                "goal": (table[:, 2] - base_x, table[:, 3] - base_y),
+                "anchor": self.GROUND_ANCHOR / (du * dv)}
 
     # ------------------------------------------------------------- queries
 
@@ -2846,7 +3152,7 @@ class _FlowFieldWarp:
 
 
 def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None,
-                 additional_pairs=None):
+                 additional_pairs=None, ground_pairs=None):
     """Build point mapper from the child frame to the main frame.
 
     Each guide spec is a bare point list (polyline guide - chord arithmetic,
@@ -3123,9 +3429,11 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
     # the warp-free mapper.
     warp = None
     additional_notes = []
-    if additional_pairs:
+
+    def lifted_pairs(pairs, noun):
+        """(child Third, main Third, line index) per usable pair."""
         thirds = []
-        for line_index, (child_item, main_item) in enumerate(additional_pairs):
+        for line_index, (child_item, main_item) in enumerate(pairs):
             child_item = child_item or {}
             main_item = main_item or {}
             child_points = [tuple(p) for p in child_item.get("points") or []]
@@ -3148,7 +3456,7 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
                        _branch_window(main_points, main_third)]
             if any(w is None for w in windows):
                 additional_notes.append(
-                    f"additional line {line_index + 1} has no continuous "
+                    f"{noun} {line_index + 1} has no continuous "
                     "Third lift (it crosses a fold edge of its frame) - "
                     "it cannot shape the mapping and was skipped")
                 continue
@@ -3157,7 +3465,7 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
             if f_lo > 1e-9 or f_hi < 1.0 - 1e-9:
                 if f_hi - f_lo < 1e-6:
                     additional_notes.append(
-                        f"additional line {line_index + 1} crosses fold "
+                        f"{noun} {line_index + 1} crosses fold "
                         "edges everywhere - it was skipped")
                     continue
                 child_third = _slice_third_by_canvas_fraction(
@@ -3165,20 +3473,39 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
                 main_third = _slice_third_by_canvas_fraction(
                     main_points, main_third, f_lo, f_hi)
                 additional_notes.append(
-                    f"additional line {line_index + 1} crosses a fold edge "
+                    f"{noun} {line_index + 1} crosses a fold edge "
                     f"of its frame; only its longest continuous stretch "
                     f"({100.0 * (f_hi - f_lo):.0f}% of the drawn length) "
                     "shapes the mapping")
             if len(child_third) < 2 or len(main_third) < 2:
                 continue
             thirds.append((child_third, main_third, line_index))
-        if thirds:
+        return thirds
+
+    def ground_stations(child_item, main_item):
+        """A ground pair with its stations paired on the CANVAS, by arc
+        fraction, before anything is lifted: the promise is about this point
+        of the pattern landing on that point of the drawn line."""
+        c = [(p[0], p[1]) for p in (child_item or {}).get("points") or []]
+        m = [(p[0], p[1]) for p in (main_item or {}).get("points") or []]
+        if len(c) < 2 or len(m) < 2:
+            return ({}, {})
+        count = _FlowFieldWarp.GROUND_STATIONS
+        return ({"points": _resample_fractions(c, count)},
+                {"points": _resample_fractions(m, count)})
+
+    if additional_pairs or ground_pairs:
+        thirds = lifted_pairs(additional_pairs or [], "additional line")
+        grounds = lifted_pairs(
+            [ground_stations(*pair) for pair in ground_pairs or []], "ground line")
+        if thirds or grounds:
             candidate = _FlowFieldWarp(
                 thirds, _ADDITIONAL["falloff"],
                 _ADDITIONAL["radius_factor"],
                 frame_window=((-child.h_arc, child.h_total - child.h_arc),
-                              (-child.v_arc, child.v_total - child.v_arc)))
-            warp = candidate if candidate.pairs else None
+                              (-child.v_arc, child.v_total - child.v_arc)),
+                grounds=grounds)
+            warp = candidate if candidate.pairs or candidate.grounds else None
             if warp is not None:
                 additional_notes.extend(warp.notes)
 

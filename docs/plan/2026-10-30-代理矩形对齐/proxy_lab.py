@@ -68,15 +68,16 @@ def solve(request):
         return {"ok": False, "reason": why}
     frame = (g["child"]["h"], g["child"]["v"], g["main"]["h"], g["main"]["v"])
     mode = request.get("mode")
-    pairs = None
-    if mode == "edges":
-        pairs = []
+    pairs = []
+    if mode in ("edges", "ground"):
         for family in ("h", "v"):
             for ce, me in zip(g["child"]["edges"][family], g["main"]["edges"][family]):
                 pairs.append((asset(densify(ce), len(pairs) + 1),
                               asset(densify(me), len(pairs) + 1)))
     info = {}
-    map_point, why = am.build_mapper(*frame, info, additional_pairs=pairs)
+    map_point, why = am.build_mapper(
+        *frame, info, additional_pairs=pairs if mode == "edges" else None,
+        ground_pairs=pairs if mode == "ground" else None)
     if map_point is None:
         return {"ok": False, "reason": str(why), "guides": g}
 
