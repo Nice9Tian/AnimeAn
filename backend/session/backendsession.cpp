@@ -21,6 +21,7 @@
 #include <QtGlobal>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <exception>
 #include <string>
@@ -265,9 +266,10 @@ const QStringList &allStateKeys()
         QStringLiteral("windows"),
         QStringLiteral("cursor/main"),
         QStringLiteral("cursor/child"),
+        QStringLiteral("viewport/main"),
+        QStringLiteral("viewport/child"),
         QStringLiteral("freeze"),
         QStringLiteral("pad"),
-        QStringLiteral("event"),
     };
     return keys;
 }
@@ -623,6 +625,14 @@ void BackendSession::bindPaintViewToBusiness(const QString &viewName, PaintOpenG
         markDirty(QStringLiteral("history"));
         markDirty(QStringLiteral("menus"));
     });
+    connect(paintView, &PaintOpenGLWidget::viewTransformChanged, this, [this, viewName]() {
+        markDirty(viewName == QStringLiteral("child") ? QStringLiteral("viewport/child")
+                                                      : QStringLiteral("viewport/main"));
+    });
+    connect(paintView, &PaintOpenGLWidget::userTransformed, this, [this, viewName]() {
+        markDirty(viewName == QStringLiteral("child") ? QStringLiteral("viewport/child")
+                                                      : QStringLiteral("viewport/main"));
+    });
 }
 
 void BackendSession::setupBusinessConnections()
@@ -640,8 +650,10 @@ void BackendSession::setupBusinessConnections()
     connect(m_business, &AnimeanBusiness::windowTitleChanged, this, [this](const QString &) {
         markDirty(QStringLiteral("window"));
     });
-    connect(m_business, &AnimeanBusiness::canvasSizeChanged, this, [this](const QString &, const QSize &) {
+    connect(m_business, &AnimeanBusiness::canvasSizeChanged, this, [this](const QString &viewName, const QSize &) {
         markDirty(QStringLiteral("window"));
+        markDirty(viewName == QStringLiteral("child") ? QStringLiteral("viewport/child")
+                                                      : QStringLiteral("viewport/main"));
     });
     connect(m_business, &AnimeanBusiness::activeViewChanged, this, [this](const QString &activeView) {
         if (m_mainBoard) {
@@ -1097,6 +1109,8 @@ void BackendSession::handleInputMessage(const QJsonObject &msg)
         const int h = msg.value(QStringLiteral("h")).toInt(msg.value(QStringLiteral("height")).toInt(board->height()));
         const qreal dpr = msg.value(QStringLiteral("dpr")).toDouble(1.0);
         board->resizeSurface(w, h, dpr);
+        markDirty(view == QStringLiteral("child") ? QStringLiteral("viewport/child")
+                                                  : QStringLiteral("viewport/main"));
     } else if (kind == QStringLiteral("focus")) {
         const bool focused = msg.value(QStringLiteral("focused")).toBool(true);
         if (focused) {
@@ -1661,6 +1675,33 @@ QJsonObject BackendSession::dispatchCall(const QString &method, const QJsonObjec
         return QJsonObject{{QStringLiteral("view"), board->viewName()}};
     }
 
+    if (method == QStringLiteral("board.scroll")) {
+        PaintOpenGLWidget *board = boardForView(view);
+        if (!board) {
+            return makeError(QStringLiteral("Board not found"));
+        }
+        const QString axis = params.value(QStringLiteral("axis")).toString().trimmed().toLower();
+        if (axis != QStringLiteral("h") && axis != QStringLiteral("v")) {
+            return makeError(QStringLiteral("Invalid axis: %1").arg(axis));
+        }
+        const int value = int(std::lround(params.value(QStringLiteral("value")).toDouble(0.0)));
+        const QJsonObject vp = buildViewportState(board->viewName());
+        const int curH = vp.value(QStringLiteral("h")).toObject().value(QStringLiteral("value")).toInt(
+            int(std::lround(-board->panOffset().x())));
+        const int curV = vp.value(QStringLiteral("v")).toObject().value(QStringLiteral("value")).toInt(
+            int(std::lround(-board->panOffset().y())));
+        const int nextH = (axis == QStringLiteral("h")) ? value : curH;
+        const int nextV = (axis == QStringLiteral("v")) ? value : curV;
+        board->setScrollPosition(nextH, nextV);
+        markDirty(board->viewName() == QStringLiteral("child") ? QStringLiteral("viewport/child")
+                                                               : QStringLiteral("viewport/main"));
+        return QJsonObject{
+            {QStringLiteral("view"), board->viewName()},
+            {QStringLiteral("h"), int(std::lround(-board->panOffset().x()))},
+            {QStringLiteral("v"), int(std::lround(-board->panOffset().y()))},
+        };
+    }
+
     return makeError(QStringLiteral("Unknown method: %1").arg(method));
 }
 
@@ -1866,7 +1907,12 @@ void BackendSession::emitUiEvent(const QString &name, const QJsonObject &args)
         {QStringLiteral("name"), name},
         {QStringLiteral("args"), args},
     };
-    markDirty(QStringLiteral("event"));
+    const QJsonObject packet{
+        {QStringLiteral("t"), QStringLiteral("state")},
+        {QStringLiteral("key"), QStringLiteral("event")},
+        {QStringLiteral("value"), m_lastEvent},
+    };
+    sendJson(packet);
 }
 
 void BackendSession::handleFrameSink(const QString &viewName, const BoardFrame &frame)
@@ -2103,6 +2149,12 @@ QJsonValue BackendSession::buildStateValue(const QString &key) const
     }
     if (key == QStringLiteral("cursor/child")) {
         return buildCursorState(QStringLiteral("child"));
+    }
+    if (key == QStringLiteral("viewport/main")) {
+        return buildViewportState(QStringLiteral("main"));
+    }
+    if (key == QStringLiteral("viewport/child")) {
+        return buildViewportState(QStringLiteral("child"));
     }
     if (key == QStringLiteral("freeze")) {
         return m_pythonFreezeDepth > 0;
@@ -2696,6 +2748,64 @@ QJsonObject BackendSession::buildCursorState(const QString &viewName) const
         {QStringLiteral("hy"), st.hy},
         {QStringLiteral("w"), st.w},
         {QStringLiteral("h"), st.h},
+    };
+}
+
+QJsonObject BackendSession::buildViewportState(const QString &viewName) const
+{
+    const PaintOpenGLWidget *paintWidget = boardForView(viewName);
+    if (!paintWidget) {
+        return QJsonObject();
+    }
+    if (paintWidget->unboundedCanvas()) {
+        return QJsonObject{
+            {QStringLiteral("h"), QJsonObject{
+                {QStringLiteral("min"), 0},
+                {QStringLiteral("max"), 0},
+                {QStringLiteral("page"), paintWidget->width()},
+                {QStringLiteral("value"), 0},
+                {QStringLiteral("enabled"), false},
+            }},
+            {QStringLiteral("v"), QJsonObject{
+                {QStringLiteral("min"), 0},
+                {QStringLiteral("max"), 0},
+                {QStringLiteral("page"), paintWidget->height()},
+                {QStringLiteral("value"), 0},
+                {QStringLiteral("enabled"), false},
+            }},
+        };
+    }
+
+    const qreal zoomFactor = paintWidget->zoom();
+    const QRectF reach = paintWidget->reachableRect();
+    const int left = int(std::lround(reach.left() * zoomFactor));
+    const int right = int(std::lround(reach.right() * zoomFactor));
+    const int top = int(std::lround(reach.top() * zoomFactor));
+    const int bottom = int(std::lround(reach.bottom() * zoomFactor));
+    const int hMin = std::min(left, right - paintWidget->width());
+    const int hMax = std::max(left, right - paintWidget->width());
+    const int vMin = std::min(top, bottom - paintWidget->height());
+    const int vMax = std::max(top, bottom - paintWidget->height());
+    const int hRange = hMax - hMin;
+    const int vRange = vMax - vMin;
+    const int hValue = std::clamp(int(std::lround(-paintWidget->panOffset().x())), hMin, hMax);
+    const int vValue = std::clamp(int(std::lround(-paintWidget->panOffset().y())), vMin, vMax);
+
+    return QJsonObject{
+        {QStringLiteral("h"), QJsonObject{
+            {QStringLiteral("min"), hMin},
+            {QStringLiteral("max"), hMax},
+            {QStringLiteral("page"), paintWidget->width()},
+            {QStringLiteral("value"), hValue},
+            {QStringLiteral("enabled"), hRange > 0},
+        }},
+        {QStringLiteral("v"), QJsonObject{
+            {QStringLiteral("min"), vMin},
+            {QStringLiteral("max"), vMax},
+            {QStringLiteral("page"), paintWidget->height()},
+            {QStringLiteral("value"), vValue},
+            {QStringLiteral("enabled"), vRange > 0},
+        }},
     };
 }
 

@@ -72,6 +72,7 @@ try {
     assert(port > 0 && port <= 65535, `Invalid port: ${port}`);
 
     const stateMap = new Map();
+    const receivedEvents = [];
     const stateWaiters = [];
     const boardWaiters = [];
     const pendingCalls = new Map();
@@ -168,6 +169,9 @@ try {
         }
         const msg = JSON.parse(event.data);
         if (msg.t === "state") {
+            if (msg.key === "event") {
+                receivedEvents.push(msg.value);
+            }
             stateMap.set(msg.key, msg.value);
             notifyStateWaiters();
         } else if (msg.t === "board") {
@@ -214,6 +218,8 @@ try {
         "windows",
         "cursor/main",
         "cursor/child",
+        "viewport/main",
+        "viewport/child",
         "freeze",
         "pad",
     ];
@@ -222,6 +228,27 @@ try {
         (map) => requiredStateKeys.every((k) => map.has(k)),
         `all initial state keys (${requiredStateKeys.join(", ")})`
     );
+    assert.equal(receivedEvents.length, 0, "Should not receive empty event on initial connection");
+
+    // Verify viewport/main fields
+    const vpMainInitial = stateMap.get("viewport/main");
+    assert(vpMainInitial && typeof vpMainInitial === "object", "viewport/main must be an object");
+    for (const axis of ["h", "v"]) {
+        const bar = vpMainInitial[axis];
+        assert(bar && typeof bar === "object", `viewport/main.${axis} must be an object`);
+        for (const numField of ["min", "max", "page", "value"]) {
+            assert.equal(
+                typeof bar[numField],
+                "number",
+                `viewport/main.${axis}.${numField} must be a number`
+            );
+        }
+        assert.equal(
+            typeof bar.enabled,
+            "boolean",
+            `viewport/main.${axis}.enabled must be a boolean`
+        );
+    }
 
     // 2. Check menus contain File, Edit, View, Auto Mapping, Draw, Theme, Windows
     const menus = stateMap.get("menus");
@@ -359,6 +386,47 @@ try {
         },
         "tools switched to Arrow and toolOptions received Python JSON"
     );
+
+    // 8. Call board.scroll -> viewport/main value changes
+    const vpBeforeScroll = stateMap.get("viewport/main");
+    const oldHValue = vpBeforeScroll.h.value;
+    const nextHValue =
+        oldHValue + 50 <= vpBeforeScroll.h.max
+            ? oldHValue + 50
+            : Math.max(vpBeforeScroll.h.min, oldHValue - 50);
+    assert.notEqual(nextHValue, oldHValue, "Scrollable range on viewport/main.h must allow a different value");
+
+    const scrollReply = await callBackend("board.scroll", {
+        view: "main",
+        axis: "h",
+        value: nextHValue,
+    });
+    assert.equal(scrollReply.ok, true, `board.scroll failed: ${scrollReply.error}`);
+
+    await waitForState(
+        (map) => {
+            const vp = map.get("viewport/main");
+            return vp && vp.h && vp.h.value === nextHValue;
+        },
+        `viewport/main.h.value === ${nextHValue}`
+    );
+
+    // 9. Two consecutive menu.trigger calls (file.open, file.saveAs) -> receive two event messages
+    const eventsBeforeCount = receivedEvents.length;
+    const openPromise = callBackend("menu.trigger", { id: "file.open" });
+    const saveAsPromise = callBackend("menu.trigger", { id: "file.saveAs" });
+    const [openReply, saveAsReply] = await Promise.all([openPromise, saveAsPromise]);
+    assert.equal(openReply.ok, true, `menu.trigger file.open failed: ${openReply.error}`);
+    assert.equal(saveAsReply.ok, true, `menu.trigger file.saveAs failed: ${saveAsReply.error}`);
+
+    await waitForState(
+        () => receivedEvents.length >= eventsBeforeCount + 2,
+        "two event messages from consecutive menu.trigger calls"
+    );
+    const twoEvents = receivedEvents.slice(eventsBeforeCount, eventsBeforeCount + 2);
+    assert.equal(twoEvents.length, 2, "Expected two distinct event state messages");
+    assert.equal(twoEvents[0].name, "dialog.openProject");
+    assert.equal(twoEvents[1].name, "dialog.saveProjectAs");
 
     ws.close();
     clearTimeout(globalTimeout);

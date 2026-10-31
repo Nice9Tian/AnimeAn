@@ -103,6 +103,7 @@ private:
     QJsonObject buildHistoryState() const;
     QJsonObject buildWindowsState() const;
     QJsonObject buildCursorState(const QString &viewName) const;
+    QJsonObject buildViewportState(const QString &viewName) const;
     QJsonObject buildPadState() const;
 
     WsServer *m_ws = nullptr;
