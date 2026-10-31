@@ -177,7 +177,7 @@ QString pythonHookSendMessage(const py::dict &message)
 #endif
 
 PaintOpenGLWidget::PaintOpenGLWidget(QWidget *parent)
-    : QOpenGLWidget(parent)
+    : PaintBoardBase(parent)
 {
     setAutoFillBackground(false);
     setMouseTracking(true);
@@ -755,7 +755,7 @@ void PaintOpenGLWidget::wheelEvent(QWheelEvent *event)
 
     const qreal steps = event->angleDelta().y() / 120.0;
     if (qFuzzyIsNull(steps)) {
-        QOpenGLWidget::wheelEvent(event);
+        PaintBoardBase::wheelEvent(event);
         return;
     }
 
@@ -789,7 +789,7 @@ void PaintOpenGLWidget::wheelEvent(QWheelEvent *event)
 
 void PaintOpenGLWidget::resizeEvent(QResizeEvent *event)
 {
-    QOpenGLWidget::resizeEvent(event);
+    PaintBoardBase::resizeEvent(event);
     if (m_playbackActive) {
         // A resize does not move the view, so the mapped blit still lands
         // correctly; it only means the cache covers less than the new viewport.
@@ -953,7 +953,7 @@ void PaintOpenGLWidget::leaveEvent(QEvent *event)
         m_hasHoverPos = false;
         update();
     }
-    QOpenGLWidget::leaveEvent(event);
+    PaintBoardBase::leaveEvent(event);
 }
 
 void PaintOpenGLWidget::focusInEvent(QFocusEvent *event)
@@ -966,7 +966,7 @@ void PaintOpenGLWidget::focusInEvent(QFocusEvent *event)
     if (m_playbackActive && event->reason() == Qt::MouseFocusReason) {
         m_swallowNextPress = true;
     }
-    QOpenGLWidget::focusInEvent(event);
+    PaintBoardBase::focusInEvent(event);
     emit focusGained();
 }
 
@@ -3224,7 +3224,7 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
     }
 
     if (event->button() != Qt::LeftButton) {
-        QOpenGLWidget::mousePressEvent(event);
+        PaintBoardBase::mousePressEvent(event);
         return;
     }
 
@@ -3412,7 +3412,7 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
             sendPythonHandleMessage(QStringLiteral("hover"), QString(), m_hoverPos);
         }
         update();
-        QOpenGLWidget::mouseMoveEvent(event);
+        PaintBoardBase::mouseMoveEvent(event);
         return;
     }
 
@@ -3469,7 +3469,7 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
     }
 
     if (!m_hasCurrentStroke) {
-        QOpenGLWidget::mouseMoveEvent(event);
+        PaintBoardBase::mouseMoveEvent(event);
         return;
     }
 
@@ -3523,7 +3523,7 @@ void PaintOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
     }
 
     if (event->button() != Qt::LeftButton) {
-        QOpenGLWidget::mouseReleaseEvent(event);
+        PaintBoardBase::mouseReleaseEvent(event);
         return;
     }
 
@@ -3584,7 +3584,7 @@ void PaintOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
     }
 
     if (!m_hasCurrentStroke) {
-        QOpenGLWidget::mouseReleaseEvent(event);
+        PaintBoardBase::mouseReleaseEvent(event);
         return;
     }
 
