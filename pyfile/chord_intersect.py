@@ -32,6 +32,7 @@ with real curve segments are handled by their flattening: the crossing locates t
 seeded there gives the exact arcs on the curve (locate_then_refine).
 """
 import bisect
+import heapq
 import math
 
 try:
@@ -119,24 +120,17 @@ def polyline_crossing(a, b):
     segment pair wins; when nothing crosses, the closest vertex pair's midpoint.
     """
     a_cum, b_cum = cumulative_lengths(a), cumulative_lengths(b)
-    for i in range(len(a) - 1):
-        for j in range(len(b) - 1):
-            hit = segment_intersection(a[i], a[i + 1], b[j], b[j + 1])
-            if hit is None:
-                continue
-            t, u = hit
-            if -_EPS <= t <= 1.0 + _EPS and -_EPS <= u <= 1.0 + _EPS:
-                t, u = min(max(t, 0.0), 1.0), min(max(u, 0.0), 1.0)
-                point = (a[i][0] + (a[i + 1][0] - a[i][0]) * t, a[i][1] + (a[i + 1][1] - a[i][1]) * t)
-                return (point, a_cum[i] + (a_cum[i + 1] - a_cum[i]) * t,
-                        b_cum[j] + (b_cum[j + 1] - b_cum[j]) * u, i, j)
-    best = None
-    for i, pa in enumerate(a):
-        for j, pb in enumerate(b):
-            d = math.hypot(pa[0] - pb[0], pa[1] - pb[1])
-            if best is None or d < best[0]:
-                best = (d, i, j)
-    _, i, j = best
+    for i, j in box_pairs(a, b, _EPS):
+        hit = segment_intersection(a[i], a[i + 1], b[j], b[j + 1])
+        if hit is None:
+            continue
+        t, u = hit
+        if -_EPS <= t <= 1.0 + _EPS and -_EPS <= u <= 1.0 + _EPS:
+            t, u = min(max(t, 0.0), 1.0), min(max(u, 0.0), 1.0)
+            point = (a[i][0] + (a[i + 1][0] - a[i][0]) * t, a[i][1] + (a[i + 1][1] - a[i][1]) * t)
+            return (point, a_cum[i] + (a_cum[i + 1] - a_cum[i]) * t,
+                    b_cum[j] + (b_cum[j + 1] - b_cum[j]) * u, i, j)
+    i, j = closest_vertices(a, b)
     point = ((a[i][0] + b[j][0]) * 0.5, (a[i][1] + b[j][1]) * 0.5)
     return point, a_cum[i], b_cum[j], min(i, len(a) - 2), min(j, len(b) - 2)
 
@@ -267,6 +261,72 @@ def _box_tree(points):
         hi_y[k] = hi_y[a] if hi_y[a] > hi_y[b] else hi_y[b]
     size = [hi_x[k] - lo_x[k] + hi_y[k] - lo_y[k] for k in range(2 * m)]
     return lo_x, hi_x, lo_y, hi_y, size, m
+
+
+def box_pairs(a, b, eps):
+    """(i, j) of the segment pairs of polylines a and b that can cross, in the
+    order of the double loop over i then j, so the first one that does is the
+    double loop's. eps is the crossing test's own tolerance: a segment counts
+    eps of its length past either end, and the boxes grow to match. Splitting
+    a's tree all the way before b's is what keeps the order."""
+    ax0, ax1, ay0, ay1, a_size, ma = _box_tree(a)
+    bx0, bx1, by0, by1, b_size, mb = _box_tree(b)
+    slack = 2.0 * eps * (max(a_size[ma:ma + len(a) - 1], default=0.0)
+                         + max(b_size[mb:mb + len(b) - 1], default=0.0))
+    stack = [(1, 1)]
+    pop, push = stack.pop, stack.append
+    while stack:
+        p, q = pop()
+        if (ax0[p] > bx1[q] + slack or bx0[q] > ax1[p] + slack
+                or ay0[p] > by1[q] + slack or by0[q] > ay1[p] + slack):
+            continue
+        if p < ma:
+            push((2 * p + 1, q))
+            push((2 * p, q))
+        elif q < mb:
+            push((p, 2 * q + 1))
+            push((p, 2 * q))
+        else:
+            yield p - ma, q - mb
+
+
+def closest_vertices(a, b):
+    """(i, j) of the closest vertex pair of a and b, and among equals the first
+    in the order of the double loop: best-first over the box trees, a pair of
+    stretches waits on the gap between its boxes. The gap is shaded down a
+    hair so that rounding can never end the search before a tie is seen."""
+    if len(a) < 2 or len(b) < 2:
+        _, i, j = min((math.hypot(p[0] - q[0], p[1] - q[1]), i, j)
+                      for i, p in enumerate(a) for j, q in enumerate(b))
+        return i, j
+    ax0, ax1, ay0, ay1, a_size, ma = _box_tree(a)
+    bx0, bx1, by0, by1, b_size, mb = _box_tree(b)
+
+    def gap(p, q):
+        return math.hypot(max(ax0[p] - bx1[q], bx0[q] - ax1[p], 0.0),
+                          max(ay0[p] - by1[q], by0[q] - ay1[p], 0.0)) * (1.0 - 1e-12)
+
+    heap = [(gap(1, 1), 1, 1)]
+    best = None
+    while heap:
+        lower, p, q = heapq.heappop(heap)
+        if best is not None and lower > best[0]:
+            break
+        if p >= ma and q >= mb:
+            for i in (p - ma, p - ma + 1):
+                for j in (q - mb, q - mb + 1):
+                    d = math.hypot(a[i][0] - b[j][0], a[i][1] - b[j][1])
+                    if best is None or (d, i, j) < best:
+                        best = (d, i, j)
+            continue
+        if p < ma and (q >= mb or a_size[p] >= b_size[q]):
+            children = ((2 * p, q), (2 * p + 1, q))
+        else:
+            children = ((p, 2 * q), (p, 2 * q + 1))
+        for u, w in children:
+            if ax0[u] != math.inf and bx0[w] != math.inf:
+                heapq.heappush(heap, (gap(u, w), u, w))
+    return best[1], best[2]
 
 
 def _hit_args(row):

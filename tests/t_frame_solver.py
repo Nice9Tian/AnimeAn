@@ -103,21 +103,100 @@ for _ in range(300):
 assert seen[True] and seen[False], seen
 print("5) can_fold == the brute minimum over all direction pairs (%d folding, %d not)" % (seen[True], seen[False]))
 
-# 6) the budget: at 3000 x 3000 everything a frame adds before its answers, with
-#    a point on the sheet and one on the extensions, stays under 200 ms
+# 6) the crossing: the box trees give the double loop's answer to the last bit, the first crossing pair in
+#    (i, j) order or else the first closest vertex pair, with the same eps on each segment's own length
+def _double_loop(a, b):
+    a_cum, b_cum = am._cumulative_lengths(a), am._cumulative_lengths(b)
+    eps = 1e-6
+    for i in range(len(a) - 1):
+        for j in range(len(b) - 1):
+            hit = am._segment_intersection(a[i], a[i + 1], b[j], b[j + 1])
+            if hit is None:
+                continue
+            t, u = hit
+            if -eps <= t <= 1.0 + eps and -eps <= u <= 1.0 + eps:
+                point = (a[i][0] + (a[i + 1][0] - a[i][0]) * t, a[i][1] + (a[i + 1][1] - a[i][1]) * t)
+                return (point, a_cum[i] + (a_cum[i + 1] - a_cum[i]) * min(max(t, 0.0), 1.0),
+                        b_cum[j] + (b_cum[j + 1] - b_cum[j]) * min(max(u, 0.0), 1.0))
+    best = None
+    for i, pa in enumerate(a):
+        for j, pb in enumerate(b):
+            d = math.hypot(pa[0] - pb[0], pa[1] - pb[1])
+            if best is None or d < best[0]:
+                best = (d, i, j)
+    _, i, j = best
+    return ((a[i][0] + b[j][0]) * 0.5, (a[i][1] + b[j][1]) * 0.5), a_cum[i], b_cum[j]
+
+
+def _walk(n, step, start, snap):
+    p = [start]
+    for _ in range(n):
+        x, y = p[-1][0] + rng.uniform(-step, step), p[-1][1] + rng.uniform(-step, step)
+        p.append((float(round(x)), float(round(y))) if snap else (x, y))
+    return p
+
+
+crossing = fallback = 0
+for k in range(1400):
+    n, m = rng.randint(1, 35), rng.randint(1, 35)
+    kind = k % 7
+    if kind == 0:
+        a, b = _walk(n, 12.0, (0.0, 0.0), False), _walk(m, 12.0, (5.0, 3.0), False)
+    elif kind == 1:                                     # apart: the closest vertices
+        a, b = _walk(n, 9.0, (0.0, 0.0), False), _walk(m, 9.0, (900.0, 0.0), False)
+    elif kind == 2:                                     # integer: ties, shared vertices, zero-length segments
+        a, b = _walk(n, 5.0, (0.0, 0.0), True), _walk(m, 5.0, (3.0, 2.0), True)
+    elif kind == 3:                                     # every distance tied
+        a, b = [(float(i), 0.0) for i in range(n + 1)], [(float(i), 7.0) for i in range(m + 1)]
+    elif kind == 4:                                     # collinear and apart
+        a = [(float(i), 2.0 * i) for i in range(n + 1)]
+        b = [(float(i) + n + 3.0, 2.0 * (i + n + 3.0)) for i in range(m + 1)]
+    elif kind == 5:                                     # a T: one end stops short of the other guide, inside eps
+        a = [(-100.0, 0.0), (100.0, 0.0)]
+        b = [(rng.uniform(-90.0, 90.0), rng.choice((-1, 1)) * rng.uniform(0.0, 3e-5)),
+             (rng.uniform(-90.0, 90.0), rng.uniform(20.0, 90.0))]
+    else:                                               # lengths far apart: eps is large on one side only
+        a, b = [(-1e6, -3.0), (1e6, 3.0)] + _walk(n, 2.0, (1e6, 3.0), False), _walk(m, 3.0, (0.0, 1.0), False)
+    want = _double_loop(a, b)
+    assert am._polyline_intersection(a, b) == want, (a, b)
+    hits = am._polylines_cross(a, b)
+    assert hits == any(-1e-6 <= h[0] <= 1.0 + 1e-6 and -1e-6 <= h[1] <= 1.0 + 1e-6
+                       for h in (am._segment_intersection(a[i], a[i + 1], b[j], b[j + 1])
+                                 for i in range(len(a) - 1) for j in range(len(b) - 1)) if h)
+    crossing += hits
+    fallback += not hits
+assert crossing and fallback
+print("6) crossing == the double loop on 1400 rigs (%d crossing, %d through the closest vertices)" % (crossing, fallback))
+
+# 7) the budget: at 3000 x 3000 the whole of what a frame needs before its answers, crossing, gate, locator, grid,
+#    with a point on the sheet and one on the extensions, stays under 200 ms; also where the guides never cross
 n = 3000
 big_h = [(-6000.0 + 4.0 * k, 25.0 * math.sin(k / n * 6.0)) for k in range(n + 1)]
 big_v = [(20.0 * math.sin(k / n * 5.0), -6000.0 + 4.0 * k) for k in range(n + 1)]
-frame = am._Frame(big_h, big_v)
-assert not frame.can_fold()
 best = None
 for _ in range(3):
-    frame._fold_gate = frame._locator = None
     start = time.perf_counter()
+    frame = am._Frame(big_h, big_v)
     for p in ((1.0, 2.0), (7000.0, 3.0)):
         assert frame.solve_full(p, 0.0, 0.0)[2] <= 1e-9
     spent = time.perf_counter() - start
     best = spent if best is None else min(best, spent)
+assert not frame.can_fold()
 assert best < 0.2, best
-print("6) 3000 x 3000: gate, locator, grid and two first solves in %.1f ms" % (best * 1e3))
+apart = None
+for _ in range(3):
+    start = time.perf_counter()
+    far = am._Frame(big_h, [(x + 9000.0, y) for x, y in big_v])
+    spent = time.perf_counter() - start
+    apart = spent if apart is None else min(apart, spent)
+assert apart < 0.2, apart
+# the loosest boxes: two spirals winding between each other, near everywhere and never crossing
+spiral = [(k * 0.5 * math.cos(k * 0.02), k * 0.5 * math.sin(k * 0.02)) for k in range(1, n + 2)]
+start = time.perf_counter()
+am._polyline_intersection(spiral, [(-x, -y) for x, y in spiral])
+wound = time.perf_counter() - start
+assert wound < 0.2, wound
+assert not am._polylines_cross(spiral, [(-x, -y) for x, y in spiral])
+print("7) 3000 x 3000: crossing to two first solves %.1f ms, guides apart %.1f ms, wound spirals %.1f ms" % (
+    best * 1e3, apart * 1e3, wound * 1e3))
 print("t_frame_solver: ok")

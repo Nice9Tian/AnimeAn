@@ -944,14 +944,13 @@ def _segment_intersection(a1, a2, b1, b2):
 def _polylines_cross(a, b):
     """True if the two polylines genuinely intersect."""
     eps = 1e-6
-    for i in range(len(a) - 1):
-        for j in range(len(b) - 1):
-            hit = _segment_intersection(a[i], a[i + 1], b[j], b[j + 1])
-            if hit is None:
-                continue
-            t, u = hit
-            if -eps <= t <= 1.0 + eps and -eps <= u <= 1.0 + eps:
-                return True
+    for i, j in chord_intersect.box_pairs(a, b, eps):
+        hit = _segment_intersection(a[i], a[i + 1], b[j], b[j + 1])
+        if hit is None:
+            continue
+        t, u = hit
+        if -eps <= t <= 1.0 + eps and -eps <= u <= 1.0 + eps:
+            return True
     return False
 
 
@@ -963,26 +962,19 @@ def _polyline_intersection(a, b):
     a_cum = _cumulative_lengths(a)
     b_cum = _cumulative_lengths(b)
     eps = 1e-6
-    for i in range(len(a) - 1):
-        for j in range(len(b) - 1):
-            hit = _segment_intersection(a[i], a[i + 1], b[j], b[j + 1])
-            if hit is None:
-                continue
-            t, u = hit
-            if -eps <= t <= 1.0 + eps and -eps <= u <= 1.0 + eps:
-                point = (a[i][0] + (a[i + 1][0] - a[i][0]) * t,
-                         a[i][1] + (a[i + 1][1] - a[i][1]) * t)
-                arc_a = a_cum[i] + (a_cum[i + 1] - a_cum[i]) * min(max(t, 0.0), 1.0)
-                arc_b = b_cum[j] + (b_cum[j + 1] - b_cum[j]) * min(max(u, 0.0), 1.0)
-                return point, arc_a, arc_b
+    for i, j in chord_intersect.box_pairs(a, b, eps):
+        hit = _segment_intersection(a[i], a[i + 1], b[j], b[j + 1])
+        if hit is None:
+            continue
+        t, u = hit
+        if -eps <= t <= 1.0 + eps and -eps <= u <= 1.0 + eps:
+            point = (a[i][0] + (a[i + 1][0] - a[i][0]) * t,
+                     a[i][1] + (a[i + 1][1] - a[i][1]) * t)
+            arc_a = a_cum[i] + (a_cum[i + 1] - a_cum[i]) * min(max(t, 0.0), 1.0)
+            arc_b = b_cum[j] + (b_cum[j + 1] - b_cum[j]) * min(max(u, 0.0), 1.0)
+            return point, arc_a, arc_b
 
-    best = None
-    for i, pa in enumerate(a):
-        for j, pb in enumerate(b):
-            distance = math.hypot(pa[0] - pb[0], pa[1] - pb[1])
-            if best is None or distance < best[0]:
-                best = (distance, i, j)
-    _, i, j = best
+    i, j = chord_intersect.closest_vertices(a, b)
     point = ((a[i][0] + b[j][0]) * 0.5, (a[i][1] + b[j][1]) * 0.5)
     return point, a_cum[i], b_cum[j]
 
@@ -1252,28 +1244,19 @@ def _curve_crossing(gh, gv):
     a, b = gh.points, gv.points
     seed = None
     eps = 1e-6
-    for i in range(len(a) - 1):
-        for j in range(len(b) - 1):
-            hit = _segment_intersection(a[i], a[i + 1], b[j], b[j + 1])
-            if hit is None:
-                continue
-            t, u = hit
-            if -eps <= t <= 1.0 + eps and -eps <= u <= 1.0 + eps:
-                t = min(max(t, 0.0), 1.0)
-                u = min(max(u, 0.0), 1.0)
-                seed = (gh.flat_arcs[i] + (gh.flat_arcs[i + 1] - gh.flat_arcs[i]) * t,
-                        gv.flat_arcs[j] + (gv.flat_arcs[j + 1] - gv.flat_arcs[j]) * u)
-                break
-        if seed is not None:
+    for i, j in chord_intersect.box_pairs(a, b, eps):
+        hit = _segment_intersection(a[i], a[i + 1], b[j], b[j + 1])
+        if hit is None:
+            continue
+        t, u = hit
+        if -eps <= t <= 1.0 + eps and -eps <= u <= 1.0 + eps:
+            t = min(max(t, 0.0), 1.0)
+            u = min(max(u, 0.0), 1.0)
+            seed = (gh.flat_arcs[i] + (gh.flat_arcs[i + 1] - gh.flat_arcs[i]) * t,
+                    gv.flat_arcs[j] + (gv.flat_arcs[j + 1] - gv.flat_arcs[j]) * u)
             break
     if seed is None:
-        best = None
-        for i, pa in enumerate(a):
-            for j, pb in enumerate(b):
-                distance = math.hypot(pa[0] - pb[0], pa[1] - pb[1])
-                if best is None or distance < best[0]:
-                    best = (distance, i, j)
-        _, i, j = best
+        i, j = chord_intersect.closest_vertices(a, b)
         point = ((a[i][0] + b[j][0]) * 0.5, (a[i][1] + b[j][1]) * 0.5)
         return point, gh.flat_arcs[i], gv.flat_arcs[j]
 
