@@ -63,7 +63,7 @@ export type InputMessage =
       t?: "input";
       view: string;
       kind: "focus";
-      in: boolean;
+      focused: boolean;
     };
 
 export interface WebSocketLike {
