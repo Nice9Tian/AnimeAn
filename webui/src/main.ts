@@ -3,8 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { loadProject, type ProjectIO } from "../vf/src/project.ts";
 import { BackendClient } from "./net.ts";
 import { createPlayer } from "./player.ts";
-import { createChrome, createStore, panelFactories } from "./ui/app.js";
+import { createChrome, createStore, DOCK_FOR_WINDOW, panelFactories, syncDocks } from "./ui/app.js";
 import "./ui/qt.css";
+import "./ui/qt3.css";
 import "./ui/shell.css";
 
 const rawDesignFiles = import.meta.glob(
@@ -90,13 +91,21 @@ async function bootstrap(): Promise<void> {
       return { update() {}, destroy() { el.replaceChildren(); } };
     };
   }
-  createPlayer(appEl, project);
+  const player = createPlayer(appEl, project, {
+    onDockClosed(dockId: string) {
+      const name = Object.entries(DOCK_FOR_WINDOW).find(([, dock]) => dock === dockId)?.[0];
+      if (name) void store.call("menu.trigger", { id: `windows.${name}` });
+    },
+  });
+  for (const dock of [...Object.values(DOCK_FOR_WINDOW), "timelineDock"]) player.runtime.dockSetVisible(dock, false);
+  syncDocks(player.runtime, store);
   createChrome(document.getElementById("qt-menubar")!, document.getElementById("qt-statusbar")!, store);
 
   const wsUrl = await resolveBackendWsUrl();
   if (wsUrl) {
     try {
       await client.connect(wsUrl);
+      (store as { boards?: { resendSizes(): void } }).boards?.resendSizes();
     } catch (e) {
       console.error("连接后端失败:", e);
     }

@@ -1,0 +1,13 @@
+{
+  "type": "QtForcePad",
+  "label": "Repulsion Pad",
+  "description": "Repulsion Pad，实现在 webui/src/ui",
+  "defaultSize": {
+    "width": 200,
+    "height": 200
+  },
+  "entry": "index.js",
+  "style": "style.css",
+  "props": {},
+  "children": false
+}

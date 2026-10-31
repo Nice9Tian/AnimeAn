@@ -400,7 +400,7 @@ function matchesMenuShortcut(e: KeyboardEvent, shortcut: string): boolean {
 export function createPlayer(
   root: HTMLElement,
   project: Project,
-  hooks: Partial<RuntimeHooks> = {},
+  hooks: Partial<RuntimeHooks> & { onDockClosed?(dockId: string): void } = {},
 ): PlayerInstance {
   const doc = root.ownerDocument ?? document;
   const win = doc.defaultView ?? window;
@@ -918,7 +918,7 @@ export function createPlayer(
     onMoveToArea: (did, area) => runtime.dockMoveToArea(did, area),
     onFloat: (did, rect) => runtime.dockFloat(did, rect),
     onRestore: (did) => runtime.dockRestore(did),
-    onClose: (did) => runtime.dockSetVisible(did, false),
+    onClose: (did) => { runtime.dockSetVisible(did, false); hooks.onDockClosed?.(did); },
     onResizeArea: (area, size) => runtime.dockResizeArea(area, size),
     onResizeSplit: (area, idx, size) => runtime.dockResizeSplit(area, idx, size),
   };
