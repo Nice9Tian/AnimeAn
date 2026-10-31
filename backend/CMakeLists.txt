@@ -4,7 +4,7 @@ if(NOT ANIMEAN_BUILD_BACKEND)
     return()
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Network)
 
 add_library(animean_core_headless STATIC
     ${CMAKE_SOURCE_DIR}/algorithm/animemodel.cpp
@@ -18,6 +18,8 @@ add_library(animean_core_headless STATIC
     ${CMAKE_SOURCE_DIR}/algorithm/viewscale.h
     ${CMAKE_SOURCE_DIR}/projectio.cpp
     ${CMAKE_SOURCE_DIR}/projectio.h
+    ${CMAKE_SOURCE_DIR}/selectionattention.cpp
+    ${CMAKE_SOURCE_DIR}/selectionattention.h
     ${CMAKE_SOURCE_DIR}/boardbase.h
     ${CMAKE_SOURCE_DIR}/openglwidget.cpp
     ${CMAKE_SOURCE_DIR}/openglwidget.h
@@ -58,14 +60,52 @@ if(ANIMEAN_WITH_PYTHON)
     )
 endif()
 
+add_executable(AnimeAnBackend
+    main.cpp
+    net/wsserver.cpp
+    net/wsserver.h
+    business/animeanbusiness.cpp
+    business/animeanbusiness.h
+    session/backendsession.cpp
+    session/backendsession.h
+)
+target_link_libraries(AnimeAnBackend PRIVATE animean_core_headless Qt6::Network)
+
 add_executable(board_headless_test
     board/tests/board_headless_test.cpp
 )
 target_link_libraries(board_headless_test PRIVATE animean_core_headless)
 
+if(WIN32)
+    find_program(ANIMEAN_BACKEND_WINDEPLOYQT windeployqt HINTS "${Qt6_DIR}/../../../bin")
+    if(ANIMEAN_BACKEND_WINDEPLOYQT)
+        add_custom_command(TARGET AnimeAnBackend POST_BUILD
+            COMMAND "${ANIMEAN_BACKEND_WINDEPLOYQT}"
+                --no-translations
+                --no-system-d3d-compiler
+                --no-opengl-sw
+                --dir "$<TARGET_FILE_DIR:AnimeAnBackend>"
+                "$<TARGET_FILE:AnimeAnBackend>"
+        )
+    endif()
+    if(EXISTS "${Qt6_DIR}/../../../plugins/platforms/qoffscreen.dll")
+        add_custom_command(TARGET AnimeAnBackend POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:AnimeAnBackend>/platforms"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${Qt6_DIR}/../../../plugins/platforms/qoffscreen.dll"
+                "$<TARGET_FILE_DIR:AnimeAnBackend>/platforms"
+        )
+    endif()
+endif()
+
 if(ANIMEAN_WITH_PYTHON)
     foreach(ANIMEAN_PYTHON_DLL python312.dll python3.dll vcruntime140.dll vcruntime140_1.dll)
         if(EXISTS "${ANIMEAN_PYTHON_HOME}/${ANIMEAN_PYTHON_DLL}")
+            add_custom_command(TARGET AnimeAnBackend POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${ANIMEAN_PYTHON_HOME}/${ANIMEAN_PYTHON_DLL}"
+                    "$<TARGET_FILE_DIR:AnimeAnBackend>"
+            )
             add_custom_command(TARGET board_headless_test POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "${ANIMEAN_PYTHON_HOME}/${ANIMEAN_PYTHON_DLL}"
