@@ -34,6 +34,7 @@ find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets OpenGLWidgets)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets OpenGLWidgets)
 
 include(CTest)
+add_subdirectory(backend)
 
 # One home for the scene-model / file-format core. The app and the C++ unit
 # tests link this library instead of re-listing (and re-compiling) the same

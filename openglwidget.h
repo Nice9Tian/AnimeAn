@@ -12,7 +12,7 @@
 #include <QImage>
 #include <QLineF>
 #include <QMouseEvent>
-#include <QOpenGLWidget>
+#include "boardbase.h"
 #include <QPainterPath>
 #include <QSet>
 #include <QString>
@@ -22,7 +22,7 @@
 class QPainter;
 class QTimer;
 
-class PaintOpenGLWidget : public QOpenGLWidget
+class PaintOpenGLWidget : public PaintBoardBase
 {
     Q_OBJECT
 
