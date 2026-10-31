@@ -1,0 +1,52 @@
+.vf-std-button {
+  width: 100%;
+  height: 100%;
+  padding: 0 10px;
+  border: 1px solid var(--color-border, #cbd5e1);
+  border-radius: 6px;
+  background: var(--color-surface, #ffffff);
+  color: var(--color-text, #1e293b);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  transition: background 0.12s, border-color 0.12s, box-shadow 0.12s, transform 0.06s;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vf-std-button[data-has-icon="true"] {
+  padding: 0 6px;
+}
+
+.vf-std-button[data-variant="primary"],
+.vf-std-button[data-checked="true"] {
+  border-color: var(--color-primary, #2563eb);
+  background: var(--color-primary, #2563eb);
+  color: #ffffff;
+}
+
+.vf-std-button[data-variant="danger"] {
+  border-color: #ef4444;
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+.vf-std-button:hover:not(:disabled) {
+  border-color: var(--color-primary, #2563eb);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.18);
+}
+
+.vf-std-button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.vf-std-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

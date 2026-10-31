@@ -1,0 +1,18 @@
+{
+  "type": "Spacer",
+  "label": "占位区",
+  "description": "排版中的弹性或固定空白占位区",
+  "defaultSize": { "width": 24, "height": 24 },
+  "entry": "index.js",
+  "style": "style.css",
+  "props": {
+    "orientation": { "type": "string", "default": "horizontal" }
+  },
+  "children": false,
+  "qt": {
+    "widget": "QWidget",
+    "props": {
+      "orientation": "vfOrientation"
+    }
+  }
+}

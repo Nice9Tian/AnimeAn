@@ -1,0 +1,17 @@
+{
+  "type": "Separator",
+  "label": "分隔线",
+  "description": "水平或垂直分隔线，orientation 可选 horizontal、vertical",
+  "defaultSize": { "width": 200, "height": 8 },
+  "entry": "index.js",
+  "style": "style.css",
+  "props": {
+    "orientation": { "type": "string", "default": "horizontal" }
+  },
+  "children": false,
+  "qt": {
+    "widget": "QFrame",
+    "props": { "orientation": "vfOrientation" },
+    "set": { "frameShape": 4, "frameShadow": 48 }
+  }
+}

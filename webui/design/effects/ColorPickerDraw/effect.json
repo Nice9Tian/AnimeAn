@@ -1,0 +1,7 @@
+{
+  "name": "ColorPickerDraw",
+  "label": "调色盘自绘效果",
+  "description": "在画布上绘制 HSV 饱和度-明度渐变方块、右侧色相条、十字准星与底部颜色预览条",
+  "kind": "paint",
+  "entry": "index.js"
+}

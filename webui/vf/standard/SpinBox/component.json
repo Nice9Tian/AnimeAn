@@ -1,0 +1,32 @@
+{
+  "type": "SpinBox",
+  "label": "数字框",
+  "description": "数值输入框，支持最小最大值、步长、后缀和双向绑定数字状态",
+  "defaultSize": { "width": 120, "height": 32 },
+  "entry": "index.js",
+  "style": "style.css",
+  "props": {
+    "min":     { "type": "number",  "default": 0 },
+    "max":     { "type": "number",  "default": 9999 },
+    "step":    { "type": "number",  "default": 1 },
+    "suffix":  { "type": "string",  "default": "" },
+    "value":   { "type": "number",  "default": 0, "logic": true },
+    "enabled": { "type": "boolean", "default": true, "logic": true }
+  },
+  "bind": "number",
+  "events": ["change"],
+  "children": false,
+  "qt": {
+    "widget": "QSpinBox",
+    "props": {
+      "min": "minimum",
+      "max": "maximum",
+      "step": "singleStep",
+      "suffix": "suffix",
+      "value": "value"
+    },
+    "events": {
+      "change": { "signal": "valueChanged", "type": "number" }
+    }
+  }
+}

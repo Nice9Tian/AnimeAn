@@ -1,0 +1,34 @@
+{
+  "type": "List",
+  "label": "列表",
+  "description": "行列表，绑定数组状态 items，支持选中行与拖动重排",
+  "defaultSize": { "width": 220, "height": 180 },
+  "entry": "index.js",
+  "style": "style.css",
+  "props": {
+    "items":     { "type": "array",   "default": [], "logic": true },
+    "value":     { "type": "number",  "default": 0,  "logic": true },
+    "emptyText": { "type": "string",  "default": "暂无内容" },
+    "draggable": { "type": "boolean", "default": false },
+    "mutedFrom": { "type": "number",  "default": -1, "logic": true },
+    "enabled":   { "type": "boolean", "default": true, "logic": true }
+  },
+  "bind": "number",
+  "events": ["change", "select", "reorder"],
+  "children": false,
+  "qt": {
+    "widget": "QListWidget",
+    "props": {
+      "items": "vfItems",
+      "value": "currentRow",
+      "emptyText": "vfEmptyText",
+      "draggable": "vfDraggable",
+      "mutedFrom": "vfMutedFrom"
+    },
+    "events": {
+      "change": { "signal": "currentRowChanged", "type": "number" },
+      "select": { "signal": "currentRowChanged", "type": "number" },
+      "reorder": { "signal": "itemReordered", "type": "string" }
+    }
+  }
+}

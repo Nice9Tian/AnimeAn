@@ -1,0 +1,36 @@
+{
+  "type": "Tree",
+  "label": "树",
+  "description": "层级树控件，支持分组展开折叠、勾选框、选中行与拖动重排",
+  "defaultSize": { "width": 220, "height": 180 },
+  "entry": "index.js",
+  "style": "style.css",
+  "props": {
+    "items":     { "type": "array",   "default": [], "logic": true },
+    "value":     { "type": "number",  "default": 0,  "logic": true },
+    "checkable": { "type": "boolean", "default": true },
+    "draggable": { "type": "boolean", "default": true },
+    "emptyText": { "type": "string",  "default": "暂无内容" },
+    "enabled":   { "type": "boolean", "default": true, "logic": true }
+  },
+  "bind": "number",
+  "events": ["change", "select", "toggleCheck", "toggleCollapse", "reorder"],
+  "children": false,
+  "qt": {
+    "widget": "QTreeWidget",
+    "props": {
+      "items": "vfItems",
+      "value": "currentRow",
+      "checkable": "vfCheckable",
+      "draggable": "vfDraggable",
+      "emptyText": "vfEmptyText"
+    },
+    "events": {
+      "change": { "signal": "currentRowChanged", "type": "number" },
+      "select": { "signal": "currentRowChanged", "type": "number" },
+      "toggleCheck": { "signal": "itemCheckToggled", "type": "string" },
+      "toggleCollapse": { "signal": "itemCollapseToggled", "type": "string" },
+      "reorder": { "signal": "itemReordered", "type": "string" }
+    }
+  }
+}

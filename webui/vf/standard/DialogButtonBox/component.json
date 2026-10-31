@@ -1,0 +1,28 @@
+{
+  "type": "DialogButtonBox",
+  "label": "对话框按钮组",
+  "description": "对话框底部的标准确认与取消按钮组",
+  "defaultSize": { "width": 220, "height": 32 },
+  "entry": "index.js",
+  "style": "style.css",
+  "props": {
+    "buttons":    { "type": "string",  "default": "OK,Cancel", "logic": true },
+    "okText":     { "type": "string",  "default": "OK", "logic": true },
+    "cancelText": { "type": "string",  "default": "Cancel", "logic": true },
+    "enabled":    { "type": "boolean", "default": true, "logic": true }
+  },
+  "events": ["accept", "reject"],
+  "children": false,
+  "qt": {
+    "widget": "QDialogButtonBox",
+    "props": {
+      "buttons": "vfButtons",
+      "okText": "vfOkText",
+      "cancelText": "vfCancelText"
+    },
+    "events": {
+      "accept": { "signal": "accepted" },
+      "reject": { "signal": "rejected" }
+    }
+  }
+}

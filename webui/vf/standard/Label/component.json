@@ -1,0 +1,19 @@
+{
+  "type": "Label",
+  "label": "文字",
+  "description": "一行或多行文字，tone 可选 normal、title、muted、error、accent",
+  "defaultSize": { "width": 160, "height": 24 },
+  "entry": "index.js",
+  "style": "style.css",
+  "props": {
+    "text":  { "type": "string", "default": "", "logic": true },
+    "tone":  { "type": "string", "default": "normal", "logic": true },
+    "align": { "type": "string", "default": "left" }
+  },
+  "children": false,
+  "qt": {
+    "widget": "QLabel",
+    "props": { "text": "text", "tone": "vfTone", "align": "vfAlign" },
+    "set": { "wordWrap": true }
+  }
+}

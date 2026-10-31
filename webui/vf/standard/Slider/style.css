@@ -1,0 +1,21 @@
+.vf-std-slider {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+.vf-std-slider-input {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--color-primary, #2563eb);
+  cursor: pointer;
+}
+
+.vf-std-slider[data-orientation="vertical"] .vf-std-slider-input {
+  writing-mode: vertical-lr;
+  width: auto;
+  height: 100%;
+}

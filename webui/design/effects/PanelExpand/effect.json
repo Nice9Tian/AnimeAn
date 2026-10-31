@@ -1,0 +1,7 @@
+{
+  "name": "PanelExpand",
+  "label": "面板展开",
+  "description": "显示时高度从 0 变到原本的高度，同时淡入；隐藏时反过来。时长 180 毫秒",
+  "kind": "visibility",
+  "entry": "index.js"
+}

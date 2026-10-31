@@ -1,0 +1,32 @@
+{
+  "type": "Slider",
+  "label": "滑条",
+  "description": "数值滑条，支持最小最大值、步长、方向和双向绑定数字状态",
+  "defaultSize": { "width": 160, "height": 24 },
+  "entry": "index.js",
+  "style": "style.css",
+  "props": {
+    "min":         { "type": "number",  "default": 0,   "logic": true },
+    "max":         { "type": "number",  "default": 100, "logic": true },
+    "step":        { "type": "number",  "default": 1 },
+    "orientation": { "type": "string",  "default": "horizontal" },
+    "value":       { "type": "number",  "default": 0, "logic": true },
+    "enabled":     { "type": "boolean", "default": true, "logic": true }
+  },
+  "bind": "number",
+  "events": ["change"],
+  "children": false,
+  "qt": {
+    "widget": "QSlider",
+    "props": {
+      "min": "minimum",
+      "max": "maximum",
+      "step": "singleStep",
+      "orientation": "vfOrientation",
+      "value": "value"
+    },
+    "events": {
+      "change": { "signal": "valueChanged", "type": "number" }
+    }
+  }
+}

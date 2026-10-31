@@ -1,0 +1,42 @@
+.vf-std-label {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  color: var(--color-text, #1e293b);
+  font-size: 13px;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+}
+
+.vf-std-label[data-align="center"] {
+  justify-content: center;
+  text-align: center;
+}
+
+.vf-std-label[data-align="right"] {
+  justify-content: flex-end;
+  text-align: right;
+}
+
+.vf-std-label[data-tone="title"] {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-heading, #0f172a);
+}
+
+.vf-std-label[data-tone="muted"] {
+  color: var(--color-muted, #64748b);
+  font-size: 12px;
+}
+
+.vf-std-label[data-tone="error"] {
+  color: var(--color-error, #dc2626);
+}
+
+.vf-std-label[data-tone="accent"] {
+  color: var(--color-primary, #2563eb);
+  font-weight: 500;
+}

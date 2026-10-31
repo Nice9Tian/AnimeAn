@@ -1,0 +1,26 @@
+{
+  "type": "TabBar",
+  "label": "页签栏",
+  "description": "页签切换栏，tabs 用逗号分隔各页签名，支持双向绑定当前页签序号",
+  "defaultSize": { "width": 220, "height": 28 },
+  "entry": "index.js",
+  "style": "style.css",
+  "props": {
+    "tabs":    { "type": "string",  "default": "Tab 1,Tab 2", "logic": true },
+    "value":   { "type": "number",  "default": 0, "logic": true },
+    "enabled": { "type": "boolean", "default": true, "logic": true }
+  },
+  "bind": "number",
+  "events": ["change"],
+  "children": false,
+  "qt": {
+    "widget": "QTabBar",
+    "props": {
+      "tabs": "vfTabs",
+      "value": "currentIndex"
+    },
+    "events": {
+      "change": { "signal": "currentChanged", "type": "number" }
+    }
+  }
+}
