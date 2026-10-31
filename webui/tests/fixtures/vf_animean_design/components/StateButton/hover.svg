@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="34" viewBox="0 0 120 34">
+  <defs>
+    <linearGradient id="bgHover" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#27374f" />
+      <stop offset="100%" stop-color="#162235" />
+    </linearGradient>
+    <filter id="hoverGlow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="1.2" result="blur" />
+      <feOffset in="blur" dx="0" dy="0.5" result="offsetBlur" />
+      <feMerge>
+        <feMergeNode in="offsetBlur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+  <rect x="1" y="1" width="118" height="32" rx="6" ry="6" fill="url(#bgHover)" stroke="#60a5fa" stroke-width="1.4" filter="url(#hoverGlow)" />
+  <line x1="8" y1="2.5" x2="112" y2="2.5" stroke="#bfdbfe" stroke-opacity="0.32" stroke-width="1" />
+</svg>

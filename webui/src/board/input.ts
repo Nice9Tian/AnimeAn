@@ -77,6 +77,7 @@ export interface BoardInputOptions {
 }
 
 export interface BoardInputHandle {
+  resend(): void;
   destroy(): void;
 }
 
@@ -283,6 +284,22 @@ export function attachBoardInput(
   canvas.addEventListener("focus", onFocus);
   canvas.addEventListener("blur", onBlur);
 
+  let lastW = 0;
+  let lastH = 0;
+
+  const sendResize = (w: number, h: number) => {
+    if (w > 0 && h > 0) {
+      emit({
+        t: "input",
+        view,
+        kind: "resize",
+        w,
+        h,
+        dpr: getDpr(),
+      });
+    }
+  };
+
   let resizeObserver: ResizeObserver | null = null;
   if (typeof ResizeObserver !== "undefined") {
     resizeObserver = new ResizeObserver((entries) => {
@@ -290,14 +307,9 @@ export function attachBoardInput(
         const w = Math.round(entry.contentRect.width);
         const h = Math.round(entry.contentRect.height);
         if (w > 0 && h > 0) {
-          emit({
-            t: "input",
-            view,
-            kind: "resize",
-            w,
-            h,
-            dpr: getDpr(),
-          });
+          lastW = w;
+          lastH = h;
+          sendResize(w, h);
         }
       }
     });
@@ -305,6 +317,22 @@ export function attachBoardInput(
   }
 
   return {
+    resend() {
+      let w = lastW;
+      let h = lastH;
+      if (w <= 0 || h <= 0) {
+        if (typeof canvas.getBoundingClientRect === "function") {
+          const rect = canvas.getBoundingClientRect();
+          w = Math.round(rect.width);
+          h = Math.round(rect.height);
+        }
+        if (w <= 0 || h <= 0) {
+          w = Math.round(Number(canvas.clientWidth) || 0);
+          h = Math.round(Number(canvas.clientHeight) || 0);
+        }
+      }
+      sendResize(w, h);
+    },
     destroy() {
       resizeObserver?.disconnect();
       canvas.removeEventListener("pointerdown", onPointerDown);

@@ -1,0 +1,2168 @@
+{
+  "version": 1,
+  "root": "window",
+  "windows": [
+    "window",
+    "newProjectDialog",
+    "drawSettingsDialog",
+    "textureFloatDialog"
+  ],
+  "nodes": {
+    "window": {
+      "type": "Window",
+      "width": 1280,
+      "height": 800,
+      "title": "AnimeAn 动画工作台",
+      "menuBar": {
+        "height": 28,
+        "menus": [
+          {
+            "id": "fileMenu",
+            "title": "文件",
+            "items": [
+              {
+                "id": "menuNewProject",
+                "text": "新建项目...",
+                "shortcut": "Ctrl+N",
+                "emit": "openNewProject"
+              },
+              {
+                "id": "menuOpenProject",
+                "text": "打开项目...",
+                "shortcut": "Ctrl+O",
+                "emit": "openProjectFile"
+              },
+              {
+                "id": "menuSaveProject",
+                "text": "保存项目",
+                "shortcut": "Ctrl+S",
+                "emit": "saveProjectFile"
+              },
+              {
+                "id": "menuSaveAsProject",
+                "text": "另存为...",
+                "shortcut": "Ctrl+Shift+S",
+                "emit": "saveAsProjectFile"
+              },
+              {
+                "id": "menuTextureSub",
+                "text": "纹理文件 (Texture)",
+                "items": [
+                  {
+                    "id": "menuOpenTexture",
+                    "text": "打开纹理视图 (.textureview)...",
+                    "emit": "openTextureFile"
+                  },
+                  {
+                    "id": "menuSaveTexture",
+                    "text": "保存纹理视图 (.textureview)",
+                    "emit": "saveTextureFile"
+                  }
+                ]
+              },
+              {
+                "id": "menuExportSub",
+                "text": "导入与导出",
+                "items": [
+                  {
+                    "id": "menuImportImage",
+                    "text": "导入图像素材...",
+                    "shortcut": "Ctrl+I",
+                    "emit": "importImageAsset"
+                  },
+                  {
+                    "id": "menuExportClip",
+                    "text": "导出视频片段...",
+                    "shortcut": "Ctrl+E",
+                    "emit": "triggerExportClip"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "viewMenu",
+            "title": "视图",
+            "items": [
+              {
+                "id": "menuToggleTools",
+                "text": "工具栏",
+                "dock": "toolsDock",
+                "checkable": true,
+                "checked": true
+              },
+              {
+                "id": "menuToggleLayers",
+                "text": "图层与素材面板",
+                "dock": "layersDock",
+                "checkable": true,
+                "checked": true
+              },
+              {
+                "id": "menuToggleInspector",
+                "text": "选项与检查器面板",
+                "dock": "inspectorDock",
+                "checkable": true,
+                "checked": true
+              },
+              {
+                "id": "menuToggleTimeline",
+                "text": "时间轴面板",
+                "dock": "timelineDock",
+                "checkable": true,
+                "checked": true
+              },
+              {
+                "id": "menuOnionSkinToggle",
+                "text": "洋葱皮透视",
+                "shortcut": "O",
+                "checkable": true,
+                "checked": false,
+                "emit": "toggleOnionSkin"
+              },
+              {
+                "id": "menuToggleTextureFloat",
+                "text": "浮动纹理子视图 (FloatBox)",
+                "shortcut": "Ctrl+T",
+                "emit": "toggleTextureFloatWindow"
+              },
+              {
+                "id": "menuEmbedTexture",
+                "text": "嵌入纹理至工具面板",
+                "emit": "embedTextureInToolOptions"
+              },
+              {
+                "id": "menuResetLayout",
+                "text": "重置工作区布局",
+                "emit": "resetWorkspaceLayout"
+              }
+            ]
+          },
+          {
+            "id": "editMenu",
+            "title": "编辑",
+            "items": [
+              {
+                "id": "menuUndo",
+                "text": "撤销",
+                "shortcut": "Ctrl+Z",
+                "emit": "undoHistory"
+              },
+              {
+                "id": "menuRedo",
+                "text": "重做",
+                "shortcut": "Ctrl+Y",
+                "emit": "redoHistory"
+              },
+              {
+                "id": "menuClearFrame",
+                "text": "清空当前帧",
+                "shortcut": "Del",
+                "emit": "clearCurrentFrame"
+              }
+            ]
+          },
+          {
+            "id": "autoMappingMenu",
+            "title": "自动映射",
+            "items": [
+              {
+                "id": "menuAutoColorize",
+                "text": "一键自动上色",
+                "shortcut": "Alt+C",
+                "emit": "runAutoColorize"
+              },
+              {
+                "id": "menuAutoInbetween",
+                "text": "生成中间帧补间",
+                "shortcut": "Alt+I",
+                "emit": "runAutoInbetween"
+              },
+              {
+                "id": "menuTextureSync",
+                "text": "同步纹理映射",
+                "emit": "syncTextureMapping"
+              }
+            ]
+          },
+          {
+            "id": "drawMenu",
+            "title": "绘图设置",
+            "items": [
+              {
+                "id": "menuDrawSettings",
+                "text": "画笔与压感设置...",
+                "shortcut": "F5",
+                "emit": "openDrawSettings"
+              },
+              {
+                "id": "menuStabilizerSub",
+                "text": "抖动修正等级",
+                "items": [
+                  {
+                    "id": "menuStabOff",
+                    "text": "关闭修正 (S0)",
+                    "kind": "radio",
+                    "group": "stabilizerGroup",
+                    "checked": false,
+                    "emit": "setStabilizerOff"
+                  },
+                  {
+                    "id": "menuStabMed",
+                    "text": "标准修正 (S5)",
+                    "kind": "radio",
+                    "group": "stabilizerGroup",
+                    "checked": true,
+                    "emit": "setStabilizerMed"
+                  },
+                  {
+                    "id": "menuStabHigh",
+                    "text": "强力平滑 (S12)",
+                    "kind": "radio",
+                    "group": "stabilizerGroup",
+                    "checked": false,
+                    "emit": "setStabilizerHigh"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "themeMenu",
+            "title": "主题",
+            "items": [
+              {
+                "id": "menuThemeDark",
+                "text": "深色创作主题",
+                "kind": "radio",
+                "group": "themeGroup",
+                "checked": true,
+                "emit": "setThemeDark"
+              },
+              {
+                "id": "menuThemeGraphite",
+                "text": "石墨灰护眼主题",
+                "kind": "radio",
+                "group": "themeGroup",
+                "checked": false,
+                "emit": "setThemeGraphite"
+              },
+              {
+                "id": "menuThemeLight",
+                "text": "明亮浅色主题",
+                "kind": "radio",
+                "group": "themeGroup",
+                "checked": false,
+                "emit": "setThemeLight"
+              }
+            ]
+          }
+        ]
+      },
+      "statusBar": "statusBar",
+      "central": "centralArea",
+      "docks": [
+        "toolsDock",
+        "timelineDock",
+        "layersDock",
+        "inspectorDock"
+      ],
+      "dockLayout": {
+        "areas": {
+          "top": {
+            "size": 62,
+            "groups": [
+              {
+                "tabs": [
+                  "toolsDock"
+                ],
+                "active": "toolsDock"
+              }
+            ]
+          },
+          "bottom": {
+            "size": 162,
+            "groups": [
+              {
+                "tabs": [
+                  "timelineDock"
+                ],
+                "active": "timelineDock"
+              }
+            ]
+          },
+          "left": {
+            "size": 236,
+            "groups": [
+              {
+                "tabs": [
+                  "layersDock"
+                ],
+                "active": "layersDock"
+              }
+            ]
+          },
+          "right": {
+            "size": 264,
+            "groups": [
+              {
+                "tabs": [
+                  "inspectorDock"
+                ],
+                "active": "inspectorDock"
+              }
+            ]
+          }
+        },
+        "floating": []
+      },
+      "children": [
+        "toolsDock",
+        "layersDock",
+        "centralArea",
+        "inspectorDock",
+        "timelineDock",
+        "statusBar"
+      ]
+    },
+    "toolsDock": {
+      "type": "Dock",
+      "dockArea": "top",
+      "width": 1280,
+      "height": 62,
+      "headerHeight": 26,
+      "title": "工具栏",
+      "layout": {
+        "kind": "flow",
+        "padding": [
+          4,
+          12,
+          4,
+          12
+        ],
+        "columnGap": 4,
+        "rowGap": 4
+      },
+      "children": [
+        "newProjectBtn",
+        "toolArrowBtn",
+        "toolBrushBtn",
+        "toolEraserBtn",
+        "toolFillBtn",
+        "toolSelectBtn",
+        "toolMoveBtn",
+        "toolEyedropperBtn",
+        "toolHLineBtn",
+        "toolVLineBtn",
+        "toolMapAreaBtn",
+        "toolAddLineBtn",
+        "toolAutoMapBtn",
+        "toolLockPolicyBtn",
+        "toolMoreMenuBtn",
+        "forcePadBox"
+      ]
+    },
+    "newProjectBtn": {
+      "type": "Button",
+      "width": 76,
+      "height": 28,
+      "props": {
+        "text": "新建项目",
+        "variant": "primary",
+        "icon": "add"
+      }
+    },
+    "toolArrowBtn": {
+      "type": "Button",
+      "width": 58,
+      "height": 28,
+      "props": {
+        "text": "选择",
+        "variant": "secondary",
+        "icon": "move",
+        "checkable": true,
+        "checked": false
+      }
+    },
+    "toolBrushBtn": {
+      "type": "Button",
+      "width": 58,
+      "height": 28,
+      "props": {
+        "text": "画笔",
+        "variant": "primary",
+        "icon": "pen",
+        "checkable": true,
+        "checked": true
+      }
+    },
+    "toolEraserBtn": {
+      "type": "Button",
+      "width": 58,
+      "height": 28,
+      "props": {
+        "text": "橡皮",
+        "variant": "secondary",
+        "icon": "eraser",
+        "checkable": true,
+        "checked": false
+      }
+    },
+    "toolFillBtn": {
+      "type": "Button",
+      "width": 58,
+      "height": 28,
+      "props": {
+        "text": "填充",
+        "variant": "secondary",
+        "icon": "bucket",
+        "checkable": true,
+        "checked": false
+      }
+    },
+    "toolShapeBtn": {
+      "type": "Button",
+      "width": 58,
+      "height": 28,
+      "props": {
+        "text": "连接",
+        "variant": "secondary",
+        "icon": "shape",
+        "checkable": true,
+        "checked": false
+      }
+    },
+    "toolSelectBtn": {
+      "type": "Button",
+      "width": 58,
+      "height": 28,
+      "props": {
+        "text": "套索",
+        "variant": "secondary",
+        "icon": "lasso",
+        "checkable": true,
+        "checked": false
+      }
+    },
+    "toolMoveBtn": {
+      "type": "Button",
+      "width": 58,
+      "height": 28,
+      "props": {
+        "text": "变换",
+        "variant": "secondary",
+        "icon": "remap",
+        "checkable": true,
+        "checked": false
+      }
+    },
+    "toolEyedropperBtn": {
+      "type": "Button",
+      "width": 58,
+      "height": 28,
+      "props": {
+        "text": "吸管",
+        "variant": "secondary",
+        "icon": "eyedropper",
+        "checkable": true,
+        "checked": false
+      }
+    },
+    "toolHLineBtn": {
+      "type": "Button",
+      "width": 62,
+      "height": 28,
+      "props": {
+        "text": "H中线",
+        "variant": "secondary",
+        "icon": "hline",
+        "checkable": true,
+        "checked": false
+      }
+    },
+    "toolVLineBtn": {
+      "type": "Button",
+      "width": 62,
+      "height": 28,
+      "props": {
+        "text": "V中线",
+        "variant": "secondary",
+        "icon": "vline",
+        "checkable": true,
+        "checked": false
+      }
+    },
+    "toolMapAreaBtn": {
+      "type": "Button",
+      "width": 66,
+      "height": 28,
+      "props": {
+        "text": "映射区",
+        "variant": "secondary",
+        "icon": "area",
+        "checkable": true,
+        "checked": false
+      }
+    },
+    "toolAddLineBtn": {
+      "type": "Button",
+      "width": 66,
+      "height": 28,
+      "props": {
+        "text": "辅助线",
+        "variant": "secondary",
+        "icon": "addline",
+        "checkable": true,
+        "checked": false
+      }
+    },
+    "toolAutoMapBtn": {
+      "type": "Button",
+      "width": 76,
+      "height": 28,
+      "props": {
+        "text": "自动映射",
+        "variant": "secondary",
+        "icon": "automap",
+        "checkable": true,
+        "checked": false
+      }
+    },
+    "toolLockPolicyBtn": {
+      "type": "Button",
+      "width": 76,
+      "height": 28,
+      "props": {
+        "text": "工具锁定",
+        "variant": "secondary",
+        "icon": "lock",
+        "checkable": true,
+        "checked": false
+      }
+    },
+    "toolMoreMenuBtn": {
+      "type": "Button",
+      "width": 72,
+      "height": 28,
+      "props": {
+        "text": "预设 ▾",
+        "variant": "secondary"
+      },
+      "popupMenu": [
+        {
+          "id": "popupResetTool",
+          "text": "重置当前工具参数",
+          "emit": "resetActiveToolOptions"
+        },
+        {
+          "id": "popupOpenDrawSettings",
+          "text": "打开压感设置...",
+          "emit": "openDrawSettings"
+        }
+      ]
+    },
+    "forcePadBox": {
+      "type": "Button",
+      "width": 108,
+      "height": 28,
+      "props": {
+        "text": "压感板 (0,0)",
+        "variant": "secondary"
+      }
+    },
+    "layersDock": {
+      "type": "Dock",
+      "dockArea": "left",
+      "width": 236,
+      "height": 554,
+      "headerHeight": 26,
+      "title": "图层与素材",
+      "layout": {
+        "kind": "vbox",
+        "padding": 6,
+        "gap": 4
+      },
+      "children": [
+        "layerViewTabBar",
+        "layerToolbar",
+        "layerList",
+        "layerVisibilityBar",
+        "assetsPanelSep",
+        "assetsHeaderBar",
+        "assetList",
+        "assetNoteInput"
+      ]
+    },
+    "layerViewTabBar": {
+      "type": "TabBar",
+      "width": 224,
+      "height": 24,
+      "props": {
+        "tabs": "Main Layers,Child Layers",
+        "value": 0
+      }
+    },
+    "layerToolbar": {
+      "type": "HBox",
+      "width": 224,
+      "height": 24,
+      "layout": {
+        "kind": "hbox",
+        "padding": 0,
+        "gap": 3
+      },
+      "children": [
+        "addLayerBtn",
+        "addGroupBtn",
+        "removeLayerBtn",
+        "moveLayerUpBtn",
+        "moveLayerDownBtn",
+        "unselectLayerBtn"
+      ]
+    },
+    "addLayerBtn": {
+      "type": "Button",
+      "width": 35,
+      "height": 24,
+      "props": {
+        "text": "新建",
+        "variant": "primary"
+      }
+    },
+    "addGroupBtn": {
+      "type": "Button",
+      "width": 35,
+      "height": 24,
+      "props": {
+        "text": "建组",
+        "variant": "secondary"
+      }
+    },
+    "removeLayerBtn": {
+      "type": "Button",
+      "width": 35,
+      "height": 24,
+      "props": {
+        "text": "删除",
+        "variant": "danger"
+      }
+    },
+    "moveLayerUpBtn": {
+      "type": "Button",
+      "width": 35,
+      "height": 24,
+      "props": {
+        "text": "上移",
+        "variant": "secondary"
+      }
+    },
+    "moveLayerDownBtn": {
+      "type": "Button",
+      "width": 35,
+      "height": 24,
+      "props": {
+        "text": "下移",
+        "variant": "secondary"
+      }
+    },
+    "unselectLayerBtn": {
+      "type": "Button",
+      "width": 34,
+      "height": 24,
+      "props": {
+        "text": "取消",
+        "variant": "ghost"
+      }
+    },
+    "layerList": {
+      "type": "Tree",
+      "width": 224,
+      "height": 156,
+      "size": {
+        "stretch": 1,
+        "vertical": "expanding",
+        "minHeight": 48
+      },
+      "props": {
+        "items": [],
+        "value": 0,
+        "checkable": true,
+        "draggable": true
+      },
+      "contextMenu": [
+        {
+          "id": "ctxDuplicateLayer",
+          "text": "复制选中图层",
+          "emit": "duplicateSelectedLayer"
+        },
+        {
+          "id": "ctxToggleLockLayer",
+          "text": "切换图层锁定",
+          "emit": "toggleSelectedLayerLock"
+        },
+        {
+          "id": "ctxDeleteLayer",
+          "text": "删除选中图层",
+          "emit": "deleteSelectedLayer"
+        },
+        {
+          "id": "ctxDissolveGroup",
+          "text": "解组保留图层",
+          "emit": "dissolveLayerGroup"
+        },
+        {
+          "id": "ctxDeleteGroup",
+          "text": "删组及成员图层",
+          "emit": "deleteLayerGroup"
+        }
+      ]
+    },
+    "layerVisibilityBar": {
+      "type": "HBox",
+      "width": 224,
+      "height": 22,
+      "layout": {
+        "kind": "hbox",
+        "padding": 0,
+        "gap": 4
+      },
+      "children": [
+        "layerVisibleLabel",
+        "toggleVisibleBtn"
+      ]
+    },
+    "layerVisibleLabel": {
+      "type": "Label",
+      "width": 130,
+      "height": 22,
+      "size": {
+        "stretch": 1,
+        "horizontal": "expanding"
+      },
+      "props": {
+        "text": "当前图层：显示",
+        "tone": "normal"
+      }
+    },
+    "toggleVisibleBtn": {
+      "type": "Button",
+      "width": 90,
+      "height": 22,
+      "props": {
+        "text": "隐藏图层",
+        "variant": "secondary"
+      }
+    },
+    "assetsPanelSep": {
+      "type": "Separator",
+      "width": 224,
+      "height": 4,
+      "props": {
+        "orientation": "horizontal"
+      }
+    },
+    "assetsHeaderBar": {
+      "type": "HBox",
+      "width": 224,
+      "height": 22,
+      "layout": {
+        "kind": "hbox",
+        "padding": 0,
+        "gap": 3
+      },
+      "children": [
+        "assetsTitleLabel",
+        "addAssetBtn",
+        "assetToLayerBtn",
+        "removeAssetBtn",
+        "unselectAssetBtn"
+      ]
+    },
+    "assetsTitleLabel": {
+      "type": "Label",
+      "width": 56,
+      "height": 22,
+      "size": {
+        "stretch": 1,
+        "horizontal": "expanding"
+      },
+      "props": {
+        "text": "素材库",
+        "tone": "title"
+      }
+    },
+    "addAssetBtn": {
+      "type": "Button",
+      "width": 40,
+      "height": 22,
+      "props": {
+        "text": "+导入",
+        "variant": "secondary"
+      }
+    },
+    "assetToLayerBtn": {
+      "type": "Button",
+      "width": 44,
+      "height": 22,
+      "props": {
+        "text": "转图层",
+        "variant": "primary"
+      }
+    },
+    "removeAssetBtn": {
+      "type": "Button",
+      "width": 40,
+      "height": 22,
+      "props": {
+        "text": "-移除",
+        "variant": "secondary"
+      }
+    },
+    "unselectAssetBtn": {
+      "type": "Button",
+      "width": 32,
+      "height": 22,
+      "props": {
+        "text": "取消",
+        "variant": "ghost"
+      }
+    },
+    "assetList": {
+      "type": "List",
+      "width": 224,
+      "height": 72,
+      "props": {
+        "items": [],
+        "value": 0,
+        "draggable": true
+      }
+    },
+    "assetNoteInput": {
+      "type": "TextArea",
+      "width": 224,
+      "height": 36,
+      "props": {
+        "placeholder": "输入选中素材的备注说明...",
+        "value": ""
+      }
+    },
+    "centralArea": {
+      "type": "VBox",
+      "width": 780,
+      "height": 554,
+      "layout": {
+        "kind": "vbox",
+        "padding": 6,
+        "gap": 4
+      },
+      "children": [
+        "canvasHeader",
+        "textureSubBar",
+        "canvasHost",
+        "button1"
+      ]
+    },
+    "canvasHeader": {
+      "type": "HBox",
+      "width": 768,
+      "height": 28,
+      "layout": {
+        "kind": "hbox",
+        "padding": 0,
+        "gap": 4
+      },
+      "children": [
+        "workspaceTabBar",
+        "toolShapeBtn",
+        "canvasTitleLabel",
+        "zoomSlider",
+        "activeToolLabel"
+      ]
+    },
+    "workspaceTabBar": {
+      "type": "TabBar",
+      "width": 124,
+      "height": 28,
+      "size": {
+        "fixedWidth": 124
+      },
+      "props": {
+        "tabs": "Drawing,Texture",
+        "value": 0
+      }
+    },
+    "canvasTitleLabel": {
+      "type": "Label",
+      "width": 180,
+      "height": 28,
+      "size": {
+        "stretch": 1,
+        "horizontal": "expanding",
+        "minWidth": 24
+      },
+      "props": {
+        "text": "画布：样片镜头",
+        "tone": "title"
+      }
+    },
+    "zoomSlider": {
+      "type": "Slider",
+      "width": 52,
+      "height": 28,
+      "size": {
+        "fixedWidth": 52
+      },
+      "props": {
+        "min": 25,
+        "max": 400,
+        "step": 25,
+        "value": 100
+      }
+    },
+    "activeToolLabel": {
+      "type": "Label",
+      "width": 72,
+      "height": 28,
+      "size": {
+        "fixedWidth": 72
+      },
+      "props": {
+        "text": "当前工具：画笔",
+        "tone": "muted",
+        "align": "right"
+      }
+    },
+    "textureSubBar": {
+      "type": "HBox",
+      "width": 768,
+      "height": 24,
+      "layout": {
+        "kind": "hbox",
+        "padding": 0,
+        "gap": 4
+      },
+      "children": [
+        "textureHostLabel",
+        "followTimelineCheck",
+        "followTextureCheck",
+        "floatTextureBtn"
+      ]
+    },
+    "textureHostLabel": {
+      "type": "Label",
+      "width": 120,
+      "height": 24,
+      "size": {
+        "stretch": 1,
+        "horizontal": "expanding",
+        "minWidth": 40
+      },
+      "props": {
+        "text": "纹理子视图：中央页签 (default.textureview)",
+        "tone": "muted"
+      }
+    },
+    "followTimelineCheck": {
+      "type": "CheckBox",
+      "width": 68,
+      "height": 24,
+      "size": {
+        "fixedWidth": 68
+      },
+      "props": {
+        "text": "跟随帧",
+        "value": true
+      }
+    },
+    "followTextureCheck": {
+      "type": "CheckBox",
+      "width": 68,
+      "height": 24,
+      "size": {
+        "fixedWidth": 68
+      },
+      "props": {
+        "text": "同步UV",
+        "value": true
+      }
+    },
+    "floatTextureBtn": {
+      "type": "Button",
+      "width": 64,
+      "height": 24,
+      "size": {
+        "fixedWidth": 64
+      },
+      "props": {
+        "text": "浮动窗",
+        "variant": "secondary"
+      }
+    },
+    "canvasHost": {
+      "type": "External",
+      "width": 768,
+      "height": 482,
+      "size": {
+        "stretch": 1,
+        "vertical": "expanding",
+        "minHeight": 80
+      },
+      "contextMenu": [
+        {
+          "id": "ctxResetZoom",
+          "text": "重置画布缩放 (100%)",
+          "emit": "resetCanvasZoom"
+        },
+        {
+          "id": "ctxClearCanvas",
+          "text": "清空当前帧画布",
+          "emit": "clearCurrentFrame"
+        }
+      ]
+    },
+    "inspectorDock": {
+      "type": "Dock",
+      "dockArea": "right",
+      "width": 264,
+      "height": 554,
+      "headerHeight": 26,
+      "title": "工具选项与检查器",
+      "layout": {
+        "kind": "vbox",
+        "padding": 2,
+        "gap": 1
+      },
+      "children": [
+        "toolOptHeader",
+        "toolOptionsForm",
+        "inspectorSep1",
+        "inspectorTabs",
+        "inspectorStack",
+        "colorPanelToggleBtn",
+        "colorPanel",
+        "onionSkinBox"
+      ]
+    },
+    "toolOptHeader": {
+      "type": "Label",
+      "width": 256,
+      "height": 15,
+      "props": {
+        "text": "工具选项 (Tool Options)",
+        "tone": "title"
+      }
+    },
+    "toolOptionsForm": {
+      "type": "DataForm",
+      "width": 256,
+      "height": 58,
+      "props": {
+        "schema": {},
+        "values": {},
+        "emptyText": "当前工具无附加选项"
+      }
+    },
+    "inspectorSep1": {
+      "type": "Separator",
+      "width": 256,
+      "height": 2,
+      "props": {
+        "orientation": "horizontal"
+      }
+    },
+    "inspectorTabs": {
+      "type": "Grid",
+      "width": 256,
+      "height": 20,
+      "layout": {
+        "kind": "grid",
+        "columns": 3,
+        "gap": 4,
+        "columnStretch": [
+          1,
+          1,
+          1
+        ],
+        "rowStretch": [
+          0
+        ]
+      },
+      "children": [
+        "tabPropsBtn",
+        "tabHistoryBtn",
+        "tabExportBtn"
+      ]
+    },
+    "tabPropsBtn": {
+      "type": "Button",
+      "row": 0,
+      "column": 0,
+      "width": 82,
+      "height": 20,
+      "props": {
+        "text": "图层属性",
+        "variant": "primary"
+      }
+    },
+    "tabHistoryBtn": {
+      "type": "Button",
+      "row": 0,
+      "column": 1,
+      "width": 82,
+      "height": 20,
+      "props": {
+        "text": "历史记录",
+        "variant": "secondary"
+      }
+    },
+    "tabExportBtn": {
+      "type": "Button",
+      "row": 0,
+      "column": 2,
+      "width": 82,
+      "height": 20,
+      "props": {
+        "text": "渲染导出",
+        "variant": "secondary"
+      }
+    },
+    "inspectorStack": {
+      "type": "Stack",
+      "width": 256,
+      "height": 180,
+      "size": {
+        "stretch": 2,
+        "vertical": "expanding",
+        "minHeight": 86
+      },
+      "layout": {
+        "kind": "stack",
+        "padding": 0
+      },
+      "props": {
+        "currentIndex": 0
+      },
+      "children": [
+        "layerPropsPage",
+        "exportPage",
+        "historyPage"
+      ]
+    },
+    "layerPropsPage": {
+      "type": "Form",
+      "width": 256,
+      "height": 180,
+      "layout": {
+        "kind": "form",
+        "padding": 0,
+        "gap": 1,
+        "labelWidth": 68
+      },
+      "children": [
+        "blendLabel",
+        "blendCombo",
+        "opacityLabel",
+        "opacitySpin",
+        "lockLabel",
+        "lockLayerCheck"
+      ]
+    },
+    "blendLabel": {
+      "type": "Label",
+      "width": 68,
+      "height": 20,
+      "props": {
+        "text": "混合模式",
+        "tone": "muted"
+      }
+    },
+    "blendCombo": {
+      "type": "ComboBox",
+      "width": 168,
+      "height": 20,
+      "props": {
+        "options": "Normal,Multiply,Screen,Overlay",
+        "value": "Normal"
+      }
+    },
+    "opacityLabel": {
+      "type": "Label",
+      "width": 68,
+      "height": 20,
+      "props": {
+        "text": "不透明度",
+        "tone": "muted"
+      }
+    },
+    "opacitySpin": {
+      "type": "SpinBox",
+      "width": 168,
+      "height": 20,
+      "props": {
+        "min": 0,
+        "max": 100,
+        "step": 5,
+        "value": 100
+      }
+    },
+    "lockLabel": {
+      "type": "Label",
+      "width": 68,
+      "height": 20,
+      "props": {
+        "text": "锁定编辑",
+        "tone": "muted"
+      }
+    },
+    "lockLayerCheck": {
+      "type": "CheckBox",
+      "width": 168,
+      "height": 20,
+      "props": {
+        "text": "锁定当前图层",
+        "value": false
+      }
+    },
+    "exportPage": {
+      "type": "VBox",
+      "width": 256,
+      "height": 180,
+      "layout": {
+        "kind": "vbox",
+        "padding": 0,
+        "gap": 2
+      },
+      "children": [
+        "exportHintLabel",
+        "exportBtn",
+        "exportResultLabel"
+      ]
+    },
+    "exportHintLabel": {
+      "type": "Label",
+      "width": 256,
+      "height": 18,
+      "props": {
+        "text": "导出当前动画镜头片段",
+        "tone": "normal"
+      }
+    },
+    "exportBtn": {
+      "type": "Button",
+      "width": 256,
+      "height": 22,
+      "props": {
+        "text": "开始导出",
+        "variant": "primary"
+      }
+    },
+    "exportResultLabel": {
+      "type": "Label",
+      "width": 256,
+      "height": 18,
+      "props": {
+        "text": "尚未导出",
+        "tone": "muted"
+      }
+    },
+    "historyPage": {
+      "type": "VBox",
+      "width": 256,
+      "height": 180,
+      "layout": {
+        "kind": "vbox",
+        "padding": 0,
+        "gap": 2
+      },
+      "children": [
+        "historyToolbar",
+        "historyList"
+      ]
+    },
+    "historyToolbar": {
+      "type": "HBox",
+      "width": 256,
+      "height": 22,
+      "layout": {
+        "kind": "hbox",
+        "padding": 0,
+        "gap": 4
+      },
+      "children": [
+        "undoBtn",
+        "redoBtn",
+        "clearHistoryBtn"
+      ]
+    },
+    "undoBtn": {
+      "type": "Button",
+      "width": 82,
+      "height": 22,
+      "props": {
+        "text": "撤销",
+        "variant": "secondary"
+      }
+    },
+    "redoBtn": {
+      "type": "Button",
+      "width": 82,
+      "height": 22,
+      "props": {
+        "text": "重做",
+        "variant": "secondary"
+      }
+    },
+    "clearHistoryBtn": {
+      "type": "Button",
+      "width": 84,
+      "height": 22,
+      "props": {
+        "text": "清空历史",
+        "variant": "danger"
+      }
+    },
+    "historyList": {
+      "type": "List",
+      "width": 256,
+      "height": 150,
+      "size": {
+        "stretch": 1,
+        "vertical": "expanding",
+        "minHeight": 38
+      },
+      "props": {
+        "items": [],
+        "value": 2,
+        "mutedFrom": -1
+      }
+    },
+    "colorPanelToggleBtn": {
+      "type": "StateButton",
+      "width": 256,
+      "height": 20,
+      "props": {
+        "text": "收起调色盘",
+        "selected": true
+      }
+    },
+    "colorPanel": {
+      "type": "VBox",
+      "width": 256,
+      "height": 96,
+      "size": {
+        "stretch": 1,
+        "vertical": "expanding",
+        "minHeight": 38,
+        "maxHeight": 96
+      },
+      "layout": {
+        "kind": "vbox",
+        "padding": 2,
+        "gap": 2
+      },
+      "children": [
+        "colorPickerCanvas",
+        "colorHexLabel"
+      ]
+    },
+    "colorPickerCanvas": {
+      "type": "ColorPicker",
+      "width": 252,
+      "height": 78,
+      "size": {
+        "stretch": 1,
+        "vertical": "expanding",
+        "minHeight": 20
+      },
+      "props": {
+        "hue": 210,
+        "saturation": 78,
+        "brightness": 92,
+        "hexColor": "#3394eb"
+      }
+    },
+    "colorHexLabel": {
+      "type": "Label",
+      "width": 252,
+      "height": 12,
+      "props": {
+        "text": "当前颜色：#3394eb",
+        "tone": "muted"
+      }
+    },
+    "onionSkinBox": {
+      "type": "FloatBox",
+      "width": 256,
+      "height": 42,
+      "headerHeight": 20,
+      "layout": {
+        "kind": "vbox",
+        "padding": 2,
+        "gap": 2
+      },
+      "props": {
+        "title": "洋葱皮预览",
+        "floating": false,
+        "headerHeight": 20,
+        "floatX": 360,
+        "floatY": 160,
+        "floatWidth": 240,
+        "floatHeight": 96
+      },
+      "children": [
+        "onionSkinLabel"
+      ]
+    },
+    "onionSkinLabel": {
+      "type": "Label",
+      "width": 252,
+      "height": 16,
+      "props": {
+        "text": "前后各显示 2 帧残影",
+        "tone": "muted"
+      }
+    },
+    "timelineDock": {
+      "type": "Dock",
+      "dockArea": "bottom",
+      "width": 1280,
+      "height": 162,
+      "headerHeight": 26,
+      "title": "时间轴",
+      "layout": {
+        "kind": "vbox",
+        "padding": [
+          6,
+          12,
+          6,
+          12
+        ],
+        "gap": 6
+      },
+      "children": [
+        "timelineTransportFlow",
+        "timelineTrackRow"
+      ]
+    },
+    "timelineTransportFlow": {
+      "type": "Flow",
+      "width": 1256,
+      "height": 28,
+      "size": {
+        "horizontal": "expanding"
+      },
+      "layout": {
+        "kind": "flow",
+        "padding": 0,
+        "columnGap": 6,
+        "rowGap": 4
+      },
+      "children": [
+        "playToggleBtn",
+        "prevFrameBtn",
+        "nextFrameBtn",
+        "addFrameBtn",
+        "addHoldFrameBtn",
+        "duplicateFrameBtn",
+        "moveFrameBackBtn",
+        "removeFrameBtn",
+        "loopToggleBtn",
+        "onionToggleBtn",
+        "onionLinesCheck",
+        "onionFillsCheck",
+        "onionAmCheck",
+        "onionGuideCheck",
+        "fpsSelectCombo",
+        "frameSlider",
+        "frameInfoLabel"
+      ]
+    },
+    "playToggleBtn": {
+      "type": "Button",
+      "width": 68,
+      "height": 28,
+      "props": {
+        "text": "播放",
+        "variant": "primary",
+        "icon": "play",
+        "checkable": true,
+        "checked": false
+      }
+    },
+    "prevFrameBtn": {
+      "type": "Button",
+      "width": 58,
+      "height": 28,
+      "props": {
+        "text": "上一帧",
+        "variant": "secondary"
+      }
+    },
+    "nextFrameBtn": {
+      "type": "Button",
+      "width": 58,
+      "height": 28,
+      "props": {
+        "text": "下一帧",
+        "variant": "secondary"
+      }
+    },
+    "addFrameBtn": {
+      "type": "Button",
+      "width": 68,
+      "height": 28,
+      "props": {
+        "text": "+关键帧",
+        "variant": "secondary"
+      }
+    },
+    "addHoldFrameBtn": {
+      "type": "Button",
+      "width": 68,
+      "height": 28,
+      "props": {
+        "text": "+延长帧",
+        "variant": "secondary"
+      }
+    },
+    "duplicateFrameBtn": {
+      "type": "Button",
+      "width": 60,
+      "height": 28,
+      "props": {
+        "text": "复制帧",
+        "variant": "secondary"
+      }
+    },
+    "moveFrameBackBtn": {
+      "type": "Button",
+      "width": 60,
+      "height": 28,
+      "props": {
+        "text": "帧前移",
+        "variant": "secondary"
+      }
+    },
+    "removeFrameBtn": {
+      "type": "Button",
+      "width": 62,
+      "height": 28,
+      "props": {
+        "text": "-删除帧",
+        "variant": "secondary"
+      }
+    },
+    "loopToggleBtn": {
+      "type": "Button",
+      "width": 62,
+      "height": 28,
+      "props": {
+        "text": "循环",
+        "variant": "secondary",
+        "checkable": true,
+        "checked": true
+      }
+    },
+    "onionToggleBtn": {
+      "type": "Button",
+      "width": 62,
+      "height": 28,
+      "props": {
+        "text": "洋葱皮",
+        "variant": "secondary",
+        "checkable": true,
+        "checked": false
+      }
+    },
+    "onionLinesCheck": {
+      "type": "CheckBox",
+      "width": 52,
+      "height": 28,
+      "props": {
+        "text": "线稿",
+        "value": true
+      }
+    },
+    "onionFillsCheck": {
+      "type": "CheckBox",
+      "width": 52,
+      "height": 28,
+      "props": {
+        "text": "填充",
+        "value": true
+      }
+    },
+    "onionAmCheck": {
+      "type": "CheckBox",
+      "width": 52,
+      "height": 28,
+      "props": {
+        "text": "映射",
+        "value": false
+      }
+    },
+    "onionGuideCheck": {
+      "type": "CheckBox",
+      "width": 52,
+      "height": 28,
+      "props": {
+        "text": "辅助",
+        "value": false
+      }
+    },
+    "fpsSelectCombo": {
+      "type": "ComboBox",
+      "width": 82,
+      "height": 28,
+      "props": {
+        "options": "12 fps,24 fps,30 fps",
+        "value": "24 fps"
+      }
+    },
+    "frameSlider": {
+      "type": "Slider",
+      "width": 112,
+      "height": 28,
+      "props": {
+        "min": 1,
+        "max": 24,
+        "step": 1,
+        "value": 1
+      }
+    },
+    "frameInfoLabel": {
+      "type": "Label",
+      "width": 116,
+      "height": 28,
+      "props": {
+        "text": "当前帧：1 / 24",
+        "tone": "normal"
+      }
+    },
+    "timelineTrackRow": {
+      "type": "HBox",
+      "width": 1256,
+      "height": 26,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "fixed"
+      },
+      "layout": {
+        "kind": "hbox",
+        "padding": 0,
+        "gap": 8
+      },
+      "children": [
+        "timelineTrackLabel",
+        "timelineScrollBar",
+        "timelineOffsetLabel"
+      ]
+    },
+    "timelineTrackLabel": {
+      "type": "Label",
+      "width": 110,
+      "height": 26,
+      "props": {
+        "text": "时间轴视口滚动",
+        "tone": "muted"
+      }
+    },
+    "timelineScrollBar": {
+      "type": "ScrollBar",
+      "width": 600,
+      "height": 26,
+      "size": {
+        "stretch": 1,
+        "horizontal": "expanding"
+      },
+      "props": {
+        "min": 0,
+        "max": 100,
+        "step": 5,
+        "pageStep": 20,
+        "value": 0
+      }
+    },
+    "timelineOffsetLabel": {
+      "type": "Label",
+      "width": 120,
+      "height": 26,
+      "props": {
+        "text": "视口偏移：0%",
+        "tone": "muted",
+        "align": "right"
+      }
+    },
+    "statusBar": {
+      "type": "HBox",
+      "width": 1280,
+      "height": 28,
+      "layout": {
+        "kind": "hbox",
+        "padding": [
+          0,
+          12,
+          0,
+          12
+        ],
+        "gap": 12
+      },
+      "children": [
+        "statusTextLabel",
+        "projectSummaryLabel",
+        "statusClockLabel",
+        "statusLayerCountLabel"
+      ]
+    },
+    "statusTextLabel": {
+      "type": "Label",
+      "width": 360,
+      "height": 28,
+      "size": {
+        "stretch": 1,
+        "horizontal": "expanding"
+      },
+      "props": {
+        "text": "就绪",
+        "tone": "muted"
+      }
+    },
+    "projectSummaryLabel": {
+      "type": "Label",
+      "width": 180,
+      "height": 28,
+      "props": {
+        "text": "样片镜头 (1920x1080)",
+        "tone": "muted",
+        "align": "right"
+      }
+    },
+    "statusClockLabel": {
+      "type": "Label",
+      "width": 120,
+      "height": 28,
+      "props": {
+        "text": "时钟：0 ms",
+        "tone": "muted",
+        "align": "right"
+      }
+    },
+    "statusLayerCountLabel": {
+      "type": "Label",
+      "width": 100,
+      "height": 28,
+      "props": {
+        "text": "图层数：3",
+        "tone": "muted",
+        "align": "right"
+      }
+    },
+    "newProjectDialog": {
+      "type": "Dialog",
+      "modal": true,
+      "initialOpen": false,
+      "width": 420,
+      "height": 320,
+      "title": "新建动画项目",
+      "layout": {
+        "kind": "vbox",
+        "padding": 16,
+        "gap": 12
+      },
+      "children": [
+        "newProjectForm",
+        "dialogSep",
+        "dialogFooter"
+      ]
+    },
+    "newProjectForm": {
+      "type": "Form",
+      "width": 388,
+      "height": 210,
+      "size": {
+        "stretch": 1,
+        "vertical": "expanding"
+      },
+      "layout": {
+        "kind": "form",
+        "padding": 0,
+        "gap": 8,
+        "labelWidth": 88
+      },
+      "children": [
+        "nameFormLabel",
+        "projectNameInput",
+        "presetFormLabel",
+        "presetCombo",
+        "widthFormLabel",
+        "widthSpin",
+        "heightFormLabel",
+        "heightSpin",
+        "transparentFormLabel",
+        "transparentCheck"
+      ]
+    },
+    "nameFormLabel": {
+      "type": "Label",
+      "width": 88,
+      "height": 30,
+      "props": {
+        "text": "项目名称",
+        "tone": "muted"
+      }
+    },
+    "projectNameInput": {
+      "type": "TextInput",
+      "width": 292,
+      "height": 30,
+      "props": {
+        "placeholder": "输入项目名称",
+        "value": "新动画镜头"
+      }
+    },
+    "presetFormLabel": {
+      "type": "Label",
+      "width": 88,
+      "height": 30,
+      "props": {
+        "text": "画幅预设",
+        "tone": "muted"
+      }
+    },
+    "presetCombo": {
+      "type": "ComboBox",
+      "width": 292,
+      "height": 30,
+      "props": {
+        "options": "1080p,720p,Square",
+        "value": "1080p"
+      }
+    },
+    "widthFormLabel": {
+      "type": "Label",
+      "width": 88,
+      "height": 30,
+      "props": {
+        "text": "画布宽度",
+        "tone": "muted"
+      }
+    },
+    "widthSpin": {
+      "type": "SpinBox",
+      "width": 292,
+      "height": 30,
+      "props": {
+        "min": 128,
+        "max": 4096,
+        "step": 16,
+        "value": 1920
+      }
+    },
+    "heightFormLabel": {
+      "type": "Label",
+      "width": 88,
+      "height": 30,
+      "props": {
+        "text": "画布高度",
+        "tone": "muted"
+      }
+    },
+    "heightSpin": {
+      "type": "SpinBox",
+      "width": 292,
+      "height": 30,
+      "props": {
+        "min": 128,
+        "max": 4096,
+        "step": 16,
+        "value": 1080
+      }
+    },
+    "transparentFormLabel": {
+      "type": "Label",
+      "width": 88,
+      "height": 30,
+      "props": {
+        "text": "背景设置",
+        "tone": "muted"
+      }
+    },
+    "transparentCheck": {
+      "type": "CheckBox",
+      "width": 292,
+      "height": 30,
+      "props": {
+        "text": "透明底色",
+        "value": true
+      }
+    },
+    "dialogSep": {
+      "type": "Separator",
+      "width": 388,
+      "height": 6,
+      "props": {
+        "orientation": "horizontal"
+      }
+    },
+    "dialogFooter": {
+      "type": "HBox",
+      "width": 388,
+      "height": 34,
+      "layout": {
+        "kind": "hbox",
+        "padding": 0,
+        "gap": 8
+      },
+      "children": [
+        "dialogSpacerLabel",
+        "cancelNewProjectBtn",
+        "confirmNewProjectBtn"
+      ]
+    },
+    "dialogSpacerLabel": {
+      "type": "Label",
+      "width": 180,
+      "height": 34,
+      "size": {
+        "stretch": 1,
+        "horizontal": "expanding"
+      },
+      "props": {
+        "text": "",
+        "tone": "muted"
+      }
+    },
+    "cancelNewProjectBtn": {
+      "type": "Button",
+      "width": 92,
+      "height": 34,
+      "props": {
+        "text": "取消",
+        "variant": "secondary"
+      }
+    },
+    "confirmNewProjectBtn": {
+      "type": "Button",
+      "width": 92,
+      "height": 34,
+      "props": {
+        "text": "创建项目",
+        "variant": "primary"
+      }
+    },
+    "drawSettingsDialog": {
+      "type": "Dialog",
+      "modal": true,
+      "initialOpen": false,
+      "width": 400,
+      "height": 260,
+      "title": "画笔与压感设置",
+      "layout": {
+        "kind": "vbox",
+        "padding": 16,
+        "gap": 10
+      },
+      "children": [
+        "drawSettingsForm",
+        "drawDialogSep",
+        "drawSettingsButtonBox"
+      ]
+    },
+    "drawSettingsForm": {
+      "type": "Form",
+      "width": 368,
+      "height": 168,
+      "size": {
+        "stretch": 1,
+        "vertical": "expanding"
+      },
+      "layout": {
+        "kind": "form",
+        "padding": 0,
+        "gap": 8,
+        "labelWidth": 88
+      },
+      "children": [
+        "pressureCurveLabel",
+        "pressureCurveCombo",
+        "minRadiusLabel",
+        "minRadiusSpin",
+        "tiltSensLabel",
+        "tiltSensitivitySlider",
+        "antiAliasLabel",
+        "antiAliasCheck"
+      ]
+    },
+    "pressureCurveLabel": {
+      "type": "Label",
+      "width": 88,
+      "height": 30,
+      "props": {
+        "text": "压感曲线",
+        "tone": "muted"
+      }
+    },
+    "pressureCurveCombo": {
+      "type": "ComboBox",
+      "width": 272,
+      "height": 30,
+      "props": {
+        "options": "Linear,SoftS,HardCurve",
+        "value": "Linear"
+      }
+    },
+    "minRadiusLabel": {
+      "type": "Label",
+      "width": 88,
+      "height": 30,
+      "props": {
+        "text": "最小笔尖",
+        "tone": "muted"
+      }
+    },
+    "minRadiusSpin": {
+      "type": "SpinBox",
+      "width": 272,
+      "height": 30,
+      "props": {
+        "min": 0,
+        "max": 100,
+        "step": 5,
+        "value": 15
+      }
+    },
+    "tiltSensLabel": {
+      "type": "Label",
+      "width": 88,
+      "height": 30,
+      "props": {
+        "text": "倾角灵敏度",
+        "tone": "muted"
+      }
+    },
+    "tiltSensitivitySlider": {
+      "type": "Slider",
+      "width": 272,
+      "height": 30,
+      "props": {
+        "min": 0,
+        "max": 100,
+        "step": 5,
+        "value": 60
+      }
+    },
+    "antiAliasLabel": {
+      "type": "Label",
+      "width": 88,
+      "height": 30,
+      "props": {
+        "text": "边缘抗锯齿",
+        "tone": "muted"
+      }
+    },
+    "antiAliasCheck": {
+      "type": "CheckBox",
+      "width": 272,
+      "height": 30,
+      "props": {
+        "text": "开启笔触抗锯齿",
+        "value": true
+      }
+    },
+    "drawDialogSep": {
+      "type": "Separator",
+      "width": 368,
+      "height": 6,
+      "props": {
+        "orientation": "horizontal"
+      }
+    },
+    "drawSettingsButtonBox": {
+      "type": "DialogButtonBox",
+      "width": 368,
+      "height": 34,
+      "props": {
+        "buttons": "ok,cancel",
+        "okText": "应用设置",
+        "cancelText": "取消"
+      }
+    },
+    "textureFloatDialog": {
+      "type": "Dialog",
+      "modal": false,
+      "initialOpen": false,
+      "width": 360,
+      "height": 220,
+      "title": "纹理子视图 (Texture FloatBox)",
+      "layout": {
+        "kind": "vbox",
+        "padding": 14,
+        "gap": 10
+      },
+      "children": [
+        "textureFloatInfoLabel",
+        "textureFloatActionsRow",
+        "closeTextureFloatBtn"
+      ]
+    },
+    "textureFloatInfoLabel": {
+      "type": "Label",
+      "width": 332,
+      "height": 60,
+      "size": {
+        "stretch": 1,
+        "vertical": "expanding"
+      },
+      "props": {
+        "text": "当前纹理子视图处于独立浮动窗口 (FloatBox)",
+        "tone": "normal"
+      }
+    },
+    "textureFloatActionsRow": {
+      "type": "HBox",
+      "width": 332,
+      "height": 32,
+      "layout": {
+        "kind": "hbox",
+        "padding": 0,
+        "gap": 8
+      },
+      "children": [
+        "dockTextureToTabBtn",
+        "embedTextureBtn"
+      ]
+    },
+    "dockTextureToTabBtn": {
+      "type": "Button",
+      "width": 162,
+      "height": 32,
+      "props": {
+        "text": "归还至中央 Texture 页",
+        "variant": "primary"
+      }
+    },
+    "embedTextureBtn": {
+      "type": "Button",
+      "width": 162,
+      "height": 32,
+      "props": {
+        "text": "嵌入工具面板槽位",
+        "variant": "secondary"
+      }
+    },
+    "closeTextureFloatBtn": {
+      "type": "Button",
+      "width": 332,
+      "height": 30,
+      "props": {
+        "text": "关闭浮动视图",
+        "variant": "secondary"
+      }
+    },
+    "button1": {
+      "type": "Button",
+      "width": 358,
+      "height": 49
+    }
+  }
+}

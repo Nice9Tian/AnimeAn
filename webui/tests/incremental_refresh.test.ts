@@ -8,7 +8,7 @@ import { loadProjectFiles, type ProjectIO } from "../vf/src/loader.ts";
 import { Runtime } from "../vf/src/runtime.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DESIGN_DIR = path.resolve(__dirname, "../design");
+const DESIGN_DIR = path.resolve(__dirname, "./fixtures/vf_animean_design");
 
 function createNodeFsProjectIO(rootDir: string): ProjectIO {
   return {
