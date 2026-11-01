@@ -1,7 +1,8 @@
 #ifndef BACKENDSESSION_H
 #define BACKENDSESSION_H
 
-#include <QCursor>
+#include "algorithm/core/image.h"
+#include "board/cursor.h"
 #include <QHash>
 #include <QImage>
 #include <QJsonArray>
@@ -81,8 +82,8 @@ private:
     void emitUiEvent(const QString &name, const QJsonObject &args = QJsonObject());
 
     void handleFrameSink(const QString &viewName, const BoardFrame &frame);
-    void handleImageSink(const QString &key, const QImage &rgba);
-    void handleCursorSink(const QString &viewName, const QCursor &cursor);
+    void handleImageSink(const QString &key, const AnimeCore::Image &rgba);
+    void handleCursorSink(const QString &viewName, const AnimeCore::Cursor &cursor);
     void sendImagePacket(const QString &key, const QImage &rgba);
 
     void setPythonUiFrozen(bool frozen);

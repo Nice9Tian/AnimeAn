@@ -322,7 +322,7 @@ qreal thicknessFromDict(const py::dict &data)
     return dictNumber(data, "thick", 3.0);
 }
 
-void appendQuadraticMetricPoints(QVector<QPointF> *points,
+void appendQuadraticMetricPoints(AnimeCore::Vector<AnimeCore::PointF> *points,
                                  const QPointF &p0,
                                  const QPointF &p1,
                                  const QPointF &p2,
@@ -438,7 +438,7 @@ QRectF importedVectorFramesBounds(const QVector<PaintOpenGLWidget::ImportedVecto
         for (const PaintOpenGLWidget::ImportedVectorStroke &stroke : frame.strokes) {
             const QRectF strokeBounds = stroke.path.isEmpty()
                                             ? QRectF()
-                                            : stroke.path.boundingRect();
+                                            : QRectF(stroke.path.boundingRect());
             if (!strokeBounds.isValid()) {
                 continue;
             }
@@ -472,13 +472,13 @@ void scaleImportedVectorFramesToCanvas(QVector<PaintOpenGLWidget::ImportedVector
 
     for (PaintOpenGLWidget::ImportedVectorFrame &frame : *frames) {
         for (PaintOpenGLWidget::ImportedVectorStroke &stroke : frame.strokes) {
-            for (QPointF &point : stroke.points) {
-                point = targetCenter + (point - sourceCenter) * scale;
+            for (AnimeCore::PointF &point : stroke.points) {
+                point = AnimeCore::PointF(targetCenter) + (point - AnimeCore::PointF(sourceCenter)) * scale;
             }
             const qreal dx = targetCenter.x() - sourceCenter.x() * scale;
             const qreal dy = targetCenter.y() - sourceCenter.y() * scale;
             const QTransform transform(scale, 0.0, 0.0, scale, dx, dy);
-            stroke.path = transform.map(stroke.path);
+            stroke.path = transform.map(QPainterPath(stroke.path));
             stroke.width = std::max(qreal(1.0), stroke.width * scale);
         }
     }
@@ -810,10 +810,10 @@ void BackendSession::setupBoardSinks(const QString &viewName, PaintOpenGLWidget 
     paintView->setFrameSink([this, viewName](const BoardFrame &frame) {
         handleFrameSink(viewName, frame);
     });
-    paintView->setImageSink([this](const QString &key, const QImage &rgba) {
+    paintView->setImageSink([this](const AnimeCore::String &key, const AnimeCore::Image &rgba) {
         handleImageSink(key, rgba);
     });
-    paintView->setCursorSink([this, viewName](const QCursor &cursor) {
+    paintView->setCursorSink([this, viewName](const AnimeCore::Cursor &cursor) {
         handleCursorSink(viewName, cursor);
     });
     handleCursorSink(viewName, paintView->cursor());
@@ -826,7 +826,7 @@ void BackendSession::bindPaintViewToBusiness(const QString &viewName, PaintOpenG
     }
 
     AnimePaintViewAdapter adapter;
-    adapter.viewObject = paintView;
+    adapter.viewObject = nullptr;
     adapter.model = &paintView->model();
     adapter.history = &paintView->history();
 
@@ -906,7 +906,7 @@ void BackendSession::bindPaintViewToBusiness(const QString &viewName, PaintOpenG
                                                 int row,
                                                 int startColumn,
                                                 int endColumn) {
-        paintView->sendPythonToolOptionMessage(hook, name, type, value, row, startColumn, endColumn);
+        const AnimeCore::JsonVariant coreVal = (value.userType() == QMetaType::Int || value.userType() == QMetaType::UInt || value.userType() == QMetaType::LongLong || value.userType() == QMetaType::ULongLong) ? AnimeCore::JsonVariant(static_cast<long long>(value.toLongLong())) : AnimeCore::Bridge<QVariant>::toCore(value); paintView->sendPythonToolOptionMessage(hook, name, type, coreVal, row, startColumn, endColumn);
     };
     adapter.sendPadMessage = [paintView](const QString &pad,
                                          const QString &phase,
@@ -916,7 +916,7 @@ void BackendSession::bindPaintViewToBusiness(const QString &viewName, PaintOpenG
     };
 
     adapter.buildPlaybackCache = [paintView](int frameCount, AnimeCore::String *error) {
-        QString qError; const bool ok = paintView->buildPlaybackCache(frameCount, error ? &qError : nullptr); if (error) { *error = qError; } return ok;
+        return paintView->buildPlaybackCache(frameCount, error);
     };
     adapter.showPlaybackFrame = [paintView](int frameIndex) {
         paintView->showPlaybackFrame(frameIndex);
@@ -944,17 +944,17 @@ void BackendSession::bindPaintViewToBusiness(const QString &viewName, PaintOpenG
 
     m_business->bindPaintView(viewName, adapter);
 
-    connect(paintView, &PaintOpenGLWidget::focusGained, this, [this, viewName]() {
+    paintView->focusGained.connect([this, viewName]() {
         m_business->setActiveViewName(viewName);
     });
-    connect(paintView, &PaintOpenGLWidget::layerListChanged, this, [this, viewName, paintView](int selectedLayer) {
+    paintView->layerListChanged.connect([this, viewName, paintView](int selectedLayer) {
         m_business->updateAttention(viewName,
                                     AttentionChange::LayerChange,
                                     paintView->model().currentFrame(),
                                     selectedLayer,
                                     paintView->model().currentAsset());
     });
-    connect(paintView, &PaintOpenGLWidget::assetListChanged, this, [this, viewName](int selectedAsset) {
+    paintView->assetListChanged.connect([this, viewName](int selectedAsset) {
         const SelectionAttention current = m_business->attentionForView(viewName);
         m_business->updateAttention(viewName,
                                     AttentionChange::AssetChange,
@@ -962,22 +962,22 @@ void BackendSession::bindPaintViewToBusiness(const QString &viewName, PaintOpenG
                                     current.layer,
                                     selectedAsset);
     });
-    connect(paintView, &PaintOpenGLWidget::pythonDebugMessage, this, &BackendSession::appendPythonDebug);
-    connect(paintView, &PaintOpenGLWidget::playbackInterrupted, this, [this]() { m_business->stopPlayback(); });
-    connect(paintView, &PaintOpenGLWidget::historyChanged, this, [this]() {
+    paintView->pythonDebugMessage.connect([this](const AnimeCore::String &msg) { appendPythonDebug(msg); });
+    paintView->playbackInterrupted.connect([this]() { m_business->stopPlayback(); });
+    paintView->historyChanged.connect([this]() {
         markDirty(QStringLiteral("history"));
         markDirty(QStringLiteral("menus"));
     });
-    connect(paintView, &PaintOpenGLWidget::historyCommitted, this, [this, viewName]() {
+    paintView->historyCommitted.connect([this, viewName]() {
         m_business->handleViewHistoryCommitted(viewName);
         markDirty(QStringLiteral("history"));
         markDirty(QStringLiteral("menus"));
     });
-    connect(paintView, &PaintOpenGLWidget::viewTransformChanged, this, [this, viewName]() {
+    paintView->viewTransformChanged.connect([this, viewName]() {
         markDirty(viewName == QStringLiteral("child") ? QStringLiteral("viewport/child")
                                                       : QStringLiteral("viewport/main"));
     });
-    connect(paintView, &PaintOpenGLWidget::userTransformed, this, [this, viewName]() {
+    paintView->userTransformed.connect([this, viewName]() {
         markDirty(viewName == QStringLiteral("child") ? QStringLiteral("viewport/child")
                                                       : QStringLiteral("viewport/main"));
     });
@@ -1422,42 +1422,42 @@ void BackendSession::handleInputMessage(const QJsonObject &msg)
     const QString kind = msg.value(QStringLiteral("kind")).toString();
     const qreal x = msg.value(QStringLiteral("x")).toDouble(0.0);
     const qreal y = msg.value(QStringLiteral("y")).toDouble(0.0);
-    const Qt::KeyboardModifiers modifiers =
-        static_cast<Qt::KeyboardModifiers>(msg.value(QStringLiteral("modifiers")).toInt(0));
+    const AnimeCore::KeyboardModifiers modifiers =
+        static_cast<AnimeCore::KeyboardModifiers>(msg.value(QStringLiteral("modifiers")).toInt(0));
     const quint64 timestamp = quint64(std::max(0.0, msg.value(QStringLiteral("time")).toDouble(0.0)));
 
     if (kind == QStringLiteral("press")) {
-        Qt::MouseButton button = static_cast<Qt::MouseButton>(msg.value(QStringLiteral("button")).toInt(int(Qt::LeftButton)));
-        if (button == Qt::NoButton && !msg.contains(QStringLiteral("button"))) {
-            button = Qt::LeftButton;
+        AnimeCore::MouseButton button = static_cast<AnimeCore::MouseButton>(msg.value(QStringLiteral("button")).toInt(int(AnimeCore::LeftButton)));
+        if (button == AnimeCore::NoButton && !msg.contains(QStringLiteral("button"))) {
+            button = AnimeCore::LeftButton;
         }
-        Qt::MouseButtons buttons = static_cast<Qt::MouseButtons>(msg.value(QStringLiteral("buttons")).toInt(int(button)));
-        if (buttons == Qt::NoButton && !msg.contains(QStringLiteral("buttons"))) {
+        AnimeCore::MouseButtons buttons = static_cast<AnimeCore::MouseButtons>(msg.value(QStringLiteral("buttons")).toInt(int(button)));
+        if (buttons == AnimeCore::NoButton && !msg.contains(QStringLiteral("buttons"))) {
             buttons = button;
         }
-        board->injectMouse(QEvent::MouseButtonPress, QPointF(x, y), button, buttons, modifiers, timestamp);
+        board->injectMouse(AnimeCore::Event::MouseButtonPress, QPointF(x, y), button, buttons, modifiers, timestamp);
     } else if (kind == QStringLiteral("move")) {
-        Qt::MouseButton button = static_cast<Qt::MouseButton>(msg.value(QStringLiteral("button")).toInt(int(Qt::NoButton)));
-        Qt::MouseButtons buttons = static_cast<Qt::MouseButtons>(msg.value(QStringLiteral("buttons")).toInt(int(Qt::LeftButton)));
+        AnimeCore::MouseButton button = static_cast<AnimeCore::MouseButton>(msg.value(QStringLiteral("button")).toInt(int(AnimeCore::NoButton)));
+        AnimeCore::MouseButtons buttons = static_cast<AnimeCore::MouseButtons>(msg.value(QStringLiteral("buttons")).toInt(int(AnimeCore::LeftButton)));
         if (msg.contains(QStringLiteral("buttons"))) {
-            buttons = static_cast<Qt::MouseButtons>(msg.value(QStringLiteral("buttons")).toInt(0));
+            buttons = static_cast<AnimeCore::MouseButtons>(msg.value(QStringLiteral("buttons")).toInt(0));
         }
-        board->injectMouse(QEvent::MouseMove, QPointF(x, y), button, buttons, modifiers, timestamp);
+        board->injectMouse(AnimeCore::Event::MouseMove, QPointF(x, y), button, buttons, modifiers, timestamp);
     } else if (kind == QStringLiteral("release")) {
-        Qt::MouseButton button = static_cast<Qt::MouseButton>(msg.value(QStringLiteral("button")).toInt(int(Qt::LeftButton)));
-        if (button == Qt::NoButton && !msg.contains(QStringLiteral("button"))) {
-            button = Qt::LeftButton;
+        AnimeCore::MouseButton button = static_cast<AnimeCore::MouseButton>(msg.value(QStringLiteral("button")).toInt(int(AnimeCore::LeftButton)));
+        if (button == AnimeCore::NoButton && !msg.contains(QStringLiteral("button"))) {
+            button = AnimeCore::LeftButton;
         }
-        Qt::MouseButtons buttons = static_cast<Qt::MouseButtons>(msg.value(QStringLiteral("buttons")).toInt(int(Qt::NoButton)));
-        board->injectMouse(QEvent::MouseButtonRelease, QPointF(x, y), button, buttons, modifiers, timestamp);
+        AnimeCore::MouseButtons buttons = static_cast<AnimeCore::MouseButtons>(msg.value(QStringLiteral("buttons")).toInt(int(AnimeCore::NoButton)));
+        board->injectMouse(AnimeCore::Event::MouseButtonRelease, QPointF(x, y), button, buttons, modifiers, timestamp);
     } else if (kind == QStringLiteral("doubleClick") || kind == QStringLiteral("dblclick")) {
-        Qt::MouseButton button = static_cast<Qt::MouseButton>(msg.value(QStringLiteral("button")).toInt(int(Qt::LeftButton)));
-        Qt::MouseButtons buttons = static_cast<Qt::MouseButtons>(msg.value(QStringLiteral("buttons")).toInt(int(button)));
-        board->injectMouse(QEvent::MouseButtonDblClick, QPointF(x, y), button, buttons, modifiers, timestamp);
+        AnimeCore::MouseButton button = static_cast<AnimeCore::MouseButton>(msg.value(QStringLiteral("button")).toInt(int(AnimeCore::LeftButton)));
+        AnimeCore::MouseButtons buttons = static_cast<AnimeCore::MouseButtons>(msg.value(QStringLiteral("buttons")).toInt(int(button)));
+        board->injectMouse(AnimeCore::Event::MouseButtonDblClick, QPointF(x, y), button, buttons, modifiers, timestamp);
     } else if (kind == QStringLiteral("wheel")) {
         const int dx = msg.value(QStringLiteral("dx")).toInt(0);
         const int dy = msg.value(QStringLiteral("dy")).toInt(0);
-        const Qt::MouseButtons buttons = static_cast<Qt::MouseButtons>(msg.value(QStringLiteral("buttons")).toInt(0));
+        const AnimeCore::MouseButtons buttons = static_cast<AnimeCore::MouseButtons>(msg.value(QStringLiteral("buttons")).toInt(0));
         board->injectWheel(QPointF(x, y), QPoint(dx, dy), modifiers, buttons);
     } else if (kind == QStringLiteral("enter")) {
         board->injectEnter();
@@ -1691,7 +1691,7 @@ QJsonObject BackendSession::dispatchCall(const QString &method, const QJsonObjec
                 members.append(member.toInt());
             }
             board->sendPythonLayerMenuMessage(id.mid(7), groupId, params.value(QStringLiteral("groupName")).toString(),
-                                              layerIndex, layerIndex >= 0 ? board->layerName(layerIndex) : QString(), members);
+                                              layerIndex, layerIndex >= 0 ? QString(board->layerName(layerIndex)) : QString(), members);
         } else {
             return makeError(QStringLiteral("Unknown layer action"));
         }
@@ -2841,14 +2841,14 @@ void BackendSession::handleFrameSink(const QString &viewName, const BoardFrame &
     payload.append(",\"keep\":");
     payload.append(QByteArray::number(frame.keep));
     payload.append(",\"ops\":");
-    payload.append(frame.ops.isEmpty() ? QByteArrayLiteral("[]") : frame.ops);
+    payload.append(frame.ops.empty() ? QByteArrayLiteral("[]") : QByteArray::fromStdString(frame.ops));
     payload.append('}');
     m_ws->sendText(payload.toStdString());
 }
 
-void BackendSession::handleImageSink(const QString &key, const QImage &rgba)
+void BackendSession::handleImageSink(const QString &key, const AnimeCore::Image &rgbaImg)
 {
-    if (key.isEmpty() || rgba.isNull()) {
+    const QImage rgba(rgbaImg); if (key.isEmpty() || rgba.isNull()) {
         return;
     }
     const QImage formatted = (rgba.format() == QImage::Format_RGBA8888)
@@ -2890,12 +2890,12 @@ void BackendSession::sendImagePacket(const QString &key, const QImage &rgba)
     }
 }
 
-void BackendSession::handleCursorSink(const QString &viewName, const QCursor &cursor)
+void BackendSession::handleCursorSink(const QString &viewName, const AnimeCore::Cursor &cursor)
 {
     CursorState state;
-    const QPixmap pixmap = cursor.pixmap();
+    const AnimeCore::Image pixmap = cursor.pixmap();
     if (!pixmap.isNull()) {
-        const QImage rgba = pixmap.toImage().convertToFormat(QImage::Format_RGBA8888);
+        const QImage rgba = QImage(pixmap).convertToFormat(QImage::Format_RGBA8888);
         const QString key = cursorImageKey(rgba);
         state.shape = QStringLiteral("bitmap");
         state.css = QStringLiteral("default");
@@ -2911,7 +2911,7 @@ void BackendSession::handleCursorSink(const QString &viewName, const QCursor &cu
             sendImagePacket(key, rgba);
         }
     } else {
-        mapQtCursorShape(cursor.shape(), &state.shape, &state.css);
+        mapQtCursorShape(static_cast<Qt::CursorShape>(cursor.shape()), &state.shape, &state.css);
     }
     m_cursors.insert(viewName, state);
     markDirty(viewName == QStringLiteral("child") ? QStringLiteral("cursor/child")
