@@ -17,6 +17,14 @@
 #include <QSize>
 #include <QTransform>
 
+QT_BEGIN_NAMESPACE
+class QPainterPath;
+class QImage;
+class QJsonValue;
+class QJsonArray;
+class QJsonObject;
+QT_END_NAMESPACE
+
 namespace AnimeCore {
 
 class PointF;
@@ -27,6 +35,11 @@ class Rect;
 class Size;
 class Transform;
 class Color;
+class Path;
+class Image;
+class JsonValue;
+class JsonArray;
+class JsonObject;
 
 template <>
 struct Bridge<QPointF>
@@ -98,6 +111,51 @@ struct Bridge<QColor>
 
     static Color toCore(const QColor &c) noexcept;
     static QColor fromCore(const Color &c) noexcept;
+};
+
+template <>
+struct Bridge<QPainterPath>
+{
+    using Core = Path;
+
+    static Path toCore(const QPainterPath &qp);
+    static QPainterPath fromCore(const Path &p);
+};
+
+template <>
+struct Bridge<QImage>
+{
+    using Core = Image;
+
+    static Image toCore(const QImage &qimg);
+    static QImage fromCore(const Image &image);
+};
+
+template <>
+struct Bridge<QJsonValue>
+{
+    using Core = JsonValue;
+
+    static JsonValue toCore(const QJsonValue &q);
+    static QJsonValue fromCore(const JsonValue &c);
+};
+
+template <>
+struct Bridge<QJsonArray>
+{
+    using Core = JsonArray;
+
+    static JsonArray toCore(const QJsonArray &q);
+    static QJsonArray fromCore(const JsonArray &c);
+};
+
+template <>
+struct Bridge<QJsonObject>
+{
+    using Core = JsonObject;
+
+    static JsonObject toCore(const QJsonObject &q);
+    static QJsonObject fromCore(const JsonObject &c);
 };
 
 } // namespace AnimeCore
