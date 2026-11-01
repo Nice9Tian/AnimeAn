@@ -6,4 +6,5 @@ import "./input.test.ts";
 import "./cursor.test.ts";
 import "./incremental_refresh.test.ts";
 import "./tool_groups.test.ts";
+import "./layers_assets.test.ts";
 import "./timeline_arrange.test.ts";

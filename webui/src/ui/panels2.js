@@ -93,7 +93,7 @@ export function createAssets(root, { onSelect, onAdd, onClear } = {}) {
     item.draggable = true;
     item.addEventListener("dragstart", (e) => {
       e.dataTransfer.effectAllowed = "copy";
-      e.dataTransfer.setData("text/plain", String(i));
+      e.dataTransfer.setData("application/x-animean-asset", String(i));
     });
   };
   return {
