@@ -16,9 +16,26 @@ function isPlainObject(val) {
   return val !== null && typeof val === "object" && !Array.isArray(val);
 }
 
+// Painted images differ at the edges with the antialiasing. Sixteen by sixteen cells,
+// so this catches a shifted, missing or recoloured picture and lets edge noise through.
+const IMAGE_GRID_TOLERANCE = 24;
+
+function gridDistance(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) {
+    return Infinity;
+  }
+  let worst = 0;
+  for (let i = 0; i < a.length; i++) {
+    worst = Math.max(worst, Math.abs(a[i] - b[i]));
+  }
+  return worst;
+}
+
 export function compareRecords(oldRecords, newRecords, maxDiffs = 30) {
   const diffs = [];
   let fieldsCompared = 0;
+  let softImages = 0;
+  let maxGridDiff = 0;
 
   function pushDiff(scenario, stepLabel, fieldPath, oldVal, newVal) {
     diffs.push({
@@ -31,6 +48,20 @@ export function compareRecords(oldRecords, newRecords, maxDiffs = 30) {
   }
 
   function walk(scenario, stepLabel, fieldPath, a, b) {
+    if (/^images\[\d+\]$/.test(fieldPath) && isPlainObject(a) && isPlainObject(b)) {
+      fieldsCompared++;
+      if (a.w !== b.w || a.h !== b.h) {
+        pushDiff(scenario, stepLabel, `${fieldPath}.size`, [a.w, a.h], [b.w, b.h]);
+      } else if (a.sha256 !== b.sha256) {
+        const worst = gridDistance(a.grid, b.grid);
+        softImages++;
+        maxGridDiff = Math.max(maxGridDiff, worst);
+        if (worst > IMAGE_GRID_TOLERANCE) {
+          pushDiff(scenario, stepLabel, `${fieldPath}.grid`, a.sha256, `${b.sha256} worst=${worst}`);
+        }
+      }
+      return;
+    }
     if (Array.isArray(a) || Array.isArray(b)) {
       if (!Array.isArray(a) || !Array.isArray(b)) {
         fieldsCompared++;
@@ -120,6 +151,8 @@ export function compareRecords(oldRecords, newRecords, maxDiffs = 30) {
     steps: oldRecords.length,
     fields: fieldsCompared,
     totalDiffs: diffs.length,
+    softImages,
+    maxGridDiff,
     diffs: diffs.slice(0, maxDiffs),
   };
 }
@@ -156,7 +189,7 @@ function runSelfTest(quiet = false) {
         main: { w: 800, h: 600, count: 14, sha256: "aaaa1111bbbb2222" },
         child: { w: 400, h: 400, count: 5, sha256: "cccc3333dddd4444" },
       },
-      images: [{ key: "cursor_01", w: 32, h: 32, sha256: "eeee5555ffff6666" }],
+      images: [{ w: 32, h: 32, sha256: "eeee5555ffff6666", grid: [0, 0, 0, 0] }],
       hooks: [
         {
           event: "linefinish",
@@ -223,11 +256,10 @@ function main() {
 
   if (res.same) {
     console.log(
-      `GOLDEN_SAME scenarios=${res.scenarios} steps=${res.steps} fields=${res.fields}`
+      `GOLDEN_SAME scenarios=${res.scenarios} steps=${res.steps} fields=${res.fields} soft_images=${res.softImages} max_grid_diff=${res.maxGridDiff}`
     );
     process.exit(0);
   }
-
   console.log(
     `GOLDEN_DIFF scenarios=${res.scenarios} steps=${res.steps} fields=${res.fields} total_diffs=${res.totalDiffs}`
   );
