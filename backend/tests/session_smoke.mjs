@@ -288,7 +288,7 @@ try {
         );
     }
 
-    // 2. Check menus are strictly ["File", "Edit", "View", "Auto Mapping", "Draw", "Theme", "Windows"] in exact order
+    // 2. Check menus are strictly ["File", "Edit", "Auto Mapping", "Draw", "Theme", "Windows"] in exact order
     const menus = stateMap.get("menus");
     assert(Array.isArray(menus), "menus state should be an array");
     const menuTitles = menus.map((m) => String(m.text ?? "").replace(/&/g, ""));
@@ -444,6 +444,37 @@ try {
         },
         "tools switched to Arrow and toolOptions received Python JSON"
     );
+
+    // 7b. On a scaled screen the pen ring's bitmap has the screen's pixels and its
+    // hotspot logical ones, so the state has to carry the ratio between them.
+    const sizeBeforeRatio = stateMap.get("viewport/main");
+    const sendRatio = (dpr) =>
+        ws.send(
+            JSON.stringify({
+                t: "input",
+                view: "main",
+                kind: "resize",
+                w: sizeBeforeRatio.h.page,
+                h: sizeBeforeRatio.v.page,
+                dpr,
+            })
+        );
+    sendRatio(1.25);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const penReply = await callBackend("tool.select", { tool: "Pen" });
+    assert.equal(penReply.ok, true, `tool.select failed: ${penReply.error}`);
+    await waitForState(
+        (map) => map.get("cursor/main")?.scale === 1.25,
+        "pen cursor declares the screen's ratio"
+    );
+    const penCursor = stateMap.get("cursor/main");
+    assert.equal(penCursor.shape, "bitmap");
+    assert(
+        Math.abs(penCursor.hx - penCursor.w / penCursor.scale / 2) <= 1,
+        `Hotspot should be the logical centre: ${JSON.stringify(penCursor)}`
+    );
+    sendRatio(1);
+    await callBackend("tool.select", { tool: "Arrow" });
 
     // 8. Call board.scroll -> viewport/main value changes
     const vpBeforeScroll = stateMap.get("viewport/main");

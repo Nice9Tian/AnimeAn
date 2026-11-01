@@ -82,6 +82,9 @@ public:
         // A draggable item reports press/move/release through the "handle"
         // hook events with its id, like an edit handle; Python owns meaning.
         bool draggable = false;
+        // Non-empty: a bubble with this text at the first point, at constant
+        // screen size, in the item's colours. Lines split on newlines.
+        QString label;
     };
 
     // Draggable edit handle, drawn at constant SCREEN size above everything.
@@ -408,6 +411,7 @@ private:
     // pan or zoom re-renders it once the gesture settles rather than per tick.
     void scheduleOnionCacheRefresh();
     void paintOverlayItems(QPainter &painter);
+    void paintOverlayLabels(QPainter &painter) const;
 #ifdef ANIMEAN_HEADLESS
     void paintFieldScope(QPainter &painter);
 #endif

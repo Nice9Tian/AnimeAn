@@ -49,6 +49,7 @@ private:
         int hy = 0;
         int w = 0;
         int h = 0;
+        double scale = 1.0;
     };
 
     struct FieldEntry {

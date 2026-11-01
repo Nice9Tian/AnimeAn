@@ -286,6 +286,17 @@ _GRID = {"divisions": 5, "extend": 0}
 # cache per view, invalidated whenever the guides change.
 _GRID_CACHE = {"child": None, "main": None}
 
+# Fold notes: a bubble on each board where the mapping turns over. Cells per
+# half-axis, so a short band at an axis end is not stepped over; a lone flipped
+# cell is numerical noise beside a line, not a fold.
+FOLD_NOTE_STEPS = 16
+FOLD_NOTE_MIN_CELLS = 2
+FOLD_NOTE_MAX = 3
+FOLD_NOTE_TURN_RUN = 6.0    # px the heading must stay turned: tremor is no turn
+FOLD_NOTE_COLOR = (232, 160, 40, 255)
+FOLD_NOTE_FILL = (40, 44, 52, 235)
+_FOLD_NOTES = {"regions": None}
+
 # The child-view "Occluded Areas" toggle (a script-defined view button):
 # tint the parts of the child board that the CURRENT mapping folds
 # face-down, so the user can see what the lining hides before mapping.
@@ -346,6 +357,7 @@ def curve_mode():
 def _invalidate_grid_cache():
     _GRID_CACHE["child"] = None
     _GRID_CACHE["main"] = None
+    _FOLD_NOTES["regions"] = None
     # Same lifetime: both displays are pure functions of the guide assets.
     _OCCLUSION_CACHE["items"] = None
 
@@ -587,8 +599,9 @@ def _sanitize_assets(data):
                 stations = [[float(p[0]), float(p[1])]
                             for p in pairing.get("stations") or []]
                 if stations and "id" in pairing:
-                    loaded[PAIRING_KEY] = {"id": int(pairing["id"]),
-                                           "stations": stations}
+                    loaded[PAIRING_KEY] = {
+                        "id": int(pairing["id"]), "stations": stations,
+                        "corner_stations": [int(i) for i in pairing.get("corner_stations") or []]}
                 assets[prop] = loaded
     return assets
 
@@ -5505,6 +5518,10 @@ def overlay_items(view_name):
         items.extend(_grid_overlay_items(view_name))
     except Exception as error:
         print(f"[auto_mapping] refer rect grid skipped: {error}")
+    try:
+        items.extend(_fold_note_items(view_name))
+    except Exception as error:
+        print(f"[auto_mapping] fold notes skipped: {error}")
     if view_name == "child":
         try:
             # UNDER the guides and area, so the tint never covers them.
@@ -5930,21 +5947,129 @@ def _grid_overlay_items(view_name):
     return items
 
 
-def _overlays_changed(view_name):
-    """Assets changed in view_name: refresh its overlay, and any OTHER view
-    whose display genuinely depends on those assets.
+def _axis_turnbacks(mapper):
+    """Where an axis turns back: (view, axis, grid coordinate on that axis, px to
+    the end past it, the point). Walking out from the crossing, the axis has
+    turned back once its heading crosses the other axis's: hv flips exactly
+    there, for a round U-turn as much as for a hook at the end of a stroke."""
+    found = []
+    for view, frame in (("child", mapper.child_frame), ("main", mapper.main_frame)):
+        for axis, curve, arc, sides, other, other_arc in (
+                ("H", frame.gh, frame.h_arc, frame.h_side, frame.gv, frame.v_arc),
+                ("V", frame.gv, frame.v_arc, frame.v_side, frame.gh, frame.h_arc)):
+            across = other.dir_at(other_arc)
+            here = curve.dir_at(arc)
+            base = here[0] * across[1] - here[1] * across[0]
+            points, arcs = curve.points, curve.flat_arcs
+            first = next((i for i, a in enumerate(arcs) if a >= arc), len(arcs) - 1)
+            for step, side in ((1, 1), (-1, 0)):
+                turn, run = None, 0.0
+                i = first
+                while 0 <= i + step < len(points):
+                    q, r = points[i], points[i + step]
+                    dx, dy = (r[0] - q[0]) * step, (r[1] - q[1]) * step
+                    length = math.hypot(dx, dy)
+                    if (dx * across[1] - dy * across[0]) * base < 0.0:
+                        turn = i if turn is None else turn
+                        run += length
+                        if run >= FOLD_NOTE_TURN_RUN:
+                            break
+                    else:
+                        turn, run = None, 0.0
+                    i += step
+                if turn is not None and run >= FOLD_NOTE_TURN_RUN:
+                    offset = arcs[turn] - arc
+                    tail = curve.total - arcs[turn] if step > 0 else arcs[turn]
+                    found.append((view, axis, offset / sides[side], tail, points[turn]))
+    return found
 
-    The occlusion tint is drawn on the texture but computed from the MAIN
-    guides, so a main-side edit re-pushes the child overlay. The MAIN refer
-    grid renders the full mapping (child lattice through the warp), so a
-    child-side edit re-pushes the main overlay. The CHILD grid stays a pure
+
+def _fold_regions():
+    """The folds of the current mapping, each with the one board and point its
+    note belongs on. An axis that turns back is a fold wherever the lattice can
+    see it or not (a short hook falls between its lines), so each gets a note at
+    the turn on its own board. The lattice adds what no turn explains, flipped
+    meaning against the cell at the crossing: the main board shows those, and
+    the note marks where the fold starts."""
+    regions = _FOLD_NOTES["regions"]
+    if regions is not None:
+        return regions
+    regions = []
+    mapper, _note = _current_mapper()
+    if mapper is not None:
+        frame = mapper.child_frame
+        half = int((1.0 + 0.5 * _grid_extend()) * FOLD_NOTE_STEPS)
+        levels = [i / FOLD_NOTE_STEPS for i in range(-half, half + 1)]
+        nodes = [[mapper(_frame_point(frame, u, v)) for u in levels] for v in levels]
+
+        def area(r, c):
+            p, q, s = nodes[r][c], nodes[r][c + 1], nodes[r + 1][c]
+            return (q[0] - p[0]) * (s[1] - p[1]) - (q[1] - p[1]) * (s[0] - p[0])
+
+        reference = area(half, half)
+        flipped = {(r, c) for r in range(2 * half) for c in range(2 * half)
+                   if area(r, c) * reference < 0.0}
+        groups = []
+        while flipped:
+            stack = [flipped.pop()]
+            cells = []
+            while stack:
+                r, c = stack.pop()
+                cells.append((r, c))
+                for near in ((r + 1, c), (r - 1, c), (r, c + 1), (r, c - 1)):
+                    if near in flipped:
+                        flipped.remove(near)
+                        stack.append(near)
+            if len(cells) >= FOLD_NOTE_MIN_CELLS:
+                groups.append(cells)
+        turnbacks = _axis_turnbacks(mapper)
+        board_title = {"child": "texture", "main": "main"}
+        # An axis the contours carried may only copy the same half of the texture
+        # axis's turn.
+        turnbacks = [turn for turn in turnbacks if not (
+            turn[0] == "main"
+            and _assets_for("main")[H_PROPERTY if turn[1] == "H" else V_PROPERTY].get("auto")
+            and any(other[0] == "child" and other[1] == turn[1]
+                    and (other[2] > 0.0) == (turn[2] > 0.0) for other in turnbacks))]
+        for view, axis, _hat, tail, point in turnbacks:
+            regions.append({"view": view, "point": point, "text": "\n".join((
+                "Fold here", f"The {axis} axis on the {board_title[view]} board",
+                f"doubles back {tail:.0f} px from its end"))})
+
+        def explained(cells):
+            for _view, axis, hat, _tail, _point in turnbacks:
+                span = [levels[cell[1 if axis == "H" else 0]] for cell in cells]
+                if min(span) - 1.0 / FOLD_NOTE_STEPS <= hat <= max(span) + 2.0 / FOLD_NOTE_STEPS:
+                    return True
+            return False
+
+        groups.sort(key=len, reverse=True)
+        for cells in [cells for cells in groups if not explained(cells)]:
+            r, c = min(cells, key=lambda cell: (cell[0] + 0.5 - half) ** 2
+                                               + (cell[1] + 0.5 - half) ** 2)
+            regions.append({"view": "main", "point": nodes[r][c],
+                            "text": "Fold: the pattern turns over here"})
+        del regions[FOLD_NOTE_MAX:]
+    _FOLD_NOTES["regions"] = regions
+    return regions
+
+
+def _fold_note_items(view_name):
+    return [{"id": f"fold_note:{index}", "points": [region["point"]],
+             "label": region["text"], "color": FOLD_NOTE_COLOR, "fill_color": FOLD_NOTE_FILL,
+             "width": 1.2, "removable": False}
+            for index, region in enumerate(_fold_regions()) if region["view"] == view_name]
+
+
+def _overlays_changed(view_name):
+    """Assets changed in view_name: refresh both boards. The fold notes stand
+    on both and read the mapping between them; so do the occlusion tint (drawn
+    on the texture, computed from the MAIN guides) and the main refer grid
+    (the child lattice through the warp). The CHILD grid alone stays a pure
     function of the child's own axes."""
     _invalidate_grid_cache()
     _push_overlay(view_name)
-    if _occlusion_enabled() and view_name != "child":
-        _push_overlay("child")
-    if refer_rect_enabled("main") and view_name != "main":
-        _push_overlay("main")
+    _push_overlay("child" if view_name == "main" else "main")
 
 
 def _main_guide_frame():
@@ -6042,15 +6167,14 @@ def _guide_drag_event(message):
     if phase == "press":
         if is_guide:
             item = assets.get(overlay_id)
-            points = list(item.get("points") or []) if item else []
         else:
-            index, line = _additional_line_by_overlay_id(view, overlay_id)
-            points = list(line.get("points") or []) if line else []
+            index, item = _additional_line_by_overlay_id(view, overlay_id)
+        points = list(item.get("points") or []) if item else []
         if len(points) < 2:
             return
         _GUIDE_DRAG[view] = {"id": overlay_id, "origin": point,
                              "points": [(float(x), float(y)) for x, y in points],
-                             "moved": False}
+                             "item": dict(item), "moved": False}
         mapping_preview.begin(view, overlay_id)
         return
 
@@ -6066,17 +6190,14 @@ def _guide_drag_event(message):
         if not drag["moved"]:
             mapping_preview.cancel()
             return
-        if is_guide:
-            item = assets.get(overlay_id)
-            if item is not None:
-                item["points"] = [list(p) for p in drag["points"]]
-        else:
-            _index, line = _additional_line_by_overlay_id(view, overlay_id)
-            if line is not None:
-                line["points"] = [list(p) for p in drag["points"]]
+        item = assets.get(overlay_id) if is_guide else (
+            _additional_line_by_overlay_id(view, overlay_id)[1])
+        if item is not None:
+            item.clear()
+            item.update(drag["item"])
         mapping_preview.cancel()
-        _push_overlay(view)
         _invalidate_grid_cache()
+        _push_overlay(view)
         try:
             _animean().ui.refresh()
         except Exception:
@@ -6091,6 +6212,14 @@ def _guide_drag_event(message):
     delta = (point[0] - drag["origin"][0], point[1] - drag["origin"][1])
     if abs(delta[0]) > 1e-9 or abs(delta[1]) > 1e-9:
         drag["moved"] = True
+    if not drag["moved"]:
+        # A click: nothing below may touch the line, or it would lose its curve
+        # and its auto mark for no move at all.
+        if phase == "release":
+            _GUIDE_DRAG.pop(view, None)
+            _push_overlay(view)
+            mapping_preview.end()
+        return
     moved = [(x + delta[0], y + delta[1]) for x, y in drag["points"]]
 
     if is_guide:
@@ -6127,10 +6256,6 @@ def _guide_drag_event(message):
 
     # release
     _GUIDE_DRAG.pop(view, None)
-    if not drag["moved"]:
-        _push_overlay(view)
-        mapping_preview.end()
-        return
     if is_guide:
         # Third space IS the child arc plane, so a moved axis retires every
         # additional line's stored coordinates on this board.
@@ -9915,7 +10040,8 @@ def proxy_pairing():
         return _PROXY_PAIRING["value"]
     if _kept_pairing(child_item, main_item) is not None:
         paired = {"child": child_item[PAIRING_KEY]["stations"],
-                  "main": main_item[PAIRING_KEY]["stations"]}
+                  "main": main_item[PAIRING_KEY]["stations"],
+                  "corner_stations": child_item[PAIRING_KEY].get("corner_stations") or []}
     else:
         import proxy_shape
         paired, why = proxy_shape.match(child_item["points"], main_item["points"])
@@ -9923,8 +10049,11 @@ def proxy_pairing():
             print(f"[auto_mapping] contours not paired: {why}")
         else:
             pairing = random.getrandbits(32)
-            child_item[PAIRING_KEY] = {"id": pairing, "stations": paired["child"]}
-            main_item[PAIRING_KEY] = {"id": pairing, "stations": paired["main"]}
+            corners = paired["corner_stations"]
+            child_item[PAIRING_KEY] = {"id": pairing, "stations": paired["child"],
+                                       "corner_stations": corners}
+            main_item[PAIRING_KEY] = {"id": pairing, "stations": paired["main"],
+                                      "corner_stations": corners}
     _PROXY_PAIRING["key"] = _pairing_key(child_item, main_item)
     _PROXY_PAIRING["value"] = paired
     return paired
@@ -9957,6 +10086,9 @@ def _refresh_proxy_axes():
             changed = True
     if changed:
         _invalidate_additional_thirds("main")
+        # Whatever was cached without this axis describes the old frame, or
+        # no frame at all if the axis was just deleted.
+        _invalidate_grid_cache()
     return changed
 
 
@@ -9984,8 +10116,7 @@ def run_proxy_contour_tool(view_name, points, width=3.0):
             _animean().ui.history_commit("Contour pairing", other)
         except Exception:
             pass
-    _push_overlay("main")
-    _push_overlay("child")
+    _overlays_changed("main")
     print(f"[auto_mapping] contour set on the {view_name} board"
           + ("" if _contour_points(other) else f"; draw one on the {other} board too."))
     _maybe_auto_run()
@@ -10062,34 +10193,48 @@ def set_line_ground(overlay_id, value):
         else:
             item.pop(GROUND_FLAG, None)
         _save_assets(view)
-        _push_overlay(view)
         try:
             _animean().ui.history_commit("Ground Line", view)
         except Exception:
             pass
+    _overlays_changed("main")
     print(f"[auto_mapping] {line_label(overlay_id)} "
           f"{'is a ground line' if value else 'is no longer a ground line'}")
     _maybe_auto_run()
 
 
-def replace_line_points(view_name, overlay_id, points, settled, stations=None,
-                        live=False):
-    """Deform's write. `live` is a move: the line alone, the mapping waits (see
-    _guide_drag_event). `settled` is the release: history, axes, the mapping.
-    `stations` are a contour's paired stations, moved with it."""
+def restore_line_item(view_name, overlay_id, saved):
+    """A cancelled Deform: the item as it stood, marks and all."""
+    item = line_item(view_name, overlay_id)
+    if item is None:
+        return
+    item.clear()
+    item.update(saved)
+    _overlays_changed(view_name)
+    try:
+        _animean().ui.refresh()
+    except Exception:
+        pass
+
+
+def replace_line_points(view_name, overlay_id, points, settled, stations=None):
+    """Deform's write. Not `settled` is a move: the line alone, the mapping waits
+    (see _guide_drag_event). `settled` is the release: history, axes, the mapping.
+    `stations` are a contour's paired stations, moved with it; a contour moved
+    without any lost what it was paired on, should it have paired mid-drag."""
     item = line_item(view_name, overlay_id)
     if item is None:
         return
     item["points"] = points
     if stations is not None:
         item[PAIRING_KEY] = dict(item[PAIRING_KEY], stations=stations)
+    elif overlay_id == PROXY_PROPERTY:
+        item.pop(PAIRING_KEY, None)
     item.pop("commands", None)
     item.pop("third", None)
     item.pop("auto", None)
     item.pop("source", None)
-    if not live and not settled:
-        mapping_preview.cancel()
-    if live:
+    if not settled:
         _push_overlay(view_name)
         mapping_preview.update()
         try:
@@ -10097,25 +10242,28 @@ def replace_line_points(view_name, overlay_id, points, settled, stations=None,
         except Exception:
             pass
         return
-    _invalidate_grid_cache()
-    if settled:
-        if overlay_id in GUIDE_PROPERTIES:
-            _invalidate_additional_thirds(view_name)
-        if overlay_id == PROXY_PROPERTY:
-            _refresh_proxy_axes()
-            _save_assets("main")
-        _save_assets(view_name)
-    _push_overlay("main")
-    _push_overlay("child")
+    if overlay_id in GUIDE_PROPERTIES:
+        _invalidate_additional_thirds(view_name)
+    axes_moved = overlay_id == PROXY_PROPERTY and _refresh_proxy_axes()
+    # A release can be the first pairing, written on both contours.
+    paired_now = (overlay_id == PROXY_PROPERTY and stations is None
+                  and proxy_pairing() is not None)
+    other = "child" if view_name == "main" else "main"
+    other_moved = paired_now or (axes_moved and other == "main")
+    _save_assets(view_name)
+    if other_moved:
+        # The other board changed with this one: its own history.
+        _save_assets(other)
+    _overlays_changed(view_name)
     try:
         animean = _animean()
         animean.ui.refresh()
-        if settled:
-            animean.ui.history_commit("Deform Line", view_name)
+        animean.ui.history_commit("Deform Line", view_name)
+        if other_moved:
+            animean.ui.history_commit("Contour pairing" if paired_now else "Contour axes", other)
     except Exception:
         pass
-    if settled:
-        _maybe_auto_run()
+    _maybe_auto_run()
 
 
 def _contour_items(view_name):
@@ -10170,6 +10318,17 @@ def _chosen_line_items(view_name):
     }]
 
 
+def _contour_pins(view_name, points):
+    """The contour has no ends: its pins stand on the paired corners, the same
+    points of the pattern on both boards."""
+    paired = proxy_pairing()
+    if paired is None:
+        import proxy_shape
+        return proxy_shape.corner_points(points)
+    stations = paired["child" if view_name == "child" else "main"]
+    return [stations[i] for i in paired["corner_stations"]]
+
+
 def _line_mark_items(view_name):
     """Pins on ground lines."""
     assets = _assets_for(view_name)
@@ -10183,8 +10342,8 @@ def _line_mark_items(view_name):
         points = (line_item(view_name, overlay_id) or {}).get("points") or []
         if len(points) < 2 or not line_is_ground(overlay_id):
             continue
-        ends = ([points[k * len(points) // 4] for k in range(4)]
-                if overlay_id == PROXY_PROPERTY else [points[0], points[-1]])
+        ends = (_contour_pins(view_name, points) if overlay_id == PROXY_PROPERTY
+                else [points[0], points[-1]])
         for number, end in enumerate(ends):
             items.append({
                 "id": f"line_pin:{overlay_id}:{number}",
@@ -10341,7 +10500,7 @@ def _overlay_removed(cell, stroke, message):
     if item_id == PROXY_PROPERTY:
         _assets_for(view).pop(PROXY_PROPERTY, None)
         _save_assets(view)
-        refresh_line_overlays()
+        _overlays_changed(view)
         try:
             _animean().ui.history_commit("Remove Contour", view)
         except Exception:
@@ -10907,7 +11066,7 @@ def _maybe_auto_run():
     if not _RUN_GUARD["depth"] and _refresh_proxy_axes():
         # A texture axis moved under contour-owned main axes.
         _save_assets("main")
-        _push_overlay("main")
+        _overlays_changed("main")
         try:
             _animean().ui.history_commit("Contour axes", "main")
         except Exception:

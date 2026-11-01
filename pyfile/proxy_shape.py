@@ -19,7 +19,7 @@ STATIONS = 240
 MIN_AREA = 400.0
 SYMMETRY_GAP = 0.02         # shape costs this close are a symmetry tie
 CORNER_DEG = 45.0
-CORNER_WINDOW = 0.018       # fraction of the contour
+CORNER_WINDOW = 0.05        # fraction of the contour: a hand-drawn corner is round
 THIN_EVERY = 3              # contour stations per thin plate centre
 AXIS_STEP = 5.0
 
@@ -157,12 +157,22 @@ def match(child_points, main_points):
     shift = _best_shift(np, _normalised(np, a), _normalised(np, b))
     seed = ((np.arange(n) + shift) % n).astype(float)
     kept = _matched_corners(np, _corners(np, a), _corners(np, b), seed, n)
-    p = _between(np, kept, n) if len(kept) >= 2 else seed
+    aligned = kept if len(kept) >= 2 else []
+    p = _between(np, aligned, n) if aligned else seed
     j = np.floor(p).astype(int) % n
     f = (p - np.floor(p))[:, None]
     paired = b[j] * (1.0 - f) + b[(j + 1) % n] * f
     return {"child": a.tolist(), "main": paired.tolist(), "folded": folded,
-            "corners": len(kept)}, ""
+            "corners": len(kept), "corner_stations": [int(pair[0]) for pair in aligned]}, ""
+
+
+def corner_points(points):
+    """The corners of one closed contour, before it has a partner."""
+    np = _numpy()
+    if np is None or len(points) < 3:
+        return []
+    a = _sample(np, np.array(points, float)[:, :2])
+    return [a[i].tolist() for i in _corners(np, a)]
 
 
 def _inside(np, points, ring):

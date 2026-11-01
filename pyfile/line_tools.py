@@ -100,8 +100,7 @@ def _deform(message, overlay_id, view):
         mapping_preview.begin(view, overlay_id)
         _DRAG[view] = {
             "id": overlay_id, "origin": point, "points": points, "moved": False,
-            "before": [list(p) for p in item["points"]], "weights": weights,
-            "stations": stations,
+            "saved": dict(item), "weights": weights, "stations": stations,
             "station_weights": stations and _station_weights(stations, points, weights),
         }
         return
@@ -110,28 +109,34 @@ def _deform(message, overlay_id, view):
         return
     if phase == "cancel":
         _DRAG.pop(view, None)
-        am.replace_line_points(view, overlay_id, drag["before"], settled=False,
-                               stations=drag["stations"])
+        am.restore_line_item(view, overlay_id, drag["saved"])
+        mapping_preview.cancel()
         return
     if phase not in ("move", "release"):
         return
     dx, dy = point[0] - drag["origin"][0], point[1] - drag["origin"][1]
     if abs(dx) > 1e-9 or abs(dy) > 1e-9:
         drag["moved"] = True
+    if not drag["moved"]:
+        if phase == "release":
+            _DRAG.pop(view, None)
+            mapping_preview.end()
+        return
     moved = _pulled(drag["points"], drag["weights"], dx, dy)
     stations = drag["stations"] and _pulled(drag["stations"], drag["station_weights"], dx, dy)
     if phase == "move":
-        am.replace_line_points(view, overlay_id, moved, settled=False, stations=stations,
-                               live=True)
+        am.replace_line_points(view, overlay_id, moved, settled=False, stations=stations)
         return
     _DRAG.pop(view, None)
-    if drag["moved"]:
-        am.replace_line_points(view, overlay_id, moved, settled=True, stations=stations)
+    am.replace_line_points(view, overlay_id, moved, settled=True, stations=stations)
     mapping_preview.end()
 
 
 def _on_handle(message):
     prop = message.get("property")
+    if message.get("phase") == "arm":
+        am.arm_line_tools(prop in am.LINE_TOOL_PROPERTIES)
+        return
     if prop not in am.LINE_TOOL_PROPERTIES:
         return
     overlay_id = str(message.get("handle") or "")
@@ -163,9 +168,15 @@ def _on_option(cell, stroke, message):
             pass
 
 
+def _history_restored(cell, stroke, message):
+    """Undo replaced the line a drag was rewriting: the drag is over."""
+    _DRAG.pop(message.get("view") or "main", None)
+
+
 def register_hooks():
     python_hooks.set_hook(_on_handle, handle=True)
     python_hooks.set_hook(_on_option, option=True)
+    python_hooks.set_hook(_history_restored, historyrestore=True)
 
 
 def activate_choice_line(name="choice_line", property_value=am.CHOICE_PROPERTY):

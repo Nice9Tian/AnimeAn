@@ -3,6 +3,7 @@
 import { BoardRenderer } from "../board/renderer.ts";
 import { GlBoardRenderer } from "../board/glrenderer.ts";
 import { attachBoardInput } from "../board/input.ts";
+import { cursorCss } from "../board/cursor.ts";
 import { createCentral, createLayers, createMenuBar, popupMenu, scrollArea } from "./panels.js";
 import { createToolOptions } from "./options.js";
 import { createPalette, toHexArgb } from "./palette.js";
@@ -313,9 +314,7 @@ function createBoards(host, client, store) {
   };
   const paintCursor = (slot) => {
     const value = store.get(`cursor/${slot.view}`);
-    const url = value?.key ? store.cursorUrl(value.key) : null;
-    const fallback = value?.css ?? "default";
-    slot.canvas.style.cursor = url ? `url(${url}) ${value.hx ?? 0} ${value.hy ?? 0}, ${fallback}` : fallback;
+    slot.canvas.style.cursor = cursorCss(value, value?.key ? store.cursorUrl(value.key) : null);
   };
   const boards = {
     current: "main",

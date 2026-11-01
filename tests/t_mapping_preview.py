@@ -1229,6 +1229,41 @@ class TestMappingPreview(unittest.TestCase):
         self.assertEqual(fake.ui.set_field_view_calls[-1], ("main", None))
         mp.end()
 
+    def test_11_click_keeps_the_line_and_ends_the_preview(self):
+        """A click is press, a zero-delta move (mouseReleaseEvent always sends one), release:
+        the line keeps its curve and marks, with the preview on, and no history is written."""
+        cases = (
+            (am._guide_drag_event, "main", am.H_PROPERTY, am.H_PROPERTY),
+            (am._guide_drag_event, "child", am.V_PROPERTY, am.V_PROPERTY),
+            (am._guide_drag_event, "main", f"{am.ADDITIONAL_PROPERTY}:1", None),
+            (lt._on_handle, "main", am.V_PROPERTY, am.V_PROPERTY),
+            (lt._on_handle, "main", f"{am.ADDITIONAL_PROPERTY}:2", None),
+        )
+        for send, view, handle, axis in cases:
+            _scenes, fake, _uid = fresh_rig_world("B")
+            item = am.line_item(view, handle)
+            if axis:
+                item["commands"] = [{"type": "move", "to": {"x": 0.0, "y": 0.0}}]
+                item["auto"] = True
+                item["source"] = 7
+            else:
+                item["third"] = [(0.0, 0.0), (10.0, 10.0)]
+            before_child = copy.deepcopy(am._assets_for("child"))
+            before_main = copy.deepcopy(am._assets_for("main"))
+            commits = len(fake.ui.commits)
+            grab = item["points"][len(item["points"]) // 2]
+            message = {"view": view, "handle": handle,
+                       "position": {"x": grab[0], "y": grab[1]}}
+            if send is lt._on_handle:
+                message["property"] = am.DEFORM_PROPERTY
+            for phase in ("press", "move", "release"):
+                send(dict(message, phase=phase))
+            self.assertEqual(am._assets_for("child"), before_child, handle)
+            self.assertEqual(am._assets_for("main"), before_main, handle)
+            self.assertEqual(len(fake.ui.commits), commits, handle)
+            self.assertEqual(fake.ui.set_field_calls, [], handle)
+            self.assertFalse(mp._SESSION.get("active"), handle)
+
     def test_10_mid_drag_invalid_axes_clears_and_recovers(self):
         """When axes stop crossing mid-drag, preview clears; when crossing again, preview recovers."""
         _scenes, fake, _uid = fresh_rig_world("A")

@@ -424,4 +424,178 @@ assert len(calls) == 1 and am._grid_overlay_items("main") is not frozen
 am._REFER_RECT.update(child=False, main=False)
 print("17) a drag rebuilds nothing until the release")
 
+
+def rounded(points, index, radius, steps=12):
+    """`ring(points)` with one corner cut to a quadratic curve."""
+    corner = points[index]
+    before, after = points[index - 1], points[(index + 1) % len(points)]
+    near = [corner[k] + (before[k] - corner[k]) * radius / math.dist(corner, before) for k in (0, 1)]
+    far = [corner[k] + (after[k] - corner[k]) * radius / math.dist(corner, after) for k in (0, 1)]
+    curve = [[(1 - t) ** 2 * near[k] + 2 * t * (1 - t) * corner[k] + t ** 2 * far[k] for k in (0, 1)]
+             for t in (i / steps for i in range(steps + 1))]
+    outline = []
+    for a, b in zip(points, points[1:] + points[:1]):
+        i = points.index(a)
+        start = far if i == index else a
+        end = near if (i + 1) % len(points) == index else b
+        outline.extend([start[0] + (end[0] - start[0]) * j / 40, start[1] + (end[1] - start[1]) * j / 40]
+                       for j in range(40))
+        if (i + 1) % len(points) == index:
+            outline.extend(curve)
+    return outline
+
+
+# 18) A hand-drawn corner is round: it still pairs with the sharp corner it is, and
+#     the pins stand on the corners, one pattern point on both boards, whichever
+#     point each line was drawn from.
+reset()
+texture()
+am._assets_for("child")[am.PROXY_PROPERTY] = {"points": ring(RECT), "width": 3.0, am.GROUND_FLAG: True}
+main_ring = rounded(KEYSTONE, 1, 45.0)
+am._assets_for("main")[am.PROXY_PROPERTY] = {"points": main_ring[37:] + main_ring[:37], "width": 3.0,
+                                             am.GROUND_FLAG: True}
+paired = am.proxy_pairing()
+assert len(paired["corner_stations"]) == 4
+pin = lambda view: sorted(
+    (sum(p[0] for p in i["points"]) / 16, sum(p[1] for p in i["points"]) / 16)
+    for i in am._line_mark_items(view) if i["id"].startswith(f"line_pin:{am.PROXY_PROPERTY}"))
+child_pins, main_pins = pin("child"), pin("main")
+assert len(child_pins) == 4 and len(main_pins) == 4
+for corner in RECT:
+    assert min(math.dist(corner, p) for p in child_pins) < 4.0
+for corner in (KEYSTONE[0], KEYSTONE[2], KEYSTONE[3]):
+    assert min(math.dist(corner, p) for p in main_pins) < 4.0
+assert min(math.dist(KEYSTONE[1], p) for p in main_pins) < 30.0
+stored = {view: json.loads(json.dumps(am._assets_for(view))) for view in ("child", "main")}
+for view in stored:
+    am._MAPPING_ASSETS[view] = am._sanitize_assets(stored[view])
+am._PROXY_PAIRING.update({"key": None, "value": None})
+assert pin("child") == child_pins and pin("main") == main_pins
+
+# One contour alone has no partner yet and still pins its own corners.
+am._assets_for("main").pop(am.PROXY_PROPERTY)
+assert pin("child") and min(math.dist(RECT[0], p) for p in pin("child")) < 4.0
+print("18) pins stand on the paired corners")
+
+
+def committed():
+    calls = []
+    original = sys.modules["animean_python"].ui.history_commit
+    sys.modules["animean_python"].ui.history_commit = lambda label, view: calls.append((label, view))
+    return calls, lambda: setattr(sys.modules["animean_python"].ui, "history_commit", original)
+
+
+def fresh_pair():
+    reset()
+    texture()
+    contours()
+    am._refresh_proxy_axes()
+    am.arm_line_tools(True)
+    am.proxy_pairing()
+
+
+# 19) A click or a cancelled drag leaves a line as it was, its marks included.
+fresh_pair()
+item = am._assets_for("main")[am.V_PROPERTY]
+item["commands"] = [{"type": "move", "to": {"x": 0.0, "y": 0.0}}]
+before = dict(item)
+grab = item["points"][len(item["points"]) // 2]
+handle(am.V_PROPERTY, "press", grab[0], grab[1], am.DEFORM_PROPERTY)
+handle(am.V_PROPERTY, "move", grab[0], grab[1], am.DEFORM_PROPERTY)
+handle(am.V_PROPERTY, "release", grab[0], grab[1], am.DEFORM_PROPERTY)
+assert am._assets_for("main")[am.V_PROPERTY] == before
+handle(am.V_PROPERTY, "press", grab[0], grab[1], am.DEFORM_PROPERTY)
+handle(am.V_PROPERTY, "move", grab[0] + 20.0, grab[1], am.DEFORM_PROPERTY)
+handle(am.V_PROPERTY, "cancel", grab[0] + 20.0, grab[1], am.DEFORM_PROPERTY)
+assert am._assets_for("main")[am.V_PROPERTY] == before
+for phases in (("press", "release"), ("press", "move", "cancel")):
+    for phase in phases:
+        offset = 20.0 if phase in ("move", "cancel") else 0.0
+        guide_drag(phase, grab[0] + offset, grab[1])
+    assert am._assets_for("main")[am.V_PROPERTY] == before
+print("19) a click or a cancel leaves a line as it was")
+
+# 20) Undo in the middle of a drag ends the drag.
+fresh_pair()
+grab = am._assets_for("main")[am.V_PROPERTY]["points"][10]
+handle(am.V_PROPERTY, "press", grab[0], grab[1], am.DEFORM_PROPERTY)
+line_tools._history_restored(None, None, {"view": "main"})
+assert not line_tools._DRAG
+restored = [list(p) for p in am._assets_for("main")[am.V_PROPERTY]["points"]]
+handle(am.V_PROPERTY, "move", grab[0] + 30.0, grab[1], am.DEFORM_PROPERTY)
+assert am._assets_for("main")[am.V_PROPERTY]["points"] == restored
+print("20) undo ends a drag")
+
+# 21) Deforming the texture contour moves the auto axes on the main board, and that
+#     board commits it too, or its undo would run ahead of its snapshots.
+fresh_pair()
+calls, restore = committed()
+seam = am._assets_for("child")[am.PROXY_PROPERTY]["points"][0]
+handle(am.PROXY_PROPERTY, "press", seam[0], seam[1], am.DEFORM_PROPERTY, "child")
+handle(am.PROXY_PROPERTY, "release", seam[0] - 20.0, seam[1], am.DEFORM_PROPERTY, "child")
+restore()
+assert ("Deform Line", "child") in calls and ("Contour axes", "main") in calls
+print("21) the main board commits axes a texture contour moved")
+
+# 22) A contour that pairs while it is being dragged does not keep stations from
+#     that moment: the release pairs what the line ended up as.
+reset()
+texture()
+am.arm_line_tools(True)
+am._assets_for("child")[am.PROXY_PROPERTY] = {"points": ring(RECT), "width": 3.0}
+seam = RECT[0]
+handle(am.PROXY_PROPERTY, "press", seam[0], seam[1], am.DEFORM_PROPERTY, "child")
+am._assets_for("main")[am.PROXY_PROPERTY] = {"points": ring(KEYSTONE), "width": 3.0}
+handle(am.PROXY_PROPERTY, "move", seam[0] - 10.0, seam[1] - 10.0, am.DEFORM_PROPERTY, "child")
+am.proxy_pairing()
+calls, restore = committed()
+handle(am.PROXY_PROPERTY, "release", seam[0] - 30.0, seam[1] - 30.0, am.DEFORM_PROPERTY, "child")
+restore()
+final = am._assets_for("child")[am.PROXY_PROPERTY]["points"]
+assert max(min(math.dist(s, p) for p in final) for s in am.proxy_pairing()["child"]) < 3.0
+assert ("Contour pairing", "main") in calls
+print("22) a pairing made mid-drag follows the release")
+
+# 23) Ground ticks and contours change the mapping, so the grid is rebuilt; unticking
+#     takes the pins away from both boards at once.
+fresh_pair()
+am._REFER_RECT.update(child=True, main=True)
+am.set_line_ground(am.PROXY_PROPERTY, True)
+frozen = am._grid_overlay_items("main")
+pushed = {}
+original_items = am.overlay_items
+am.overlay_items = lambda view: pushed.setdefault(view, sum(
+    i["id"].startswith("line_pin:") for i in am._line_mark_items(view))) and [] or []
+am.set_line_ground(am.PROXY_PROPERTY, False)
+am.overlay_items = original_items
+assert pushed == {"main": 0, "child": 0}
+assert am._grid_overlay_items("main") is not frozen
+frozen = am._grid_overlay_items("main")
+am._overlay_removed(None, None, {"overlay": {"id": am.PROXY_PROPERTY}, "view": "main"})
+assert am._grid_overlay_items("main") is not frozen
+frozen = am._grid_overlay_items("main")
+am.run_proxy_contour_tool("main", ring(KEYSTONE))
+assert am._grid_overlay_items("main") is not frozen
+am._REFER_RECT.update(child=False, main=False)
+print("23) ground ticks and contours refresh the grid")
+
+# 24) One matched corner aligns nothing, so it marks nothing either.
+drop = [[200.0 * math.cos(t), 200.0 * math.sin(t) * math.sin(t / 2.0)]
+        for t in (i * 2.0 * math.pi / 240 for i in range(240))]
+paired, why = proxy_shape.match(drop, drop)
+assert paired and paired["corners"] == 1 and paired["corner_stations"] == []
+print("24) one corner is no corner pin")
+
+# 25) The contour takes presses only under a line tool, and the halo goes with it:
+#     any other tool announces itself through the handle event's arm phase.
+fresh_pair()
+am.choose_line(am.H_PROPERTY)
+contour_item = lambda: next(i for i in am._contour_items("main") if i["id"] == am.PROXY_PROPERTY)
+assert contour_item()["draggable"] and am._chosen_line_items("main")
+line_tools._on_handle({"phase": "arm", "property": ""})
+assert not contour_item()["draggable"] and not am._chosen_line_items("main")
+line_tools._on_handle({"phase": "arm", "property": am.DEFORM_PROPERTY})
+assert contour_item()["draggable"] and am._chosen_line_items("main")
+print("25) other tools disarm the contour and the halo")
+
 print("ALL OK")

@@ -72,14 +72,14 @@ role=front/back/seal 与 depth，由 `_MappedOutput.layer_roles` 提供）。
 |---|---|
 | H Axis / V Axis | 对应轴覆盖层显隐 |
 | Additional Lines / Mapping Area / Nearest-Point Handle | 对应覆盖层显隐 |
-| Refer-Rect Grid（+ Grid Density 5/9/17/33） | 参考网格 |
+| Refer-Rect Grid（+ Grid Density 5/9/17/33、Grid Extend） | 参考网格 |
 | Occluded Areas (texture board) | 纹理板遮挡染色 |
 | Front / Front Lines、Back / Back Lines、Crease Lines | **直接映射为对应成员层的可见性** |
 | Live Re-render | 本单元的自动重跑总开关 |
 
-旧的全局显示入口（View 菜单的 Mapping Refer Rect / Occluded Areas）仅在
+旧的全局显示入口（Tool Options 的 Refer Rect、View 菜单的 Occluded Areas）仅在
 无单元的旧文档里继续生效；单元模式下网格/遮挡显隐一律由激活单元的设置
-决定（`refer_rect_enabled` / `_occlusion_enabled` / `_grid_divisions`
+决定（`refer_rect_enabled` / `_occlusion_enabled` / `_grid_divisions` / `_grid_extend`
 统一解析）。
 
 ## 5. C++ 通用机制（本次新增，全部工具无关）

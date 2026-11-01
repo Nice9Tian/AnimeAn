@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { beforeEach, test } from "node:test";
+import { parse } from "yaml";
 import { raiseBusiness, syncTools, watchToolsScroll } from "../src/ui/tools.js";
 
 const KEY = "animean.toolGroups";
@@ -149,4 +151,23 @@ test("滚轮一格走一行，方向跟滚轮", () => {
   h.wheel(-3);
   assert.equal(h.top(), 0);
   assert.deepEqual(h.arrows(), [false, true]);
+});
+
+test("Python 注册的工具都有节点、状态和图标", () => {
+  const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+  const names = [...read("../../pyfile/extra_tools.py").matchAll(/"name": "(\w+)"/g)].map((m) => m[1]);
+  const logic = parse(read("../design/logic/app.logic.yaml"));
+  const nodes = JSON.parse(read("../design/ui/scene.json")).nodes;
+  const glyphs = read("../design/components/QtToolChip/index.js");
+  assert.ok(names.includes("deform_line"));
+  for (const name of names) {
+    assert.ok(name in logic.state.tools.locked, `tools.locked.${name}`);
+    assert.match(logic.conditions.mappingArmed.expr, new RegExp(`'${name}'`));
+    const [id] = Object.entries(logic.objects).find(
+      ([, object]: [string, any]) => object.events?.click?.[0]?.emit?.args?.name === `'${name}'`,
+    ) ?? [];
+    assert.ok(id, `${name} 没有点击逻辑`);
+    assert.ok(nodes.mappingBody.children.includes(id), `${id} 不在 Mapping 组`);
+    assert.ok(glyphs.includes(`  ${nodes[id].props.glyph}: `), `${id} 没有图标`);
+  }
 });
