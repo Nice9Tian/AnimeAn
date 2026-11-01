@@ -35,6 +35,38 @@ pub fn parse_port_line(line: &str) -> Option<u16> {
     Some(port)
 }
 
+/// Validates `ANIMEAN_START_PAGE`: only accepts non-empty relative filenames without `..` or `:`.
+pub fn parse_start_page(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.contains("..") || trimmed.contains(':') {
+        return None;
+    }
+    if trimmed.starts_with('/') || trimmed.starts_with('\\') {
+        return None;
+    }
+    if trimmed.chars().any(|c| c.is_control()) {
+        return None;
+    }
+    let path = std::path::Path::new(trimmed);
+    if path.is_absolute() {
+        return None;
+    }
+    let mut has_normal = false;
+    for comp in path.components() {
+        match comp {
+            std::path::Component::Normal(_) => has_normal = true,
+            _ => return None,
+        }
+    }
+    if !has_normal {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
 pub fn format_ws_url(port: u16, token: &str) -> String {
     format!("ws://127.0.0.1:{port}/?token={token}")
 }
@@ -621,10 +653,32 @@ async fn pick_files(
 }
 
 pub fn run() {
-    let (backend_manager, wait_handle) = BackendManager::spawn_and_wait();
+    let start_page = std::env::var("ANIMEAN_START_PAGE")
+        .ok()
+        .and_then(|val| parse_start_page(&val));
+
+    let (backend_manager, wait_handle) = if let Some(ref page) = start_page {
+        (
+            Arc::new(BackendManager::new_failed(format!(
+                "Backend not started (ANIMEAN_START_PAGE={page})"
+            ))),
+            None,
+        )
+    } else {
+        BackendManager::spawn_and_wait()
+    };
     let manager_for_setup = Arc::clone(&backend_manager);
     let manager_for_window = Arc::clone(&backend_manager);
     let manager_for_run = Arc::clone(&backend_manager);
+
+    let mut context = tauri::generate_context!();
+    if let Some(ref page) = start_page {
+        for win in &mut context.config_mut().app.windows {
+            if win.label == "main" {
+                win.url = tauri::WebviewUrl::App(PathBuf::from(page));
+            }
+        }
+    }
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -651,7 +705,7 @@ pub fn run() {
             close_panel_window,
             pick_files,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building AnimeAn Tauri shell");
 
     app.run(move |_app_handle, event| {
@@ -692,6 +746,36 @@ mod tests {
         assert_eq!(parse_port_line("ANIMEAN_BACKEND_PORT=1234a"), None);
         assert_eq!(parse_port_line("OTHER_PORT=12345"), None);
         assert_eq!(parse_port_line("INFO ANIMEAN_BACKEND_PORT=12345"), None);
+    }
+
+    #[test]
+    fn test_parse_start_page() {
+        assert_eq!(
+            parse_start_page("pen_probe.html"),
+            Some("pen_probe.html".to_string())
+        );
+        assert_eq!(
+            parse_start_page("  pen_probe.html \r\n"),
+            Some("pen_probe.html".to_string())
+        );
+        assert_eq!(
+            parse_start_page("tools/pen_probe.html"),
+            Some("tools/pen_probe.html".to_string())
+        );
+
+        assert_eq!(parse_start_page(""), None);
+        assert_eq!(parse_start_page("   "), None);
+        assert_eq!(parse_start_page("."), None);
+        assert_eq!(parse_start_page(".."), None);
+        assert_eq!(parse_start_page("../pen_probe.html"), None);
+        assert_eq!(parse_start_page("a/../pen_probe.html"), None);
+        assert_eq!(parse_start_page("foo..bar.html"), None);
+        assert_eq!(parse_start_page("http://localhost:1430/pen_probe.html"), None);
+        assert_eq!(parse_start_page("tauri://localhost/pen_probe.html"), None);
+        assert_eq!(parse_start_page("C:\\pen_probe.html"), None);
+        assert_eq!(parse_start_page("C:/pen_probe.html"), None);
+        assert_eq!(parse_start_page("/pen_probe.html"), None);
+        assert_eq!(parse_start_page("\\pen_probe.html"), None);
     }
 
     #[test]
