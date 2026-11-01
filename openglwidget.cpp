@@ -16,6 +16,9 @@ namespace {
 // The artwork's ground, not chrome: it stays white in both themes.
 const QColor kPaperColor(Qt::white);
 const qreal kOverlayHandleSize = 14.0;
+// Screen px around a badge's centre that always mean the badge: a drawn badge
+// at ordinary zoom, a fingertip's worth of it when high zoom makes it huge.
+const qreal kOverlayBadgeSurePx = 12.0;
 // The zoom limits the wheel has always enforced, named so the programmatic
 // paths (setViewTransform, fitViewToContent) cannot drift away from what a
 // gesture is allowed to reach.
@@ -3153,12 +3156,15 @@ bool PaintOpenGLWidget::pressOverlayOrBadge(const QPointF &screenPos,
     // and fire accept/remove on the guide the user meant to move, while
     // draggable-first makes a low-zoom badge sitting on its own guide
     // permanently unclickable. So the tie is broken by how deep INSIDE the
-    // drawn badge the pointer is (screen px): the inner half of the glyph is
-    // always a deliberate badge click, and on the outer fringe the badge
-    // only wins when the pointer is deeper into it than it is close to the
-    // draggable geometry. (Comparing against the badge's centre point
-    // instead handicapped the badge by up to half its size and left the
-    // glyph's line-facing strip dead at every zoom.)
+    // drawn badge the pointer is (screen px): the inner half of the glyph and
+    // anything within kOverlayBadgeSurePx of its centre are always a
+    // deliberate badge click, and on the outer fringe the badge only wins
+    // when the pointer is deeper into it than it is close to the draggable
+    // geometry. (Comparing against the badge's centre point instead
+    // handicapped the badge by up to half its size and left the glyph's
+    // line-facing strip dead at every zoom. The sure zone is for a guide that
+    // runs through its own badge, which sits up and right of its end point:
+    // the fringe rule alone lost a third to a half of that badge to the grab.)
     const int badgeIndex = overlayActionHandleAt(docPos);
     qreal dragDistance = 0.0;
     const QString overlayId = draggableOverlayItemAt(screenPos, &dragDistance);
@@ -3170,7 +3176,9 @@ bool PaintOpenGLWidget::pressOverlayOrBadge(const QPointF &screenPos,
             std::min(docPos.y() - badgeRect.top(), badgeRect.bottom() - docPos.y()));
         const qreal depthScreen = depthDoc * m_zoom;
         const qreal halfScreen = 0.5 * std::min(badgeRect.width(), badgeRect.height()) * m_zoom;
-        badgeWins = depthScreen >= 0.5 * halfScreen || depthScreen >= dragDistance;
+        const QPointF offCentre = (docPos - badgeRect.center()) * m_zoom;
+        badgeWins = std::max(std::abs(offCentre.x()), std::abs(offCentre.y())) <= kOverlayBadgeSurePx
+                    || depthScreen >= 0.5 * halfScreen || depthScreen >= dragDistance;
     }
     if (badgeWins) {
         const OverlayHandle &handle = m_overlayHandles[badgeIndex];
