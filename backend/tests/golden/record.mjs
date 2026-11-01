@@ -217,8 +217,37 @@ function createNormalizer({ tmpDir, repoRoot, backendDir, token, port }) {
   return { normalizeValue, normalizeString };
 }
 
-function sha256Hex(input) {
-  return crypto.createHash("sha256").update(input).digest("hex");
+// Painted images (cursors, onion ghosts, playback frames) change at the edges with
+// the antialiasing, so besides the exact hash each one keeps a coarse picture of
+// itself. Colours are weighted by alpha: a transparent pixel has no colour to compare.
+function imageGrid(buf, w, h, cells = 16) {
+  const out = [];
+  for (let cy = 0; cy < cells; cy++) {
+    const y0 = Math.floor((cy * h) / cells);
+    const y1 = Math.max(y0 + 1, Math.floor(((cy + 1) * h) / cells));
+    for (let cx = 0; cx < cells; cx++) {
+      const x0 = Math.floor((cx * w) / cells);
+      const x1 = Math.max(x0 + 1, Math.floor(((cx + 1) * w) / cells));
+      let r = 0, g = 0, b = 0, a = 0, n = 0;
+      for (let y = y0; y < y1 && y < h; y++) {
+        for (let x = x0; x < x1 && x < w; x++) {
+          const i = (y * w + x) * 4;
+          const alpha = buf[i + 3];
+          r += (buf[i] * alpha) / 255;
+          g += (buf[i + 1] * alpha) / 255;
+          b += (buf[i + 2] * alpha) / 255;
+          a += alpha;
+          n += 1;
+        }
+      }
+      const mean = (v) => (n ? Math.round(v / n) : 0);
+      out.push(mean(r), mean(g), mean(b), mean(a));
+    }
+  }
+  return out;
+}
+
+function sha256Hex(input) {  return crypto.createHash("sha256").update(input).digest("hex");
 }
 
 async function main() {
@@ -322,6 +351,7 @@ async function main() {
           w: hdr.w,
           h: hdr.h,
           sha256: sha256Hex(buf),
+          grid: imageGrid(buf, hdr.w, hdr.h),
         });
       }
       return;
@@ -450,6 +480,12 @@ async function main() {
     for (const key of Object.keys(stepStates).sort()) {
       stateOut[key] = normalizeValue(stepStates[key]);
     }
+    for (const view of ["main", "child"]) {
+      const cursor = stateOut[`cursor/${view}`];
+      if (cursor?.key) {
+        stateOut[`cursor/${view}`] = { ...cursor, key: "<IMAGE>" };
+      }
+    }
     if (stepEvents.length === 1) {
       stateOut.event = normalizeValue(stepEvents[0]);
     } else if (stepEvents.length > 1) {
@@ -458,7 +494,10 @@ async function main() {
 
     const boardsOut = {};
     for (const view of ["main", "child"]) {
-      const normalizedOps = normalizeValue(boards[view].ops);
+      // An image key is the hash of its pixels, compared through the images list.
+      const normalizedOps = normalizeValue(boards[view].ops).map((op) =>
+        Array.isArray(op) && op[0] === "I" ? [op[0], "<IMAGE>", ...op.slice(2)] : op
+      );
       const opsCanonicalJson = JSON.stringify(normalizedOps);
       boardsOut[view] = {
         w: boards[view].w,
@@ -491,10 +530,10 @@ async function main() {
 
     const hooksOut = consumeRecordedHooks();
     const imagesOut = stepImages.map((img) => ({
-      key: img.key,
       w: img.w,
       h: img.h,
       sha256: img.sha256,
+      grid: img.grid,
     }));
 
     const record = {
