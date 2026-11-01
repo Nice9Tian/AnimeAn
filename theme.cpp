@@ -1,75 +1,77 @@
 #include "theme.h"
 
-#include <QSettings>
+#include "algorithm/core/settings.h"
 
 #ifdef ANIMEAN_WITH_PYTHON
 #include "pythonbind/python_bindings.h"
 #endif
 
+using namespace AnimeCore;
+
 namespace {
 // The two tables ARE the design system: the page gets them as the theme state.
 struct ThemeColors {
-    QColor window;
-    QColor surface;
-    QColor surfaceAlt;
-    QColor text;
-    QColor textDim;
-    QColor divider;
-    QColor accent;
-    QColor accentHover;
-    QColor accentActive;
-    QColor chipRest;
-    QColor chipRestFg;
-    QColor chipHover;
-    QColor chipHoverFg;
-    QColor viewportSurround;
-    QColor viewportSurroundDeep;
-    QColor boardFrameIdle;
-    QColor onionPast;
-    QColor onionAhead;
+    Color window;
+    Color surface;
+    Color surfaceAlt;
+    Color text;
+    Color textDim;
+    Color divider;
+    Color accent;
+    Color accentHover;
+    Color accentActive;
+    Color chipRest;
+    Color chipRestFg;
+    Color chipHover;
+    Color chipHoverFg;
+    Color viewportSurround;
+    Color viewportSurroundDeep;
+    Color boardFrameIdle;
+    Color onionPast;
+    Color onionAhead;
 };
 
 const ThemeColors &colorsFor(AnimeTheme::Mode mode)
 {
     static const ThemeColors dark = {
-        QColor(QStringLiteral("#1d1f20")),   // window
-        QColor(QStringLiteral("#232526")),   // surface
-        QColor(QStringLiteral("#2a2c2e")),   // surfaceAlt
-        QColor(QStringLiteral("#f5f5f8")),   // text
-        QColor(QStringLiteral("#b4b6bc")),   // textDim
-        QColor(QStringLiteral("#575a5c")),   // divider
-        QColor(QStringLiteral("#3d8ec9")),   // accent
-        QColor(QStringLiteral("#58a5dd")),   // accentHover
-        QColor(QStringLiteral("#2f74a6")),   // accentActive
-        QColor(QStringLiteral("#2a2c2e")),   // chipRest
-        QColor(QStringLiteral("#b4b6bc")),   // chipRestFg
-        QColor(QStringLiteral("#35383b")),   // chipHover
-        QColor(QStringLiteral("#f5f5f8")),   // chipHoverFg
-        QColor(QStringLiteral("#2a2c2e")),   // viewportSurround
-        QColor(QStringLiteral("#141516")),   // viewportSurroundDeep
-        QColor(QStringLiteral("#b4b6bc")),   // boardFrameIdle
-        QColor(QStringLiteral("#b3392f")),   // onionPast
-        QColor(QStringLiteral("#2f7a4f"))    // onionAhead
+        Color(String("#1d1f20")),   // window
+        Color(String("#232526")),   // surface
+        Color(String("#2a2c2e")),   // surfaceAlt
+        Color(String("#f5f5f8")),   // text
+        Color(String("#b4b6bc")),   // textDim
+        Color(String("#575a5c")),   // divider
+        Color(String("#3d8ec9")),   // accent
+        Color(String("#58a5dd")),   // accentHover
+        Color(String("#2f74a6")),   // accentActive
+        Color(String("#2a2c2e")),   // chipRest
+        Color(String("#b4b6bc")),   // chipRestFg
+        Color(String("#35383b")),   // chipHover
+        Color(String("#f5f5f8")),   // chipHoverFg
+        Color(String("#2a2c2e")),   // viewportSurround
+        Color(String("#141516")),   // viewportSurroundDeep
+        Color(String("#b4b6bc")),   // boardFrameIdle
+        Color(String("#b3392f")),   // onionPast
+        Color(String("#2f7a4f"))    // onionAhead
     };
     static const ThemeColors light = {
-        QColor(QStringLiteral("#f5f5f6")),   // window
-        QColor(QStringLiteral("#ffffff")),   // surface
-        QColor(QStringLiteral("#e8e8ea")),   // surfaceAlt
-        QColor(QStringLiteral("#1d1f20")),   // text
-        QColor(QStringLiteral("#6b6d72")),   // textDim
-        QColor(QStringLiteral("#bcbdc0")),   // divider
-        QColor(QStringLiteral("#3d8ec9")),   // accent
-        QColor(QStringLiteral("#2f74a6")),   // accentHover
-        QColor(QStringLiteral("#245c85")),   // accentActive
-        QColor(QStringLiteral("#fbfbfc")),   // chipRest
-        QColor(QStringLiteral("#4a4c51")),   // chipRestFg
-        QColor(QStringLiteral("#ffffff")),   // chipHover
-        QColor(QStringLiteral("#1d1f20")),   // chipHoverFg
-        QColor(QStringLiteral("#cfd0d3")),   // viewportSurround
-        QColor(QStringLiteral("#141516")),   // viewportSurroundDeep
-        QColor(QStringLiteral("#bcbdc0")),   // boardFrameIdle
-        QColor(QStringLiteral("#b3392f")),   // onionPast
-        QColor(QStringLiteral("#2f7a4f"))    // onionAhead
+        Color(String("#f5f5f6")),   // window
+        Color(String("#ffffff")),   // surface
+        Color(String("#e8e8ea")),   // surfaceAlt
+        Color(String("#1d1f20")),   // text
+        Color(String("#6b6d72")),   // textDim
+        Color(String("#bcbdc0")),   // divider
+        Color(String("#3d8ec9")),   // accent
+        Color(String("#2f74a6")),   // accentHover
+        Color(String("#245c85")),   // accentActive
+        Color(String("#fbfbfc")),   // chipRest
+        Color(String("#4a4c51")),   // chipRestFg
+        Color(String("#ffffff")),   // chipHover
+        Color(String("#1d1f20")),   // chipHoverFg
+        Color(String("#cfd0d3")),   // viewportSurround
+        Color(String("#141516")),   // viewportSurroundDeep
+        Color(String("#bcbdc0")),   // boardFrameIdle
+        Color(String("#b3392f")),   // onionPast
+        Color(String("#2f7a4f"))    // onionAhead
     };
     return mode == AnimeTheme::Mode::Dark ? dark : light;
 }
@@ -78,10 +80,7 @@ AnimeTheme::Mode g_mode = AnimeTheme::Mode::Dark;
 bool g_modeLoaded = false;
 }
 
-AnimeTheme::AnimeTheme(QObject *parent)
-    : QObject(parent)
-{
-}
+AnimeTheme::AnimeTheme() = default;
 
 AnimeTheme *AnimeTheme::instance()
 {
@@ -94,10 +93,10 @@ AnimeTheme::Mode AnimeTheme::mode()
     if (!g_modeLoaded) {
         // Anything but an explicit "light" means Dark: an absent or damaged
         // setting must land on the default, not on a half-applied theme.
-        QSettings settings(QStringLiteral("AnimeAn"), QStringLiteral("AnimeAn"));
-        const QString saved = settings.value(QStringLiteral("theme/mode")).toString();
-        g_mode = saved.compare(QStringLiteral("light"), Qt::CaseInsensitive) == 0 ? Mode::Light
-                                                                                  : Mode::Dark;
+        Settings settings;
+        const String saved = settings.value(String("theme/mode")).toString();
+        g_mode = saved.compare(String("light"), CaseInsensitive) == 0 ? Mode::Light
+                                                                      : Mode::Dark;
         g_modeLoaded = true;
     }
     return g_mode;
@@ -110,15 +109,15 @@ void AnimeTheme::setMode(Mode mode)
     }
 
     g_mode = mode;
-    QSettings settings(QStringLiteral("AnimeAn"), QStringLiteral("AnimeAn"));
-    settings.setValue(QStringLiteral("theme/mode"), modeName(mode));
+    Settings settings;
+    settings.setValue(String("theme/mode"), modeName(mode));
 #ifdef ANIMEAN_WITH_PYTHON
     setAnimeanUiTheme(modeName(mode));
 #endif
-    emit instance()->themeChanged();
+    instance()->themeChanged();
 }
 
-QColor AnimeTheme::color(Role role)
+Color AnimeTheme::color(Role role)
 {
     const ThemeColors &colors = colorsFor(mode());
     switch (role) {
@@ -162,12 +161,12 @@ QColor AnimeTheme::color(Role role)
     return colors.text;
 }
 
-QColor AnimeTheme::surroundFor(const QColor &paper)
+Color AnimeTheme::surroundFor(const Color &paper)
 {
     return color(paper.lightnessF() < 0.5 ? Role::ViewportSurroundDeep : Role::ViewportSurround);
 }
 
-QString AnimeTheme::modeName(Mode mode)
+String AnimeTheme::modeName(Mode mode)
 {
-    return mode == Mode::Light ? QStringLiteral("light") : QStringLiteral("dark");
+    return mode == Mode::Light ? String("light") : String("dark");
 }

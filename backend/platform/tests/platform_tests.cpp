@@ -391,7 +391,7 @@ bool testSocketReadinessAndFairness()
 bool testIdleNoBusySpin()
 {
     EventLoop &loop = EventLoop::instance();
-    loop.setIdlePump(nullptr);
+
 
     ElapsedTimer wall;
     wall.start();

@@ -2,8 +2,6 @@ cmake_minimum_required(VERSION 3.16)
 
 project(AnimeAn VERSION 0.1 LANGUAGES CXX)
 
-set(CMAKE_AUTOMOC ON)
-
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -49,8 +47,6 @@ if(BUILD_TESTING)
 endif()
 
 if(ANIMEAN_BUILD_PYTHON_MODULE)
-    find_package(Qt6 REQUIRED COMPONENTS Core Gui)
-
     set(ANIMEAN_DEFAULT_PYTHON_BINDINGS "${ANIMEAN_PYTHONBIND_DIR}/python_bindings.cpp")
     if(NOT DEFINED ANIMEAN_PYTHON_BINDINGS OR ANIMEAN_PYTHON_BINDINGS STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}/pyfile/python_bindings.cpp")
         set(ANIMEAN_PYTHON_BINDINGS "${ANIMEAN_DEFAULT_PYTHON_BINDINGS}" CACHE FILEPATH "Source file for the AnimeAn Python extension module." FORCE)
@@ -65,5 +61,5 @@ if(ANIMEAN_BUILD_PYTHON_MODULE)
     pybind11_add_module(animean_python MODULE "${ANIMEAN_PYTHON_BINDINGS}")
     target_include_directories(animean_python PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/algorithm ${CMAKE_CURRENT_SOURCE_DIR}/pythonbind)
     target_compile_definitions(animean_python PRIVATE ANIMEAN_BUILDING_PYTHON_MODULE)
-    target_link_libraries(animean_python PRIVATE animean_core Qt6::Core Qt6::Gui)
+    target_link_libraries(animean_python PRIVATE animean_core)
 endif()

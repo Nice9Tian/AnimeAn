@@ -9,7 +9,7 @@
 #include <utility>
 #include "animeanbusiness.h"
 
-#include "algorithm/core/qtbridge.h"
+
 #include "projectio.h"
 
 #include "algorithm/core/file.h"

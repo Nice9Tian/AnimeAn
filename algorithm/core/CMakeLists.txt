@@ -78,16 +78,18 @@ target_link_libraries(animean_core PUBLIC animean_corelib)
 # gives the same answer. The tests may use Qt; the library above must not, and
 # since it has no Qt on its include path, a stray include fails the build.
 if(BUILD_TESTING)
-    find_package(Qt6 REQUIRED COMPONENTS Core Gui)
-    foreach(ANIMEAN_CORE_TEST geometry containers string json path pathops image file settings raster)
-        set(ANIMEAN_CORE_TEST_SOURCE ${ANIMEAN_CORE_ROOT}/tests/core/${ANIMEAN_CORE_TEST}_tests.cpp)
-        if(EXISTS ${ANIMEAN_CORE_TEST_SOURCE})
-            add_executable(core_${ANIMEAN_CORE_TEST}_tests ${ANIMEAN_CORE_TEST_SOURCE})
-            target_link_libraries(core_${ANIMEAN_CORE_TEST}_tests PRIVATE animean_corelib Qt6::Core Qt6::Gui)
-            add_test(NAME core_${ANIMEAN_CORE_TEST} COMMAND core_${ANIMEAN_CORE_TEST}_tests)
-            set_property(TEST core_${ANIMEAN_CORE_TEST} PROPERTY ENVIRONMENT
-                "PATH=${Qt6_DIR}/../../../bin\;$ENV{PATH}"
-                "QT_QPA_PLATFORM=offscreen")
-        endif()
-    endforeach()
+    find_package(Qt6 QUIET COMPONENTS Core Gui)
+    if(Qt6_FOUND)
+        foreach(ANIMEAN_CORE_TEST geometry containers string json path pathops image file settings raster)
+            set(ANIMEAN_CORE_TEST_SOURCE ${ANIMEAN_CORE_ROOT}/tests/core/${ANIMEAN_CORE_TEST}_tests.cpp)
+            if(EXISTS ${ANIMEAN_CORE_TEST_SOURCE})
+                add_executable(core_${ANIMEAN_CORE_TEST}_tests ${ANIMEAN_CORE_TEST_SOURCE})
+                target_link_libraries(core_${ANIMEAN_CORE_TEST}_tests PRIVATE animean_corelib Qt6::Core Qt6::Gui)
+                add_test(NAME core_${ANIMEAN_CORE_TEST} COMMAND core_${ANIMEAN_CORE_TEST}_tests)
+                set_property(TEST core_${ANIMEAN_CORE_TEST} PROPERTY ENVIRONMENT
+                    "PATH=${Qt6_DIR}/../../../bin\;$ENV{PATH}"
+                    "QT_QPA_PLATFORM=offscreen")
+            endif()
+        endforeach()
+    endif()
 endif()

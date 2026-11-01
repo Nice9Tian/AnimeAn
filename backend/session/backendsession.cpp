@@ -1,6 +1,11 @@
+#include "algorithm/core/containers.h"
+#include "algorithm/core/image.h"
+#include "algorithm/core/path.h"
+#include "algorithm/core/string.h"
+#include <utility>
 #include "session/backendsession.h"
 
-#include "algorithm/core/qtbridge.h"
+#include "algorithm/core/file.h"
 #include "algorithm/beziersplit.h"
 #include "board/boardsurface.h"
 #include "business/animeanbusiness.h"
@@ -9,137 +14,132 @@
 #include "openglwidget.h"
 #include "theme.h"
 
-#include <QColor>
-#include <QCoreApplication>
-#include <QDir>
-#include <QEvent>
-#include <QFileInfo>
-#include <QImageReader>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QJsonParseError>
-#include <QLineF>
-#include <QMetaObject>
-#include <QPixmap>
-#include <QRectF>
-#include <QSettings>
-#include <QSize>
-#include <QSizeF>
-#include <QTimer>
-#include <QTransform>
-#include <QtGlobal>
+#include "algorithm/core/color.h"
+#include "algorithm/core/settings.h"
+#include "platform/eventloop.h"
+#include "platform/signalslot.h"
+#include "platform/timer.h"
+
+#include "algorithm/core/json.h"
+#include "algorithm/core/geometry.h"
+
+
+
+
+#include <cstdint>
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <exception>
 #include <string>
+using namespace AnimeCore;
 
 #ifdef ANIMEAN_WITH_PYTHON
 #ifdef slots
 #undef slots
-#define ANIMEAN_RESTORE_QT_SLOTS
+
 #endif
 #include <pybind11/embed.h>
-#ifdef ANIMEAN_RESTORE_QT_SLOTS
-#define slots Q_SLOTS
-#undef ANIMEAN_RESTORE_QT_SLOTS
+#if 1
+
+
+
 #endif
 namespace py = pybind11;
 #endif
 
 namespace {
 
-QString cursorImageKey(const QImage &rgba)
+String cursorImageKey(const Image &rgba)
 {
-    quint64 h = 14695981039346656037ULL;
-    const auto mix = [&h](const uchar *data, size_t len) {
+    std::uint64_t h = 14695981039346656037ULL;
+    const auto mix = [&h](const unsigned char *data, size_t len) {
         for (size_t i = 0; i < len; ++i) {
-            h ^= static_cast<quint64>(data[i]);
+            h ^= static_cast<std::uint64_t>(data[i]);
             h *= 1099511628211ULL;
         }
     };
     const int w = rgba.width();
     const int height = rgba.height();
-    mix(reinterpret_cast<const uchar *>(&w), sizeof(w));
-    mix(reinterpret_cast<const uchar *>(&height), sizeof(height));
+    mix(reinterpret_cast<const unsigned char *>(&w), sizeof(w));
+    mix(reinterpret_cast<const unsigned char *>(&height), sizeof(height));
     for (int y = 0; y < height; ++y) {
         mix(rgba.constScanLine(y), static_cast<size_t>(w) * 4);
     }
-    return QStringLiteral("cur_%1").arg(h, 16, 16, QLatin1Char('0'));
+    return String("cur_%1").arg(h, 16, 16, Latin1Char('0'));
 }
 
-void mapQtCursorShape(Qt::CursorShape shape, QString *outName, QString *outCss)
+void mapCursorShape(CursorShape shape, String *outName, String *outCss)
 {
     switch (shape) {
-    case Qt::ArrowCursor:
-        *outName = QStringLiteral("arrow");
-        *outCss = QStringLiteral("default");
+    case ArrowCursor:
+        *outName = String("arrow");
+        *outCss = String("default");
         break;
-    case Qt::CrossCursor:
-        *outName = QStringLiteral("cross");
-        *outCss = QStringLiteral("crosshair");
+    case CrossCursor:
+        *outName = String("cross");
+        *outCss = String("crosshair");
         break;
-    case Qt::WaitCursor:
-    case Qt::BusyCursor:
-        *outName = QStringLiteral("wait");
-        *outCss = QStringLiteral("wait");
+    case WaitCursor:
+    case BusyCursor:
+        *outName = String("wait");
+        *outCss = String("wait");
         break;
-    case Qt::IBeamCursor:
-        *outName = QStringLiteral("ibeam");
-        *outCss = QStringLiteral("text");
+    case IBeamCursor:
+        *outName = String("ibeam");
+        *outCss = String("text");
         break;
-    case Qt::SizeVerCursor:
-    case Qt::SplitVCursor:
-        *outName = QStringLiteral("size_v");
-        *outCss = QStringLiteral("ns-resize");
+    case SizeVerCursor:
+    case SplitVCursor:
+        *outName = String("size_v");
+        *outCss = String("ns-resize");
         break;
-    case Qt::SizeHorCursor:
-    case Qt::SplitHCursor:
-        *outName = QStringLiteral("size_h");
-        *outCss = QStringLiteral("ew-resize");
+    case SizeHorCursor:
+    case SplitHCursor:
+        *outName = String("size_h");
+        *outCss = String("ew-resize");
         break;
-    case Qt::SizeBDiagCursor:
-        *outName = QStringLiteral("size_bdiag");
-        *outCss = QStringLiteral("nesw-resize");
+    case SizeBDiagCursor:
+        *outName = String("size_bdiag");
+        *outCss = String("nesw-resize");
         break;
-    case Qt::SizeFDiagCursor:
-        *outName = QStringLiteral("size_fdiag");
-        *outCss = QStringLiteral("nwse-resize");
+    case SizeFDiagCursor:
+        *outName = String("size_fdiag");
+        *outCss = String("nwse-resize");
         break;
-    case Qt::SizeAllCursor:
-        *outName = QStringLiteral("size_all");
-        *outCss = QStringLiteral("move");
+    case SizeAllCursor:
+        *outName = String("size_all");
+        *outCss = String("move");
         break;
-    case Qt::BlankCursor:
-        *outName = QStringLiteral("blank");
-        *outCss = QStringLiteral("none");
+    case BlankCursor:
+        *outName = String("blank");
+        *outCss = String("none");
         break;
-    case Qt::PointingHandCursor:
-        *outName = QStringLiteral("pointing_hand");
-        *outCss = QStringLiteral("pointer");
+    case PointingHandCursor:
+        *outName = String("pointing_hand");
+        *outCss = String("pointer");
         break;
-    case Qt::ForbiddenCursor:
-        *outName = QStringLiteral("forbidden");
-        *outCss = QStringLiteral("not-allowed");
+    case ForbiddenCursor:
+        *outName = String("forbidden");
+        *outCss = String("not-allowed");
         break;
-    case Qt::OpenHandCursor:
-        *outName = QStringLiteral("open_hand");
-        *outCss = QStringLiteral("grab");
+    case OpenHandCursor:
+        *outName = String("open_hand");
+        *outCss = String("grab");
         break;
-    case Qt::ClosedHandCursor:
-        *outName = QStringLiteral("closed_hand");
-        *outCss = QStringLiteral("grabbing");
+    case ClosedHandCursor:
+        *outName = String("closed_hand");
+        *outCss = String("grabbing");
         break;
     default:
-        *outName = QStringLiteral("arrow");
-        *outCss = QStringLiteral("default");
+        *outName = String("arrow");
+        *outCss = String("default");
         break;
     }
 }
 
-AnimeanBusiness::Tool parseToolValue(const QJsonValue &val, bool *okOut = nullptr)
+AnimeanBusiness::Tool parseToolValue(const JsonValue &val, bool *okOut = nullptr)
 {
     if (okOut) {
         *okOut = true;
@@ -150,29 +150,29 @@ AnimeanBusiness::Tool parseToolValue(const QJsonValue &val, bool *okOut = nullpt
             return static_cast<AnimeanBusiness::Tool>(idx);
         }
     }
-    const QString s = val.toString().trimmed().toLower();
-    if (s == QStringLiteral("pen")) {
+    const String s = val.toString().trimmed().toLower();
+    if (s == String("pen")) {
         return AnimeanBusiness::Tool::Pen;
     }
-    if (s == QStringLiteral("eraser") || s == QStringLiteral("area")) {
+    if (s == String("eraser") || s == String("area")) {
         return AnimeanBusiness::Tool::Eraser;
     }
-    if (s == QStringLiteral("delete_line") || s == QStringLiteral("deleteline") || s == QStringLiteral("line")) {
+    if (s == String("delete_line") || s == String("deleteline") || s == String("line")) {
         return AnimeanBusiness::Tool::DeleteLine;
     }
-    if (s == QStringLiteral("cut_line") || s == QStringLiteral("cutline") || s == QStringLiteral("cut")) {
+    if (s == String("cut_line") || s == String("cutline") || s == String("cut")) {
         return AnimeanBusiness::Tool::CutLine;
     }
-    if (s == QStringLiteral("fill")) {
+    if (s == String("fill")) {
         return AnimeanBusiness::Tool::Fill;
     }
-    if (s == QStringLiteral("arrow")) {
+    if (s == String("arrow")) {
         return AnimeanBusiness::Tool::Arrow;
     }
-    if (s == QStringLiteral("connect")) {
+    if (s == String("connect")) {
         return AnimeanBusiness::Tool::Connect;
     }
-    if (s == QStringLiteral("transfer")) {
+    if (s == String("transfer")) {
         return AnimeanBusiness::Tool::Transfer;
     }
     if (okOut) {
@@ -181,113 +181,113 @@ AnimeanBusiness::Tool parseToolValue(const QJsonValue &val, bool *okOut = nullpt
     return AnimeanBusiness::Tool::Pen;
 }
 
-QString toolEnumDisplayName(AnimeanBusiness::Tool tool)
+String toolEnumDisplayName(AnimeanBusiness::Tool tool)
 {
     switch (tool) {
     case AnimeanBusiness::Tool::Pen:
-        return QStringLiteral("Pen");
+        return String("Pen");
     case AnimeanBusiness::Tool::Eraser:
-        return QStringLiteral("Eraser");
+        return String("Eraser");
     case AnimeanBusiness::Tool::DeleteLine:
-        return QStringLiteral("DeleteLine");
+        return String("DeleteLine");
     case AnimeanBusiness::Tool::CutLine:
-        return QStringLiteral("CutLine");
+        return String("CutLine");
     case AnimeanBusiness::Tool::Fill:
-        return QStringLiteral("Fill");
+        return String("Fill");
     case AnimeanBusiness::Tool::Arrow:
-        return QStringLiteral("Arrow");
+        return String("Arrow");
     case AnimeanBusiness::Tool::Connect:
-        return QStringLiteral("Connect");
+        return String("Connect");
     case AnimeanBusiness::Tool::Transfer:
-        return QStringLiteral("Transfer");
+        return String("Transfer");
     }
-    return QStringLiteral("Pen");
+    return String("Pen");
 }
 
-QColor parseColorParams(const QJsonObject &params)
+Color parseColorParams(const JsonObject &params)
 {
-    if (params.contains(QStringLiteral("color"))) {
-        const QJsonValue cVal = params.value(QStringLiteral("color"));
+    if (params.contains(String("color"))) {
+        const JsonValue cVal = params.value(String("color"));
         if (cVal.isString()) {
-            const QColor c(cVal.toString());
+            const Color c(cVal.toString());
             if (c.isValid()) {
                 return c;
             }
         } else if (cVal.isObject()) {
-            const QJsonObject cObj = cVal.toObject();
-            return QColor(cObj.value(QStringLiteral("r")).toInt(0),
-                          cObj.value(QStringLiteral("g")).toInt(0),
-                          cObj.value(QStringLiteral("b")).toInt(0),
-                          cObj.value(QStringLiteral("a")).toInt(255));
+            const JsonObject cObj = cVal.toObject();
+            return Color(cObj.value(String("r")).toInt(0),
+                          cObj.value(String("g")).toInt(0),
+                          cObj.value(String("b")).toInt(0),
+                          cObj.value(String("a")).toInt(255));
         }
     }
-    if (params.contains(QStringLiteral("hex"))) {
-        const QColor c(params.value(QStringLiteral("hex")).toString());
+    if (params.contains(String("hex"))) {
+        const Color c(params.value(String("hex")).toString());
         if (c.isValid()) {
             return c;
         }
     }
-    if (params.contains(QStringLiteral("r"))
-        || params.contains(QStringLiteral("g"))
-        || params.contains(QStringLiteral("b"))) {
-        return QColor(params.value(QStringLiteral("r")).toInt(0),
-                      params.value(QStringLiteral("g")).toInt(0),
-                      params.value(QStringLiteral("b")).toInt(0),
-                      params.value(QStringLiteral("a")).toInt(255));
+    if (params.contains(String("r"))
+        || params.contains(String("g"))
+        || params.contains(String("b"))) {
+        return Color(params.value(String("r")).toInt(0),
+                      params.value(String("g")).toInt(0),
+                      params.value(String("b")).toInt(0),
+                      params.value(String("a")).toInt(255));
     }
-    return QColor();
+    return Color();
 }
 
-QJsonObject makeMenuItem(const QString &id,
-                         const QString &text,
-                         const QString &shortcut,
-                         const QString &kind,
+JsonObject makeMenuItem(const String &id,
+                         const String &text,
+                         const String &shortcut,
+                         const String &kind,
                          bool checked = false,
                          bool enabled = true,
-                         const QJsonArray &children = QJsonArray())
+                         const JsonArray &children = JsonArray())
 {
-    return QJsonObject{
-        {QStringLiteral("id"), id},
-        {QStringLiteral("text"), text},
-        {QStringLiteral("shortcut"), shortcut},
-        {QStringLiteral("kind"), kind},
-        {QStringLiteral("checked"), checked},
-        {QStringLiteral("enabled"), enabled},
-        {QStringLiteral("children"), children},
+    return JsonObject{
+        {String("id"), id},
+        {String("text"), text},
+        {String("shortcut"), shortcut},
+        {String("kind"), kind},
+        {String("checked"), checked},
+        {String("enabled"), enabled},
+        {String("children"), children},
     };
 }
 
-const QStringList &allStateKeys()
+const StringList &allStateKeys()
 {
-    static const QStringList keys = {
-        QStringLiteral("window"),
-        QStringLiteral("theme"),
-        QStringLiteral("menus"),
-        QStringLiteral("tools"),
-        QStringLiteral("toolOptions"),
-        QStringLiteral("drawColor"),
-        QStringLiteral("drawSettings"),
-        QStringLiteral("layers/main"),
-        QStringLiteral("layers/child"),
-        QStringLiteral("assets/main"),
-        QStringLiteral("assets/child"),
-        QStringLiteral("timeline"),
-        QStringLiteral("history"),
-        QStringLiteral("windows"),
-        QStringLiteral("cursor/main"),
-        QStringLiteral("cursor/child"),
-        QStringLiteral("viewport/main"),
-        QStringLiteral("viewport/child"),
-        QStringLiteral("freeze"),
-        QStringLiteral("pad"),
+    static const StringList keys = {
+        String("window"),
+        String("theme"),
+        String("menus"),
+        String("tools"),
+        String("toolOptions"),
+        String("drawColor"),
+        String("drawSettings"),
+        String("layers/main"),
+        String("layers/child"),
+        String("assets/main"),
+        String("assets/child"),
+        String("timeline"),
+        String("history"),
+        String("windows"),
+        String("cursor/main"),
+        String("cursor/child"),
+        String("viewport/main"),
+        String("viewport/child"),
+        String("freeze"),
+        String("pad"),
     };
     return keys;
 }
 
-int frameNameToRow(const QString &frameName)
+int frameNameToRow(const String &frameName)
 {
-    QString digits;
-    for (const QChar ch : frameName) {
+    String digits;
+    for (const Char ch : frameName) {
         if (!ch.isDigit()) {
             break;
         }
@@ -300,32 +300,32 @@ int frameNameToRow(const QString &frameName)
 }
 
 #ifdef ANIMEAN_WITH_PYTHON
-qreal dictNumber(const py::dict &data, const char *key, qreal fallback = 0.0)
+double dictNumber(const py::dict &data, const char *key, double fallback = 0.0)
 {
     if (!data.contains(py::str(key))) {
         return fallback;
     }
     try {
-        return data[py::str(key)].cast<qreal>();
+        return data[py::str(key)].cast<double>();
     } catch (const py::cast_error &) {
         return fallback;
     }
 }
 
-QPointF pointFromDict(const py::dict &data)
+PointF pointFromDict(const py::dict &data)
 {
-    return QPointF(dictNumber(data, "x"), dictNumber(data, "y"));
+    return PointF(dictNumber(data, "x"), dictNumber(data, "y"));
 }
 
-qreal thicknessFromDict(const py::dict &data)
+double thicknessFromDict(const py::dict &data)
 {
     return dictNumber(data, "thick", 3.0);
 }
 
 void appendQuadraticMetricPoints(AnimeCore::Vector<AnimeCore::PointF> *points,
-                                 const QPointF &p0,
-                                 const QPointF &p1,
-                                 const QPointF &p2,
+                                 const PointF &p0,
+                                 const PointF &p1,
+                                 const PointF &p2,
                                  int sampleCount)
 {
     if (points->isEmpty()) {
@@ -336,13 +336,13 @@ void appendQuadraticMetricPoints(AnimeCore::Vector<AnimeCore::PointF> *points,
     AnimeBezierSplit::quadToCubic(p0, p1, p2, cubic);
     sampleCount = std::max(2, sampleCount);
     for (int i = 1; i <= sampleCount; ++i) {
-        points->append(AnimeBezierSplit::evaluateCubic(cubic, static_cast<qreal>(i) / sampleCount));
+        points->append(AnimeBezierSplit::evaluateCubic(cubic, static_cast<double>(i) / sampleCount));
     }
 }
 
-QVector<PaintOpenGLWidget::ImportedVectorFrame> importedFramesFromOpenToonzLevel(const py::dict &levelData)
+Vector<PaintOpenGLWidget::ImportedVectorFrame> importedFramesFromOpenToonzLevel(const py::dict &levelData)
 {
-    QVector<PaintOpenGLWidget::ImportedVectorFrame> importedFrames;
+    Vector<PaintOpenGLWidget::ImportedVectorFrame> importedFrames;
     if (!levelData.contains(py::str("frames"))) {
         return importedFrames;
     }
@@ -354,10 +354,10 @@ QVector<PaintOpenGLWidget::ImportedVectorFrame> importedFramesFromOpenToonzLevel
         }
         py::dict frameDict = py::reinterpret_borrow<py::dict>(frameHandle);
         PaintOpenGLWidget::ImportedVectorFrame importedFrame;
-        QString frameName = QStringLiteral("1");
+        String frameName = String("1");
         if (frameDict.contains(py::str("frame"))) {
             const std::string frameNameText = frameDict[py::str("frame")].cast<std::string>();
-            frameName = QString::fromUtf8(frameNameText.c_str());
+            frameName = String::fromUtf8(frameNameText.c_str());
         }
         importedFrame.row = frameNameToRow(frameName);
 
@@ -376,7 +376,7 @@ QVector<PaintOpenGLWidget::ImportedVectorFrame> importedFramesFromOpenToonzLevel
 
             PaintOpenGLWidget::ImportedVectorStroke importedStroke;
             bool hasPathStart = false;
-            qreal thicknessTotal = 0.0;
+            double thicknessTotal = 0.0;
             int thicknessCount = 0;
             py::iterable quadratics = strokeDict[py::str("quadratics")];
             for (py::handle quadraticHandle : quadratics) {
@@ -393,18 +393,18 @@ QVector<PaintOpenGLWidget::ImportedVectorFrame> importedFramesFromOpenToonzLevel
                 py::dict p0Dict = py::reinterpret_borrow<py::dict>(quadratic[py::str("p0")]);
                 py::dict p1Dict = py::reinterpret_borrow<py::dict>(quadratic[py::str("p1")]);
                 py::dict p2Dict = py::reinterpret_borrow<py::dict>(quadratic[py::str("p2")]);
-                const QPointF p0 = pointFromDict(p0Dict);
-                const QPointF p1 = pointFromDict(p1Dict);
-                const QPointF p2 = pointFromDict(p2Dict);
+                const PointF p0 = pointFromDict(p0Dict);
+                const PointF p1 = pointFromDict(p1Dict);
+                const PointF p2 = pointFromDict(p2Dict);
                 if (!hasPathStart) {
                     importedStroke.path.moveTo(p0);
                     hasPathStart = true;
-                } else if (!qFuzzyCompare(importedStroke.path.currentPosition().x(), p0.x()) ||
-                           !qFuzzyCompare(importedStroke.path.currentPosition().y(), p0.y())) {
+                } else if (!fuzzyCompare(importedStroke.path.currentPosition().x(), p0.x()) ||
+                           !fuzzyCompare(importedStroke.path.currentPosition().y(), p0.y())) {
                     importedStroke.path.lineTo(p0);
                 }
                 importedStroke.path.quadTo(p1, p2);
-                const qreal approxLength = QLineF(p0, p1).length() + QLineF(p1, p2).length();
+                const double approxLength = LineF(p0, p1).length() + LineF(p1, p2).length();
                 appendQuadraticMetricPoints(&importedStroke.points,
                                             p0,
                                             p1,
@@ -416,8 +416,8 @@ QVector<PaintOpenGLWidget::ImportedVectorFrame> importedFramesFromOpenToonzLevel
 
             if (importedStroke.points.size() >= 2) {
                 importedStroke.width = thicknessCount > 0
-                                           ? std::max(qreal(1.0), thicknessTotal / thicknessCount)
-                                           : std::max(qreal(1.0), dictNumber(strokeDict, "max_thickness", 3.0) * 0.2);
+                                           ? std::max(double(1.0), thicknessTotal / thicknessCount)
+                                           : std::max(double(1.0), dictNumber(strokeDict, "max_thickness", 3.0) * 0.2);
                 importedFrame.strokes.append(importedStroke);
             }
         }
@@ -430,15 +430,15 @@ QVector<PaintOpenGLWidget::ImportedVectorFrame> importedFramesFromOpenToonzLevel
 }
 #endif
 
-QRectF importedVectorFramesBounds(const QVector<PaintOpenGLWidget::ImportedVectorFrame> &frames)
+RectF importedVectorFramesBounds(const Vector<PaintOpenGLWidget::ImportedVectorFrame> &frames)
 {
-    QRectF bounds;
+    RectF bounds;
     bool hasBounds = false;
     for (const PaintOpenGLWidget::ImportedVectorFrame &frame : frames) {
         for (const PaintOpenGLWidget::ImportedVectorStroke &stroke : frame.strokes) {
-            const QRectF strokeBounds = stroke.path.isEmpty()
-                                            ? QRectF()
-                                            : QRectF(stroke.path.boundingRect());
+            const RectF strokeBounds = stroke.path.isEmpty()
+                                            ? RectF()
+                                            : RectF(stroke.path.boundingRect());
             if (!strokeBounds.isValid()) {
                 continue;
             }
@@ -453,60 +453,60 @@ QRectF importedVectorFramesBounds(const QVector<PaintOpenGLWidget::ImportedVecto
     return bounds;
 }
 
-void scaleImportedVectorFramesToCanvas(QVector<PaintOpenGLWidget::ImportedVectorFrame> *frames, const QSizeF &targetSize)
+void scaleImportedVectorFramesToCanvas(Vector<PaintOpenGLWidget::ImportedVectorFrame> *frames, const SizeF &targetSize)
 {
     if (!frames || targetSize.width() <= 0.0 || targetSize.height() <= 0.0) {
         return;
     }
 
-    const QRectF sourceBounds = importedVectorFramesBounds(*frames);
+    const RectF sourceBounds = importedVectorFramesBounds(*frames);
     if (!sourceBounds.isValid() || sourceBounds.width() <= 0.0 || sourceBounds.height() <= 0.0) {
         return;
     }
 
-    const qreal scaleX = targetSize.width() / sourceBounds.width();
-    const qreal scaleY = targetSize.height() / sourceBounds.height();
-    const qreal scale = std::min(scaleX, scaleY);
-    const QPointF sourceCenter = sourceBounds.center();
-    const QPointF targetCenter(targetSize.width() * 0.5, targetSize.height() * 0.5);
+    const double scaleX = targetSize.width() / sourceBounds.width();
+    const double scaleY = targetSize.height() / sourceBounds.height();
+    const double scale = std::min(scaleX, scaleY);
+    const PointF sourceCenter = sourceBounds.center();
+    const PointF targetCenter(targetSize.width() * 0.5, targetSize.height() * 0.5);
 
     for (PaintOpenGLWidget::ImportedVectorFrame &frame : *frames) {
         for (PaintOpenGLWidget::ImportedVectorStroke &stroke : frame.strokes) {
             for (AnimeCore::PointF &point : stroke.points) {
                 point = AnimeCore::PointF(targetCenter) + (point - AnimeCore::PointF(sourceCenter)) * scale;
             }
-            const qreal dx = targetCenter.x() - sourceCenter.x() * scale;
-            const qreal dy = targetCenter.y() - sourceCenter.y() * scale;
-            const QTransform transform(scale, 0.0, 0.0, scale, dx, dy);
-            stroke.path = transform.map(QPainterPath(stroke.path));
-            stroke.width = std::max(qreal(1.0), stroke.width * scale);
+            const double dx = targetCenter.x() - sourceCenter.x() * scale;
+            const double dy = targetCenter.y() - sourceCenter.y() * scale;
+            const Transform transform(scale, 0.0, 0.0, scale, dx, dy);
+            stroke.path = transform.map(Path(stroke.path));
+            stroke.width = std::max(double(1.0), stroke.width * scale);
         }
     }
 }
 
-QStringList extractPathsParam(const QJsonObject &params)
+StringList extractPathsParam(const JsonObject &params)
 {
-    QStringList out;
-    if (params.contains(QStringLiteral("paths"))) {
-        const QJsonValue v = params.value(QStringLiteral("paths"));
+    StringList out;
+    if (params.contains(String("paths"))) {
+        const JsonValue v = params.value(String("paths"));
         if (v.isArray()) {
-            for (const QJsonValue &item : v.toArray()) {
-                const QString s = item.toString().trimmed();
+            for (const JsonValue &item : v.toArray()) {
+                const String s = item.toString().trimmed();
                 if (!s.isEmpty()) {
                     out.append(s);
                 }
             }
         } else if (v.isString()) {
-            const QString s = v.toString().trimmed();
+            const String s = v.toString().trimmed();
             if (!s.isEmpty()) {
                 out.append(s);
             }
         }
     }
     if (out.isEmpty()) {
-        const QString single = params.value(QStringLiteral("path"))
-                                   .toString(params.value(QStringLiteral("fileName"))
-                                                 .toString(params.value(QStringLiteral("filePath")).toString()))
+        const String single = params.value(String("path"))
+                                   .toString(params.value(String("fileName"))
+                                                 .toString(params.value(String("filePath")).toString()))
                                    .trimmed();
         if (!single.isEmpty()) {
             out.append(single);
@@ -517,62 +517,62 @@ QStringList extractPathsParam(const QJsonObject &params)
 
 } // namespace
 
-BackendSession::BackendSession(WsServer *ws, QObject *parent)
-    : QObject(parent)
-    , m_ws(ws)
+BackendSession::BackendSession(WsServer *ws)
+    : m_ws(ws)
+
     , m_business(std::make_unique<AnimeanBusiness>())
     , m_mainBoard(std::make_unique<PaintOpenGLWidget>())
     , m_childBoard(std::make_unique<PaintOpenGLWidget>())
-    , m_lastEvent(QJsonObject{{QStringLiteral("name"), QString()}, {QStringLiteral("args"), QJsonObject()}})
+    , m_lastEvent(JsonObject{{String("name"), String()}, {String("args"), JsonObject()}})
 {
     initWindowInfos();
     loadTimelineSettings();
-    m_cursors.insert(QStringLiteral("main"), CursorState());
-    m_cursors.insert(QStringLiteral("child"), CursorState());
-    m_padValues.insert(QStringLiteral("force_pad"), m_forcePadValue);
+    m_cursors.insert(String("main"), CursorState());
+    m_cursors.insert(String("child"), CursorState());
+    m_padValues.insert(String("force_pad"), m_forcePadValue);
 
-    m_mainBoard->setViewName(QStringLiteral("main"));
-    m_mainBoard->model().setTextId(QStringLiteral("main_paint_view"));
+    m_mainBoard->setViewName(String("main"));
+    m_mainBoard->model().setTextId(String("main_paint_view"));
     m_mainBoard->model().setIntId(1);
     m_mainBoard->setActiveIndicator(true);
     m_mainBoard->resizeSurface(800, 600, 1.0);
 
-    m_childBoard->setViewName(QStringLiteral("child"));
+    m_childBoard->setViewName(String("child"));
     m_childBoard->setUnboundedCanvas(true);
-    m_childBoard->model().setTextId(QStringLiteral("child_paint_view"));
+    m_childBoard->model().setTextId(String("child_paint_view"));
     m_childBoard->model().setIntId(2);
     m_childBoard->setActiveIndicator(false);
     m_childBoard->resizeSurface(400, 400, 1.0);
 
-    setupBoardSinks(QStringLiteral("main"), m_mainBoard.get());
-    setupBoardSinks(QStringLiteral("child"), m_childBoard.get());
+    setupBoardSinks(String("main"), m_mainBoard.get());
+    setupBoardSinks(String("child"), m_childBoard.get());
 
-    bindPaintViewToBusiness(QStringLiteral("main"), m_mainBoard.get());
-    bindPaintViewToBusiness(QStringLiteral("child"), m_childBoard.get());
+    bindPaintViewToBusiness(String("main"), m_mainBoard.get());
+    bindPaintViewToBusiness(String("child"), m_childBoard.get());
 
     setupBusinessConnections();
     registerPythonUiCallbacks();
 
-    m_mainBoard->resetHistory(QStringLiteral("Initial"));
-    m_childBoard->resetHistory(QStringLiteral("Initial"));
+    m_mainBoard->resetHistory(String("Initial"));
+    m_childBoard->resetHistory(String("Initial"));
 
     if (m_ws) {
         m_ws->clientConnected.connect([this]() { onClientConnected(); });
         m_ws->clientDisconnected.connect([this]() { onClientDisconnected(); });
         m_ws->textReceived.connect([this](const std::string &data) {
-            QJsonParseError err;
-            const QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(data), &err);
-            if (err.error != QJsonParseError::NoError || !doc.isObject()) {
+            JsonParseError err;
+            const JsonDocument doc = JsonDocument::fromJson(data, &err);
+            if (err.error != JsonParseError::NoError || !doc.isObject()) {
                 return;
             }
             try {
                 onMessageReceived(doc.object());
             } catch (const std::exception &error) {
-                m_business->setStatusMessage(QString::fromUtf8(error.what()));
-                markDirty(QStringLiteral("window"));
+                m_business->setStatusMessage(String::fromUtf8(error.what()));
+                markDirty(String("window"));
             } catch (...) {
-                m_business->setStatusMessage(QStringLiteral("Backend error while handling a message"));
-                markDirty(QStringLiteral("window"));
+                m_business->setStatusMessage(String("Backend error while handling a message"));
+                markDirty(String("window"));
             }
         });
     }
@@ -602,10 +602,10 @@ BackendSession::~BackendSession()
 #endif
 }
 
-void BackendSession::setStatusText(const QString &text)
+void BackendSession::setStatusText(const String &text)
 {
     m_business->setStatusMessage(text);
-    markDirty(QStringLiteral("window"));
+    markDirty(String("window"));
 }
 
 void BackendSession::initializePythonStartup()
@@ -613,7 +613,7 @@ void BackendSession::initializePythonStartup()
 #ifdef ANIMEAN_WITH_PYTHON
     registerPythonUiCallbacks();
     m_business->syncEmbeddedPythonState();
-    appendPythonDebug(QStringLiteral(
+    appendPythonDebug(String(
         "[python register] animean_python, animemodel, ui, model, current, model_pybind, vectorlogic, canvas_width, canvas_height, "
         "main_model, child_model, active_view"));
 
@@ -626,39 +626,39 @@ void BackendSession::initializePythonStartup()
 
     m_business->runPythonInitializationScript();
     loadProtectedPropertiesForChild();
-    m_mainBoard->resetHistory(QStringLiteral("Initial"));
-    m_childBoard->resetHistory(QStringLiteral("Initial"));
+    m_mainBoard->resetHistory(String("Initial"));
+    m_childBoard->resetHistory(String("Initial"));
     m_business->refreshToolOptions();
 #endif
 }
 
 void BackendSession::loadTimelineSettings()
 {
-    QSettings settings(QStringLiteral("AnimeAn"), QStringLiteral("AnimeAn"));
-    settings.beginGroup(QStringLiteral("timeline"));
+    Settings settings;
+    settings.beginGroup(String("timeline"));
 
-    const QString area = settings.value(QStringLiteral("dockArea"), QStringLiteral("bottom")).toString();
-    if (area == QStringLiteral("left") || area == QStringLiteral("right") || area == QStringLiteral("bottom")) {
+    const String area = settings.value(String("dockArea"), String("bottom")).toString();
+    if (area == String("left") || area == String("right") || area == String("bottom")) {
         m_timelineDockArea = area;
     } else {
-        m_timelineDockArea = QStringLiteral("bottom");
+        m_timelineDockArea = String("bottom");
     }
 
-    m_timelineCollapsed = settings.value(QStringLiteral("collapsed"), false).toBool();
-    m_timelineFloating = settings.value(QStringLiteral("floating"), false).toBool();
-    m_timelineVisible = settings.value(QStringLiteral("visible"), true).toBool();
+    m_timelineCollapsed = settings.value(String("collapsed"), false).toBool();
+    m_timelineFloating = settings.value(String("floating"), false).toBool();
+    m_timelineVisible = settings.value(String("visible"), true).toBool();
 
     settings.endGroup();
 }
 
 void BackendSession::saveTimelineSettings() const
 {
-    QSettings settings(QStringLiteral("AnimeAn"), QStringLiteral("AnimeAn"));
-    settings.beginGroup(QStringLiteral("timeline"));
-    settings.setValue(QStringLiteral("dockArea"), m_timelineDockArea);
-    settings.setValue(QStringLiteral("floating"), m_timelineFloating);
-    settings.setValue(QStringLiteral("collapsed"), m_timelineCollapsed);
-    settings.setValue(QStringLiteral("visible"), m_timelineVisible);
+    Settings settings;
+    settings.beginGroup(String("timeline"));
+    settings.setValue(String("dockArea"), m_timelineDockArea);
+    settings.setValue(String("floating"), m_timelineFloating);
+    settings.setValue(String("collapsed"), m_timelineCollapsed);
+    settings.setValue(String("visible"), m_timelineVisible);
     settings.endGroup();
 }
 
@@ -670,28 +670,28 @@ void BackendSession::captureScriptMenuNames()
     if (!Py_IsInitialized()) {
         return;
     }
-    auto captureForHost = [this](const char *host, QVector<QPair<QString, QString>> *out) {
+    auto captureForHost = [this](const char *host, Vector<std::pair<String, String>> *out) {
         try {
             py::gil_scoped_acquire acquire;
             const std::string json = py::module_::import("python_hooks")
                                          .attr("menus_json")(std::string(host))
                                          .cast<std::string>();
-            QJsonParseError parseError;
-            const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json), &parseError);
-            if (parseError.error != QJsonParseError::NoError || !document.isArray()) {
+            JsonParseError parseError;
+            const JsonDocument document = JsonDocument::fromJson(json, &parseError);
+            if (parseError.error != JsonParseError::NoError || !document.isArray()) {
                 return;
             }
-            for (const QJsonValue &value : document.array()) {
-                const QJsonObject object = value.toObject();
-                const QString name = object.value(QStringLiteral("name")).toString();
+            for (const JsonValue &value : document.array()) {
+                const JsonObject object = value.toObject();
+                const String name = object.value(String("name")).toString();
                 if (name.isEmpty()) {
                     continue;
                 }
-                const QString title = object.value(QStringLiteral("title")).toString(name);
-                out->append(qMakePair(name, title));
+                const String title = object.value(String("title")).toString(name);
+                out->append(std::make_pair(name, title));
             }
         } catch (const py::error_already_set &error) {
-            m_business->setStatusMessage(QStringLiteral("menus error: %1").arg(QString::fromUtf8(error.what())));
+            m_business->setStatusMessage(String("menus error: %1").arg(String::fromUtf8(error.what())));
         }
     };
     captureForHost("main", &m_mainScriptMenus);
@@ -703,26 +703,26 @@ void BackendSession::surfaceTextureView()
 {
     if (!m_textureSubControlVisible) {
         for (AnimeanWindowInfo &info : m_windowInfos) {
-            if (info.name == QStringLiteral("paint")) {
-                info.current = QStringLiteral("texture");
+            if (info.name == String("paint")) {
+                info.current = String("texture");
                 break;
             }
         }
-        markDirty(QStringLiteral("windows"));
+        markDirty(String("windows"));
     }
-    emitUiEvent(QStringLiteral("textureView.surface"));
-    m_business->setActiveViewName(QStringLiteral("child"));
+    emitUiEvent(String("textureView.surface"));
+    m_business->setActiveViewName(String("child"));
 }
 
 void BackendSession::initWindowInfos()
 {
     m_windowInfos.clear();
 
-    auto addWin = [this](const QString &name,
-                         const QString &title,
+    auto addWin = [this](const String &name,
+                         const String &title,
                          bool visible,
-                         const QStringList &pages,
-                         const QString &current) {
+                         const StringList &pages,
+                         const String &current) {
         AnimeanWindowInfo info;
         info.name = name;
         info.title = title;
@@ -732,46 +732,46 @@ void BackendSession::initWindowInfos()
         m_windowInfos.append(info);
     };
 
-    addWin(QStringLiteral("paint"),
-           QStringLiteral("Paint"),
+    addWin(String("paint"),
+           String("Paint"),
            true,
-           {QStringLiteral("drawing"), QStringLiteral("texture")},
-           QStringLiteral("drawing"));
-    addWin(QStringLiteral("tools"),
-           QStringLiteral("Tools"),
+           {String("drawing"), String("texture")},
+           String("drawing"));
+    addWin(String("tools"),
+           String("Tools"),
            true,
-           {QStringLiteral("painting"), QStringLiteral("mapping")},
-           QStringLiteral("painting"));
-    addWin(QStringLiteral("tool_options"),
-           QStringLiteral("Tool Options"),
+           {String("painting"), String("mapping")},
+           String("painting"));
+    addWin(String("tool_options"),
+           String("Tool Options"),
            true,
-           {QStringLiteral("options")},
-           QStringLiteral("options"));
-    addWin(QStringLiteral("layers"),
-           QStringLiteral("Layers"),
+           {String("options")},
+           String("options"));
+    addWin(String("layers"),
+           String("Layers"),
            true,
-           {QStringLiteral("main"), QStringLiteral("child")},
-           QStringLiteral("main"));
-    addWin(QStringLiteral("assets"),
-           QStringLiteral("Assets"),
+           {String("main"), String("child")},
+           String("main"));
+    addWin(String("assets"),
+           String("Assets"),
            false,
-           {QStringLiteral("assets")},
-           QStringLiteral("assets"));
-    addWin(QStringLiteral("history"),
-           QStringLiteral("History"),
+           {String("assets")},
+           String("assets"));
+    addWin(String("history"),
+           String("History"),
            false,
-           {QStringLiteral("history")},
-           QStringLiteral("history"));
-    addWin(QStringLiteral("repulsion_pad"),
-           QStringLiteral("Repulsion Pad"),
+           {String("history")},
+           String("history"));
+    addWin(String("repulsion_pad"),
+           String("Repulsion Pad"),
            false,
-           {QStringLiteral("repulsion_pad")},
-           QStringLiteral("repulsion_pad"));
-    addWin(QStringLiteral("python_debug"),
-           QStringLiteral("Python Debug"),
+           {String("repulsion_pad")},
+           String("repulsion_pad"));
+    addWin(String("python_debug"),
+           String("Python Debug"),
            false,
-           {QStringLiteral("python_debug")},
-           QStringLiteral("python_debug"));
+           {String("python_debug")},
+           String("python_debug"));
 }
 
 void BackendSession::loadProtectedPropertiesForChild()
@@ -785,23 +785,23 @@ void BackendSession::loadProtectedPropertiesForChild()
         const std::string json = py::module_::import("python_hooks")
                                      .attr("protected_properties_json")(std::string("child"))
                                      .cast<std::string>();
-        const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json));
-        QStringList allowed;
-        for (const QJsonValue &value : document.array()) {
-            const QString property = value.toString();
+        const JsonDocument document = JsonDocument::fromJson(json);
+        StringList allowed;
+        for (const JsonValue &value : document.array()) {
+            const String property = value.toString();
             if (!property.isEmpty()) {
                 allowed.append(property);
             }
         }
         m_childBoard->setEditablePropertyFilter(allowed);
     } catch (const py::error_already_set &error) {
-        m_business->setStatusMessage(QStringLiteral("protected properties error: %1")
-                                         .arg(QString::fromUtf8(error.what())));
+        m_business->setStatusMessage(String("protected properties error: %1")
+                                         .arg(String::fromUtf8(error.what())));
     }
 #endif
 }
 
-void BackendSession::setupBoardSinks(const QString &viewName, PaintOpenGLWidget *paintView)
+void BackendSession::setupBoardSinks(const String &viewName, PaintOpenGLWidget *paintView)
 {
     if (!paintView) {
         return;
@@ -819,7 +819,7 @@ void BackendSession::setupBoardSinks(const QString &viewName, PaintOpenGLWidget 
     handleCursorSink(viewName, paintView->cursor());
 }
 
-void BackendSession::bindPaintViewToBusiness(const QString &viewName, PaintOpenGLWidget *paintView)
+void BackendSession::bindPaintViewToBusiness(const String &viewName, PaintOpenGLWidget *paintView)
 {
     if (!m_business || !paintView) {
         return;
@@ -831,14 +831,14 @@ void BackendSession::bindPaintViewToBusiness(const QString &viewName, PaintOpenG
     adapter.history = &paintView->history();
 
     adapter.modelReplaced = [paintView]() { paintView->modelReplaced(); };
-    adapter.setCanvasSize = [paintView](const QSize &size) { paintView->setCanvasSize(size); };
+    adapter.setCanvasSize = [paintView](const Size &size) { paintView->setCanvasSize(size); };
     adapter.requestUpdate = [paintView]() { paintView->update(); };
     adapter.setCurrentFrame = [paintView](int frameIndex) { paintView->setCurrentFrame(frameIndex); };
     adapter.setCurrentLayer = [paintView](int layerIndex) { paintView->setCurrentLayer(layerIndex); };
     adapter.setCurrentAsset = [paintView](int assetIndex) { paintView->setCurrentAsset(assetIndex); };
 
-    adapter.commitHistory = [paintView](const QString &label) { paintView->commitHistory(label); };
-    adapter.resetHistory = [paintView](const QString &label) { paintView->resetHistory(label); };
+    adapter.commitHistory = [paintView](const String &label) { paintView->commitHistory(label); };
+    adapter.resetHistory = [paintView](const String &label) { paintView->resetHistory(label); };
     adapter.dropRedoTail = [paintView]() { paintView->dropRedoTail(); };
     adapter.undoHistory = [paintView]() { return paintView->undoHistory(); };
     adapter.redoHistory = [paintView]() { return paintView->redoHistory(); };
@@ -868,7 +868,7 @@ void BackendSession::bindPaintViewToBusiness(const QString &viewName, PaintOpenG
         return paintView->moveFrame(fromIndex, toIndex);
     };
 
-    adapter.addAsset = [paintView](AnimeColumnType type, const QString &name) {
+    adapter.addAsset = [paintView](AnimeColumnType type, const String &name) {
         return paintView->addAsset(type, name);
     };
     adapter.assignAssetToLayer = [paintView](int layerIndex, int assetIndex) {
@@ -882,13 +882,13 @@ void BackendSession::bindPaintViewToBusiness(const QString &viewName, PaintOpenG
         paintView->setTool(static_cast<PaintOpenGLWidget::Tool>(tool));
     };
     adapter.currentTool = [paintView]() { return int(paintView->tool()); };
-    adapter.setStrokeProperty = [paintView](const QString &property) {
+    adapter.setStrokeProperty = [paintView](const String &property) {
         paintView->setStrokeProperty(property);
     };
-    adapter.setDrawingColor = [paintView](const QColor &color) {
+    adapter.setDrawingColor = [paintView](const Color &color) {
         paintView->setDrawingColor(color);
     };
-    adapter.setPenWidth = [paintView](qreal width) { paintView->setPenWidth(width); };
+    adapter.setPenWidth = [paintView](double width) { paintView->setPenWidth(width); };
     adapter.setFillScope = [paintView](int scope) {
         paintView->setFillScope(static_cast<PaintOpenGLWidget::FillScope>(scope));
     };
@@ -896,20 +896,20 @@ void BackendSession::bindPaintViewToBusiness(const QString &viewName, PaintOpenG
     adapter.setStrokeFitSettings = [paintView](const AnimeStrokeFitSettings &settings) {
         paintView->setStrokeFitSettings(settings);
     };
-    adapter.sendExtraToolMessage = [paintView](const QString &name, const QString &property) {
+    adapter.sendExtraToolMessage = [paintView](const String &name, const String &property) {
         paintView->sendPythonExtraToolMessage(name, property);
     };
-    adapter.sendToolOptionMessage = [paintView](const QString &hook,
-                                                const QString &name,
-                                                const QString &type,
-                                                const QVariant &value,
+    adapter.sendToolOptionMessage = [paintView](const String &hook,
+                                                const String &name,
+                                                const String &type,
+                                                const JsonVariant &value,
                                                 int row,
                                                 int startColumn,
                                                 int endColumn) {
-        const AnimeCore::JsonVariant coreVal = (value.userType() == QMetaType::Int || value.userType() == QMetaType::UInt || value.userType() == QMetaType::LongLong || value.userType() == QMetaType::ULongLong) ? AnimeCore::JsonVariant(static_cast<long long>(value.toLongLong())) : AnimeCore::Bridge<QVariant>::toCore(value); paintView->sendPythonToolOptionMessage(hook, name, type, coreVal, row, startColumn, endColumn);
+        paintView->sendPythonToolOptionMessage(hook, name, type, value, row, startColumn, endColumn);
     };
-    adapter.sendPadMessage = [paintView](const QString &pad,
-                                         const QString &phase,
+    adapter.sendPadMessage = [paintView](const String &pad,
+                                         const String &phase,
                                          double x,
                                          double y) {
         paintView->sendPythonPadMessage(pad, phase, x, y);
@@ -924,21 +924,21 @@ void BackendSession::bindPaintViewToBusiness(const QString &viewName, PaintOpenG
     adapter.endPlayback = [paintView]() { paintView->endPlayback(); };
 
     adapter.setOnionEnabled = [paintView](bool on) { paintView->setOnionEnabled(on); };
-    adapter.setOnionFrames = [paintView](const QSet<int> &frames) {
+    adapter.setOnionFrames = [paintView](const Set<int> &frames) {
         paintView->setOnionFrames(frames);
     };
     adapter.setOnionLines = [paintView](bool on) { paintView->setOnionLines(on); };
     adapter.setOnionFills = [paintView](bool on) { paintView->setOnionFills(on); };
     adapter.setOnionAmLayers = [paintView](bool on) { paintView->setOnionAmLayers(on); };
     adapter.setOnionGuideLines = [paintView](bool on) { paintView->setOnionGuideLines(on); };
-    adapter.setOnionExcludeProperties = [paintView](const QStringList &properties) {
+    adapter.setOnionExcludeProperties = [paintView](const StringList &properties) {
         paintView->setOnionExcludeProperties(properties);
     };
-    adapter.setOnionLayerTag = [paintView](const QString &tag) {
+    adapter.setOnionLayerTag = [paintView](const String &tag) {
         paintView->setOnionLayerTag(tag);
     };
 
-    adapter.renderFrameThumbnail = [paintView](int frameIndex, const QSize &size) {
+    adapter.renderFrameThumbnail = [paintView](int frameIndex, const Size &size) {
         return paintView->renderFrameThumbnail(frameIndex, size);
     };
 
@@ -965,62 +965,62 @@ void BackendSession::bindPaintViewToBusiness(const QString &viewName, PaintOpenG
     paintView->pythonDebugMessage.connect([this](const AnimeCore::String &msg) { appendPythonDebug(msg); });
     paintView->playbackInterrupted.connect([this]() { m_business->stopPlayback(); });
     paintView->historyChanged.connect([this]() {
-        markDirty(QStringLiteral("history"));
-        markDirty(QStringLiteral("menus"));
+        markDirty(String("history"));
+        markDirty(String("menus"));
     });
     paintView->historyCommitted.connect([this, viewName]() {
         m_business->handleViewHistoryCommitted(viewName);
-        markDirty(QStringLiteral("history"));
-        markDirty(QStringLiteral("menus"));
+        markDirty(String("history"));
+        markDirty(String("menus"));
     });
     paintView->viewTransformChanged.connect([this, viewName]() {
-        markDirty(viewName == QStringLiteral("child") ? QStringLiteral("viewport/child")
-                                                      : QStringLiteral("viewport/main"));
+        markDirty(viewName == String("child") ? String("viewport/child")
+                                                      : String("viewport/main"));
     });
     paintView->userTransformed.connect([this, viewName]() {
-        markDirty(viewName == QStringLiteral("child") ? QStringLiteral("viewport/child")
-                                                      : QStringLiteral("viewport/main"));
+        markDirty(viewName == String("child") ? String("viewport/child")
+                                                      : String("viewport/main"));
     });
 }
 
 void BackendSession::setupBusinessConnections()
 {
-    m_business->statusMessageChanged.connect([this](const QString &) {
-        markDirty(QStringLiteral("window"));
+    m_business->statusMessageChanged.connect([this](const String &) {
+        markDirty(String("window"));
     });
-    m_business->pythonDebugMessage.connect([this](const QString &message) { appendPythonDebug(message); });
-    m_business->projectFilePathChanged.connect([this](const QString &) {
-        markDirty(QStringLiteral("window"));
+    m_business->pythonDebugMessage.connect([this](const String &message) { appendPythonDebug(message); });
+    m_business->projectFilePathChanged.connect([this](const String &) {
+        markDirty(String("window"));
     });
-    m_business->childFilePathChanged.connect([this](const QString &) {
-        markDirty(QStringLiteral("window"));
+    m_business->childFilePathChanged.connect([this](const String &) {
+        markDirty(String("window"));
     });
-    m_business->windowTitleChanged.connect([this](const QString &) {
-        markDirty(QStringLiteral("window"));
+    m_business->windowTitleChanged.connect([this](const String &) {
+        markDirty(String("window"));
     });
-    m_business->canvasSizeChanged.connect([this](const QString &viewName, const QSize &) {
-        markDirty(QStringLiteral("window"));
-        markDirty(viewName == QStringLiteral("child") ? QStringLiteral("viewport/child")
-                                                      : QStringLiteral("viewport/main"));
+    m_business->canvasSizeChanged.connect([this](const String &viewName, const Size &) {
+        markDirty(String("window"));
+        markDirty(viewName == String("child") ? String("viewport/child")
+                                                      : String("viewport/main"));
     });
-    m_business->activeViewChanged.connect([this](const QString &activeView) {
+    m_business->activeViewChanged.connect([this](const String &activeView) {
         if (m_mainBoard) {
-            m_mainBoard->setActiveIndicator(activeView == QStringLiteral("main"));
+            m_mainBoard->setActiveIndicator(activeView == String("main"));
         }
         if (m_childBoard) {
-            m_childBoard->setActiveIndicator(activeView == QStringLiteral("child"));
+            m_childBoard->setActiveIndicator(activeView == String("child"));
         }
-        markDirty(QStringLiteral("window"));
-        markDirty(QStringLiteral("tools"));
-        markDirty(QStringLiteral("history"));
-        markDirty(QStringLiteral("timeline"));
-        markDirty(QStringLiteral("layers/main"));
-        markDirty(QStringLiteral("layers/child"));
-        markDirty(QStringLiteral("assets/main"));
-        markDirty(QStringLiteral("assets/child"));
+        markDirty(String("window"));
+        markDirty(String("tools"));
+        markDirty(String("history"));
+        markDirty(String("timeline"));
+        markDirty(String("layers/main"));
+        markDirty(String("layers/child"));
+        markDirty(String("assets/main"));
+        markDirty(String("assets/child"));
     });
     m_business->requestSurfaceTextureView.connect([this]() {
-        emitUiEvent(QStringLiteral("textureView.surface"));
+        emitUiEvent(String("textureView.surface"));
     });
     m_business->requestAutoFitTextureControlView.connect([this]() {
         if (m_childBoard) {
@@ -1028,66 +1028,66 @@ void BackendSession::setupBusinessConnections()
             m_textureAutoFitFrame = m_childBoard->model().currentFrame();
         }
     });
-    m_business->layersChanged.connect([this](const QString &viewName, int) {
-        if (viewName == QStringLiteral("child")) {
-            markDirty(QStringLiteral("layers/child"));
+    m_business->layersChanged.connect([this](const String &viewName, int) {
+        if (viewName == String("child")) {
+            markDirty(String("layers/child"));
         } else {
-            markDirty(QStringLiteral("layers/main"));
+            markDirty(String("layers/main"));
         }
     });
-    m_business->assetsChanged.connect([this](const QString &viewName, int) {
-        if (viewName == QStringLiteral("child")) {
-            markDirty(QStringLiteral("assets/child"));
+    m_business->assetsChanged.connect([this](const String &viewName, int) {
+        if (viewName == String("child")) {
+            markDirty(String("assets/child"));
         } else {
-            markDirty(QStringLiteral("assets/main"));
+            markDirty(String("assets/main"));
         }
     });
     m_business->timelineChanged.connect([this]() {
-        markDirty(QStringLiteral("timeline"));
-        markDirty(QStringLiteral("layers/main"));
-        markDirty(QStringLiteral("layers/child"));
+        markDirty(String("timeline"));
+        markDirty(String("layers/main"));
+        markDirty(String("layers/child"));
     });
-    m_business->playbackStateChanged.connect([this](bool, int, const QString &) {
-        markDirty(QStringLiteral("timeline"));
+    m_business->playbackStateChanged.connect([this](bool, int, const String &) {
+        markDirty(String("timeline"));
     });
     m_business->onionStateChanged.connect([this]() {
-        markDirty(QStringLiteral("timeline"));
+        markDirty(String("timeline"));
     });
-    m_business->toolChanged.connect([this](int, const QString &) {
-        markDirty(QStringLiteral("tools"));
+    m_business->toolChanged.connect([this](int, const String &) {
+        markDirty(String("tools"));
     });
     m_business->toolLockStateChanged.connect([this]() {
-        markDirty(QStringLiteral("tools"));
+        markDirty(String("tools"));
     });
     m_business->toolOptionsLayoutChanged.connect(
-            [this](const QJsonObject &layout, int, bool) {
+            [this](const JsonObject &layout, int, bool) {
         m_lastToolOptions = layout;
-        markDirty(QStringLiteral("toolOptions"));
+        markDirty(String("toolOptions"));
     });
     m_business->toolOptionsStateChanged.connect([this]() {
-        markDirty(QStringLiteral("drawSettings"));
+        markDirty(String("drawSettings"));
     });
-    m_business->drawingColorChanged.connect([this](const QColor &) {
-        markDirty(QStringLiteral("drawColor"));
+    m_business->drawingColorChanged.connect([this](const Color &) {
+        markDirty(String("drawColor"));
     });
     m_business->historyChanged.connect([this]() {
-        markDirty(QStringLiteral("history"));
-        markDirty(QStringLiteral("menus"));
+        markDirty(String("history"));
+        markDirty(String("menus"));
     });
-    m_business->historyRestored.connect([this](const QString &viewName) {
-        markDirty(QStringLiteral("history"));
-        markDirty(QStringLiteral("menus"));
-        markDirty(QStringLiteral("timeline"));
-        markDirty(QStringLiteral("layers/main"));
-        markDirty(QStringLiteral("layers/child"));
-        markDirty(QStringLiteral("assets/main"));
-        markDirty(QStringLiteral("assets/child"));
+    m_business->historyRestored.connect([this](const String &viewName) {
+        markDirty(String("history"));
+        markDirty(String("menus"));
+        markDirty(String("timeline"));
+        markDirty(String("layers/main"));
+        markDirty(String("layers/child"));
+        markDirty(String("assets/main"));
+        markDirty(String("assets/child"));
         if (PaintOpenGLWidget *board = boardForView(viewName)) {
             board->update();
         }
     });
 
-    connect(AnimeTheme::instance(), &AnimeTheme::themeChanged, this, [this]() {
+    AnimeTheme::instance()->themeChanged.connect([this]() {
 #ifdef ANIMEAN_WITH_PYTHON
         setAnimeanUiTheme(AnimeTheme::modeName(AnimeTheme::mode()));
 #endif
@@ -1097,9 +1097,9 @@ void BackendSession::setupBusinessConnections()
         if (m_childBoard) {
             m_childBoard->update();
         }
-        markDirty(QStringLiteral("theme"));
-        markDirty(QStringLiteral("menus"));
-        markDirty(QStringLiteral("history"));
+        markDirty(String("theme"));
+        markDirty(String("menus"));
+        markDirty(String("history"));
     });
 }
 
@@ -1117,19 +1117,19 @@ void BackendSession::registerPythonUiCallbacks()
     registerAnimeanUiRefreshCallback([this](bool frame, bool layer, bool asset, bool widget) {
         m_business->syncAllViewAttentionsFromModels();
         if (frame) {
-            markDirty(QStringLiteral("timeline"));
+            markDirty(String("timeline"));
             if (m_childBoard && m_childBoard->model().currentFrame() != m_textureAutoFitFrame) {
                 m_childBoard->fitViewToContent(false);
                 m_textureAutoFitFrame = m_childBoard->model().currentFrame();
             }
         }
         if (layer) {
-            markDirty(QStringLiteral("layers/main"));
-            markDirty(QStringLiteral("layers/child"));
+            markDirty(String("layers/main"));
+            markDirty(String("layers/child"));
         }
         if (asset) {
-            markDirty(QStringLiteral("assets/main"));
-            markDirty(QStringLiteral("assets/child"));
+            markDirty(String("assets/main"));
+            markDirty(String("assets/child"));
         }
         if (widget) {
             if (m_mainBoard) {
@@ -1150,62 +1150,62 @@ void BackendSession::registerPythonUiCallbacks()
     windows.list = [this]() {
         return m_windowInfos;
     };
-    windows.show = [this](const QString &name, bool on) {
-        if (name == QStringLiteral("paint")) {
+    windows.show = [this](const String &name, bool on) {
+        if (name == String("paint")) {
             return;
         }
-        if (name == QStringLiteral("timeline")) {
+        if (name == String("timeline")) {
             m_timelineVisible = on;
             saveTimelineSettings();
-            markDirty(QStringLiteral("windows"));
-            markDirty(QStringLiteral("timeline"));
-            markDirty(QStringLiteral("menus"));
-            emitUiEvent(QStringLiteral("window.show"),
-                        QJsonObject{{QStringLiteral("name"), name}, {QStringLiteral("visible"), on}});
+            markDirty(String("windows"));
+            markDirty(String("timeline"));
+            markDirty(String("menus"));
+            emitUiEvent(String("window.show"),
+                        JsonObject{{String("name"), name}, {String("visible"), on}});
             return;
         }
         for (AnimeanWindowInfo &info : m_windowInfos) {
             if (info.name == name) {
                 info.visible = on;
-                markDirty(QStringLiteral("windows"));
-                markDirty(QStringLiteral("menus"));
-                emitUiEvent(QStringLiteral("window.show"),
-                            QJsonObject{{QStringLiteral("name"), name}, {QStringLiteral("visible"), on}});
+                markDirty(String("windows"));
+                markDirty(String("menus"));
+                emitUiEvent(String("window.show"),
+                            JsonObject{{String("name"), name}, {String("visible"), on}});
                 return;
             }
         }
     };
-    windows.select = [this](const QString &name, const QString &page) {
+    windows.select = [this](const String &name, const String &page) {
         for (AnimeanWindowInfo &info : m_windowInfos) {
             if (info.name == name) {
                 if (info.pages.contains(page)) {
                     info.current = page;
                 }
-                if (name == QStringLiteral("paint")) {
-                    if (page == QStringLiteral("texture")) {
-                        m_business->setActiveViewName(QStringLiteral("child"));
-                    } else if (page == QStringLiteral("drawing")) {
-                        m_business->setActiveViewName(QStringLiteral("main"));
+                if (name == String("paint")) {
+                    if (page == String("texture")) {
+                        m_business->setActiveViewName(String("child"));
+                    } else if (page == String("drawing")) {
+                        m_business->setActiveViewName(String("main"));
                     }
                 }
-                markDirty(QStringLiteral("windows"));
-                if (name == QStringLiteral("tools")) {
-                    markDirty(QStringLiteral("tools"));
+                markDirty(String("windows"));
+                if (name == String("tools")) {
+                    markDirty(String("tools"));
                 }
-                emitUiEvent(QStringLiteral("window.select"),
-                            QJsonObject{{QStringLiteral("name"), name}, {QStringLiteral("page"), page}});
+                emitUiEvent(String("window.select"),
+                            JsonObject{{String("name"), name}, {String("page"), page}});
                 return;
             }
         }
     };
     registerAnimeanUiWindowsCallback(std::move(windows));
 
-    registerAnimeanUiOverlayCallback([this](const QString &view, const QVector<AnimeanOverlayItem> &items) {
+    registerAnimeanUiOverlayCallback([this](const String &view, const Vector<AnimeanOverlayItem> &items) {
         PaintOpenGLWidget *target = boardForView(view);
         if (!target) {
             return;
         }
-        QVector<PaintOpenGLWidget::OverlayItem> converted;
+        Vector<PaintOpenGLWidget::OverlayItem> converted;
         converted.reserve(items.size());
         for (const AnimeanOverlayItem &item : items) {
             PaintOpenGLWidget::OverlayItem overlayItem;
@@ -1224,12 +1224,12 @@ void BackendSession::registerPythonUiCallbacks()
         target->setOverlayItems(converted);
     });
 
-    registerAnimeanUiEditHandleCallback([this](const QString &view, const QVector<AnimeanEditHandle> &handles) {
+    registerAnimeanUiEditHandleCallback([this](const String &view, const Vector<AnimeanEditHandle> &handles) {
         PaintOpenGLWidget *target = boardForView(view);
         if (!target) {
             return;
         }
-        QVector<PaintOpenGLWidget::EditHandle> converted;
+        Vector<PaintOpenGLWidget::EditHandle> converted;
         converted.reserve(handles.size());
         for (const AnimeanEditHandle &handle : handles) {
             PaintOpenGLWidget::EditHandle editHandle;
@@ -1243,30 +1243,30 @@ void BackendSession::registerPythonUiCallbacks()
         target->setEditHandles(converted);
     });
 
-    registerAnimeanUiCursorCallback([this](const QString &view, const QString &name) {
+    registerAnimeanUiCursorCallback([this](const String &view, const String &name) {
         PaintOpenGLWidget *target = boardForView(view);
         if (target) {
             target->setScriptCursor(name);
         }
     });
 
-    registerAnimeanUiFillPaintModeCallback([this](const QString &view, bool on) {
-        if (view == QStringLiteral("main") && m_mainBoard) {
+    registerAnimeanUiFillPaintModeCallback([this](const String &view, bool on) {
+        if (view == String("main") && m_mainBoard) {
             m_mainBoard->setFillPaintMode(on);
             return;
         }
-        if (view == QStringLiteral("child") && m_childBoard) {
+        if (view == String("child") && m_childBoard) {
             m_childBoard->setFillPaintMode(on);
             return;
         }
-        appendPythonDebug(QStringLiteral("[fill paint] unknown view '%1'").arg(view));
+        appendPythonDebug(String("[fill paint] unknown view '%1'").arg(view));
     });
 
-    registerAnimeanUiLockedToolsCallback([this](const QString &view, const QStringList &tools) {
+    registerAnimeanUiLockedToolsCallback([this](const String &view, const StringList &tools) {
         m_business->applyLockedTools(view, tools);
     });
 
-    registerAnimeanUiDrawColorCallback([this](const QColor &color) {
+    registerAnimeanUiDrawColorCallback([this](const Color &color) {
         m_business->setDrawingColor(color);
     });
 
@@ -1274,57 +1274,57 @@ void BackendSession::registerPythonUiCallbacks()
         m_business->setDrawSettings(stabilizer, simplify, corner);
     });
 
-    registerAnimeanUiHistoryCallback([this](const QString &op, const QString &viewName, const QString &label) {
+    registerAnimeanUiHistoryCallback([this](const String &op, const String &viewName, const String &label) {
         if (!viewName.isEmpty()
-            && viewName != QStringLiteral("main")
-            && viewName != QStringLiteral("child")) {
-            appendPythonDebug(QStringLiteral("[history] unknown view '%1'").arg(viewName));
+            && viewName != String("main")
+            && viewName != String("child")) {
+            appendPythonDebug(String("[history] unknown view '%1'").arg(viewName));
             return;
         }
-        if (op == QStringLiteral("commit")) {
-            m_business->commitHistory(label.isEmpty() ? QStringLiteral("Python") : label, viewName);
-        } else if (op == QStringLiteral("undo")) {
+        if (op == String("commit")) {
+            m_business->commitHistory(label.isEmpty() ? String("Python") : label, viewName);
+        } else if (op == String("undo")) {
             m_business->undo(viewName);
-        } else if (op == QStringLiteral("redo")) {
+        } else if (op == String("redo")) {
             m_business->redo(viewName);
         }
     });
 
-    registerAnimeanUiPadValueCallback([this](const QString &pad, double x, double y) {
-        const QPointF pt(x, y);
+    registerAnimeanUiPadValueCallback([this](const String &pad, double x, double y) {
+        const PointF pt(x, y);
         m_padValues.insert(pad, pt);
-        if (pad == QStringLiteral("force_pad")) {
+        if (pad == String("force_pad")) {
             m_forcePadValue = pt;
         }
-        markDirty(QStringLiteral("pad"));
+        markDirty(String("pad"));
     });
 #endif
 }
 
-PaintOpenGLWidget *BackendSession::boardForView(const QString &viewName) const
+PaintOpenGLWidget *BackendSession::boardForView(const String &viewName) const
 {
-    if (viewName == QStringLiteral("child")) {
+    if (viewName == String("child")) {
         return m_childBoard.get();
     }
-    if (viewName == QStringLiteral("main")) {
+    if (viewName == String("main")) {
         return m_mainBoard.get();
     }
-    return (m_business && m_business->activeViewName() == QStringLiteral("child"))
+    return (m_business && m_business->activeViewName() == String("child"))
                ? m_childBoard.get()
                : m_mainBoard.get();
 }
 
-QString BackendSession::resolveViewName(const QString &viewName) const
+String BackendSession::resolveViewName(const String &viewName) const
 {
-    if (viewName == QStringLiteral("child")) {
-        return QStringLiteral("child");
+    if (viewName == String("child")) {
+        return String("child");
     }
-    if (viewName == QStringLiteral("main")) {
-        return QStringLiteral("main");
+    if (viewName == String("main")) {
+        return String("main");
     }
-    return (m_business && m_business->activeViewName() == QStringLiteral("child"))
-               ? QStringLiteral("child")
-               : QStringLiteral("main");
+    return (m_business && m_business->activeViewName() == String("child"))
+               ? String("child")
+               : String("main");
 }
 
 void BackendSession::onClientConnected()
@@ -1334,18 +1334,18 @@ void BackendSession::onClientConnected()
     }
 
     m_dirtyKeys.clear();
-    for (const QString &key : allStateKeys()) {
+    for (const String &key : allStateKeys()) {
         sendStateKey(key);
     }
 
     if (m_mainBoard) {
-        m_mainBoard->acknowledgeFrame(m_lastBoardFrameId.value(QStringLiteral("main"), 0));
+        m_mainBoard->acknowledgeFrame(m_lastBoardFrameId.value(String("main"), 0));
         m_mainBoard->resizeSurface(m_mainBoard->width(),
                                    m_mainBoard->height(),
                                    m_mainBoard->devicePixelRatioF());
     }
     if (m_childBoard) {
-        m_childBoard->acknowledgeFrame(m_lastBoardFrameId.value(QStringLiteral("child"), 0));
+        m_childBoard->acknowledgeFrame(m_lastBoardFrameId.value(String("child"), 0));
         m_childBoard->resizeSurface(m_childBoard->width(),
                                     m_childBoard->height(),
                                     m_childBoard->devicePixelRatioF());
@@ -1357,61 +1357,61 @@ void BackendSession::onClientDisconnected()
     // Keep session alive and wait for next connection.
 }
 
-void BackendSession::onMessageReceived(const QJsonObject &msg)
+void BackendSession::onMessageReceived(const JsonObject &msg)
 {
-    const QString t = msg.value(QStringLiteral("t"))
-                          .toString(msg.value(QStringLiteral("type")).toString());
-    if (t == QStringLiteral("call")) {
+    const String t = msg.value(String("t"))
+                          .toString(msg.value(String("type")).toString());
+    if (t == String("call")) {
         handleCallMessage(msg);
-    } else if (t == QStringLiteral("input")) {
+    } else if (t == String("input")) {
         handleInputMessage(msg);
-    } else if (t == QStringLiteral("ack")) {
+    } else if (t == String("ack")) {
         handleAckMessage(msg);
     }
 }
 
-void BackendSession::handleCallMessage(const QJsonObject &msg)
+void BackendSession::handleCallMessage(const JsonObject &msg)
 {
-    const QJsonValue idVal = msg.value(QStringLiteral("id"));
-    const QString method = msg.value(QStringLiteral("method")).toString();
-    const QJsonObject params = msg.value(QStringLiteral("params")).toObject();
+    const JsonValue idVal = msg.value(String("id"));
+    const String method = msg.value(String("method")).toString();
+    const JsonObject params = msg.value(String("params")).toObject();
 
     // Ensure any pending board frame is unblocked so mutations from this call produce frames.
     if (m_mainBoard) {
-        m_mainBoard->acknowledgeFrame(m_lastBoardFrameId.value(QStringLiteral("main"), 0));
+        m_mainBoard->acknowledgeFrame(m_lastBoardFrameId.value(String("main"), 0));
     }
     if (m_childBoard) {
-        m_childBoard->acknowledgeFrame(m_lastBoardFrameId.value(QStringLiteral("child"), 0));
+        m_childBoard->acknowledgeFrame(m_lastBoardFrameId.value(String("child"), 0));
     }
 
-    QJsonObject reply;
-    reply.insert(QStringLiteral("t"), QStringLiteral("reply"));
-    reply.insert(QStringLiteral("id"), idVal);
+    JsonObject reply;
+    reply.insert(String("t"), String("reply"));
+    reply.insert(String("id"), idVal);
 
     try {
-        const QJsonObject result = dispatchCall(method, params);
-        if (result.value(QStringLiteral("__error__")).toBool(false)) {
-            reply.insert(QStringLiteral("ok"), false);
-            reply.insert(QStringLiteral("error"),
-                         result.value(QStringLiteral("error")).toString(QStringLiteral("Call failed")));
+        const JsonObject result = dispatchCall(method, params);
+        if (result.value(String("__error__")).toBool(false)) {
+            reply.insert(String("ok"), false);
+            reply.insert(String("error"),
+                         result.value(String("error")).toString(String("Call failed")));
         } else {
-            reply.insert(QStringLiteral("ok"), true);
-            reply.insert(QStringLiteral("result"), result);
+            reply.insert(String("ok"), true);
+            reply.insert(String("result"), result);
         }
     } catch (const std::exception &ex) {
-        reply.insert(QStringLiteral("ok"), false);
-        reply.insert(QStringLiteral("error"), QString::fromUtf8(ex.what()));
+        reply.insert(String("ok"), false);
+        reply.insert(String("error"), String::fromUtf8(ex.what()));
     } catch (...) {
-        reply.insert(QStringLiteral("ok"), false);
-        reply.insert(QStringLiteral("error"), QStringLiteral("Unknown exception during call"));
+        reply.insert(String("ok"), false);
+        reply.insert(String("error"), String("Unknown exception during call"));
     }
 
     sendJson(reply);
 }
 
-void BackendSession::handleInputMessage(const QJsonObject &msg)
+void BackendSession::handleInputMessage(const JsonObject &msg)
 {
-    const QString view = resolveViewName(msg.value(QStringLiteral("view")).toString(QStringLiteral("main")));
+    const String view = resolveViewName(msg.value(String("view")).toString(String("main")));
     PaintOpenGLWidget *board = boardForView(view);
     if (!board) {
         return;
@@ -1419,59 +1419,59 @@ void BackendSession::handleInputMessage(const QJsonObject &msg)
 
     board->acknowledgeFrame(m_lastBoardFrameId.value(view, 0));
 
-    const QString kind = msg.value(QStringLiteral("kind")).toString();
-    const qreal x = msg.value(QStringLiteral("x")).toDouble(0.0);
-    const qreal y = msg.value(QStringLiteral("y")).toDouble(0.0);
+    const String kind = msg.value(String("kind")).toString();
+    const double x = msg.value(String("x")).toDouble(0.0);
+    const double y = msg.value(String("y")).toDouble(0.0);
     const AnimeCore::KeyboardModifiers modifiers =
-        static_cast<AnimeCore::KeyboardModifiers>(msg.value(QStringLiteral("modifiers")).toInt(0));
-    const quint64 timestamp = quint64(std::max(0.0, msg.value(QStringLiteral("time")).toDouble(0.0)));
+        static_cast<AnimeCore::KeyboardModifiers>(msg.value(String("modifiers")).toInt(0));
+    const std::uint64_t timestamp = std::uint64_t(std::max(0.0, msg.value(String("time")).toDouble(0.0)));
 
-    if (kind == QStringLiteral("press")) {
-        AnimeCore::MouseButton button = static_cast<AnimeCore::MouseButton>(msg.value(QStringLiteral("button")).toInt(int(AnimeCore::LeftButton)));
-        if (button == AnimeCore::NoButton && !msg.contains(QStringLiteral("button"))) {
+    if (kind == String("press")) {
+        AnimeCore::MouseButton button = static_cast<AnimeCore::MouseButton>(msg.value(String("button")).toInt(int(AnimeCore::LeftButton)));
+        if (button == AnimeCore::NoButton && !msg.contains(String("button"))) {
             button = AnimeCore::LeftButton;
         }
-        AnimeCore::MouseButtons buttons = static_cast<AnimeCore::MouseButtons>(msg.value(QStringLiteral("buttons")).toInt(int(button)));
-        if (buttons == AnimeCore::NoButton && !msg.contains(QStringLiteral("buttons"))) {
+        AnimeCore::MouseButtons buttons = static_cast<AnimeCore::MouseButtons>(msg.value(String("buttons")).toInt(int(button)));
+        if (buttons == AnimeCore::NoButton && !msg.contains(String("buttons"))) {
             buttons = button;
         }
-        board->injectMouse(AnimeCore::Event::MouseButtonPress, QPointF(x, y), button, buttons, modifiers, timestamp);
-    } else if (kind == QStringLiteral("move")) {
-        AnimeCore::MouseButton button = static_cast<AnimeCore::MouseButton>(msg.value(QStringLiteral("button")).toInt(int(AnimeCore::NoButton)));
-        AnimeCore::MouseButtons buttons = static_cast<AnimeCore::MouseButtons>(msg.value(QStringLiteral("buttons")).toInt(int(AnimeCore::LeftButton)));
-        if (msg.contains(QStringLiteral("buttons"))) {
-            buttons = static_cast<AnimeCore::MouseButtons>(msg.value(QStringLiteral("buttons")).toInt(0));
+        board->injectMouse(AnimeCore::Event::MouseButtonPress, PointF(x, y), button, buttons, modifiers, timestamp);
+    } else if (kind == String("move")) {
+        AnimeCore::MouseButton button = static_cast<AnimeCore::MouseButton>(msg.value(String("button")).toInt(int(AnimeCore::NoButton)));
+        AnimeCore::MouseButtons buttons = static_cast<AnimeCore::MouseButtons>(msg.value(String("buttons")).toInt(int(AnimeCore::LeftButton)));
+        if (msg.contains(String("buttons"))) {
+            buttons = static_cast<AnimeCore::MouseButtons>(msg.value(String("buttons")).toInt(0));
         }
-        board->injectMouse(AnimeCore::Event::MouseMove, QPointF(x, y), button, buttons, modifiers, timestamp);
-    } else if (kind == QStringLiteral("release")) {
-        AnimeCore::MouseButton button = static_cast<AnimeCore::MouseButton>(msg.value(QStringLiteral("button")).toInt(int(AnimeCore::LeftButton)));
-        if (button == AnimeCore::NoButton && !msg.contains(QStringLiteral("button"))) {
+        board->injectMouse(AnimeCore::Event::MouseMove, PointF(x, y), button, buttons, modifiers, timestamp);
+    } else if (kind == String("release")) {
+        AnimeCore::MouseButton button = static_cast<AnimeCore::MouseButton>(msg.value(String("button")).toInt(int(AnimeCore::LeftButton)));
+        if (button == AnimeCore::NoButton && !msg.contains(String("button"))) {
             button = AnimeCore::LeftButton;
         }
-        AnimeCore::MouseButtons buttons = static_cast<AnimeCore::MouseButtons>(msg.value(QStringLiteral("buttons")).toInt(int(AnimeCore::NoButton)));
-        board->injectMouse(AnimeCore::Event::MouseButtonRelease, QPointF(x, y), button, buttons, modifiers, timestamp);
-    } else if (kind == QStringLiteral("doubleClick") || kind == QStringLiteral("dblclick")) {
-        AnimeCore::MouseButton button = static_cast<AnimeCore::MouseButton>(msg.value(QStringLiteral("button")).toInt(int(AnimeCore::LeftButton)));
-        AnimeCore::MouseButtons buttons = static_cast<AnimeCore::MouseButtons>(msg.value(QStringLiteral("buttons")).toInt(int(button)));
-        board->injectMouse(AnimeCore::Event::MouseButtonDblClick, QPointF(x, y), button, buttons, modifiers, timestamp);
-    } else if (kind == QStringLiteral("wheel")) {
-        const int dx = msg.value(QStringLiteral("dx")).toInt(0);
-        const int dy = msg.value(QStringLiteral("dy")).toInt(0);
-        const AnimeCore::MouseButtons buttons = static_cast<AnimeCore::MouseButtons>(msg.value(QStringLiteral("buttons")).toInt(0));
-        board->injectWheel(QPointF(x, y), QPoint(dx, dy), modifiers, buttons);
-    } else if (kind == QStringLiteral("enter")) {
+        AnimeCore::MouseButtons buttons = static_cast<AnimeCore::MouseButtons>(msg.value(String("buttons")).toInt(int(AnimeCore::NoButton)));
+        board->injectMouse(AnimeCore::Event::MouseButtonRelease, PointF(x, y), button, buttons, modifiers, timestamp);
+    } else if (kind == String("doubleClick") || kind == String("dblclick")) {
+        AnimeCore::MouseButton button = static_cast<AnimeCore::MouseButton>(msg.value(String("button")).toInt(int(AnimeCore::LeftButton)));
+        AnimeCore::MouseButtons buttons = static_cast<AnimeCore::MouseButtons>(msg.value(String("buttons")).toInt(int(button)));
+        board->injectMouse(AnimeCore::Event::MouseButtonDblClick, PointF(x, y), button, buttons, modifiers, timestamp);
+    } else if (kind == String("wheel")) {
+        const int dx = msg.value(String("dx")).toInt(0);
+        const int dy = msg.value(String("dy")).toInt(0);
+        const AnimeCore::MouseButtons buttons = static_cast<AnimeCore::MouseButtons>(msg.value(String("buttons")).toInt(0));
+        board->injectWheel(PointF(x, y), Point(dx, dy), modifiers, buttons);
+    } else if (kind == String("enter")) {
         board->injectEnter();
-    } else if (kind == QStringLiteral("leave")) {
+    } else if (kind == String("leave")) {
         board->injectLeave();
-    } else if (kind == QStringLiteral("resize")) {
-        const int w = msg.value(QStringLiteral("w")).toInt(msg.value(QStringLiteral("width")).toInt(board->width()));
-        const int h = msg.value(QStringLiteral("h")).toInt(msg.value(QStringLiteral("height")).toInt(board->height()));
-        const qreal dpr = msg.value(QStringLiteral("dpr")).toDouble(1.0);
+    } else if (kind == String("resize")) {
+        const int w = msg.value(String("w")).toInt(msg.value(String("width")).toInt(board->width()));
+        const int h = msg.value(String("h")).toInt(msg.value(String("height")).toInt(board->height()));
+        const double dpr = msg.value(String("dpr")).toDouble(1.0);
         board->resizeSurface(w, h, dpr);
-        markDirty(view == QStringLiteral("child") ? QStringLiteral("viewport/child")
-                                                  : QStringLiteral("viewport/main"));
-    } else if (kind == QStringLiteral("focus")) {
-        const bool focused = msg.value(QStringLiteral("focused")).toBool(true);
+        markDirty(view == String("child") ? String("viewport/child")
+                                                  : String("viewport/main"));
+    } else if (kind == String("focus")) {
+        const bool focused = msg.value(String("focused")).toBool(true);
         if (focused) {
             board->injectFocus();
         } else {
@@ -1480,144 +1480,144 @@ void BackendSession::handleInputMessage(const QJsonObject &msg)
     }
 }
 
-void BackendSession::handleAckMessage(const QJsonObject &msg)
+void BackendSession::handleAckMessage(const JsonObject &msg)
 {
-    const QString view = resolveViewName(msg.value(QStringLiteral("view")).toString(QStringLiteral("main")));
+    const String view = resolveViewName(msg.value(String("view")).toString(String("main")));
     PaintOpenGLWidget *board = boardForView(view);
     if (!board) {
         return;
     }
-    const uint64_t frameId = static_cast<uint64_t>(msg.value(QStringLiteral("frame")).toInteger(0));
+    const uint64_t frameId = static_cast<uint64_t>(msg.value(String("frame")).toInteger(0));
     board->acknowledgeFrame(frameId);
 }
 
-QJsonObject BackendSession::dispatchCall(const QString &method, const QJsonObject &params)
+JsonObject BackendSession::dispatchCall(const String &method, const JsonObject &params)
 {
-    auto makeError = [](const QString &err) {
-        return QJsonObject{
-            {QStringLiteral("__error__"), true},
-            {QStringLiteral("error"), err},
+    auto makeError = [](const String &err) {
+        return JsonObject{
+            {String("__error__"), true},
+            {String("error"), err},
         };
     };
 
-    const QString view = params.value(QStringLiteral("view"))
-                             .toString(params.value(QStringLiteral("viewName")).toString(QStringLiteral("main")));
+    const String view = params.value(String("view"))
+                             .toString(params.value(String("viewName")).toString(String("main")));
 
-    if (method == QStringLiteral("project.new")) {
-        const QSize current = m_business->canvasSize(QStringLiteral("main"));
-        int w = params.value(QStringLiteral("width")).toInt(params.value(QStringLiteral("w")).toInt(current.width()));
-        int h = params.value(QStringLiteral("height")).toInt(params.value(QStringLiteral("h")).toInt(current.height()));
-        if (params.value(QStringLiteral("canvasSize")).isObject()) {
-            const QJsonObject cs = params.value(QStringLiteral("canvasSize")).toObject();
-            w = cs.value(QStringLiteral("width")).toInt(cs.value(QStringLiteral("w")).toInt(w));
-            h = cs.value(QStringLiteral("height")).toInt(cs.value(QStringLiteral("h")).toInt(h));
+    if (method == String("project.new")) {
+        const Size current = m_business->canvasSize(String("main"));
+        int w = params.value(String("width")).toInt(params.value(String("w")).toInt(current.width()));
+        int h = params.value(String("height")).toInt(params.value(String("h")).toInt(current.height()));
+        if (params.value(String("canvasSize")).isObject()) {
+            const JsonObject cs = params.value(String("canvasSize")).toObject();
+            w = cs.value(String("width")).toInt(cs.value(String("w")).toInt(w));
+            h = cs.value(String("height")).toInt(cs.value(String("h")).toInt(h));
         }
         w = std::max(1, w);
         h = std::max(1, h);
-        m_business->newProject(QSize(w, h));
-        return QJsonObject{{QStringLiteral("width"), w}, {QStringLiteral("height"), h}};
+        m_business->newProject(Size(w, h));
+        return JsonObject{{String("width"), w}, {String("height"), h}};
     }
 
-    if (method == QStringLiteral("project.open")) {
-        const QString fileName = params.value(QStringLiteral("path"))
-                                     .toString(params.value(QStringLiteral("fileName"))
-                                                   .toString(params.value(QStringLiteral("filePath")).toString()));
+    if (method == String("project.open")) {
+        const String fileName = params.value(String("path"))
+                                     .toString(params.value(String("fileName"))
+                                                   .toString(params.value(String("filePath")).toString()));
         if (fileName.isEmpty()) {
-            return makeError(QStringLiteral("path is required"));
+            return makeError(String("path is required"));
         }
-        QString error;
-        const bool ok = (view == QStringLiteral("child"))
+        String error;
+        const bool ok = (view == String("child"))
                             ? [&]{ AnimeCore::String e; const bool r = m_business->openTextureViewFrom(fileName, &e); error = e; return r; }()
                             : [&]{ AnimeCore::String e; const bool r = m_business->loadProjectFrom(fileName, &e); error = e; return r; }();
         if (!ok) {
-            return makeError(error.isEmpty() ? QStringLiteral("Failed to open file") : error);
+            return makeError(error.isEmpty() ? String("Failed to open file") : error);
         }
-        const QString openedPath = (view == QStringLiteral("child"))
+        const String openedPath = (view == String("child"))
                                        ? m_business->childFilePath()
                                        : m_business->currentFilePath();
-        return QJsonObject{
-            {QStringLiteral("path"), openedPath},
-            {QStringLiteral("fileName"), openedPath},
+        return JsonObject{
+            {String("path"), openedPath},
+            {String("fileName"), openedPath},
         };
     }
 
-    if (method == QStringLiteral("project.save")) {
-        QString fileName = params.value(QStringLiteral("path"))
-                               .toString(params.value(QStringLiteral("fileName"))
-                                             .toString(params.value(QStringLiteral("filePath")).toString()));
+    if (method == String("project.save")) {
+        String fileName = params.value(String("path"))
+                               .toString(params.value(String("fileName"))
+                                             .toString(params.value(String("filePath")).toString()));
         if (fileName.isEmpty()) {
-            fileName = (view == QStringLiteral("child"))
+            fileName = (view == String("child"))
                            ? m_business->childFilePath()
                            : m_business->currentFilePath();
         }
         if (fileName.isEmpty()) {
-            return makeError(QStringLiteral("No file path specified for save"));
+            return makeError(String("No file path specified for save"));
         }
-        QString error;
-        const bool ok = (view == QStringLiteral("child"))
+        String error;
+        const bool ok = (view == String("child"))
                             ? [&]{ AnimeCore::String e; const bool r = m_business->saveTextureViewTo(fileName, &e); error = e; return r; }()
                             : [&]{ AnimeCore::String e; const bool r = m_business->saveProjectTo(fileName, &e); error = e; return r; }();
         if (!ok) {
-            return makeError(error.isEmpty() ? QStringLiteral("Failed to save file") : error);
+            return makeError(error.isEmpty() ? String("Failed to save file") : error);
         }
-        const QString savedPath = (view == QStringLiteral("child"))
+        const String savedPath = (view == String("child"))
                                       ? m_business->childFilePath()
                                       : m_business->currentFilePath();
-        return QJsonObject{
-            {QStringLiteral("path"), savedPath},
-            {QStringLiteral("fileName"), savedPath},
+        return JsonObject{
+            {String("path"), savedPath},
+            {String("fileName"), savedPath},
         };
     }
 
-    if (method == QStringLiteral("project.saveAs")) {
-        const QString fileName = params.value(QStringLiteral("path"))
-                                     .toString(params.value(QStringLiteral("fileName"))
-                                                   .toString(params.value(QStringLiteral("filePath")).toString()));
+    if (method == String("project.saveAs")) {
+        const String fileName = params.value(String("path"))
+                                     .toString(params.value(String("fileName"))
+                                                   .toString(params.value(String("filePath")).toString()));
         if (fileName.isEmpty()) {
-            return makeError(QStringLiteral("path is required"));
+            return makeError(String("path is required"));
         }
-        QString error;
-        const bool ok = (view == QStringLiteral("child"))
+        String error;
+        const bool ok = (view == String("child"))
                             ? [&]{ AnimeCore::String e; const bool r = m_business->saveTextureViewTo(fileName, &e); error = e; return r; }()
                             : [&]{ AnimeCore::String e; const bool r = m_business->saveProjectTo(fileName, &e); error = e; return r; }();
         if (!ok) {
-            return makeError(error.isEmpty() ? QStringLiteral("Failed to save file") : error);
+            return makeError(error.isEmpty() ? String("Failed to save file") : error);
         }
-        const QString savedPath = (view == QStringLiteral("child"))
+        const String savedPath = (view == String("child"))
                                       ? m_business->childFilePath()
                                       : m_business->currentFilePath();
-        return QJsonObject{
-            {QStringLiteral("path"), savedPath},
-            {QStringLiteral("fileName"), savedPath},
+        return JsonObject{
+            {String("path"), savedPath},
+            {String("fileName"), savedPath},
         };
     }
 
-    if (method == QStringLiteral("file.import")) {
+    if (method == String("file.import")) {
         return handleFileImportCall(params);
     }
 
-    if (method == QStringLiteral("file.texture")) {
+    if (method == String("file.texture")) {
         return handleFileTextureCall(params);
     }
 
-    if (method == QStringLiteral("layer.contextMenu")) {
+    if (method == String("layer.contextMenu")) {
         // Same order as MainWindow::showLayerContextMenu: the group's own two
         // actions, then whatever Python registered for this target.
-        const QString viewName = params.value(QStringLiteral("view")).toString(QStringLiteral("main"));
+        const String viewName = params.value(String("view")).toString(String("main"));
         PaintOpenGLWidget *board = boardForView(viewName);
         if (!board) {
-            return makeError(QStringLiteral("Unknown view"));
+            return makeError(String("Unknown view"));
         }
-        const int groupId = params.value(QStringLiteral("groupId")).toInt(0);
-        const int layerIndex = groupId > 0 ? -1 : params.value(QStringLiteral("layer")).toInt(-1);
+        const int groupId = params.value(String("groupId")).toInt(0);
+        const int layerIndex = groupId > 0 ? -1 : params.value(String("layer")).toInt(-1);
         const bool hasItem = groupId > 0 || layerIndex >= 0;
-        QJsonArray entries;
+        JsonArray entries;
 #ifdef ANIMEAN_WITH_PYTHON
         py::dict context;
         context["view"] = viewName.toStdString();
         context["kind"] = !hasItem ? "panel" : (groupId > 0 ? "group" : "layer");
         context["group"] = groupId;
-        context["group_name"] = params.value(QStringLiteral("groupName")).toString().toStdString();
+        context["group_name"] = params.value(String("groupName")).toString().toStdString();
         context["layer"] = layerIndex;
         context["layer_name"] = layerIndex >= 0 ? board->layerName(layerIndex).toStdString() : std::string();
         context["layer_id"] = layerIndex >= 0 ? board->model().layerIdAt(layerIndex) : 0;
@@ -1628,195 +1628,195 @@ QJsonObject BackendSession::dispatchCall(const QString &method, const QJsonObjec
         context["parent_layer_id"] = layerIndex >= 0 ? board->model().layerParentId(layerIndex) : 0;
         context["child_count"] = layerIndex >= 0 ? board->model().childLayerIndices(layerIndex).size() : 0;
         py::list memberList;
-        for (const QJsonValue &member : params.value(QStringLiteral("members")).toArray()) {
+        for (const JsonValue &member : params.value(String("members")).toArray()) {
             memberList.append(member.toInt());
         }
         context["members"] = memberList;
         const std::string json = py::module_::import("python_hooks").attr("menu_items_json")(context).cast<std::string>();
-        entries = QJsonDocument::fromJson(QByteArray::fromStdString(json)).array();
+        entries = JsonDocument::fromJson(json).array();
 #endif
-        QJsonArray items;
-        const auto addItem = [&items](const QString &id, const QString &text, const QString &kind, bool enabled) {
-            items.append(QJsonObject{{QStringLiteral("id"), id}, {QStringLiteral("text"), text},
-                                     {QStringLiteral("kind"), kind}, {QStringLiteral("enabled"), enabled}});
+        JsonArray items;
+        const auto addItem = [&items](const String &id, const String &text, const String &kind, bool enabled) {
+            items.append(JsonObject{{String("id"), id}, {String("text"), text},
+                                     {String("kind"), kind}, {String("enabled"), enabled}});
         };
         if (groupId > 0) {
-            addItem(QStringLiteral("ungroup"), QStringLiteral("Ungroup (keep the layers)"), QStringLiteral("action"), true);
-            addItem(QStringLiteral("deleteGroup"), QStringLiteral("Delete Group and Layers"), QStringLiteral("action"), true);
+            addItem(String("ungroup"), String("Ungroup (keep the layers)"), String("action"), true);
+            addItem(String("deleteGroup"), String("Delete Group and Layers"), String("action"), true);
             if (!entries.isEmpty()) {
-                addItem(QStringLiteral("sep"), QString(), QStringLiteral("separator"), true);
+                addItem(String("sep"), String(), String("separator"), true);
             }
         }
-        for (const QJsonValue &value : entries) {
-            const QJsonObject object = value.toObject();
-            const QString kind = object.value(QStringLiteral("kind")).toString(QStringLiteral("action"));
-            if (kind == QStringLiteral("separator")) {
-                addItem(QStringLiteral("sep"), QString(), kind, true);
+        for (const JsonValue &value : entries) {
+            const JsonObject object = value.toObject();
+            const String kind = object.value(String("kind")).toString(String("action"));
+            if (kind == String("separator")) {
+                addItem(String("sep"), String(), kind, true);
                 continue;
             }
-            const QString name = object.value(QStringLiteral("name")).toString();
+            const String name = object.value(String("name")).toString();
             if (name.isEmpty()) {
                 continue;
             }
-            const QString title = object.value(QStringLiteral("title")).toString(name);
-            const bool enabled = object.value(QStringLiteral("enabled")).toBool(true);
-            if (kind == QStringLiteral("settings")) {
-                addItem(QStringLiteral("settings:") + object.value(QStringLiteral("settings")).toString(name), title,
-                        QStringLiteral("action"), enabled);
+            const String title = object.value(String("title")).toString(name);
+            const bool enabled = object.value(String("enabled")).toBool(true);
+            if (kind == String("settings")) {
+                addItem(String("settings:") + object.value(String("settings")).toString(name), title,
+                        String("action"), enabled);
             } else {
-                addItem(QStringLiteral("script:") + name, title, QStringLiteral("action"), enabled);
+                addItem(String("script:") + name, title, String("action"), enabled);
             }
         }
-        return QJsonObject{{QStringLiteral("items"), items}};
+        return JsonObject{{String("items"), items}};
     }
 
-    if (method == QStringLiteral("layer.contextAction")) {
-        const QString viewName = params.value(QStringLiteral("view")).toString(QStringLiteral("main"));
+    if (method == String("layer.contextAction")) {
+        const String viewName = params.value(String("view")).toString(String("main"));
         PaintOpenGLWidget *board = boardForView(viewName);
         if (!board) {
-            return makeError(QStringLiteral("Unknown view"));
+            return makeError(String("Unknown view"));
         }
-        const QString id = params.value(QStringLiteral("id")).toString();
-        const int groupId = params.value(QStringLiteral("groupId")).toInt(0);
-        const int layerIndex = groupId > 0 ? -1 : params.value(QStringLiteral("layer")).toInt(-1);
-        if (id == QStringLiteral("ungroup")) {
+        const String id = params.value(String("id")).toString();
+        const int groupId = params.value(String("groupId")).toInt(0);
+        const int layerIndex = groupId > 0 ? -1 : params.value(String("layer")).toInt(-1);
+        if (id == String("ungroup")) {
             m_business->dissolveLayerGroup(groupId, viewName);
-        } else if (id == QStringLiteral("deleteGroup")) {
+        } else if (id == String("deleteGroup")) {
             m_business->deleteLayerGroup(groupId, viewName);
-        } else if (id.startsWith(QStringLiteral("settings:"))) {
-            openScriptSettings(id.mid(9), params.value(QStringLiteral("title")).toString());
-        } else if (id.startsWith(QStringLiteral("script:"))) {
-            QVector<int> members;
-            for (const QJsonValue &member : params.value(QStringLiteral("members")).toArray()) {
+        } else if (id.startsWith(String("settings:"))) {
+            openScriptSettings(id.mid(9), params.value(String("title")).toString());
+        } else if (id.startsWith(String("script:"))) {
+            Vector<int> members;
+            for (const JsonValue &member : params.value(String("members")).toArray()) {
                 members.append(member.toInt());
             }
-            board->sendPythonLayerMenuMessage(id.mid(7), groupId, params.value(QStringLiteral("groupName")).toString(),
-                                              layerIndex, layerIndex >= 0 ? QString(board->layerName(layerIndex)) : QString(), members);
+            board->sendPythonLayerMenuMessage(id.mid(7), groupId, params.value(String("groupName")).toString(),
+                                              layerIndex, layerIndex >= 0 ? String(board->layerName(layerIndex)) : String(), members);
         } else {
-            return makeError(QStringLiteral("Unknown layer action"));
+            return makeError(String("Unknown layer action"));
         }
-        markDirty(viewName == QStringLiteral("child") ? QStringLiteral("layers/child") : QStringLiteral("layers/main"));
-        markDirty(QStringLiteral("timeline"));
-        return QJsonObject{};
+        markDirty(viewName == String("child") ? String("layers/child") : String("layers/main"));
+        markDirty(String("timeline"));
+        return JsonObject{};
     }
 
-    if (method == QStringLiteral("layer.add")) {
+    if (method == String("layer.add")) {
         const int layerIndex = m_business->addLayer(view);
-        return QJsonObject{{QStringLiteral("layer"), layerIndex}};
+        return JsonObject{{String("layer"), layerIndex}};
     }
 
-    if (method == QStringLiteral("layer.delete")) {
-        const int layerIndex = params.value(QStringLiteral("layerIndex"))
-                                   .toInt(params.value(QStringLiteral("layer"))
-                                              .toInt(params.value(QStringLiteral("index"))
+    if (method == String("layer.delete")) {
+        const int layerIndex = params.value(String("layerIndex"))
+                                   .toInt(params.value(String("layer"))
+                                              .toInt(params.value(String("index"))
                                                          .toInt(m_business->currentLayer(view))));
         const bool removed = m_business->deleteLayer(layerIndex, view);
-        return QJsonObject{
-            {QStringLiteral("deleted"), removed},
-            {QStringLiteral("layer"), m_business->currentLayer(view)},
+        return JsonObject{
+            {String("deleted"), removed},
+            {String("layer"), m_business->currentLayer(view)},
         };
     }
 
-    if (method == QStringLiteral("layer.deleteGroup")) {
-        const int groupId = params.value(QStringLiteral("groupId"))
-                                .toInt(params.value(QStringLiteral("group_id"))
-                                           .toInt(params.value(QStringLiteral("id")).toInt(0)));
+    if (method == String("layer.deleteGroup")) {
+        const int groupId = params.value(String("groupId"))
+                                .toInt(params.value(String("group_id"))
+                                           .toInt(params.value(String("id")).toInt(0)));
         const int deleted = m_business->deleteLayerGroup(groupId, view);
-        return QJsonObject{{QStringLiteral("deleted"), deleted}};
+        return JsonObject{{String("deleted"), deleted}};
     }
 
-    if (method == QStringLiteral("layer.dissolveGroup")) {
-        const int groupId = params.value(QStringLiteral("groupId"))
-                                .toInt(params.value(QStringLiteral("group_id"))
-                                           .toInt(params.value(QStringLiteral("id")).toInt(0)));
+    if (method == String("layer.dissolveGroup")) {
+        const int groupId = params.value(String("groupId"))
+                                .toInt(params.value(String("group_id"))
+                                           .toInt(params.value(String("id")).toInt(0)));
         const bool dissolved = m_business->dissolveLayerGroup(groupId, view);
-        return QJsonObject{{QStringLiteral("dissolved"), dissolved}};
+        return JsonObject{{String("dissolved"), dissolved}};
     }
 
-    if (method == QStringLiteral("layer.move")) {
-        const int fromIndex = params.value(QStringLiteral("fromIndex"))
-                                  .toInt(params.value(QStringLiteral("from")).toInt(-1));
-        const int toIndex = params.value(QStringLiteral("toIndex"))
-                                .toInt(params.value(QStringLiteral("to")).toInt(-1));
+    if (method == String("layer.move")) {
+        const int fromIndex = params.value(String("fromIndex"))
+                                  .toInt(params.value(String("from")).toInt(-1));
+        const int toIndex = params.value(String("toIndex"))
+                                .toInt(params.value(String("to")).toInt(-1));
         const bool moved = m_business->moveLayer(fromIndex, toIndex, view);
-        return QJsonObject{{QStringLiteral("moved"), moved}};
+        return JsonObject{{String("moved"), moved}};
     }
 
-    if (method == QStringLiteral("layer.setVisible")) {
-        const int layerIndex = params.value(QStringLiteral("layerIndex"))
-                                   .toInt(params.value(QStringLiteral("layer"))
-                                              .toInt(params.value(QStringLiteral("index"))
+    if (method == String("layer.setVisible")) {
+        const int layerIndex = params.value(String("layerIndex"))
+                                   .toInt(params.value(String("layer"))
+                                              .toInt(params.value(String("index"))
                                                          .toInt(m_business->currentLayer(view))));
-        const bool visible = params.value(QStringLiteral("visible"))
-                                 .toBool(params.value(QStringLiteral("on")).toBool(true));
+        const bool visible = params.value(String("visible"))
+                                 .toBool(params.value(String("on")).toBool(true));
         const bool ok = m_business->setLayerVisible(layerIndex, visible, view);
-        return QJsonObject{{QStringLiteral("visible"), visible}, {QStringLiteral("updated"), ok}};
+        return JsonObject{{String("visible"), visible}, {String("updated"), ok}};
     }
 
-    if (method == QStringLiteral("layer.select")) {
-        const int layerIndex = params.value(QStringLiteral("layerIndex"))
-                                   .toInt(params.value(QStringLiteral("layer"))
-                                              .toInt(params.value(QStringLiteral("index")).toInt(-1)));
+    if (method == String("layer.select")) {
+        const int layerIndex = params.value(String("layerIndex"))
+                                   .toInt(params.value(String("layer"))
+                                              .toInt(params.value(String("index")).toInt(-1)));
         m_business->selectLayer(layerIndex, view);
-        return QJsonObject{{QStringLiteral("selected"), m_business->currentLayer(view)}};
+        return JsonObject{{String("selected"), m_business->currentLayer(view)}};
     }
 
-    if (method == QStringLiteral("layer.unselect")) {
+    if (method == String("layer.unselect")) {
         m_business->unselectLayer(view);
-        return QJsonObject{{QStringLiteral("selected"), m_business->currentLayer(view)}};
+        return JsonObject{{String("selected"), m_business->currentLayer(view)}};
     }
 
-    if (method == QStringLiteral("layer.setCollapsed")) {
-        const int groupId = params.value(QStringLiteral("groupId"))
-                                .toInt(params.value(QStringLiteral("group_id"))
-                                           .toInt(params.value(QStringLiteral("id")).toInt(0)));
-        const bool collapsed = params.value(QStringLiteral("collapsed"))
-                                   .toBool(params.value(QStringLiteral("on")).toBool(false));
+    if (method == String("layer.setCollapsed")) {
+        const int groupId = params.value(String("groupId"))
+                                .toInt(params.value(String("group_id"))
+                                           .toInt(params.value(String("id")).toInt(0)));
+        const bool collapsed = params.value(String("collapsed"))
+                                   .toBool(params.value(String("on")).toBool(false));
         m_business->setLayerGroupCollapsed(groupId, collapsed, view);
-        markDirty(view == QStringLiteral("child") ? QStringLiteral("layers/child")
-                                                  : QStringLiteral("layers/main"));
-        return QJsonObject{{QStringLiteral("groupId"), groupId}, {QStringLiteral("collapsed"), collapsed}};
+        markDirty(view == String("child") ? String("layers/child")
+                                                  : String("layers/main"));
+        return JsonObject{{String("groupId"), groupId}, {String("collapsed"), collapsed}};
     }
 
-    if (method == QStringLiteral("tool.select")) {
-        QJsonValue toolVal = params.value(QStringLiteral("tool"));
+    if (method == String("tool.select")) {
+        JsonValue toolVal = params.value(String("tool"));
         if (toolVal.isUndefined()) {
-            toolVal = params.value(QStringLiteral("name"));
+            toolVal = params.value(String("name"));
         }
         bool ok = false;
         const AnimeanBusiness::Tool tool = parseToolValue(toolVal, &ok);
         if (!ok) {
-            return makeError(QStringLiteral("Unknown tool: %1").arg(toolVal.toVariant().toString()));
+            return makeError(String("Unknown tool: %1").arg(toolVal.toVariant().toString()));
         }
         m_business->selectTool(int(tool));
-        return QJsonObject{
-            {QStringLiteral("tool"), AnimeanBusiness::toolControlName(m_business->currentToolEnum())},
-            {QStringLiteral("toolEnum"), toolEnumDisplayName(m_business->currentToolEnum())},
+        return JsonObject{
+            {String("tool"), AnimeanBusiness::toolControlName(m_business->currentToolEnum())},
+            {String("toolEnum"), toolEnumDisplayName(m_business->currentToolEnum())},
         };
     }
 
-    if (method == QStringLiteral("tool.selectExtra")) {
-        const QString name = params.value(QStringLiteral("extraToolName"))
-                                 .toString(params.value(QStringLiteral("name"))
-                                               .toString(params.value(QStringLiteral("tool")).toString()));
+    if (method == String("tool.selectExtra")) {
+        const String name = params.value(String("extraToolName"))
+                                 .toString(params.value(String("name"))
+                                               .toString(params.value(String("tool")).toString()));
         if (name.isEmpty()) {
-            return makeError(QStringLiteral("extraToolName is required"));
+            return makeError(String("extraToolName is required"));
         }
         m_business->selectExtraToolByName(name);
-        return QJsonObject{{QStringLiteral("activeExtraTool"), m_business->activeExtraTool()}};
+        return JsonObject{{String("activeExtraTool"), m_business->activeExtraTool()}};
     }
 
-    if (method == QStringLiteral("tool.option") || method == QStringLiteral("settings.option")) {
-        const QString hook = params.value(QStringLiteral("hook")).toString();
-        const QString name = params.value(QStringLiteral("name"))
-                                 .toString(params.value(QStringLiteral("optionName")).toString());
-        const QString type = params.value(QStringLiteral("type")).toString();
-        const QVariant value = params.value(QStringLiteral("value")).toVariant();
-        const int row = params.value(QStringLiteral("row")).toInt(-1);
-        const int startColumn = params.value(QStringLiteral("startColumn"))
-                                    .toInt(params.value(QStringLiteral("start_column")).toInt(-1));
-        const int endColumn = params.value(QStringLiteral("endColumn"))
-                                  .toInt(params.value(QStringLiteral("end_column")).toInt(-1));
+    if (method == String("tool.option") || method == String("settings.option")) {
+        const String hook = params.value(String("hook")).toString();
+        const String name = params.value(String("name"))
+                                 .toString(params.value(String("optionName")).toString());
+        const String type = params.value(String("type")).toString();
+        const JsonVariant value = params.value(String("value")).toVariant();
+        const int row = params.value(String("row")).toInt(-1);
+        const int startColumn = params.value(String("startColumn"))
+                                    .toInt(params.value(String("start_column")).toInt(-1));
+        const int endColumn = params.value(String("endColumn"))
+                                  .toInt(params.value(String("end_column")).toInt(-1));
         m_business->sendToolOption(hook, name, type, value, row, startColumn, endColumn);
         if (m_mainBoard) {
             m_mainBoard->update();
@@ -1824,27 +1824,27 @@ QJsonObject BackendSession::dispatchCall(const QString &method, const QJsonObjec
         if (m_childBoard) {
             m_childBoard->update();
         }
-        return QJsonObject{{QStringLiteral("hook"), hook}, {QStringLiteral("name"), name}};
+        return JsonObject{{String("hook"), hook}, {String("name"), name}};
     }
 
-    if (method == QStringLiteral("tool.eraserMode")) {
-        QJsonValue toolVal = params.value(QStringLiteral("tool"));
+    if (method == String("tool.eraserMode")) {
+        JsonValue toolVal = params.value(String("tool"));
         if (toolVal.isUndefined()) {
-            toolVal = params.value(QStringLiteral("mode"));
+            toolVal = params.value(String("mode"));
         }
         const AnimeanBusiness::Tool tool = parseToolValue(toolVal);
         m_business->selectEraserMode(int(tool));
-        return QJsonObject{
-            {QStringLiteral("tool"), AnimeanBusiness::toolControlName(m_business->currentToolEnum())},
+        return JsonObject{
+            {String("tool"), AnimeanBusiness::toolControlName(m_business->currentToolEnum())},
         };
     }
 
-    if (method == QStringLiteral("color.set")) {
-        const QColor color = parseColorParams(params);
+    if (method == String("color.set")) {
+        const Color color = parseColorParams(params);
         if (!color.isValid()) {
-            return makeError(QStringLiteral("Invalid color"));
+            return makeError(String("Invalid color"));
         }
-        if (params.value(QStringLiteral("select")).toBool(false)) {
+        if (params.value(String("select")).toBool(false)) {
             m_business->selectColor(color);
         } else {
             m_business->setDrawingColor(color);
@@ -1852,473 +1852,473 @@ QJsonObject BackendSession::dispatchCall(const QString &method, const QJsonObjec
         return buildDrawColorState();
     }
 
-    if (method == QStringLiteral("draw.setSmooth")) {
-        const int val = params.value(QStringLiteral("value"))
-                            .toInt(params.value(QStringLiteral("smooth")).toInt(m_business->toolSmoothValue()));
+    if (method == String("draw.setSmooth")) {
+        const int val = params.value(String("value"))
+                            .toInt(params.value(String("smooth")).toInt(m_business->toolSmoothValue()));
         m_business->setSmoothValue(val);
-        return QJsonObject{{QStringLiteral("smooth"), m_business->toolSmoothValue()}};
+        return JsonObject{{String("smooth"), m_business->toolSmoothValue()}};
     }
 
-    if (method == QStringLiteral("draw.setPenWidth")) {
-        const int width = params.value(QStringLiteral("width"))
-                              .toInt(params.value(QStringLiteral("penWidth"))
-                                         .toInt(params.value(QStringLiteral("value"))
+    if (method == String("draw.setPenWidth")) {
+        const int width = params.value(String("width"))
+                              .toInt(params.value(String("penWidth"))
+                                         .toInt(params.value(String("value"))
                                                     .toInt(m_business->toolPenWidth())));
         m_business->setPenWidth(width);
-        return QJsonObject{{QStringLiteral("penWidth"), m_business->toolPenWidth()}};
+        return JsonObject{{String("penWidth"), m_business->toolPenWidth()}};
     }
 
-    if (method == QStringLiteral("draw.setSettings")) {
-        const int stabilizer = params.value(QStringLiteral("stabilizer"))
-                                   .toInt(params.value(QStringLiteral("smooth")).toInt(m_business->toolSmoothValue()));
-        const int simplify = params.value(QStringLiteral("simplify"))
+    if (method == String("draw.setSettings")) {
+        const int stabilizer = params.value(String("stabilizer"))
+                                   .toInt(params.value(String("smooth")).toInt(m_business->toolSmoothValue()));
+        const int simplify = params.value(String("simplify"))
                                  .toInt(m_business->strokeFitSettings().simplify);
-        const int corner = params.value(QStringLiteral("corner"))
+        const int corner = params.value(String("corner"))
                                .toInt(m_business->strokeFitSettings().corner);
         m_business->setDrawSettings(stabilizer, simplify, corner);
         return buildDrawSettingsState();
     }
 
-    if (method == QStringLiteral("fill.setScope")) {
+    if (method == String("fill.setScope")) {
         bool allLayers = false;
-        if (params.contains(QStringLiteral("allLayers"))) {
-            allLayers = params.value(QStringLiteral("allLayers")).toBool();
+        if (params.contains(String("allLayers"))) {
+            allLayers = params.value(String("allLayers")).toBool();
         } else {
-            const QJsonValue scopeVal = params.value(QStringLiteral("scope"));
+            const JsonValue scopeVal = params.value(String("scope"));
             if (scopeVal.isBool()) {
                 allLayers = scopeVal.toBool();
             } else if (scopeVal.isDouble()) {
                 allLayers = (scopeVal.toInt(0) == int(AnimeanBusiness::FillScope::AllLayers));
             } else {
-                const QString s = scopeVal.toString().trimmed().toLower();
-                allLayers = (s == QStringLiteral("all") || s == QStringLiteral("alllayers") || s == QStringLiteral("all_layers"));
+                const String s = scopeVal.toString().trimmed().toLower();
+                allLayers = (s == String("all") || s == String("alllayers") || s == String("all_layers"));
             }
         }
         m_business->setFillAllLayers(allLayers);
-        return QJsonObject{
-            {QStringLiteral("fillScope"), m_business->toolFillAllLayers() ? QStringLiteral("all") : QStringLiteral("current")},
-            {QStringLiteral("fillAllLayers"), m_business->toolFillAllLayers()},
+        return JsonObject{
+            {String("fillScope"), m_business->toolFillAllLayers() ? String("all") : String("current")},
+            {String("fillAllLayers"), m_business->toolFillAllLayers()},
         };
     }
 
-    if (method == QStringLiteral("asset.add")) {
+    if (method == String("asset.add")) {
         AnimeColumnType colType = AnimeColumnType::Vector;
-        const QJsonValue typeVal = params.value(QStringLiteral("type"));
+        const JsonValue typeVal = params.value(String("type"));
         if (typeVal.isDouble()) {
             colType = static_cast<AnimeColumnType>(typeVal.toInt(int(AnimeColumnType::Vector)));
-        } else if (typeVal.isString() && typeVal.toString().trimmed().compare(QStringLiteral("raster"), Qt::CaseInsensitive) == 0) {
+        } else if (typeVal.isString() && typeVal.toString().trimmed().compare(String("raster"), CaseInsensitive) == 0) {
             colType = AnimeColumnType::Raster;
         }
-        const QString name = params.value(QStringLiteral("name")).toString();
+        const String name = params.value(String("name")).toString();
         const int assetIndex = m_business->addAsset(colType, name, view);
-        return QJsonObject{{QStringLiteral("asset"), assetIndex}};
+        return JsonObject{{String("asset"), assetIndex}};
     }
 
-    if (method == QStringLiteral("asset.select")) {
-        const int assetIndex = params.value(QStringLiteral("assetIndex"))
-                                   .toInt(params.value(QStringLiteral("asset"))
-                                              .toInt(params.value(QStringLiteral("index")).toInt(-1)));
+    if (method == String("asset.select")) {
+        const int assetIndex = params.value(String("assetIndex"))
+                                   .toInt(params.value(String("asset"))
+                                              .toInt(params.value(String("index")).toInt(-1)));
         m_business->selectAsset(assetIndex, view);
-        return QJsonObject{{QStringLiteral("selected"), m_business->currentAsset(view)}};
+        return JsonObject{{String("selected"), m_business->currentAsset(view)}};
     }
 
-    if (method == QStringLiteral("asset.unselect")) {
+    if (method == String("asset.unselect")) {
         m_business->unselectAsset(view);
-        return QJsonObject{{QStringLiteral("selected"), m_business->currentAsset(view)}};
+        return JsonObject{{String("selected"), m_business->currentAsset(view)}};
     }
 
-    if (method == QStringLiteral("asset.addLayer")) {
-        const int assetIndex = params.value(QStringLiteral("assetIndex"))
-                                   .toInt(params.value(QStringLiteral("asset"))
-                                              .toInt(params.value(QStringLiteral("index"))
+    if (method == String("asset.addLayer")) {
+        const int assetIndex = params.value(String("assetIndex"))
+                                   .toInt(params.value(String("asset"))
+                                              .toInt(params.value(String("index"))
                                                          .toInt(m_business->currentAsset(view))));
         const int layerIndex = m_business->addLayerForAsset(assetIndex, view);
-        return QJsonObject{{QStringLiteral("layer"), layerIndex}};
+        return JsonObject{{String("layer"), layerIndex}};
     }
 
-    if (method == QStringLiteral("asset.assign")) {
-        const int layerIndex = params.value(QStringLiteral("layerIndex"))
-                                   .toInt(params.value(QStringLiteral("layer")).toInt(m_business->currentLayer(view)));
-        const int assetIndex = params.value(QStringLiteral("assetIndex"))
-                                   .toInt(params.value(QStringLiteral("asset")).toInt(m_business->currentAsset(view)));
+    if (method == String("asset.assign")) {
+        const int layerIndex = params.value(String("layerIndex"))
+                                   .toInt(params.value(String("layer")).toInt(m_business->currentLayer(view)));
+        const int assetIndex = params.value(String("assetIndex"))
+                                   .toInt(params.value(String("asset")).toInt(m_business->currentAsset(view)));
         const bool assigned = m_business->assignAssetToLayer(layerIndex, assetIndex, view);
-        return QJsonObject{{QStringLiteral("assigned"), assigned}};
+        return JsonObject{{String("assigned"), assigned}};
     }
 
-    if (method == QStringLiteral("history.undo")) {
-        const QString explicitView = params.value(QStringLiteral("view"))
-                                         .toString(params.value(QStringLiteral("viewName")).toString());
+    if (method == String("history.undo")) {
+        const String explicitView = params.value(String("view"))
+                                         .toString(params.value(String("viewName")).toString());
         const bool ok = m_business->undo(explicitView);
-        return QJsonObject{{QStringLiteral("undone"), ok}, {QStringLiteral("canUndo"), m_business->canUndo()}};
+        return JsonObject{{String("undone"), ok}, {String("canUndo"), m_business->canUndo()}};
     }
 
-    if (method == QStringLiteral("history.redo")) {
-        const QString explicitView = params.value(QStringLiteral("view"))
-                                         .toString(params.value(QStringLiteral("viewName")).toString());
+    if (method == String("history.redo")) {
+        const String explicitView = params.value(String("view"))
+                                         .toString(params.value(String("viewName")).toString());
         const bool ok = m_business->redo(explicitView);
-        return QJsonObject{{QStringLiteral("redone"), ok}, {QStringLiteral("canRedo"), m_business->canRedo()}};
+        return JsonObject{{String("redone"), ok}, {String("canRedo"), m_business->canRedo()}};
     }
 
-    if (method == QStringLiteral("history.goTo")) {
-        const int row = params.value(QStringLiteral("row"))
-                            .toInt(params.value(QStringLiteral("index")).toInt(-1));
-        const QString explicitView = params.value(QStringLiteral("view"))
-                                         .toString(params.value(QStringLiteral("viewName")).toString());
+    if (method == String("history.goTo")) {
+        const int row = params.value(String("row"))
+                            .toInt(params.value(String("index")).toInt(-1));
+        const String explicitView = params.value(String("view"))
+                                         .toString(params.value(String("viewName")).toString());
         const bool ok = m_business->goToHistory(row, explicitView);
-        return QJsonObject{
-            {QStringLiteral("moved"), ok},
-            {QStringLiteral("currentIndex"), m_business->currentHistoryIndex(explicitView)},
+        return JsonObject{
+            {String("moved"), ok},
+            {String("currentIndex"), m_business->currentHistoryIndex(explicitView)},
         };
     }
 
-    if (method == QStringLiteral("frame.select")) {
-        const int frameIndex = params.value(QStringLiteral("frameIndex"))
-                                   .toInt(params.value(QStringLiteral("frame"))
-                                              .toInt(params.value(QStringLiteral("index")).toInt(0)));
+    if (method == String("frame.select")) {
+        const int frameIndex = params.value(String("frameIndex"))
+                                   .toInt(params.value(String("frame"))
+                                              .toInt(params.value(String("index")).toInt(0)));
         m_business->selectFrame(frameIndex);
-        return QJsonObject{{QStringLiteral("currentFrame"), m_business->currentFrame()}};
+        return JsonObject{{String("currentFrame"), m_business->currentFrame()}};
     }
 
-    if (method == QStringLiteral("frame.step")) {
-        const int delta = params.value(QStringLiteral("delta")).toInt(1);
+    if (method == String("frame.step")) {
+        const int delta = params.value(String("delta")).toInt(1);
         m_business->stepFrame(delta);
-        return QJsonObject{{QStringLiteral("currentFrame"), m_business->currentFrame()}};
+        return JsonObject{{String("currentFrame"), m_business->currentFrame()}};
     }
 
-    if (method == QStringLiteral("frame.add")) {
+    if (method == String("frame.add")) {
         const int frameIndex = m_business->addFrame();
-        return QJsonObject{{QStringLiteral("frame"), frameIndex}};
+        return JsonObject{{String("frame"), frameIndex}};
     }
 
-    if (method == QStringLiteral("frame.addHold")) {
+    if (method == String("frame.addHold")) {
         const int frameIndex = m_business->addHoldFrame();
-        return QJsonObject{{QStringLiteral("frame"), frameIndex}};
+        return JsonObject{{String("frame"), frameIndex}};
     }
 
-    if (method == QStringLiteral("frame.duplicate")) {
+    if (method == String("frame.duplicate")) {
         const int frameIndex = m_business->duplicateFrame();
-        return QJsonObject{{QStringLiteral("frame"), frameIndex}};
+        return JsonObject{{String("frame"), frameIndex}};
     }
 
-    if (method == QStringLiteral("frame.delete")) {
+    if (method == String("frame.delete")) {
         const bool deleted = m_business->deleteFrame();
-        return QJsonObject{{QStringLiteral("deleted"), deleted}};
+        return JsonObject{{String("deleted"), deleted}};
     }
 
-    if (method == QStringLiteral("frame.move")) {
-        const int fromIndex = params.value(QStringLiteral("fromIndex"))
-                                  .toInt(params.value(QStringLiteral("from")).toInt(-1));
-        const int toIndex = params.value(QStringLiteral("toIndex"))
-                                .toInt(params.value(QStringLiteral("to")).toInt(-1));
+    if (method == String("frame.move")) {
+        const int fromIndex = params.value(String("fromIndex"))
+                                  .toInt(params.value(String("from")).toInt(-1));
+        const int toIndex = params.value(String("toIndex"))
+                                .toInt(params.value(String("to")).toInt(-1));
         const bool moved = m_business->moveFrame(fromIndex, toIndex);
-        return QJsonObject{{QStringLiteral("moved"), moved}};
+        return JsonObject{{String("moved"), moved}};
     }
 
-    if (method == QStringLiteral("frame.setFps")) {
-        const int fps = params.value(QStringLiteral("fps")).toInt(12);
+    if (method == String("frame.setFps")) {
+        const int fps = params.value(String("fps")).toInt(12);
         m_business->setFps(fps);
-        return QJsonObject{{QStringLiteral("fps"), m_business->playbackFps()}};
+        return JsonObject{{String("fps"), m_business->playbackFps()}};
     }
 
-    if (method == QStringLiteral("playback.start")) {
+    if (method == String("playback.start")) {
         m_business->startPlayback();
-        return QJsonObject{{QStringLiteral("playbackActive"), m_business->isPlaybackActive()}};
+        return JsonObject{{String("playbackActive"), m_business->isPlaybackActive()}};
     }
 
-    if (method == QStringLiteral("playback.stop")) {
+    if (method == String("playback.stop")) {
         m_business->stopPlayback();
-        return QJsonObject{{QStringLiteral("playbackActive"), m_business->isPlaybackActive()}};
+        return JsonObject{{String("playbackActive"), m_business->isPlaybackActive()}};
     }
 
-    if (method == QStringLiteral("playback.setLoop")) {
-        const bool loop = params.value(QStringLiteral("loop"))
-                              .toBool(params.value(QStringLiteral("on")).toBool(true));
+    if (method == String("playback.setLoop")) {
+        const bool loop = params.value(String("loop"))
+                              .toBool(params.value(String("on")).toBool(true));
         m_business->setPlaybackLoop(loop);
-        return QJsonObject{{QStringLiteral("loop"), m_business->isPlaybackLoop()}};
+        return JsonObject{{String("loop"), m_business->isPlaybackLoop()}};
     }
 
-    if (method == QStringLiteral("onion.setEnabled")) {
-        const bool on = params.value(QStringLiteral("on"))
-                            .toBool(params.value(QStringLiteral("enabled")).toBool(false));
+    if (method == String("onion.setEnabled")) {
+        const bool on = params.value(String("on"))
+                            .toBool(params.value(String("enabled")).toBool(false));
         m_business->setOnionEnabled(on);
-        return QJsonObject{{QStringLiteral("onionEnabled"), m_business->isOnionEnabled()}};
+        return JsonObject{{String("onionEnabled"), m_business->isOnionEnabled()}};
     }
 
-    if (method == QStringLiteral("onion.setLines")) {
-        const bool on = params.value(QStringLiteral("on"))
-                            .toBool(params.value(QStringLiteral("lines")).toBool(true));
+    if (method == String("onion.setLines")) {
+        const bool on = params.value(String("on"))
+                            .toBool(params.value(String("lines")).toBool(true));
         m_business->setOnionLines(on);
-        return QJsonObject{{QStringLiteral("onionLines"), m_business->isOnionLines()}};
+        return JsonObject{{String("onionLines"), m_business->isOnionLines()}};
     }
 
-    if (method == QStringLiteral("onion.setFills")) {
-        const bool on = params.value(QStringLiteral("on"))
-                            .toBool(params.value(QStringLiteral("fills")).toBool(true));
+    if (method == String("onion.setFills")) {
+        const bool on = params.value(String("on"))
+                            .toBool(params.value(String("fills")).toBool(true));
         m_business->setOnionFills(on);
-        return QJsonObject{{QStringLiteral("onionFills"), m_business->isOnionFills()}};
+        return JsonObject{{String("onionFills"), m_business->isOnionFills()}};
     }
 
-    if (method == QStringLiteral("onion.setAmLayers")) {
-        const bool on = params.value(QStringLiteral("on"))
-                            .toBool(params.value(QStringLiteral("amLayers")).toBool(true));
+    if (method == String("onion.setAmLayers")) {
+        const bool on = params.value(String("on"))
+                            .toBool(params.value(String("amLayers")).toBool(true));
         m_business->setOnionAmLayers(on);
-        return QJsonObject{{QStringLiteral("onionAmLayers"), m_business->isOnionAmLayers()}};
+        return JsonObject{{String("onionAmLayers"), m_business->isOnionAmLayers()}};
     }
 
-    if (method == QStringLiteral("onion.setGuideLines")) {
-        const bool on = params.value(QStringLiteral("on"))
-                            .toBool(params.value(QStringLiteral("guideLines")).toBool(false));
+    if (method == String("onion.setGuideLines")) {
+        const bool on = params.value(String("on"))
+                            .toBool(params.value(String("guideLines")).toBool(false));
         m_business->setOnionGuideLines(on);
-        return QJsonObject{{QStringLiteral("onionGuideLines"), m_business->isOnionGuideLines()}};
+        return JsonObject{{String("onionGuideLines"), m_business->isOnionGuideLines()}};
     }
 
-    if (method == QStringLiteral("onion.toggleFrame")) {
-        const int frame = params.value(QStringLiteral("frame"))
-                              .toInt(params.value(QStringLiteral("frameIndex")).toInt(0));
+    if (method == String("onion.toggleFrame")) {
+        const int frame = params.value(String("frame"))
+                              .toInt(params.value(String("frameIndex")).toInt(0));
         const bool currentlyOn = m_business->onionFrames().contains(frame);
-        const bool on = params.contains(QStringLiteral("on"))
-                            ? params.value(QStringLiteral("on")).toBool()
+        const bool on = params.contains(String("on"))
+                            ? params.value(String("on")).toBool()
                             : !currentlyOn;
         m_business->toggleOnionFrame(frame, on);
-        return QJsonObject{{QStringLiteral("frame"), frame}, {QStringLiteral("on"), on}};
+        return JsonObject{{String("frame"), frame}, {String("on"), on}};
     }
 
-    if (method == QStringLiteral("view.setActive")) {
+    if (method == String("view.setActive")) {
         m_business->setActiveViewName(view);
-        return QJsonObject{{QStringLiteral("activeView"), m_business->activeViewName()}};
+        return JsonObject{{String("activeView"), m_business->activeViewName()}};
     }
 
-    if (method == QStringLiteral("menu.trigger")) {
-        const QString id = params.value(QStringLiteral("id")).toString();
-        QString error;
+    if (method == String("menu.trigger")) {
+        const String id = params.value(String("id")).toString();
+        String error;
         if (!triggerMenuById(id, params, &error)) {
-            return makeError(error.isEmpty() ? QStringLiteral("Menu trigger failed") : error);
+            return makeError(error.isEmpty() ? String("Menu trigger failed") : error);
         }
-        return QJsonObject{{QStringLiteral("triggered"), true}};
+        return JsonObject{{String("triggered"), true}};
     }
 
-    if (method == QStringLiteral("pad.event")) {
-        const QString pad = params.value(QStringLiteral("pad")).toString(QStringLiteral("force_pad"));
-        const QString phase = params.value(QStringLiteral("phase")).toString(QStringLiteral("move"));
-        const double x = params.value(QStringLiteral("x")).toDouble(0.0);
-        const double y = params.value(QStringLiteral("y")).toDouble(0.0);
-        m_padValues.insert(pad, QPointF(x, y));
-        if (pad == QStringLiteral("force_pad")) {
-            m_forcePadValue = QPointF(x, y);
+    if (method == String("pad.event")) {
+        const String pad = params.value(String("pad")).toString(String("force_pad"));
+        const String phase = params.value(String("phase")).toString(String("move"));
+        const double x = params.value(String("x")).toDouble(0.0);
+        const double y = params.value(String("y")).toDouble(0.0);
+        m_padValues.insert(pad, PointF(x, y));
+        if (pad == String("force_pad")) {
+            m_forcePadValue = PointF(x, y);
         }
-        markDirty(QStringLiteral("pad"));
+        markDirty(String("pad"));
         m_business->sendPadEvent(pad, phase, x, y);
-        return QJsonObject{{QStringLiteral("pad"), pad}, {QStringLiteral("x"), x}, {QStringLiteral("y"), y}};
+        return JsonObject{{String("pad"), pad}, {String("x"), x}, {String("y"), y}};
     }
 
-    if (method == QStringLiteral("theme.set")) {
-        const QJsonValue modeVal = params.contains(QStringLiteral("mode"))
-                                       ? params.value(QStringLiteral("mode"))
-                                       : params.value(QStringLiteral("theme"));
+    if (method == String("theme.set")) {
+        const JsonValue modeVal = params.contains(String("mode"))
+                                       ? params.value(String("mode"))
+                                       : params.value(String("theme"));
         AnimeTheme::Mode targetMode = AnimeTheme::Mode::Dark;
         if (modeVal.isDouble()) {
             targetMode = modeVal.toInt(0) == int(AnimeTheme::Mode::Light)
                              ? AnimeTheme::Mode::Light
                              : AnimeTheme::Mode::Dark;
         } else {
-            const QString s = modeVal.toString().trimmed().toLower();
-            targetMode = (s == QStringLiteral("light")) ? AnimeTheme::Mode::Light : AnimeTheme::Mode::Dark;
+            const String s = modeVal.toString().trimmed().toLower();
+            targetMode = (s == String("light")) ? AnimeTheme::Mode::Light : AnimeTheme::Mode::Dark;
         }
         AnimeTheme::setMode(targetMode);
 #ifdef ANIMEAN_WITH_PYTHON
         setAnimeanUiTheme(AnimeTheme::modeName(AnimeTheme::mode()));
 #endif
-        markDirty(QStringLiteral("theme"));
-        markDirty(QStringLiteral("menus"));
+        markDirty(String("theme"));
+        markDirty(String("menus"));
         return buildThemeState();
     }
 
-    if (method == QStringLiteral("python.run")) {
-        const QString command = params.value(QStringLiteral("command"))
-                                    .toString(params.value(QStringLiteral("code"))
-                                                  .toString(params.value(QStringLiteral("script")).toString()));
-        const QString scriptDir = params.value(QStringLiteral("scriptDir")).toString();
-        const QString output = m_business->runEmbeddedPythonCommand(command, scriptDir);
-        appendPythonDebug(QStringLiteral("> %1\n%2").arg(command.trimmed(), output.trimmed()));
-        return QJsonObject{{QStringLiteral("output"), output}};
+    if (method == String("python.run")) {
+        const String command = params.value(String("command"))
+                                    .toString(params.value(String("code"))
+                                                  .toString(params.value(String("script")).toString()));
+        const String scriptDir = params.value(String("scriptDir")).toString();
+        const String output = m_business->runEmbeddedPythonCommand(command, scriptDir);
+        appendPythonDebug(String("> %1\n%2").arg(command.trimmed(), output.trimmed()));
+        return JsonObject{{String("output"), output}};
     }
 
-    if (method == QStringLiteral("board.resetView")) {
+    if (method == String("board.resetView")) {
         PaintOpenGLWidget *board = boardForView(view);
         if (!board) {
-            return makeError(QStringLiteral("Board not found"));
+            return makeError(String("Board not found"));
         }
-        if (board->viewName() == QStringLiteral("child")) {
+        if (board->viewName() == String("child")) {
             if (!board->fitViewToContent(true)) {
-                board->setViewTransform(1.0, QPointF(0.0, 0.0));
+                board->setViewTransform(1.0, PointF(0.0, 0.0));
             }
         } else {
-            board->setViewTransform(1.0, QPointF(0.0, 0.0));
+            board->setViewTransform(1.0, PointF(0.0, 0.0));
         }
-        return QJsonObject{{QStringLiteral("view"), board->viewName()}};
+        return JsonObject{{String("view"), board->viewName()}};
     }
 
-    if (method == QStringLiteral("board.scroll")) {
+    if (method == String("board.scroll")) {
         PaintOpenGLWidget *board = boardForView(view);
         if (!board) {
-            return makeError(QStringLiteral("Board not found"));
+            return makeError(String("Board not found"));
         }
-        const QString axis = params.value(QStringLiteral("axis")).toString().trimmed().toLower();
-        if (axis != QStringLiteral("h") && axis != QStringLiteral("v")) {
-            return makeError(QStringLiteral("Invalid axis: %1").arg(axis));
+        const String axis = params.value(String("axis")).toString().trimmed().toLower();
+        if (axis != String("h") && axis != String("v")) {
+            return makeError(String("Invalid axis: %1").arg(axis));
         }
-        const int value = int(std::lround(params.value(QStringLiteral("value")).toDouble(0.0)));
-        const QJsonObject vp = buildViewportState(board->viewName());
-        const int curH = vp.value(QStringLiteral("h")).toObject().value(QStringLiteral("value")).toInt(
+        const int value = int(std::lround(params.value(String("value")).toDouble(0.0)));
+        const JsonObject vp = buildViewportState(board->viewName());
+        const int curH = vp.value(String("h")).toObject().value(String("value")).toInt(
             int(std::lround(-board->panOffset().x())));
-        const int curV = vp.value(QStringLiteral("v")).toObject().value(QStringLiteral("value")).toInt(
+        const int curV = vp.value(String("v")).toObject().value(String("value")).toInt(
             int(std::lround(-board->panOffset().y())));
-        const int nextH = (axis == QStringLiteral("h")) ? value : curH;
-        const int nextV = (axis == QStringLiteral("v")) ? value : curV;
+        const int nextH = (axis == String("h")) ? value : curH;
+        const int nextV = (axis == String("v")) ? value : curV;
         board->setScrollPosition(nextH, nextV);
-        markDirty(board->viewName() == QStringLiteral("child") ? QStringLiteral("viewport/child")
-                                                               : QStringLiteral("viewport/main"));
-        return QJsonObject{
-            {QStringLiteral("view"), board->viewName()},
-            {QStringLiteral("h"), int(std::lround(-board->panOffset().x()))},
-            {QStringLiteral("v"), int(std::lround(-board->panOffset().y()))},
+        markDirty(board->viewName() == String("child") ? String("viewport/child")
+                                                               : String("viewport/main"));
+        return JsonObject{
+            {String("view"), board->viewName()},
+            {String("h"), int(std::lround(-board->panOffset().x()))},
+            {String("v"), int(std::lround(-board->panOffset().y()))},
         };
     }
 
-    if (method == QStringLiteral("timeline.setVisible")) {
-        m_timelineVisible = params.contains(QStringLiteral("visible"))
-                                ? params.value(QStringLiteral("visible")).toBool()
-                                : params.value(QStringLiteral("on")).toBool(!m_timelineVisible);
+    if (method == String("timeline.setVisible")) {
+        m_timelineVisible = params.contains(String("visible"))
+                                ? params.value(String("visible")).toBool()
+                                : params.value(String("on")).toBool(!m_timelineVisible);
         saveTimelineSettings();
-        markDirty(QStringLiteral("windows"));
-        markDirty(QStringLiteral("timeline"));
-        markDirty(QStringLiteral("menus"));
-        return QJsonObject{{QStringLiteral("visible"), m_timelineVisible}};
+        markDirty(String("windows"));
+        markDirty(String("timeline"));
+        markDirty(String("menus"));
+        return JsonObject{{String("visible"), m_timelineVisible}};
     }
 
-    if (method == QStringLiteral("timeline.setCollapsed")) {
-        m_timelineCollapsed = params.contains(QStringLiteral("collapsed"))
-                                  ? params.value(QStringLiteral("collapsed")).toBool()
-                                  : params.value(QStringLiteral("on")).toBool(!m_timelineCollapsed);
+    if (method == String("timeline.setCollapsed")) {
+        m_timelineCollapsed = params.contains(String("collapsed"))
+                                  ? params.value(String("collapsed")).toBool()
+                                  : params.value(String("on")).toBool(!m_timelineCollapsed);
         saveTimelineSettings();
-        markDirty(QStringLiteral("windows"));
-        markDirty(QStringLiteral("timeline"));
-        return QJsonObject{{QStringLiteral("collapsed"), m_timelineCollapsed}};
+        markDirty(String("windows"));
+        markDirty(String("timeline"));
+        return JsonObject{{String("collapsed"), m_timelineCollapsed}};
     }
 
-    if (method == QStringLiteral("timeline.setFloating")) {
-        m_timelineFloating = params.contains(QStringLiteral("floating"))
-                                 ? params.value(QStringLiteral("floating")).toBool()
-                                 : params.value(QStringLiteral("on")).toBool(!m_timelineFloating);
+    if (method == String("timeline.setFloating")) {
+        m_timelineFloating = params.contains(String("floating"))
+                                 ? params.value(String("floating")).toBool()
+                                 : params.value(String("on")).toBool(!m_timelineFloating);
         saveTimelineSettings();
-        markDirty(QStringLiteral("windows"));
-        markDirty(QStringLiteral("timeline"));
-        return QJsonObject{{QStringLiteral("floating"), m_timelineFloating}};
+        markDirty(String("windows"));
+        markDirty(String("timeline"));
+        return JsonObject{{String("floating"), m_timelineFloating}};
     }
 
-    if (method == QStringLiteral("timeline.setDockArea") || method == QStringLiteral("timeline.setLayout")) {
-        if (params.contains(QStringLiteral("dockArea")) || params.contains(QStringLiteral("area"))) {
-            const QString area = params.value(QStringLiteral("dockArea"))
-                                     .toString(params.value(QStringLiteral("area")).toString())
+    if (method == String("timeline.setDockArea") || method == String("timeline.setLayout")) {
+        if (params.contains(String("dockArea")) || params.contains(String("area"))) {
+            const String area = params.value(String("dockArea"))
+                                     .toString(params.value(String("area")).toString())
                                      .trimmed()
                                      .toLower();
-            if (area == QStringLiteral("left") || area == QStringLiteral("right") || area == QStringLiteral("bottom")) {
+            if (area == String("left") || area == String("right") || area == String("bottom")) {
                 m_timelineDockArea = area;
             }
         }
-        if (params.contains(QStringLiteral("visible"))) {
-            m_timelineVisible = params.value(QStringLiteral("visible")).toBool();
+        if (params.contains(String("visible"))) {
+            m_timelineVisible = params.value(String("visible")).toBool();
         }
-        if (params.contains(QStringLiteral("collapsed"))) {
-            m_timelineCollapsed = params.value(QStringLiteral("collapsed")).toBool();
+        if (params.contains(String("collapsed"))) {
+            m_timelineCollapsed = params.value(String("collapsed")).toBool();
         }
-        if (params.contains(QStringLiteral("floating"))) {
-            m_timelineFloating = params.value(QStringLiteral("floating")).toBool();
+        if (params.contains(String("floating"))) {
+            m_timelineFloating = params.value(String("floating")).toBool();
         }
         saveTimelineSettings();
-        markDirty(QStringLiteral("windows"));
-        markDirty(QStringLiteral("timeline"));
-        markDirty(QStringLiteral("menus"));
-        return QJsonObject{
-            {QStringLiteral("visible"), m_timelineVisible},
-            {QStringLiteral("collapsed"), m_timelineCollapsed},
-            {QStringLiteral("floating"), m_timelineFloating},
-            {QStringLiteral("dockArea"), m_timelineDockArea},
+        markDirty(String("windows"));
+        markDirty(String("timeline"));
+        markDirty(String("menus"));
+        return JsonObject{
+            {String("visible"), m_timelineVisible},
+            {String("collapsed"), m_timelineCollapsed},
+            {String("floating"), m_timelineFloating},
+            {String("dockArea"), m_timelineDockArea},
         };
     }
 
-    return makeError(QStringLiteral("Unknown method: %1").arg(method));
+    return makeError(String("Unknown method: %1").arg(method));
 }
 
-QJsonObject BackendSession::handleFileImportCall(const QJsonObject &params)
+JsonObject BackendSession::handleFileImportCall(const JsonObject &params)
 {
-    auto makeError = [](const QString &err) {
-        return QJsonObject{
-            {QStringLiteral("__error__"), true},
-            {QStringLiteral("error"), err},
+    auto makeError = [](const String &err) {
+        return JsonObject{
+            {String("__error__"), true},
+            {String("error"), err},
         };
     };
 
-    const QString rawKind = params.value(QStringLiteral("kind"))
-                                .toString(params.value(QStringLiteral("type")).toString())
+    const String rawKind = params.value(String("kind"))
+                                .toString(params.value(String("type")).toString())
                                 .trimmed();
-    QString normKind = rawKind.toLower();
+    String normKind = rawKind.toLower();
 
     bool isTextureImport = false;
-    if (normKind.startsWith(QStringLiteral("file.texture.import."))) {
-        normKind = normKind.mid(QStringLiteral("file.texture.import.").size());
+    if (normKind.startsWith(String("file.texture.import."))) {
+        normKind = normKind.mid(String("file.texture.import.").size());
         isTextureImport = true;
-    } else if (normKind.startsWith(QStringLiteral("texture.import."))) {
-        normKind = normKind.mid(QStringLiteral("texture.import.").size());
+    } else if (normKind.startsWith(String("texture.import."))) {
+        normKind = normKind.mid(String("texture.import.").size());
         isTextureImport = true;
-    } else if (normKind.startsWith(QStringLiteral("file.texture."))) {
-        normKind = normKind.mid(QStringLiteral("file.texture.").size());
+    } else if (normKind.startsWith(String("file.texture."))) {
+        normKind = normKind.mid(String("file.texture.").size());
         isTextureImport = true;
-    } else if (normKind.startsWith(QStringLiteral("texture."))) {
-        normKind = normKind.mid(QStringLiteral("texture.").size());
+    } else if (normKind.startsWith(String("texture."))) {
+        normKind = normKind.mid(String("texture.").size());
         isTextureImport = true;
-    } else if (normKind.startsWith(QStringLiteral("file.import."))) {
-        normKind = normKind.mid(QStringLiteral("file.import.").size());
-    } else if (normKind.startsWith(QStringLiteral("import."))) {
-        normKind = normKind.mid(QStringLiteral("import.").size());
+    } else if (normKind.startsWith(String("file.import."))) {
+        normKind = normKind.mid(String("file.import.").size());
+    } else if (normKind.startsWith(String("import."))) {
+        normKind = normKind.mid(String("import.").size());
     }
 
-    const QString requestedView = params.value(QStringLiteral("view"))
-                                      .toString(params.value(QStringLiteral("viewName")).toString());
-    if (isTextureImport || requestedView == QStringLiteral("child")) {
+    const String requestedView = params.value(String("view"))
+                                      .toString(params.value(String("viewName")).toString());
+    if (isTextureImport || requestedView == String("child")) {
         surfaceTextureView();
     }
-    const QString targetView = (isTextureImport || requestedView == QStringLiteral("child"))
-                                   ? QStringLiteral("child")
-                                   : resolveViewName(requestedView.isEmpty() ? QStringLiteral("main") : requestedView);
+    const String targetView = (isTextureImport || requestedView == String("child"))
+                                   ? String("child")
+                                   : resolveViewName(requestedView.isEmpty() ? String("main") : requestedView);
     PaintOpenGLWidget *board = boardForView(targetView);
     if (!board) {
-        return makeError(QStringLiteral("Board not found"));
+        return makeError(String("Board not found"));
     }
 
-    const QStringList paths = extractPathsParam(params);
+    const StringList paths = extractPathsParam(params);
     if (paths.isEmpty()) {
-        return makeError(QStringLiteral("paths is required"));
+        return makeError(String("paths is required"));
     }
 
-    const bool fitToCanvas = params.value(QStringLiteral("fitToCanvas"))
-                                 .toBool(params.value(QStringLiteral("scaleToCanvas")).toBool(true));
+    const bool fitToCanvas = params.value(String("fitToCanvas"))
+                                 .toBool(params.value(String("scaleToCanvas")).toBool(true));
 
-    QJsonArray importedLayers;
+    JsonArray importedLayers;
 
-    if (normKind == QStringLiteral("raster") || normKind == QStringLiteral("image")) {
-        for (const QString &fileName : paths) {
-            QImageReader reader(fileName);
-            reader.setAutoTransform(true);
-            QImage image = reader.read();
+    if (normKind == String("raster") || normKind == String("image")) {
+        for (const String &fileName : paths) {
+            Image image;
+            image.load(fileName);
+
             if (image.isNull()) {
-                return makeError(QStringLiteral("Failed to load image:\n%1").arg(reader.errorString()));
+                return makeError(String("Failed to load image:\n%1").arg(fileName));
             }
-            image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
-            const QFileInfo fileInfo(fileName);
+            image = image.convertToFormat(Image::Format_ARGB32_Premultiplied);
+            const FileInfo fileInfo(fileName);
             const int layerIndex = board->importRasterLayer(image, fileInfo.completeBaseName());
             if (layerIndex < 0) {
-                return makeError(QStringLiteral("Failed to import raster layer."));
+                return makeError(String("Failed to import raster layer."));
             }
             importedLayers.append(layerIndex);
             m_business->updateAttention(targetView,
@@ -2326,46 +2326,46 @@ QJsonObject BackendSession::handleFileImportCall(const QJsonObject &params)
                                         board->model().currentFrame(),
                                         layerIndex,
                                         board->model().currentAsset());
-            m_business->setStatusMessage(QStringLiteral("Imported raster into %1: %2 (%3 x %4)")
+            m_business->setStatusMessage(String("Imported raster into %1: %2 (%3 x %4)")
                                              .arg(board->viewName())
                                              .arg(fileInfo.fileName())
                                              .arg(image.width())
                                              .arg(image.height()));
         }
-    } else if (normKind == QStringLiteral("opentoonz")
-               || normKind == QStringLiteral("opentoonzlines")
-               || normKind == QStringLiteral("opentoonz_lines")
-               || normKind == QStringLiteral("pli")
-               || normKind == QStringLiteral("toonz")) {
+    } else if (normKind == String("opentoonz")
+               || normKind == String("opentoonzlines")
+               || normKind == String("opentoonz_lines")
+               || normKind == String("pli")
+               || normKind == String("toonz")) {
 #ifndef ANIMEAN_WITH_PYTHON
-        return makeError(QStringLiteral("Python support is disabled, so OpenToonz line import is unavailable."));
+        return makeError(String("Python support is disabled, so OpenToonz line import is unavailable."));
 #else
-        for (const QString &fileName : paths) {
+        for (const String &fileName : paths) {
             try {
                 py::gil_scoped_acquire acquire;
                 py::module_ toonzTool = py::module_::import("toonz_to_dict");
-                py::object level = toonzTool.attr("read_vector_level")(QDir::toNativeSeparators(fileName).toStdString());
+                py::object level = toonzTool.attr("read_vector_level")(Dir::toNativeSeparators(fileName).toStdString());
                 py::dict levelData = level.attr("to_dict")().cast<py::dict>();
-                QVector<PaintOpenGLWidget::ImportedVectorFrame> frames = importedFramesFromOpenToonzLevel(levelData);
+                Vector<PaintOpenGLWidget::ImportedVectorFrame> frames = importedFramesFromOpenToonzLevel(levelData);
                 if (frames.isEmpty()) {
-                    return makeError(QStringLiteral("No strokes were found in this .pli file."));
+                    return makeError(String("No strokes were found in this .pli file."));
                 }
-                const QRectF sourceBounds = importedVectorFramesBounds(frames);
-                const QSizeF canvasSize = board->documentRect().size();
-                const QRectF canvasBounds(QPointF(0.0, 0.0), canvasSize);
+                const RectF sourceBounds = importedVectorFramesBounds(frames);
+                const SizeF canvasSize = board->documentRect().size();
+                const RectF canvasBounds(PointF(0.0, 0.0), canvasSize);
                 const bool needsScale = sourceBounds.isValid()
                                         && sourceBounds.width() > 0.0
                                         && sourceBounds.height() > 0.0
                                         && (!canvasBounds.contains(sourceBounds)
-                                            || !qFuzzyCompare(sourceBounds.width(), canvasSize.width())
-                                            || !qFuzzyCompare(sourceBounds.height(), canvasSize.height()));
+                                            || !fuzzyCompare(sourceBounds.width(), canvasSize.width())
+                                            || !fuzzyCompare(sourceBounds.height(), canvasSize.height()));
                 if (needsScale && fitToCanvas) {
                     scaleImportedVectorFramesToCanvas(&frames, canvasSize);
                 }
-                const QFileInfo fileInfo(fileName);
+                const FileInfo fileInfo(fileName);
                 const int layerIndex = board->importVectorLineLayer(frames, fileInfo.completeBaseName());
                 if (layerIndex < 0) {
-                    return makeError(QStringLiteral("Failed to import OpenToonz line layer."));
+                    return makeError(String("Failed to import OpenToonz line layer."));
                 }
                 importedLayers.append(layerIndex);
                 m_business->updateAttention(targetView,
@@ -2373,28 +2373,28 @@ QJsonObject BackendSession::handleFileImportCall(const QJsonObject &params)
                                             board->model().currentFrame(),
                                             layerIndex,
                                             board->model().currentAsset());
-                m_business->setStatusMessage(QStringLiteral("Imported OpenToonz lines into %1: %2 (%3 frame(s))")
+                m_business->setStatusMessage(String("Imported OpenToonz lines into %1: %2 (%3 frame(s))")
                                                  .arg(board->viewName())
                                                  .arg(fileInfo.fileName())
                                                  .arg(frames.size()));
             } catch (const py::error_already_set &error) {
-                return makeError(QStringLiteral("OpenToonz import failed:\n%1").arg(QString::fromUtf8(error.what())));
+                return makeError(String("OpenToonz import failed:\n%1").arg(String::fromUtf8(error.what())));
             }
         }
 #endif
-    } else if (normKind == QStringLiteral("csp")
-               || normKind == QStringLiteral("clip")
-               || normKind == QStringLiteral("clipstudio")
-               || normKind == QStringLiteral("clipstudiopaint")
-               || normKind == QStringLiteral("clip_studio_paint")) {
-        for (const QString &fileName : paths) {
+    } else if (normKind == String("csp")
+               || normKind == String("clip")
+               || normKind == String("clipstudio")
+               || normKind == String("clipstudiopaint")
+               || normKind == String("clip_studio_paint")) {
+        for (const String &fileName : paths) {
             const ClipReader::ClipDocument document = ClipReader::readClipFile(fileName);
             if (!document.valid) {
                 return makeError(document.error.isEmpty()
-                                     ? QStringLiteral("Unable to read this .clip file.")
-                                     : QString(document.error));
+                                     ? String("Unable to read this .clip file.")
+                                     : String(document.error));
             }
-            QVector<PaintOpenGLWidget::ImportedVectorFrame> frames;
+            Vector<PaintOpenGLWidget::ImportedVectorFrame> frames;
             PaintOpenGLWidget::ImportedVectorFrame frame;
             frame.row = 0;
             for (const ClipReader::ClipStroke &clipStroke : document.strokes) {
@@ -2404,7 +2404,7 @@ QJsonObject BackendSession::handleFileImportCall(const QJsonObject &params)
                 PaintOpenGLWidget::ImportedVectorStroke stroke;
                 stroke.points = clipStroke.points;
                 stroke.color = clipStroke.color;
-                stroke.width = std::max(qreal(1.0), clipStroke.width);
+                stroke.width = std::max(double(1.0), clipStroke.width);
                 stroke.path.moveTo(clipStroke.points.first());
                 for (int i = 1; i < clipStroke.points.size(); ++i) {
                     stroke.path.lineTo(clipStroke.points[i]);
@@ -2412,25 +2412,25 @@ QJsonObject BackendSession::handleFileImportCall(const QJsonObject &params)
                 frame.strokes.append(stroke);
             }
             if (frame.strokes.isEmpty()) {
-                return makeError(QStringLiteral("No usable vector strokes were found in this .clip file."));
+                return makeError(String("No usable vector strokes were found in this .clip file."));
             }
             frames.append(frame);
-            const QRectF sourceBounds = importedVectorFramesBounds(frames);
-            const QSizeF canvasSize = board->documentRect().size();
-            const QRectF canvasBounds(QPointF(0.0, 0.0), canvasSize);
+            const RectF sourceBounds = importedVectorFramesBounds(frames);
+            const SizeF canvasSize = board->documentRect().size();
+            const RectF canvasBounds(PointF(0.0, 0.0), canvasSize);
             const bool needsScale = sourceBounds.isValid()
                                     && sourceBounds.width() > 0.0
                                     && sourceBounds.height() > 0.0
                                     && (!canvasBounds.contains(sourceBounds)
-                                        || !qFuzzyCompare(sourceBounds.width(), canvasSize.width())
-                                        || !qFuzzyCompare(sourceBounds.height(), canvasSize.height()));
+                                        || !fuzzyCompare(sourceBounds.width(), canvasSize.width())
+                                        || !fuzzyCompare(sourceBounds.height(), canvasSize.height()));
             if (needsScale && fitToCanvas) {
                 scaleImportedVectorFramesToCanvas(&frames, canvasSize);
             }
-            const QFileInfo fileInfo(fileName);
+            const FileInfo fileInfo(fileName);
             const int layerIndex = board->importVectorLineLayer(frames, fileInfo.completeBaseName());
             if (layerIndex < 0) {
-                return makeError(QStringLiteral("Failed to import the Clip Studio Paint vector layer."));
+                return makeError(String("Failed to import the Clip Studio Paint vector layer."));
             }
             int strokeCount = 0;
             for (const PaintOpenGLWidget::ImportedVectorFrame &imported : frames) {
@@ -2442,349 +2442,349 @@ QJsonObject BackendSession::handleFileImportCall(const QJsonObject &params)
                                         board->model().currentFrame(),
                                         layerIndex,
                                         board->model().currentAsset());
-            m_business->setStatusMessage(QStringLiteral("Imported Clip Studio Paint into %1: %2 (%3 stroke(s))")
+            m_business->setStatusMessage(String("Imported Clip Studio Paint into %1: %2 (%3 stroke(s))")
                                              .arg(board->viewName())
                                              .arg(fileInfo.fileName())
                                              .arg(strokeCount));
         }
     } else {
-        return makeError(QStringLiteral("Unknown import kind: %1").arg(rawKind));
+        return makeError(String("Unknown import kind: %1").arg(rawKind));
     }
 
-    markDirty(targetView == QStringLiteral("child") ? QStringLiteral("layers/child")
-                                                    : QStringLiteral("layers/main"));
-    markDirty(targetView == QStringLiteral("child") ? QStringLiteral("assets/child")
-                                                    : QStringLiteral("assets/main"));
-    markDirty(QStringLiteral("timeline"));
-    markDirty(QStringLiteral("history"));
-    markDirty(QStringLiteral("menus"));
-    markDirty(QStringLiteral("window"));
+    markDirty(targetView == String("child") ? String("layers/child")
+                                                    : String("layers/main"));
+    markDirty(targetView == String("child") ? String("assets/child")
+                                                    : String("assets/main"));
+    markDirty(String("timeline"));
+    markDirty(String("history"));
+    markDirty(String("menus"));
+    markDirty(String("window"));
 
-    return QJsonObject{
-        {QStringLiteral("kind"), normKind},
-        {QStringLiteral("view"), targetView},
-        {QStringLiteral("layers"), importedLayers},
-        {QStringLiteral("layer"), importedLayers.isEmpty() ? -1 : importedLayers.last().toInt(-1)},
-        {QStringLiteral("count"), importedLayers.size()},
+    return JsonObject{
+        {String("kind"), normKind},
+        {String("view"), targetView},
+        {String("layers"), importedLayers},
+        {String("layer"), importedLayers.isEmpty() ? -1 : importedLayers.last().toInt(-1)},
+        {String("count"), importedLayers.size()},
     };
 }
 
-QJsonObject BackendSession::handleFileTextureCall(const QJsonObject &params)
+JsonObject BackendSession::handleFileTextureCall(const JsonObject &params)
 {
-    auto makeError = [](const QString &err) {
-        return QJsonObject{
-            {QStringLiteral("__error__"), true},
-            {QStringLiteral("error"), err},
+    auto makeError = [](const String &err) {
+        return JsonObject{
+            {String("__error__"), true},
+            {String("error"), err},
         };
     };
 
-    const QString rawKind = params.value(QStringLiteral("kind"))
-                                .toString(params.value(QStringLiteral("action")).toString())
+    const String rawKind = params.value(String("kind"))
+                                .toString(params.value(String("action")).toString())
                                 .trimmed();
-    QString normKind = rawKind.toLower();
-    if (normKind.startsWith(QStringLiteral("file.texture."))) {
-        normKind = normKind.mid(QStringLiteral("file.texture.").size());
-    } else if (normKind.startsWith(QStringLiteral("texture."))) {
-        normKind = normKind.mid(QStringLiteral("texture.").size());
+    String normKind = rawKind.toLower();
+    if (normKind.startsWith(String("file.texture."))) {
+        normKind = normKind.mid(String("file.texture.").size());
+    } else if (normKind.startsWith(String("texture."))) {
+        normKind = normKind.mid(String("texture.").size());
     }
 
-    if (normKind.startsWith(QStringLiteral("import."))
-        || normKind == QStringLiteral("raster")
-        || normKind == QStringLiteral("image")
-        || normKind == QStringLiteral("opentoonz")
-        || normKind == QStringLiteral("pli")
-        || normKind == QStringLiteral("csp")
-        || normKind == QStringLiteral("clip")) {
-        QJsonObject forwarded = params;
-        forwarded.insert(QStringLiteral("view"), QStringLiteral("child"));
-        forwarded.insert(QStringLiteral("kind"), normKind);
+    if (normKind.startsWith(String("import."))
+        || normKind == String("raster")
+        || normKind == String("image")
+        || normKind == String("opentoonz")
+        || normKind == String("pli")
+        || normKind == String("csp")
+        || normKind == String("clip")) {
+        JsonObject forwarded = params;
+        forwarded.insert(String("view"), String("child"));
+        forwarded.insert(String("kind"), normKind);
         return handleFileImportCall(forwarded);
     }
 
-    const QStringList paths = extractPathsParam(params);
-    QString fileName = paths.isEmpty() ? QString() : paths.first();
+    const StringList paths = extractPathsParam(params);
+    String fileName = paths.isEmpty() ? String() : paths.first();
 
-    if (normKind == QStringLiteral("open") || normKind == QStringLiteral("opentextureview")) {
+    if (normKind == String("open") || normKind == String("opentextureview")) {
         if (fileName.isEmpty()) {
-            return makeError(QStringLiteral("path is required"));
+            return makeError(String("path is required"));
         }
-        QString error;
+        String error;
         if (![&]{ AnimeCore::String e; const bool r = m_business->openTextureViewFrom(fileName, &e); error = e; return r; }()) {
-            return makeError(error.isEmpty() ? QStringLiteral("Failed to open texture view") : error);
+            return makeError(error.isEmpty() ? String("Failed to open texture view") : error);
         }
         surfaceTextureView();
-        return QJsonObject{
-            {QStringLiteral("kind"), QStringLiteral("open")},
-            {QStringLiteral("path"), m_business->childFilePath()},
-            {QStringLiteral("fileName"), m_business->childFilePath()},
+        return JsonObject{
+            {String("kind"), String("open")},
+            {String("path"), m_business->childFilePath()},
+            {String("fileName"), m_business->childFilePath()},
         };
     }
 
-    if (normKind == QStringLiteral("save") || normKind == QStringLiteral("savetextureview")) {
+    if (normKind == String("save") || normKind == String("savetextureview")) {
         if (fileName.isEmpty()) {
-            const QString current = m_business->childFilePath();
+            const String current = m_business->childFilePath();
             if (!current.isEmpty()
-                && QFileInfo(current).suffix().compare(QStringLiteral("textureview"), Qt::CaseInsensitive) == 0) {
+                && FileInfo(current).suffix().compare(String("textureview"), CaseInsensitive) == 0) {
                 fileName = current;
             }
         }
         if (fileName.isEmpty()) {
-            return makeError(QStringLiteral("path is required"));
+            return makeError(String("path is required"));
         }
-        QString error;
+        String error;
         if (![&]{ AnimeCore::String e; const bool r = m_business->saveTextureViewTo(fileName, &e); error = e; return r; }()) {
-            return makeError(error.isEmpty() ? QStringLiteral("Failed to save texture view") : error);
+            return makeError(error.isEmpty() ? String("Failed to save texture view") : error);
         }
-        return QJsonObject{
-            {QStringLiteral("kind"), QStringLiteral("save")},
-            {QStringLiteral("path"), m_business->childFilePath()},
-            {QStringLiteral("fileName"), m_business->childFilePath()},
+        return JsonObject{
+            {String("kind"), String("save")},
+            {String("path"), m_business->childFilePath()},
+            {String("fileName"), m_business->childFilePath()},
         };
     }
 
-    if (normKind == QStringLiteral("saveas")
-        || normKind == QStringLiteral("save_as")
-        || normKind == QStringLiteral("savetextureviewas")) {
+    if (normKind == String("saveas")
+        || normKind == String("save_as")
+        || normKind == String("savetextureviewas")) {
         if (fileName.isEmpty()) {
-            return makeError(QStringLiteral("path is required"));
+            return makeError(String("path is required"));
         }
-        QString error;
+        String error;
         if (![&]{ AnimeCore::String e; const bool r = m_business->saveTextureViewTo(fileName, &e); error = e; return r; }()) {
-            return makeError(error.isEmpty() ? QStringLiteral("Failed to save texture view") : error);
+            return makeError(error.isEmpty() ? String("Failed to save texture view") : error);
         }
-        return QJsonObject{
-            {QStringLiteral("kind"), QStringLiteral("saveAs")},
-            {QStringLiteral("path"), m_business->childFilePath()},
-            {QStringLiteral("fileName"), m_business->childFilePath()},
+        return JsonObject{
+            {String("kind"), String("saveAs")},
+            {String("path"), m_business->childFilePath()},
+            {String("fileName"), m_business->childFilePath()},
         };
     }
 
-    if (normKind == QStringLiteral("exportimage")
-        || normKind == QStringLiteral("export_image")
-        || normKind == QStringLiteral("export")
-        || normKind == QStringLiteral("exporttextureimage")
-        || normKind == QStringLiteral("image")
-        || normKind == QStringLiteral("png")) {
+    if (normKind == String("exportimage")
+        || normKind == String("export_image")
+        || normKind == String("export")
+        || normKind == String("exporttextureimage")
+        || normKind == String("image")
+        || normKind == String("png")) {
         if (fileName.isEmpty()) {
-            return makeError(QStringLiteral("path is required"));
+            return makeError(String("path is required"));
         }
         if (!m_childBoard) {
-            return makeError(QStringLiteral("Texture board not found"));
+            return makeError(String("Texture board not found"));
         }
-        if (QFileInfo(fileName).suffix().isEmpty()) {
-            fileName += QStringLiteral(".png");
+        if (FileInfo(fileName).suffix().isEmpty()) {
+            fileName += String(".png");
         }
-        QSize exportSize = m_childBoard->size();
+        Size exportSize = m_childBoard->size();
         if (exportSize.width() <= 0 || exportSize.height() <= 0) {
             exportSize = m_childBoard->model().canvasSize();
         }
-        const QImage image = m_childBoard->renderFrameThumbnail(m_childBoard->model().currentFrame(), exportSize);
+        const Image image = m_childBoard->renderFrameThumbnail(m_childBoard->model().currentFrame(), exportSize);
         if (image.isNull()) {
-            return makeError(QStringLiteral("The texture view could not be captured."));
+            return makeError(String("The texture view could not be captured."));
         }
         if (!image.save(fileName, "PNG")) {
-            return makeError(QStringLiteral("Failed to write the image to:\n%1").arg(fileName));
+            return makeError(String("Failed to write the image to:\n%1").arg(fileName));
         }
-        m_business->setStatusMessage(QStringLiteral("Exported texture image: %1 (%2 x %3)")
-                                         .arg(QFileInfo(fileName).fileName())
+        m_business->setStatusMessage(String("Exported texture image: %1 (%2 x %3)")
+                                         .arg(FileInfo(fileName).fileName())
                                          .arg(image.width())
                                          .arg(image.height()));
-        return QJsonObject{
-            {QStringLiteral("kind"), QStringLiteral("exportImage")},
-            {QStringLiteral("path"), fileName},
-            {QStringLiteral("fileName"), fileName},
-            {QStringLiteral("width"), image.width()},
-            {QStringLiteral("height"), image.height()},
+        return JsonObject{
+            {String("kind"), String("exportImage")},
+            {String("path"), fileName},
+            {String("fileName"), fileName},
+            {String("width"), image.width()},
+            {String("height"), image.height()},
         };
     }
 
-    return makeError(QStringLiteral("Unknown texture kind: %1").arg(rawKind));
+    return makeError(String("Unknown texture kind: %1").arg(rawKind));
 }
 
-bool BackendSession::triggerMenuById(const QString &id, const QJsonObject &params, QString *errorOut)
+bool BackendSession::triggerMenuById(const String &id, const JsonObject &params, String *errorOut)
 {
     // Direct (menuName, name) script menu call if provided in params
-    if (params.contains(QStringLiteral("menuName")) || params.contains(QStringLiteral("menu"))) {
-        const QString menuName = params.value(QStringLiteral("menuName"))
-                                     .toString(params.value(QStringLiteral("menu")).toString());
-        const QString itemName = params.value(QStringLiteral("name"))
-                                     .toString(params.value(QStringLiteral("itemName")).toString(id));
-        const QString host = params.value(QStringLiteral("host"))
-                                 .toString(params.value(QStringLiteral("view")).toString(QStringLiteral("main")));
-        const bool checked = params.value(QStringLiteral("checked")).toBool(false);
+    if (params.contains(String("menuName")) || params.contains(String("menu"))) {
+        const String menuName = params.value(String("menuName"))
+                                     .toString(params.value(String("menu")).toString());
+        const String itemName = params.value(String("name"))
+                                     .toString(params.value(String("itemName")).toString(id));
+        const String host = params.value(String("host"))
+                                 .toString(params.value(String("view")).toString(String("main")));
+        const bool checked = params.value(String("checked")).toBool(false);
         PaintOpenGLWidget *owner = boardForView(host);
         if (owner) {
             owner->sendPythonMenuMessage(menuName, itemName, checked);
-            markDirty(QStringLiteral("menus"));
-            markDirty(QStringLiteral("toolOptions"));
-            markDirty(QStringLiteral("timeline"));
-            markDirty(QStringLiteral("layers/main"));
-            markDirty(QStringLiteral("layers/child"));
-            markDirty(QStringLiteral("assets/main"));
-            markDirty(QStringLiteral("assets/child"));
+            markDirty(String("menus"));
+            markDirty(String("toolOptions"));
+            markDirty(String("timeline"));
+            markDirty(String("layers/main"));
+            markDirty(String("layers/child"));
+            markDirty(String("assets/main"));
+            markDirty(String("assets/child"));
             return true;
         }
     }
 
-    if (id == QStringLiteral("file.new")) {
-        emitUiEvent(QStringLiteral("dialog.canvasSize"),
-                    QJsonObject{
-                        {QStringLiteral("width"), m_business->canvasSize().width()},
-                        {QStringLiteral("height"), m_business->canvasSize().height()},
+    if (id == String("file.new")) {
+        emitUiEvent(String("dialog.canvasSize"),
+                    JsonObject{
+                        {String("width"), m_business->canvasSize().width()},
+                        {String("height"), m_business->canvasSize().height()},
                     });
         return true;
     }
-    if (id == QStringLiteral("file.open")) {
-        emitUiEvent(QStringLiteral("dialog.openProject"));
+    if (id == String("file.open")) {
+        emitUiEvent(String("dialog.openProject"));
         return true;
     }
-    if (id == QStringLiteral("file.save")) {
+    if (id == String("file.save")) {
         if (m_business->currentFilePath().isEmpty()
-            || QFileInfo(m_business->currentFilePath()).suffix().compare(QStringLiteral("anproj"), Qt::CaseInsensitive) != 0) {
-            emitUiEvent(QStringLiteral("dialog.saveProjectAs"));
+            || FileInfo(m_business->currentFilePath()).suffix().compare(String("anproj"), CaseInsensitive) != 0) {
+            emitUiEvent(String("dialog.saveProjectAs"));
             return true;
         }
         return [&]{ AnimeCore::String e; const bool r = m_business->saveProjectTo(m_business->currentFilePath(), errorOut ? &e : nullptr); if (errorOut) *errorOut = e; return r; }();
     }
-    if (id == QStringLiteral("file.saveAs")) {
-        emitUiEvent(QStringLiteral("dialog.saveProjectAs"));
+    if (id == String("file.saveAs")) {
+        emitUiEvent(String("dialog.saveProjectAs"));
         return true;
     }
-    if (id == QStringLiteral("file.texture.save")) {
+    if (id == String("file.texture.save")) {
         if (!m_business->childFilePath().isEmpty()
-            && QFileInfo(m_business->childFilePath()).suffix().compare(QStringLiteral("textureview"), Qt::CaseInsensitive) == 0) {
+            && FileInfo(m_business->childFilePath()).suffix().compare(String("textureview"), CaseInsensitive) == 0) {
             return [&]{ AnimeCore::String e; const bool r = m_business->saveTextureViewTo(m_business->childFilePath(), errorOut ? &e : nullptr); if (errorOut) *errorOut = e; return r; }();
         }
-        emitUiEvent(QStringLiteral("menu.action"), QJsonObject{{QStringLiteral("id"), id}});
+        emitUiEvent(String("menu.action"), JsonObject{{String("id"), id}});
         return true;
     }
-    if (id.startsWith(QStringLiteral("file.import."))
-        || id.startsWith(QStringLiteral("file.texture."))) {
-        emitUiEvent(QStringLiteral("menu.action"), QJsonObject{{QStringLiteral("id"), id}});
+    if (id.startsWith(String("file.import."))
+        || id.startsWith(String("file.texture."))) {
+        emitUiEvent(String("menu.action"), JsonObject{{String("id"), id}});
         return true;
     }
-    if (id == QStringLiteral("edit.undo")) {
+    if (id == String("edit.undo")) {
         m_business->undo();
         return true;
     }
-    if (id == QStringLiteral("edit.redo")) {
+    if (id == String("edit.redo")) {
         m_business->redo();
         return true;
     }
-    if (id == QStringLiteral("theme.dark")) {
+    if (id == String("theme.dark")) {
         AnimeTheme::setMode(AnimeTheme::Mode::Dark);
 #ifdef ANIMEAN_WITH_PYTHON
         setAnimeanUiTheme(AnimeTheme::modeName(AnimeTheme::mode()));
 #endif
-        markDirty(QStringLiteral("theme"));
-        markDirty(QStringLiteral("menus"));
+        markDirty(String("theme"));
+        markDirty(String("menus"));
         return true;
     }
-    if (id == QStringLiteral("theme.light")) {
+    if (id == String("theme.light")) {
         AnimeTheme::setMode(AnimeTheme::Mode::Light);
 #ifdef ANIMEAN_WITH_PYTHON
         setAnimeanUiTheme(AnimeTheme::modeName(AnimeTheme::mode()));
 #endif
-        markDirty(QStringLiteral("theme"));
-        markDirty(QStringLiteral("menus"));
+        markDirty(String("theme"));
+        markDirty(String("menus"));
         return true;
     }
-    if (id == QStringLiteral("windows.texture_view")) {
+    if (id == String("windows.texture_view")) {
         m_textureSubControlVisible = true;
-        emitUiEvent(QStringLiteral("textureSubControl.surface"));
-        markDirty(QStringLiteral("windows"));
+        emitUiEvent(String("textureSubControl.surface"));
+        markDirty(String("windows"));
         return true;
     }
-    if (id == QStringLiteral("windows.timeline")) {
-        m_timelineVisible = params.contains(QStringLiteral("checked"))
-                                ? params.value(QStringLiteral("checked")).toBool()
+    if (id == String("windows.timeline")) {
+        m_timelineVisible = params.contains(String("checked"))
+                                ? params.value(String("checked")).toBool()
                                 : !m_timelineVisible;
         saveTimelineSettings();
-        markDirty(QStringLiteral("windows"));
-        markDirty(QStringLiteral("timeline"));
-        markDirty(QStringLiteral("menus"));
+        markDirty(String("windows"));
+        markDirty(String("timeline"));
+        markDirty(String("menus"));
         return true;
     }
-    if (id.startsWith(QStringLiteral("windows."))) {
-        const QString winName = id.mid(QStringLiteral("windows.").size());
+    if (id.startsWith(String("windows."))) {
+        const String winName = id.mid(String("windows.").size());
         for (AnimeanWindowInfo &info : m_windowInfos) {
             if (info.name == winName) {
-                info.visible = params.contains(QStringLiteral("checked"))
-                                   ? params.value(QStringLiteral("checked")).toBool()
+                info.visible = params.contains(String("checked"))
+                                   ? params.value(String("checked")).toBool()
                                    : !info.visible;
-                markDirty(QStringLiteral("windows"));
-                markDirty(QStringLiteral("menus"));
+                markDirty(String("windows"));
+                markDirty(String("menus"));
                 return true;
             }
         }
     }
-    if (id == QStringLiteral("child.setting.changeableTimeline")) {
-        const bool next = params.contains(QStringLiteral("checked"))
-                              ? params.value(QStringLiteral("checked")).toBool()
+    if (id == String("child.setting.changeableTimeline")) {
+        const bool next = params.contains(String("checked"))
+                              ? params.value(String("checked")).toBool()
                               : !m_business->changeableTimeline();
         m_business->setChangeableTimeline(next);
-        markDirty(QStringLiteral("menus"));
+        markDirty(String("menus"));
         return true;
     }
-    if (id == QStringLiteral("child.setting.changeableTexture")) {
-        const bool next = params.contains(QStringLiteral("checked"))
-                              ? params.value(QStringLiteral("checked")).toBool()
+    if (id == String("child.setting.changeableTexture")) {
+        const bool next = params.contains(String("checked"))
+                              ? params.value(String("checked")).toBool()
                               : !m_business->changeableTexture();
         m_business->setChangeableTexture(next);
-        markDirty(QStringLiteral("menus"));
+        markDirty(String("menus"));
         return true;
     }
-    if (id == QStringLiteral("child.setting.background.white") && m_childBoard) {
+    if (id == String("child.setting.background.white") && m_childBoard) {
         m_childBoard->setBackgroundMode(PaintOpenGLWidget::BackgroundMode::White);
-        markDirty(QStringLiteral("menus"));
+        markDirty(String("menus"));
         return true;
     }
-    if (id == QStringLiteral("child.setting.background.black") && m_childBoard) {
+    if (id == String("child.setting.background.black") && m_childBoard) {
         m_childBoard->setBackgroundMode(PaintOpenGLWidget::BackgroundMode::Black);
-        markDirty(QStringLiteral("menus"));
+        markDirty(String("menus"));
         return true;
     }
-    if (id == QStringLiteral("child.setting.background.transparent") && m_childBoard) {
+    if (id == String("child.setting.background.transparent") && m_childBoard) {
         m_childBoard->setBackgroundMode(PaintOpenGLWidget::BackgroundMode::Transparent);
-        markDirty(QStringLiteral("menus"));
+        markDirty(String("menus"));
         return true;
     }
-    if (id.startsWith(QStringLiteral("settings:"))) {
-        const QString target = id.mid(QStringLiteral("settings:").size());
-        openScriptSettings(target, params.value(QStringLiteral("title")).toString(target));
+    if (id.startsWith(String("settings:"))) {
+        const String target = id.mid(String("settings:").size());
+        openScriptSettings(target, params.value(String("title")).toString(target));
         return true;
     }
-    if (id.startsWith(QStringLiteral("script:"))) {
-        const QStringList parts = id.split(QLatin1Char(':'));
+    if (id.startsWith(String("script:"))) {
+        const StringList parts = id.split(Latin1Char(':'));
         if (parts.size() >= 4) {
-            const QString host = parts.at(1);
-            const QString menuName = parts.at(2);
-            const QString itemName = parts.mid(3).join(QLatin1Char(':'));
-            const bool checked = params.value(QStringLiteral("checked")).toBool(false);
+            const String host = parts.at(1);
+            const String menuName = parts.at(2);
+            const String itemName = parts.mid(3).join(Latin1Char(':'));
+            const bool checked = params.value(String("checked")).toBool(false);
             PaintOpenGLWidget *owner = boardForView(host);
             if (owner) {
                 owner->sendPythonMenuMessage(menuName, itemName, checked);
-                markDirty(QStringLiteral("menus"));
-                markDirty(QStringLiteral("toolOptions"));
-                markDirty(QStringLiteral("timeline"));
-                markDirty(QStringLiteral("layers/main"));
-                markDirty(QStringLiteral("layers/child"));
-                markDirty(QStringLiteral("assets/main"));
-                markDirty(QStringLiteral("assets/child"));
+                markDirty(String("menus"));
+                markDirty(String("toolOptions"));
+                markDirty(String("timeline"));
+                markDirty(String("layers/main"));
+                markDirty(String("layers/child"));
+                markDirty(String("assets/main"));
+                markDirty(String("assets/child"));
                 return true;
             }
         }
     }
 
     if (errorOut) {
-        *errorOut = QStringLiteral("Unknown menu id: %1").arg(id);
+        *errorOut = String("Unknown menu id: %1").arg(id);
     }
     return false;
 }
 
-void BackendSession::openScriptSettings(const QString &name, const QString &title)
+void BackendSession::openScriptSettings(const String &name, const String &title)
 {
-    QJsonObject layout;
+    JsonObject layout;
 #ifdef ANIMEAN_WITH_PYTHON
     if (Py_IsInitialized()) {
         try {
@@ -2792,73 +2792,73 @@ void BackendSession::openScriptSettings(const QString &name, const QString &titl
             const std::string json = py::module_::import("python_hooks")
                                          .attr("settings_layout_json")(name.toStdString())
                                          .cast<std::string>();
-            const QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(json));
+            const JsonDocument doc = JsonDocument::fromJson(json);
             layout = doc.object();
         } catch (const py::error_already_set &error) {
-            m_business->setStatusMessage(QStringLiteral("settings error: %1").arg(QString::fromUtf8(error.what())));
+            m_business->setStatusMessage(String("settings error: %1").arg(String::fromUtf8(error.what())));
             return;
         }
     }
 #endif
-    emitUiEvent(QStringLiteral("settings.open"),
-                QJsonObject{
-                    {QStringLiteral("name"), name},
-                    {QStringLiteral("title"), title.isEmpty() ? name : title},
-                    {QStringLiteral("layout"), layout},
+    emitUiEvent(String("settings.open"),
+                JsonObject{
+                    {String("name"), name},
+                    {String("title"), title.isEmpty() ? name : title},
+                    {String("layout"), layout},
                 });
 }
 
-void BackendSession::emitUiEvent(const QString &name, const QJsonObject &args)
+void BackendSession::emitUiEvent(const String &name, const JsonObject &args)
 {
-    m_lastEvent = QJsonObject{
-        {QStringLiteral("name"), name},
-        {QStringLiteral("args"), args},
+    m_lastEvent = JsonObject{
+        {String("name"), name},
+        {String("args"), args},
     };
-    const QJsonObject packet{
-        {QStringLiteral("t"), QStringLiteral("state")},
-        {QStringLiteral("key"), QStringLiteral("event")},
-        {QStringLiteral("value"), m_lastEvent},
+    const JsonObject packet{
+        {String("t"), String("state")},
+        {String("key"), String("event")},
+        {String("value"), m_lastEvent},
     };
     sendJson(packet);
 }
 
-void BackendSession::handleFrameSink(const QString &viewName, const BoardFrame &frame)
+void BackendSession::handleFrameSink(const String &viewName, const BoardFrame &frame)
 {
     m_lastBoardFrameId.insert(viewName, frame.frame);
     if (!m_ws || !m_ws->hasClient()) {
         return;
     }
-    QByteArray payload;
+    std::string payload;
     payload.reserve(frame.ops.size() + 128);
     payload.append("{\"t\":\"board\",\"view\":\"");
     payload.append(viewName.toUtf8());
     payload.append("\",\"frame\":");
-    payload.append(QByteArray::number(static_cast<qulonglong>(frame.frame)));
+    payload.append(std::to_string(static_cast<unsigned long long>(frame.frame)));
     payload.append(",\"w\":");
-    payload.append(QByteArray::number(frame.w));
+    payload.append(std::to_string(frame.w));
     payload.append(",\"h\":");
-    payload.append(QByteArray::number(frame.h));
+    payload.append(std::to_string(frame.h));
     payload.append(",\"keep\":");
-    payload.append(QByteArray::number(frame.keep));
+    payload.append(std::to_string(frame.keep));
     payload.append(",\"ops\":");
-    payload.append(frame.ops.empty() ? QByteArrayLiteral("[]") : QByteArray::fromStdString(frame.ops));
-    payload.append('}');
-    m_ws->sendText(payload.toStdString());
+    payload.append(frame.ops.empty() ? std::string("[]") : frame.ops);
+    payload.append("}");
+    m_ws->sendText(payload);
 }
 
-void BackendSession::handleImageSink(const QString &key, const AnimeCore::Image &rgbaImg)
+void BackendSession::handleImageSink(const String &key, const AnimeCore::Image &rgbaImg)
 {
-    const QImage rgba(rgbaImg); if (key.isEmpty() || rgba.isNull()) {
+    const Image rgba(rgbaImg); if (key.isEmpty() || rgba.isNull()) {
         return;
     }
-    const QImage formatted = (rgba.format() == QImage::Format_RGBA8888)
+    const Image formatted = (rgba.format() == Image::Format_RGBA8888)
                                  ? rgba
-                                 : rgba.convertToFormat(QImage::Format_RGBA8888);
+                                 : rgba.convertToFormat(Image::Format_RGBA8888);
     m_cachedImages.insert(key, formatted);
     sendImagePacket(key, formatted);
 }
 
-void BackendSession::sendImagePacket(const QString &key, const QImage &rgba)
+void BackendSession::sendImagePacket(const String &key, const Image &rgba)
 {
     if (!m_ws || !m_ws->hasClient() || rgba.isNull()) {
         return;
@@ -2869,36 +2869,36 @@ void BackendSession::sendImagePacket(const QString &key, const QImage &rgba)
     if (expectedBytes <= 0) {
         return;
     }
-    const QJsonObject header{
-        {QStringLiteral("t"), QStringLiteral("image")},
-        {QStringLiteral("key"), key},
-        {QStringLiteral("w"), w},
-        {QStringLiteral("h"), h},
-        {QStringLiteral("bytes"), expectedBytes},
+    const JsonObject header{
+        {String("t"), String("image")},
+        {String("key"), key},
+        {String("w"), w},
+        {String("h"), h},
+        {String("bytes"), expectedBytes},
     };
     sendJson(header);
     if (rgba.bytesPerLine() == w * 4) {
         m_ws->sendBinary(std::string(reinterpret_cast<const char *>(rgba.constBits()), static_cast<std::size_t>(expectedBytes)));
     } else {
-        QByteArray tight;
+        std::string tight;
         tight.resize(expectedBytes);
         char *dst = tight.data();
         for (int y = 0; y < h; ++y) {
             std::memcpy(dst + y * w * 4, rgba.constScanLine(y), static_cast<size_t>(w * 4));
         }
-        m_ws->sendBinary(tight.toStdString());
+        m_ws->sendBinary(tight);
     }
 }
 
-void BackendSession::handleCursorSink(const QString &viewName, const AnimeCore::Cursor &cursor)
+void BackendSession::handleCursorSink(const String &viewName, const AnimeCore::Cursor &cursor)
 {
     CursorState state;
     const AnimeCore::Image pixmap = cursor.pixmap();
     if (!pixmap.isNull()) {
-        const QImage rgba = QImage(pixmap).convertToFormat(QImage::Format_RGBA8888);
-        const QString key = cursorImageKey(rgba);
-        state.shape = QStringLiteral("bitmap");
-        state.css = QStringLiteral("default");
+        const Image rgba = Image(pixmap).convertToFormat(Image::Format_RGBA8888);
+        const String key = cursorImageKey(rgba);
+        state.shape = String("bitmap");
+        state.css = String("default");
         state.key = key;
         state.hx = cursor.hotSpot().x();
         state.hy = cursor.hotSpot().y();
@@ -2911,11 +2911,11 @@ void BackendSession::handleCursorSink(const QString &viewName, const AnimeCore::
             sendImagePacket(key, rgba);
         }
     } else {
-        mapQtCursorShape(static_cast<Qt::CursorShape>(cursor.shape()), &state.shape, &state.css);
+        mapCursorShape(cursor.shape(), &state.shape, &state.css);
     }
     m_cursors.insert(viewName, state);
-    markDirty(viewName == QStringLiteral("child") ? QStringLiteral("cursor/child")
-                                                  : QStringLiteral("cursor/main"));
+    markDirty(viewName == String("child") ? String("cursor/child")
+                                                  : String("cursor/main"));
 }
 
 void BackendSession::setPythonUiFrozen(bool frozen)
@@ -2928,13 +2928,13 @@ void BackendSession::setPythonUiFrozen(bool frozen)
     }
     const bool isFrozen = (m_pythonFreezeDepth > 0);
     if (wasFrozen != isFrozen) {
-        markDirty(QStringLiteral("freeze"));
+        markDirty(String("freeze"));
     }
 }
 
-void BackendSession::appendPythonDebug(const QString &message)
+void BackendSession::appendPythonDebug(const String &message)
 {
-    const QString trimmed = message.trimmed();
+    const String trimmed = message.trimmed();
     if (trimmed.isEmpty()) {
         return;
     }
@@ -2942,10 +2942,10 @@ void BackendSession::appendPythonDebug(const QString &message)
     while (m_pythonDebugLog.size() > 200) {
         m_pythonDebugLog.removeFirst();
     }
-    markDirty(QStringLiteral("window"));
+    markDirty(String("window"));
 }
 
-void BackendSession::markDirty(const QString &key)
+void BackendSession::markDirty(const String &key)
 {
     m_dirtyKeys.insert(key);
     scheduleStateFlush();
@@ -2953,7 +2953,7 @@ void BackendSession::markDirty(const QString &key)
 
 void BackendSession::markAllDirty()
 {
-    for (const QString &key : allStateKeys()) {
+    for (const String &key : allStateKeys()) {
         m_dirtyKeys.insert(key);
     }
     scheduleStateFlush();
@@ -2965,7 +2965,7 @@ void BackendSession::scheduleStateFlush()
         return;
     }
     m_stateFlushScheduled = true;
-    QTimer::singleShot(0, this, &BackendSession::flushDirtyState);
+    Timer::singleShot(0, this, &BackendSession::flushDirtyState);
 }
 
 void BackendSession::flushDirtyState()
@@ -2974,203 +2974,203 @@ void BackendSession::flushDirtyState()
     if (m_dirtyKeys.isEmpty()) {
         return;
     }
-    const QSet<QString> toSend = std::move(m_dirtyKeys);
+    const Set<String> toSend = std::move(m_dirtyKeys);
     m_dirtyKeys.clear();
 
     if (!m_ws || !m_ws->hasClient()) {
         return;
     }
 
-    for (const QString &key : allStateKeys()) {
+    for (const String &key : allStateKeys()) {
         if (toSend.contains(key)) {
             sendStateKey(key);
         }
     }
 }
 
-void BackendSession::sendStateKey(const QString &key)
+void BackendSession::sendStateKey(const String &key)
 {
     if (!m_ws || !m_ws->hasClient()) {
         return;
     }
-    const QJsonObject packet{
-        {QStringLiteral("t"), QStringLiteral("state")},
-        {QStringLiteral("key"), key},
-        {QStringLiteral("value"), buildStateValue(key)},
+    const JsonObject packet{
+        {String("t"), String("state")},
+        {String("key"), key},
+        {String("value"), buildStateValue(key)},
     };
     sendJson(packet);
 }
 
-void BackendSession::sendJson(const QJsonObject &obj)
+void BackendSession::sendJson(const JsonObject &obj)
 {
     if (!m_ws || !m_ws->hasClient()) {
         return;
     }
-    m_ws->sendText(QJsonDocument(obj).toJson(QJsonDocument::Compact).toStdString());
+    m_ws->sendText(JsonDocument(obj).toJson(JsonDocument::Compact));
 }
 
-QJsonValue BackendSession::buildStateValue(const QString &key) const
+JsonValue BackendSession::buildStateValue(const String &key) const
 {
-    if (key == QStringLiteral("window")) {
+    if (key == String("window")) {
         return buildWindowState();
     }
-    if (key == QStringLiteral("theme")) {
+    if (key == String("theme")) {
         return buildThemeState();
     }
-    if (key == QStringLiteral("menus")) {
+    if (key == String("menus")) {
         return buildMenusState();
     }
-    if (key == QStringLiteral("tools")) {
+    if (key == String("tools")) {
         return buildToolsState();
     }
-    if (key == QStringLiteral("toolOptions")) {
+    if (key == String("toolOptions")) {
         return buildToolOptionsState();
     }
-    if (key == QStringLiteral("drawColor")) {
+    if (key == String("drawColor")) {
         return buildDrawColorState();
     }
-    if (key == QStringLiteral("drawSettings")) {
+    if (key == String("drawSettings")) {
         return buildDrawSettingsState();
     }
-    if (key == QStringLiteral("layers/main")) {
-        return buildLayersState(QStringLiteral("main"));
+    if (key == String("layers/main")) {
+        return buildLayersState(String("main"));
     }
-    if (key == QStringLiteral("layers/child")) {
-        return buildLayersState(QStringLiteral("child"));
+    if (key == String("layers/child")) {
+        return buildLayersState(String("child"));
     }
-    if (key == QStringLiteral("assets/main")) {
-        return buildAssetsState(QStringLiteral("main"));
+    if (key == String("assets/main")) {
+        return buildAssetsState(String("main"));
     }
-    if (key == QStringLiteral("assets/child")) {
-        return buildAssetsState(QStringLiteral("child"));
+    if (key == String("assets/child")) {
+        return buildAssetsState(String("child"));
     }
-    if (key == QStringLiteral("timeline")) {
+    if (key == String("timeline")) {
         return buildTimelineState();
     }
-    if (key == QStringLiteral("history")) {
+    if (key == String("history")) {
         return buildHistoryState();
     }
-    if (key == QStringLiteral("windows")) {
+    if (key == String("windows")) {
         return buildWindowsState();
     }
-    if (key == QStringLiteral("cursor/main")) {
-        return buildCursorState(QStringLiteral("main"));
+    if (key == String("cursor/main")) {
+        return buildCursorState(String("main"));
     }
-    if (key == QStringLiteral("cursor/child")) {
-        return buildCursorState(QStringLiteral("child"));
+    if (key == String("cursor/child")) {
+        return buildCursorState(String("child"));
     }
-    if (key == QStringLiteral("viewport/main")) {
-        return buildViewportState(QStringLiteral("main"));
+    if (key == String("viewport/main")) {
+        return buildViewportState(String("main"));
     }
-    if (key == QStringLiteral("viewport/child")) {
-        return buildViewportState(QStringLiteral("child"));
+    if (key == String("viewport/child")) {
+        return buildViewportState(String("child"));
     }
-    if (key == QStringLiteral("freeze")) {
+    if (key == String("freeze")) {
         return m_pythonFreezeDepth > 0;
     }
-    if (key == QStringLiteral("pad")) {
+    if (key == String("pad")) {
         return buildPadState();
     }
-    if (key == QStringLiteral("event")) {
+    if (key == String("event")) {
         return m_lastEvent;
     }
-    return QJsonValue();
+    return JsonValue();
 }
 
-QJsonObject BackendSession::buildWindowState() const
+JsonObject BackendSession::buildWindowState() const
 {
-    const QSize mainCanvas = m_business->canvasSize(QStringLiteral("main"));
-    QJsonArray debugArr;
-    for (const QString &line : m_pythonDebugLog) {
+    const Size mainCanvas = m_business->canvasSize(String("main"));
+    JsonArray debugArr;
+    for (const String &line : m_pythonDebugLog) {
         debugArr.append(line);
     }
-    return QJsonObject{
-        {QStringLiteral("title"), m_business->windowTitle()},
-        {QStringLiteral("status"), m_business->statusMessage()},
-        {QStringLiteral("activeView"), m_business->activeViewName()},
-        {QStringLiteral("currentFilePath"), m_business->currentFilePath()},
-        {QStringLiteral("childFilePath"), m_business->childFilePath()},
-        {QStringLiteral("canvasWidth"), mainCanvas.width()},
-        {QStringLiteral("canvasHeight"), mainCanvas.height()},
-        {QStringLiteral("pythonDebug"), debugArr},
+    return JsonObject{
+        {String("title"), m_business->windowTitle()},
+        {String("status"), m_business->statusMessage()},
+        {String("activeView"), m_business->activeViewName()},
+        {String("currentFilePath"), m_business->currentFilePath()},
+        {String("childFilePath"), m_business->childFilePath()},
+        {String("canvasWidth"), mainCanvas.width()},
+        {String("canvasHeight"), mainCanvas.height()},
+        {String("pythonDebug"), debugArr},
     };
 }
 
-QJsonObject BackendSession::buildThemeState() const
+JsonObject BackendSession::buildThemeState() const
 {
     auto hex = [](AnimeTheme::Role role) {
-        const QColor c = AnimeTheme::color(role);
-        return c.alpha() == 255 ? c.name(QColor::HexRgb) : c.name(QColor::HexArgb);
+        const Color c = AnimeTheme::color(role);
+        return c.alpha() == 255 ? c.name(Color::HexRgb) : c.name(Color::HexArgb);
     };
-    QJsonObject roles{
-        {QStringLiteral("window"), hex(AnimeTheme::Role::Window)},
-        {QStringLiteral("surface"), hex(AnimeTheme::Role::Surface)},
-        {QStringLiteral("surfaceAlt"), hex(AnimeTheme::Role::SurfaceAlt)},
-        {QStringLiteral("text"), hex(AnimeTheme::Role::Text)},
-        {QStringLiteral("textDim"), hex(AnimeTheme::Role::TextDim)},
-        {QStringLiteral("divider"), hex(AnimeTheme::Role::Divider)},
-        {QStringLiteral("accent"), hex(AnimeTheme::Role::Accent)},
-        {QStringLiteral("accentHover"), hex(AnimeTheme::Role::AccentHover)},
-        {QStringLiteral("accentActive"), hex(AnimeTheme::Role::AccentActive)},
-        {QStringLiteral("chipRest"), hex(AnimeTheme::Role::ChipRest)},
-        {QStringLiteral("chipRestFg"), hex(AnimeTheme::Role::ChipRestFg)},
-        {QStringLiteral("chipHover"), hex(AnimeTheme::Role::ChipHover)},
-        {QStringLiteral("chipHoverFg"), hex(AnimeTheme::Role::ChipHoverFg)},
-        {QStringLiteral("viewportSurround"), hex(AnimeTheme::Role::ViewportSurround)},
-        {QStringLiteral("onionPast"), hex(AnimeTheme::Role::OnionPast)},
-        {QStringLiteral("onionAhead"), hex(AnimeTheme::Role::OnionAhead)},
+    JsonObject roles{
+        {String("window"), hex(AnimeTheme::Role::Window)},
+        {String("surface"), hex(AnimeTheme::Role::Surface)},
+        {String("surfaceAlt"), hex(AnimeTheme::Role::SurfaceAlt)},
+        {String("text"), hex(AnimeTheme::Role::Text)},
+        {String("textDim"), hex(AnimeTheme::Role::TextDim)},
+        {String("divider"), hex(AnimeTheme::Role::Divider)},
+        {String("accent"), hex(AnimeTheme::Role::Accent)},
+        {String("accentHover"), hex(AnimeTheme::Role::AccentHover)},
+        {String("accentActive"), hex(AnimeTheme::Role::AccentActive)},
+        {String("chipRest"), hex(AnimeTheme::Role::ChipRest)},
+        {String("chipRestFg"), hex(AnimeTheme::Role::ChipRestFg)},
+        {String("chipHover"), hex(AnimeTheme::Role::ChipHover)},
+        {String("chipHoverFg"), hex(AnimeTheme::Role::ChipHoverFg)},
+        {String("viewportSurround"), hex(AnimeTheme::Role::ViewportSurround)},
+        {String("onionPast"), hex(AnimeTheme::Role::OnionPast)},
+        {String("onionAhead"), hex(AnimeTheme::Role::OnionAhead)},
     };
-    QJsonObject out = roles;
-    out.insert(QStringLiteral("mode"), AnimeTheme::modeName(AnimeTheme::mode()));
-    out.insert(QStringLiteral("roles"), roles);
+    JsonObject out = roles;
+    out.insert(String("mode"), AnimeTheme::modeName(AnimeTheme::mode()));
+    out.insert(String("roles"), roles);
     return out;
 }
 
-QJsonArray BackendSession::buildScriptMenuItems(const QString &host,
-                                                const QString &menuName,
-                                                const QJsonArray &items) const
+JsonArray BackendSession::buildScriptMenuItems(const String &host,
+                                                const String &menuName,
+                                                const JsonArray &items) const
 {
-    QJsonArray out;
+    JsonArray out;
     int sepIndex = 0;
-    for (const QJsonValue &val : items) {
-        const QJsonObject obj = val.toObject();
-        const QString kind = obj.value(QStringLiteral("kind")).toString(QStringLiteral("action"));
-        if (kind == QStringLiteral("separator")) {
-            out.append(makeMenuItem(QStringLiteral("%1.%2.sep%3").arg(host, menuName).arg(++sepIndex),
-                                    QString(),
-                                    QString(),
-                                    QStringLiteral("separator")));
+    for (const JsonValue &val : items) {
+        const JsonObject obj = val.toObject();
+        const String kind = obj.value(String("kind")).toString(String("action"));
+        if (kind == String("separator")) {
+            out.append(makeMenuItem(String("%1.%2.sep%3").arg(host, menuName).arg(++sepIndex),
+                                    String(),
+                                    String(),
+                                    String("separator")));
             continue;
         }
-        const QString itemName = obj.value(QStringLiteral("name")).toString();
-        const QString title = obj.value(QStringLiteral("title")).toString(itemName);
-        const QString shortcut = obj.value(QStringLiteral("shortcut")).toString();
-        const bool enabled = obj.value(QStringLiteral("enabled")).toBool(true);
-        const bool checked = obj.value(QStringLiteral("checked")).toBool(false);
+        const String itemName = obj.value(String("name")).toString();
+        const String title = obj.value(String("title")).toString(itemName);
+        const String shortcut = obj.value(String("shortcut")).toString();
+        const bool enabled = obj.value(String("enabled")).toBool(true);
+        const bool checked = obj.value(String("checked")).toBool(false);
 
-        if (kind == QStringLiteral("submenu")) {
-            const QJsonArray children =
-                buildScriptMenuItems(host, menuName, obj.value(QStringLiteral("items")).toArray());
-            out.append(makeMenuItem(QStringLiteral("submenu:%1:%2:%3").arg(host, menuName, itemName.isEmpty() ? title : itemName),
+        if (kind == String("submenu")) {
+            const JsonArray children =
+                buildScriptMenuItems(host, menuName, obj.value(String("items")).toArray());
+            out.append(makeMenuItem(String("submenu:%1:%2:%3").arg(host, menuName, itemName.isEmpty() ? title : itemName),
                                     title,
                                     shortcut,
-                                    QStringLiteral("submenu"),
+                                    String("submenu"),
                                     false,
                                     enabled,
                                     children));
             continue;
         }
-        if (kind == QStringLiteral("settings")) {
-            const QString target = obj.value(QStringLiteral("settings")).toString(itemName);
-            out.append(makeMenuItem(QStringLiteral("settings:%1").arg(target),
+        if (kind == String("settings")) {
+            const String target = obj.value(String("settings")).toString(itemName);
+            out.append(makeMenuItem(String("settings:%1").arg(target),
                                     title.isEmpty() ? itemName : title,
                                     shortcut,
-                                    QStringLiteral("settings"),
+                                    String("settings"),
                                     false,
                                     enabled));
             continue;
         }
-        out.append(makeMenuItem(QStringLiteral("script:%1:%2:%3").arg(host, menuName, itemName),
+        out.append(makeMenuItem(String("script:%1:%2:%3").arg(host, menuName, itemName),
                                 title.isEmpty() ? itemName : title,
                                 shortcut,
                                 kind,
@@ -3180,59 +3180,59 @@ QJsonArray BackendSession::buildScriptMenuItems(const QString &host,
     return out;
 }
 
-QJsonArray BackendSession::buildMenusState() const
+JsonArray BackendSession::buildMenusState() const
 {
-    QJsonArray menus;
+    JsonArray menus;
 
     // 1. File menu (from mainwindow.ui + createMainTextureMenu + createTextureFileMenu)
-    QJsonArray importChildren{
-        makeMenuItem(QStringLiteral("file.import.raster"), QStringLiteral("Raster..."), QString(), QStringLiteral("action")),
-        makeMenuItem(QStringLiteral("file.import.opentoonz"), QStringLiteral("OpenToonz Lines..."), QString(), QStringLiteral("action")),
-        makeMenuItem(QStringLiteral("file.import.csp"), QStringLiteral("Clip Studio Paint..."), QString(), QStringLiteral("action")),
+    JsonArray importChildren{
+        makeMenuItem(String("file.import.raster"), String("Raster..."), String(), String("action")),
+        makeMenuItem(String("file.import.opentoonz"), String("OpenToonz Lines..."), String(), String("action")),
+        makeMenuItem(String("file.import.csp"), String("Clip Studio Paint..."), String(), String("action")),
     };
 
-    QJsonArray texImportChildren{
-        makeMenuItem(QStringLiteral("file.texture.import.raster"), QStringLiteral("Raster..."), QString(), QStringLiteral("action")),
-        makeMenuItem(QStringLiteral("file.texture.import.opentoonz"), QStringLiteral("OpenToonz Lines..."), QString(), QStringLiteral("action")),
-        makeMenuItem(QStringLiteral("file.texture.import.csp"), QStringLiteral("Clip Studio Paint..."), QString(), QStringLiteral("action")),
+    JsonArray texImportChildren{
+        makeMenuItem(String("file.texture.import.raster"), String("Raster..."), String(), String("action")),
+        makeMenuItem(String("file.texture.import.opentoonz"), String("OpenToonz Lines..."), String(), String("action")),
+        makeMenuItem(String("file.texture.import.csp"), String("Clip Studio Paint..."), String(), String("action")),
     };
 
     const PaintOpenGLWidget::BackgroundMode bgMode =
         m_childBoard ? m_childBoard->backgroundMode() : PaintOpenGLWidget::BackgroundMode::White;
-    QJsonArray bgChildren{
-        makeMenuItem(QStringLiteral("child.setting.background.white"),
-                     QStringLiteral("White"),
-                     QString(),
-                     QStringLiteral("radio"),
+    JsonArray bgChildren{
+        makeMenuItem(String("child.setting.background.white"),
+                     String("White"),
+                     String(),
+                     String("radio"),
                      bgMode == PaintOpenGLWidget::BackgroundMode::White),
-        makeMenuItem(QStringLiteral("child.setting.background.black"),
-                     QStringLiteral("Black"),
-                     QString(),
-                     QStringLiteral("radio"),
+        makeMenuItem(String("child.setting.background.black"),
+                     String("Black"),
+                     String(),
+                     String("radio"),
                      bgMode == PaintOpenGLWidget::BackgroundMode::Black),
-        makeMenuItem(QStringLiteral("child.setting.background.transparent"),
-                     QStringLiteral("Transparent"),
-                     QString(),
-                     QStringLiteral("radio"),
+        makeMenuItem(String("child.setting.background.transparent"),
+                     String("Transparent"),
+                     String(),
+                     String("radio"),
                      bgMode == PaintOpenGLWidget::BackgroundMode::Transparent),
     };
 
-    QJsonArray childSettingChildren{
-        makeMenuItem(QStringLiteral("child.setting.changeableTimeline"),
-                     QStringLiteral("Changable Timeline"),
-                     QString(),
-                     QStringLiteral("check"),
+    JsonArray childSettingChildren{
+        makeMenuItem(String("child.setting.changeableTimeline"),
+                     String("Changable Timeline"),
+                     String(),
+                     String("check"),
                      m_business->changeableTimeline()),
-        makeMenuItem(QStringLiteral("child.setting.changeableTexture"),
-                     QStringLiteral("Changable Texture"),
-                     QString(),
-                     QStringLiteral("check"),
+        makeMenuItem(String("child.setting.changeableTexture"),
+                     String("Changable Texture"),
+                     String(),
+                     String("check"),
                      m_business->changeableTexture()),
-        makeMenuItem(QStringLiteral("child.setting.sep1"), QString(), QString(), QStringLiteral("separator")),
-        makeMenuItem(QStringLiteral("child.setting.background"),
-                     QStringLiteral("Background"),
-                     QString(),
-                     QStringLiteral("submenu"),
+        makeMenuItem(String("child.setting.sep1"), String(), String(), String("separator")),
+        makeMenuItem(String("child.setting.background"),
+                     String("Background"),
+                     String(),
+                     String("submenu"),
                      false,
                      true,
                      bgChildren),
@@ -3245,25 +3245,25 @@ QJsonArray BackendSession::buildMenusState() const
             const std::string json = py::module_::import("python_hooks")
                                          .attr("menus_json")(std::string("child"))
                                          .cast<std::string>();
-            const QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(json));
-            QHash<QString, QJsonObject> liveChildMenus;
-            for (const QJsonValue &val : doc.array()) {
-                const QJsonObject obj = val.toObject();
-                const QString mName = obj.value(QStringLiteral("name")).toString();
+            const JsonDocument doc = JsonDocument::fromJson(json);
+            Hash<String, JsonObject> liveChildMenus;
+            for (const JsonValue &val : doc.array()) {
+                const JsonObject obj = val.toObject();
+                const String mName = obj.value(String("name")).toString();
                 if (!mName.isEmpty()) {
                     liveChildMenus.insert(mName, obj);
                 }
             }
-            for (const QPair<QString, QString> &entry : m_childScriptMenus) {
-                const QString &mName = entry.first;
-                const QJsonObject obj = liveChildMenus.value(mName);
-                const QString mTitle = obj.value(QStringLiteral("title")).toString(entry.second);
-                const QJsonArray items =
-                    buildScriptMenuItems(QStringLiteral("child"), mName, obj.value(QStringLiteral("items")).toArray());
-                childSettingChildren.append(makeMenuItem(QStringLiteral("child.menu.%1").arg(mName),
+            for (const std::pair<String, String> &entry : m_childScriptMenus) {
+                const String &mName = entry.first;
+                const JsonObject obj = liveChildMenus.value(mName);
+                const String mTitle = obj.value(String("title")).toString(entry.second);
+                const JsonArray items =
+                    buildScriptMenuItems(String("child"), mName, obj.value(String("items")).toArray());
+                childSettingChildren.append(makeMenuItem(String("child.menu.%1").arg(mName),
                                                          mTitle,
-                                                         QString(),
-                                                         QStringLiteral("submenu"),
+                                                         String(),
+                                                         String("submenu"),
                                                          false,
                                                          true,
                                                          items));
@@ -3273,68 +3273,68 @@ QJsonArray BackendSession::buildMenusState() const
     }
 #endif
 
-    QJsonArray textureChildren{
-        makeMenuItem(QStringLiteral("file.texture.import"),
-                     QStringLiteral("Import"),
-                     QString(),
-                     QStringLiteral("submenu"),
+    JsonArray textureChildren{
+        makeMenuItem(String("file.texture.import"),
+                     String("Import"),
+                     String(),
+                     String("submenu"),
                      false,
                      true,
                      texImportChildren),
-        makeMenuItem(QStringLiteral("file.texture.sep1"), QString(), QString(), QStringLiteral("separator")),
-        makeMenuItem(QStringLiteral("file.texture.open"), QStringLiteral("Open Texture View..."), QString(), QStringLiteral("action")),
-        makeMenuItem(QStringLiteral("file.texture.save"), QStringLiteral("Save Texture View"), QString(), QStringLiteral("action")),
-        makeMenuItem(QStringLiteral("file.texture.saveAs"), QStringLiteral("Save Texture View As..."), QString(), QStringLiteral("action")),
-        makeMenuItem(QStringLiteral("file.texture.exportImage"), QStringLiteral("Export Texture View Image..."), QString(), QStringLiteral("action")),
-        makeMenuItem(QStringLiteral("file.texture.sep2"), QString(), QString(), QStringLiteral("separator")),
-        makeMenuItem(QStringLiteral("file.texture.setting"),
-                     QStringLiteral("Setting"),
-                     QString(),
-                     QStringLiteral("submenu"),
+        makeMenuItem(String("file.texture.sep1"), String(), String(), String("separator")),
+        makeMenuItem(String("file.texture.open"), String("Open Texture View..."), String(), String("action")),
+        makeMenuItem(String("file.texture.save"), String("Save Texture View"), String(), String("action")),
+        makeMenuItem(String("file.texture.saveAs"), String("Save Texture View As..."), String(), String("action")),
+        makeMenuItem(String("file.texture.exportImage"), String("Export Texture View Image..."), String(), String("action")),
+        makeMenuItem(String("file.texture.sep2"), String(), String(), String("separator")),
+        makeMenuItem(String("file.texture.setting"),
+                     String("Setting"),
+                     String(),
+                     String("submenu"),
                      false,
                      true,
                      childSettingChildren),
     };
 
-    QJsonArray fileChildren{
-        makeMenuItem(QStringLiteral("file.new"), QStringLiteral("Canvas Size..."), QString(), QStringLiteral("action")),
-        makeMenuItem(QStringLiteral("file.open"), QStringLiteral("Open..."), QStringLiteral("Ctrl+O"), QStringLiteral("action")),
-        makeMenuItem(QStringLiteral("file.save"), QStringLiteral("Save"), QStringLiteral("Ctrl+S"), QStringLiteral("action")),
-        makeMenuItem(QStringLiteral("file.saveAs"), QStringLiteral("Save As..."), QStringLiteral("Ctrl+Shift+S"), QStringLiteral("action")),
-        makeMenuItem(QStringLiteral("file.sep1"), QString(), QString(), QStringLiteral("separator")),
-        makeMenuItem(QStringLiteral("file.import"),
-                     QStringLiteral("Import"),
-                     QString(),
-                     QStringLiteral("submenu"),
+    JsonArray fileChildren{
+        makeMenuItem(String("file.new"), String("Canvas Size..."), String(), String("action")),
+        makeMenuItem(String("file.open"), String("Open..."), String("Ctrl+O"), String("action")),
+        makeMenuItem(String("file.save"), String("Save"), String("Ctrl+S"), String("action")),
+        makeMenuItem(String("file.saveAs"), String("Save As..."), String("Ctrl+Shift+S"), String("action")),
+        makeMenuItem(String("file.sep1"), String(), String(), String("separator")),
+        makeMenuItem(String("file.import"),
+                     String("Import"),
+                     String(),
+                     String("submenu"),
                      false,
                      true,
                      importChildren),
-        makeMenuItem(QStringLiteral("file.texture"),
-                     QStringLiteral("Texture"),
-                     QString(),
-                     QStringLiteral("submenu"),
+        makeMenuItem(String("file.texture"),
+                     String("Texture"),
+                     String(),
+                     String("submenu"),
                      false,
                      true,
                      textureChildren),
     };
-    menus.append(makeMenuItem(QStringLiteral("file"), QStringLiteral("File"), QString(), QStringLiteral("submenu"), false, true, fileChildren));
+    menus.append(makeMenuItem(String("file"), String("File"), String(), String("submenu"), false, true, fileChildren));
 
     // 2. Edit menu
-    QJsonArray editChildren{
-        makeMenuItem(QStringLiteral("edit.undo"),
-                     QStringLiteral("Undo"),
-                     QStringLiteral("Ctrl+Z"),
-                     QStringLiteral("action"),
+    JsonArray editChildren{
+        makeMenuItem(String("edit.undo"),
+                     String("Undo"),
+                     String("Ctrl+Z"),
+                     String("action"),
                      false,
                      m_business->canUndo()),
-        makeMenuItem(QStringLiteral("edit.redo"),
-                     QStringLiteral("Redo"),
-                     QStringLiteral("Ctrl+Y"),
-                     QStringLiteral("action"),
+        makeMenuItem(String("edit.redo"),
+                     String("Redo"),
+                     String("Ctrl+Y"),
+                     String("action"),
                      false,
                      m_business->canRedo()),
     };
-    menus.append(makeMenuItem(QStringLiteral("edit"), QStringLiteral("Edit"), QString(), QStringLiteral("submenu"), false, true, editChildren));
+    menus.append(makeMenuItem(String("edit"), String("Edit"), String(), String("submenu"), false, true, editChildren));
 
     // 3..5. Python script menus for "main" (captured at createScriptMenus time: View, Auto Mapping, Draw)
 #ifdef ANIMEAN_WITH_PYTHON
@@ -3344,22 +3344,22 @@ QJsonArray BackendSession::buildMenusState() const
             const std::string json = py::module_::import("python_hooks")
                                          .attr("menus_json")(std::string("main"))
                                          .cast<std::string>();
-            const QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(json));
-            QHash<QString, QJsonObject> liveMainMenus;
-            for (const QJsonValue &val : doc.array()) {
-                const QJsonObject obj = val.toObject();
-                const QString mName = obj.value(QStringLiteral("name")).toString();
+            const JsonDocument doc = JsonDocument::fromJson(json);
+            Hash<String, JsonObject> liveMainMenus;
+            for (const JsonValue &val : doc.array()) {
+                const JsonObject obj = val.toObject();
+                const String mName = obj.value(String("name")).toString();
                 if (!mName.isEmpty()) {
                     liveMainMenus.insert(mName, obj);
                 }
             }
-            for (const QPair<QString, QString> &entry : m_mainScriptMenus) {
-                const QString &mName = entry.first;
-                const QJsonObject obj = liveMainMenus.value(mName);
-                const QString mTitle = obj.value(QStringLiteral("title")).toString(entry.second);
-                const QJsonArray items =
-                    buildScriptMenuItems(QStringLiteral("main"), mName, obj.value(QStringLiteral("items")).toArray());
-                menus.append(makeMenuItem(mName, mTitle, QString(), QStringLiteral("submenu"), false, true, items));
+            for (const std::pair<String, String> &entry : m_mainScriptMenus) {
+                const String &mName = entry.first;
+                const JsonObject obj = liveMainMenus.value(mName);
+                const String mTitle = obj.value(String("title")).toString(entry.second);
+                const JsonArray items =
+                    buildScriptMenuItems(String("main"), mName, obj.value(String("items")).toArray());
+                menus.append(makeMenuItem(mName, mTitle, String(), String("submenu"), false, true, items));
             }
         } catch (...) {
         }
@@ -3367,102 +3367,102 @@ QJsonArray BackendSession::buildMenusState() const
 #endif
 
     // 6. Theme menu
-    QJsonArray themeChildren{
-        makeMenuItem(QStringLiteral("theme.dark"),
-                     QStringLiteral("Dark"),
-                     QString(),
-                     QStringLiteral("radio"),
+    JsonArray themeChildren{
+        makeMenuItem(String("theme.dark"),
+                     String("Dark"),
+                     String(),
+                     String("radio"),
                      AnimeTheme::mode() == AnimeTheme::Mode::Dark),
-        makeMenuItem(QStringLiteral("theme.light"),
-                     QStringLiteral("Light"),
-                     QString(),
-                     QStringLiteral("radio"),
+        makeMenuItem(String("theme.light"),
+                     String("Light"),
+                     String(),
+                     String("radio"),
                      AnimeTheme::mode() == AnimeTheme::Mode::Light),
     };
-    menus.append(makeMenuItem(QStringLiteral("theme"), QStringLiteral("Theme"), QString(), QStringLiteral("submenu"), false, true, themeChildren));
+    menus.append(makeMenuItem(String("theme"), String("Theme"), String(), String("submenu"), false, true, themeChildren));
 
     // 7. Windows menu
-    QJsonArray windowsChildren{
-        makeMenuItem(QStringLiteral("windows.texture_view"),
-                     QStringLiteral("Texture View"),
-                     QString(),
-                     QStringLiteral("action")),
-        makeMenuItem(QStringLiteral("windows.sep1"), QString(), QString(), QStringLiteral("separator")),
+    JsonArray windowsChildren{
+        makeMenuItem(String("windows.texture_view"),
+                     String("Texture View"),
+                     String(),
+                     String("action")),
+        makeMenuItem(String("windows.sep1"), String(), String(), String("separator")),
     };
     for (const AnimeanWindowInfo &info : m_windowInfos) {
-        if (info.name == QStringLiteral("paint")) {
+        if (info.name == String("paint")) {
             continue;
         }
-        windowsChildren.append(makeMenuItem(QStringLiteral("windows.%1").arg(info.name),
+        windowsChildren.append(makeMenuItem(String("windows.%1").arg(info.name),
                                             info.title,
-                                            QString(),
-                                            QStringLiteral("check"),
+                                            String(),
+                                            String("check"),
                                             info.visible));
     }
-    windowsChildren.append(makeMenuItem(QStringLiteral("windows.timeline"),
-                                        QStringLiteral("Timeline"),
-                                        QString(),
-                                        QStringLiteral("check"),
+    windowsChildren.append(makeMenuItem(String("windows.timeline"),
+                                        String("Timeline"),
+                                        String(),
+                                        String("check"),
                                         m_timelineVisible));
-    menus.append(makeMenuItem(QStringLiteral("windows"), QStringLiteral("Windows"), QString(), QStringLiteral("submenu"), false, true, windowsChildren));
+    menus.append(makeMenuItem(String("windows"), String("Windows"), String(), String("submenu"), false, true, windowsChildren));
 
     return menus;
 }
 
-QJsonObject BackendSession::buildToolsState() const
+JsonObject BackendSession::buildToolsState() const
 {
     const AnimeanBusiness::Tool curTool = m_business->currentToolEnum();
-    QJsonArray extraArr;
+    JsonArray extraArr;
     for (const AnimeExtraToolDefinition &et : m_business->extraTools()) {
-        extraArr.append(QJsonObject{
-            {QStringLiteral("name"), et.name},
-            {QStringLiteral("title"), et.title},
-            {QStringLiteral("property"), et.property},
-            {QStringLiteral("handler"), et.handler},
-            {QStringLiteral("baseTool"), et.baseTool},
-            {QStringLiteral("page"), et.page},
+        extraArr.append(JsonObject{
+            {String("name"), et.name},
+            {String("title"), et.title},
+            {String("property"), et.property},
+            {String("handler"), et.handler},
+            {String("baseTool"), et.baseTool},
+            {String("page"), et.page},
         });
     }
 
-    auto setToSortedArray = [](const QSet<QString> &set) {
-        QStringList list = set.values();
+    auto setToSortedArray = [](const Set<String> &set) {
+        StringList list = set.values();
         list.sort();
-        QJsonArray arr;
-        for (const QString &s : list) {
+        JsonArray arr;
+        for (const String &s : list) {
             arr.append(s);
         }
         return arr;
     };
 
-    const QJsonArray activeLocked = setToSortedArray(m_business->lockedToolsForView(m_business->activeViewName()));
-    QJsonObject lockedByView{
-        {QStringLiteral("main"), setToSortedArray(m_business->lockedToolsForView(QStringLiteral("main")))},
-        {QStringLiteral("child"), setToSortedArray(m_business->lockedToolsForView(QStringLiteral("child")))},
+    const JsonArray activeLocked = setToSortedArray(m_business->lockedToolsForView(m_business->activeViewName()));
+    JsonObject lockedByView{
+        {String("main"), setToSortedArray(m_business->lockedToolsForView(String("main")))},
+        {String("child"), setToSortedArray(m_business->lockedToolsForView(String("child")))},
     };
 
-    QString toolsPage = QStringLiteral("painting");
+    String toolsPage = String("painting");
     for (const AnimeanWindowInfo &info : m_windowInfos) {
-        if (info.name == QStringLiteral("tools")) {
+        if (info.name == String("tools")) {
             toolsPage = info.current;
             break;
         }
     }
 
-    return QJsonObject{
-        {QStringLiteral("tool"), AnimeanBusiness::toolControlName(curTool)},
-        {QStringLiteral("current"), AnimeanBusiness::toolControlName(curTool)},
-        {QStringLiteral("toolEnum"), toolEnumDisplayName(curTool)},
-        {QStringLiteral("toolId"), int(curTool)},
-        {QStringLiteral("activeExtraTool"), m_business->activeExtraTool()},
-        {QStringLiteral("activeExtraToolProperty"), m_business->activeExtraToolProperty()},
-        {QStringLiteral("extraTools"), extraArr},
-        {QStringLiteral("lockedTools"), activeLocked},
-        {QStringLiteral("lockedToolsByView"), lockedByView},
-        {QStringLiteral("page"), toolsPage},
+    return JsonObject{
+        {String("tool"), AnimeanBusiness::toolControlName(curTool)},
+        {String("current"), AnimeanBusiness::toolControlName(curTool)},
+        {String("toolEnum"), toolEnumDisplayName(curTool)},
+        {String("toolId"), int(curTool)},
+        {String("activeExtraTool"), m_business->activeExtraTool()},
+        {String("activeExtraToolProperty"), m_business->activeExtraToolProperty()},
+        {String("extraTools"), extraArr},
+        {String("lockedTools"), activeLocked},
+        {String("lockedToolsByView"), lockedByView},
+        {String("page"), toolsPage},
     };
 }
 
-QJsonObject BackendSession::buildToolOptionsState() const
+JsonObject BackendSession::buildToolOptionsState() const
 {
     if (!m_lastToolOptions.isEmpty()) {
         return m_lastToolOptions;
@@ -3473,249 +3473,249 @@ QJsonObject BackendSession::buildToolOptionsState() const
     return m_business->toolOptionsLayout(m_business->currentToolEnum());
 }
 
-QJsonObject BackendSession::buildDrawColorState() const
+JsonObject BackendSession::buildDrawColorState() const
 {
-    const QColor c = m_business->drawingColor();
-    return QJsonObject{
-        {QStringLiteral("r"), c.red()},
-        {QStringLiteral("g"), c.green()},
-        {QStringLiteral("b"), c.blue()},
-        {QStringLiteral("a"), c.alpha()},
-        {QStringLiteral("hex"), c.name(QColor::HexRgb)},
-        {QStringLiteral("rgba"), c.name(QColor::HexArgb)},
+    const Color c = m_business->drawingColor();
+    return JsonObject{
+        {String("r"), c.red()},
+        {String("g"), c.green()},
+        {String("b"), c.blue()},
+        {String("a"), c.alpha()},
+        {String("hex"), c.name(Color::HexRgb)},
+        {String("rgba"), c.name(Color::HexArgb)},
     };
 }
 
-QJsonObject BackendSession::buildDrawSettingsState() const
+JsonObject BackendSession::buildDrawSettingsState() const
 {
     const AnimeStrokeFitSettings fit = m_business->strokeFitSettings();
-    return QJsonObject{
-        {QStringLiteral("smooth"), m_business->toolSmoothValue()},
-        {QStringLiteral("stabilizer"), m_business->toolSmoothValue()},
-        {QStringLiteral("penWidth"), m_business->toolPenWidth()},
-        {QStringLiteral("simplify"), fit.simplify},
-        {QStringLiteral("corner"), fit.corner},
-        {QStringLiteral("fillScope"), m_business->toolFillAllLayers() ? QStringLiteral("all") : QStringLiteral("current")},
-        {QStringLiteral("fillAllLayers"), m_business->toolFillAllLayers()},
+    return JsonObject{
+        {String("smooth"), m_business->toolSmoothValue()},
+        {String("stabilizer"), m_business->toolSmoothValue()},
+        {String("penWidth"), m_business->toolPenWidth()},
+        {String("simplify"), fit.simplify},
+        {String("corner"), fit.corner},
+        {String("fillScope"), m_business->toolFillAllLayers() ? String("all") : String("current")},
+        {String("fillAllLayers"), m_business->toolFillAllLayers()},
     };
 }
 
-QJsonObject BackendSession::buildLayersState(const QString &viewName) const
+JsonObject BackendSession::buildLayersState(const String &viewName) const
 {
-    const QVector<AnimeLayerPanelRow> rows = m_business->layerRowsForView(viewName);
-    QJsonArray rowsArr;
+    const Vector<AnimeLayerPanelRow> rows = m_business->layerRowsForView(viewName);
+    JsonArray rowsArr;
     for (const AnimeLayerPanelRow &row : rows) {
-        rowsArr.append(QJsonObject{
-            {QStringLiteral("group"), row.group},
-            {QStringLiteral("group_id"), row.groupId},
-            {QStringLiteral("layer"), row.layerIndex},
-            {QStringLiteral("name"), row.name},
-            {QStringLiteral("visible"), row.visible},
-            {QStringLiteral("collapsed"), row.collapsed},
-            {QStringLiteral("depth"), row.depth},
-            {QStringLiteral("child"), row.child},
-            {QStringLiteral("parent"), row.parent},
+        rowsArr.append(JsonObject{
+            {String("group"), row.group},
+            {String("group_id"), row.groupId},
+            {String("layer"), row.layerIndex},
+            {String("name"), row.name},
+            {String("visible"), row.visible},
+            {String("collapsed"), row.collapsed},
+            {String("depth"), row.depth},
+            {String("child"), row.child},
+            {String("parent"), row.parent},
         });
     }
-    return QJsonObject{
-        {QStringLiteral("rows"), rowsArr},
-        {QStringLiteral("selected"), m_business->currentLayer(viewName)},
+    return JsonObject{
+        {String("rows"), rowsArr},
+        {String("selected"), m_business->currentLayer(viewName)},
     };
 }
 
-QJsonObject BackendSession::buildAssetsState(const QString &viewName) const
+JsonObject BackendSession::buildAssetsState(const String &viewName) const
 {
     const AnimeSceneModel &model = m_business->modelForView(viewName);
-    QJsonArray items;
-    QJsonArray names;
+    JsonArray items;
+    JsonArray names;
     for (int i = 0; i < model.assetCount(); ++i) {
         if (model.assetInternal(i)) {
             continue;
         }
-        items.append(QJsonObject{
-            {QStringLiteral("index"), i},
-            {QStringLiteral("name"), model.assetName(i)},
-            {QStringLiteral("type"), int(model.assetType(i))},
+        items.append(JsonObject{
+            {String("index"), i},
+            {String("name"), model.assetName(i)},
+            {String("type"), int(model.assetType(i))},
         });
         names.append(model.assetName(i));
     }
-    return QJsonObject{
-        {QStringLiteral("items"), items},
-        {QStringLiteral("assets"), items},
-        {QStringLiteral("names"), names},
-        {QStringLiteral("selected"), m_business->attentionForView(viewName).asset},
+    return JsonObject{
+        {String("items"), items},
+        {String("assets"), items},
+        {String("names"), names},
+        {String("selected"), m_business->attentionForView(viewName).asset},
     };
 }
 
-QJsonObject BackendSession::buildTimelineState() const
+JsonObject BackendSession::buildTimelineState() const
 {
     const AnimeTimelineState st = m_business->timelineState();
-    QJsonArray framesArr;
-    QJsonArray holdsArr;
-    QJsonArray namesArr;
+    JsonArray framesArr;
+    JsonArray holdsArr;
+    JsonArray namesArr;
     for (int i = 0; i < st.frameCount; ++i) {
         const bool hold = (i < st.holds.size()) ? st.holds.at(i) : false;
-        const QString name = (i < st.frameNames.size()) ? QString(st.frameNames.at(i)) : QString();
-        framesArr.append(QJsonObject{
-            {QStringLiteral("index"), i},
-            {QStringLiteral("name"), name},
-            {QStringLiteral("hold"), hold},
+        const String name = (i < st.frameNames.size()) ? String(st.frameNames.at(i)) : String();
+        framesArr.append(JsonObject{
+            {String("index"), i},
+            {String("name"), name},
+            {String("hold"), hold},
         });
         holdsArr.append(hold);
         namesArr.append(name);
     }
 
-    QList<int> onionList = st.onionFrames.values();
+    Vector<int> onionList = st.onionFrames.values();
     std::sort(onionList.begin(), onionList.end());
-    QJsonArray onionFramesArr;
+    JsonArray onionFramesArr;
     for (int f : onionList) {
         onionFramesArr.append(f);
     }
 
-    QJsonObject onionObj{
-        {QStringLiteral("available"), st.onionAvailable},
-        {QStringLiteral("enabled"), st.onionEnabled},
-        {QStringLiteral("lines"), st.onionLines},
-        {QStringLiteral("fills"), st.onionFills},
-        {QStringLiteral("amLayers"), st.onionAmLayers},
-        {QStringLiteral("guideLines"), st.onionGuideLines},
-        {QStringLiteral("frames"), onionFramesArr},
+    JsonObject onionObj{
+        {String("available"), st.onionAvailable},
+        {String("enabled"), st.onionEnabled},
+        {String("lines"), st.onionLines},
+        {String("fills"), st.onionFills},
+        {String("amLayers"), st.onionAmLayers},
+        {String("guideLines"), st.onionGuideLines},
+        {String("frames"), onionFramesArr},
     };
 
-    const bool vertical = (m_timelineDockArea == QStringLiteral("left")
-                           || m_timelineDockArea == QStringLiteral("right"));
-    const bool leftAligned = (m_timelineDockArea == QStringLiteral("left"));
+    const bool vertical = (m_timelineDockArea == String("left")
+                           || m_timelineDockArea == String("right"));
+    const bool leftAligned = (m_timelineDockArea == String("left"));
 
-    return QJsonObject{
-        {QStringLiteral("view"), st.viewName},
-        {QStringLiteral("visible"), m_timelineVisible},
-        {QStringLiteral("collapsed"), m_timelineCollapsed},
-        {QStringLiteral("floating"), m_timelineFloating},
-        {QStringLiteral("dockArea"), m_timelineDockArea},
-        {QStringLiteral("vertical"), vertical},
-        {QStringLiteral("leftAligned"), leftAligned},
-        {QStringLiteral("frameCount"), st.frameCount},
-        {QStringLiteral("frames"), framesArr},
-        {QStringLiteral("holds"), holdsArr},
-        {QStringLiteral("frameNames"), namesArr},
-        {QStringLiteral("currentFrame"), st.currentFrame},
-        {QStringLiteral("fps"), st.fps},
-        {QStringLiteral("playbackActive"), st.playbackActive},
-        {QStringLiteral("playing"), st.playbackActive},
-        {QStringLiteral("loop"), st.loop},
-        {QStringLiteral("onion"), onionObj},
-        {QStringLiteral("onionAvailable"), st.onionAvailable},
-        {QStringLiteral("onionEnabled"), st.onionEnabled},
-        {QStringLiteral("onionLines"), st.onionLines},
-        {QStringLiteral("onionFills"), st.onionFills},
-        {QStringLiteral("onionAmLayers"), st.onionAmLayers},
-        {QStringLiteral("onionGuideLines"), st.onionGuideLines},
-        {QStringLiteral("onionFrames"), onionFramesArr},
+    return JsonObject{
+        {String("view"), st.viewName},
+        {String("visible"), m_timelineVisible},
+        {String("collapsed"), m_timelineCollapsed},
+        {String("floating"), m_timelineFloating},
+        {String("dockArea"), m_timelineDockArea},
+        {String("vertical"), vertical},
+        {String("leftAligned"), leftAligned},
+        {String("frameCount"), st.frameCount},
+        {String("frames"), framesArr},
+        {String("holds"), holdsArr},
+        {String("frameNames"), namesArr},
+        {String("currentFrame"), st.currentFrame},
+        {String("fps"), st.fps},
+        {String("playbackActive"), st.playbackActive},
+        {String("playing"), st.playbackActive},
+        {String("loop"), st.loop},
+        {String("onion"), onionObj},
+        {String("onionAvailable"), st.onionAvailable},
+        {String("onionEnabled"), st.onionEnabled},
+        {String("onionLines"), st.onionLines},
+        {String("onionFills"), st.onionFills},
+        {String("onionAmLayers"), st.onionAmLayers},
+        {String("onionGuideLines"), st.onionGuideLines},
+        {String("onionFrames"), onionFramesArr},
     };
 }
 
-QJsonObject BackendSession::buildHistoryState() const
+JsonObject BackendSession::buildHistoryState() const
 {
-    const QString activeView = m_business->activeViewName();
-    const QStringList labels = m_business->historyLabels(activeView);
-    QJsonArray labelsArr;
-    for (const QString &l : labels) {
+    const String activeView = m_business->activeViewName();
+    const StringList labels = m_business->historyLabels(activeView);
+    JsonArray labelsArr;
+    for (const String &l : labels) {
         labelsArr.append(l);
     }
-    return QJsonObject{
-        {QStringLiteral("view"), activeView},
-        {QStringLiteral("labels"), labelsArr},
-        {QStringLiteral("items"), labelsArr},
-        {QStringLiteral("currentIndex"), m_business->currentHistoryIndex(activeView)},
-        {QStringLiteral("canUndo"), m_business->canUndo()},
-        {QStringLiteral("canRedo"), m_business->canRedo()},
-        {QStringLiteral("undoTargetView"), m_business->undoTargetViewName()},
-        {QStringLiteral("redoTargetView"), m_business->redoTargetViewName()},
+    return JsonObject{
+        {String("view"), activeView},
+        {String("labels"), labelsArr},
+        {String("items"), labelsArr},
+        {String("currentIndex"), m_business->currentHistoryIndex(activeView)},
+        {String("canUndo"), m_business->canUndo()},
+        {String("canRedo"), m_business->canRedo()},
+        {String("undoTargetView"), m_business->undoTargetViewName()},
+        {String("redoTargetView"), m_business->redoTargetViewName()},
     };
 }
 
-QJsonObject BackendSession::buildWindowsState() const
+JsonObject BackendSession::buildWindowsState() const
 {
-    QJsonObject out;
-    QJsonArray listArr;
+    JsonObject out;
+    JsonArray listArr;
     for (const AnimeanWindowInfo &info : m_windowInfos) {
-        QJsonArray pagesArr;
-        for (const QString &p : info.pages) {
+        JsonArray pagesArr;
+        for (const String &p : info.pages) {
             pagesArr.append(p);
         }
-        const QJsonObject winObj{
-            {QStringLiteral("name"), info.name},
-            {QStringLiteral("title"), info.title},
-            {QStringLiteral("visible"), info.visible},
-            {QStringLiteral("pages"), pagesArr},
-            {QStringLiteral("current"), info.current},
+        const JsonObject winObj{
+            {String("name"), info.name},
+            {String("title"), info.title},
+            {String("visible"), info.visible},
+            {String("pages"), pagesArr},
+            {String("current"), info.current},
         };
         out.insert(info.name, winObj);
         listArr.append(winObj);
     }
-    const bool vertical = (m_timelineDockArea == QStringLiteral("left")
-                           || m_timelineDockArea == QStringLiteral("right"));
-    const bool leftAligned = (m_timelineDockArea == QStringLiteral("left"));
-    const QJsonObject timelineObj{
-        {QStringLiteral("name"), QStringLiteral("timeline")},
-        {QStringLiteral("title"), QStringLiteral("Timeline")},
-        {QStringLiteral("visible"), m_timelineVisible},
-        {QStringLiteral("collapsed"), m_timelineCollapsed},
-        {QStringLiteral("floating"), m_timelineFloating},
-        {QStringLiteral("dockArea"), m_timelineDockArea},
-        {QStringLiteral("vertical"), vertical},
-        {QStringLiteral("leftAligned"), leftAligned},
-        {QStringLiteral("pages"), QJsonArray()},
-        {QStringLiteral("current"), QString()},
+    const bool vertical = (m_timelineDockArea == String("left")
+                           || m_timelineDockArea == String("right"));
+    const bool leftAligned = (m_timelineDockArea == String("left"));
+    const JsonObject timelineObj{
+        {String("name"), String("timeline")},
+        {String("title"), String("Timeline")},
+        {String("visible"), m_timelineVisible},
+        {String("collapsed"), m_timelineCollapsed},
+        {String("floating"), m_timelineFloating},
+        {String("dockArea"), m_timelineDockArea},
+        {String("vertical"), vertical},
+        {String("leftAligned"), leftAligned},
+        {String("pages"), JsonArray()},
+        {String("current"), String()},
     };
-    out.insert(QStringLiteral("timeline"), timelineObj);
-    out.insert(QStringLiteral("textureSubControlVisible"), m_textureSubControlVisible);
-    out.insert(QStringLiteral("list"), listArr);
+    out.insert(String("timeline"), timelineObj);
+    out.insert(String("textureSubControlVisible"), m_textureSubControlVisible);
+    out.insert(String("list"), listArr);
     return out;
 }
 
-QJsonObject BackendSession::buildCursorState(const QString &viewName) const
+JsonObject BackendSession::buildCursorState(const String &viewName) const
 {
     const CursorState st = m_cursors.value(viewName);
-    return QJsonObject{
-        {QStringLiteral("shape"), st.shape},
-        {QStringLiteral("css"), st.css},
-        {QStringLiteral("key"), st.key},
-        {QStringLiteral("hx"), st.hx},
-        {QStringLiteral("hy"), st.hy},
-        {QStringLiteral("w"), st.w},
-        {QStringLiteral("h"), st.h},
-        {QStringLiteral("scale"), st.scale},
+    return JsonObject{
+        {String("shape"), st.shape},
+        {String("css"), st.css},
+        {String("key"), st.key},
+        {String("hx"), st.hx},
+        {String("hy"), st.hy},
+        {String("w"), st.w},
+        {String("h"), st.h},
+        {String("scale"), st.scale},
     };
 }
 
-QJsonObject BackendSession::buildViewportState(const QString &viewName) const
+JsonObject BackendSession::buildViewportState(const String &viewName) const
 {
     const PaintOpenGLWidget *paintWidget = boardForView(viewName);
     if (!paintWidget) {
-        return QJsonObject();
+        return JsonObject();
     }
     if (paintWidget->unboundedCanvas()) {
-        return QJsonObject{
-            {QStringLiteral("h"), QJsonObject{
-                {QStringLiteral("min"), 0},
-                {QStringLiteral("max"), 0},
-                {QStringLiteral("page"), paintWidget->width()},
-                {QStringLiteral("value"), 0},
-                {QStringLiteral("enabled"), false},
+        return JsonObject{
+            {String("h"), JsonObject{
+                {String("min"), 0},
+                {String("max"), 0},
+                {String("page"), paintWidget->width()},
+                {String("value"), 0},
+                {String("enabled"), false},
             }},
-            {QStringLiteral("v"), QJsonObject{
-                {QStringLiteral("min"), 0},
-                {QStringLiteral("max"), 0},
-                {QStringLiteral("page"), paintWidget->height()},
-                {QStringLiteral("value"), 0},
-                {QStringLiteral("enabled"), false},
+            {String("v"), JsonObject{
+                {String("min"), 0},
+                {String("max"), 0},
+                {String("page"), paintWidget->height()},
+                {String("value"), 0},
+                {String("enabled"), false},
             }},
         };
     }
 
-    const qreal zoomFactor = paintWidget->zoom();
-    const QRectF reach = paintWidget->reachableRect();
+    const double zoomFactor = paintWidget->zoom();
+    const RectF reach = paintWidget->reachableRect();
     const int left = int(std::lround(reach.left() * zoomFactor));
     const int right = int(std::lround(reach.right() * zoomFactor));
     const int top = int(std::lround(reach.top() * zoomFactor));
@@ -3729,36 +3729,36 @@ QJsonObject BackendSession::buildViewportState(const QString &viewName) const
     const int hValue = std::clamp(int(std::lround(-paintWidget->panOffset().x())), hMin, hMax);
     const int vValue = std::clamp(int(std::lround(-paintWidget->panOffset().y())), vMin, vMax);
 
-    return QJsonObject{
-        {QStringLiteral("h"), QJsonObject{
-            {QStringLiteral("min"), hMin},
-            {QStringLiteral("max"), hMax},
-            {QStringLiteral("page"), paintWidget->width()},
-            {QStringLiteral("value"), hValue},
-            {QStringLiteral("enabled"), hRange > 0},
+    return JsonObject{
+        {String("h"), JsonObject{
+            {String("min"), hMin},
+            {String("max"), hMax},
+            {String("page"), paintWidget->width()},
+            {String("value"), hValue},
+            {String("enabled"), hRange > 0},
         }},
-        {QStringLiteral("v"), QJsonObject{
-            {QStringLiteral("min"), vMin},
-            {QStringLiteral("max"), vMax},
-            {QStringLiteral("page"), paintWidget->height()},
-            {QStringLiteral("value"), vValue},
-            {QStringLiteral("enabled"), vRange > 0},
+        {String("v"), JsonObject{
+            {String("min"), vMin},
+            {String("max"), vMax},
+            {String("page"), paintWidget->height()},
+            {String("value"), vValue},
+            {String("enabled"), vRange > 0},
         }},
     };
 }
 
-QJsonObject BackendSession::buildPadState() const
+JsonObject BackendSession::buildPadState() const
 {
-    QJsonObject padsObj;
+    JsonObject padsObj;
     for (auto it = m_padValues.cbegin(); it != m_padValues.cend(); ++it) {
-        padsObj.insert(it.key(), QJsonObject{
-            {QStringLiteral("x"), it.value().x()},
-            {QStringLiteral("y"), it.value().y()},
+        padsObj.insert(it.key(), JsonObject{
+            {String("x"), it.value().x()},
+            {String("y"), it.value().y()},
         });
     }
-    return QJsonObject{
-        {QStringLiteral("x"), m_forcePadValue.x()},
-        {QStringLiteral("y"), m_forcePadValue.y()},
-        {QStringLiteral("pads"), padsObj},
+    return JsonObject{
+        {String("x"), m_forcePadValue.x()},
+        {String("y"), m_forcePadValue.y()},
+        {String("pads"), padsObj},
     };
 }

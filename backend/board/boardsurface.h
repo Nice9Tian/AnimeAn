@@ -1,7 +1,7 @@
 #ifndef BOARDSURFACE_H
 #define BOARDSURFACE_H
 
-#include "algorithm/core/qtbridge.h"
+
 #include "algorithm/core/color.h"
 #include "algorithm/core/containers.h"
 #include "algorithm/core/geometry.h"

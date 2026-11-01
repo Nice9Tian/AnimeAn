@@ -5,7 +5,7 @@
 #include "algorithm/core/json.h"
 #include "algorithm/core/painter.h"
 #include "algorithm/core/path.h"
-#include "algorithm/core/qtbridge.h"
+
 #include "algorithm/core/string.h"
 #include "openglwidget.h"
 #include "theme.h"

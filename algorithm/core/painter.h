@@ -133,8 +133,8 @@ public:
                            const RectF &source) = 0;
 };
 
-// The subset of QPainter the board uses, with the same names and order of
-// effects: a device sees exactly the calls a QPaintEngine used to see.
+// The subset of Painter the board uses, with the same names and order of
+// effects: a device sees exactly the calls a paint engine used to see.
 class Painter
 {
 public:

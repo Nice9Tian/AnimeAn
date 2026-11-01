@@ -1,17 +1,17 @@
 #ifndef THEME_H
 #define THEME_H
 
-#include <QColor>
-#include <QObject>
-#include <QString>
+#include "algorithm/core/color.h"
+#include "algorithm/core/string.h"
+#include "backend/platform/signalslot.h"
+
+using namespace AnimeCore;
 
 // The one place the application's colours live. The page reads them from the
 // theme state and the board asks color(Role), so a mode switch reaches every
 // surface.
-class AnimeTheme : public QObject
+class AnimeTheme
 {
-    Q_OBJECT
-
 public:
     enum class Mode {
         Dark,
@@ -48,21 +48,20 @@ public:
     static AnimeTheme *instance();
 
     static Mode mode();
-    // Applies, persists (QSettings "AnimeAn"/"AnimeAn", key "theme/mode") and
+    // Applies, persists (Settings "AnimeAn"/"AnimeAn", key "theme/mode") and
     // announces the change.
     static void setMode(Mode mode);
-    static QColor color(Role role);
+    static Color color(Role role);
     // The surround that suits this paper: white paper on a near-black surround
     // glares, so the colour follows the paper and not only the mode.
-    static QColor surroundFor(const QColor &paper);
+    static Color surroundFor(const Color &paper);
     // "dark" / "light" - what animean_python.ui.theme() reports.
-    static QString modeName(Mode mode);
+    static String modeName(Mode mode);
 
-signals:
-    void themeChanged();
+    Signal<> themeChanged;
 
 private:
-    explicit AnimeTheme(QObject *parent = nullptr);
+    AnimeTheme();
 };
 
 #endif // THEME_H
