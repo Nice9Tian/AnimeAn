@@ -2,20 +2,12 @@
 
 #include <QSettings>
 
-#ifndef ANIMEAN_HEADLESS
-#include <QApplication>
-#include <QPalette>
-#include <QStyle>
-#include <QStyleFactory>
-#endif
-
 #ifdef ANIMEAN_WITH_PYTHON
 #include "pythonbind/python_bindings.h"
 #endif
 
 namespace {
-// The two tables ARE the design system: every colour in the application is
-// either one of these or a QPalette entry derived from them below.
+// The two tables ARE the design system: the page gets them as the theme state.
 struct ThemeColors {
     QColor window;
     QColor surface;
@@ -82,82 +74,6 @@ const ThemeColors &colorsFor(AnimeTheme::Mode mode)
     return mode == AnimeTheme::Mode::Dark ? dark : light;
 }
 
-#ifndef ANIMEAN_HEADLESS
-QPalette buildPalette(AnimeTheme::Mode mode)
-{
-    const ThemeColors &colors = colorsFor(mode);
-    const bool dark = mode == AnimeTheme::Mode::Dark;
-    const QColor white(QStringLiteral("#ffffff"));
-    const QColor disabledText(dark ? QStringLiteral("#6f7175") : QStringLiteral("#a6a7ab"));
-    const QColor disabledHighlight(dark ? QStringLiteral("#2f3234") : QStringLiteral("#dcdcde"));
-
-    QPalette palette;
-    palette.setColor(QPalette::Window, colors.window);
-    palette.setColor(QPalette::WindowText, colors.text);
-    palette.setColor(QPalette::Base, colors.surface);
-    palette.setColor(QPalette::AlternateBase, colors.surfaceAlt);
-    palette.setColor(QPalette::Text, colors.text);
-    palette.setColor(QPalette::PlaceholderText, colors.textDim);
-    palette.setColor(QPalette::Button, colors.surfaceAlt);
-    palette.setColor(QPalette::ButtonText, colors.text);
-    palette.setColor(QPalette::BrightText, colors.onionPast);
-    palette.setColor(QPalette::ToolTipBase, colors.surfaceAlt);
-    palette.setColor(QPalette::ToolTipText, colors.text);
-    palette.setColor(QPalette::Highlight, colors.accent);
-    palette.setColor(QPalette::HighlightedText, white);
-    palette.setColor(QPalette::Link, colors.accentHover);
-    palette.setColor(QPalette::LinkVisited, colors.accentActive);
-
-    // Fusion draws every bevel and frame from the shading roles, and Mid is
-    // the hairline the tool-option stylesheets ask for as palette(mid). In a
-    // dark theme the "light" end has to be lighter than Button, not darker,
-    // or every raised edge reads as a hole.
-    palette.setColor(QPalette::Light, QColor(dark ? QStringLiteral("#4a4d50") : QStringLiteral("#ffffff")));
-    palette.setColor(QPalette::Midlight, QColor(dark ? QStringLiteral("#3d4043") : QStringLiteral("#f2f2f4")));
-    palette.setColor(QPalette::Mid, colors.divider);
-    palette.setColor(QPalette::Dark, QColor(dark ? QStringLiteral("#141516") : QStringLiteral("#9a9b9f")));
-    palette.setColor(QPalette::Shadow, QColor(dark ? QStringLiteral("#000000") : QStringLiteral("#6d6e72")));
-
-    for (QPalette::ColorRole role : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText,
-                                     QPalette::ToolTipText, QPalette::HighlightedText,
-                                     QPalette::PlaceholderText}) {
-        palette.setColor(QPalette::Disabled, role, disabledText);
-    }
-    palette.setColor(QPalette::Disabled, QPalette::Base, colors.window);
-    palette.setColor(QPalette::Disabled, QPalette::Button, colors.window);
-    palette.setColor(QPalette::Disabled, QPalette::Highlight, disabledHighlight);
-    return palette;
-}
-
-QString appStyleSheet(AnimeTheme::Mode mode)
-{
-    const ThemeColors &colors = colorsFor(mode);
-    // QToolTip is the one common widget the style paints from its own tooltip
-    // palette rather than the application palette, so it needs a rule of its
-    // own; Fusion reads everything else straight off the palette.
-    // QMainWindow::separator is the splitter between docks: its extent IS the
-    // grab zone for resizing a panel, and the style's default is too thin to
-    // find. The hover wash confirms the cursor is on it before the press.
-    return QStringLiteral("QToolTip {"
-                          " color: %1;"
-                          " background-color: %2;"
-                          " border: 1px solid %3;"
-                          " padding: 2px 4px;"
-                          "}"
-                          "QMainWindow::separator {"
-                          " background-color: %4;"
-                          " width: 8px;"
-                          " height: 8px;"
-                          "}"
-                          "QMainWindow::separator:hover {"
-                          " background-color: %3;"
-                          "}")
-        .arg(colors.text.name(), colors.surfaceAlt.name(), colors.divider.name(),
-             colors.window.name());
-}
-
-#endif
-
 AnimeTheme::Mode g_mode = AnimeTheme::Mode::Dark;
 bool g_modeLoaded = false;
 }
@@ -196,9 +112,7 @@ void AnimeTheme::setMode(Mode mode)
     g_mode = mode;
     QSettings settings(QStringLiteral("AnimeAn"), QStringLiteral("AnimeAn"));
     settings.setValue(QStringLiteral("theme/mode"), modeName(mode));
-#ifndef ANIMEAN_HEADLESS
-    apply(qApp);
-#elif defined(ANIMEAN_WITH_PYTHON)
+#ifdef ANIMEAN_WITH_PYTHON
     setAnimeanUiTheme(modeName(mode));
 #endif
     emit instance()->themeChanged();
@@ -252,34 +166,6 @@ QColor AnimeTheme::surroundFor(const QColor &paper)
 {
     return color(paper.lightnessF() < 0.5 ? Role::ViewportSurroundDeep : Role::ViewportSurround);
 }
-
-#ifndef ANIMEAN_HEADLESS
-void AnimeTheme::apply(QApplication *app)
-{
-    if (!app) {
-        return;
-    }
-
-    // Fusion is the only style that honours a full custom palette on every
-    // platform - the native Windows styles paint their own chrome whatever the
-    // palette says. Swapping the style again on a mode change would rebuild
-    // every widget's style for nothing, so it is set once.
-    // The latch cannot be read back off the application: setStyleSheet below
-    // wraps the style in an unnamed QStyleSheetStyle, so objectName() is "" from
-    // the first apply() on and any name test would re-install Fusion every time.
-    static bool fusionInstalled = false;
-    if (!fusionInstalled) {
-        app->setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
-        fusionInstalled = true;
-    }
-    app->setPalette(buildPalette(mode()));
-    app->setStyleSheet(appStyleSheet(mode()));
-#ifdef ANIMEAN_WITH_PYTHON
-    setAnimeanUiTheme(modeName(mode()));
-#endif
-}
-
-#endif
 
 QString AnimeTheme::modeName(Mode mode)
 {

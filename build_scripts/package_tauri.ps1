@@ -1,12 +1,12 @@
 <#
 .SYNOPSIS
-    组装可独立运行的 Tauri 桌面版发布文件夹 dist_tauri/AnimeAn/。
+    组装可独立运行的桌面版发布文件夹 dist/AnimeAn/。
 
 .DESCRIPTION
-    按顺序完成以下步骤，生成脱离源码树、换机即用的自包含发布包 dist_tauri/AnimeAn/：
+    按顺序完成以下步骤，生成脱离源码树、换机即用的自包含发布包 dist/AnimeAn/：
     1. 在 webui/ 目录下执行 npm run build，生成前端静态产物 webui/dist/。
     2. 执行 cargo build --release --manifest-path src-tauri/Cargo.toml（启用 tauri/custom-protocol 内嵌前端产物），
-       将生成的 animean-shell.exe 改名为 AnimeAn.exe 放入 dist_tauri/AnimeAn/。
+       将生成的 animean-shell.exe 改名为 AnimeAn.exe 放入 dist/AnimeAn/。
     3. 从 -BackendDir 指定的后端构建目录复制 AnimeAnBackend.exe，以及其同目录下的全部 .dll、
        插件子目录（如 platforms/、plugins/ 等）与已有的 Python 相关运行文件。
     4. 部署后端所需的最小 Qt 运行库与平台插件（仅保留 Qt6Core.dll、Qt6Gui.dll、Qt6Network.dll、Qt6Svg.dll、
@@ -17,7 +17,7 @@
        - 无源码树机器上编译期宏 ANIMEAN_PYFILE_DIR / ANIMEAN_PYTHONBIND_DIR / ANIMEAN_OPENTOONZ_TOOLS_DIR 不存在，
          PYTHONPATH 只含 <appDir>，initalize.py 与 pydeps.py 从 <appDir> 及其下 pywheels/ 查找模块和离线 wheel，
          animeanbusiness.cpp 从 <appDir>/childrenpanel/tool_controls/ 查找兜底选项布局。
-       因此脚本将 -PythonHome 复制到 dist_tauri/AnimeAn/python312/，将 python312.dll 等复制到根部，
+       因此脚本将 -PythonHome 复制到 dist/AnimeAn/python312/，将 python312.dll 等复制到根部，
        并将仓库中的 pyfile/*.py、pythonbind/animemodel.py、opentoonz_tools/toonz_to_dict.py、
        pywheels/、childrenpanel/tool_controls/ 一并复制到发布目录。
 
@@ -36,7 +36,7 @@
     MinGW 工具链 bin 目录，默认 C:/Qt/Tools/mingw1310_64/bin。
 
 .PARAMETER OutputDir
-    输出发布目录，默认 <仓库根目录>/dist_tauri/AnimeAn。
+    输出发布目录，默认 <仓库根目录>/dist/AnimeAn。
 
 .EXAMPLE
     PowerShell -ExecutionPolicy Bypass -File .\build_scripts\package_tauri.ps1 `
@@ -150,9 +150,9 @@ if (-not $resolvedPythonHome -or -not (Test-Path -LiteralPath (Join-Path $resolv
     throw "未找到有效的 Python 3.12 运行时目录（需包含 python312.dll），请通过 -PythonHome 指定（当前: '$PythonHome'）。"
 }
 
-# 3. 解析输出目录 dist_tauri/AnimeAn/
+# 3. 解析输出目录 dist/AnimeAn/
 $distDir = if ([string]::IsNullOrWhiteSpace($OutputDir)) {
-    Join-Path $repoRoot "dist_tauri\AnimeAn"
+    Join-Path $repoRoot "dist\AnimeAn"
 } elseif ([System.IO.Path]::IsPathRooted($OutputDir)) {
     $OutputDir
 } else {
@@ -207,7 +207,7 @@ if (-not (Test-Path -LiteralPath $builtShellExe -PathType Leaf)) {
 }
 
 # =========================
-# 步骤 3：初始化 dist_tauri/AnimeAn 并放入 AnimeAn.exe 与后端文件
+# 步骤 3：初始化 dist/AnimeAn 并放入 AnimeAn.exe 与后端文件
 # =========================
 Write-Host "[3/6] Preparing $distDir and copying executables..."
 if (Test-Path -LiteralPath $distDir) {
@@ -336,7 +336,7 @@ Get-ChildItem -LiteralPath $distPlatformsDir -Filter "*.dll" -File -ErrorAction 
 }
 
 # =========================
-# 步骤 5：复制 Python 3.12 运行时（-PythonHome -> dist_tauri/AnimeAn/python312）
+# 步骤 5：复制 Python 3.12 运行时（-PythonHome -> dist/AnimeAn/python312）
 # =========================
 # backend/main.cpp 在 <appDir>/python312 下查找 python312.dll 并设为 PYTHONHOME；
 # 同时 AnimeAnBackend.exe 链接了 python312.dll，需要在同目录放置 python312.dll 等动态库。
@@ -357,7 +357,7 @@ foreach ($pyDll in @("python312.dll", "python3.dll", "vcruntime140.dll", "vcrunt
 # =========================
 # 步骤 6：从仓库补齐 pyfile、pythonbind、opentoonz_tools、pywheels 与 tool_controls
 # =========================
-# 无源码树机器上编译期宏路径不存在，backend/main.cpp 将 PYTHONPATH 设为 <appDir>（即 dist_tauri/AnimeAn），
+# 无源码树机器上编译期宏路径不存在，backend/main.cpp 将 PYTHONPATH 设为 <appDir>（即 dist/AnimeAn），
 # 因此所有 .py 模块需位于 <appDir> 根目录，同时保留子目录副本以兼容相对路径访问。
 Write-Host "[6/6] Copying Python scripts, bindings, wheels, and tool controls from repository..."
 

@@ -20,8 +20,6 @@ add_library(animean_core_headless STATIC
     board/recordingengine.h
 )
 
-target_compile_definitions(animean_core_headless PUBLIC ANIMEAN_HEADLESS)
-
 target_include_directories(animean_core_headless PUBLIC
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/algorithm

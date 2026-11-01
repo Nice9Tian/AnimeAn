@@ -5,14 +5,9 @@
 #include <QObject>
 #include <QString>
 
-#ifndef ANIMEAN_HEADLESS
-class QApplication;
-#endif
-
-// The one place the application's colours live. Widgets Qt can style through
-// QPalette need nothing from here; custom-painted widgets and the stylesheet
-// strings built in C++ ask color(Role) instead of carrying a literal, so a
-// mode switch reaches every surface.
+// The one place the application's colours live. The page reads them from the
+// theme state and the board asks color(Role), so a mode switch reaches every
+// surface.
 class AnimeTheme : public QObject
 {
     Q_OBJECT
@@ -25,7 +20,7 @@ public:
 
     enum class Role {
         Window,             // application ground
-        Surface,            // panel and field ground (QPalette::Base)
+        Surface,            // panel and field ground
         SurfaceAlt,         // raised ground: buttons, chips, slider grooves
         Text,
         TextDim,
@@ -60,12 +55,6 @@ public:
     // The surround that suits this paper: white paper on a near-black surround
     // glares, so the colour follows the paper and not only the mode.
     static QColor surroundFor(const QColor &paper);
-    // Fusion, the full palette, and the little stylesheet the palette cannot
-    // reach. Must run before the first widget is constructed: a widget reads
-    // the application palette as it is built.
-#ifndef ANIMEAN_HEADLESS
-    static void apply(QApplication *app);
-#endif
     // "dark" / "light" - what animean_python.ui.theme() reports.
     static QString modeName(Mode mode);
 
