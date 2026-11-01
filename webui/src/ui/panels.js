@@ -1,6 +1,5 @@
 // Panels of the main window, drawn to match the Qt build. Each takes plain
 // data and reports what the user did; the wiring to the backend is elsewhere.
-import { glyphSvg } from "./glyphs.js";
 
 function div(cls, text) {
   const d = document.createElement("div");
@@ -28,57 +27,6 @@ export function tabBar(labels, onSelect) {
     return t;
   });
   return { el: bar, select: (i) => tabs.forEach((t, k) => t.classList.toggle("sel", k === i)) };
-}
-
-// ---- Tools dock -------------------------------------------------------------
-const CHIPS = ["arrow", "pen", "eraser", "fill", "transfer", "connect"];
-const ERASERS = new Set(["eraser", "delete_line", "cut_line"]);
-
-export function createTools(root, { onTool, onExtra }) {
-  const tabs = tabBar(["Painting", "Mapping"], (i) => show(i));
-  const pages = [div("tools-page"), div("tools-page")];
-  root.append(tabs.el, ...pages);
-
-  const rail = div("rail");
-  pages[0].append(rail);
-  const chips = CHIPS.map((tool) => {
-    const c = div("chip");
-    c.innerHTML = glyphSvg(tool);
-    c.addEventListener("click", () => { if (!c.classList.contains("locked")) onTool(tool); });
-    rail.append(c);
-    return { c, tool };
-  });
-  const extraBoxes = [div("tools-extra"), div("tools-extra")];
-  pages.forEach((p, i) => p.append(extraBoxes[i]));
-
-  function show(i) {
-    tabs.select(i);
-    pages.forEach((p, k) => { p.style.display = k === i ? "" : "none"; });
-  }
-  show(0);
-
-  return {
-    update(state) {
-      if (!state) return;
-      const locked = new Set(state.lockedTools ?? []);
-      for (const { c, tool } of chips) {
-        const armed = !state.activeExtraTool && (tool === state.current || (tool === "eraser" && ERASERS.has(state.current)));
-        c.classList.toggle("on", armed && !locked.has(tool));
-        c.classList.toggle("locked", locked.has(tool));
-      }
-      extraBoxes.forEach((b) => b.replaceChildren());
-      for (const tool of state.extraTools ?? []) {
-        const b = document.createElement("button");
-        b.type = "button";
-        b.className = "qbutton";
-        b.textContent = tool.title ?? tool.name;
-        b.classList.toggle("checked", state.activeExtraTool === tool.name);
-        b.disabled = locked.has(tool.name);
-        b.addEventListener("click", () => onExtra(tool.name));
-        extraBoxes[tool.page === "painting" ? 0 : 1].append(b);
-      }
-    },
-  };
 }
 
 // ---- Scrollbar --------------------------------------------------------------

@@ -3,7 +3,7 @@
 import { BoardRenderer } from "../board/renderer.ts";
 import { GlBoardRenderer } from "../board/glrenderer.ts";
 import { attachBoardInput } from "../board/input.ts";
-import { createCentral, createLayers, createMenuBar, createTools, popupMenu } from "./panels.js";
+import { createCentral, createLayers, createMenuBar, popupMenu } from "./panels.js";
 import { createToolOptions } from "./options.js";
 import { createPalette, toHexArgb } from "./palette.js";
 import { createAssets, createForcePad, createHistory, createNewProjectDialog, createPythonDebug } from "./panels2.js";
@@ -55,14 +55,6 @@ export const DOCK_FOR_WINDOW = {
 export function panelFactories(store, client) {
   const { on, call } = store;
   return {
-    QtTools(el) {
-      const panel = createTools(el, {
-        onTool: (tool) => call("tool.select", { tool }),
-        onExtra: (name) => call("tool.selectExtra", { name }),
-      });
-      on("tools", (value) => panel.update(value));
-    },
-
     QtToolOptions(el) {
       el.classList.add("dock-page", "toolopt-gap");
       const tabs = document.createElement("div");

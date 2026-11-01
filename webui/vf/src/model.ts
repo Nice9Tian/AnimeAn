@@ -140,6 +140,9 @@ export interface SceneNode {
   dockArea?: DockArea;
   /** 停靠面板标题栏高度（默认 26） */
   headerHeight?: number;
+  /** 停靠面板：停在左右区时宽度吸附到 widthBase + n × widthStep（n ≥ 1），不写就不吸附 */
+  widthStep?: number;
+  widthBase?: number;
   /** 主窗口分区：菜单栏、状态栏节点 ID、中央区节点 ID、停靠面板节点 ID 列表、停靠排列描述 */
   menuBar?: MenuBarSpec;
   statusBar?: string;

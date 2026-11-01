@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Tools 分组方案</title>
+<style>
+:root {
+--window: #f5f5f6; --surface: #ffffff; --surface-alt: #e8e8ea;
+  --text: #1d1f20; --text-dim: #6b6d72; --divider: #bcbdc0;
+  --accent: #3d8ec9; --accent-hover: #2f74a6; --accent-active: #245c85;
+  --chip-rest: #fbfbfc; --chip-rest-fg: #4a4c51; --chip-hover: #ffffff; --chip-hover-fg: #1d1f20;
+  --viewport-surround: #cfd0d3; --on-accent: #ffffff;
+  --accent-field: #e3eef7; --hover-wash: #ecf4fa;
+  --menu-line: #dcdcdd; --frame: #bdbdbe; --midlight: #f2f2f4;
+  --btn-border: #afafb0; --btn-top: #fdfdfd; --btn-bottom: #e8e8e8;
+  --sb-track: #e0e0e1; --sb-top: #fcfcfd; --sb-bottom: #ececed; --sb-border-a: #c6c6c7; --sb-border-b: #c2c2c3;
+  --sb-arrow: #6d6e6f; --dock-btn: #c4c4c5;
+}
+:root[data-theme="dark"] {
+--window: #1d1f20; --surface: #232526; --surface-alt: #2a2c2e;
+  --text: #f5f5f8; --text-dim: #b4b6bc; --divider: #575a5c;
+  --accent: #3d8ec9; --accent-hover: #58a5dd; --accent-active: #2f74a6;
+  --chip-rest: #2a2c2e; --chip-rest-fg: #b4b6bc; --chip-hover: #35383b; --chip-hover-fg: #f5f5f8;
+  --viewport-surround: #141516; --on-accent: #f5f5f8;
+  --accent-field: #2f4556; --hover-wash: #282f34;
+  --menu-line: #191b1c; --frame: #161819; --midlight: #3d4043;
+  --btn-border: #151617; --btn-top: #3d3f41; --btn-bottom: #343637;
+  --sb-track: #323435; --sb-top: #37393b; --sb-bottom: #373838; --sb-border-a: #4f5052; --sb-border-b: #4f5052;
+  --sb-arrow: #aeafb2; --dock-btn: #4a4d50;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--window); color: var(--text); font: 13px/20px "Segoe UI", "Microsoft YaHei UI", sans-serif; }
+main { max-width: 980px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { font-size: 20px; line-height: 28px; font-weight: 600; margin: 0; }
+h2 { font-size: 14px; line-height: 20px; font-weight: 600; margin: 28px 0 8px; }
+p { margin: 4px 0; color: var(--text-dim); }
+.top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.theme { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--btn-border); border-radius: 4px; padding: 3px 10px; }
+.stage { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; padding: 16px; border: 1px solid var(--divider); border-radius: 6px; background: var(--surface-alt); overflow-x: auto; }
+.readout { font-variant-numeric: tabular-nums; color: var(--text); margin-bottom: 8px; }
+.case { flex: none; }
+.case .cap { margin-top: 6px; width: 170px; font-size: 12px; line-height: 17px; color: var(--text-dim); }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; vertical-align: top; padding: 6px 8px; border-top: 1px solid var(--divider); }
+th { font-weight: 600; width: 110px; }
+td { color: var(--text-dim); }
+ol { margin: 4px 0; padding-left: 20px; color: var(--text-dim); }
+code { font: 12px Consolas, monospace; }
+
+/* The panel itself: same sizes as the design project. */
+.panel { position: relative; flex: none; background: var(--window); color: var(--text); font: 12px/16px "Segoe UI", sans-serif; user-select: none; box-shadow: 0 0 0 1px var(--frame); }
+.title { display: flex; align-items: center; justify-content: space-between; height: 18px; padding: 0 1px 0 4.5px; line-height: 19px; }
+.title i { display: inline-block; width: 18px; height: 14px; margin-left: 1px; background: var(--dock-btn); opacity: .6; border-radius: 1px; transform: scale(.55); }
+.group { display: flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px 0 6px; border-top: 1px solid var(--divider); color: var(--text-dim); line-height: 20px; }
+.group:hover { background: var(--hover-wash); color: var(--text); }
+.group svg { flex: none; width: 10px; height: 10px; transition: transform 120ms ease-out; }
+.group.closed svg { transform: rotate(-90deg); }
+.group span { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.group b { display: none; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.group.active b { display: block; }
+.group.active { color: var(--text); }
+.flow { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 6px; padding: 8px; }
+.chip { position: relative; width: 44px; height: 44px; border-radius: 8px; background: var(--chip-rest); color: var(--chip-rest-fg); }
+.chip:hover { background: var(--chip-hover); color: var(--chip-hover-fg); }
+.chip.on { background: var(--accent); color: var(--on-accent); }
+.chip svg { position: absolute; left: 10px; top: 10px; width: 24px; height: 24px; overflow: visible; }
+.stack { display: flex; flex-direction: column; gap: 6px; padding: 8px; }
+.btn { height: 24px; border: 1px solid var(--btn-border); border-radius: 2px; padding: 0 4px; background: linear-gradient(var(--btn-top), var(--btn-bottom)); color: var(--text);
+  font: 12px/22px "Segoe UI"; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; }
+.btn:hover { border-color: var(--accent); }
+.btn.on { background: var(--accent); color: var(--on-accent); }
+.fill { height: 60px; }
+.tabs { display: flex; height: 23px; }
+.tabs div { width: 66px; margin-right: 2px; border: 1px solid var(--divider); border-bottom: 0; text-align: center; line-height: 23px; background: var(--chip-rest); color: var(--chip-rest-fg); }
+.tabs div.sel { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.grip { position: absolute; top: 0; bottom: 0; right: -6px; width: 12px; cursor: ew-resize; }
+.grip::after { content: ""; position: absolute; left: 5px; top: 0; bottom: 0; width: 2px; background: var(--accent); opacity: 0; }
+.grip:hover::after, .grip.drag::after { opacity: 1; }
+</style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <h1>Tools 面板：分组方案</h1>
+    <button class="theme" id="theme" type="button">切换深色</button>
+  </div>
+  <p>去掉 Painting / Mapping 两个分页，两组工具同时放在 Tools 面板里，每组可以单独折叠。审核稿，还没有合进软件。</p>
+
+  <h2>试一试</h2>
+  <p>点分组标题折叠，点工具选中，拖面板右边缘改宽度（吸附到整列）。折叠一个有选中工具的分组，标题右边会留一个蓝点。</p>
+  <div class="stage" id="live"></div>
+
+  <h2>各种状态</h2>
+  <div class="stage" id="cases"></div>
+
+  <h2>和现在的区别</h2>
+  <table>
+    <tr><th>现在</th><td>两个分页，同一时间只能看到一组，用 Mapping 工具要先切页。</td></tr>
+    <tr><th>分组后</th><td>两组同时可见，不用切页；用不到的一组收起来，下面的内容自动上移。</td></tr>
+    <tr><th>层级</th><td><code>toolsDock</code> 下直接是 <code>paintingHeader</code>、<code>paintingBody</code>、<code>mappingHeader</code>、<code>mappingBody</code>，比现在少两层（<code>toolsTabs</code>、<code>toolsPages</code> 和两个页都没有了）。</td></tr>
+    <tr><th>步进</th><td>Painting 组继续按整列排；Mapping 组的文字按钮占满一行，不分列。</td></tr>
+  </table>
+
+  <h2>需要你决定</h2>
+  <ol>
+    <li>Mapping 组现在用文字按钮。图形画好后，要不要换成和 Painting 一样的图标格子？换了之后两组都能按列步进，代价是看不到文字。</li>
+    <li>折叠状态要不要下次启动时还记得？这份稿子里每次启动都是两组全开。</li>
+    <li>选中的工具落在折叠的组里时，要不要自动展开？现在有一条规则是“Auto-Mapping 单元里的层切到 Mapping 页”，分页没了以后它可以变成自动展开 Mapping 组。这份稿子里不展开，只在标题上亮蓝点。</li>
+  </ol>
+</main>
+<script>
+const line = 'fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"';
+
+const GLYPHS = {
+  arrow: `<g ${line} transform="translate(0.8 0.5)"><path d="M5.5 3 L5.5 18 L9.8 14 L12.4 20.5 L14.9 19.4 L12.3 13 L17.6 13 Z"/></g>`,
+  pen: `<g ${line}><path d="M3 21 L4.8 16.2 L16.2 4.8 L19.2 7.8 L7.8 19.2 Z"/><line x1="14.4" y1="6.6" x2="17.4" y2="9.6"/></g>`,
+  eraser: `<g ${line}><g transform="rotate(-40 12 11)"><rect x="4.5" y="7.5" width="15" height="7"/><line x1="11" y1="7.5" x2="11" y2="14.5"/></g><line x1="4" y1="21" x2="20" y2="21"/></g>`,
+  fill: `<g transform="rotate(-35 12 12)"><path ${line} d="M7.7 8.1 C8.4 4.4 15.6 4.4 16.3 8.1"/>`
+    + `<path fill="currentColor" d="M7.3 13.2 L16.7 13.2 L15.9 18.4 A1.7 1.7 0 0 1 14.2 19.9 L9.8 19.9 A1.7 1.7 0 0 1 8.1 18.4 Z"/>`
+    + `<line ${line} x1="5.2" y1="8.6" x2="18.8" y2="8.6"/>`
+    + `<path ${line} d="M6.6 8.6 L8.1 18.4 A1.7 1.7 0 0 0 9.8 19.9 L14.2 19.9 A1.7 1.7 0 0 0 15.9 18.4 L17.4 8.6"/></g>`,
+  transfer: `<defs><mask id="transfer-hole" maskUnits="userSpaceOnUse" x="-2" y="-2" width="28" height="28"><rect x="-2" y="-2" width="28" height="28" fill="white"/><circle cx="16.8" cy="16.8" r="8.1" fill="black"/></mask></defs>`
+    + `<g mask="url(#transfer-hole)"><rect x="4.5" y="4.5" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="1.5 1.5" stroke-dashoffset="2.25"/>`
+    + `<g fill="currentColor"><rect x="3.2" y="3.2" width="2.6" height="2.6"/><rect x="18.2" y="3.2" width="2.6" height="2.6"/><rect x="3.2" y="18.2" width="2.6" height="2.6"/></g></g>`
+    + `<g ${line}><line x1="16.8" y1="13.9" x2="16.8" y2="19.7"/><line x1="13.9" y1="16.8" x2="19.7" y2="16.8"/></g>`
+    + `<g fill="currentColor"><polygon points="16.8,10.4 19.1,13.9 14.5,13.9"/><polygon points="16.8,23.2 14.5,19.7 19.1,19.7"/><polygon points="10.4,16.8 13.9,14.5 13.9,19.1"/><polygon points="23.2,16.8 19.7,14.5 19.7,19.1"/></g>`,
+  connect: `<path ${line} d="M17.2 4.7 C17.2 12.4 9.4 12 6.8 16"/>`
+    + `<path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" d="M9.2 15.89 L6.8 16 L7.11 13.62"/>`
+    + `<circle cx="6.8" cy="19.9" r="1.9" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="17.2" cy="4.7" r="1.9" fill="none" stroke="currentColor" stroke-width="1.2"/>`
+    + `<circle cx="17.2" cy="4.7" r="0.85" fill="currentColor"/>`,
+};
+
+const ARROW = '<svg viewBox="0 0 10 10"><path d="M2 3.5 L5 6.5 L8 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const PAINTING = ["arrow", "pen", "eraser", "fill", "transfer", "connect"];
+const MAPPING = [["h_center_line", "H Center Line"], ["v_center_line", "V Center Line"], ["mapping_area", "Mapping Area"], ["additional_line", "Additional Line"], ["auto_mapping_2", "Auto Mapping"]];
+const snap = (w) => Math.max(80, Math.max(1, Math.round((w - 10) / 50)) * 50 + 10);
+
+function el(cls, html) {
+  const d = document.createElement("div");
+  d.className = cls;
+  if (html !== undefined) d.innerHTML = html;
+  return d;
+}
+
+// state: { width, armed, paintingOpen, mappingOpen }; onChange makes it live.
+function buildPanel(state, onChange) {
+  const panel = el("panel");
+  panel.style.width = state.width + "px";
+  panel.append(el("title", "<span>Tools</span><span><i></i><i></i></span>"));
+  const header = (label, open, armedHere, key) => {
+    const row = el("group" + (open ? "" : " closed") + (!open && armedHere ? " active" : ""), ARROW + "<span>" + label + "</span><b></b>");
+    if (onChange) row.addEventListener("click", () => { state[key] = !state[key]; onChange(); });
+    return row;
+  };
+  panel.append(header("Painting", state.paintingOpen, PAINTING.includes(state.armed), "paintingOpen"));
+  if (state.paintingOpen) {
+    const flow = el("flow");
+    for (const tool of PAINTING) {
+      const chip = el("chip" + (state.armed === tool ? " on" : ""), '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">' + GLYPHS[tool].replaceAll("transfer-hole", "transfer-hole-" + (buildPanel.next = (buildPanel.next ?? 0) + 1)) + "</svg>");
+      if (onChange) chip.addEventListener("click", () => { state.armed = tool; onChange(); });
+      flow.append(chip);
+    }
+    panel.append(flow);
+  }
+  panel.append(header("Mapping", state.mappingOpen, MAPPING.some(([id]) => id === state.armed), "mappingOpen"));
+  if (state.mappingOpen) {
+    const stack = el("stack");
+    for (const [id, label] of MAPPING) {
+      const b = el("btn" + (state.armed === id ? " on" : ""), label);
+      if (onChange) b.addEventListener("click", () => { state.armed = id; onChange(); });
+      stack.append(b);
+    }
+    panel.append(stack);
+  }
+  panel.append(el("fill"));
+  return panel;
+}
+
+const live = { width: 110, armed: "pen", paintingOpen: true, mappingOpen: true };
+const liveRoot = document.getElementById("live");
+function drawLive() {
+  const cols = Math.max(1, Math.floor((live.width - 16 + 6) / 50));
+  const wrap = el("case");
+  wrap.append(el("readout", "宽 " + live.width + " · " + cols + " 列"));
+  const panel = buildPanel(live, drawLive);
+  const grip = el("grip");
+  grip.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    const x0 = e.clientX, w0 = live.width, body = document.body;
+    const move = (m) => {
+      const next = Math.min(410, snap(w0 + m.clientX - x0));
+      if (next !== live.width) { live.width = next; panel.style.width = next + "px"; wrap.firstChild.textContent = "宽 " + next + " · " + Math.max(1, Math.floor((next - 10) / 50)) + " 列"; }
+    };
+    const up = () => { body.removeEventListener("pointermove", move); body.removeEventListener("pointerup", up); drawLive(); };
+    body.addEventListener("pointermove", move);
+    body.addEventListener("pointerup", up);
+  });
+  panel.append(grip);
+  wrap.append(panel);
+  liveRoot.replaceChildren(wrap);
+}
+drawLive();
+
+const CASES = [
+  ["默认：2 列，两组全开", { width: 110, armed: "pen", paintingOpen: true, mappingOpen: true }],
+  ["拖宽：3 列，Mapping 按钮占满一行", { width: 160, armed: "pen", paintingOpen: true, mappingOpen: true }],
+  ["最窄：1 列，文字显示省略号", { width: 80, armed: "pen", paintingOpen: true, mappingOpen: true }],
+  ["收起 Painting，选中的 Pen 留下蓝点", { width: 110, armed: "pen", paintingOpen: false, mappingOpen: true }],
+  ["收起 Mapping，给画图留出空间", { width: 110, armed: "fill", paintingOpen: true, mappingOpen: false }],
+  ["两组都收起", { width: 110, armed: "mapping_area", paintingOpen: false, mappingOpen: false }],
+];
+const casesRoot = document.getElementById("cases");
+for (const [caption, state] of CASES) {
+  const wrap = el("case");
+  wrap.append(buildPanel(state), el("cap", caption));
+  casesRoot.append(wrap);
+}
+const nowWrap = el("case");
+const now = el("panel");
+now.style.width = "160px";
+now.append(el("title", "<span>Tools</span><span><i></i><i></i></span>"), el("tabs", '<div class="sel">Painting</div><div>Mapping</div>'));
+const nowFlow = el("flow");
+for (const tool of PAINTING) nowFlow.append(el("chip" + (tool === "pen" ? " on" : ""), '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">' + GLYPHS[tool].replaceAll("transfer-hole", "transfer-hole-now") + "</svg>"));
+now.append(nowFlow, el("fill"));
+nowWrap.append(now, el("cap", "对照：现在的分页"));
+casesRoot.append(nowWrap);
+
+const themeButton = document.getElementById("theme");
+themeButton.addEventListener("click", () => {
+  const dark = document.documentElement.dataset.theme !== "dark";
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  themeButton.textContent = dark ? "切换浅色" : "切换深色";
+});
+</script>
+</body>
+</html>

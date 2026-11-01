@@ -225,6 +225,35 @@ export function windowDockIds(scene: Scene, winNode: SceneNode | undefined): str
   return out;
 }
 
+const DOCK_WIDTH_MIN = 80;
+/** 写了档位的面板可以窄到第一档，和排版算宽度时的下限一致 */
+const DOCK_WIDTH_STEP_MIN = 60;
+const DOCK_WIDTH_MAX = 900;
+
+/** 取最近的 widthBase + n × widthStep（n ≥ 1），不超出左右停靠区的宽度范围。 */
+function snapDockWidth(size: number, dock: SceneNode): number {
+  const step = dock.widthStep!;
+  const base = dock.widthBase ?? 0;
+  const most = Math.max(1, Math.floor((DOCK_WIDTH_MAX - base) / step));
+  const n = Math.min(most, Math.max(1, Math.round((size - base) / step)));
+  return Math.max(DOCK_WIDTH_STEP_MIN, base + n * step);
+}
+
+/**
+ * 左右停靠区里有写了 widthStep 的面板时，宽度吸附到它的档位上；有多个时取排在最前的。
+ * 沿宽度方向并排时不吸附，那时的宽度是各组之和。
+ */
+function snapSideAreas(areas: Record<DockArea, DockAreaSpec>, scene: Scene): void {
+  for (const area of ["left", "right"] as const) {
+    const areaSpec = areas[area];
+    const dock = areaSpec.groups.flatMap((g) => g.tabs).map((id) => scene.nodes[id]).find((n) => n?.widthStep);
+    if (!dock) continue;
+    const orient = areaSpec.splitOrientation ?? defaultSplitOrientation(area);
+    if (areaSpec.groups.length >= 2 && orient !== defaultSplitOrientation(area)) continue;
+    areaSpec.size = snapDockWidth(areaSpec.size ?? prefWidth(dock), dock);
+  }
+}
+
 /**
  * 将窗口节点上的 dockLayout（或回退自 docks + dockArea）归一化为完整的 DockLayoutSpec。
  */
@@ -296,6 +325,8 @@ export function normalizeDockLayout(scene: Scene, winNode: SceneNode | undefined
     const area: DockArea = isDockArea(dNode.dockArea) ? dNode.dockArea : "left";
     areas[area].groups.push({ tabs: [did], active: did });
   }
+
+  snapSideAreas(areas, scene);
 
   // 补齐每个非空停靠区的默认厚度 size，并清理空区/单组区的多余字段
   const out: DockLayoutSpec = { areas, floating };
@@ -604,8 +635,8 @@ export function dockResizeArea(
   size: number,
 ): DockLayoutSpec {
   const next = cloneDockLayout(layout);
-  const minSize = area === "left" || area === "right" ? 80 : 48;
-  const clamped = Math.max(minSize, Math.min(900, Math.round(size)));
+  const minSize = area === "left" || area === "right" ? DOCK_WIDTH_MIN : 48;
+  const clamped = Math.max(minSize, Math.min(DOCK_WIDTH_MAX, Math.round(size)));
   const areaSpec = next.areas[area];
   areaSpec.size = clamped;
   // 沿厚度方向并排时，停靠区厚度是各组之和，要按比例缩放各组，否则归一化后又回到原来的和

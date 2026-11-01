@@ -1,0 +1,5 @@
+.qbutton { box-sizing: border-box; width: 100%; height: 100%; border: 1px solid var(--btn-border, #afafb0); border-radius: 2px; padding: 0 8px;
+  background: linear-gradient(var(--btn-top, #fdfdfd), var(--btn-bottom, #e8e8e8)); color: var(--text, #1d1f20); font: 12px "Segoe UI"; line-height: 22px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qbutton:hover { border-color: var(--accent, #3d8ec9); }
+.qbutton.checked { background: var(--accent, #3d8ec9); color: var(--on-accent, #ffffff); }
+.qbutton:disabled { color: var(--text-dim, #6b6d72); }

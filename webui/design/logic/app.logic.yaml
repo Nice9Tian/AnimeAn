@@ -1,5 +1,184 @@
 version: 1
-state: {}
-conditions: {}
-events: {}
-objects: {}
+state:
+  tools:
+    paintingOpen: { type: boolean, initial: true, owner: business }
+    mappingOpen: { type: boolean, initial: true, owner: business }
+    armed: { type: string, initial: pen, owner: business }
+    locked:
+      arrow: { type: boolean, initial: false, owner: business }
+      pen: { type: boolean, initial: false, owner: business }
+      eraser: { type: boolean, initial: false, owner: business }
+      fill: { type: boolean, initial: false, owner: business }
+      transfer: { type: boolean, initial: false, owner: business }
+      connect: { type: boolean, initial: false, owner: business }
+      h_center_line: { type: boolean, initial: false, owner: business }
+      v_center_line: { type: boolean, initial: false, owner: business }
+      mapping_area: { type: boolean, initial: false, owner: business }
+      additional_line: { type: boolean, initial: false, owner: business }
+      auto_mapping_2: { type: boolean, initial: false, owner: business }
+conditions:
+  paintingArmed:
+    type: symbol
+    text: 选中的工具在 Painting 组
+    expr: tools.armed == 'arrow' or tools.armed == 'pen' or tools.armed == 'eraser' or tools.armed == 'fill' or tools.armed == 'transfer' or tools.armed == 'connect'
+  mappingArmed:
+    type: symbol
+    text: 选中的工具在 Mapping 组
+    expr: tools.armed == 'h_center_line' or tools.armed == 'v_center_line' or tools.armed == 'mapping_area' or tools.armed == 'additional_line' or tools.armed == 'auto_mapping_2'
+events:
+  toolSelect:
+    owner: business
+    text: 用户点了 Painting 组的工具
+    simulate:
+      - set: tools.armed = param.tool
+  toolSelectExtra:
+    owner: business
+    text: 用户点了 Python 注册的工具
+    simulate:
+      - set: tools.armed = param.name
+  toolGroupToggle:
+    owner: business
+    text: 用户折叠或展开 Tools 的一个分组
+    simulate:
+      - if: param.group == 'painting'
+        then:
+          - set: tools.paintingOpen = not tools.paintingOpen
+        else:
+          - set: tools.mappingOpen = not tools.mappingOpen
+objects:
+  paintingHeader:
+    props:
+      open: tools.paintingOpen
+      active: paintingArmed
+    events:
+      click:
+        - emit:
+            name: toolGroupToggle
+            args:
+              group: "'painting'"
+  paintingBody:
+    props:
+      visible: tools.paintingOpen
+  mappingHeader:
+    props:
+      open: tools.mappingOpen
+      active: mappingArmed
+    events:
+      click:
+        - emit:
+            name: toolGroupToggle
+            args:
+              group: "'mapping'"
+  mappingBody:
+    props:
+      visible: tools.mappingOpen
+  toolArrow:
+    props:
+      armed: tools.armed == 'arrow' and not tools.locked.arrow
+      enabled: not tools.locked.arrow
+    events:
+      click:
+        - emit:
+            name: toolSelect
+            args:
+              tool: "'arrow'"
+  toolPen:
+    props:
+      armed: tools.armed == 'pen' and not tools.locked.pen
+      enabled: not tools.locked.pen
+    events:
+      click:
+        - emit:
+            name: toolSelect
+            args:
+              tool: "'pen'"
+  toolEraser:
+    props:
+      armed: tools.armed == 'eraser' and not tools.locked.eraser
+      enabled: not tools.locked.eraser
+    events:
+      click:
+        - emit:
+            name: toolSelect
+            args:
+              tool: "'eraser'"
+  toolFill:
+    props:
+      armed: tools.armed == 'fill' and not tools.locked.fill
+      enabled: not tools.locked.fill
+    events:
+      click:
+        - emit:
+            name: toolSelect
+            args:
+              tool: "'fill'"
+  toolTransfer:
+    props:
+      armed: tools.armed == 'transfer' and not tools.locked.transfer
+      enabled: not tools.locked.transfer
+    events:
+      click:
+        - emit:
+            name: toolSelect
+            args:
+              tool: "'transfer'"
+  toolConnect:
+    props:
+      armed: tools.armed == 'connect' and not tools.locked.connect
+      enabled: not tools.locked.connect
+    events:
+      click:
+        - emit:
+            name: toolSelect
+            args:
+              tool: "'connect'"
+  toolHCenterLine:
+    props:
+      armed: tools.armed == 'h_center_line' and not tools.locked.h_center_line
+      enabled: not tools.locked.h_center_line
+    events:
+      click:
+        - emit:
+            name: toolSelectExtra
+            args:
+              name: "'h_center_line'"
+  toolVCenterLine:
+    props:
+      armed: tools.armed == 'v_center_line' and not tools.locked.v_center_line
+      enabled: not tools.locked.v_center_line
+    events:
+      click:
+        - emit:
+            name: toolSelectExtra
+            args:
+              name: "'v_center_line'"
+  toolMappingArea:
+    props:
+      armed: tools.armed == 'mapping_area' and not tools.locked.mapping_area
+      enabled: not tools.locked.mapping_area
+    events:
+      click:
+        - emit:
+            name: toolSelectExtra
+            args:
+              name: "'mapping_area'"
+  toolAdditionalLine:
+    props:
+      armed: tools.armed == 'additional_line' and not tools.locked.additional_line
+      enabled: not tools.locked.additional_line
+    events:
+      click:
+        - emit:
+            name: toolSelectExtra
+            args:
+              name: "'additional_line'"
+  toolAutoMapping:
+    props:
+      armed: tools.armed == 'auto_mapping_2' and not tools.locked.auto_mapping_2
+      enabled: not tools.locked.auto_mapping_2
+    events:
+      click:
+        - emit:
+            name: toolSelectExtra
+            args:
+              name: "'auto_mapping_2'"

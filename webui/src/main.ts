@@ -1,9 +1,11 @@
 /// <reference types="vite/client" />
 import { invoke } from "@tauri-apps/api/core";
+import { removeNodeReferences, type Project } from "../vf/src/model.ts";
 import { loadProject, type ProjectIO } from "../vf/src/project.ts";
 import { BackendClient } from "./net.ts";
 import { createPlayer } from "./player.ts";
 import { createChrome, createStore, DOCK_FOR_WINDOW, panelFactories, syncDocks } from "./ui/app.js";
+import { raiseBusiness, syncTools } from "./ui/tools.js";
 import "./ui/qt.css";
 import "./ui/qt3.css";
 import "./ui/shell.css";
@@ -73,12 +75,27 @@ async function resolveBackendWsUrl(): Promise<string | null> {
   return params.get("ws");
 }
 
+// ?only=<dock id> leaves that dock alone in the window, to work on one panel by itself.
+function keepOnlyDock(project: Project, dockId: string): void {
+  const { scene } = project;
+  const dock = scene.nodes[dockId];
+  if (!dock) throw new Error(`场景里没有 ${dockId}`);
+  const kept = new Set([dockId]);
+  for (const id of kept) for (const child of scene.nodes[id].children ?? []) kept.add(child);
+  kept.add(scene.root);
+  const removed = new Set(Object.keys(scene.nodes).filter((id) => !kept.has(id)));
+  removeNodeReferences(scene, removed);
+  for (const id of removed) delete scene.nodes[id];
+}
+
 async function bootstrap(): Promise<void> {
   const appEl = document.getElementById("app");
   if (!appEl) throw new Error("找不到 #app 容器");
 
   const io = createGlobProjectIO(rawDesignFiles);
   const project = await loadProject(io);
+  const onlyDock = new URLSearchParams(window.location.search).get("only");
+  if (onlyDock) keepOnlyDock(project, onlyDock);
   const client = new BackendClient();
   const store = createStore(client);
   const factories = panelFactories(store, client);
@@ -92,6 +109,7 @@ async function bootstrap(): Promise<void> {
     };
   }
   const player = createPlayer(appEl, project, {
+    raiseBusiness: (name, args) => raiseBusiness(store, name, args),
     onDockClosed(dockId: string) {
       const name = Object.entries(DOCK_FOR_WINDOW).find(([, dock]) => dock === dockId)?.[0];
       if (name) void store.call("menu.trigger", { id: `windows.${name}` });
@@ -99,7 +117,12 @@ async function bootstrap(): Promise<void> {
   });
   for (const dock of [...Object.values(DOCK_FOR_WINDOW), "timelineDock"]) player.runtime.dockSetVisible(dock, false);
   syncDocks(player.runtime, store);
-  createChrome(document.getElementById("qt-menubar")!, document.getElementById("qt-statusbar")!, store);
+  const toolState = project.logic.state?.tools as { locked?: object } | undefined;
+  syncTools(player.runtime, store, Object.keys(toolState?.locked ?? {}));
+  const menuEl = document.getElementById("qt-menubar")!;
+  const statusEl = document.getElementById("qt-statusbar")!;
+  createChrome(menuEl, statusEl, store);
+  menuEl.hidden = statusEl.hidden = Boolean(onlyDock);
 
   const wsUrl = await resolveBackendWsUrl();
   if (wsUrl) {
