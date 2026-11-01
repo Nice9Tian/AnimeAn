@@ -374,14 +374,39 @@ def options_for_extra_tool(tool, state=None):
     state = state or {}
     tool = str(tool).lower()
 
-    if tool in ("h_center_line", "v_center_line",
+    if tool == "choice_line":
+        import auto_mapping
+        choice = auto_mapping.chosen_line()
+        return {
+            "row_spacing": 8,
+            "column_spacing": 6,
+            "controls": [{
+                "name": "ground_line",
+                "type": "check",
+                "title": f"地线（{auto_mapping.line_label(choice)}）" if choice else "地线（先点一条线）",
+                "hook": "ground_line",
+                "value": "on" if choice and auto_mapping.line_is_ground(choice) else "off",
+                "row": 0,
+                "start_column": 0,
+                "end_column": 2,
+            }],
+        }
+    if tool == "deform_line":
+        import line_tools
+        return {
+            "row_spacing": 8,
+            "column_spacing": 6,
+            "controls": [_slider("deform_radius", "Radius", "deform_radius", 10, 300,
+                                 int(line_tools.DEFORM_RADIUS["value"]), 0)],
+        }
+    if tool in ("h_center_line", "v_center_line", "free_out_line",
                 "mapping_area", "additional_line", "auto_mapping_2"):
         # Every mapping tool shows the SAME run-policy block. The settings it
         # holds are global to auto_mapping, and the guide tools are where the
         # user stands when they matter - arming h_center_line only to discover
         # the fold split lives on another tool's panel was the complaint.
         controls, row = _automapping_controls(0)
-        if tool in ("h_center_line", "v_center_line",
+        if tool in ("h_center_line", "v_center_line", "free_out_line",
                     "additional_line"):
             # These three are pen strokes, so they honour the same smoothing
             # and width parameters as the pen tool. They come AFTER the shared

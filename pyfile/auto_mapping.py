@@ -38,6 +38,7 @@ clipping, curve fitting - live in this file.
 """
 
 import bisect
+import colorsys
 import heapq
 import json
 import math
@@ -173,6 +174,18 @@ _HORIZON_MAX_SIN = 0.5
 # Falloff shape and reach are tool options.
 ADDITIONAL_PROPERTY = "additional_line"
 ADDITIONAL_COLOR = (255, 105, 180, 255)
+PROXY_PROPERTY = "proxy_contour"
+PROXY_COLOR = (214, 96, 40, 255)
+PROXY_HUES = 72
+PROXY_MIN_LENGTH = 60.0
+CHOICE_PROPERTY = "choice_line"
+DEFORM_PROPERTY = "deform_line"
+LINE_TOOL_PROPERTIES = (CHOICE_PROPERTY, DEFORM_PROPERTY)
+GROUND_FLAG = "ground"
+LINE_CHOSEN_COLOR = (255, 200, 40, 150)
+GROUND_PIN_COLOR = (220, 60, 40, 255)
+_LINE_TOOLS = {"armed": False, "chosen": None}
+_PROXY_PAIRING = {"key": None, "value": None}
 ADDITIONAL_FALLOFFS = ("linear", "quadratic")
 # constrain_outline (menu checkbox 约束外轮廓, default ON = the original
 # design): the MainView grid's outer contour - the outline the H/V axes
@@ -1749,9 +1762,9 @@ class _FlowFieldWarp:
                         f"additional line {index + 1} is neutral (both "
                         "sides ask for the identity flow) - bend or "
                         "rotate either side to shape the mapping")
-        for child_third, main_third, index in grounds:
+        for child_third, main_third, index, closed in grounds:
             line = self._prepare_ground([tuple(p) for p in child_third],
-                                        [tuple(p) for p in main_third], index)
+                                        [tuple(p) for p in main_third], index, closed)
             if line is not None:
                 self.grounds.append(line)
         if self.pairs or self.grounds:
@@ -1810,7 +1823,7 @@ class _FlowFieldWarp:
                 "radius": radius, "chord": chord, "arc": arc,
                 "neutral": neutral}
 
-    def _prepare_ground(self, child, main, index):
+    def _prepare_ground(self, child, main, index, closed=False):
         """One ground pair. Its stations are already paired, on the CANVAS
         (see build_mapper): resampling here, in Third, would slide them
         wherever the two sides of an axis scale differently (37.5 px along
@@ -1822,6 +1835,8 @@ class _FlowFieldWarp:
             return None
         # In Third, like _prepare: on the canvas a main frame turned past 90
         # degrees reads every unmoved partner as drawn backwards.
+        if closed:      # paired station by station, and a loop has no chord
+            return {"child": child, "main": main, "index": index, "closed": True}
         return {"child": child, "main": _partner_aligned(child, main),
                 "index": index}
 
@@ -2720,7 +2735,10 @@ class _FlowFieldWarp:
         # last-bit graze of zero from registering a phantom locus (and
         # from making the retreat count vary between runs).
         self._all_positive = bool(np.all(det > -self.DET_FOLD_TOL))
-        if ground_moved and not self._all_positive:
+        # A contour's outside folds on nearly every shape and nothing draws
+        # there, so the whole-field verdict says nothing about it.
+        if (ground_moved and not self._all_positive
+                and not any(line.get("closed") for line in grounds)):
             self.notes.append(
                 "ground lines fold the mapping: they cross their own parallel "
                 "axis, or ask for more than the ground between them can give")
@@ -2794,6 +2812,12 @@ class _FlowFieldWarp:
         target_y = np.zeros_like(X)
         stiffness = self.GROUND_STIFFNESS / (du * dv)
         for position, line in enumerate(self.grounds):
+            if line.get("closed"):
+                # A contour has no free end and decides everything inside it.
+                for k in (0, 1):
+                    for sign in (1.0, -1.0):
+                        release(k, sign)
+                continue
             c, m = line["child"], line["main"]
             k_orth = 1 if self._family_of(c) == "v" else 0   # axis it crosses
             k_side = 1 - k_orth                              # side it lives on
@@ -3490,14 +3514,21 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
         m = [(p[0], p[1]) for p in (main_item or {}).get("points") or []]
         if len(c) < 2 or len(m) < 2:
             return ({}, {})
+        if (child_item or {}).get("closed"):
+            return (child_item, main_item)     # already paired, station by station
         count = _FlowFieldWarp.GROUND_STATIONS
-        return ({"points": _resample_fractions(c, count)},
+        return ({"points": _resample_fractions(c, count),
+                 "same_third": (child_item or {}).get("same_third")},
                 {"points": _resample_fractions(m, count)})
 
     if additional_pairs or ground_pairs:
         thirds = lifted_pairs(additional_pairs or [], "additional line")
-        grounds = lifted_pairs(
-            [ground_stations(*pair) for pair in ground_pairs or []], "ground line")
+        stationed = [ground_stations(*pair) for pair in ground_pairs or []]
+        grounds = []
+        for child_third, main_third, index in lifted_pairs(stationed, "ground line"):
+            item = stationed[index][0]
+            grounds.append((child_third, child_third if item.get("same_third") else main_third,
+                            index, bool(item.get("closed"))))
         if thirds or grounds:
             candidate = _FlowFieldWarp(
                 thirds, _ADDITIONAL["falloff"],
@@ -4486,7 +4517,7 @@ def _direction_arrow_points(points, size):
 _MAPPER_CACHE = {"key": None, "mapper": None}
 
 
-def _mapper_fingerprint(child_assets, main_assets, pairs):
+def _mapper_fingerprint(child_assets, main_assets, pairs, grounds=None):
     """A cheap content key for _current_mapper's cache: the guide point
     lists, the pair geometry/authority, and the tool options that shape
     the mapping. Self-validating - no invalidation hooks to forget."""
@@ -4499,10 +4530,10 @@ def _mapper_fingerprint(child_assets, main_assets, pairs):
             # mapper when only the curve handles changed.
             parts.append((prop, tuple(map(tuple, item.get("points") or ())),
                           repr(item.get("commands"))))
-    for child_item, main_item in pairs or []:
+    for child_item, main_item in list(pairs or []) + list(grounds or []):
         for item in (child_item, main_item):
             item = item or {}
-            parts.append((item.get("id"),
+            parts.append((item.get("id"), item.get("closed"), item.get("same_third"),
                           tuple(map(tuple, item.get("points") or ())),
                           tuple(map(tuple, item.get("third") or ()))))
     parts.append((_ADDITIONAL["falloff"], _ADDITIONAL["radius_factor"],
@@ -4529,7 +4560,8 @@ def _current_mapper():
                             main_assets[V_PROPERTY]["points"]):
         return None, "the main center lines do not cross"
     pairs = _additional_pairs()
-    key = _mapper_fingerprint(child_assets, main_assets, pairs)
+    grounds = _ground_pairs()
+    key = _mapper_fingerprint(child_assets, main_assets, pairs, grounds)
     if _MAPPER_CACHE["key"] == key and _MAPPER_CACHE["mapper"] is not None:
         return _MAPPER_CACHE["mapper"], ""
     mapper, _ = build_mapper(
@@ -4538,7 +4570,7 @@ def _current_mapper():
         # The preview must show the mapping the RUN will use - with the
         # additional-line pairs. Without them the face-down bands sat at
         # the unwarped position (measured 6-7% of the domain mis-tinted).
-        additional_pairs=pairs)
+        additional_pairs=pairs, ground_pairs=grounds)
     if mapper is None:
         return None, "the mapper refuses these guides"
     _MAPPER_CACHE["key"] = key
@@ -4712,7 +4744,7 @@ def overlay_items(view_name):
         return settings is None or bool(settings.get(key, True))
 
     assets = _assets_for(view_name)
-    items = []
+    items = _chosen_line_items(view_name)    # first, so it sits under the line
     for prop, key in ((H_PROPERTY, "h"), (V_PROPERTY, "v")):
         if not wanted(f"show_{key}"):
             continue
@@ -4762,6 +4794,8 @@ def overlay_items(view_name):
             "pen_style": _display_style("additional_style"),
             "removable": True,
         })
+    items.extend(_contour_items(view_name))
+    items.extend(_line_mark_items(view_name))
     area = assets.get(MAPPING_AREA_PROPERTY) if wanted("show_area") else None
     if area:
         for polygon in area.get("polygons") or []:
@@ -5295,6 +5329,8 @@ _GUIDE_DRAG = {}
 
 
 def _guide_drag_event(message):
+    if message.get("property") in LINE_TOOL_PROPERTIES:
+        return    # pyfile/line_tools.py owns the press under these tools
     overlay_id = str(message.get("handle") or "")
     is_guide = overlay_id in GUIDE_PROPERTIES
     is_additional = overlay_id.startswith(ADDITIONAL_PROPERTY + ":")
@@ -5360,6 +5396,9 @@ def _guide_drag_event(message):
         if item is None:
             return
         item["points"] = moved
+        # Moved by hand: the contour no longer owns it.
+        item.pop("auto", None)
+        item.pop("source", None)
         # The stored Bezier commands describe the OLD position; dropping them
         # keeps the guide honest as a polyline rather than drawing it in two
         # places at once. A redraw restores the curve.
@@ -8983,6 +9022,7 @@ def _perform_mapping():
         main_assets[V_PROPERTY],
         mapper_info,
         additional_pairs=additional,
+        ground_pairs=_ground_pairs(),
     )
     if map_point is None:
         print(f"[auto_mapping] cannot build mapping: {width_scale}")
@@ -9135,11 +9175,311 @@ def _run():
 # hooks + tool handlers
 # ---------------------------------------------------------------------------
 
+def _contour_points(view_name):
+    return (_assets_for(view_name).get(PROXY_PROPERTY) or {}).get("points")
+
+
+def proxy_pairing():
+    """The two contours paired, station by station, or None."""
+    child, main = _contour_points("child"), _contour_points("main")
+    if not child or not main:
+        return None
+    key = (tuple(map(tuple, child)), tuple(map(tuple, main)))
+    if _PROXY_PAIRING["key"] != key:
+        import proxy_shape
+        paired, why = proxy_shape.match(child, main)
+        if paired is None:
+            print(f"[auto_mapping] contours not paired: {why}")
+        _PROXY_PAIRING["key"], _PROXY_PAIRING["value"] = key, paired
+    return _PROXY_PAIRING["value"]
+
+
+def _refresh_proxy_axes():
+    """Main axes the user never drew or moved follow the contours (issue #9).
+    The texture axes are the user's and stay as they are."""
+    paired = proxy_pairing()
+    child_assets, main_assets = _assets_for("child"), _assets_for("main")
+    if paired is None or any(prop not in child_assets for prop in GUIDE_PROPERTIES):
+        return False
+    import proxy_shape
+    changed = False
+    for prop in GUIDE_PROPERTIES:
+        item = main_assets.get(prop)
+        if item is not None and not item.get("auto"):
+            continue
+        # What this axis was read from: re-reading it when nothing changed
+        # would cost a thin plate on every committed edit.
+        source = hash((tuple(map(tuple, child_assets[prop]["points"])), _PROXY_PAIRING["key"]))
+        if item is not None and item.get("source") == source:
+            continue
+        line = proxy_shape.carried_axis(paired, child_assets[prop]["points"])
+        if line:
+            flagged = bool(item and item.get(GROUND_FLAG))
+            main_assets[prop] = {"points": line, "width": 3.0, "auto": True, "source": source}
+            if flagged:
+                main_assets[prop][GROUND_FLAG] = True
+            changed = True
+    if changed:
+        _invalidate_additional_thirds("main")
+    return changed
+
+
+def run_proxy_contour_tool(view_name, points, width=3.0):
+    """Install this board's closed proxy contour; a redraw replaces it."""
+    # The fitter turns a clean polygon into a few straight runs, and flattening
+    # gives a straight run only its ends: judge the length, not the point count.
+    cleaned = [(float(x), float(y)) for x, y in points or []]
+    if len(cleaned) < 3 or _cumulative_lengths(cleaned + cleaned[:1])[-1] < PROXY_MIN_LENGTH:
+        print("[auto_mapping] a contour needs a longer stroke.")
+        return False
+    cleaned = [list(p) for p in _densify(cleaned + cleaned[:1])[:-1]]
+    assets = _assets_for(view_name)
+    # A contour IS a ground line from the moment it is drawn (user 2026-11-01);
+    # Choice Line can still untick it.
+    assets[PROXY_PROPERTY] = {"points": cleaned, "width": float(width), GROUND_FLAG: True}
+    other = "main" if view_name == "child" else "child"
+    axes_moved = _refresh_proxy_axes()
+    _save_assets(view_name)
+    if axes_moved and view_name != "main":
+        _save_assets("main")
+        try:
+            _animean().ui.history_commit("Contour axes", "main")
+        except Exception:
+            pass
+    _push_overlay("main")
+    _push_overlay("child")
+    print(f"[auto_mapping] contour set on the {view_name} board"
+          + ("" if _contour_points(other) else f"; draw one on the {other} board too."))
+    _maybe_auto_run()
+    return True
+
+
+def activate_proxy_contour_tool(name="free_out_line", property_value=PROXY_PROPERTY):
+    register_hooks()
+    arm_line_tools(False)
+    _set_draw_color(PROXY_COLOR)
+    print("[auto_mapping] Free Out Line: draw one closed shape on each board "
+          "(the end joins the start).")
+    return property_value
+
+
+def arm_line_tools(armed):
+    """The contour takes presses only while a line tool is armed; under the
+    pen it must not swallow a stroke that starts on it."""
+    if _LINE_TOOLS["armed"] != bool(armed):
+        _LINE_TOOLS["armed"] = bool(armed)
+        refresh_line_overlays()
+
+
+def refresh_line_overlays():
+    _push_overlay("main")
+    _push_overlay("child")
+
+
+def is_line(overlay_id):
+    return (overlay_id in GUIDE_PROPERTIES or overlay_id == PROXY_PROPERTY
+            or overlay_id.startswith(ADDITIONAL_PROPERTY + ":"))
+
+
+def line_item(view_name, overlay_id):
+    if overlay_id.startswith(ADDITIONAL_PROPERTY + ":"):
+        return _additional_line_by_overlay_id(view_name, overlay_id)[1]
+    return _assets_for(view_name).get(overlay_id)
+
+
+def line_label(overlay_id):
+    if overlay_id == H_PROPERTY:
+        return "H"
+    if overlay_id == V_PROPERTY:
+        return "V"
+    if overlay_id == PROXY_PROPERTY:
+        return "轮廓线"
+    return "辅助线"
+
+
+def chosen_line():
+    choice = _LINE_TOOLS["chosen"]
+    if choice and (line_item("child", choice) or line_item("main", choice)):
+        return choice
+    return None
+
+
+def choose_line(overlay_id):
+    _LINE_TOOLS["chosen"] = overlay_id
+
+
+def line_is_ground(overlay_id):
+    return any((line_item(view, overlay_id) or {}).get(GROUND_FLAG)
+               for view in ("child", "main"))
+
+
+def set_line_ground(overlay_id, value):
+    """A pair is one line: the flag sits on both boards and commits on both."""
+    for view in ("child", "main"):
+        item = line_item(view, overlay_id)
+        if item is None:
+            continue
+        if value:
+            item[GROUND_FLAG] = True
+        else:
+            item.pop(GROUND_FLAG, None)
+        _save_assets(view)
+        _push_overlay(view)
+        try:
+            _animean().ui.history_commit("Ground Line", view)
+        except Exception:
+            pass
+    print(f"[auto_mapping] {line_label(overlay_id)} "
+          f"{'is a ground line' if value else 'is no longer a ground line'}")
+    _maybe_auto_run()
+
+
+def replace_line_points(view_name, overlay_id, points, settled):
+    """Deform's write. `settled` is the release: history, axes, the mapping."""
+    item = line_item(view_name, overlay_id)
+    if item is None:
+        return
+    item["points"] = points
+    item.pop("commands", None)
+    item.pop("third", None)
+    item.pop("auto", None)
+    item.pop("source", None)
+    _invalidate_grid_cache()
+    if settled:
+        if overlay_id in GUIDE_PROPERTIES:
+            _invalidate_additional_thirds(view_name)
+        if overlay_id == PROXY_PROPERTY:
+            _refresh_proxy_axes()
+            _save_assets("main")
+        _save_assets(view_name)
+    _push_overlay("main")
+    _push_overlay("child")
+    try:
+        animean = _animean()
+        animean.ui.refresh()
+        if settled:
+            animean.ui.history_commit("Deform Line", view_name)
+    except Exception:
+        pass
+    if settled:
+        _maybe_auto_run()
+
+
+def _contour_items(view_name):
+    """The contour as one grabbable ring, with the hues on top: equal hue on
+    the two boards is the same point of the pattern."""
+    points = _contour_points(view_name)
+    if not points:
+        return []
+    ring = [tuple(p) for p in points]
+    items = [{
+        "id": PROXY_PROPERTY,
+        "points": ring,
+        "closed": True,
+        "color": (PROXY_COLOR[0], PROXY_COLOR[1], PROXY_COLOR[2], 255),
+        "width": 2.0,
+        "removable": True,
+        "draggable": _LINE_TOOLS["armed"],
+    }]
+    paired = proxy_pairing()
+    if paired is None:
+        return items
+    stations = [tuple(p) for p in paired["child" if view_name == "child" else "main"]]
+    count = len(stations)
+    for index in range(PROXY_HUES):
+        first = index * count // PROXY_HUES
+        last = (index + 1) * count // PROXY_HUES
+        chunk = [stations[k % count] for k in range(first, last + 1)]
+        red, green, blue = colorsys.hsv_to_rgb(index / PROXY_HUES, 0.8, 0.92)
+        items.append({
+            "id": f"{PROXY_PROPERTY}_hue:{index}",
+            "points": chunk,
+            "color": (int(red * 255), int(green * 255), int(blue * 255), 255),
+            "width": 3.5,
+            "removable": False,
+        })
+    return items
+
+
+def _chosen_line_items(view_name):
+    """A halo under the line Choice Line picked."""
+    chosen = chosen_line() if _LINE_TOOLS["armed"] else None
+    points = (line_item(view_name, chosen) or {}).get("points") if chosen else None
+    if not points or len(points) < 2:
+        return []
+    return [{
+        "id": f"line_chosen:{chosen}",
+        "points": [tuple(p) for p in points],
+        "closed": chosen == PROXY_PROPERTY,
+        "color": LINE_CHOSEN_COLOR,
+        "width": 10.0,
+        "removable": False,
+    }]
+
+
+def _line_mark_items(view_name):
+    """Pins on ground lines."""
+    assets = _assets_for(view_name)
+    lines = [prop for prop in GUIDE_PROPERTIES if prop in assets]
+    lines += [f"{ADDITIONAL_PROPERTY}:{_line_id(line, index)}" for index, line in enumerate(
+        (assets.get(ADDITIONAL_PROPERTY) or {}).get("lines") or [])]
+    if PROXY_PROPERTY in assets:
+        lines.append(PROXY_PROPERTY)
+    items = []
+    for overlay_id in lines:
+        points = (line_item(view_name, overlay_id) or {}).get("points") or []
+        if len(points) < 2 or not line_is_ground(overlay_id):
+            continue
+        ends = ([points[k * len(points) // 4] for k in range(4)]
+                if overlay_id == PROXY_PROPERTY else [points[0], points[-1]])
+        for number, end in enumerate(ends):
+            items.append({
+                "id": f"line_pin:{overlay_id}:{number}",
+                "points": [(end[0] + 5.0 * math.cos(2.0 * math.pi * k / 16),
+                            end[1] + 5.0 * math.sin(2.0 * math.pi * k / 16))
+                           for k in range(16)],
+                "closed": True,
+                "color": GROUND_PIN_COLOR,
+                "fill_color": GROUND_PIN_COLOR,
+                "width": 1.0,
+                "removable": False,
+            })
+    return items
+
+
+def _ground_pairs():
+    """The (child, main) ground pairs: lines the user ticked 地线."""
+    child_assets, main_assets = _assets_for("child"), _assets_for("main")
+    pairs = []
+    for prop in GUIDE_PROPERTIES:
+        child_item, main_item = child_assets.get(prop), main_assets.get(prop)
+        if child_item and main_item and (child_item.get(GROUND_FLAG) or main_item.get(GROUND_FLAG)):
+            # The frame already takes this axis onto its partner: the pin is
+            # "stay where the frame puts you", whatever else lets the axis go.
+            pairs.append(({"points": child_item["points"], "same_third": True},
+                          {"points": main_item["points"]}))
+    child_lines = {_line_id(line, index): line for index, line in enumerate(
+        (child_assets.get(ADDITIONAL_PROPERTY) or {}).get("lines") or [])}
+    main_lines = {_line_id(line, index): line for index, line in enumerate(
+        (main_assets.get(ADDITIONAL_PROPERTY) or {}).get("lines") or [])}
+    for key in sorted(child_lines):
+        child_item, main_item = child_lines[key], main_lines.get(key)
+        if main_item and (child_item.get(GROUND_FLAG) or main_item.get(GROUND_FLAG)):
+            pairs.append(({"points": child_item["points"]}, {"points": main_item["points"]}))
+    if line_is_ground(PROXY_PROPERTY):
+        paired = proxy_pairing()
+        if paired is not None:
+            child, main = paired["child"], paired["main"]
+            pairs.append(({"points": child + child[:1], "closed": True},
+                          {"points": main + main[:1]}))
+    return pairs or None
+
+
 def _capture_mapping_item(cell, stroke, message):
     """Move a freshly drawn guide/area click out of the model into the dict."""
     prop = message.get("property")
     if prop not in (H_PROPERTY, V_PROPERTY, MAPPING_AREA_PROPERTY,
-                    ADDITIONAL_PROPERTY):
+                    ADDITIONAL_PROPERTY, PROXY_PROPERTY):
         return
     view = message.get("view") or "main"
     row = cell.get("row")
@@ -9206,6 +9546,11 @@ def _capture_mapping_item(cell, stroke, message):
             message["cancel_history"] = True
         _animean().ui.widget.refresh()
         return
+    elif prop == PROXY_PROPERTY:
+        if not run_proxy_contour_tool(view, points, width):
+            message["cancel_history"] = True
+        _animean().ui.widget.refresh()
+        return
     else:
         # Same entry point Re-expand uses; it saves and refreshes the overlays
         # itself, which is why the shared tail below only runs for the area.
@@ -9240,6 +9585,16 @@ def _overlay_removed(cell, stroke, message):
     if not item_id:
         return
     view = message.get("view") or "main"
+    if item_id == PROXY_PROPERTY:
+        _assets_for(view).pop(PROXY_PROPERTY, None)
+        _save_assets(view)
+        refresh_line_overlays()
+        try:
+            _animean().ui.history_commit("Remove Contour", view)
+        except Exception:
+            pass
+        _maybe_auto_run()
+        return
     if item_id.startswith(ADDITIONAL_PROPERTY + ":"):
         # Additional lines exist as PAIRS - removing one on either board
         # removes the pair (matched by id) on both, and each board's write
@@ -9818,6 +10173,14 @@ def _maybe_auto_run():
     pattern stroke). A no-op outside unit focus, while a run is already in
     flight, or when the unit's Live Re-render checkbox is off."""
     uid = _ACTIVE_UNIT["id"]
+    if not _RUN_GUARD["depth"] and _refresh_proxy_axes():
+        # A texture axis moved under contour-owned main axes.
+        _save_assets("main")
+        _push_overlay("main")
+        try:
+            _animean().ui.history_commit("Contour axes", "main")
+        except Exception:
+            pass
     if uid is None or _RUN_GUARD["depth"]:
         return
     if not _unit_settings(uid).get("auto_render", True):
@@ -10834,6 +11197,8 @@ def _additional_pairs():
         if main_line is None:
             orphans += 1
             continue
+        if child_line.get(GROUND_FLAG) or main_line.get(GROUND_FLAG):
+            continue    # a ticked line pins position instead (_ground_pairs)
         if (len(child_line.get("points") or []) >= 2
                 and len(main_line.get("points") or []) >= 2):
             pairs.append((child_line, main_line))
@@ -10860,7 +11225,8 @@ def _mapper_from_assets(additional=True):
             return None, f"the H and V center lines on the {view} board do not cross"
     return build_mapper(specs[("child", H_PROPERTY)], specs[("child", V_PROPERTY)],
                         specs[("main", H_PROPERTY)], specs[("main", V_PROPERTY)],
-                        additional_pairs=_additional_pairs() if additional else None)
+                        additional_pairs=_additional_pairs() if additional else None,
+                        ground_pairs=_ground_pairs() if additional else None)
 
 
 def _nearest_additional_index(lines, points):
