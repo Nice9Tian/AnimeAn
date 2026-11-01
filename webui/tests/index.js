@@ -8,3 +8,4 @@ import "./incremental_refresh.test.ts";
 import "./tool_groups.test.ts";
 import "./layers_assets.test.ts";
 import "./timeline_arrange.test.ts";
+import "./dialogs_and_options.test.ts";

@@ -617,3 +617,79 @@ export function createTexturePanel(root, { onTrigger, onScroll, onButton } = {})
     },
   };
 }
+
+// ---- QMessageBox -----------------------------------------------------------------
+export function messageBox({ title = "", text = "", buttons = ["OK"] } = {}) {
+  const list = Array.isArray(buttons) && buttons.length ? buttons.map(String) : ["OK"];
+  if (typeof document === "undefined" || !document.body) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const shade = div("qdialog-shade");
+    const dialog = div("qdialog");
+    Object.assign(dialog.style, { width: "auto", minWidth: "260px", maxWidth: "420px" });
+    const head = div("qdialog-title");
+    head.append(div("qdialog-caption", String(title ?? "")));
+    const close = div("qdialog-close");
+    close.innerHTML = `<svg width="10" height="10"><path d="M0.5 0.5 L9.5 9.5 M9.5 0.5 L0.5 9.5" stroke="currentColor" fill="none"/></svg>`;
+    head.append(close);
+    const body = div("qdialog-body");
+    Object.assign(body.style, {
+      width: "auto",
+      height: "auto",
+      padding: "12px",
+      display: "flex",
+      flexDirection: "column",
+      gap: "12px",
+      boxSizing: "border-box",
+    });
+    const msg = div("qdialog-caption-text", String(text ?? ""));
+    Object.assign(msg.style, { position: "static", whiteSpace: "pre-wrap", overflowWrap: "anywhere" });
+    const row = div("qdialog-buttons");
+    Object.assign(row.style, { position: "static", display: "flex", justifyContent: "flex-end", gap: "6px" });
+
+    let done = false;
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      if (typeof window !== "undefined") window.removeEventListener("keydown", onKey, true);
+      shade.remove();
+      resolve(result);
+    };
+    const onKey = (e) => {
+      if (e.key === "Enter") { e.preventDefault(); finish(list[0]); }
+      else if (e.key === "Escape") { e.preventDefault(); finish(null); }
+    };
+
+    const btnEls = list.map((label, i) => {
+      const b = pushButton(label, () => finish(label));
+      b.style.minWidth = "72px";
+      if (i === 0) b.classList.add("qdefault");
+      row.append(b);
+      return b;
+    });
+
+    close.addEventListener("click", () => finish(null));
+    dialog.tabIndex = -1;
+    dialog.addEventListener("keydown", onKey);
+    if (typeof window !== "undefined") window.addEventListener("keydown", onKey, true);
+    head.addEventListener("pointerdown", (e) => {
+      if (e.target?.closest?.(".qdialog-close")) return;
+      head.setPointerCapture?.(e.pointerId);
+      const r = dialog.getBoundingClientRect(), host = shade.getBoundingClientRect();
+      const dx = e.clientX - r.left, dy = e.clientY - r.top;
+      const move = (m) => {
+        dialog.style.left = `${m.clientX - dx - host.left}px`;
+        dialog.style.top = `${m.clientY - dy - host.top}px`;
+        dialog.style.transform = "none";
+      };
+      const up = () => { head.removeEventListener("pointermove", move); head.removeEventListener("pointerup", up); };
+      head.addEventListener("pointermove", move);
+      head.addEventListener("pointerup", up);
+    });
+
+    body.append(msg, row);
+    dialog.append(head, body);
+    shade.append(dialog);
+    document.body.append(shade);
+    (btnEls[0] ?? dialog).focus?.({ preventScroll: true });
+  });
+}

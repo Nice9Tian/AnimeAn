@@ -1,7 +1,8 @@
 // The tool options panel: builds the grid Python describes, the same control
 // set as childrenpanel/tooloptpanel.cpp. onOption receives
 // { hook, name, type, value, row, startColumn, endColumn }.
-import { createPalette, parseColor, toHexRgb } from "./palette.js";
+import { colorButtonColors, colorDarker, colorLighter, colorLightness, createPalette, parseColor, toHexArgb, toHexRgb } from "./palette.js";
+export { colorButtonColors, colorButtonColors as colorButtonStyle, colorDarker, colorDarker as darker, colorLighter, colorLighter as lighter, colorLightness, colorLightness as lightness };
 
 function div(cls, text) {
   const d = document.createElement("div");
@@ -89,30 +90,99 @@ function check(control, send) {
   return label;
 }
 
+function buttonTint(state) {
+  if (!state || typeof state !== "object") return null;
+  if (state.color) return parseColor(state.color);
+  if (state.r !== undefined || state.g !== undefined || state.b !== undefined) {
+    return { r: Number(state.r ?? 0), g: Number(state.g ?? 0), b: Number(state.b ?? 0), a: Number(state.a ?? 255) };
+  }
+  return null;
+}
+
 function button(control, send) {
   const b = document.createElement("button");
   b.type = "button";
   b.className = "qbutton opt-button";
   b.textContent = control.title ?? "";
-  const tint = control.state?.color;
-  if (tint) b.style.background = String(tint);
+  const tint = buttonTint(control.state);
+  if (tint) {
+    const styles = colorButtonColors(tint);
+    let hovered = false, pressed = false;
+    const syncBg = () => {
+      const bg = pressed ? styles.pressedBackground : hovered ? styles.hoverBackground : styles.background;
+      b.style.background = bg;
+      b.style.backgroundColor = bg;
+    };
+    b.style.color = styles.color;
+    b.dataset.hoverBg = styles.hoverBackground;
+    b.dataset.pressedBg = styles.pressedBackground;
+    syncBg();
+    b.addEventListener("pointerenter", () => { hovered = true; syncBg(); });
+    b.addEventListener("pointerleave", () => { hovered = false; pressed = false; syncBg(); });
+    b.addEventListener("pointerdown", (e) => { if (!e.button) { pressed = true; syncBg(); } });
+    b.addEventListener("pointerup", () => { pressed = false; syncBg(); });
+    b.addEventListener("pointercancel", () => { pressed = false; syncBg(); });
+  }
   b.addEventListener("click", () => send("button", control.value ?? ""));
   return b;
+}
+
+function openColorDialog(initial, onAccept) {
+  const shade = div("qdialog-shade");
+  const dialog = div("qdialog newcolor-dialog");
+  const inner = createPalette(() => {}, { pickersOnly: true });
+  const row = div("qdialog-buttons");
+  Object.assign(row.style, { display: "flex", justifyContent: "flex-end", gap: "6px" });
+  const ok = document.createElement("button");
+  ok.type = "button";
+  ok.className = "qbutton qdefault";
+  ok.textContent = "OK";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "qbutton";
+  cancel.textContent = "Cancel";
+  const close = () => shade.remove();
+  const accept = () => {
+    const chosen = { ...inner.color() };
+    close();
+    onAccept(chosen);
+  };
+  ok.addEventListener("click", accept);
+  cancel.addEventListener("click", close);
+  shade.addEventListener("pointerdown", (e) => { if (e.target === shade) close(); });
+  dialog.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); accept(); }
+    if (e.key === "Escape") { e.preventDefault(); close(); }
+  });
+  row.append(ok, cancel);
+  dialog.append(inner.el, row);
+  shade.append(dialog);
+  document.body.append(shade);
+  inner.update({ value: toHexArgb(initial), swatches: [] });
 }
 
 function color(control, send) {
   const wrap = div("opt-color");
   if (control.title) wrap.append(div("opt-title-inline", control.title));
-  const c = parseColor(control.value);
-  const input = document.createElement("input");
-  input.type = "color";
-  input.className = "opt-swatch";
-  input.value = toHexRgb(c);
-  input.addEventListener("change", () => {
-    const alpha = c.a.toString(16).padStart(2, "0");
-    send("color", `#${alpha}${input.value.slice(1)}`);
+  let current = parseColor(control.value);
+  const swatch = document.createElement("button");
+  swatch.type = "button";
+  swatch.className = "opt-swatch";
+  const paintSwatch = (c) => {
+    const rgb = toHexRgb(c);
+    swatch.style.background = rgb;
+    swatch.style.backgroundColor = rgb;
+    swatch.title = toHexArgb(c);
+  };
+  paintSwatch(current);
+  swatch.addEventListener("click", () => {
+    openColorDialog(current, (chosen) => {
+      current = chosen;
+      paintSwatch(current);
+      send("color", toHexArgb(current));
+    });
   });
-  wrap.append(input);
+  wrap.append(swatch);
   return wrap;
 }
 
