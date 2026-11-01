@@ -101,7 +101,39 @@ describe("Field Texture & F..f Scope Rendering", () => {
     assert.ok(sharedCount >= 3, "Expected shared uniforms (u_fieldTex, u_fieldRect, u_fieldGrid) between FIELD_VS and FIELD_FS");
   });
 
-  it("executes F..f passes in reverse order, supports 7-element tint and 3-element legacy passes, restores entry state, and multiplies opacity", () => {
+  it("parses flat JSON F op literal and draws scope geometry with drawArrays instead of skipping", () => {
+    const mock = createMockGlCanvas();
+    const renderer = new GlBoardRenderer(mock.canvas, { getDpr: () => 1 });
+    const field = new Float32Array(2 * 2 * 4);
+    field[2] = 1;
+    field[6] = 1;
+    field[10] = 1;
+    field[14] = 1;
+    renderer.putField({ t: "field", key: "field_preview", w: 2, h: 2, version: 20, bytes: 64 }, field);
+
+    const flatFOp = JSON.parse('["F", "field_preview", 20, 272, 112, 736, 496, 5.767, [[0.5, 1.5, 1, 0, 0, 0, 0]]]') as unknown[];
+    mock.calls.length = 0;
+    renderer.renderFrame({
+      t: "board",
+      view: "main",
+      frame: 1,
+      w: 1280,
+      h: 720,
+      keep: 0,
+      ops: [
+        ["P", 255, 0, 0, 255, 2, 0, 0, 2, 0, null],
+        flatFOp,
+        ["S", [0, 300, 200, 1, 500, 300], 0],
+        ["f"],
+      ],
+    });
+
+    const drawCalls = mock.calls.filter((c) => c.fn === "drawArrays" && Number(c.args[2]) > 6);
+    assert.ok(drawCalls.length >= 1, "flat F op parsed from JSON must execute and emit drawArrays for scope stroke");
+    assert.ok(renderer.getLastDrawCalls() >= 1);
+  });
+
+  it("executes F..f passes in reverse order, supports 7-element tint and 3-element legacy passes, restores entry state, and multiplies outer/pass/inner opacity", () => {
     const mock = createMockGlCanvas();
     const renderer = new GlBoardRenderer(mock.canvas, { getDpr: () => 1 });
     const field = new Float32Array(2 * 2 * 4);
@@ -123,7 +155,10 @@ describe("Field Texture & F..f Scope Rendering", () => {
           "F",
           "f_rev",
           5,
-          [10, 20, 100, 80],
+          10,
+          20,
+          100,
+          80,
           4,
           [
             [1, 1, 1.0],
@@ -131,13 +166,16 @@ describe("Field Texture & F..f Scope Rendering", () => {
           ],
         ],
         ["S", [0, 20, 30, 1, 60, 30], 0],
-        // Mutate state inside scope: next pass and ops after 'f' must see restored entry state
+        // Mutate state inside scope: O inside scope multiplies op[1] * passOpacity * entryOpacity (0.8 * passOpacity * 0.5)
         ["O", 0.8],
         ["P", 255, 0, 0, 255, 4, 0, 0, 2, 0, null],
         ["S", [0, 20, 50, 1, 60, 50], 0],
         ["f"],
         // After 'f', pen should be restored to green (0,200,0) and opacity to 0.5
         ["S", [0, 10, 10, 1, 30, 10], 0],
+        // And an O op outside F..f sets opacity directly without entryOpacity/passOpacity factors
+        ["O", 0.8],
+        ["S", [0, 10, 20, 1, 30, 20], 0],
       ],
     });
 
@@ -161,22 +199,24 @@ describe("Field Texture & F..f Scope Rendering", () => {
     assert.deepEqual(lastTint, [0, 0, 0, 0], "3-element pass must default tint to [0,0,0,0]");
 
     // Check premultiplied alpha in u_color:
-    // Pass 1 (tag 0..0, passOpacity=0.25):
-    //   first stroke uses entry opacity 0.5 * 0.25 = 0.125 (green)
-    //   second stroke after ["O", 0.8] uses 0.8 * 0.25 = 0.2 (red)
-    // Pass 0 (tag 1..1, passOpacity=1.0):
-    //   first stroke uses restored entry opacity 0.5 * 1.0 = 0.5 (green)
-    //   second stroke after ["O", 0.8] uses 0.8 * 1.0 = 0.8 (red)
+    // Pass 1 (tag 0..0, passOpacity=0.25, entryOpacity=0.5):
+    //   first stroke uses entryOpacity * passOpacity = 0.5 * 0.25 = 0.125 (green)
+    //   second stroke after ["O", 0.8] uses 0.8 * passOpacity * entryOpacity = 0.8 * 0.25 * 0.5 = 0.1 (red)
+    // Pass 0 (tag 1..1, passOpacity=1.0, entryOpacity=0.5):
+    //   first stroke uses restored entryOpacity * passOpacity = 0.5 * 1.0 = 0.5 (green)
+    //   second stroke after ["O", 0.8] uses 0.8 * passOpacity * entryOpacity = 0.8 * 1.0 * 0.5 = 0.4 (red)
     // After 'f':
-    //   stroke uses restored entry opacity 0.5 (green)
+    //   stroke uses restored entryOpacity = 0.5 (green)
+    //   stroke after outer ["O", 0.8] uses 0.8 directly
     const colorCalls = mock.calls.filter((c) => c.fn === "uniform4f" && c.args[0] === "u_color");
-    assert.equal(colorCalls.length, 5);
+    assert.equal(colorCalls.length, 6);
     const alphas = colorCalls.map((c) => Number(c.args[4]));
     assert.ok(Math.abs(alphas[0] - 0.125) < 1e-5, `expected 0.125, got ${alphas[0]}`);
-    assert.ok(Math.abs(alphas[1] - 0.2) < 1e-5, `expected 0.2, got ${alphas[1]}`);
+    assert.ok(Math.abs(alphas[1] - 0.1) < 1e-5, `expected 0.1 (0.8 * 0.25 * 0.5), got ${alphas[1]}`);
     assert.ok(Math.abs(alphas[2] - 0.5) < 1e-5, `expected 0.5, got ${alphas[2]}`);
-    assert.ok(Math.abs(alphas[3] - 0.8) < 1e-5, `expected 0.8, got ${alphas[3]}`);
+    assert.ok(Math.abs(alphas[3] - 0.4) < 1e-5, `expected 0.4 (0.8 * 1.0 * 0.5), got ${alphas[3]}`);
     assert.ok(Math.abs(alphas[4] - 0.5) < 1e-5, `expected 0.5 after f, got ${alphas[4]}`);
+    assert.ok(Math.abs(alphas[5] - 0.8) < 1e-5, `expected 0.8 for outer O after f, got ${alphas[5]}`);
     // Verify green channel is non-zero on restored strokes (index 0, 2, 4)
     assert.ok(Number(colorCalls[2].args[2]) > 0, "pass[0] starts with restored green pen");
     assert.ok(Number(colorCalls[4].args[2]) > 0, "stroke after 'f' uses restored green pen");
@@ -201,7 +241,7 @@ describe("Field Texture & F..f Scope Rendering", () => {
       ops: [
         ["P", 0, 0, 0, 255, 2, 0, 0, 2, 0, null],
         ["S", sharedLine, 0],
-        ["F", "f_geo", 1, [0, 0, 200, 200], 4, [{ tagRange: [0, 1], opacity: 1 }]],
+        ["F", "f_geo", 1, 0, 0, 200, 200, 4, [[0, 1, 1, 0, 0, 0, 0]]],
         ["S", sharedLine, 0],
         ["f"],
       ],
@@ -230,7 +270,7 @@ describe("Field Texture & F..f Scope Rendering", () => {
       h: 200,
       keep: 2,
       ops: [
-        ["F", "f_geo", 2, [0, 0, 200, 200], 4, [{ tagRange: [0, 1], opacity: 1 }]],
+        ["F", "f_geo", 2, 0, 0, 200, 200, 4, [[0, 1, 1, 0, 0, 0, 0]]],
         ["S", sharedLine, 0],
         ["f"],
       ],
@@ -257,7 +297,7 @@ describe("Field Texture & F..f Scope Rendering", () => {
       ops: [
         ["B", 255, 0, 0, 255],
         ["P", 0, 0, 0, 0, 1, 0, 0, 2, 0, null],
-        ["F", "f_fill", 3, [0, 0, 300, 200], 10, [[0, 1, 1, 0, 0, 0, 0]]],
+        ["F", "f_fill", 3, 0, 0, 300, 200, 10, [[0, 1, 1, 0, 0, 0, 0]]],
         ["S", [0, 20, 20, 1, 60, 20, 1, 60, 60, 1, 20, 60, 3], 0],
         ["f"],
       ],
@@ -282,11 +322,11 @@ describe("Field Texture & F..f Scope Rendering", () => {
       h: 200,
       keep: 0,
       ops: [
-        ["F", "f_fill", 99, [0, 0, 300, 200], 10, [[0, 1, 1]]],
+        ["F", "f_fill", 99, 0, 0, 300, 200, 10, [[0, 1, 1]]],
         ["B", 255, 0, 0, 255],
         ["S", [0, 20, 20, 1, 60, 20, 1, 60, 60, 1, 20, 60, 3], 0],
         ["f"],
-        ["F", "missing_key", 1, [0, 0, 300, 200], 10, [[0, 1, 1]]],
+        ["F", "missing_key", 1, 0, 0, 300, 200, 10, [[0, 1, 1]]],
         ["B", 255, 0, 0, 255],
         ["S", [0, 20, 20, 1, 60, 20, 1, 60, 60, 1, 20, 60, 3], 0],
         ["f"],
@@ -300,7 +340,7 @@ describe("Field Texture & F..f Scope Rendering", () => {
     const sampleOps: unknown[][] = [
       ["B", 1, 2, 3, 255],
       ["R", 0, 0, 10, 10],
-      ["F", "k", 1, [0, 0, 100, 100], 4, [{ tagRange: [1, 1], opacity: 1 }]],
+      ["F", "k", 1, 0, 0, 100, 100, 4, [[1, 1, 1, 0, 0, 0, 0]]],
       ["S", [0, 0, 0, 1, 10, 10], 0],
       ["S", [0, 10, 10, 1, 20, 20], 0],
       ["f"],
@@ -344,7 +384,7 @@ describe("Field Texture & F..f Scope Rendering", () => {
       h: 100,
       keep: 2,
       ops: [
-        ["F", "k", 2, [0, 0, 100, 100], 4, [{ tagRange: [1, 1], opacity: 1 }]],
+        ["F", "k", 2, 0, 0, 100, 100, 4, [[1, 1, 1, 0, 0, 0, 0]]],
         ["S", [0, 0, 0, 1, 10, 10], 0],
         ["S", [0, 10, 10, 1, 20, 20], 0],
         ["f"],
@@ -393,7 +433,7 @@ describe("Field Texture & F..f Scope Rendering", () => {
     c2d.putField({ key: "fld_adopt", w: 2, h: 2, version: 7 }, fData);
     const ops: unknown[][] = [
       ["P", 0, 0, 0, 255, 2, 0, 0, 2, 0, null],
-      ["F", "fld_adopt", 7, [0, 0, 100, 100], 4, [{ tagRange: [1, 1], opacity: 1 }]],
+      ["F", "fld_adopt", 7, 0, 0, 100, 100, 4, [[1, 1, 1, 0, 0, 0, 0]]],
       ["S", [0, 10, 10, 1, 50, 10], 0],
       ["f"],
     ];

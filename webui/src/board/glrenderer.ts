@@ -627,6 +627,7 @@ export class GlBoardRenderer {
     tagMin: number;
     tagMax: number;
     passOpacity: number;
+    entryOpacity: number;
     tint: [number, number, number, number];
   } | null = null;
 
@@ -2144,7 +2145,8 @@ export class GlBoardRenderer {
 
         case "O": {
           state.opacity =
-            Math.max(0, Math.min(1, Number(op[1] ?? 1))) * (this.activeField ? this.activeField.passOpacity : 1);
+            Math.max(0, Math.min(1, Number(op[1] ?? 1))) *
+            (this.activeField ? this.activeField.passOpacity * this.activeField.entryOpacity : 1);
           break;
         }
 
@@ -2289,13 +2291,12 @@ export class GlBoardRenderer {
           const scopeEnd = closeIdx >= 0 ? closeIdx : end;
           const key = String(op[1] ?? "");
           const version = Math.round(Number(op[2] ?? 0));
-          const rawRect = Array.isArray(op[3]) ? op[3] : [];
-          const rx = Number(rawRect[0] ?? 0);
-          const ry = Number(rawRect[1] ?? 0);
-          const rw = Number(rawRect[2] ?? 0);
-          const rh = Number(rawRect[3] ?? 0);
-          const maxEdge = Math.max(0.5, Number(op[4] ?? 4));
-          const passes = Array.isArray(op[5]) ? op[5] : [];
+          const rx = Number(op[3] ?? 0);
+          const ry = Number(op[4] ?? 0);
+          const rw = Number(op[5] ?? 0);
+          const rh = Number(op[6] ?? 0);
+          const maxEdge = Math.max(0.5, Number(op[7] ?? 4));
+          const passes = Array.isArray(op[8]) ? op[8] : [];
           const fieldTexInfo = key && rw > 0 && rh > 0 ? this.getFieldTexture(key, version) : null;
 
           if (fieldTexInfo && passes.length > 0 && i + 1 < scopeEnd) {
@@ -2311,44 +2312,25 @@ export class GlBoardRenderer {
             }
             for (let pIdx = passes.length - 1; pIdx >= 0; pIdx--) {
               const rawPass = passes[pIdx];
-              let tagMin = 0;
-              let tagMax = 0;
-              let passOpacity = 1;
+              if (!Array.isArray(rawPass) || (rawPass.length !== 3 && rawPass.length !== 7)) continue;
+              const tagMin = Number(rawPass[0] ?? 0);
+              const tagMax = Number(rawPass[1] ?? tagMin);
+              const passOpacity = Math.max(0, Math.min(1, Number(rawPass[2] ?? 1)));
               let tintR = 0;
               let tintG = 0;
               let tintB = 0;
               let tintA = 0;
-              if (Array.isArray(rawPass)) {
-                if (rawPass.length < 3) continue;
-                tagMin = Number(rawPass[0] ?? 0);
-                tagMax = Number(rawPass[1] ?? tagMin);
-                passOpacity = Math.max(0, Math.min(1, Number(rawPass[2] ?? 1)));
-                if (rawPass.length >= 7) {
-                  tintR = clampByte(rawPass[3]) / 255;
-                  tintG = clampByte(rawPass[4]) / 255;
-                  tintB = clampByte(rawPass[5]) / 255;
-                  tintA = clampByte(rawPass[6]) / 255;
+              if (rawPass.length === 7) {
+                tintR = clampByte(rawPass[3]) / 255;
+                tintG = clampByte(rawPass[4]) / 255;
+                tintB = clampByte(rawPass[5]) / 255;
+                tintA = clampByte(rawPass[6]) / 255;
+                if (tintA <= 0) {
+                  tintR = 0;
+                  tintG = 0;
+                  tintB = 0;
+                  tintA = 0;
                 }
-              } else if (rawPass && typeof rawPass === "object") {
-                const pObj = rawPass as Record<string, unknown>;
-                const rawTagRange = Array.isArray(pObj.tagRange) ? pObj.tagRange : [0, 0];
-                tagMin = Number(rawTagRange[0] ?? 0);
-                tagMax = Number(rawTagRange[1] ?? tagMin);
-                passOpacity = Math.max(0, Math.min(1, Number(pObj.opacity ?? 1)));
-                if (pObj.a !== undefined) {
-                  tintR = clampByte(pObj.r) / 255;
-                  tintG = clampByte(pObj.g) / 255;
-                  tintB = clampByte(pObj.b) / 255;
-                  tintA = clampByte(pObj.a) / 255;
-                }
-              } else {
-                continue;
-              }
-              if (tintA <= 0) {
-                tintR = 0;
-                tintG = 0;
-                tintB = 0;
-                tintA = 0;
               }
 
               const passState = cloneDrawState(entryState);
@@ -2365,6 +2347,7 @@ export class GlBoardRenderer {
                 tagMin,
                 tagMax,
                 passOpacity,
+                entryOpacity: entryState.opacity,
                 tint: [tintR, tintG, tintB, tintA],
               };
               this.executeOps(ops, i + 1, scopeEnd, passState, dpr, pw, ph);
