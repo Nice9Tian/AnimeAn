@@ -1,6 +1,7 @@
 // Joins the drawn panels to the backend: keeps the latest value of every state
 // key, hands each panel what it shows, and turns what the user does into calls.
 import { BoardRenderer } from "../board/renderer.ts";
+import { GlBoardRenderer } from "../board/glrenderer.ts";
 import { attachBoardInput } from "../board/input.ts";
 import { createCentral, createLayers, createMenuBar, createTools, popupMenu } from "./panels.js";
 import { createToolOptions } from "./options.js";
@@ -252,31 +253,94 @@ function openNewColor(palette) {
   inner.update({ value: toHexArgb(palette.color()), swatches: [] });
 }
 
+// The board renderer is a per-machine choice, so it lives in the page's own
+// storage rather than in the document or the backend.
+const RENDERER_KEY = "animean.boardRenderer";
+
+function savedRendererKind() {
+  try {
+    return localStorage.getItem(RENDERER_KEY) === "canvas2d" ? "canvas2d" : "webgl";
+  } catch {
+    return "webgl";
+  }
+}
+
+function saveRendererKind(kind) {
+  try {
+    localStorage.setItem(RENDERER_KEY, kind);
+  } catch (error) {
+    fail(error);
+  }
+}
+
+// Asking opens a real context, and the browser only allows a handful.
+let webglSupported;
+function hasWebgl() {
+  webglSupported ??= GlBoardRenderer.isSupported();
+  return webglSupported;
+}
+
+function boardCanvas() {
+  const canvas = document.createElement("canvas");
+  canvas.className = "board-canvas";
+  return canvas;
+}
+
+// A canvas that has handed out one kind of context can never give the other,
+// so a failed WebGL start and every switch begin on a fresh canvas.
+function startRenderer(kind, options) {
+  if (kind === "webgl" && hasWebgl()) {
+    const canvas = boardCanvas();
+    try {
+      return { canvas, renderer: new GlBoardRenderer(canvas, options), kind };
+    } catch (error) {
+      fail(error);
+    }
+  }
+  const canvas = boardCanvas();
+  return { canvas, renderer: new BoardRenderer(canvas, options), kind: "canvas2d" };
+}
+
 function createBoards(host, client, store) {
-  const inputs = [];
-  const make = (view) => {
-    const canvas = document.createElement("canvas");
-    canvas.className = "board-canvas";
-    host.append(canvas);
-    new BoardRenderer(canvas, { view, client });
-    inputs.push(attachBoardInput(canvas, { view, client }));
-    store.on(`cursor/${view}`, (value) => {
-      const url = value?.key ? store.cursorUrl(value.key) : null;
-      const fallback = value?.css ?? "default";
-      canvas.style.cursor = url ? `url(${url}) ${value.hx ?? 0} ${value.hy ?? 0}, ${fallback}` : fallback;
-    });
-    return canvas;
+  const slots = { main: { view: "main" }, child: { view: "child" } };
+  const mount = (slot, kind) => {
+    const { canvas, renderer, kind: started } = startRenderer(kind, { view: slot.view, client });
+    if (slot.canvas) slot.canvas.replaceWith(canvas);
+    else host.append(canvas);
+    if (slot.renderer) {
+      renderer.adopt(slot.renderer);
+      slot.renderer.destroy();
+      slot.input.destroy();
+    }
+    Object.assign(slot, { canvas, renderer, input: attachBoardInput(canvas, { view: slot.view, client }) });
+    paintCursor(slot);
+    return started;
   };
-  const canvases = { main: make("main"), child: make("child") };
+  const paintCursor = (slot) => {
+    const value = store.get(`cursor/${slot.view}`);
+    const url = value?.key ? store.cursorUrl(value.key) : null;
+    const fallback = value?.css ?? "default";
+    slot.canvas.style.cursor = url ? `url(${url}) ${value.hx ?? 0} ${value.hy ?? 0}, ${fallback}` : fallback;
+  };
   const boards = {
     current: "main",
-    resendSizes: () => inputs.forEach((input) => input.resend?.()),
+    rendererKind: savedRendererKind(),
+    resendSizes: () => Object.values(slots).forEach((slot) => slot.input.resend?.()),
     show(view) {
       boards.current = view;
-      canvases.main.style.visibility = view === "main" ? "visible" : "hidden";
-      canvases.child.style.visibility = view === "child" ? "visible" : "hidden";
+      slots.main.canvas.style.visibility = view === "main" ? "visible" : "hidden";
+      slots.child.canvas.style.visibility = view === "child" ? "visible" : "hidden";
+    },
+    setRenderer(kind) {
+      boards.rendererKind = mount(slots.main, kind);
+      mount(slots.child, kind);
+      saveRendererKind(boards.rendererKind);
+      boards.show(boards.current);
     },
   };
+  boards.rendererKind = mount(slots.main, boards.rendererKind);
+  mount(slots.child, boards.rendererKind);
+  for (const slot of Object.values(slots)) store.on(`cursor/${slot.view}`, () => paintCursor(slot));
   boards.show("main");
   return boards;
 }
@@ -293,12 +357,40 @@ export function syncDocks(runtime, store) {
 
 // The chrome outside the docked scene: menu bar and status bar.
 export function createChrome(menuEl, statusEl, store) {
-  const trigger = (item) => store.call("menu.trigger", {
-    id: item.id,
-    checked: item.kind === "check" ? !item.checked : item.kind === "radio" ? true : undefined,
-  });
+  const RENDERER_ITEM = "settings.renderer.";
+  const trigger = (item) => {
+    if (item.id?.startsWith(RENDERER_ITEM)) {
+      store.boards?.setRenderer(item.id.slice(RENDERER_ITEM.length));
+      paintMenus();
+      return undefined;
+    }
+    return store.call("menu.trigger", {
+      id: item.id,
+      checked: item.kind === "check" ? !item.checked : item.kind === "radio" ? true : undefined,
+    });
+  };
   const bar = createMenuBar(menuEl, { onTrigger: trigger });
-  store.on("menus", (value) => bar.update(value));
+  // The renderer belongs to this page, not the document, so its menu is added
+  // here rather than coming from the backend's menu state.
+  const settingsMenu = () => {
+    const kind = store.boards?.rendererKind ?? savedRendererKind();
+    return {
+      id: "settings",
+      text: "Settings",
+      kind: "submenu",
+      children: [{
+        id: "settings.renderer",
+        text: "Board Renderer",
+        kind: "submenu",
+        children: [
+          { id: `${RENDERER_ITEM}webgl`, text: "WebGL", kind: "radio", checked: kind === "webgl", enabled: hasWebgl() },
+          { id: `${RENDERER_ITEM}canvas2d`, text: "Canvas 2D", kind: "radio", checked: kind === "canvas2d" },
+        ],
+      }],
+    };
+  };
+  const paintMenus = () => bar.update([...(store.get("menus") ?? []), settingsMenu()]);
+  store.on("menus", paintMenus);
   const text = document.createElement("div");
   text.className = "status-text";
   const grip = document.createElement("div");

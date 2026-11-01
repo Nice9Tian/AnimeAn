@@ -294,4 +294,23 @@ describe("BoardRenderer", () => {
       ),
     );
   });
+
+  it("repaints what the previous renderer showed when taking over, without a backend frame", () => {
+    const main = createMockCanvas();
+    const acks: number[] = [];
+    const renderer = new BoardRenderer(main.canvas, {
+      getDpr: () => 1,
+      createCacheCanvas: () => createMockCanvas().canvas,
+      onAck: (_view, frame) => acks.push(frame),
+    });
+    const ops = [["B", 10, 20, 30, 255], ["R", 1, 2, 3, 4]];
+    renderer.adopt({ getOps: () => ops, images: new Map([["img", "held"]]), logicalW: 200, logicalH: 100 });
+
+    assert.deepEqual(renderer.getOps(), ops);
+    assert.notEqual(renderer.getOps()[0], ops[0]);
+    assert.equal(renderer.getImage("img"), "held");
+    assert.equal(main.canvas.width, 200);
+    assert.ok(main.calls.some((c) => c.op === "fillRect" && c.args[0] === 1));
+    assert.deepEqual(acks, []);
+  });
 });
