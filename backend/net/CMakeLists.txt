@@ -4,11 +4,15 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     project(animean_net VERSION 0.1 LANGUAGES CXX)
 endif()
 
-set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTOMOC OFF)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Network)
+get_filename_component(ANIMEAN_NET_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+
+if(NOT TARGET animean_platform)
+    add_subdirectory("${ANIMEAN_NET_ROOT}/backend/platform" "${CMAKE_CURRENT_BINARY_DIR}/platform")
+endif()
 
 add_library(animean_ws STATIC
     wsserver.cpp
@@ -17,11 +21,12 @@ add_library(animean_ws STATIC
 
 target_include_directories(animean_ws PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
 
 target_link_libraries(animean_ws PUBLIC
-    Qt6::Core
-    Qt6::Network
+    animean_platform
+    ws2_32
 )
 
 add_executable(ws_echo
