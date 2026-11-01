@@ -23,6 +23,9 @@ html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background:
 .vf-player-stage .vf-dock-header .dock-action-btn:hover { background-color: var(--surface-alt); }
 .vf-player-stage .vf-dock-header .dock-btn-float { background-image: var(--dock-float-svg); }
 .vf-player-stage .vf-dock-header .dock-btn-close { background-image: var(--dock-close-svg); }
+/* Too narrow for the title and both buttons: the title bar still drags the dock out. */
+.vf-player-stage .vf-dock-header { container-type: inline-size; }
+@container (max-width: 79px) { .vf-player-stage .vf-dock-header .dock-btn-float { display: none; } }
 
 .dock-page { display: flex; flex-direction: column; }
 .opt-body { flex: 1; min-height: 0; overflow: auto; }

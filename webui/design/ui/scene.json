@@ -128,8 +128,10 @@
         "gap": 0
       },
       "children": [
-        "toolsTabs",
-        "toolsPages"
+        "paintingHeader",
+        "paintingBody",
+        "mappingHeader",
+        "mappingBody"
       ]
     },
     "toolOptionsDock": {
@@ -316,57 +318,6 @@
         "vertical": "expanding"
       }
     },
-    "toolsTabs": {
-      "type": "QtTabBar",
-      "width": 144,
-      "height": 23,
-      "size": {
-        "horizontal": "expanding",
-        "vertical": "fixed"
-      },
-      "props": {
-        "tabs": "Painting,Mapping",
-        "widths": "66,70"
-      }
-    },
-    "toolsPages": {
-      "type": "Stack",
-      "width": 144,
-      "height": 691,
-      "size": {
-        "horizontal": "expanding",
-        "vertical": "expanding"
-      },
-      "layout": {
-        "kind": "stack",
-        "padding": 0
-      },
-      "props": {
-        "currentPage": "paintingPage"
-      },
-      "children": [
-        "mappingPage",
-        "paintingPage"
-      ]
-    },
-    "paintingPage": {
-      "type": "Flow",
-      "width": 144,
-      "height": 691,
-      "children": [
-        "toolArrow",
-        "toolPen",
-        "toolEraser",
-        "toolFill",
-        "toolTransfer",
-        "toolConnect"
-      ],
-      "layout": {
-        "kind": "flow",
-        "padding": 8,
-        "gap": 6
-      }
-    },
     "toolArrow": {
       "type": "QtToolChip",
       "width": 44,
@@ -439,12 +390,120 @@
         "glyph": "connect"
       }
     },
-    "mappingPage": {
-      "type": "VBox",
-      "width": 144,
-      "height": 691,
+    "toolHCenterLine": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "text": "H Line"
+      }
+    },
+    "toolVCenterLine": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "text": "V Line"
+      }
+    },
+    "toolMappingArea": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "text": "Area"
+      }
+    },
+    "toolAdditionalLine": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "text": "Add Line"
+      }
+    },
+    "toolAutoMapping": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "text": "Auto Map"
+      }
+    },
+    "paintingHeader": {
+      "type": "QtGroupHeader",
+      "width": 110,
+      "height": 22,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "fixed"
+      },
+      "props": {
+        "label": "Painting"
+      }
+    },
+    "paintingBody": {
+      "type": "Flow",
+      "width": 110,
+      "height": 166,
+      "size": {
+        "horizontal": "expanding"
+      },
       "layout": {
-        "kind": "vbox",
+        "kind": "flow",
+        "padding": 8,
+        "gap": 6
+      },
+      "children": [
+        "toolArrow",
+        "toolPen",
+        "toolEraser",
+        "toolFill",
+        "toolTransfer",
+        "toolConnect"
+      ]
+    },
+    "mappingHeader": {
+      "type": "QtGroupHeader",
+      "width": 110,
+      "height": 22,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "fixed"
+      },
+      "props": {
+        "label": "Mapping"
+      }
+    },
+    "mappingBody": {
+      "type": "Flow",
+      "width": 110,
+      "height": 166,
+      "size": {
+        "horizontal": "expanding"
+      },
+      "layout": {
+        "kind": "flow",
         "padding": 8,
         "gap": 6
       },
@@ -455,66 +514,6 @@
         "toolAdditionalLine",
         "toolAutoMapping"
       ]
-    },
-    "toolHCenterLine": {
-      "type": "QtButton",
-      "width": 128,
-      "height": 24,
-      "size": {
-        "horizontal": "expanding",
-        "vertical": "fixed"
-      },
-      "props": {
-        "label": "H Center Line"
-      }
-    },
-    "toolVCenterLine": {
-      "type": "QtButton",
-      "width": 128,
-      "height": 24,
-      "size": {
-        "horizontal": "expanding",
-        "vertical": "fixed"
-      },
-      "props": {
-        "label": "V Center Line"
-      }
-    },
-    "toolMappingArea": {
-      "type": "QtButton",
-      "width": 128,
-      "height": 24,
-      "size": {
-        "horizontal": "expanding",
-        "vertical": "fixed"
-      },
-      "props": {
-        "label": "Mapping Area"
-      }
-    },
-    "toolAdditionalLine": {
-      "type": "QtButton",
-      "width": 128,
-      "height": 24,
-      "size": {
-        "horizontal": "expanding",
-        "vertical": "fixed"
-      },
-      "props": {
-        "label": "Additional Line"
-      }
-    },
-    "toolAutoMapping": {
-      "type": "QtButton",
-      "width": 128,
-      "height": 24,
-      "size": {
-        "horizontal": "expanding",
-        "vertical": "fixed"
-      },
-      "props": {
-        "label": "Auto Mapping"
-      }
     }
   }
 }

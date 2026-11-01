@@ -1,7 +1,7 @@
 {
   "type": "QtToolChip",
   "label": "工具按钮",
-  "description": "Tools 面板里的图标按钮，glyph 选图标，armed 为真时高亮",
+  "description": "Tools 面板里的图标按钮，glyph 选图标，没有图标时显示 text，armed 为真时高亮",
   "defaultSize": {
     "width": 44,
     "height": 44
@@ -9,7 +9,8 @@
   "entry": "index.js",
   "style": "style.css",
   "props": {
-    "glyph": { "type": "string", "default": "arrow" },
+    "glyph": { "type": "string", "default": "" },
+    "text": { "type": "string", "default": "" },
     "armed": { "type": "boolean", "default": false, "logic": true },
     "enabled": { "type": "boolean", "default": true, "logic": true }
   },

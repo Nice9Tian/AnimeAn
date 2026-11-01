@@ -10,11 +10,18 @@
 - 时间轴是停靠窗但不是父窗（没有页），`ui.windows` 不列它；它的播放条就是标题栏，停在底边是横条，停在左右是竖条加细标题。
 - 无边框浮动的顶层窗由 `WindowEdgeResize` 提供四边拉伸。
 
+## Tools 面板（网页界面）
+
+- `toolsDock` 下直接是 `paintingHeader`、`paintingBody`、`mappingHeader`、`mappingBody`，没有分组容器：VBox 只对 `Flow` 子节点按内容算高度，嵌套容器折叠后不会收缩。定义在 `webui/design/ui/scene.json`。
+- 折叠状态是业务状态 `tools.paintingOpen`、`tools.mappingOpen`，点标题发 `toolGroupToggle`。逻辑在 `webui/src/ui/tools.js`：按本机偏好存进 `localStorage` 的 `animean.toolGroups`，不进文档，也不告诉后端。
+- 自动展开只看变化：选中的工具换了、或 `windows.tools.current` 变了（图层策略 `window_manager.select("tools", page)`）才展开对应的组，所以用户收起选中工具所在的组后不会被弹开，启动时也不展开。后端的页名 `painting` / `mapping` 就是组名。
+- 单列（宽度小于 80）时标题栏收起浮动按钮，分组标题换 10px 字号。Mapping 组的按钮暂时用 `text` 占位，图形定稿后改成 `glyph`。
+
 ## Tools 面板的列数（网页界面）
 
-- Painting 页 `paintingPage` 是 `Flow` 排版：内边距 8、间距 6，按钮 `QtToolChip` 固定 44×44。列数 = ⌊(面板宽 − 16 + 6) / 50⌋，夹在 1 到按钮总数之间，所以宽度跨过 110、160、210…… 才变一列。
-- 按钮不写坐标，新工具加进 `paintingPage` 的 `children` 就排进去。定义在 `webui/design/ui/scene.json`。
-- 停靠在左右区时，宽度取最近的整列宽：n 列是 50n + 10，即 110、160、210……，最大 860。一列是 60，但停靠区最小宽度 80，所以一列时停在 80。
+- 两组都是 `Flow` 排版：内边距 8、间距 6，按钮 `QtToolChip` 固定 44×44。列数 = ⌊(面板宽 − 16 + 6) / 50⌋，夹在 1 到这组按钮数之间，所以宽度跨过 110、160、210…… 才变一列。
+- 按钮不写坐标，新工具加进 `paintingBody` 或 `mappingBody` 的 `children` 就排进去，同时要在逻辑里加 `tools.locked.<名字>`。
+- 停靠在左右区时，宽度取最近的整列宽：n 列是 50n + 10，即 110、160、210……，最大 860。一列是 60；没写档位的面板最窄仍是 80。
 - 这条规则写在 `webui/design/ui/scene.json` 的 `toolsDock` 上：`widthStep` 是按钮宽加间距（44 + 6），`widthBase` 是两侧内边距减一个间距（16 − 6）。改按钮尺寸、间距或内边距时要一起改这两个值。
 - 吸附由 VibeFrontend 运行层的 `normalizeDockLayout`（`webui/vf/src/dock.ts`）完成，网页页面和 VibeFrontend 编辑器用同一份规则。拖分隔条、打开设计文件、把面板移到另一侧都会吸附。
 - 浮动、停在顶部底部、同一区沿宽度方向并排时不吸附，按钮照常换行。
@@ -23,7 +30,7 @@
 
 - 纹理面板（菜单栏 + 选项行 + 画板容器）是一个可搬迁的部件，有三个家：中央 Texture 页、名为 `texture_view` 的子控件框（可嵌进 Options 或 Tools 面板，也可浮动）、停车位。任一时刻只在一处，`updateTextureHome` 是唯一路由。
 - 每个家记自己的视口（缩放、平移）；子控件里自动按长边适配，用户手动缩放后到下次进入前不再自动适配。
-- Mapping 页工具的 Options 面板最后一行嵌的就是 `texture_view` 子控件；框浮动或缺失时面板显示一行说明。
+- Mapping 组工具的 Options 面板最后一行嵌的就是 `texture_view` 子控件；框浮动或缺失时面板显示一行说明。
 - 两个图层面板目标固定（Main Layers → 主画板，Child Layers → 纹理板）；`Changable Texture` 只管内容可否编辑和资产面板，`Changable Timeline` 决定时间轴是否跟随纹理板。
 
 ## 主题

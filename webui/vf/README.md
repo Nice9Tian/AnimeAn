@@ -37,5 +37,5 @@
    - `importSource` 在无 `document` 环境（如 Node 测试）下回退使用 `data:text/javascript` URL 导入。
    - 导出 `importSource`、`applyComponentStylesToDoc`、`injectComponentStyles`。
 
-3. **`webui/vf/src/dock.ts`、`model.ts`、`check.ts`（停靠面板的 `widthStep`、`widthBase`）**
+3. **`webui/vf/src/dock.ts`、`model.ts`、`check.ts`（停靠面板的 `widthStep`、`widthBase`；写了档位的面板最窄到第一档，上游这一处在 `work/editor-interaction` 上还没提交）**
    - 从 VibeFrontend 的提交 `6ebf46e`（分支 `work/editor-interaction`）同步：左右停靠区的宽度吸附到 `widthBase + n × widthStep`。这三个文件以那边为准。

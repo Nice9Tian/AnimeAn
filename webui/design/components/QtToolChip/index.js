@@ -28,9 +28,16 @@ export default function create(el, { props }) {
   let shown = null;
 
   function update(next) {
-    if (next.glyph !== shown) {
-      shown = next.glyph;
-      chip.innerHTML = `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">${GLYPHS[shown] ?? ""}</svg>`;
+    const face = next.glyph || next.text;
+    if (face !== shown) {
+      shown = face;
+      if (GLYPHS[next.glyph]) chip.innerHTML = `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">${GLYPHS[next.glyph]}</svg>`;
+      else {
+        const text = document.createElement("span");
+        text.className = "chip-text";
+        text.textContent = next.text;
+        chip.replaceChildren(text);
+      }
     }
     chip.classList.toggle("on", Boolean(next.armed));
     chip.classList.toggle("locked", next.enabled === false);

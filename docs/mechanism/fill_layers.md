@@ -28,7 +28,7 @@
 
 | 当前层 | Tools 页 | 锁定 | 备注 |
 |---|---|---|---|
-| Auto-Mapping 单元里的层 | Mapping | 无 | 单元用 Mapping 页的工具编辑 |
+| Auto-Mapping 单元里的层 | Mapping | 无 | 单元用 Mapping 组的工具编辑 |
 | 普通线稿层 | Painting | 无 | |
 | 跟随线稿的填充层 | Painting | Pen、Eraser、Connect、Transfer | 内容由父层拓扑派生，手改会被下次重算覆盖；Arrow 留着能看，Fill 留着（填充交互事件只是升级自己的范围） |
 | 独立填充层 | Painting | Connect | `ui.set_fill_paint_mode` 打开：Pen 画完的笔迹经 `linefinish` 否决转成经过的每个封闭区域的填充，Eraser 原生擦填充区域 |

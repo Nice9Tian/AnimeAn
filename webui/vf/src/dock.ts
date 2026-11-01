@@ -226,6 +226,8 @@ export function windowDockIds(scene: Scene, winNode: SceneNode | undefined): str
 }
 
 const DOCK_WIDTH_MIN = 80;
+/** 写了档位的面板可以窄到第一档，和排版算宽度时的下限一致 */
+const DOCK_WIDTH_STEP_MIN = 60;
 const DOCK_WIDTH_MAX = 900;
 
 /** 取最近的 widthBase + n × widthStep（n ≥ 1），不超出左右停靠区的宽度范围。 */
@@ -234,7 +236,7 @@ function snapDockWidth(size: number, dock: SceneNode): number {
   const base = dock.widthBase ?? 0;
   const most = Math.max(1, Math.floor((DOCK_WIDTH_MAX - base) / step));
   const n = Math.min(most, Math.max(1, Math.round((size - base) / step)));
-  return Math.max(DOCK_WIDTH_MIN, base + n * step);
+  return Math.max(DOCK_WIDTH_STEP_MIN, base + n * step);
 }
 
 /**
