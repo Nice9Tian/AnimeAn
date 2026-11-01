@@ -4,7 +4,7 @@ Tools ▸ Painting 的 **Connect**。点两个点，两点之间生成一条新�
 
 ## 在哪
 
-- Painting 页图标 **Connect**。
+- Painting 组图标 **Connect**。
 - Options 面板：**Auto Snap**、**Connect Mode**（PolyMode / CurveMode / SmoothMode）、**Smooth**（只在 SmoothMode 显示）、**Auto Accept**。
 
 ## 怎么用

@@ -4,7 +4,7 @@ Tools ▸ Painting 的 **Fill**。封闭区域里点一下填色，填充落在�
 
 ## 在哪
 
-- Painting 页图标 **Fill**。
+- Painting 组图标 **Fill**。
 - Options 面板：**Color**（调色板控件）、**Fill Scope**（ALL / Current）。
 - Layers 面板右键：**New Fill Layer**；填充层的行右键：**To Independent Layer**。
 
