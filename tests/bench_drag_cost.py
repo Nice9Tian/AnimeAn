@@ -5,6 +5,8 @@ Usage:
     py tests/bench_drag_cost.py --rig B
     py tests/bench_drag_cost.py --rig C
     py tests/bench_drag_cost.py --all
+    py tests/bench_drag_cost.py --rig B --warm
+    py tests/bench_drag_cost.py --rig C --warm
 """
 import argparse
 import inspect
@@ -16,6 +18,7 @@ import sys
 import textwrap
 import time
 import types
+import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if os.path.join(ROOT, "pyfile") not in sys.path:
@@ -74,52 +77,35 @@ def _reset_solve_trace():
     })
 
 
+_PATCHED = False
+
+
 def _install_monkeypatches():
     """Patch am._FlowFieldWarp and am.build_mapper in memory without touching pyfile/."""
+    global _PATCHED
+    if _PATCHED:
+        return
+    _PATCHED = True
+
     # 1. Patch _FlowFieldWarp._build to time field construction, CG rounds, and CG iterations
     fb_src = textwrap.dedent(inspect.getsource(am._FlowFieldWarp._build))
 
-    target_cg_loop = (
-        "        for _ in range(self.CG_MAX_ITER):\n"
-        "            AP = apply_A(P, mask)"
+    target_pcg_call = (
+        "        E, _ = gridsolve.pcg(\n"
+        "            lambda P: apply_A(P, mask), R, x0=x0_solve, precond=jacobi,\n"
+        "            tol=cur_tol, max_iter=cur_max_iter, step_tol=cur_step_tol)"
     )
-    replacement_cg_loop = (
-        "        _cg_iter_count = 0\n"
-        "        for _ in range(self.CG_MAX_ITER):\n"
-        "            _cg_iter_count += 1\n"
-        "            AP = apply_A(P, mask)"
+    replacement_pcg_call = (
+        "        E, _cg_it = gridsolve.pcg(\n"
+        "            lambda P: apply_A(P, mask), R, x0=x0_solve, precond=jacobi,\n"
+        "            tol=cur_tol, max_iter=cur_max_iter, step_tol=cur_step_tol)\n"
+        "        _BENCH_TRACE['cg_iters'].append((_BENCH_TRACE['current_round'], component, _cg_it))"
     )
-    assert target_cg_loop in fb_src, "Failed to locate CG loop in _FlowFieldWarp._build"
-    fb_src = fb_src.replace(target_cg_loop, replacement_cg_loop, 1)
-
-    target_cg_early_ret = (
-        "        if rs <= 0.0:\n"
-        "            return E + pin_val"
-    )
-    replacement_cg_early_ret = (
-        "        if rs <= 0.0:\n"
-        "            _BENCH_TRACE['cg_iters'].append((_BENCH_TRACE['current_round'], component, 0))\n"
-        "            return E + pin_val"
-    )
-    assert target_cg_early_ret in fb_src, "Failed to locate early return in solve()"
-    fb_src = fb_src.replace(target_cg_early_ret, replacement_cg_early_ret, 1)
-
-    target_cg_end_ret = (
-        "            P = Z + (rs_new / rs) * P\n"
-        "            rs = rs_new\n"
-        "        return E + pin_val"
-    )
-    replacement_cg_end_ret = (
-        "            P = Z + (rs_new / rs) * P\n"
-        "            rs = rs_new\n"
-        "        _BENCH_TRACE['cg_iters'].append((_BENCH_TRACE['current_round'], component, _cg_iter_count))\n"
-        "        return E + pin_val"
-    )
-    assert target_cg_end_ret in fb_src, "Failed to locate end return in solve()"
-    fb_src = fb_src.replace(target_cg_end_ret, replacement_cg_end_ret, 1)
+    assert target_pcg_call in fb_src, "Failed to locate gridsolve.pcg call in _FlowFieldWarp._build"
+    fb_src = fb_src.replace(target_pcg_call, replacement_pcg_call, 1)
 
     target_r0_and_boost = (
-        "    ux, uy = assemble_and_solve()\n"
+        "    ux, uy = assemble_and_solve(0)\n"
         "    for _round in range(self.BOOST_ROUNDS):"
     )
     replacement_r0_and_boost = (
@@ -128,7 +114,7 @@ def _install_monkeypatches():
         "    _BENCH_TRACE['field_pre_perf'] += _t_pre_perf - _b_start_perf\n"
         "    _BENCH_TRACE['field_pre_proc'] += _t_pre_proc - _b_start_proc\n"
         "    _BENCH_TRACE['current_round'] = 'r0'\n"
-        "    ux, uy = assemble_and_solve()\n"
+        "    ux, uy = assemble_and_solve(0)\n"
         "    _t_r0_perf = time.perf_counter()\n"
         "    _t_r0_proc = time.process_time()\n"
         "    _BENCH_TRACE['cg_r0_perf'] += _t_r0_perf - _t_pre_perf\n"
@@ -144,7 +130,7 @@ def _install_monkeypatches():
     target_boost_end = (
         "        if worst < 0.02:\n"
         "            break\n"
-        "        ux, uy = assemble_and_solve()\n"
+        "        ux, uy = assemble_and_solve(_round + 1)\n"
         "\n"
         "    def det_of(sol_x, sol_y):"
     )
@@ -153,7 +139,7 @@ def _install_monkeypatches():
         "            _BENCH_TRACE[f'cg_boost_{_round + 1}_perf'] += time.perf_counter() - _t_rb_perf\n"
         "            _BENCH_TRACE[f'cg_boost_{_round + 1}_proc'] += time.process_time() - _t_rb_proc\n"
         "            break\n"
-        "        ux, uy = assemble_and_solve()\n"
+        "        ux, uy = assemble_and_solve(_round + 1)\n"
         "        _BENCH_TRACE[f'cg_boost_{_round + 1}_perf'] += time.perf_counter() - _t_rb_perf\n"
         "        _BENCH_TRACE[f'cg_boost_{_round + 1}_proc'] += time.process_time() - _t_rb_proc\n"
         "    _t_post_perf = time.perf_counter()\n"
@@ -167,13 +153,13 @@ def _install_monkeypatches():
 
     # Also track any retreat assemble_and_solve() separately from field_post
     target_retreat1 = (
-        "        ux, uy = assemble_and_solve()\n"
+        "        ux, uy = assemble_and_solve((\"retreat\", retreat))\n"
         "        det = det_of(ux, uy)\n"
         "        retreat += 1"
     )
     replacement_retreat1 = (
         "        _tr_p0, _tr_c0 = time.perf_counter(), time.process_time()\n"
-        "        ux, uy = assemble_and_solve()\n"
+        "        ux, uy = assemble_and_solve((\"retreat\", retreat))\n"
         "        _BENCH_TRACE['cg_retreat_perf'] += time.perf_counter() - _tr_p0\n"
         "        _BENCH_TRACE['cg_retreat_proc'] += time.process_time() - _tr_c0\n"
         "        det = det_of(ux, uy)\n"
@@ -185,14 +171,14 @@ def _install_monkeypatches():
     target_retreat2 = (
         "        for field in fields:\n"
         "            field[\"boost\"] = None\n"
-        "        ux, uy = assemble_and_solve()\n"
+        "        ux, uy = assemble_and_solve(\"full_retreat\")\n"
         "        det = det_of(ux, uy)"
     )
     replacement_retreat2 = (
         "        for field in fields:\n"
         "            field[\"boost\"] = None\n"
         "        _tr_p0, _tr_c0 = time.perf_counter(), time.process_time()\n"
-        "        ux, uy = assemble_and_solve()\n"
+        "        ux, uy = assemble_and_solve(\"full_retreat\")\n"
         "        _BENCH_TRACE['cg_retreat_perf'] += time.perf_counter() - _tr_p0\n"
         "        _BENCH_TRACE['cg_retreat_proc'] += time.process_time() - _tr_c0\n"
         "        det = det_of(ux, uy)"
@@ -201,18 +187,15 @@ def _install_monkeypatches():
     fb_src = fb_src.replace(target_retreat2, replacement_retreat2, 1)
 
     fb_src = fb_src.replace(
-        "def _build(self, frame_window):\n",
-        "def _build(self, frame_window):\n"
+        "def _build(self, frame_window, warm=None):\n",
+        "def _build(self, frame_window, warm=None):\n"
         "    _b_start_perf = time.perf_counter()\n"
         "    _b_start_proc = time.process_time()\n",
         1,
     )
 
     target_grid_end = (
-        "    self._grid = {\n"
-        "        \"x0\": x0, \"y0\": y0, \"du\": du, \"dv\": dv, \"nx\": nx, \"ny\": ny,\n"
-        "        \"ux\": ux.tolist(), \"uy\": uy.tolist(),\n"
-        "        \"det\": None if self._all_positive else det.tolist(),\n"
+        "        \"_ux_src\": ux_list, \"_uy_src\": uy_list, \"_det_src\": det_list,\n"
         "    }"
     )
     replacement_grid_end = (
@@ -236,10 +219,9 @@ def _install_monkeypatches():
         _SOLVE_TRACE["warp_total_perf"] += time.perf_counter() - p0
         _SOLVE_TRACE["warp_total_proc"] += time.process_time() - c0
 
-    def _wrapped_build(self, frame_window):
-        # Time spent in __init__ before _build is _prepare / _prepare_ground
+    def _wrapped_build(self, frame_window, warm=None):
         p0, c0 = time.perf_counter(), time.process_time()
-        patched_build(self, frame_window)
+        patched_build(self, frame_window, warm=warm)
         _SOLVE_TRACE["_build_total_perf"] = time.perf_counter() - p0
         _SOLVE_TRACE["_build_total_proc"] = time.process_time() - c0
 
@@ -545,11 +527,16 @@ def _stats_ms(samples_sec):
     return _percentile(s, 0.50), _percentile(s, 0.90)
 
 
-def run_rig_benchmark(rig_name, steps=40):
+def run_rig_benchmark(rig_name, steps=40, warm=False):
     _install_monkeypatches()
     step_drag = _make_rig(rig_name)
     grids = _make_uniform_grids()
     polys, strokes = _make_synthetic_strokes(200, 40)
+
+    # Pre-build numpy arrays for 129x129 batch benchmarks
+    pts_129 = grids[129]
+    px_129 = np.array([p[0] for p in pts_129], dtype=np.float64)
+    py_129 = np.array([p[1] for p in pts_129], dtype=np.float64)
 
     # Ordered list of stage keys
     stage_keys = [
@@ -578,6 +565,10 @@ def run_rig_benchmark(rig_name, steps=40):
         "2. 逐点 129x129 (16641点): main_of_third(t)",
         "2. 逐点 129x129 (16641点): warp.apply(t)",
         "2. 逐点 129x129 (16641点): warp.det_sign(t)",
+        "2b. 批量 129x129 (16641点): third_of_batch",
+        "2b. 批量 129x129 (16641点): main_of_third_batch",
+        "2b. 批量 129x129 (16641点): warp.apply_batch",
+        "2b. 批量 129x129 (16641点): warp.det_sign_batch",
         "3. 叠加层: _grid_overlay_items('main')",
         "3. 叠加层: _grid_overlay_items('child')",
         "3. 叠加层: _occlusion_overlay_items()",
@@ -591,7 +582,9 @@ def run_rig_benchmark(rig_name, steps=40):
     perf_records = {k: [] for k in stage_keys}
     proc_records = {k: [] for k in stage_keys}
     cg_iter_records = []  # per kept step: dict with per-round and total iterations
+    warm_err_records = []  # per kept step: max grid-node canvas px error vs cold solve
     meta_checks = {}
+    warm_state = {} if warm else None
 
     for step in range(steps):
         step_drag(step)
@@ -612,6 +605,7 @@ def run_rig_benchmark(rig_name, steps=40):
             main_assets[am.V_PROPERTY],
             additional_pairs=add_pairs,
             ground_pairs=gnd_pairs,
+            warm=warm_state,
         )
         bm_perf = time.perf_counter() - p0
         bm_proc = time.process_time() - c0
@@ -718,6 +712,31 @@ def run_rig_benchmark(rig_name, steps=40):
                 pw_perf[(n, "warp.det_sign")] = 0.0
                 pw_proc[(n, "warp.det_sign")] = 0.0
 
+        # --- Stage 2b: Batch Evaluation on 129x129 ---
+        p0, c0 = time.perf_counter(), time.process_time()
+        mapper.third_of_batch(px_129, py_129)
+        b_third_perf = time.perf_counter() - p0
+        b_third_proc = time.process_time() - c0
+
+        p0, c0 = time.perf_counter(), time.process_time()
+        mapper.main_of_third_batch(px_129, py_129)
+        b_main_perf = time.perf_counter() - p0
+        b_main_proc = time.process_time() - c0
+
+        if warp is not None:
+            p0, c0 = time.perf_counter(), time.process_time()
+            warp.apply_batch(px_129, py_129)
+            b_wapp_perf = time.perf_counter() - p0
+            b_wapp_proc = time.process_time() - c0
+
+            p0, c0 = time.perf_counter(), time.process_time()
+            warp.det_sign_batch(px_129, py_129)
+            b_wdet_perf = time.perf_counter() - p0
+            b_wdet_proc = time.process_time() - c0
+        else:
+            b_wapp_perf = b_wapp_proc = 0.0
+            b_wdet_perf = b_wdet_proc = 0.0
+
         # --- Stage 3: Overlays ---
         p0, c0 = time.perf_counter(), time.process_time()
         grid_main_items = am._grid_overlay_items("main")
@@ -753,6 +772,27 @@ def run_rig_benchmark(rig_name, steps=40):
         if step == 0:
             continue
 
+        # Measure grid-node flow-field drift vs cold exact solve when warm is enabled
+        if warm and warp is not None and warp._grid is not None:
+            saved_iters = list(_SOLVE_TRACE["cg_iters"])
+            cold_mapper, _ = am.build_mapper(
+                child_assets[am.H_PROPERTY],
+                child_assets[am.V_PROPERTY],
+                main_assets[am.H_PROPERTY],
+                main_assets[am.V_PROPERTY],
+                additional_pairs=add_pairs,
+                ground_pairs=gnd_pairs,
+                warm=None,
+            )
+            _SOLVE_TRACE["cg_iters"] = saved_iters
+            cw = cold_mapper.warp
+            sx = max(mapper.h_scales[0], mapper.h_scales[1], 1.0)
+            sy = max(mapper.v_scales[0], mapper.v_scales[1], 1.0)
+            dux = ( np.asarray(warp._grid["ux"], dtype=float) - np.asarray(cw._grid["ux"], dtype=float) ) * sx
+            duy = ( np.asarray(warp._grid["uy"], dtype=float) - np.asarray(cw._grid["uy"], dtype=float) ) * sy
+            err_px = float(np.max(np.hypot(dux, duy)))
+            warm_err_records.append(err_px)
+
         ui_step_perf = bm_perf + gm_perf + gc_perf + occ_perf
         ui_step_proc = bm_proc + gm_proc + gc_proc + occ_proc
         full_poly_perf = ui_step_perf + sm_poly_perf
@@ -771,6 +811,10 @@ def run_rig_benchmark(rig_name, steps=40):
             "  │  ├─ CG Boost Round 2": (cg_b2_perf, cg_b2_proc),
             "  │  └─ CG Boost Round 3": (cg_b3_perf, cg_b3_proc),
             "  └─ build_mapper 其余开销": (bm_other_perf, bm_other_proc),
+            "2b. 批量 129x129 (16641点): third_of_batch": (b_third_perf, b_third_proc),
+            "2b. 批量 129x129 (16641点): main_of_third_batch": (b_main_perf, b_main_proc),
+            "2b. 批量 129x129 (16641点): warp.apply_batch": (b_wapp_perf, b_wapp_proc),
+            "2b. 批量 129x129 (16641点): warp.det_sign_batch": (b_wdet_perf, b_wdet_proc),
             "3. 叠加层: _grid_overlay_items('main')": (gm_perf, gm_proc),
             "3. 叠加层: _grid_overlay_items('child')": (gc_perf, gc_proc),
             "3. 叠加层: _occlusion_overlay_items()": (occ_perf, occ_proc),
@@ -821,7 +865,7 @@ def run_rig_benchmark(rig_name, steps=40):
                     per_pt_str = f"{(med_perf * 1000.0 / cnt):.3f} / {(p90_perf * 1000.0 / cnt):.3f} μs"
                 break
 
-        if k.startswith("2. 逐点"):
+        if k.startswith("2. 逐点") or k.startswith("2b. 批量"):
             pct_ui = "-"
             pct_tot = "-"
         else:
@@ -848,18 +892,35 @@ def run_rig_benchmark(rig_name, steps=40):
             key = f"{r_tag}_u{'x' if comp == 0 else 'y'}"
             cg_summary["by_round"].setdefault(key, []).append(it)
 
+    warm_err_max = max(warm_err_records) if warm_err_records else 0.0
+    warm_err_med = _percentile(sorted(warm_err_records), 0.50) if warm_err_records else 0.0
+
+    if warm and rig_name in ("B", "C"):
+        bm_med, _ = _stats_ms(perf_records["1. 求解: build_mapper 总时长"])
+        b_third_med, _ = _stats_ms(perf_records["2b. 批量 129x129 (16641点): third_of_batch"])
+        b_main_med, _ = _stats_ms(perf_records["2b. 批量 129x129 (16641点): main_of_third_batch"])
+        assert bm_med <= 25.0, f"Rig {rig_name} warm build_mapper median {bm_med:.2f}ms > 25ms"
+        assert warm_err_max <= 0.5, f"Rig {rig_name} warm max node error {warm_err_max:.4f}px > 0.5px"
+        assert b_third_med <= 15.0, f"Rig {rig_name} third_of_batch median {b_third_med:.2f}ms > 15ms"
+        assert b_main_med <= 3.0, f"Rig {rig_name} main_of_third_batch median {b_main_med:.2f}ms > 3ms"
+
     return {
         "rig": rig_name,
+        "warm": bool(warm),
         "steps_total": steps,
         "steps_kept": steps - 1,
         "meta": meta_checks,
         "rows": rows_out,
         "cg_summary": cg_summary,
+        "warm_err_max_px": warm_err_max,
+        "warm_err_med_px": warm_err_med,
     }
 
 
 def _print_report(results):
-    print("# AnimeAn 拖动单步耗时基准报告 (issue #46 step 1)\n")
+    warm_flag = any(r.get("warm") for r in results)
+    mode_tag = " [WARM 模式]" if warm_flag else ""
+    print(f"# AnimeAn 拖动单步耗时基准报告 (issue #46){mode_tag}\n")
     print("- **计时方法**：同一进程内每轮依次执行全部阶段，共跑 N 步（默认 40 步），丢弃第 1 轮（step 0 冷缓存），对后 39 轮统计中位数（p50）与 p90；同时记录 `time.perf_counter` 与 `time.process_time`。")
     print("- **每步开始前清理的缓存**：")
     print("  1. `am._invalidate_grid_cache()`（清空 `_GRID_CACHE['child']`、`_GRID_CACHE['main']`、`_OCCLUSION_CACHE['items']`）")
@@ -901,11 +962,25 @@ def _print_report(results):
             parts.append(f"{k}:{vals[0]}..{int(round(_percentile(vals, 0.5)))}..{vals[-1]}")
         print(f"| {rig} | {grid_sz} | {t_min} / {t_med} / {t_p90} / {t_max} | {', '.join(parts)} |")
 
+    if warm_flag:
+        print("\n## Warm 求解相对同一步冷启动精确解的网格节点最大流场偏差\n")
+        print("| 装置 | 连续步数 | 中位节点最大偏差 (px) | 全程最大节点偏差 (px) | 验收阈值 (<= 0.5 px) |")
+        print("| :--- | ---: | ---: | ---: | :--- |")
+        for res in results:
+            rig = res["rig"]
+            if res["meta"].get("grid_size", "None") == "None":
+                continue
+            med_e = res.get("warm_err_med_px", 0.0)
+            max_e = res.get("warm_err_max_px", 0.0)
+            status = "PASS" if max_e <= 0.5 else "FAIL"
+            print(f"| {rig} | {res['steps_kept']} | {med_e:.4f} | {max_e:.4f} | {status} |")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Benchmark single-step guide drag cost.")
     parser.add_argument("--rig", choices=("A", "B", "C"), help="Run single rig (A, B, or C).")
     parser.add_argument("--all", action="store_true", help="Run A, B, C sequentially in subprocesses.")
+    parser.add_argument("--warm", action="store_true", help="Enable warm solver state across drag steps.")
     parser.add_argument("--steps", type=int, default=40, help="Number of drag steps (default: 40, step 0 discarded).")
     parser.add_argument("--json-out", type=str, default="", help="Internal: write JSON result to path.")
     args = parser.parse_args()
@@ -920,6 +995,8 @@ def main():
                 "--steps", str(args.steps),
                 "--json-out", "-",
             ]
+            if args.warm:
+                cmd.append("--warm")
             proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
             # Extract JSON line from stdout
             json_line = None
@@ -934,7 +1011,7 @@ def main():
         return
 
     rig = args.rig or "B"
-    res = run_rig_benchmark(rig, steps=args.steps)
+    res = run_rig_benchmark(rig, steps=args.steps, warm=args.warm)
     if args.json_out == "-":
         print("__BENCH_JSON__:" + json.dumps(res, ensure_ascii=False))
     else:
