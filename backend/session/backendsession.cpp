@@ -520,7 +520,7 @@ QStringList extractPathsParam(const QJsonObject &params)
 BackendSession::BackendSession(WsServer *ws, QObject *parent)
     : QObject(parent)
     , m_ws(ws)
-    , m_business(new AnimeanBusiness(this))
+    , m_business(std::make_unique<AnimeanBusiness>())
     , m_mainBoard(std::make_unique<PaintOpenGLWidget>())
     , m_childBoard(std::make_unique<PaintOpenGLWidget>())
     , m_lastEvent(QJsonObject{{QStringLiteral("name"), QString()}, {QStringLiteral("args"), QJsonObject()}})
@@ -915,8 +915,8 @@ void BackendSession::bindPaintViewToBusiness(const QString &viewName, PaintOpenG
         paintView->sendPythonPadMessage(pad, phase, x, y);
     };
 
-    adapter.buildPlaybackCache = [paintView](int frameCount, QString *error) {
-        return paintView->buildPlaybackCache(frameCount, error);
+    adapter.buildPlaybackCache = [paintView](int frameCount, AnimeCore::String *error) {
+        QString qError; const bool ok = paintView->buildPlaybackCache(frameCount, error ? &qError : nullptr); if (error) { *error = qError; } return ok;
     };
     adapter.showPlaybackFrame = [paintView](int frameIndex) {
         paintView->showPlaybackFrame(frameIndex);
@@ -963,7 +963,7 @@ void BackendSession::bindPaintViewToBusiness(const QString &viewName, PaintOpenG
                                     selectedAsset);
     });
     connect(paintView, &PaintOpenGLWidget::pythonDebugMessage, this, &BackendSession::appendPythonDebug);
-    connect(paintView, &PaintOpenGLWidget::playbackInterrupted, m_business, &AnimeanBusiness::stopPlayback);
+    connect(paintView, &PaintOpenGLWidget::playbackInterrupted, this, [this]() { m_business->stopPlayback(); });
     connect(paintView, &PaintOpenGLWidget::historyChanged, this, [this]() {
         markDirty(QStringLiteral("history"));
         markDirty(QStringLiteral("menus"));
@@ -985,25 +985,25 @@ void BackendSession::bindPaintViewToBusiness(const QString &viewName, PaintOpenG
 
 void BackendSession::setupBusinessConnections()
 {
-    connect(m_business, &AnimeanBusiness::statusMessageChanged, this, [this](const QString &) {
+    m_business->statusMessageChanged.connect([this](const QString &) {
         markDirty(QStringLiteral("window"));
     });
-    connect(m_business, &AnimeanBusiness::pythonDebugMessage, this, &BackendSession::appendPythonDebug);
-    connect(m_business, &AnimeanBusiness::projectFilePathChanged, this, [this](const QString &) {
+    m_business->pythonDebugMessage.connect([this](const QString &message) { appendPythonDebug(message); });
+    m_business->projectFilePathChanged.connect([this](const QString &) {
         markDirty(QStringLiteral("window"));
     });
-    connect(m_business, &AnimeanBusiness::childFilePathChanged, this, [this](const QString &) {
+    m_business->childFilePathChanged.connect([this](const QString &) {
         markDirty(QStringLiteral("window"));
     });
-    connect(m_business, &AnimeanBusiness::windowTitleChanged, this, [this](const QString &) {
+    m_business->windowTitleChanged.connect([this](const QString &) {
         markDirty(QStringLiteral("window"));
     });
-    connect(m_business, &AnimeanBusiness::canvasSizeChanged, this, [this](const QString &viewName, const QSize &) {
+    m_business->canvasSizeChanged.connect([this](const QString &viewName, const QSize &) {
         markDirty(QStringLiteral("window"));
         markDirty(viewName == QStringLiteral("child") ? QStringLiteral("viewport/child")
                                                       : QStringLiteral("viewport/main"));
     });
-    connect(m_business, &AnimeanBusiness::activeViewChanged, this, [this](const QString &activeView) {
+    m_business->activeViewChanged.connect([this](const QString &activeView) {
         if (m_mainBoard) {
             m_mainBoard->setActiveIndicator(activeView == QStringLiteral("main"));
         }
@@ -1019,62 +1019,62 @@ void BackendSession::setupBusinessConnections()
         markDirty(QStringLiteral("assets/main"));
         markDirty(QStringLiteral("assets/child"));
     });
-    connect(m_business, &AnimeanBusiness::requestSurfaceTextureView, this, [this]() {
+    m_business->requestSurfaceTextureView.connect([this]() {
         emitUiEvent(QStringLiteral("textureView.surface"));
     });
-    connect(m_business, &AnimeanBusiness::requestAutoFitTextureControlView, this, [this]() {
+    m_business->requestAutoFitTextureControlView.connect([this]() {
         if (m_childBoard) {
             m_childBoard->fitViewToContent(false);
             m_textureAutoFitFrame = m_childBoard->model().currentFrame();
         }
     });
-    connect(m_business, &AnimeanBusiness::layersChanged, this, [this](const QString &viewName, int) {
+    m_business->layersChanged.connect([this](const QString &viewName, int) {
         if (viewName == QStringLiteral("child")) {
             markDirty(QStringLiteral("layers/child"));
         } else {
             markDirty(QStringLiteral("layers/main"));
         }
     });
-    connect(m_business, &AnimeanBusiness::assetsChanged, this, [this](const QString &viewName, int) {
+    m_business->assetsChanged.connect([this](const QString &viewName, int) {
         if (viewName == QStringLiteral("child")) {
             markDirty(QStringLiteral("assets/child"));
         } else {
             markDirty(QStringLiteral("assets/main"));
         }
     });
-    connect(m_business, &AnimeanBusiness::timelineChanged, this, [this]() {
+    m_business->timelineChanged.connect([this]() {
         markDirty(QStringLiteral("timeline"));
         markDirty(QStringLiteral("layers/main"));
         markDirty(QStringLiteral("layers/child"));
     });
-    connect(m_business, &AnimeanBusiness::playbackStateChanged, this, [this](bool, int, const QString &) {
+    m_business->playbackStateChanged.connect([this](bool, int, const QString &) {
         markDirty(QStringLiteral("timeline"));
     });
-    connect(m_business, &AnimeanBusiness::onionStateChanged, this, [this]() {
+    m_business->onionStateChanged.connect([this]() {
         markDirty(QStringLiteral("timeline"));
     });
-    connect(m_business, &AnimeanBusiness::toolChanged, this, [this](int, const QString &) {
+    m_business->toolChanged.connect([this](int, const QString &) {
         markDirty(QStringLiteral("tools"));
     });
-    connect(m_business, &AnimeanBusiness::toolLockStateChanged, this, [this]() {
+    m_business->toolLockStateChanged.connect([this]() {
         markDirty(QStringLiteral("tools"));
     });
-    connect(m_business, &AnimeanBusiness::toolOptionsLayoutChanged,
-            this, [this](const QJsonObject &layout, int, bool) {
+    m_business->toolOptionsLayoutChanged.connect(
+            [this](const QJsonObject &layout, int, bool) {
         m_lastToolOptions = layout;
         markDirty(QStringLiteral("toolOptions"));
     });
-    connect(m_business, &AnimeanBusiness::toolOptionsStateChanged, this, [this]() {
+    m_business->toolOptionsStateChanged.connect([this]() {
         markDirty(QStringLiteral("drawSettings"));
     });
-    connect(m_business, &AnimeanBusiness::drawingColorChanged, this, [this](const QColor &) {
+    m_business->drawingColorChanged.connect([this](const QColor &) {
         markDirty(QStringLiteral("drawColor"));
     });
-    connect(m_business, &AnimeanBusiness::historyChanged, this, [this]() {
+    m_business->historyChanged.connect([this]() {
         markDirty(QStringLiteral("history"));
         markDirty(QStringLiteral("menus"));
     });
-    connect(m_business, &AnimeanBusiness::historyRestored, this, [this](const QString &viewName) {
+    m_business->historyRestored.connect([this](const QString &viewName) {
         markDirty(QStringLiteral("history"));
         markDirty(QStringLiteral("menus"));
         markDirty(QStringLiteral("timeline"));
@@ -1527,8 +1527,8 @@ QJsonObject BackendSession::dispatchCall(const QString &method, const QJsonObjec
         }
         QString error;
         const bool ok = (view == QStringLiteral("child"))
-                            ? m_business->openTextureViewFrom(fileName, &error)
-                            : m_business->loadProjectFrom(fileName, &error);
+                            ? [&]{ AnimeCore::String e; const bool r = m_business->openTextureViewFrom(fileName, &e); error = e; return r; }()
+                            : [&]{ AnimeCore::String e; const bool r = m_business->loadProjectFrom(fileName, &e); error = e; return r; }();
         if (!ok) {
             return makeError(error.isEmpty() ? QStringLiteral("Failed to open file") : error);
         }
@@ -1555,8 +1555,8 @@ QJsonObject BackendSession::dispatchCall(const QString &method, const QJsonObjec
         }
         QString error;
         const bool ok = (view == QStringLiteral("child"))
-                            ? m_business->saveTextureViewTo(fileName, &error)
-                            : m_business->saveProjectTo(fileName, &error);
+                            ? [&]{ AnimeCore::String e; const bool r = m_business->saveTextureViewTo(fileName, &e); error = e; return r; }()
+                            : [&]{ AnimeCore::String e; const bool r = m_business->saveProjectTo(fileName, &e); error = e; return r; }();
         if (!ok) {
             return makeError(error.isEmpty() ? QStringLiteral("Failed to save file") : error);
         }
@@ -1578,8 +1578,8 @@ QJsonObject BackendSession::dispatchCall(const QString &method, const QJsonObjec
         }
         QString error;
         const bool ok = (view == QStringLiteral("child"))
-                            ? m_business->saveTextureViewTo(fileName, &error)
-                            : m_business->saveProjectTo(fileName, &error);
+                            ? [&]{ AnimeCore::String e; const bool r = m_business->saveTextureViewTo(fileName, &e); error = e; return r; }()
+                            : [&]{ AnimeCore::String e; const bool r = m_business->saveProjectTo(fileName, &e); error = e; return r; }();
         if (!ok) {
             return makeError(error.isEmpty() ? QStringLiteral("Failed to save file") : error);
         }
@@ -2509,7 +2509,7 @@ QJsonObject BackendSession::handleFileTextureCall(const QJsonObject &params)
             return makeError(QStringLiteral("path is required"));
         }
         QString error;
-        if (!m_business->openTextureViewFrom(fileName, &error)) {
+        if (![&]{ AnimeCore::String e; const bool r = m_business->openTextureViewFrom(fileName, &e); error = e; return r; }()) {
             return makeError(error.isEmpty() ? QStringLiteral("Failed to open texture view") : error);
         }
         surfaceTextureView();
@@ -2532,7 +2532,7 @@ QJsonObject BackendSession::handleFileTextureCall(const QJsonObject &params)
             return makeError(QStringLiteral("path is required"));
         }
         QString error;
-        if (!m_business->saveTextureViewTo(fileName, &error)) {
+        if (![&]{ AnimeCore::String e; const bool r = m_business->saveTextureViewTo(fileName, &e); error = e; return r; }()) {
             return makeError(error.isEmpty() ? QStringLiteral("Failed to save texture view") : error);
         }
         return QJsonObject{
@@ -2549,7 +2549,7 @@ QJsonObject BackendSession::handleFileTextureCall(const QJsonObject &params)
             return makeError(QStringLiteral("path is required"));
         }
         QString error;
-        if (!m_business->saveTextureViewTo(fileName, &error)) {
+        if (![&]{ AnimeCore::String e; const bool r = m_business->saveTextureViewTo(fileName, &e); error = e; return r; }()) {
             return makeError(error.isEmpty() ? QStringLiteral("Failed to save texture view") : error);
         }
         return QJsonObject{
@@ -2644,7 +2644,7 @@ bool BackendSession::triggerMenuById(const QString &id, const QJsonObject &param
             emitUiEvent(QStringLiteral("dialog.saveProjectAs"));
             return true;
         }
-        return m_business->saveProjectTo(m_business->currentFilePath(), errorOut);
+        return [&]{ AnimeCore::String e; const bool r = m_business->saveProjectTo(m_business->currentFilePath(), errorOut ? &e : nullptr); if (errorOut) *errorOut = e; return r; }();
     }
     if (id == QStringLiteral("file.saveAs")) {
         emitUiEvent(QStringLiteral("dialog.saveProjectAs"));
@@ -2653,7 +2653,7 @@ bool BackendSession::triggerMenuById(const QString &id, const QJsonObject &param
     if (id == QStringLiteral("file.texture.save")) {
         if (!m_business->childFilePath().isEmpty()
             && QFileInfo(m_business->childFilePath()).suffix().compare(QStringLiteral("textureview"), Qt::CaseInsensitive) == 0) {
-            return m_business->saveTextureViewTo(m_business->childFilePath(), errorOut);
+            return [&]{ AnimeCore::String e; const bool r = m_business->saveTextureViewTo(m_business->childFilePath(), errorOut ? &e : nullptr); if (errorOut) *errorOut = e; return r; }();
         }
         emitUiEvent(QStringLiteral("menu.action"), QJsonObject{{QStringLiteral("id"), id}});
         return true;
@@ -3555,7 +3555,7 @@ QJsonObject BackendSession::buildTimelineState() const
     QJsonArray namesArr;
     for (int i = 0; i < st.frameCount; ++i) {
         const bool hold = (i < st.holds.size()) ? st.holds.at(i) : false;
-        const QString name = (i < st.frameNames.size()) ? st.frameNames.at(i) : QString();
+        const QString name = (i < st.frameNames.size()) ? QString(st.frameNames.at(i)) : QString();
         framesArr.append(QJsonObject{
             {QStringLiteral("index"), i},
             {QStringLiteral("name"), name},
