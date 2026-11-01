@@ -516,11 +516,11 @@ def begin(view, overlay_id):
             am.MAPPING_AREA_PROPERTY,
         ))
         hide_columns = _unit_hide_columns(am, main_scene, uid)
-        third_cache = {}
-        if _SESSION["view"] != "child":
-            third_cache["key"] = _child_axes_key(child_h, child_v)
-            third_cache["value"] = mapper.third_of_batch(px, py)
-
+        l_h, l_v, ok = mapper.third_of_batch(px, py)
+        third_cache = {
+            "key": _child_axes_key(child_h, child_v),
+            "value": (l_h, l_v, ok),
+        }
         snapshot = _take_asset_snapshot(am)
         _SESSION.update({
             "active": True,
@@ -558,7 +558,34 @@ def begin(view, overlay_id):
             "last_duration": 0.0,
             "pending": False,
             "timer_armed": False,
+            "prev_labels": None,
+            "prev_n_front": 0,
+            "prev_n_regions": 0,
+            "prev_region_depths": None,
         })
+        if am._FOLD["split"]:
+            phi_x, phi_y = mapper.main_of_third_batch(l_h, l_v)
+            dx_raw = phi_x - px
+            dy_raw = phi_y - py
+            valid = ok & np.isfinite(dx_raw) & np.isfinite(dy_raw)
+            if in_child_area is not None:
+                valid = valid & in_child_area
+            if main_area_lut is not None:
+                safe_px = np.where(np.isfinite(phi_x), phi_x, 0.0)
+                safe_py = np.where(np.isfinite(phi_y), phi_y, 0.0)
+                valid = valid & _lookup_area_lut(np, main_area_lut, safe_px, safe_py)
+            dx, dy = _fill_invalid_from_neighbors(np, dx_raw, dy_raw, valid, passes=2)
+            det = gridsolve.det2(
+                (px + dx) * float(mapper.fold_reference),
+                py + dy,
+                du,
+                dv,
+            )
+            is_front = det >= 0.0
+            _update_coarse_depth_table(
+                am, np, _SESSION, mapper, l_h, l_v, valid, is_front
+            )
+            _init_region_depths_from_coarse(np, _SESSION, valid, is_front)
     except Exception as error:
         _handle_preview_error(am, error)
 
@@ -635,6 +662,251 @@ def _update_coarse_depth_table(am, np, session, mapper, l_h, l_v, valid, is_fron
     else:
         session["depth_interval"] = DEPTH_BASE_INTERVAL
     return dt
+
+
+def _label_front_back_regions(np, valid, is_front):
+    front_mask = valid & is_front
+    back_mask = valid & ~is_front
+    front_labels, n_front = gridsolve.label_regions(front_mask)
+    back_labels, n_back = gridsolve.label_regions(back_mask)
+    if n_back > 0 and n_front > 0:
+        labels = np.where(back_labels > 0, back_labels + n_front, front_labels)
+    elif n_back > 0:
+        labels = back_labels
+    else:
+        labels = front_labels
+    return labels, int(n_front), int(n_front + n_back)
+
+
+def _region_adjacency(np, labels, n_regions):
+    adj4 = np.zeros((n_regions + 1, n_regions + 1), dtype=bool)
+    adj8 = np.zeros((n_regions + 1, n_regions + 1), dtype=bool)
+    if n_regions <= 1:
+        return adj4, adj8
+
+    if labels.shape[0] > 1:
+        a = labels[:-1, :]
+        b = labels[1:, :]
+        m = (a != b) & (a > 0) & (b > 0)
+        if np.any(m):
+            am_idx, bm_idx = a[m], b[m]
+            adj4[am_idx, bm_idx] = True
+            adj4[bm_idx, am_idx] = True
+    if labels.shape[1] > 1:
+        a = labels[:, :-1]
+        b = labels[:, 1:]
+        m = (a != b) & (a > 0) & (b > 0)
+        if np.any(m):
+            am_idx, bm_idx = a[m], b[m]
+            adj4[am_idx, bm_idx] = True
+            adj4[bm_idx, am_idx] = True
+
+    adj8 |= adj4
+    if labels.shape[0] > 1 and labels.shape[1] > 1:
+        for a, b in (
+            (labels[:-1, :-1], labels[1:, 1:]),
+            (labels[:-1, 1:], labels[1:, :-1]),
+        ):
+            m = (a != b) & (a > 0) & (b > 0)
+            if np.any(m):
+                am_idx, bm_idx = a[m], b[m]
+                adj8[am_idx, bm_idx] = True
+                adj8[bm_idx, am_idx] = True
+    return adj4, adj8
+
+
+def _propagate_unassigned_depths(region_depths, adj4, n_front, n_regions, fallback_fn=None):
+    while True:
+        progressed = False
+        for r in range(1, n_regions + 1):
+            if region_depths[r] >= 0:
+                continue
+            nbrs = [
+                int(region_depths[nb])
+                for nb in range(1, n_regions + 1)
+                if adj4[r, nb] and region_depths[nb] >= 0
+            ]
+            if nbrs:
+                want_even = (r <= n_front)
+                d = min(nbrs) + 1
+                if ((d % 2) == 0) != want_even:
+                    d += 1
+                region_depths[r] = d
+                progressed = True
+        if not progressed:
+            break
+
+    for r in range(1, n_regions + 1):
+        want_even = (r <= n_front)
+        if region_depths[r] < 0:
+            d = int(fallback_fn(r)) if fallback_fn is not None else (0 if want_even else 1)
+            if ((d % 2) == 0) != want_even:
+                d += 1
+            region_depths[r] = d
+        elif ((int(region_depths[r]) % 2) == 0) != want_even:
+            region_depths[r] += 1
+
+
+def _init_region_depths_from_coarse(np, session, valid, is_front):
+    c_depth = session["coarse_depth"]
+    nci = session["nearest_ci"]
+    ncj = session["nearest_cj"]
+    depth = c_depth[nci[:, None], ncj[None, :]].copy()
+    mismatch = ((depth % 2) == 0) != is_front
+    depth[mismatch] += 1
+
+    labels, n_front, n_regions = _label_front_back_regions(np, valid, is_front)
+    region_depths = np.full(n_regions + 1, -1, dtype=np.int32)
+    region_depths[0] = 0
+    if n_regions > 0:
+        coarse_i = session["coarse_i"]
+        coarse_j = session["coarse_j"]
+        ci_grid, cj_grid = np.meshgrid(coarse_i, coarse_j, indexing="ij")
+        c_labels = labels[ci_grid, cj_grid]
+        c_valid = valid[ci_grid, cj_grid]
+        for r in range(1, n_regions + 1):
+            want_even = (r <= n_front)
+            cmask = c_valid & (c_labels == r)
+            if np.any(cmask):
+                vals = c_depth[cmask]
+                vals = np.where(((vals % 2) == 0) != want_even, vals + 1, vals)
+                counts = np.bincount(np.maximum(0, vals))
+                d = int(np.argmax(counts))
+                if ((d % 2) == 0) != want_even:
+                    d += 1
+                region_depths[r] = d
+
+        if np.any(region_depths[1:] < 0):
+            adj4, _adj8 = _region_adjacency(np, labels, n_regions)
+
+            def _fallback_fine(r):
+                vals = depth[labels == r]
+                if vals.size > 0:
+                    return int(np.argmax(np.bincount(np.maximum(0, vals))))
+                return 0 if (r <= n_front) else 1
+
+            _propagate_unassigned_depths(region_depths, adj4, n_front, n_regions, _fallback_fine)
+
+    session["prev_labels"] = labels
+    session["prev_n_front"] = n_front
+    session["prev_n_regions"] = n_regions
+    session["prev_region_depths"] = region_depths
+    return region_depths[labels]
+
+
+def _inherit_region_depths(am, np, session, mapper, l_h, l_v, valid, is_front):
+    t0 = _clock()
+    labels, n_front, n_regions = _label_front_back_regions(np, valid, is_front)
+    if n_regions == 0:
+        session["prev_labels"] = labels
+        session["prev_n_front"] = 0
+        session["prev_n_regions"] = 0
+        session["prev_region_depths"] = np.zeros(1, dtype=np.int32)
+        dt = _clock() - t0
+        session["last_depth_duration"] = dt
+        return np.zeros_like(labels, dtype=np.int32), dt
+
+    prev_labels = session.get("prev_labels")
+    prev_n_front = int(session.get("prev_n_front", 0))
+    prev_n_regions = int(session.get("prev_n_regions", 0))
+    prev_depths = session.get("prev_region_depths")
+
+    adj4, adj8 = _region_adjacency(np, labels, n_regions)
+    region_depths = np.full(n_regions + 1, -1, dtype=np.int32)
+    region_depths[0] = 0
+    best_prev = np.zeros(n_regions + 1, dtype=np.int32)
+    best_prev_ov = np.zeros(n_regions + 1, dtype=np.int32)
+
+    if prev_labels is not None and prev_depths is not None and prev_n_regions > 0:
+        n_cols = prev_n_regions + 1
+        pair_idx = labels.ravel() * n_cols + prev_labels.ravel()
+        overlap = np.bincount(
+            pair_idx, minlength=(n_regions + 1) * n_cols
+        ).reshape(n_regions + 1, n_cols)
+        overlap[0, :] = 0
+        overlap[:, 0] = 0
+        overlap[1:n_front + 1, prev_n_front + 1:] = 0
+        overlap[n_front + 1:, 1:prev_n_front + 1] = 0
+
+        for r in range(1, n_regions + 1):
+            row = overlap[r, 1:]
+            mx = int(np.max(row))
+            if mx > 0:
+                best_prev[r] = int(np.argmax(row)) + 1
+                best_prev_ov[r] = mx
+
+        claimants_of_p = {}
+        for r in range(1, n_regions + 1):
+            p = int(best_prev[r])
+            if p > 0:
+                claimants_of_p.setdefault(p, []).append(r)
+
+        anchor_dist2 = None
+        for p, r_list in claimants_of_p.items():
+            p_depth = int(prev_depths[p])
+            if len(r_list) == 1:
+                region_depths[r_list[0]] = p_depth
+            else:
+                if anchor_dist2 is None:
+                    main_f = mapper.main_frame
+                    anc = am._nearest_arc()
+                    anc = (
+                        min(max(anc[0], -main_f.h_arc), main_f.h_total - main_f.h_arc),
+                        min(max(anc[1], -main_f.v_arc), main_f.v_total - main_f.v_arc),
+                    )
+                    anc_lh, anc_lv = mapper.unscale_arcs(*anc)
+                    anchor_dist2 = (l_h - anc_lh) ** 2 + (l_v - anc_lv) ** 2
+
+                def _split_rank(r_cand):
+                    rmask = (labels == r_cand)
+                    min_d2 = float(np.min(anchor_dist2[rmask])) if np.any(rmask) else float("inf")
+                    return (round(min_d2, 0), -int(best_prev_ov[r_cand]))
+
+                r_best = min(r_list, key=_split_rank)
+                region_depths[r_best] = p_depth
+                same_sheet = {r_best}
+                changed = True
+                while changed:
+                    changed = False
+                    for r_other in r_list:
+                        if r_other in same_sheet:
+                            continue
+                        if any(adj8[r_other, s] for s in same_sheet):
+                            same_sheet.add(r_other)
+                            region_depths[r_other] = p_depth
+                            changed = True
+                for r_other in r_list:
+                    if r_other in same_sheet:
+                        continue
+                    if int(best_prev_ov[r_other]) <= 4 or not np.any(adj4[r_other, 1:]):
+                        region_depths[r_other] = p_depth
+
+        for p in range(1, prev_n_regions + 1):
+            col = overlap[1:, p]
+            mx = int(np.max(col))
+            if mx > 0:
+                r_win = int(np.argmax(col)) + 1
+                if region_depths[r_win] >= 0 and mx * 2 >= int(np.sum(col)):
+                    p_depth = int(prev_depths[p])
+                    if p_depth < region_depths[r_win]:
+                        region_depths[r_win] = p_depth
+
+    def _fallback_prev(r):
+        p = int(best_prev[r])
+        if p > 0 and prev_depths is not None:
+            return int(prev_depths[p])
+        return 0 if (r <= n_front) else 1
+
+    _propagate_unassigned_depths(region_depths, adj4, n_front, n_regions, _fallback_prev)
+
+    depth = region_depths[labels]
+    session["prev_labels"] = labels
+    session["prev_n_front"] = n_front
+    session["prev_n_regions"] = n_regions
+    session["prev_region_depths"] = region_depths
+    dt = _clock() - t0
+    session["last_depth_duration"] = dt
+    return depth, dt
 
 
 def _build_passes(am, session, valid, depth):
@@ -761,19 +1033,9 @@ def _compute_and_push():
 
     t_dep = 0.0
     if am._FOLD["split"]:
-        now_dep = _clock()
-        last_dep = _SESSION["last_depth_time"]
-        if (_SESSION["coarse_depth"] is None
-                or last_dep is None
-                or (now_dep - last_dep) >= _SESSION["depth_interval"]):
-            t_dep = _update_coarse_depth_table(
-                am, np, _SESSION, mapper, l_h, l_v, valid, is_front)
-        c_depth = _SESSION["coarse_depth"]
-        nci = _SESSION["nearest_ci"]
-        ncj = _SESSION["nearest_cj"]
-        depth = c_depth[nci[:, None], ncj[None, :]].copy()
-        mismatch = ((depth % 2) == 0) != is_front
-        depth[mismatch] += 1
+        depth, t_dep = _inherit_region_depths(
+            am, np, _SESSION, mapper, l_h, l_v, valid, is_front
+        )
     else:
         depth = np.zeros((_SESSION["W"], _SESSION["H"]), dtype=np.int32)
 

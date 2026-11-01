@@ -385,21 +385,58 @@ def _stroke_dict(points, width=3.0, prop=""):
     }
 
 
-def _default_pattern_strokes():
-    """Pattern strokes covering [-240, 240] x [-160, 160] on the child board."""
+def _default_pattern_strokes(cx=0.0, cy=0.0):
+    """Pattern strokes covering [cx-240, cx+240] x [cy-160, cy+160] on the child board."""
     strokes = []
     # Outer frame & interior cross-hatching so bounding box is well-defined
-    strokes.append(_stroke_dict([(-232.0, -152.0), (232.0, -152.0),
-                                 (232.0, 152.0), (-232.0, 152.0),
-                                 (-232.0, -152.0)], width=3.0))
+    strokes.append(_stroke_dict([(cx - 232.0, cy - 152.0), (cx + 232.0, cy - 152.0),
+                                 (cx + 232.0, cy + 152.0), (cx - 232.0, cy + 152.0),
+                                 (cx - 232.0, cy - 152.0)], width=3.0))
     for y in (-100.0, -40.0, 20.0, 80.0):
-        pts = [(-200.0 + 40.0 * k, y + 10.0 * math.sin(k * 0.6)) for k in range(11)]
+        pts = [(cx - 200.0 + 40.0 * k, cy + y + 10.0 * math.sin(k * 0.6)) for k in range(11)]
         strokes.append(_stroke_dict(pts, width=2.5))
     return strokes
 
 
 def _build_rig_assets(rig_name):
-    """Build (child_assets, main_assets) matching tests/bench_drag_cost.py Rigs A, B, C."""
+    """Build (child_assets, main_assets) matching tests/bench_drag_cost.py Rigs A, B, C, D."""
+    if rig_name in ("D", "D3"):
+        child_h = [[240.0, 360.0], [1040.0, 360.0]]
+        child_v = [[640.0, 90.0], [640.0, 630.0]]
+        main_v = [[640.0, 90.0], [640.0, 630.0]]
+        main_h = [
+            [
+                240.0 + 800.0 * (k / 60.0) + 170.0 * math.sin((k / 60.0) * math.pi * 3.0 + 0.6),
+                360.0 + 90.0 * math.sin((k / 60.0) * math.pi * 3.0),
+            ]
+            for k in range(61)
+        ]
+        child_lines = [{
+            "id": 1,
+            "width": 2.5,
+            "points": [[330.0 + 16.0 * k, 230.0] for k in range(41)],
+        }]
+        main_lines = [{
+            "id": 1,
+            "width": 2.5,
+            "points": [
+                [330.0 + 16.0 * k, 210.0 + 30.0 * math.sin(k / 40.0 * math.pi)]
+                for k in range(41)
+            ],
+        }]
+        return (
+            {
+                am.H_PROPERTY: {"points": [list(p) for p in child_h], "width": 3.0},
+                am.V_PROPERTY: {"points": [list(p) for p in child_v], "width": 3.0},
+                am.ADDITIONAL_PROPERTY: {"lines": child_lines},
+            },
+            {
+                am.H_PROPERTY: {"points": [list(p) for p in main_h], "width": 3.0},
+                am.V_PROPERTY: {"points": [list(p) for p in main_v], "width": 3.0},
+                am.ADDITIONAL_PROPERTY: {"lines": main_lines},
+            },
+        )
+
     if rig_name == "A":
         child_h = [(-300.0, 0.0), (300.0, 0.0)]
         child_v = [(0.0, -200.0), (0.0, 200.0)]
@@ -581,7 +618,18 @@ def fresh_rig_world(rig_name="B", pattern_strokes=None):
     child = scenes["child"]
     c_layer = child.add_layer("vector")
     c_lid = child.layer_id_at(c_layer)
-    child.pattern[c_lid] = list(pattern_strokes if pattern_strokes is not None else _default_pattern_strokes())
+    if pattern_strokes is not None:
+        child.pattern[c_lid] = list(pattern_strokes)
+    elif rig_name == "D":
+        child.pattern[c_lid] = _default_pattern_strokes(640.0, 360.0)
+    elif rig_name == "D3":
+        child.pattern[c_lid] = [
+            _stroke_dict([(268.0, 208.0), (872.0, 208.0),
+                          (872.0, 512.0), (268.0, 512.0),
+                          (268.0, 208.0)], width=3.0),
+        ]
+    else:
+        child.pattern[c_lid] = _default_pattern_strokes()
 
     # Create and focus a mapping unit on main board
     uid = am._create_unit()
@@ -1302,6 +1350,332 @@ class TestMappingPreview(unittest.TestCase):
         self.assertEqual(len(fake.ui.set_field_calls), 2)
         self.assertIsNotNone(fake.ui.set_field_view_calls[-1][1])
         mp.end()
+
+    def _assert_frame_depth_matches_fold_depth(self, ui, orig_prepare, min_agreement=0.99):
+        _key, W, H, rect, arr = _decode_last_field(ui)
+        x0, y0, rw, rh = rect
+        du, dv = rw / (W - 1), rh / (H - 1)
+
+        # Convert (H, W, 4) buffer back to (W, H) grid indexing matching px, py
+        dx = arr[:, :, 0].T.astype(np.float64)
+        dy = arr[:, :, 1].T.astype(np.float64)
+        tag = arr[:, :, 2].T.astype(np.float64)
+        valid = tag > 0.0
+        pred_depth = np.rint(tag).astype(np.int32) - 1
+
+        gx = np.linspace(x0, x0 + rw, W, dtype=np.float64)
+        gy = np.linspace(y0, y0 + rh, H, dtype=np.float64)
+        px, py = np.meshgrid(gx, gy, indexing="ij")
+
+        specs = mp._effective_specs_and_pairs(am, mp._SESSION)
+        self.assertIsNotNone(specs)
+        ch_h, ch_v, mn_h, mn_v, add_pairs, gnd_pairs = specs
+        ref_warm = copy.deepcopy(mp._SESSION["warm"])
+        ref_mapper, _ws = am.build_mapper(
+            ch_h, ch_v, mn_h, mn_v,
+            additional_pairs=add_pairs, ground_pairs=gnd_pairs, warm=ref_warm,
+        )
+        self.assertIsNotNone(ref_mapper)
+
+        import gridsolve
+        det = gridsolve.det2(
+            (px + dx) * float(ref_mapper.fold_reference),
+            py + dy,
+            du,
+            dv,
+        )
+        is_front = det >= 0.0
+
+        # 1. Parity and front/back must agree 100% on ALL valid nodes
+        valid_parity_ok = ((pred_depth[valid] % 2) == 0) == is_front[valid]
+        self.assertTrue(
+            bool(np.all(valid_parity_ok)),
+            "Depth parity and is_front disagreed on valid nodes",
+        )
+
+        # 2. Prepare reference fold context outside preview and evaluate direct _fold_depth
+        l_h, l_v, _ok = ref_mapper.third_of_batch(px, py)
+        v_lh = l_h[valid]
+        v_lv = l_v[valid]
+        warp = getattr(ref_mapper, "warp", None)
+        if warp is not None:
+            w_h, w_v = warp.apply_batch(v_lh, v_lv)
+        else:
+            w_h, w_v = v_lh, v_lv
+        arc_h = np.where(w_h >= 0.0, w_h * ref_mapper.h_scales[1], w_h * ref_mapper.h_scales[0])
+        arc_v = np.where(w_v >= 0.0, w_v * ref_mapper.v_scales[1], w_v * ref_mapper.v_scales[0])
+        h_range = (float(np.min(arc_h)), float(np.max(arc_h)))
+        v_range = (float(np.min(arc_v)), float(np.max(arc_v)))
+        orig_prepare(ref_mapper, h_range, v_range)
+
+        front_const = am._MappedOutput.FRONT
+        back_const = am._MappedOutput.BACK
+        interior_total = 0
+        interior_match = 0
+        seen_depths = set()
+
+        for i in range(1, W - 1):
+            for j in range(1, H - 1):
+                if not valid[i, j]:
+                    continue
+                nb_valid = valid[i - 1:i + 2, j - 1:j + 2]
+                if not np.all(nb_valid):
+                    continue
+                nb_front = is_front[i - 1:i + 2, j - 1:j + 2]
+                if not np.all(nb_front == nb_front[1, 1]):
+                    continue
+                pt = (float(px[i, j]), float(py[i, j]))
+                side = front_const if is_front[i, j] else back_const
+                ref_d = int(am._fold_depth(ref_mapper, pt, side))
+                pred_d = int(pred_depth[i, j])
+                seen_depths.add(pred_d)
+                self.assertEqual(
+                    pred_d % 2, ref_d % 2,
+                    f"Parity mismatch at ({i}, {j}): pred={pred_d}, ref={ref_d}",
+                )
+                interior_total += 1
+                if pred_d == ref_d:
+                    interior_match += 1
+
+        self.assertGreater(interior_total, 200)
+        agreement = interior_match / float(interior_total)
+        self.assertGreaterEqual(
+            agreement, min_agreement,
+            f"Interior depth agreement {agreement:.4f} < {min_agreement:.4f} "
+            f"({interior_match}/{interior_total})",
+        )
+        return agreement, seen_depths
+
+    def test_12_zero_prepare_fold_context_calls_during_drag(self):
+        """_prepare_fold_context is called once in begin() and 0 times during drag updates."""
+        _scenes, fake, _uid = fresh_rig_world("D")
+        clock_val = [100.0]
+        mp._clock = lambda: clock_val[0]
+
+        orig_prepare = am._prepare_fold_context
+        call_count = [0]
+
+        def counted_prepare(*args, **kwargs):
+            call_count[0] += 1
+            return orig_prepare(*args, **kwargs)
+
+        am._prepare_fold_context = counted_prepare
+        try:
+            am._guide_drag_event({
+                "view": "main", "handle": am.H_PROPERTY, "phase": "press",
+                "position": {"x": 640.0, "y": 360.0},
+            })
+            self.assertEqual(call_count[0], 1, "Expected 1 _prepare_fold_context call in begin()")
+
+            call_count[0] = 0
+            for step in range(1, 15):
+                clock_val[0] += 0.30  # even well past 200ms, never calls _prepare_fold_context
+                am._guide_drag_event({
+                    "view": "main", "handle": am.H_PROPERTY, "phase": "move",
+                    "position": {"x": 640.0, "y": 360.0 - step * 0.6},
+                })
+            self.assertEqual(len(fake.ui.set_field_calls), 14)
+            self.assertEqual(call_count[0], 0, "Expected 0 _prepare_fold_context calls during drag")
+            mp.end()
+        finally:
+            am._prepare_fold_context = orig_prepare
+
+    def test_13_continuous_drag_depth_accuracy_rig_D_and_3layer(self):
+        """Continuous drag on Rig D and a 3-layer rig matches direct _fold_depth >=99% (>1 cell from crease)."""
+        orig_prepare = am._prepare_fold_context
+        for rig_name, expected_layers in (("D", {0, 1}), ("D3", {0, 1, 2})):
+            _scenes, fake, _uid = fresh_rig_world(rig_name)
+            clock_val = [200.0]
+            mp._clock = lambda: clock_val[0]
+
+            drag_prepare_calls = [0]
+
+            def spy_prepare(*args, **kwargs):
+                drag_prepare_calls[0] += 1
+                return orig_prepare(*args, **kwargs)
+
+            am._prepare_fold_context = spy_prepare
+            try:
+                am._guide_drag_event({
+                    "view": "main", "handle": am.H_PROPERTY, "phase": "press",
+                    "position": {"x": 640.0, "y": 360.0},
+                })
+                self.assertEqual(drag_prepare_calls[0], 1)
+                drag_prepare_calls[0] = 0
+
+                for step in range(1, 6):
+                    clock_val[0] += 0.25
+                    am._guide_drag_event({
+                        "view": "main", "handle": am.H_PROPERTY, "phase": "move",
+                        "position": {"x": 640.0 + step * 0.4, "y": 360.0 - step * 0.6},
+                    })
+                    self.assertEqual(drag_prepare_calls[0], 0)
+                    agreement, seen_depths = self._assert_frame_depth_matches_fold_depth(
+                        fake.ui, orig_prepare, min_agreement=0.99,
+                    )
+                    self.assertTrue(
+                        expected_layers.issubset(seen_depths),
+                        f"Rig {rig_name} step {step}: expected {expected_layers} in {seen_depths}",
+                    )
+                mp.end()
+            finally:
+                am._prepare_fold_context = orig_prepare
+
+    def test_14_fold_appear_and_disappear_mid_drag(self):
+        """Mid-drag fold appearance (0 -> 0,1,2) and disappearance (0,1,2 -> 0) match _fold_depth >=99%."""
+        orig_prepare = am._prepare_fold_context
+        n_seg = 40
+        ch_h = [(-300.0 + 600.0 * i / n_seg, 0.0) for i in range(n_seg + 1)]
+        ch_v = [(-140.0, -200.0 + 400.0 * i / n_seg) for i in range(n_seg + 1)]
+        mn_v = [[-140.0, -200.0 + 400.0 * i / n_seg] for i in range(n_seg + 1)]
+
+        def make_main_h(amp):
+            pts = []
+            for i in range(n_seg + 1):
+                s = -1.0 + 2.0 * i / n_seg
+                u = s - 0.25
+                # Localized S-wave around s = 0.25 (to the right of the crossing at x = -140)
+                env = math.exp(-6.0 * u * u)
+                x = 300.0 * s - amp * math.sin(2.0 * math.pi * u) * env
+                y = 12.0 * math.sin(0.5 * math.pi * s)
+                pts.append([x, y])
+            return pts
+
+        z_strokes = [
+            _stroke_dict([(-232.0, -72.0), (232.0, -72.0),
+                          (232.0, 72.0), (-232.0, 72.0),
+                          (-232.0, -72.0)], width=3.0),
+        ]
+
+        # Case A: New fold appears mid-drag (amp goes from 20 [unfolded] -> 140 [3-layer folded])
+        _scenes, fake, uid = fresh_rig_world("A", pattern_strokes=z_strokes)
+        clock_val = [300.0]
+        mp._clock = lambda: clock_val[0]
+        am._UNIT_ASSETS["child"][uid] = {
+            am.H_PROPERTY: {"points": [list(p) for p in ch_h], "width": 3.0},
+            am.V_PROPERTY: {"points": [list(p) for p in ch_v], "width": 3.0},
+        }
+        am._UNIT_ASSETS["main"][uid] = {
+            am.H_PROPERTY: {"points": make_main_h(20.0), "width": 3.0},
+            am.V_PROPERTY: {"points": copy.deepcopy(mn_v), "width": 3.0},
+        }
+
+        drag_prepare_calls = [0]
+
+        def spy_prepare(*args, **kwargs):
+            drag_prepare_calls[0] += 1
+            return orig_prepare(*args, **kwargs)
+
+        am._prepare_fold_context = spy_prepare
+        try:
+            mp.begin("main", am.H_PROPERTY)
+            self.assertEqual(drag_prepare_calls[0], 1)
+            drag_prepare_calls[0] = 0
+
+            seen_by_step = []
+            for amp in (25.0, 65.0, 95.0, 125.0, 145.0):
+                clock_val[0] += 0.25
+                am._UNIT_ASSETS["main"][uid][am.H_PROPERTY]["points"] = make_main_h(amp)
+                mp.update()
+                self.assertEqual(drag_prepare_calls[0], 0)
+                _ag, seen = self._assert_frame_depth_matches_fold_depth(
+                    fake.ui, orig_prepare, min_agreement=0.99,
+                )
+                seen_by_step.append(seen)
+
+            self.assertEqual(seen_by_step[0], {0}, "First step should be unfolded {0}")
+            self.assertEqual(seen_by_step[-1], {0, 1, 2}, "Last step should have 3 layers {0, 1, 2}")
+            mp.end()
+
+            # Case B: Fold disappears mid-drag (amp goes from 145 [3-layer folded] -> 20 [unfolded])
+            _scenes, fake, uid = fresh_rig_world("A", pattern_strokes=z_strokes)
+            mp._clock = lambda: clock_val[0]
+            am._UNIT_ASSETS["child"][uid] = {
+                am.H_PROPERTY: {"points": [list(p) for p in ch_h], "width": 3.0},
+                am.V_PROPERTY: {"points": [list(p) for p in ch_v], "width": 3.0},
+            }
+            am._UNIT_ASSETS["main"][uid] = {
+                am.H_PROPERTY: {"points": make_main_h(145.0), "width": 3.0},
+                am.V_PROPERTY: {"points": copy.deepcopy(mn_v), "width": 3.0},
+            }
+
+            drag_prepare_calls[0] = 0
+            mp.begin("main", am.H_PROPERTY)
+            self.assertEqual(drag_prepare_calls[0], 1)
+            drag_prepare_calls[0] = 0
+
+            seen_disappear = []
+            for amp in (140.0, 115.0, 85.0, 45.0, 20.0):
+                clock_val[0] += 0.25
+                am._UNIT_ASSETS["main"][uid][am.H_PROPERTY]["points"] = make_main_h(amp)
+                mp.update()
+                self.assertEqual(drag_prepare_calls[0], 0)
+                _ag, seen = self._assert_frame_depth_matches_fold_depth(
+                    fake.ui, orig_prepare, min_agreement=0.99,
+                )
+                seen_disappear.append(seen)
+
+            self.assertEqual(seen_disappear[0], {0, 1, 2}, "First step should have 3 layers {0, 1, 2}")
+            self.assertEqual(seen_disappear[-1], {0}, "Last step should unfold back to {0}")
+            mp.end()
+        finally:
+            am._prepare_fold_context = orig_prepare
+
+    def test_15_rig_D_40_steps_latency_max_under_45ms(self):
+        """Rig D continuous 40-step drag has max single-step update <= 45 ms and median <= 33 ms."""
+        _scenes, fake, _uid = fresh_rig_world("D")
+        offset = [0.0]
+        mp._clock = lambda: time.perf_counter() + offset[0]
+
+        orig_prepare = am._prepare_fold_context
+        drag_prepare_calls = [0]
+
+        def spy_prepare(*args, **kwargs):
+            drag_prepare_calls[0] += 1
+            return orig_prepare(*args, **kwargs)
+
+        am._prepare_fold_context = spy_prepare
+        try:
+            am._guide_drag_event({
+                "view": "main", "handle": am.H_PROPERTY, "phase": "press",
+                "position": {"x": 640.0, "y": 360.0},
+            })
+            self.assertEqual(drag_prepare_calls[0], 1)
+            drag_prepare_calls[0] = 0
+
+            step_durations_ms = []
+            depth_durations_ms = []
+            for step in range(1, 41):
+                offset[0] += 0.060  # advance past throttle gate every step
+                t0 = time.perf_counter()
+                am._guide_drag_event({
+                    "view": "main", "handle": am.H_PROPERTY, "phase": "move",
+                    "position": {"x": 640.0, "y": 360.0 - step * 0.6},
+                })
+                dt_ms = (time.perf_counter() - t0) * 1000.0
+                step_durations_ms.append(dt_ms)
+                depth_durations_ms.append(mp.last_timings().get("depth_table", 0.0) * 1000.0)
+
+            self.assertEqual(len(fake.ui.set_field_calls), 40)
+            self.assertEqual(drag_prepare_calls[0], 0)
+            max_ms = max(step_durations_ms)
+            median_ms = statistics.median(step_durations_ms)
+            med_depth_ms = statistics.median(depth_durations_ms)
+            print(
+                f"[timing] Rig D (40 steps): median={median_ms:.2f}ms, "
+                f"max={max_ms:.2f}ms, depth_inherit_median={med_depth_ms:.2f}ms"
+            )
+            self.assertLessEqual(
+                max_ms, 45.0,
+                f"Rig D 40-step max update cost {max_ms:.2f} ms exceeds 45 ms limit",
+            )
+            self.assertLessEqual(
+                median_ms, 33.0,
+                f"Rig D 40-step median update cost {median_ms:.2f} ms exceeds 33 ms budget",
+            )
+            mp.end()
+        finally:
+            am._prepare_fold_context = orig_prepare
 
 
 if __name__ == "__main__":

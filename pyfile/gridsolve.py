@@ -110,3 +110,58 @@ def det2(dx, dy, du, dv):
             det = xx * yy - xy * yx
             best = det if best is None else np.minimum(best, det)
     return best
+
+
+def label_regions(mask):
+    """4-connected component labeling of a 2D boolean array ``mask``.
+
+    Returns ``(labels, count)`` where ``labels`` is an ``int32`` ndarray of
+    the same shape as ``mask`` (``0`` where ``mask`` is False, and
+    ``1 .. count`` for each 4-connected True component) and ``count`` is the
+    number of connected components.
+    """
+    np = _np()
+    m = np.asarray(mask, dtype=bool)
+    if m.ndim != 2:
+        raise ValueError("mask must be a 2D boolean array")
+    if m.size == 0:
+        return np.zeros(m.shape, dtype=np.int32), 0
+    is_start = m.copy()
+    if m.shape[1] > 1:
+        is_start[:, 1:] &= ~m[:, :-1]
+    run_ids = np.cumsum(is_start, dtype=np.int32).reshape(m.shape)
+    n_runs = int(run_ids[-1, -1])
+    if n_runs == 0:
+        return np.zeros(m.shape, dtype=np.int32), 0
+    parent = list(range(n_runs + 1))
+    if m.shape[0] > 1:
+        v_adj = m[:-1, :] & m[1:, :]
+        v_start = v_adj.copy()
+        if m.shape[1] > 1:
+            v_start[:, 1:] &= ~v_adj[:, :-1]
+        u_arr = run_ids[:-1, :][v_start]
+        v_arr = run_ids[1:, :][v_start]
+        for u, v in zip(u_arr.tolist(), v_arr.tolist()):
+            while parent[u] != u:
+                parent[u] = parent[parent[u]]
+                u = parent[u]
+            while parent[v] != v:
+                parent[v] = parent[parent[v]]
+                v = parent[v]
+            if u != v:
+                if u < v:
+                    parent[v] = u
+                else:
+                    parent[u] = v
+    lut = [0] * (n_runs + 1)
+    count = 0
+    for i in range(1, n_runs + 1):
+        p = parent[i]
+        if p == i:
+            count += 1
+            lut[i] = count
+        else:
+            lut[i] = lut[p]
+    lut_arr = np.asarray(lut, dtype=np.int32)
+    labels = np.where(m, lut_arr[run_ids], np.int32(0))
+    return labels, count
