@@ -113,7 +113,7 @@ export function isUnboundedViewport(hOrViewport, vEnabled) {
   return hOrViewport === false && vEnabled === false;
 }
 
-export function createCentral(root, { onPage, onScroll, onPill }) {
+export function createCentral(root, { onPage, onScroll, onPill, bottomChrome = div("central-bottom") }) {
   const tabs = tabBar(["Drawing", "Texture"], (i) => { show(i); onPage(i === 0 ? "main" : "child"); });
   const stage = div("central-stage");
   const host = div("board-host");
@@ -133,10 +133,10 @@ export function createCentral(root, { onPage, onScroll, onPill }) {
   pill.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24"><path d="M6 14 L12 8 L18 14" fill="none" stroke="currentColor" stroke-width="2"/></svg><span>TIMELINE</span>`;
   pill.addEventListener("click", onPill);
   stage.append(host, h.el, v.el, pill);
-  root.append(tabs.el, stage);
+  root.append(tabs.el, stage, bottomChrome);
   function show(i) { tabs.select(i); }
   show(0);
-  return { host, h, v, pill, show };
+  return { host, h, v, pill, bottomChrome, show };
 }
 
 // ---- Layer tree ---------------------------------------------------------------

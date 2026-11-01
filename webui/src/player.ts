@@ -400,7 +400,7 @@ function matchesMenuShortcut(e: KeyboardEvent, shortcut: string): boolean {
 export function createPlayer(
   root: HTMLElement,
   project: Project,
-  hooks: Partial<RuntimeHooks> & { onDockClosed?(dockId: string): void } = {},
+  hooks: Partial<RuntimeHooks> & { onDockClosed?(dockId: string): void; onDockChanged?(dockId: string): void } = {},
 ): PlayerInstance {
   const doc = root.ownerDocument ?? document;
   const win = doc.defaultView ?? window;
@@ -913,11 +913,11 @@ export function createPlayer(
     getWindowSize: () => getRootSize(),
     getDockTitle: (did) => String(runtime.view(did).props.title ?? node(did)?.title ?? did),
     onActivateTab: (did) => runtime.dockActivateTab(did),
-    onTabify: (targetId, did) => runtime.dockTabify(targetId, did),
-    onSplit: (targetId, did, pos, orient) => runtime.dockSplit(targetId, did, pos, orient),
-    onMoveToArea: (did, area) => runtime.dockMoveToArea(did, area),
-    onFloat: (did, rect) => runtime.dockFloat(did, rect),
-    onRestore: (did) => runtime.dockRestore(did),
+    onTabify: (targetId, did) => { runtime.dockTabify(targetId, did); hooks.onDockChanged?.(did); },
+    onSplit: (targetId, did, pos, orient) => { runtime.dockSplit(targetId, did, pos, orient); hooks.onDockChanged?.(did); },
+    onMoveToArea: (did, area) => { runtime.dockMoveToArea(did, area); hooks.onDockChanged?.(did); },
+    onFloat: (did, rect, commit = true) => { runtime.dockFloat(did, rect); if (commit) hooks.onDockChanged?.(did); },
+    onRestore: (did) => { runtime.dockRestore(did); hooks.onDockChanged?.(did); },
     onClose: (did) => { runtime.dockSetVisible(did, false); hooks.onDockClosed?.(did); },
     onResizeArea: (area, size) => runtime.dockResizeArea(area, size),
     onResizeSplit: (area, idx, size) => runtime.dockResizeSplit(area, idx, size),
