@@ -91,6 +91,22 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 
 网页每画完一帧发一次 `ack`。后端在收到上一帧的 `ack` 之前不发新帧，只记下「要重画」，所以网页慢时不会堆积。
 
+## 渲染器
+
+同一份指令表有两种画法，语义以 `webui/src/board/renderer.ts` 的 `executeOps` 为准。
+
+| 渲染器 | 文件 | 稳定前缀 | 全量重画（3000 条笔画，每条 40 段三次曲线） |
+|---|---|---|---|
+| WebGL2，缺省 | `glrenderer.ts`、`tess.ts` | 画在多重采样缓冲里，解析成一张纹理；后缀帧先铺这张纹理 | 几何缓存命中 4–7 ms，换缩放档重建 260–290 ms |
+| Canvas 2D | `renderer.ts` | 画在一张缓存位图里 | 约 600 ms |
+
+- 上表是 RTX 3080 上的实测，比较页是 `webui/tests/webgl_compare.html`。
+- WebGL2 不许把多重采样缓冲 blit 到另一个多重采样缓冲，所以前缀不能直接复制，要先解析成纹理。模板缓冲也带不过去，后缀开始时裁剪要重新写一次。
+- 笔画几何按路径内容缓存，缩小时复用，放大超过 1.75 倍才重建。展平误差不超过 0.1 屏幕像素。
+- 选择存在页面的 `localStorage`，键是 `animean.boardRenderer`，属于机器级偏好，不进工程文件，也不经过后端。菜单项由 `webui/src/ui/app.js` 加在后端的菜单后面。
+- 切换时新建 canvas，因为同一个 canvas 只能拿到一种上下文。新渲染器用 `adopt` 接手指令表和图片，不需要后端重发。
+- 显卡不支持 WebGL2 或上下文创建失败时退回 Canvas 2D。要读背景的合成模式（`multiply`、`screen` 等）WebGL 没有实现，退回 `source-over`；画板现在不发这些模式，唯一的 `setCompositionMode` 作用在离屏 `QImage` 上。
+
 ## 状态键
 
 | 键 | 内容 |

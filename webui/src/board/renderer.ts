@@ -58,7 +58,7 @@ export interface BoardRendererOptions {
   onAck?: (view: string, frame: number) => void;
 }
 
-interface PenState {
+export interface PenState {
   r: number;
   g: number;
   b: number;
@@ -72,9 +72,9 @@ interface PenState {
   dash: number[] | null;
 }
 
-type GradientStop = [number, string];
+export type GradientStop = [number, string];
 
-type BrushGradientSpec =
+export type BrushGradientSpec =
   | {
       kind: "linear";
       x1: number;
@@ -94,7 +94,7 @@ type BrushGradientSpec =
       stops: GradientStop[];
     };
 
-interface BrushState {
+export interface BrushState {
   r: number;
   g: number;
   b: number;
@@ -103,13 +103,13 @@ interface BrushState {
   gradient: BrushGradientSpec | null;
 }
 
-interface ClipSpec {
+export interface ClipSpec {
   path: number[];
   rule: CanvasFillRule;
   transform: [number, number, number, number, number, number];
 }
 
-interface DrawState {
+export interface DrawState {
   transform: [number, number, number, number, number, number];
   pen: PenState;
   brush: BrushState;
@@ -119,7 +119,7 @@ interface DrawState {
   smooth: boolean;
 }
 
-function clampByte(n: unknown): number {
+export function clampByte(n: unknown): number {
   const v = Math.round(Number(n) || 0);
   return v < 0 ? 0 : v > 255 ? 255 : v;
 }
@@ -134,7 +134,7 @@ export function formatRgbaColor(r: number, g: number, b: number, a: number): str
   return `rgba(${r},${g},${b},${a / 255})`;
 }
 
-function defaultDrawState(): DrawState {
+export function defaultDrawState(): DrawState {
   return {
     transform: [1, 0, 0, 1, 0, 0],
     pen: {
@@ -165,7 +165,7 @@ function defaultDrawState(): DrawState {
   };
 }
 
-function cloneDrawState(s: DrawState): DrawState {
+export function cloneDrawState(s: DrawState): DrawState {
   return {
     transform: [...s.transform] as [number, number, number, number, number, number],
     pen: {
@@ -193,21 +193,21 @@ function cloneDrawState(s: DrawState): DrawState {
   };
 }
 
-function mapLineCap(cap: unknown): CanvasLineCap {
+export function mapLineCap(cap: unknown): CanvasLineCap {
   const n = Number(cap);
   if (n === 1 || cap === "square") return "square";
   if (n === 2 || cap === "round") return "round";
   return "butt";
 }
 
-function mapLineJoin(join: unknown): CanvasLineJoin {
+export function mapLineJoin(join: unknown): CanvasLineJoin {
   const n = Number(join);
   if (n === 1 || join === "bevel") return "bevel";
   if (n === 2 || join === "round") return "round";
   return "miter";
 }
 
-function mapCompositeMode(mode: unknown): GlobalCompositeOperation {
+export function mapCompositeMode(mode: unknown): GlobalCompositeOperation {
   if (typeof mode === "string" && mode.length > 0) {
     if (mode === "source") return "copy";
     return mode as GlobalCompositeOperation;
@@ -215,7 +215,7 @@ function mapCompositeMode(mode: unknown): GlobalCompositeOperation {
   return "source-over";
 }
 
-function parseGradientStops(rawStops: unknown): GradientStop[] {
+export function parseGradientStops(rawStops: unknown): GradientStop[] {
   if (!Array.isArray(rawStops)) return [];
   return rawStops.map((st) => {
     if (!Array.isArray(st)) return [0, "rgba(0,0,0,0)"];
@@ -231,7 +231,7 @@ function parseGradientStops(rawStops: unknown): GradientStop[] {
   });
 }
 
-function createDefaultCacheCanvas(width: number, height: number): CanvasLike {
+export function createDefaultCacheCanvas(width: number, height: number): CanvasLike {
   if (typeof OffscreenCanvas !== "undefined") {
     return new OffscreenCanvas(width, height) as unknown as CanvasLike;
   }
@@ -447,6 +447,20 @@ export class BoardRenderer {
         this.resetContext(this.ctx, pw, ph, dpr, mainState);
         this.executeOps(this.ctx, this.fullOps, 0, this.fullOps.length, mainState, dpr);
       }
+    }
+  }
+
+  // Takes over from a renderer of the other kind, which keeps its op list and
+  // images in the same shape, so the board repaints without a backend resend.
+  adopt(prev: { getOps(): ReadonlyArray<unknown[]>; images?: Map<string, unknown>; logicalW?: number; logicalH?: number }): void {
+    this.fullOps = prev.getOps().map((op) => [...op]);
+    for (const [key, image] of prev.images ?? []) {
+      this.images.set(key, image);
+    }
+    const w = prev.logicalW ?? 0;
+    const h = prev.logicalH ?? 0;
+    if (w > 0 && h > 0) {
+      this.drawFrame({ t: "board", view: this.view, frame: 0, w, h, keep: 0, ops: this.fullOps });
     }
   }
 
