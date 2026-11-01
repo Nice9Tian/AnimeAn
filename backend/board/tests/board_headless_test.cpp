@@ -399,6 +399,25 @@ int main(int argc, char *argv[])
         board.acknowledgeFrame(f.frame);
     }
 
+    // The op list stays in logical pixels whatever the screen's ratio: the page
+    // applies the ratio once, and pointer positions arrive in logical pixels.
+    board.resizeSurface(567, 690, 1.25);
+    {
+        const BoardFrame f = waitForFrame();
+        board.acknowledgeFrame(f.frame);
+        for (const QJsonValue &val : fullOps) {
+            const QJsonArray op = val.toArray();
+            if (op.at(0).toString() == QStringLiteral("T")) {
+                if (op.at(1).toDouble() != 1.0 || op.at(4).toDouble() != 1.0) {
+                    std::fprintf(stderr, "Expected logical transform at ratio 1.25, got scale %g\n",
+                                 op.at(1).toDouble());
+                    return 1;
+                }
+                break;
+            }
+        }
+    }
+
     if (argc > 1 && argv[1] && argv[1][0] != '\0') {
         QFile outFile(QString::fromLocal8Bit(argv[1]));
         if (!outFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {

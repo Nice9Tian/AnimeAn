@@ -199,6 +199,9 @@ function createMockGlCanvas() {
     bindBuffer(target, buf) {
       calls.push({ fn: "bindBuffer", args: [target, buf] });
     },
+    bufferSubData(target, offset, data) {
+      calls.push({ fn: "bufferSubData", args: [target, offset, new Float32Array(data as Float32Array)] });
+    },
     bufferData(target, data, usage) {
       const copy = data instanceof Float32Array ? new Float32Array(data) : data;
       calls.push({ fn: "bufferData", args: [target, copy, usage] });
@@ -590,7 +593,7 @@ describe("GlBoardRenderer", () => {
         ["S", curvePath, 0],
       ],
     });
-    const uploadsFrame1 = mock.calls.filter((c) => c.fn === "bufferData").length;
+    const uploadsFrame1 = mock.calls.filter((c) => c.fn === "bufferSubData").length;
     assert.equal(uploadsFrame1, 1, "First frame should upload stroke geometry once");
 
     // Frame 2: pan + slight zoom (1.15x stays within 1.75x builtScale) => cache hit, zero bufferData calls!
@@ -608,7 +611,7 @@ describe("GlBoardRenderer", () => {
         ["S", curvePath, 0],
       ],
     });
-    const uploadsFrame2 = mock.calls.filter((c) => c.fn === "bufferData").length;
+    const uploadsFrame2 = mock.calls.filter((c) => c.fn === "bufferSubData").length;
     assert.equal(uploadsFrame2, 0, "Cache hit within scale bucket must not call bufferData");
     assert.ok(
       mock.calls.some(
@@ -632,7 +635,7 @@ describe("GlBoardRenderer", () => {
         ["S", curvePath, 0],
       ],
     });
-    const uploadsFrame3 = mock.calls.filter((c) => c.fn === "bufferData").length;
+    const uploadsFrame3 = mock.calls.filter((c) => c.fn === "bufferSubData").length;
     assert.equal(uploadsFrame3, 0, "Zooming out must always reuse existing cached geometry");
 
     // Frame 4: zoom in 4x crosses scale bucket boundary => re-tessellates and uploads once
@@ -650,7 +653,7 @@ describe("GlBoardRenderer", () => {
         ["S", curvePath, 0],
       ],
     });
-    const uploadsFrame4 = mock.calls.filter((c) => c.fn === "bufferData").length;
+    const uploadsFrame4 = mock.calls.filter((c) => c.fn === "bufferSubData").length;
     assert.equal(uploadsFrame4, 1, "Crossing scale bucket when zooming in should re-tessellate and upload once");
   });
 
@@ -673,9 +676,9 @@ describe("GlBoardRenderer", () => {
       ],
     });
 
-    const uploadCall = mock.calls.find((c) => c.fn === "bufferData");
+    const uploadCall = mock.calls.find((c) => c.fn === "bufferSubData");
     assert.ok(uploadCall, "Should upload cosmetic stroke geometry");
-    const strokeVerts = uploadCall.args[1] as Float32Array;
+    const strokeVerts = uploadCall.args[2] as Float32Array;
     assert.equal(strokeVerts.length, 12, "Opaque direct stroke uploads only its 6 vertices (12 floats)");
     let minX = Infinity;
     let maxX = -Infinity;
@@ -856,7 +859,7 @@ describe("GlBoardRenderer", () => {
       keep: 0,
       ops: renderer.getOps() as unknown[][],
     });
-    assert.equal(mock.calls.filter((c) => c.fn === "bufferData").length, 0, "Warm frame must do 0 bufferData uploads");
+    assert.equal(mock.calls.filter((c) => c.fn === "bufferSubData").length, 0, "Warm frame must do 0 bufferData uploads");
     assert.equal(renderer.getLastDrawCalls(), 2);
   });
 
@@ -889,6 +892,28 @@ describe("GlBoardRenderer", () => {
 
     renderer.renderFrame(frame(2, 110));
     assert.equal(internals.geoCache.size, 5, "the next frame starts from a trimmed cache");
+  });
+
+  it("sends only the new geometry when a stroke is added, not everything so far", () => {
+    const mock = createMockGlCanvas();
+    const renderer = new GlBoardRenderer(mock.canvas, { getDpr: () => 1 });
+    const start = [
+      ["T", 1, 0, 0, 1, 0, 0],
+      ["B", 0, 0, 0, 0],
+      ["P", 20, 30, 40, 255, 3, 0, 0, 2, 0, null],
+    ];
+    const frame = (n: number, ops: unknown[][], keep: number) => ({ t: "board" as const, view: "main", frame: n, w: 400, h: 400, keep, ops });
+    renderer.renderFrame(frame(1, [...start, ["S", [0, 10, 10, 1, 50, 10], 0]], 0));
+
+    mock.calls.length = 0;
+    renderer.renderFrame(frame(2, [["S", [0, 10, 20, 1, 50, 20], 0]], 4));
+
+    const arenaAllocations = mock.calls.filter((c) => c.fn === "bufferData" && typeof c.args[1] === "number");
+    assert.equal(arenaAllocations.length, 0, "the buffer keeps its reserved capacity");
+    const uploads = mock.calls.filter((c) => c.fn === "bufferSubData");
+    assert.equal(uploads.length, 1);
+    assert.equal(uploads[0].args[1], 12 * 4, "the upload starts after the first stroke's 6 vertices");
+    assert.equal((uploads[0].args[2] as Float32Array).length, 12, "and carries only the new stroke");
   });
 
   it("takes the exact bytes from a renderer that kept them instead of reading a canvas back", () => {

@@ -1,14 +1,20 @@
 #include "scenehistory.h"
 
+#include "algorithm/core/string.h"
+
+#include <cstdint>
+
+using namespace AnimeCore;
+
 namespace {
-quint64 nextHistorySequence()
+std::uint64_t nextHistorySequence()
 {
-    static quint64 sequence = 0;
+    static std::uint64_t sequence = 0;
     return ++sequence;
 }
 }
 
-void SceneHistory::reset(const QString &label, const AnimeSceneModel &model)
+void SceneHistory::reset(const String &label, const AnimeSceneModel &model)
 {
     m_entries.clear();
     Entry entry;
@@ -18,7 +24,7 @@ void SceneHistory::reset(const QString &label, const AnimeSceneModel &model)
     m_current = 0;
 }
 
-void SceneHistory::commit(const QString &label, const AnimeSceneModel &model)
+void SceneHistory::commit(const String &label, const AnimeSceneModel &model)
 {
     if (m_current < m_entries.size() - 1) {
         m_entries.resize(m_current + 1);
@@ -85,15 +91,15 @@ int SceneHistory::currentIndex() const
     return m_current;
 }
 
-QString SceneHistory::labelAt(int index) const
+String SceneHistory::labelAt(int index) const
 {
     if (index < 0 || index >= m_entries.size()) {
-        return QString();
+        return String();
     }
     return m_entries[index].label;
 }
 
-quint64 SceneHistory::currentSeq() const
+std::uint64_t SceneHistory::currentSeq() const
 {
     if (m_current < 0 || m_current >= m_entries.size()) {
         return 0;
@@ -101,7 +107,7 @@ quint64 SceneHistory::currentSeq() const
     return m_entries[m_current].seq;
 }
 
-quint64 SceneHistory::redoSeq() const
+std::uint64_t SceneHistory::redoSeq() const
 {
     if (!canRedo()) {
         return 0;

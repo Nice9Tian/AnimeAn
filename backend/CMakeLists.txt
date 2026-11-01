@@ -7,17 +7,6 @@ endif()
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Network)
 
 add_library(animean_core_headless STATIC
-    ${CMAKE_SOURCE_DIR}/algorithm/animemodel.cpp
-    ${CMAKE_SOURCE_DIR}/algorithm/animemodel.h
-    ${CMAKE_SOURCE_DIR}/algorithm/beziersplit.cpp
-    ${CMAKE_SOURCE_DIR}/algorithm/beziersplit.h
-    ${CMAKE_SOURCE_DIR}/algorithm/scenehistory.cpp
-    ${CMAKE_SOURCE_DIR}/algorithm/scenehistory.h
-    ${CMAKE_SOURCE_DIR}/algorithm/vectorlogic.cpp
-    ${CMAKE_SOURCE_DIR}/algorithm/vectorlogic.h
-    ${CMAKE_SOURCE_DIR}/algorithm/viewscale.h
-    ${CMAKE_SOURCE_DIR}/projectio.cpp
-    ${CMAKE_SOURCE_DIR}/projectio.h
     ${CMAKE_SOURCE_DIR}/selectionattention.cpp
     ${CMAKE_SOURCE_DIR}/selectionattention.h
     ${CMAKE_SOURCE_DIR}/boardbase.h
@@ -41,7 +30,7 @@ target_include_directories(animean_core_headless PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/board
 )
 
-target_link_libraries(animean_core_headless PUBLIC Qt6::Core Qt6::Gui)
+target_link_libraries(animean_core_headless PUBLIC animean_core Qt6::Core Qt6::Gui)
 
 if(ANIMEAN_WITH_PYTHON)
     target_sources(animean_core_headless PRIVATE

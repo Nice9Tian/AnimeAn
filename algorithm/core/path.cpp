@@ -140,73 +140,89 @@ struct Cubic
         return {x1, y1, x12, y12, x123, y123, x1234, y1234};
     }
 
-    double tAtLength(double l, double error = 0.01) const
+    // Bisects until the prefix is within 0.01 of the wanted length. The result
+    // depends on where that stops, so the steps follow Qt's exactly: a different
+    // bisection lands on another t, about 1e-5 away.
+    double tAtLength(double l) const
     {
-        double len = length(error);
-        if (l >= len)
+        const double error = 0.01;
+        const double len = length();
+        if (l > len || fuzzyCompare(l, len))
             return 1.0;
-        if (l <= 0.0)
-            return 0.0;
 
+        double t = 0.5;
         double lastBigger = 1.0;
-        double t = 1.0;
-        double error2 = error * 0.5;
-        (void)error2;
-        double smaller = 0.5;
-        while (std::abs(len - l) > error) {
-            if (l < len) {
-                lastBigger = t;
-                t -= t * smaller;
-            } else {
-                smaller *= 0.5;
+        while (true) {
+            const double prefixLength = prefixTo(t).length();
+            if (std::abs(prefixLength - l) < error)
+                return t;
+            if (prefixLength < l) {
                 t += (lastBigger - t) * 0.5;
+            } else {
+                lastBigger = t;
+                t -= t * 0.5;
             }
-            len = prefixTo(t).length(error);
         }
-        return t;
     }
 };
 
-void updateCubicExtrema1D(double p0, double p1, double p2, double p3, double &minVal, double &maxVal)
+// One curve's extent, widened into the path's by the caller. Bounds end up in
+// project files, so the last bit has to agree with Qt, which shapes this code:
+// each curve starts from its own end points, every stationary point updates
+// BOTH axes, the point is found by repeated interpolation rather than the
+// expanded polynomial, and the roots go through one reciprocal.
+struct CubicExtent {
+    double minX, minY, maxX, maxY;
+};
+
+CubicExtent cubicExtent(const PointF &p0, const PointF &p1, const PointF &p2, const PointF &p3)
 {
-    if (p0 < minVal) minVal = p0;
-    if (p0 > maxVal) maxVal = p0;
-    if (p3 < minVal) minVal = p3;
-    if (p3 > maxVal) maxVal = p3;
+    CubicExtent e;
+    e.minX = std::min(p0.x(), p3.x());
+    e.maxX = std::max(p0.x(), p3.x());
+    e.minY = std::min(p0.y(), p3.y());
+    e.maxY = std::max(p0.y(), p3.y());
 
-    if (p1 >= minVal && p1 <= maxVal && p2 >= minVal && p2 <= maxVal) {
-        return;
-    }
-
-    const double a = 3.0 * (-p0 + 3.0 * p1 - 3.0 * p2 + p3);
-    const double b = 6.0 * (p0 - 2.0 * p1 + p2);
-    const double c = 3.0 * (p1 - p0);
-
-    auto evalAt = [&](double t) {
-        if (t <= 0.0 || t >= 1.0)
-            return;
+    const auto interpolate = [](double v0, double v1, double v2, double v3, double t) {
         const double mt = 1.0 - t;
-        const double val = mt * mt * mt * p0
-                         + 3.0 * mt * mt * t * p1
-                         + 3.0 * mt * t * t * p2
-                         + t * t * t * p3;
-        if (val < minVal) minVal = val;
-        if (val > maxVal) maxVal = val;
+        double q0 = v0 * mt + v1 * t;
+        double q1 = v1 * mt + v2 * t;
+        const double q2 = v2 * mt + v3 * t;
+        q0 = q0 * mt + q1 * t;
+        q1 = q1 * mt + q2 * t;
+        return q0 * mt + q1 * t;
     };
-
-    if ( fuzzyIsNull(a) ) {
-        if (!fuzzyIsNull(b)) {
-            evalAt(-c / b);
+    const auto widenAt = [&](double t) {
+        if (t < 0.0 || t > 1.0)
+            return;
+        const double x = interpolate(p0.x(), p1.x(), p2.x(), p3.x(), t);
+        const double y = interpolate(p0.y(), p1.y(), p2.y(), p3.y(), t);
+        if (x < e.minX) e.minX = x;
+        if (x > e.maxX) e.maxX = x;
+        if (y < e.minY) e.minY = y;
+        if (y > e.maxY) e.maxY = y;
+    };
+    const auto widenAtStationary = [&](double v0, double v1, double v2, double v3) {
+        const double a = 3.0 * (-v0 + 3.0 * v1 - 3.0 * v2 + v3);
+        const double b = 6.0 * (v0 - 2.0 * v1 + v2);
+        const double c = 3.0 * (v1 - v0);
+        if (fuzzyIsNull(a)) {
+            if (!fuzzyIsNull(b)) {
+                widenAt(-c / b);
+            }
+            return;
         }
-        return;
-    }
-
-    const double disc = b * b - 4.0 * a * c;
-    if (disc < 0.0)
-        return;
-    const double s = std::sqrt(disc);
-    evalAt((-b + s) / (2.0 * a));
-    evalAt((-b - s) / (2.0 * a));
+        const double disc = b * b - 4.0 * a * c;
+        if (disc >= 0.0) {
+            const double s = std::sqrt(disc);
+            const double rcp = 1.0 / (2.0 * a);
+            widenAt((-b + s) * rcp);
+            widenAt((-b - s) * rcp);
+        }
+    };
+    widenAtStationary(p0.x(), p1.x(), p2.x(), p3.x());
+    widenAtStationary(p0.y(), p1.y(), p2.y(), p3.y());
+    return e;
 }
 
 void flattenCubicToPolygon(const Cubic &b, Vector<PointF> &poly, double threshold = 0.5)
@@ -318,6 +334,7 @@ struct Path::Data
     int cStart = 0;
     FillRule fillRule = OddEvenFill;
     bool require_moveTo = false;
+    std::shared_ptr<const void> bridged;
 };
 
 Path::Path(const PointF &startPoint)
@@ -343,6 +360,19 @@ void Path::detach()
     } else if (m_d.use_count() > 1) {
         m_d = std::make_shared<Data>(*m_d);
     }
+    m_d->bridged.reset();
+}
+
+std::shared_ptr<const void> Path::bridgedCopy() const
+{
+    return m_d ? m_d->bridged : nullptr;
+}
+
+void Path::setBridgedCopy(std::shared_ptr<const void> copy) const
+{
+    if (m_d) {
+        m_d->bridged = std::move(copy);
+    }
 }
 
 void Path::maybeMoveTo()
@@ -363,6 +393,7 @@ void Path::clear()
         m_d->elements.clear();
         m_d->cStart = 0;
         m_d->require_moveTo = false;
+        m_d->bridged.reset();
         if (m_d->fillRule == OddEvenFill && m_d->elements.capacity() == 0) {
             m_d.reset();
         }
@@ -710,8 +741,13 @@ RectF Path::boundingRect() const
             if (i + 2 < count) {
                 const Element &e1 = m_d->elements[i + 1];
                 const Element &e2 = m_d->elements[i + 2];
-                updateCubicExtrema1D(curPt.x(), e.x, e1.x, e2.x, minX, maxX);
-                updateCubicExtrema1D(curPt.y(), e.y, e1.y, e2.y, minY, maxY);
+                const CubicExtent extent = cubicExtent(curPt, PointF(e.x, e.y), PointF(e1.x, e1.y), PointF(e2.x, e2.y));
+                const double right = extent.minX + (extent.maxX - extent.minX);
+                const double bottom = extent.minY + (extent.maxY - extent.minY);
+                if (extent.minX < minX) minX = extent.minX;
+                if (right > maxX) maxX = right;
+                if (extent.minY < minY) minY = extent.minY;
+                if (bottom > maxY) maxY = bottom;
                 curPt = PointF(e2.x, e2.y);
                 i += 3;
             } else {
@@ -971,7 +1007,8 @@ Cubic bezierAtT(const Path &path, double t, double *startingLength, double *bezi
             const PointF p2(e);
             const LineF line(p1, p2);
             const double slen = line.length();
-            lastBezier = Cubic::fromPoints(p1, line.pointAt(1.0 / 3.0), line.pointAt(2.0 / 3.0), p2);
+            const PointF delta = p2 - p1;
+            lastBezier = Cubic::fromPoints(p1, p1 + delta / 3.0, p1 + 2.0 * delta / 3.0, p2);
             *startingLength = curLen;
             *bezierLength = slen;
             curLen += slen;
