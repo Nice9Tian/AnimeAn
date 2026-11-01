@@ -37,7 +37,7 @@ export function scrollBar(vertical, onValue) {
   s.innerHTML = `<div class="sb-btn sb-a"><svg width="14" height="14"><path d="${a}" fill="var(--sb-arrow)"/></svg></div>`
     + `<div class="sb-btn sb-b"><svg width="14" height="14"><path d="${b}" fill="var(--sb-arrow)"/></svg></div><div class="sb-handle"></div>`;
   const handle = s.querySelector(".sb-handle");
-  let min = 0, max = 0, page = 1, value = 0;
+  let min = 0, max = 0, page = 1, value = 0, enabled = true;
   const BTN = 14, MIN_HANDLE = 20;
   const metrics = () => {
     const length = (vertical ? s.clientHeight : s.clientWidth) - 2 * BTN;
@@ -56,9 +56,10 @@ export function scrollBar(vertical, onValue) {
     next = Math.max(min, Math.min(max, next));
     if (next !== value) { value = next; draw(); onValue(value); }
   };
-  s.querySelector(".sb-a").addEventListener("click", () => set(value - 20));
-  s.querySelector(".sb-b").addEventListener("click", () => set(value + 20));
+  s.querySelector(".sb-a").addEventListener("click", () => { if (enabled) set(value - 20); });
+  s.querySelector(".sb-b").addEventListener("click", () => { if (enabled) set(value + 20); });
   handle.addEventListener("pointerdown", (e) => {
+    if (!enabled) return;
     handle.setPointerCapture(e.pointerId);
     const start = vertical ? e.clientY : e.clientX, from = value;
     const move = (m) => {
@@ -72,7 +73,16 @@ export function scrollBar(vertical, onValue) {
     e.stopPropagation();
   });
   new ResizeObserver(draw).observe(s);
-  return { el: s, set(next) { ({ min, max, page, value } = next); draw(); }, held: () => handle.matches(":active") };
+  return {
+    el: s,
+    set(next = {}) {
+      ({ min = 0, max = 0, page = 1, value = 0, enabled = true } = next);
+      s.classList.toggle("disabled", !enabled);
+      draw();
+    },
+    held: () => handle.matches(":active"),
+    enabled: () => enabled,
+  };
 }
 
 // ---- QAbstractScrollArea --------------------------------------------------------
@@ -96,12 +106,29 @@ export function scrollArea(cls) {
 }
 
 // ---- Central area: Drawing / Texture pages around the board canvases ---------
+export function isUnboundedViewport(hOrViewport, vEnabled) {
+  if (hOrViewport && typeof hOrViewport === "object" && ("h" in hOrViewport || "v" in hOrViewport)) {
+    return hOrViewport.h?.enabled === false && hOrViewport.v?.enabled === false;
+  }
+  return hOrViewport === false && vEnabled === false;
+}
+
 export function createCentral(root, { onPage, onScroll, onPill }) {
   const tabs = tabBar(["Drawing", "Texture"], (i) => { show(i); onPage(i === 0 ? "main" : "child"); });
   const stage = div("central-stage");
   const host = div("board-host");
   const h = scrollBar(false, (v) => onScroll("h", v));
   const v = scrollBar(true, (val) => onScroll("v", val));
+  const syncBars = () => {
+    const hide = isUnboundedViewport(h.enabled(), v.enabled());
+    h.el.style.display = hide ? "none" : "";
+    v.el.style.display = hide ? "none" : "";
+    host.style.right = hide ? "0" : "";
+    host.style.bottom = hide ? "0" : "";
+  };
+  const setH = h.set, setV = v.set;
+  h.set = (next) => { setH(next); syncBars(); };
+  v.set = (next) => { setV(next); syncBars(); };
   const pill = div("pill");
   pill.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24"><path d="M6 14 L12 8 L18 14" fill="none" stroke="currentColor" stroke-width="2"/></svg><span>TIMELINE</span>`;
   pill.addEventListener("click", onPill);

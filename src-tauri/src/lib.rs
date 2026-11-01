@@ -563,6 +563,7 @@ async fn pick_files(
     title: Option<String>,
     filters: Option<Vec<FileFilter>>,
     multiple: Option<bool>,
+    default_name: Option<String>,
 ) -> Result<Vec<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
@@ -577,6 +578,11 @@ async fn pick_files(
     if let Some(t) = title {
         if !t.is_empty() {
             builder = builder.set_title(t);
+        }
+    }
+    if let Some(name) = default_name {
+        if !name.is_empty() {
+            builder = builder.set_file_name(name);
         }
     }
     for filter in filters.unwrap_or_default() {

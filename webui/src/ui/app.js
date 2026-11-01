@@ -7,11 +7,96 @@ import { cursorCss } from "../board/cursor.ts";
 import { createCentral, createLayers, createMenuBar, popupMenu, scrollArea } from "./panels.js";
 import { createToolOptions } from "./options.js";
 import { createPalette, toHexArgb } from "./palette.js";
-import { createAssets, createForcePad, createHistory, createNewProjectDialog, createPythonDebug } from "./panels2.js";
+import { createAssets, createForcePad, createHistory, createNewProjectDialog, createPythonDebug, messageBox } from "./panels2.js";
 import { createTimeline } from "./timeline.js";
 
-function fail(error) {
+export function warningTitleForCall(method, params = {}) {
+  const view = params?.view ?? "main";
+  if (method === "project.open") return view === "child" ? "Open Texture View" : "Open Project";
+  if (method === "project.save" || method === "project.saveAs") {
+    return view === "child" ? "Save Texture View" : "Save Project";
+  }
+  if (method === "menu.trigger") {
+    if (params?.id === "file.save") return "Save Project";
+    if (params?.id === "file.texture.save") return "Save Texture View";
+    return null;
+  }
+  if (method === "file.import") {
+    const kind = String(params?.kind ?? params?.action ?? "").trim().toLowerCase().replace(/^(file\.)?import\./, "");
+    if (kind === "raster" || kind === "image") return "Import Raster";
+    if (kind === "opentoonz" || kind === "pli") return "Import OpenToonz Lines";
+    if (kind === "csp" || kind === "clip") return "Import Clip Studio Paint";
+    return null;
+  }
+  if (method === "file.texture") {
+    const kind = String(params?.kind ?? params?.action ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/^(file\.)?texture\./, "")
+      .replace(/^import\./, "");
+    if (kind === "open" || kind === "opentextureview") return "Open Texture View";
+    if (kind === "save" || kind === "savetextureview" || kind === "saveas" || kind === "save_as" || kind === "savetextureviewas") {
+      return "Save Texture View";
+    }
+    if (kind === "exportimage" || kind === "export_image" || kind === "export" || kind === "exporttextureimage" || kind === "png") {
+      return "Export Texture View Image";
+    }
+    if (kind === "raster" || kind === "image") return "Import Raster";
+    if (kind === "opentoonz" || kind === "pli") return "Import OpenToonz Lines";
+    if (kind === "csp" || kind === "clip") return "Import Clip Studio Paint";
+  }
+  return null;
+}
+
+function fileNameOf(path) {
+  const s = String(path ?? "").trim();
+  if (!s) return "";
+  const i = Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\"));
+  return i >= 0 ? s.slice(i + 1) : s;
+}
+
+function migrateExtension(name, ext) {
+  if (!name) return "";
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return `${name}.${ext}`;
+  if (name.slice(dot + 1).toLowerCase() === "json") return `${name.slice(0, dot)}.${ext}`;
+  return name;
+}
+
+export function defaultSaveName(kind, windowState = {}) {
+  if (kind === "project" || kind === "saveProjectAs") {
+    const name = fileNameOf(windowState?.currentFilePath);
+    return name ? migrateExtension(name, "anproj") : "";
+  }
+  if (kind === "texture" || kind === "saveAs" || kind === "save") {
+    const name = fileNameOf(windowState?.childFilePath);
+    return name ? migrateExtension(name, "textureview") : "texture.textureview";
+  }
+  if (kind === "exportImage") {
+    const name = fileNameOf(windowState?.childFilePath);
+    if (!name) return "texture.png";
+    const dot = name.lastIndexOf(".");
+    const base = dot > 0 ? name.slice(0, dot) : name;
+    return `${base || "texture"}.png`;
+  }
+  return "";
+}
+
+export function isAllowedWhenFrozen(target, pythonDebugEl) {
+  if (!target || typeof target !== "object") return false;
+  if (pythonDebugEl && (target === pythonDebugEl || pythonDebugEl.contains?.(target))) return true;
+  if (typeof target.closest === "function") {
+    return Boolean(target.closest('[data-vf-id="pythonDebugDock"], .debug-page, [data-python-debug="true"]'));
+  }
+  return false;
+}
+
+function fail(error, title) {
   console.error(error);
+  if (title) {
+    const text = error instanceof Error ? error.message : String(error ?? "");
+    messageBox({ title, text });
+  }
 }
 
 export function createStore(client) {
@@ -28,7 +113,7 @@ export function createStore(client) {
     listeners.get(key).push(fn);
     if (values.has(key)) fn(values.get(key));
   };
-  const call = (method, params = {}) => client.call(method, params).catch(fail);
+  const call = (method, params = {}) => client.call(method, params).catch((error) => fail(error, warningTitleForCall(method, params)));
   const cursors = new Map();
   client.onImage((meta, data) => {
     if (!meta.key.startsWith("cur_")) return;
@@ -157,6 +242,8 @@ export function panelFactories(store, client) {
     },
 
     QtPythonDebug(el) {
+      if (el.dataset) el.dataset.pythonDebug = "true";
+      store.pythonDebugEl = el;
       const panel = createPythonDebug(el, {
         onRun: async (command) => {
           const reply = await call("python.run", { command });
@@ -219,26 +306,31 @@ export function panelFactories(store, client) {
     QtCentral(el) {
       el.classList.add("central");
       const panel = createCentral(el, {
-        onPage: (view) => { boards.show(view); call("view.setActive", { viewName: view }); },
+        onPage: (view) => { switchView(view); call("view.setActive", { viewName: view }); },
         onScroll: (axis, value) => call("board.scroll", { view: boards.current, axis, value }),
         onPill: () => call("menu.trigger", { id: "windows.timeline" }),
       });
       const boards = createBoards(panel.host, client, store);
       store.boards = boards;
-      on("windows", (value) => { panel.pill.style.display = value?.timeline?.visible ? "none" : ""; });
-      on("event", (event) => {
-        if (event?.name === "textureView.surface") { panel.show(1); boards.show("child"); }
-        if (event?.name === "window.select" && event.args?.name === "paint") {
-          const child = event.args.page === "texture";
-          panel.show(child ? 1 : 0);
-          boards.show(child ? "child" : "main");
-        }
-      });
+      store.boardsHost = panel.host;
       const syncScroll = (view) => (value) => {
         if (view !== boards.current || !value) return;
         panel.h.set(value.h);
         panel.v.set(value.v);
       };
+      const switchView = (view) => {
+        boards.show(view);
+        syncScroll(view)(store.get(`viewport/${view}`));
+      };
+      on("windows", (value) => { panel.pill.style.display = value?.timeline?.visible ? "none" : ""; });
+      on("event", (event) => {
+        if (event?.name === "textureView.surface") { panel.show(1); switchView("child"); }
+        if (event?.name === "window.select" && event.args?.name === "paint") {
+          const child = event.args.page === "texture";
+          panel.show(child ? 1 : 0);
+          switchView(child ? "child" : "main");
+        }
+      });
       on("viewport/main", syncScroll("main"));
       on("viewport/child", syncScroll("child"));
     },
@@ -252,19 +344,34 @@ function subWindowNote() {
   return note;
 }
 
-function openNewColor(palette) {
+export function openNewColor(palette) {
   const shade = document.createElement("div");
   shade.className = "qdialog-shade";
   const dialog = document.createElement("div");
   dialog.className = "qdialog newcolor-dialog";
   const inner = createPalette(() => {}, { pickersOnly: true });
+  const row = document.createElement("div");
+  row.className = "qdialog-buttons";
+  Object.assign(row.style, { display: "flex", justifyContent: "flex-end", gap: "6px" });
   const add = document.createElement("button");
   add.type = "button";
-  add.className = "qbutton";
+  add.className = "qbutton qdefault";
   add.textContent = "Add";
-  add.addEventListener("click", () => { palette.addSwatch(toHexArgb(inner.color())); shade.remove(); });
-  shade.addEventListener("pointerdown", (e) => { if (e.target === shade) shade.remove(); });
-  dialog.append(inner.el, add);
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "qbutton";
+  cancel.textContent = "Cancel";
+  const close = () => shade.remove();
+  const accept = () => { palette.addSwatch(toHexArgb(inner.color())); close(); };
+  add.addEventListener("click", accept);
+  cancel.addEventListener("click", close);
+  shade.addEventListener("pointerdown", (e) => { if (e.target === shade) close(); });
+  dialog.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); accept(); }
+    if (e.key === "Escape") { e.preventDefault(); close(); }
+  });
+  row.append(add, cancel);
+  dialog.append(inner.el, row);
   shade.append(dialog);
   document.body.append(shade);
   inner.update({ value: toHexArgb(palette.color()), swatches: [] });
@@ -374,8 +481,10 @@ export function syncDocks(runtime, store) {
 
 // The chrome outside the docked scene: menu bar and status bar.
 export function createChrome(menuEl, statusEl, store) {
+  let frozen = false;
   const RENDERER_ITEM = "settings.renderer.";
   const trigger = (item) => {
+    if (frozen) return undefined;
     if (item.id?.startsWith(RENDERER_ITEM)) {
       store.boards?.setRenderer(item.id.slice(RENDERER_ITEM.length));
       paintMenus();
@@ -414,9 +523,45 @@ export function createChrome(menuEl, statusEl, store) {
   grip.className = "size-grip";
   statusEl.append(text, grip);
   store.on("window", (value) => {
-    text.textContent = value?.status ?? "";
+    if (!frozen) text.textContent = value?.status ?? "";
     if (value?.title) window.__TAURI__?.core.invoke("set_window_title", { title: value.title });
   });
+  store.on("freeze", (value) => {
+    const next = Boolean(value?.frozen ?? value);
+    if (next === frozen) return;
+    frozen = next;
+    text.textContent = frozen ? "Python busy..." : "Python ready";
+    if (menuEl) {
+      menuEl.inert = frozen;
+      if (menuEl.style) menuEl.style.pointerEvents = frozen ? "none" : "";
+    }
+    if (store.boardsHost?.style) {
+      store.boardsHost.style.pointerEvents = frozen ? "none" : "";
+    }
+    if (typeof document !== "undefined" && document.querySelectorAll) {
+      for (const el of document.querySelectorAll(".qt-panel, .vf-dock, .settings-dialog")) {
+        if (isAllowedWhenFrozen(el, store.pythonDebugEl) || (store.pythonDebugEl && el.contains?.(store.pythonDebugEl))) {
+          el.inert = false;
+          if (el.style) el.style.pointerEvents = "";
+          continue;
+        }
+        el.inert = frozen;
+        if (el.style) el.style.pointerEvents = frozen ? "none" : "";
+      }
+    }
+  });
+  const blockIfFrozen = (e) => {
+    if (!frozen) return;
+    if (isAllowedWhenFrozen(e.target, store.pythonDebugEl)) return;
+    e.stopImmediatePropagation?.();
+    e.stopPropagation?.();
+    e.preventDefault?.();
+  };
+  if (typeof window !== "undefined" && window.addEventListener) {
+    for (const type of ["pointerdown", "pointermove", "pointerup", "mousedown", "mousemove", "mouseup", "click", "dblclick", "contextmenu", "wheel", "keydown", "keyup"]) {
+      window.addEventListener(type, blockIfFrozen, true);
+    }
+  }
   store.on("theme", (value) => {
     document.documentElement.dataset.theme = value?.mode === "dark" ? "dark" : "light";
   });
@@ -436,8 +581,8 @@ export function createChrome(menuEl, statusEl, store) {
   });
 
   // Native pickers live in the shell; the page only says what to pick.
-  const pick = (mode, title, filters, multiple = false) =>
-    window.__TAURI__?.core.invoke("pick_files", { mode, title, filters, multiple }) ?? Promise.resolve([]);
+  const pick = (mode, title, filters, multiple = false, defaultName = "") =>
+    window.__TAURI__?.core.invoke("pick_files", { mode, title, filters, multiple, defaultName }) ?? Promise.resolve([]);
   const PROJECT = [{ name: "AnimeAn Projects", extensions: ["anproj"] }];
   const TEXTURE = [{ name: "AnimeAn Texture Views", extensions: ["textureview"] }];
   const IMPORTS = {
@@ -447,6 +592,7 @@ export function createChrome(menuEl, statusEl, store) {
   };
   const TEXTURE_ACTIONS = {
     "file.texture.open": ["open", "open", "Open Texture View", TEXTURE],
+    "file.texture.save": ["saveAs", "save", "Save Texture View As", TEXTURE],
     "file.texture.saveAs": ["saveAs", "save", "Save Texture View As", TEXTURE],
     "file.texture.exportImage": ["exportImage", "save", "Export Texture View Image", [{ name: "PNG Image", extensions: ["png"] }]],
   };
@@ -468,7 +614,7 @@ export function createChrome(menuEl, statusEl, store) {
         break;
       }
       case "dialog.saveProjectAs": {
-        const [path] = await pick("save", "Save Project As", PROJECT);
+        const [path] = await pick("save", "Save Project As", PROJECT, false, defaultSaveName("project", store.get("window")));
         if (path) store.call("project.saveAs", { path });
         break;
       }
@@ -479,7 +625,8 @@ export function createChrome(menuEl, statusEl, store) {
           if (paths.length) store.call("file.import", { kind, paths });
         } else if (TEXTURE_ACTIONS[args.id]) {
           const [kind, mode, title, filters] = TEXTURE_ACTIONS[args.id];
-          const [path] = await pick(mode, title, filters);
+          const defaultName = mode === "save" ? defaultSaveName(kind, store.get("window")) : "";
+          const [path] = await pick(mode, title, filters, false, defaultName);
           if (path) store.call("file.texture", { kind, path });
         } else if (args.id?.startsWith("file.texture.")) {
           store.call("file.texture", { kind: args.id.slice("file.texture.".length) });
@@ -499,6 +646,7 @@ export function createChrome(menuEl, statusEl, store) {
   };
   store.on("menus", (value) => { shortcuts.clear(); collect(value); });
   window.addEventListener("keydown", (e) => {
+    if (frozen) return;
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
     const id = shortcuts.get(keyName(e));
     if (id) { e.preventDefault(); store.call("menu.trigger", { id }); }
@@ -526,7 +674,7 @@ function openSettings(store, { name, title, layout }) {
   createToolOptions(body, {
     onOption: (option) => store.call("settings.option", { ...option, menu: name }),
     onPalette: () => {},
-    onNewColor: () => {},
+    onNewColor: (palette) => openNewColor(palette),
     onSubWindow: () => null,
   }).build(layout);
 }
