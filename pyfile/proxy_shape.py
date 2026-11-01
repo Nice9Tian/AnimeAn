@@ -157,12 +157,13 @@ def match(child_points, main_points):
     shift = _best_shift(np, _normalised(np, a), _normalised(np, b))
     seed = ((np.arange(n) + shift) % n).astype(float)
     kept = _matched_corners(np, _corners(np, a), _corners(np, b), seed, n)
-    p = _between(np, kept, n) if len(kept) >= 2 else seed
+    aligned = kept if len(kept) >= 2 else []
+    p = _between(np, aligned, n) if aligned else seed
     j = np.floor(p).astype(int) % n
     f = (p - np.floor(p))[:, None]
     paired = b[j] * (1.0 - f) + b[(j + 1) % n] * f
     return {"child": a.tolist(), "main": paired.tolist(), "folded": folded,
-            "corners": len(kept), "corner_stations": [int(pair[0]) for pair in kept]}, ""
+            "corners": len(kept), "corner_stations": [int(pair[0]) for pair in aligned]}, ""
 
 
 def corner_points(points):

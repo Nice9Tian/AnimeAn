@@ -150,4 +150,12 @@ assert am._assets_for("main")[am.V_PROPERTY]["auto"]
 assert len(notes("child")) == 1 and notes("main") == [] and am._grid_overlay_items("main")
 am._REFER_RECT.update(child=False, main=False)
 
-print("t_fold_notes: 7 cases ok")
+# 8) An axis the contours carried that turns back on its own: the texture axis is
+#    straight, so this is no copy, and the note is the main board's.
+setup(STRAIGHT, HOOKED)
+am._assets_for("main")[am.V_PROPERTY]["auto"] = True
+am._invalidate_grid_cache()
+found = notes("main")
+assert len(found) == 1 and "The V axis on the main board" in found[0]["label"]
+
+print("t_fold_notes: 8 cases ok")

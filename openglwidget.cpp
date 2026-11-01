@@ -3089,17 +3089,17 @@ void PaintOpenGLWidget::paintOverlayLabels(QPainter &painter) const
                                std::max(board.top(), board.bottom() - box.height())));
 
         QPainterPath bubble;
-        bubble.setFillRule(Qt::WindingFill);
         bubble.addRoundedRect(box, 5.0, 5.0);
-        const qreal foot = std::clamp(anchor.x(), box.left() + 2.0 * kTail, box.right() - 2.0 * kTail);
+        const qreal inset = std::min(2.0 * kTail, box.width() / 2.0);
+        const qreal foot = std::clamp(anchor.x(), box.left() + inset, box.right() - inset);
         const qreal edge = anchor.y() >= box.center().y() ? box.bottom() - 1.0 : box.top() + 1.0;
-        QPolygonF tail;
-        tail << QPointF(foot - kTail / 2.0, edge) << QPointF(foot + kTail / 2.0, edge) << anchor;
-        bubble.addPolygon(tail);
-        bubble.closeSubpath();
+        QPainterPath tail;
+        tail.addPolygon(QPolygonF({QPointF(foot - kTail / 2.0, edge),
+                                   QPointF(foot + kTail / 2.0, edge), anchor}));
+        tail.closeSubpath();
         painter.setPen(QPen(item.strokeColor, item.width));
         painter.setBrush(item.fillColor);
-        painter.drawPath(bubble.simplified());
+        painter.drawPath(bubble.united(tail));
 
         painter.setPen(item.fillColor.lightness() < 128 ? Qt::white : Qt::black);
         qreal baseline = box.top() + kPadding + metrics.ascent();

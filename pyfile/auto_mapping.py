@@ -5328,9 +5328,8 @@ def _axis_turnbacks(mapper):
             points, arcs = curve.points, curve.flat_arcs
             first = next((i for i, a in enumerate(arcs) if a >= arc), len(arcs) - 1)
             for step, side in ((1, 1), (-1, 0)):
-                start = first if step > 0 else max(first - 1, 0)
                 turn, run = None, 0.0
-                i = start
+                i = first
                 while 0 <= i + step < len(points):
                     q, r = points[i], points[i + step]
                     dx, dy = (r[0] - q[0]) * step, (r[1] - q[1]) * step
@@ -5390,10 +5389,12 @@ def _fold_regions():
                 groups.append(cells)
         turnbacks = _axis_turnbacks(mapper)
         board_title = {"child": "texture", "main": "main"}
+        # An axis the contours carried may only copy the texture axis's turn.
+        turnbacks = [turn for turn in turnbacks if not (
+            turn[0] == "main"
+            and _assets_for("main")[H_PROPERTY if turn[1] == "H" else V_PROPERTY].get("auto")
+            and any(other[0] == "child" and other[1] == turn[1] for other in turnbacks))]
         for view, axis, _hat, tail, point in turnbacks:
-            # An axis the contours carried only copies the texture axis's turn.
-            if _assets_for(view)[H_PROPERTY if axis == "H" else V_PROPERTY].get("auto"):
-                continue
             regions.append({"view": view, "point": point, "text": "\n".join((
                 "Fold here", f"The {axis} axis on the {board_title[view]} board",
                 f"doubles back {tail:.0f} px from its end"))})
@@ -5529,15 +5530,14 @@ def _guide_drag_event(message):
     if phase == "press":
         if is_guide:
             item = assets.get(overlay_id)
-            points = list(item.get("points") or []) if item else []
         else:
-            index, line = _additional_line_by_overlay_id(view, overlay_id)
-            points = list(line.get("points") or []) if line else []
+            index, item = _additional_line_by_overlay_id(view, overlay_id)
+        points = list(item.get("points") or []) if item else []
         if len(points) < 2:
             return
         _GUIDE_DRAG[view] = {"id": overlay_id, "origin": point,
                              "points": [(float(x), float(y)) for x, y in points],
-                             "moved": False}
+                             "item": dict(item), "moved": False}
         return
 
     if phase == "cancel":
@@ -5549,16 +5549,13 @@ def _guide_drag_event(message):
         drag = _GUIDE_DRAG.pop(view, None)
         if drag is None or drag["id"] != overlay_id or not drag["moved"]:
             return
-        if is_guide:
-            item = assets.get(overlay_id)
-            if item is not None:
-                item["points"] = [list(p) for p in drag["points"]]
-        else:
-            _index, line = _additional_line_by_overlay_id(view, overlay_id)
-            if line is not None:
-                line["points"] = [list(p) for p in drag["points"]]
-        _push_overlay(view)
+        item = assets.get(overlay_id) if is_guide else (
+            _additional_line_by_overlay_id(view, overlay_id)[1])
+        if item is not None:
+            item.clear()
+            item.update(drag["item"])
         _invalidate_grid_cache()
+        _push_overlay(view)
         try:
             _animean().ui.refresh()
         except Exception:
@@ -5573,6 +5570,13 @@ def _guide_drag_event(message):
     delta = (point[0] - drag["origin"][0], point[1] - drag["origin"][1])
     if abs(delta[0]) > 1e-9 or abs(delta[1]) > 1e-9:
         drag["moved"] = True
+    if not drag["moved"]:
+        # A click: nothing below may touch the line, or it would lose its curve
+        # and its auto mark for no move at all.
+        if phase == "release":
+            _GUIDE_DRAG.pop(view, None)
+            _push_overlay(view)
+        return
     moved = [(x + delta[0], y + delta[1]) for x, y in drag["points"]]
 
     if is_guide:
@@ -5608,9 +5612,6 @@ def _guide_drag_event(message):
 
     # release
     _GUIDE_DRAG.pop(view, None)
-    if not drag["moved"]:
-        _push_overlay(view)
-        return
     if is_guide:
         # Third space IS the child arc plane, so a moved axis retires every
         # additional line's stored coordinates on this board.
@@ -9470,8 +9471,7 @@ def run_proxy_contour_tool(view_name, points, width=3.0):
             _animean().ui.history_commit("Contour pairing", other)
         except Exception:
             pass
-    _push_overlay("main")
-    _push_overlay("child")
+    _overlays_changed("main")
     print(f"[auto_mapping] contour set on the {view_name} board"
           + ("" if _contour_points(other) else f"; draw one on the {other} board too."))
     _maybe_auto_run()
@@ -9548,57 +9548,71 @@ def set_line_ground(overlay_id, value):
         else:
             item.pop(GROUND_FLAG, None)
         _save_assets(view)
-        _push_overlay(view)
         try:
             _animean().ui.history_commit("Ground Line", view)
         except Exception:
             pass
+    _overlays_changed("main")
     print(f"[auto_mapping] {line_label(overlay_id)} "
           f"{'is a ground line' if value else 'is no longer a ground line'}")
     _maybe_auto_run()
 
 
-def replace_line_points(view_name, overlay_id, points, settled, stations=None,
-                        live=False):
-    """Deform's write. `live` is a move: the line alone, the mapping waits (see
-    _guide_drag_event). `settled` is the release: history, axes, the mapping.
-    `stations` are a contour's paired stations, moved with it."""
+def restore_line_item(view_name, overlay_id, saved):
+    """A cancelled Deform: the item as it stood, marks and all."""
+    item = line_item(view_name, overlay_id)
+    if item is None:
+        return
+    item.clear()
+    item.update(saved)
+    _overlays_changed(view_name)
+    try:
+        _animean().ui.refresh()
+    except Exception:
+        pass
+
+
+def replace_line_points(view_name, overlay_id, points, settled, stations=None):
+    """Deform's write. Not `settled` is a move: the line alone, the mapping waits
+    (see _guide_drag_event). `settled` is the release: history, axes, the mapping.
+    `stations` are a contour's paired stations, moved with it; a contour moved
+    without any lost what it was paired on, should it have paired mid-drag."""
     item = line_item(view_name, overlay_id)
     if item is None:
         return
     item["points"] = points
     if stations is not None:
         item[PAIRING_KEY] = dict(item[PAIRING_KEY], stations=stations)
+    elif overlay_id == PROXY_PROPERTY:
+        item.pop(PAIRING_KEY, None)
     item.pop("commands", None)
     item.pop("third", None)
     item.pop("auto", None)
     item.pop("source", None)
-    if live:
+    if not settled:
         _push_overlay(view_name)
         try:
             _animean().ui.refresh()
         except Exception:
             pass
         return
-    _invalidate_grid_cache()
-    if settled:
-        if overlay_id in GUIDE_PROPERTIES:
-            _invalidate_additional_thirds(view_name)
-        if overlay_id == PROXY_PROPERTY:
-            _refresh_proxy_axes()
-            _save_assets("main")
-        _save_assets(view_name)
-    _push_overlay("main")
-    _push_overlay("child")
+    if overlay_id in GUIDE_PROPERTIES:
+        _invalidate_additional_thirds(view_name)
+    axes_moved = overlay_id == PROXY_PROPERTY and _refresh_proxy_axes()
+    _save_assets(view_name)
+    if axes_moved and view_name != "main":
+        # The main board's axes moved with a texture contour: its own history.
+        _save_assets("main")
+    _overlays_changed(view_name)
     try:
         animean = _animean()
         animean.ui.refresh()
-        if settled:
-            animean.ui.history_commit("Deform Line", view_name)
+        animean.ui.history_commit("Deform Line", view_name)
+        if axes_moved and view_name != "main":
+            animean.ui.history_commit("Contour axes", "main")
     except Exception:
         pass
-    if settled:
-        _maybe_auto_run()
+    _maybe_auto_run()
 
 
 def _contour_items(view_name):
@@ -9835,7 +9849,7 @@ def _overlay_removed(cell, stroke, message):
     if item_id == PROXY_PROPERTY:
         _assets_for(view).pop(PROXY_PROPERTY, None)
         _save_assets(view)
-        refresh_line_overlays()
+        _overlays_changed(view)
         try:
             _animean().ui.history_commit("Remove Contour", view)
         except Exception:
