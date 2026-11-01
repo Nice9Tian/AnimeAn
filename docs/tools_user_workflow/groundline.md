@@ -1,6 +1,6 @@
 # 地线（groundline）
 
-> 状态：**规划，草稿，待用户拍板**（用户 2026-09-30 提出）。下面写的单独工具和移动手势还没有。现在能用的：用 `choice_line.md` 把已有的线设成地线，`free_out_line.md` 的轮廓自动是地线。规格：`../auto_mapping/ground_line.md`。计划：`../plan/2026-09-30-地线-GroundLine-计划.md`。
+> 状态：**规划，草稿，待用户拍板**（用户 2026-09-30 提出）。下面写的单独工具和移动交互事件还没有。现在能用的：用 `choice_line.md` 把已有的线设成地线，`free_out_line.md` 的轮廓自动是地线。规格（一级）：`../auto_mapping/ground_line.md`。计划：`../plan/2026-09-30-地线-GroundLine-计划.md`。
 
 Tools ▸ Mapping 的 **Ground Line**。把纹理板上的一段花纹钉到主画板上的一条线上。附加线只告诉 Auto Mapping"纹理往哪流"，不保证花纹停在哪；要花纹严丝合缝地落在某条线上，用地线。
 

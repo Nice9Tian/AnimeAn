@@ -4,7 +4,7 @@
 
 **回归套件**：`tests/t_groundline.py`（二十项）。**代码**：`pyfile/auto_mapping.py` 的 `_FlowFieldWarp`（`_prepare_ground`、`_pin_grounds`）和 `build_mapper` 的 `ground_pairs`。计划：`../plan/2026-09-30-地线-GroundLine-计划.md`。
 
-**范围**：第一期是求解器。2026-11-02 起界面能产生地线：Choice Line 勾选、Free Out Line 的闭合轮廓，勾选随撤销和存档保存。单独的 Ground Line 工具和移动手势还没有。
+**范围**：第一期是求解器。2026-11-02 起界面能产生地线：Choice Line 勾选、Free Out Line 的闭合轮廓，勾选随撤销和存档保存。单独的 Ground Line 工具和移动交互事件还没有。
 
 ## 1. 语义
 
@@ -95,7 +95,7 @@ $$\min_U\ \iint \omega\lVert\nabla U-G\rVert^2
 
 ## 7. 已知局限
 
-- **没有接入界面和资产。** 指纹、Third 缓存失效、存档都还没做，属于第二期。`ground_stations` 现在总是重新提升，接入时要保留资产里存的 Third。
+- **Third 还没存。** 勾选、存档和指纹都已接上，但 `ground_stations` 总是重新提升，要保留资产里的 Third 还得接上。
 - **弯边的内部不是 Coons。** 鼓起的边能精确落位，内部是调和场。Coons 是保留项目，除非 warp 遇到限制，一直走 warp 路线（用户 2026-10-30）。
 - **线压到自己的平行轴旁会折。** 例如一条斜线的低端被压到离 H 轴 5 px，折 15 个节点，并有提示。这种要求本身无法兑现。
 - **主画板轴线有折点时残差变大。** 两侧标定不等（例如主 H 轴交点偏 180 px）时 2.07 px，主轴线有 ±12 px 的小波动时 3.94 px。

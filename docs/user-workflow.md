@@ -2,7 +2,7 @@
 
 用户从拿到程序到日常使用，主线是下面这几步。每一步写用户看到什么、做什么，不写怎么实现；实现见 `architecture.md`。每个工具的详细用法各有一页，在 `tools_user_workflow/`（索引在它的 README），本文只写主线，工具页与本文同为一级。界面文案以英文为主（菜单、按钮），本文照抄界面写法。
 
-> 状态：2026-09-28 用户拍板（一级，含 `tools_user_workflow/` 十三页）。
+> 状态：2026-09-28 用户拍板（一级，含 `tools_user_workflow/` 当时的十三页）。2026-11-02 用户授权加入 Free Out Line、Choice Line、Deform 三页。
 
 ## 1. 拿到程序与首次启动
 
@@ -101,7 +101,7 @@ Mapping 组的按钮：**H Center Line**、**V Center Line**、**Mapping Area**�
 
 ## 11. 各工具的详细用法
 
-每个工具一页，固定四节（在哪、怎么用、会看到什么、边界），索引在 `tools_user_workflow/README.md`。Painting 组：`arrow`、`pen`、`eraser`、`fill`、`transfer`、`connect`；面板窗：`repulsion_pad`；Mapping 组：`center_line`、`mapping_area`、`additional_line`、`auto_mapping`；Auto Mapping 菜单：`horizon_line`、`to_3d`。
+每个工具一页，固定四节（在哪、怎么用、会看到什么、边界），索引在 `tools_user_workflow/README.md`。Painting 组：`arrow`、`pen`、`eraser`、`fill`、`transfer`、`connect`；面板窗：`repulsion_pad`；Mapping 组：`center_line`、`mapping_area`、`additional_line`、`free_out_line`、`choice_line`、`deform_line`、`auto_mapping`；Auto Mapping 菜单：`horizon_line`、`to_3d`。
 
 ## 待核
 
