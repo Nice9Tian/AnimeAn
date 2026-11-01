@@ -63,9 +63,18 @@ String duplicateSuffix(int index)
 // "3-c" rather than "3-b-a".
 String duplicateBaseName(const String &name)
 {
-    static const QRegularExpression suffixPattern(ANIME_STR("-[a-z]+$"));
-    const QRegularExpressionMatch match = suffixPattern.match(name);
-    return match.hasMatch() ? name.left(match.capturedStart()) : name;
+    int i = name.size();
+    while (i > 0) {
+        const char16_t ch = name[i - 1].unicode();
+        if (ch < u'a' || ch > u'z') {
+            break;
+        }
+        --i;
+    }
+    if (i > 0 && i < name.size() && name[i - 1] == Latin1Char('-')) {
+        return name.left(i - 1);
+    }
+    return name;
 }
 
 String nextNumberedColumnName(const Vector<AnimeColumn> &columns, const String &baseName)
@@ -239,8 +248,7 @@ void AnimeVectorImageModel::transform(const Transform &matrix)
         const Size target(std::max(1, AnimeCore::round(mapped.width())),
                            std::max(1, AnimeCore::round(mapped.height())));
         if (target != m_raster.image.size() && !m_raster.image.isNull()) {
-            m_raster.image = m_raster.image.scaled(target, Qt::IgnoreAspectRatio,
-                                                   Qt::SmoothTransformation);
+            m_raster.image = m_raster.image.scaled(target.width(), target.height());
         }
         // A negative determinant is a mirror; the pixels have to flip with
         // the box or the image reads back-to-front inside a correct frame.
@@ -253,7 +261,7 @@ void AnimeVectorImageModel::transform(const Transform &matrix)
     }
     for (AnimeVectorFillRegion &fill : m_fills) {
         fill.seedPoint = matrix.map(fill.seedPoint);
-        fill.path = matrix.map(fill.path);
+        fill.path = fill.path.transformed(matrix);
         fill.bounds = fill.path.boundingRect();
     }
     for (AnimeVectorStrokeNode &node : m_strokes) {
@@ -267,7 +275,7 @@ void AnimeVectorImageModel::transform(const Transform &matrix)
             // stroke permanently fattened.
             node.stroke.width = std::max(double(1e-4), node.stroke.width * widthScale);
         }
-        node.stroke.path = matrix.map(node.stroke.path);
+        node.stroke.path = node.stroke.path.transformed(matrix);
         if (!node.stroke.path.isEmpty()) {
             // PADDED by the stroke width, like every other producer of these
             // bounds: they are the cull box for erase/delete/cut and for the
