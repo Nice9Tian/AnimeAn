@@ -4,7 +4,7 @@
 
 **回归套件**：`tests/t_groundline.py`（二十项）。**代码**：`pyfile/auto_mapping.py` 的 `_FlowFieldWarp`（`_prepare_ground`、`_pin_grounds`）和 `build_mapper` 的 `ground_pairs`。计划：`../plan/2026-09-30-地线-GroundLine-计划.md`。
 
-**范围**：第一期，只有求解器。没有工具、按钮、存档；`build_mapper` 接收地线，界面还不会产生地线。
+**范围**：第一期是求解器。2026-11-02 起界面能产生地线：Choice Line 勾选、Free Out Line 的闭合轮廓，勾选随撤销和存档保存。单独的 Ground Line 工具和移动手势还没有。
 
 ## 1. 语义
 
@@ -48,6 +48,8 @@ $$\min_U\ \iint \omega\lVert\nabla U-G\rVert^2
 - **能挡住延长的只有两样**（计划决策 10）：平行轴，位移在那里淡出到零；别的地线，位移在那里淡出到那条线的位移。
 
 ## 4. 闭合轮廓和角点
+
+一条闭合轮廓是一条地线，配对见 `closed_contour.md`：它没有自由端，四条半轴和原点全部放开，内部由轮廓决定。
 
 四条线首尾相接时（issue #15）补两条规则：
 
