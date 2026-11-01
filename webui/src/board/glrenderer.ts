@@ -122,7 +122,7 @@ export interface WebGL2ContextLike {
   createBuffer(): WebGLBuffer | null;
   bindBuffer(target: number, buffer: WebGLBuffer | null): void;
   bufferData(target: number, data: ArrayBufferView | ArrayBuffer | number, usage: number): void;
-  bufferSubData?(target: number, dstByteOffset: number, srcData: ArrayBufferView): void;
+  bufferSubData(target: number, dstByteOffset: number, srcData: ArrayBufferView): void;
   deleteBuffer(buffer: WebGLBuffer | null): void;
 
   enableVertexAttribArray(index: number): void;
@@ -972,21 +972,16 @@ export class GlBoardRenderer {
       this.arenaGpuCapFloats = 0;
     }
     gl.bindBuffer(gl.ARRAY_BUFFER, this.arenaVbo);
-    if (
-      this.arenaUploadedFloats > 0 &&
-      this.arenaFloatCount <= this.arenaGpuCapFloats &&
-      typeof gl.bufferSubData === "function"
-    ) {
-      const slice = this.arenaData.subarray(this.arenaUploadedFloats, this.arenaFloatCount);
-      gl.bufferSubData(gl.ARRAY_BUFFER, this.arenaUploadedFloats * 4, slice);
-      this.arenaUploadedFloats = this.arenaFloatCount;
-      return;
+    // Reserve the arena's whole capacity. A buffer sized to the data alone is
+    // outgrown by the next append, and every new stroke re-sends all geometry.
+    if (this.arenaGpuCapFloats < this.arenaData.length) {
+      gl.bufferData(gl.ARRAY_BUFFER, this.arenaData.length * 4, gl.DYNAMIC_DRAW);
+      this.arenaGpuCapFloats = this.arenaData.length;
+      this.arenaUploadedFloats = 0;
     }
-
-    const slice = this.arenaData.subarray(0, this.arenaFloatCount);
-    gl.bufferData(gl.ARRAY_BUFFER, slice, gl.STATIC_DRAW);
+    const slice = this.arenaData.subarray(this.arenaUploadedFloats, this.arenaFloatCount);
+    gl.bufferSubData(gl.ARRAY_BUFFER, this.arenaUploadedFloats * 4, slice);
     this.arenaUploadedFloats = this.arenaFloatCount;
-    this.arenaGpuCapFloats = this.arenaFloatCount;
   }
 
   private emitDrawArrays(mode: number, first: number, count: number): void {

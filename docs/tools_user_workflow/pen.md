@@ -4,7 +4,7 @@ Tools ▸ Painting 的 **Pen**。画一笔，抬笔时自动拟合成平滑曲�
 
 ## 在哪
 
-- Painting 页图标 **Pen**。
+- Painting 组图标 **Pen**。
 - Options 面板：**Color**（调色板控件）、**Stabilizer**、**Width**。
 - 菜单栏 **Draw ▸ Draw Setting…**：**Stabilizer**、**Simplify**、**Corner** 三个滑条。
 

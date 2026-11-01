@@ -12,19 +12,42 @@
       "title": "AnimeAn",
       "central": "central",
       "docks": [
+        "timelineDock",
+        "pythonDebugDock",
         "toolsDock",
         "toolOptionsDock",
         "layersDock",
         "assetsDock",
         "historyDock",
-        "forcePadDock",
-        "pythonDebugDock",
-        "timelineDock"
+        "forcePadDock"
       ],
       "dockLayout": {
         "areas": {
+          "top": {
+            "groups": []
+          },
+          "bottom": {
+            "size": 200,
+            "splitOrientation": "horizontal",
+            "groups": [
+              {
+                "tabs": [
+                  "timelineDock"
+                ],
+                "active": "timelineDock",
+                "size": 514
+              },
+              {
+                "tabs": [
+                  "pythonDebugDock"
+                ],
+                "active": "pythonDebugDock",
+                "size": 513
+              }
+            ]
+          },
           "left": {
-            "size": 144,
+            "size": 110,
             "groups": [
               {
                 "tabs": [
@@ -36,58 +59,42 @@
           },
           "right": {
             "size": 284,
+            "splitOrientation": "vertical",
             "groups": [
               {
                 "tabs": [
                   "toolOptionsDock"
                 ],
                 "active": "toolOptionsDock",
-                "size": 358
+                "size": 126
               },
               {
                 "tabs": [
                   "layersDock"
                 ],
                 "active": "layersDock",
-                "size": 374
+                "size": 132
               },
               {
                 "tabs": [
                   "assetsDock"
                 ],
                 "active": "assetsDock",
-                "size": 240
+                "size": 84
               },
               {
                 "tabs": [
                   "historyDock"
                 ],
                 "active": "historyDock",
-                "size": 240
+                "size": 84
               },
               {
                 "tabs": [
                   "forcePadDock"
                 ],
                 "active": "forcePadDock",
-                "size": 300
-              }
-            ]
-          },
-          "bottom": {
-            "size": 200,
-            "groups": [
-              {
-                "tabs": [
-                  "timelineDock"
-                ],
-                "active": "timelineDock"
-              },
-              {
-                "tabs": [
-                  "pythonDebugDock"
-                ],
-                "active": "pythonDebugDock"
+                "size": 106
               }
             ]
           }
@@ -109,9 +116,11 @@
     "toolsDock": {
       "type": "Dock",
       "dockArea": "left",
-      "width": 144,
+      "width": 110,
       "height": 732,
       "headerHeight": 18,
+      "widthStep": 50,
+      "widthBase": 10,
       "title": "Tools",
       "layout": {
         "kind": "vbox",
@@ -119,17 +128,10 @@
         "gap": 0
       },
       "children": [
-        "toolsPanel"
+        "toolsScrollUp",
+        "toolsScroll",
+        "toolsScrollDown"
       ]
-    },
-    "toolsPanel": {
-      "type": "QtTools",
-      "width": 144,
-      "height": 714,
-      "size": {
-        "horizontal": "expanding",
-        "vertical": "expanding"
-      }
     },
     "toolOptionsDock": {
       "type": "Dock",
@@ -313,6 +315,269 @@
       "size": {
         "horizontal": "expanding",
         "vertical": "expanding"
+      }
+    },
+    "toolArrow": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "arrow",
+        "tipTitle": "Arrow",
+        "tip": "Select strokes and points"
+      }
+    },
+    "toolPen": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "pen",
+        "tipTitle": "Pen",
+        "tip": "Draw a stroke — width, smooth, colour"
+      }
+    },
+    "toolEraser": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "eraser",
+        "tipTitle": "Eraser",
+        "tip": "Erase, delete line, cut line"
+      }
+    },
+    "toolFill": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "fill",
+        "tipTitle": "Fill",
+        "tip": "Flood a region — scope All or Current"
+      }
+    },
+    "toolTransfer": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "transfer",
+        "tipTitle": "Transfer",
+        "tip": "Move and free transform: drag inside the box, scale from eight grips, rotate outside the corners"
+      }
+    },
+    "toolConnect": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "connect",
+        "tipTitle": "Connect",
+        "tip": "Close the gap between two open endpoints — poly, curve, smooth"
+      }
+    },
+    "toolHCenterLine": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "h_center_line",
+        "tipTitle": "H Center Line",
+        "tip": "Draw the horizontal axis. Each board needs one H and one V line, and they must cross."
+      }
+    },
+    "toolVCenterLine": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "v_center_line",
+        "tipTitle": "V Center Line",
+        "tip": "Draw the vertical axis. Each board needs one H and one V line, and they must cross."
+      }
+    },
+    "toolMappingArea": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "mapping_area",
+        "tipTitle": "Mapping Area",
+        "tip": "Click like a paint bucket to outline the range Auto Mapping covers."
+      }
+    },
+    "toolAdditionalLine": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "additional_line",
+        "tipTitle": "Additional Line",
+        "tip": "Draw extra lines that tell Auto Mapping which way the texture flows."
+      }
+    },
+    "toolAutoMapping": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "auto_mapping",
+        "tipTitle": "Auto Mapping",
+        "tip": "Map the texture pattern onto the main board along the H and V axes."
+      }
+    },
+    "paintingHeader": {
+      "type": "QtGroupHeader",
+      "width": 110,
+      "height": 22,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "fixed"
+      },
+      "props": {
+        "label": "Painting"
+      }
+    },
+    "paintingBody": {
+      "type": "Flow",
+      "width": 110,
+      "height": 166,
+      "size": {
+        "horizontal": "expanding"
+      },
+      "layout": {
+        "kind": "flow",
+        "padding": 8,
+        "gap": 6
+      },
+      "children": [
+        "toolArrow",
+        "toolPen",
+        "toolEraser",
+        "toolFill",
+        "toolTransfer",
+        "toolConnect"
+      ]
+    },
+    "mappingHeader": {
+      "type": "QtGroupHeader",
+      "width": 110,
+      "height": 22,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "fixed"
+      },
+      "props": {
+        "label": "Mapping"
+      }
+    },
+    "mappingBody": {
+      "type": "Flow",
+      "width": 110,
+      "height": 166,
+      "size": {
+        "horizontal": "expanding"
+      },
+      "layout": {
+        "kind": "flow",
+        "padding": 8,
+        "gap": 6
+      },
+      "children": [
+        "toolHCenterLine",
+        "toolVCenterLine",
+        "toolMappingArea",
+        "toolAdditionalLine",
+        "toolAutoMapping"
+      ]
+    },
+    "toolsScrollUp": {
+      "type": "QtScrollArrow",
+      "width": 110,
+      "height": 14,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "fixed"
+      },
+      "props": {
+        "direction": "up"
+      }
+    },
+    "toolsScroll": {
+      "type": "VBox",
+      "width": 110,
+      "height": 714,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "expanding"
+      },
+      "layout": {
+        "kind": "vbox",
+        "padding": 0,
+        "gap": 0
+      },
+      "children": [
+        "paintingHeader",
+        "paintingBody",
+        "mappingHeader",
+        "mappingBody"
+      ]
+    },
+    "toolsScrollDown": {
+      "type": "QtScrollArrow",
+      "width": 110,
+      "height": 14,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "fixed"
+      },
+      "props": {
+        "direction": "down"
       }
     }
   }

@@ -1,0 +1,16 @@
+.qt-group { container-type: inline-size; display: flex; align-items: center; width: 100%; height: 100%; box-sizing: border-box;
+  background: var(--window, #f5f5f6); color: var(--text-dim, #6b6d72); border-top: 1px solid var(--divider, #bcbdc0);
+  font: 12px/20px "Segoe UI", sans-serif; cursor: default; user-select: none; }
+.qt-group:hover { background: var(--hover-wash, #ecf4fa); color: var(--text, #1d1f20); }
+.qt-group-arrow { flex: none; width: 10px; height: 10px; margin: 0 4px 0 6px; transition: transform 120ms ease-out; }
+.qt-group.closed .qt-group-arrow { transform: rotate(-90deg); }
+.qt-group-label { flex: 1; min-width: 0; margin-right: 8px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.qt-group-dot { display: none; flex: none; width: 6px; height: 6px; margin-right: 8px; border-radius: 50%; background: var(--accent, #3d8ec9); }
+.qt-group.active .qt-group-dot { display: block; }
+.qt-group.active { color: var(--text, #1d1f20); }
+/* One column: the label has to fit beside the arrow. */
+@container (max-width: 79px) {
+  .qt-group-arrow { margin: 0 2px; }
+  .qt-group-label { margin-right: 2px; font-size: 10px; }
+  .qt-group-dot { margin-right: 2px; }
+}

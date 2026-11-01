@@ -31,6 +31,8 @@ struct ThemeColors {
     QColor chipHover;
     QColor chipHoverFg;
     QColor viewportSurround;
+    QColor viewportSurroundDeep;
+    QColor boardFrameIdle;
     QColor onionPast;
     QColor onionAhead;
 };
@@ -51,7 +53,9 @@ const ThemeColors &colorsFor(AnimeTheme::Mode mode)
         QColor(QStringLiteral("#b4b6bc")),   // chipRestFg
         QColor(QStringLiteral("#35383b")),   // chipHover
         QColor(QStringLiteral("#f5f5f8")),   // chipHoverFg
-        QColor(QStringLiteral("#141516")),   // viewportSurround
+        QColor(QStringLiteral("#2a2c2e")),   // viewportSurround
+        QColor(QStringLiteral("#141516")),   // viewportSurroundDeep
+        QColor(QStringLiteral("#b4b6bc")),   // boardFrameIdle
         QColor(QStringLiteral("#b3392f")),   // onionPast
         QColor(QStringLiteral("#2f7a4f"))    // onionAhead
     };
@@ -70,6 +74,8 @@ const ThemeColors &colorsFor(AnimeTheme::Mode mode)
         QColor(QStringLiteral("#ffffff")),   // chipHover
         QColor(QStringLiteral("#1d1f20")),   // chipHoverFg
         QColor(QStringLiteral("#cfd0d3")),   // viewportSurround
+        QColor(QStringLiteral("#141516")),   // viewportSurroundDeep
+        QColor(QStringLiteral("#bcbdc0")),   // boardFrameIdle
         QColor(QStringLiteral("#b3392f")),   // onionPast
         QColor(QStringLiteral("#2f7a4f"))    // onionAhead
     };
@@ -230,12 +236,21 @@ QColor AnimeTheme::color(Role role)
         return colors.chipHoverFg;
     case Role::ViewportSurround:
         return colors.viewportSurround;
+    case Role::ViewportSurroundDeep:
+        return colors.viewportSurroundDeep;
+    case Role::BoardFrameIdle:
+        return colors.boardFrameIdle;
     case Role::OnionPast:
         return colors.onionPast;
     case Role::OnionAhead:
         return colors.onionAhead;
     }
     return colors.text;
+}
+
+QColor AnimeTheme::surroundFor(const QColor &paper)
+{
+    return color(paper.lightnessF() < 0.5 ? Role::ViewportSurroundDeep : Role::ViewportSurround);
 }
 
 #ifndef ANIMEAN_HEADLESS

@@ -6,8 +6,8 @@ Tools ▸ Mapping 的 **Ground Line**。把纹理板上的一段花纹钉到主�
 
 ## 在哪
 
-- Mapping 页按钮 **Ground Line**。
-- Options 面板：Mapping 页所有工具共用的运行选项块，加 **Stabilizer**、**Width**。
+- Mapping 组按钮 **Ground Line**。
+- Options 面板：Mapping 组所有工具共用的运行选项块，加 **Stabilizer**、**Width**。
 - 附加线可以转换成地线（入口待定）。
 
 ## 怎么用

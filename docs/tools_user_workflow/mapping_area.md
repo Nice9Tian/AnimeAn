@@ -4,8 +4,8 @@ Tools ▸ Mapping 的 **Mapping Area**（浅蓝）。像油漆桶一样点一下
 
 ## 在哪
 
-- Mapping 页按钮 **Mapping Area**。
-- Options 面板：Mapping 页所有工具共用的运行选项块，最后一行嵌着纹理板。
+- Mapping 组按钮 **Mapping Area**。
+- Options 面板：Mapping 组所有工具共用的运行选项块，最后一行嵌着纹理板。
 
 ## 怎么用
 

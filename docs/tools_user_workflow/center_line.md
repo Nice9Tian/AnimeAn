@@ -4,8 +4,8 @@ Tools ▸ Mapping 的两个按钮：**H Center Line**（横向轴，蓝）和 **
 
 ## 在哪
 
-- Mapping 页按钮 **H Center Line**、**V Center Line**。
-- Options 面板：Mapping 页所有工具共用的运行选项块（见 `auto_mapping.md`），加 **Stabilizer**、**Width**，最后一行嵌着纹理板。
+- Mapping 组按钮 **H Center Line**、**V Center Line**。
+- Options 面板：Mapping 组所有工具共用的运行选项块（见 `auto_mapping.md`），加 **Stabilizer**、**Width**，最后一行嵌着纹理板。
 - 菜单 **Auto Mapping ▸ Line Display Settings…**：轴线的颜色、线型、线宽。
 
 ## 怎么用

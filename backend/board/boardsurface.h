@@ -66,6 +66,7 @@ public:
     void injectEnter();
     void injectLeave();
     void injectFocus();
+    void injectBlur();
     void resizeSurface(int w, int h, qreal dpr);
     void acknowledgeFrame(quint64 frame);
     bool isWaitingForAck() const { return m_waitingForAck; }

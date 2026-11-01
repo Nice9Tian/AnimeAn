@@ -4,8 +4,8 @@ Tools ▸ Mapping 的 **Additional Line**（粉）。在 H/V 轴线之外再画�
 
 ## 在哪
 
-- Mapping 页按钮 **Additional Line**。
-- Options 面板：Mapping 页所有工具共用的运行选项块，加 **Stabilizer**、**Width**，最后一行嵌着纹理板。
+- Mapping 组按钮 **Additional Line**。
+- Options 面板：Mapping 组所有工具共用的运行选项块，加 **Stabilizer**、**Width**，最后一行嵌着纹理板。
 - 菜单 **Auto Mapping ▸ Additional Line Falloff**（Linear / Quadratic）、**约束外轮廓 / Constrain Outline**。
 
 ## 怎么用

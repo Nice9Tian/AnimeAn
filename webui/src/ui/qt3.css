@@ -1,9 +1,8 @@
 /* Colours the hidden panels add to the table in qt.css / qt2.css. mix() results from
    timelinewindow.cpp are written out, since a stylesheet cannot run them. */
 :root {
-  --accent-wash: #d4e6f3;   /* mix(Surface, Accent, 0.22) */
+  --accent-wash: #dcdde0;
   --strip-hold: #dfe0e1;    /* mix(Window, Text, 0.10) */
-  --strip-track: #dbdbdc;   /* mix(Window, Text, 0.12) */
   --chrome-off: rgba(107, 109, 114, 0.431);  /* TextDim, alpha 110 */
   --onion-past: #b3392f; --onion-ahead: #2f7a4f;
   --onion-past-line: rgba(179, 57, 47, 0.667); --onion-ahead-line: rgba(47, 122, 79, 0.667);  /* alpha 170 */
@@ -17,9 +16,8 @@
   --spin-top: #fefefe; --spin-bottom: #e9e9e9;
 }
 [data-theme="dark"] {
-  --accent-wash: #293c4a;
+  --accent-wash: #35383b;
   --strip-hold: #333436;
-  --strip-track: #37393a;
   --chrome-off: rgba(180, 182, 188, 0.431);
   --disabled-text: #6f7175;
   --check-outline: #171819; --check-top: #1e2021; --check-mark: #cbcbce;
@@ -42,7 +40,8 @@
 .tl-mask { position: absolute; left: 0; top: 0; background: currentColor; }
 .tl-cell:hover { background: var(--accent-wash); color: var(--text); }
 .tl-cell.off, .tl-cell.off:hover { background: none; color: var(--chrome-off); }
-.tl-cell.on, .tl-cell.on:hover { background: var(--accent); color: #fff; }
+.tl-cell.on, .tl-cell.on:hover { background: var(--accent-2); color: var(--on-accent-2); }
+.tl-cell.live, .tl-cell.live:hover { background: var(--accent); color: var(--on-accent); }
 .tl-label { position: absolute; left: 0; right: 0; top: 0; height: 34px; text-align: center; white-space: nowrap;
   font: bold 10px/34px "Segoe UI", sans-serif; letter-spacing: 0.7px; }
 .tl-upper { top: 7px; height: 11px; line-height: 11px; }
@@ -56,8 +55,10 @@
 
 .tl-strip { position: relative; flex: 1; min-height: 0; min-width: 0; overflow: hidden; background: var(--window); }
 .tl-canvas { position: absolute; left: 0; top: 0; display: block; }
+.tl-strip .sb-h { left: 0; right: 0; bottom: 0; height: 14px; }
+.tl-strip .sb-v { right: 0; bottom: 0; width: 14px; }
 
-.tl-side { position: relative; flex: none; height: 22px; box-sizing: border-box; background: var(--surface); border-bottom: 1px solid var(--divider); }
+.tl-side { position: relative; flex: none; height: 22px; box-sizing: border-box; background: var(--dock-title); border-bottom: 1px solid var(--divider); }
 .tl-side-text { left: 8px; right: 26px; height: 22px; text-align: left; line-height: 22px; color: var(--text-dim); }
 .tl-side-close { position: absolute; top: 1px; right: 2px; width: 20px; height: 20px; color: var(--text-dim); }
 .tl-side-close svg { display: block; }
@@ -69,7 +70,7 @@
 /* the rate menu, Fusion's QMenu with its checkable rows */
 .rate-menu { position: fixed; z-index: 1000; box-sizing: border-box; width: 169px; background: var(--menu-ground); outline: 1px solid var(--menu-frame); outline-offset: -1px; color: var(--text); font: 12px/16px "Segoe UI", sans-serif; }
 .rate-item { position: relative; height: 24px; }
-.rate-item:hover { background: var(--accent); box-shadow: inset 0 0 0 1px var(--focus-outline); color: #fff; }
+.rate-item:hover { background: var(--accent-2); color: var(--on-accent-2); }
 .rate-check { position: absolute; left: 8px; top: 5px; width: 14px; height: 14px; }
 .rate-check svg { display: block; }
 .rate-text { position: absolute; left: 28px; top: 0; line-height: 24px; white-space: pre; }
@@ -87,7 +88,7 @@
 .qframe.scrolls .qframe-view { right: 14px; }
 .qitem { box-sizing: border-box; height: 16px; line-height: 16px; padding-left: 3px; white-space: nowrap; overflow: hidden; color: var(--text); }
 .qitem.dim { color: var(--disabled-text); }
-.qitem.sel { background: var(--accent); color: #fff; }
+.qitem.sel { background: var(--accent-2); color: var(--on-accent-2); }
 
 .qlineedit { box-sizing: border-box; height: 24px; margin: 0; padding: 0 2px; border: 1px solid var(--btn-border); border-radius: 2px; outline: 0; background: var(--surface); color: var(--text); font: 12px "Segoe UI", sans-serif; box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.07); }
 .qlineedit:focus { border-color: var(--focus-outline); box-shadow: inset 0 0 0 1px rgba(94, 171, 226, 0.2); }
@@ -126,7 +127,7 @@
 .qdialog-label { white-space: nowrap; }
 .qdialog-body > .qbutton { padding: 0; height: 24px; }
 .qbutton, .qcombo { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.118); }  /* Fusion's inner contrast line */
-.qbutton.qdefault { border-color: var(--focus-outline); background: linear-gradient(var(--default-top), var(--default-bottom)); }
+.qbutton.qdefault { border-color: var(--accent-2-line); background: linear-gradient(var(--default-top), var(--default-bottom)); }
 
 .qcombo { box-sizing: border-box; height: 24px; border: 1px solid var(--btn-border); border-radius: 2px; background: linear-gradient(var(--btn-top), var(--btn-bottom)); color: var(--text); }
 .qcombo-text { position: absolute; left: 2px; top: 0; right: 20px; line-height: 22px; white-space: pre; overflow: hidden; }
@@ -134,7 +135,7 @@
 .qcombo-arrow svg, .qspin-up svg, .qspin-down svg { display: block; }
 .qcombo-popup { position: fixed; z-index: 1000; box-sizing: border-box; width: 171px; padding: 1px; background: var(--window); border: 1px solid var(--menu-frame); color: var(--text); font: 12px/24px "Segoe UI", sans-serif; }
 .qcombo-item { height: 24px; padding-left: 6px; white-space: pre; }
-.qcombo-item.sel { background: var(--accent); box-shadow: inset 0 0 0 1px var(--focus-outline); color: #fff; }
+.qcombo-item.sel { background: var(--accent-2); color: var(--on-accent-2); }
 
 .qspin { box-sizing: border-box; height: 27px; border: 1px solid var(--btn-border); border-radius: 2px; background: var(--surface); box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.07); }
 .qspin:focus-within { border-color: var(--focus-outline); box-shadow: inset 0 0 0 1px rgba(94, 171, 226, 0.2); }
@@ -154,8 +155,7 @@
 .subframe-text { position: absolute; left: 6px; right: 26px; top: 0; font: 11.33px/21px "Segoe UI", sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .subframe-glyph { position: absolute; right: 6px; top: 3px; width: 14px; height: 14px; color: var(--text-dim); cursor: default; }
 .subframe-glyph svg { display: block; overflow: visible; }
-.subframe-glyph:hover { color: var(--accent); }
-.subframe-glyph:active { color: var(--accent-active); }
+.subframe-glyph:hover { color: var(--text); }
 .subframe-body { position: relative; flex: 1; min-height: 0; }
 .subframe-body:empty { display: none; }
 .subframe-placeholder { flex: 1; display: flex; align-items: center; justify-content: center; text-align: center; padding: 8px 10px 8px 8px; color: var(--text-dim); }
