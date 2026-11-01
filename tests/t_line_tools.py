@@ -2,6 +2,7 @@
 axes, Choice Line's 地线 tick reaching the real mapper, Deform's local pull. The
 tools run on the legacy asset scratch here; gestures are driven through the same
 handle messages C++ sends."""
+import json
 import math
 import os
 import sys
@@ -334,6 +335,31 @@ handle(am.PROXY_PROPERTY, "move", seam[0] + 40.0, seam[1], am.DEFORM_PROPERTY)
 handle(am.PROXY_PROPERTY, "cancel", seam[0] + 40.0, seam[1], am.DEFORM_PROPERTY)
 assert am.proxy_pairing()["main"] == before
 print("14) a cancelled pull restores the stations")
+
+# 15) Undo, redo and loading rebuild the assets from scriptData: the contour, its
+#     pairing, the ground ticks and the axes' auto mark all come back, and nothing
+#     is matched or carried again.
+am.set_line_ground(am.PROXY_PROPERTY, True)
+am.set_line_ground(am.V_PROPERTY, True)
+am._assets_for("child")[am.ADDITIONAL_PROPERTY] = {"lines": [
+    {"id": 0, "points": line((-90.0, -50.0), (90.0, -50.0)), "width": 2.5, am.GROUND_FLAG: True}]}
+stored = {view: json.loads(json.dumps(am._assets_for(view))) for view in ("child", "main")}
+stations = am.proxy_pairing()
+calls, restore = counted_matches()
+for view in stored:
+    am._MAPPING_ASSETS[view] = am._sanitize_assets(stored[view])
+am._PROXY_PAIRING.update({"key": None, "value": None})
+main_assets = am._assets_for("main")
+assert main_assets[am.PROXY_PROPERTY]["points"] == stored["main"][am.PROXY_PROPERTY]["points"]
+assert main_assets[am.PROXY_PROPERTY][am.GROUND_FLAG]
+assert main_assets[am.H_PROPERTY]["auto"] and "source" in main_assets[am.H_PROPERTY]
+assert am.line_is_ground(am.V_PROPERTY) and am.line_is_ground(am.PROXY_PROPERTY)
+assert am._assets_for("child")[am.ADDITIONAL_PROPERTY]["lines"][0][am.GROUND_FLAG]
+assert am.proxy_pairing()["main"] == stations["main"] and am.proxy_pairing()["child"] == stations["child"]
+assert not am._refresh_proxy_axes()
+restore()
+assert not calls
+print("15) the assets survive a restore")
 
 # 16) Only a new line is a new pairing: a redraw matches again, on both contours.
 kept = am._assets_for("child")[am.PROXY_PROPERTY][am.PAIRING_KEY]["id"]

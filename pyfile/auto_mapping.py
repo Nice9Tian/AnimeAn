@@ -517,6 +517,8 @@ def _sanitize_assets(data):
                     continue
                 if line.get("commands"):
                     loaded["commands"] = line["commands"]
+                if line.get(GROUND_FLAG):
+                    loaded[GROUND_FLAG] = True
                 third = [[float(t[0]), float(t[1])]
                          for t in line.get("third") or [] if len(t) >= 2]
                 # The stored Third polyline is only authoritative while it
@@ -542,6 +544,24 @@ def _sanitize_assets(data):
                 # undo or project load.
                 if item.get("commands"):
                     loaded["commands"] = item["commands"]
+                # Without these an undo froze the auto axes and dropped the
+                # Choice Line tick.
+                for key in ("auto", "source", GROUND_FLAG):
+                    if key in item:
+                        loaded[key] = item[key]
+                assets[prop] = loaded
+        elif prop == PROXY_PROPERTY:
+            points = [[float(p[0]), float(p[1])] for p in item.get("points") or []]
+            if len(points) >= 3:
+                loaded = {"points": points, "width": float(item.get("width", 3.0))}
+                if item.get(GROUND_FLAG):
+                    loaded[GROUND_FLAG] = True
+                pairing = item.get(PAIRING_KEY) or {}
+                stations = [[float(p[0]), float(p[1])]
+                            for p in pairing.get("stations") or []]
+                if stations and "id" in pairing:
+                    loaded[PAIRING_KEY] = {"id": int(pairing["id"]),
+                                           "stations": stations}
                 assets[prop] = loaded
     return assets
 
