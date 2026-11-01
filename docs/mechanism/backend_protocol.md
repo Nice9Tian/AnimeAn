@@ -123,7 +123,7 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 | `timeline` | 帧数、当前帧、播放状态、洋葱皮 |
 | `history` | 历史记录 |
 | `windows` | 面板的显示状态 |
-| `cursor/main`、`cursor/child` | 光标：形状名，或者图片 `key` 加热点 |
+| `cursor/main`、`cursor/child` | 光标：形状名，或者图片 `key` 加热点和 `scale`。位图是屏幕像素，`w`、`h` 也是；热点是逻辑像素，`scale` 是位图每个逻辑像素的像素数，网页用 `image-set` 声明 |
 | `freeze` | Python 冻结界面的开关 |
 | `pad` | Repulsion Pad 的值 |
 | `viewport/main`、`viewport/child` | 滚动条：`h`、`v` 各含 `min`、`max`、`page`、`value`、`enabled`，算法同 `PaintViewContainer::syncScrollBars` |
