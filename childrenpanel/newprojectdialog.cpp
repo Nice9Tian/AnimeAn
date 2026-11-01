@@ -1,6 +1,8 @@
+#include "algorithm/core/qtbridge.h"
 #include "newprojectdialog.h"
 
 #include "algorithm/animemodel.h"
+#include "algorithm/core/qtbridge.h"
 
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -53,7 +55,7 @@ NewProjectDialog::NewProjectDialog(const QSize &initial, QWidget *parent)
 
     const QSize start = initial.isValid() && initial.width() > 0 && initial.height() > 0
                             ? initial
-                            : AnimeSceneModel::defaultCanvasSize();
+                            : QSize(AnimeSceneModel::defaultCanvasSize());
 
     m_widthBox = new QSpinBox(this);
     m_widthBox->setRange(16, 16384);

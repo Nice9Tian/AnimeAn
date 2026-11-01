@@ -13,6 +13,7 @@
 #include "clipreader.h"
 #include "openglwidget.h"
 #include "algorithm/beziersplit.h"
+#include "algorithm/core/qtbridge.h"
 #include "paintviewcontainer.h"
 #include "parentwindow.h"
 #include "projectio.h"
@@ -222,7 +223,7 @@ void appendQuadraticMetricPoints(QVector<QPointF> *points,
     // (algorithm/beziersplit.h). The path stores this quad as an elevated
     // cubic (quadTo), so the metric polyline now samples exactly the
     // geometry the stored path renders.
-    QPointF cubic[4];
+    AnimeCore::PointF cubic[4];
     AnimeBezierSplit::quadToCubic(p0, p1, p2, cubic);
     sampleCount = std::max(2, sampleCount);
     for (int i = 1; i <= sampleCount; ++i) {
@@ -1880,7 +1881,9 @@ void MainWindow::openTextureView()
 
     AnimeSceneModel loadedModel;
     QString error;
-    if (!textureViewFromJson(root, &loadedModel, &error)) {
+    AnimeCore::String coreError;
+    if (!textureViewFromJson(root, &loadedModel, &coreError)) {
+        error = coreError;
         QMessageBox::warning(this,
                              QStringLiteral("Open Texture View"),
                              error.isEmpty() ? QStringLiteral("Unsupported texture file.") : error);
@@ -1922,7 +1925,7 @@ bool MainWindow::saveTextureViewAs()
     // dialog confirms is normally the name that gets written.
     const QString selectedFile = m_childFilePath.isEmpty()
                                      ? QDir::home().filePath(QStringLiteral("texture.textureview"))
-                                     : ensureTextureViewFileExtension(m_childFilePath);
+                                     : QString(ensureTextureViewFileExtension(m_childFilePath));
     const QString fileName = QFileDialog::getSaveFileName(
         this,
         QStringLiteral("Save Texture View As"),
@@ -3435,7 +3438,7 @@ void MainWindow::newProject()
 
 void MainWindow::applyNewCanvasSize(const QSize &size)
 {
-    if (m_paintWidget->model().canvasSize() == size) {
+    if (QSize(m_paintWidget->model().canvasSize()) == size) {
         // Nothing changed, so nothing is committed. A commit here would be a
         // phantom history entry that also drops the redo future of BOTH views
         // (a new edit anywhere clears the whole redo tail), so pressing Enter
@@ -3501,7 +3504,7 @@ bool MainWindow::saveProjectAs()
     // confirms is normally the name that gets written.
     QString selectedFile = m_currentFilePath.isEmpty()
                                ? QDir::home().filePath(QStringLiteral("untitled.anproj"))
-                               : ensureProjectFileExtension(m_currentFilePath);
+                               : QString(ensureProjectFileExtension(m_currentFilePath));
 
     QString fileName = QFileDialog::getSaveFileName(
         this,
@@ -3548,7 +3551,9 @@ bool MainWindow::loadProjectFrom(const QString &fileName)
     AnimeSceneModel loadedMainModel;
     AnimeSceneModel loadedTextureModel;
     QString error;
-    if (!projectFromJson(root, &loadedMainModel, &loadedTextureModel, &error)) {
+    AnimeCore::String coreError;
+    if (!projectFromJson(root, &loadedMainModel, &loadedTextureModel, &coreError)) {
+        error = coreError;
         QMessageBox::warning(this,
                              QStringLiteral("Open Project"),
                              error.isEmpty() ? QStringLiteral("Unsupported project file.") : error);
@@ -3742,7 +3747,7 @@ void MainWindow::importClipStudioPaint(PaintOpenGLWidget *view)
                              QStringLiteral("Import Clip Studio Paint"),
                              document.error.isEmpty()
                                  ? QStringLiteral("Unable to read this .clip file.")
-                                 : document.error);
+                                 : QString(document.error));
         return;
     }
 
@@ -4158,10 +4163,10 @@ void MainWindow::applyLayerPanelStructure(LayerPanel *panel, PaintOpenGLWidget *
     // appending them where the leaf sits would put them inside whatever group
     // the leaf is in, making group membership follow a parent link the user
     // never dragged. They are put back below, each in its own container.
-    QVector<AnimeLayerNode> hosted;
-    std::function<QVector<AnimeLayerNode>(QTreeWidgetItem *)> capture =
+    AnimeCore::Vector<AnimeLayerNode> hosted;
+    std::function<AnimeCore::Vector<AnimeLayerNode>(QTreeWidgetItem *)> capture =
         [&](QTreeWidgetItem *parent) {
-        QVector<AnimeLayerNode> nodes;
+        AnimeCore::Vector<AnimeLayerNode> nodes;
         const int count = parent ? parent->childCount() : tree->topLevelItemCount();
         for (int i = 0; i < count; ++i) {
             QTreeWidgetItem *item = parent ? parent->child(i) : tree->topLevelItem(i);
@@ -4199,7 +4204,7 @@ void MainWindow::applyLayerPanelStructure(LayerPanel *panel, PaintOpenGLWidget *
         }
         return nodes;
     };
-    QVector<AnimeLayerNode> captured = capture(nullptr);
+    AnimeCore::Vector<AnimeLayerNode> captured = capture(nullptr);
 
     // Each hosted row goes back to the container it was in BEFORE the drag,
     // re-read from the model's own tree by column id: the panel stopped
@@ -4208,8 +4213,8 @@ void MainWindow::applyLayerPanelStructure(LayerPanel *panel, PaintOpenGLWidget *
     // the group it was in no longer has rows in the panel.
     if (!hosted.isEmpty()) {
         QHash<int, int> groupForLayer;
-        std::function<void(const QVector<AnimeLayerNode> &, int)> readGroups =
-            [&](const QVector<AnimeLayerNode> &nodes, int groupId) {
+        std::function<void(const AnimeCore::Vector<AnimeLayerNode> &, int)> readGroups =
+            [&](const AnimeCore::Vector<AnimeLayerNode> &nodes, int groupId) {
             for (const AnimeLayerNode &node : nodes) {
                 if (node.isGroup()) {
                     readGroups(node.children, node.groupId);
@@ -4220,8 +4225,8 @@ void MainWindow::applyLayerPanelStructure(LayerPanel *panel, PaintOpenGLWidget *
         };
         readGroups(model.layerTree(), 0);
 
-        std::function<AnimeLayerNode *(QVector<AnimeLayerNode> &, int)> findGroup =
-            [&](QVector<AnimeLayerNode> &nodes, int groupId) -> AnimeLayerNode * {
+        std::function<AnimeLayerNode *(AnimeCore::Vector<AnimeLayerNode> &, int)> findGroup =
+            [&](AnimeCore::Vector<AnimeLayerNode> &nodes, int groupId) -> AnimeLayerNode * {
             for (AnimeLayerNode &node : nodes) {
                 if (!node.isGroup()) {
                     continue;
@@ -4354,8 +4359,8 @@ void MainWindow::refreshLayerList(LayerPanel *panel, PaintOpenGLWidget *view, in
     // A layer shows when it is not a script-owned working layer and it has a
     // cell on the current frame - the same two tests the flat list used, now
     // applied while walking the group tree instead of the column vector.
-    std::function<int(const QVector<AnimeLayerNode> &, int)> collect =
-        [&](const QVector<AnimeLayerNode> &nodes, int depth) {
+    std::function<int(const AnimeCore::Vector<AnimeLayerNode> &, int)> collect =
+        [&](const AnimeCore::Vector<AnimeLayerNode> &nodes, int depth) {
         int shown = 0;
         for (const AnimeLayerNode &node : nodes) {
             if (node.isGroup()) {
