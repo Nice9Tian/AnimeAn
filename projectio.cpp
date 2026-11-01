@@ -1,115 +1,119 @@
 #include "projectio.h"
 
-#include <QBuffer>
-#include <QFileInfo>
-#include <QJsonArray>
-#include <QRegularExpression>
-#include <QSet>
 
 #include <functional>
 
+#include "algorithm/core/color.h"
+#include "algorithm/core/containers.h"
+#include "algorithm/core/geometry.h"
+#include "algorithm/core/json.h"
+#include "algorithm/core/path.h"
+#include "algorithm/core/string.h"
+
+using namespace AnimeCore;
+
 namespace {
-QString columnTypeName(AnimeColumnType type)
+String columnTypeName(AnimeColumnType type)
 {
     switch (type) {
     case AnimeColumnType::Raster:
-        return QStringLiteral("raster");
+        return ANIME_STR("raster");
     case AnimeColumnType::Fill:
-        return QStringLiteral("fill");
+        return ANIME_STR("fill");
     case AnimeColumnType::Vector:
     default:
-        return QStringLiteral("vector");
+        return ANIME_STR("vector");
     }
 }
 
-AnimeColumnType columnTypeFromName(const QString &name)
+AnimeColumnType columnTypeFromName(const String &name)
 {
-    if (name == QStringLiteral("raster")) {
+    if (name == ANIME_STR("raster")) {
         return AnimeColumnType::Raster;
     }
-    if (name == QStringLiteral("fill")) {
+    if (name == ANIME_STR("fill")) {
         return AnimeColumnType::Fill;
     }
     return AnimeColumnType::Vector;
 }
 
-bool isUuidText(const QString &text)
+bool isUuidText(const String &text)
 {
     static const QRegularExpression uuidPattern(
-        QStringLiteral("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"));
+        ANIME_STR("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"));
     return uuidPattern.match(text.trimmed()).hasMatch();
 }
 
-QJsonObject pointToJson(const QPointF &point)
+JsonObject pointToJson(const PointF &point)
 {
-    QJsonObject object;
-    object[QStringLiteral("x")] = point.x();
-    object[QStringLiteral("y")] = point.y();
+    JsonObject object;
+    object[ANIME_STR("x")] = point.x();
+    object[ANIME_STR("y")] = point.y();
     return object;
 }
 
-QPointF pointFromJson(const QJsonValue &value)
+PointF pointFromJson(const JsonValue &value)
 {
-    const QJsonObject object = value.toObject();
-    return QPointF(object.value(QStringLiteral("x")).toDouble(),
-                   object.value(QStringLiteral("y")).toDouble());
+    const JsonObject object = value.toObject();
+    return PointF(object.value(ANIME_STR("x")).toDouble(),
+                   object.value(ANIME_STR("y")).toDouble());
 }
 
-QJsonObject colorToJson(const QColor &color)
+JsonObject colorToJson(const Color &color)
 {
-    QJsonObject object;
-    object[QStringLiteral("name")] = color.name(QColor::HexArgb);
+    JsonObject object;
+    object[ANIME_STR("name")] = color.name(Color::HexArgb);
     return object;
 }
 
-QColor colorFromJson(const QJsonValue &value)
+Color colorFromJson(const JsonValue &value)
 {
-    const QJsonObject object = value.toObject();
-    const QColor color(object.value(QStringLiteral("name")).toString(QStringLiteral("#ff000000")));
-    return color.isValid() ? color : QColor(Qt::black);
+    const JsonObject object = value.toObject();
+    const Color color(object.value(ANIME_STR("name")).toString(ANIME_STR("#ff000000")));
+    return color.isValid() ? color : Color(Qt::black);
 }
 
-QJsonObject pathToJson(const QPainterPath &path)
+JsonObject pathToJson(const Path &path)
 {
-    QJsonObject object;
-    object[QStringLiteral("fillRule")] = static_cast<int>(path.fillRule());
+    JsonObject object;
+    object[ANIME_STR("fillRule")] = static_cast<int>(path.fillRule());
 
-    QJsonArray elements;
+    JsonArray elements;
     for (int i = 0; i < path.elementCount(); ++i) {
-        const QPainterPath::Element element = path.elementAt(i);
-        QJsonObject elementObject;
-        elementObject[QStringLiteral("type")] = static_cast<int>(element.type);
-        elementObject[QStringLiteral("x")] = element.x;
-        elementObject[QStringLiteral("y")] = element.y;
+        const Path::Element element = path.elementAt(i);
+        JsonObject elementObject;
+        elementObject[ANIME_STR("type")] = static_cast<int>(element.type);
+        elementObject[ANIME_STR("x")] = element.x;
+        elementObject[ANIME_STR("y")] = element.y;
         elements.append(elementObject);
     }
-    object[QStringLiteral("elements")] = elements;
+    object[ANIME_STR("elements")] = elements;
     return object;
 }
 
-QPainterPath pathFromJson(const QJsonValue &value)
+Path pathFromJson(const JsonValue &value)
 {
-    const QJsonObject object = value.toObject();
-    const QJsonArray elements = object.value(QStringLiteral("elements")).toArray();
-    QPainterPath path;
-    path.setFillRule(static_cast<Qt::FillRule>(object.value(QStringLiteral("fillRule")).toInt(Qt::OddEvenFill)));
+    const JsonObject object = value.toObject();
+    const JsonArray elements = object.value(ANIME_STR("elements")).toArray();
+    Path path;
+    path.setFillRule(static_cast<Qt::FillRule>(object.value(ANIME_STR("fillRule")).toInt(Qt::OddEvenFill)));
 
     for (int i = 0; i < elements.size(); ++i) {
-        const QJsonObject element = elements[i].toObject();
-        const int type = element.value(QStringLiteral("type")).toInt();
-        const QPointF point(element.value(QStringLiteral("x")).toDouble(),
-                            element.value(QStringLiteral("y")).toDouble());
-        if (type == QPainterPath::MoveToElement) {
+        const JsonObject element = elements[i].toObject();
+        const int type = element.value(ANIME_STR("type")).toInt();
+        const PointF point(element.value(ANIME_STR("x")).toDouble(),
+                            element.value(ANIME_STR("y")).toDouble());
+        if (type == Path::MoveToElement) {
             path.moveTo(point);
-        } else if (type == QPainterPath::LineToElement) {
+        } else if (type == Path::LineToElement) {
             path.lineTo(point);
-        } else if (type == QPainterPath::CurveToElement && i + 2 < elements.size()) {
-            const QJsonObject controlElement = elements[i + 1].toObject();
-            const QJsonObject endElement = elements[i + 2].toObject();
-            const QPointF control2(controlElement.value(QStringLiteral("x")).toDouble(),
-                                   controlElement.value(QStringLiteral("y")).toDouble());
-            const QPointF endPoint(endElement.value(QStringLiteral("x")).toDouble(),
-                                   endElement.value(QStringLiteral("y")).toDouble());
+        } else if (type == Path::CurveToElement && i + 2 < elements.size()) {
+            const JsonObject controlElement = elements[i + 1].toObject();
+            const JsonObject endElement = elements[i + 2].toObject();
+            const PointF control2(controlElement.value(ANIME_STR("x")).toDouble(),
+                                   controlElement.value(ANIME_STR("y")).toDouble());
+            const PointF endPoint(endElement.value(ANIME_STR("x")).toDouble(),
+                                   endElement.value(ANIME_STR("y")).toDouble());
             path.cubicTo(point, control2, endPoint);
             i += 2;
         }
@@ -117,230 +121,230 @@ QPainterPath pathFromJson(const QJsonValue &value)
     return path;
 }
 
-QVector<QPointF> pointsFromJson(const QJsonValue &value)
+Vector<PointF> pointsFromJson(const JsonValue &value)
 {
-    QVector<QPointF> points;
-    const QJsonArray array = value.toArray();
+    Vector<PointF> points;
+    const JsonArray array = value.toArray();
     points.reserve(array.size());
-    for (const QJsonValue &point : array) {
+    for (const JsonValue &point : array) {
         points.append(pointFromJson(point));
     }
     return points;
 }
 
-QJsonObject strokeToJson(const AnimeVectorStroke &stroke)
+JsonObject strokeToJson(const AnimeVectorStroke &stroke)
 {
-    QJsonObject object;
-    object[QStringLiteral("id")] = stroke.id;
-    object[QStringLiteral("property")] = stroke.property;
-    QJsonArray points;
-    for (const QPointF &point : stroke.points) {
+    JsonObject object;
+    object[ANIME_STR("id")] = stroke.id;
+    object[ANIME_STR("property")] = stroke.property;
+    JsonArray points;
+    for (const PointF &point : stroke.points) {
         points.append(pointToJson(point));
     }
-    object[QStringLiteral("points")] = points;
-    QJsonArray lengths;
-    for (qreal length : stroke.lengths) {
+    object[ANIME_STR("points")] = points;
+    JsonArray lengths;
+    for (double length : stroke.lengths) {
         lengths.append(length);
     }
-    object[QStringLiteral("lengths")] = lengths;
-    object[QStringLiteral("totalLength")] = stroke.totalLength;
-    object[QStringLiteral("path")] = pathToJson(stroke.path);
-    object[QStringLiteral("boundsX")] = stroke.bounds.x();
-    object[QStringLiteral("boundsY")] = stroke.bounds.y();
-    object[QStringLiteral("boundsW")] = stroke.bounds.width();
-    object[QStringLiteral("boundsH")] = stroke.bounds.height();
-    object[QStringLiteral("color")] = colorToJson(stroke.color);
-    object[QStringLiteral("width")] = stroke.width;
+    object[ANIME_STR("lengths")] = lengths;
+    object[ANIME_STR("totalLength")] = stroke.totalLength;
+    object[ANIME_STR("path")] = pathToJson(stroke.path);
+    object[ANIME_STR("boundsX")] = stroke.bounds.x();
+    object[ANIME_STR("boundsY")] = stroke.bounds.y();
+    object[ANIME_STR("boundsW")] = stroke.bounds.width();
+    object[ANIME_STR("boundsH")] = stroke.bounds.height();
+    object[ANIME_STR("color")] = colorToJson(stroke.color);
+    object[ANIME_STR("width")] = stroke.width;
     if (stroke.penStyle != 1) {
         // Written only when non-solid, so files without styled strokes stay
         // byte-identical to what older builds produced.
-        object[QStringLiteral("penStyle")] = stroke.penStyle;
+        object[ANIME_STR("penStyle")] = stroke.penStyle;
     }
     return object;
 }
 
-AnimeVectorStroke strokeFromJson(const QJsonValue &value)
+AnimeVectorStroke strokeFromJson(const JsonValue &value)
 {
-    const QJsonObject object = value.toObject();
+    const JsonObject object = value.toObject();
     AnimeVectorStroke stroke;
-    stroke.id = object.value(QStringLiteral("id")).toInt();
-    stroke.property = object.value(QStringLiteral("property")).toString();
-    stroke.points = pointsFromJson(object.value(QStringLiteral("points")));
-    const QJsonArray lengths = object.value(QStringLiteral("lengths")).toArray();
+    stroke.id = object.value(ANIME_STR("id")).toInt();
+    stroke.property = object.value(ANIME_STR("property")).toString();
+    stroke.points = pointsFromJson(object.value(ANIME_STR("points")));
+    const JsonArray lengths = object.value(ANIME_STR("lengths")).toArray();
     stroke.lengths.reserve(lengths.size());
-    for (const QJsonValue &length : lengths) {
+    for (const JsonValue &length : lengths) {
         stroke.lengths.append(length.toDouble());
     }
-    stroke.totalLength = object.value(QStringLiteral("totalLength")).toDouble();
-    stroke.path = pathFromJson(object.value(QStringLiteral("path")));
-    stroke.bounds = QRectF(object.value(QStringLiteral("boundsX")).toDouble(),
-                           object.value(QStringLiteral("boundsY")).toDouble(),
-                           object.value(QStringLiteral("boundsW")).toDouble(),
-                           object.value(QStringLiteral("boundsH")).toDouble());
-    stroke.color = colorFromJson(object.value(QStringLiteral("color")));
-    stroke.width = object.value(QStringLiteral("width")).toDouble(3.0);
-    stroke.penStyle = object.value(QStringLiteral("penStyle")).toInt(1);
+    stroke.totalLength = object.value(ANIME_STR("totalLength")).toDouble();
+    stroke.path = pathFromJson(object.value(ANIME_STR("path")));
+    stroke.bounds = RectF(object.value(ANIME_STR("boundsX")).toDouble(),
+                           object.value(ANIME_STR("boundsY")).toDouble(),
+                           object.value(ANIME_STR("boundsW")).toDouble(),
+                           object.value(ANIME_STR("boundsH")).toDouble());
+    stroke.color = colorFromJson(object.value(ANIME_STR("color")));
+    stroke.width = object.value(ANIME_STR("width")).toDouble(3.0);
+    stroke.penStyle = object.value(ANIME_STR("penStyle")).toInt(1);
     return stroke;
 }
 
-QJsonObject strokeNodeToJson(const AnimeVectorStrokeNode &node)
+JsonObject strokeNodeToJson(const AnimeVectorStrokeNode &node)
 {
-    QJsonObject object;
-    object[QStringLiteral("stroke")] = strokeToJson(node.stroke);
-    object[QStringLiteral("groupId")] = QJsonArray();
-    object[QStringLiteral("isPoint")] = node.isPoint;
-    object[QStringLiteral("isNewForFill")] = node.isNewForFill;
-    object[QStringLiteral("selected")] = node.selected;
+    JsonObject object;
+    object[ANIME_STR("stroke")] = strokeToJson(node.stroke);
+    object[ANIME_STR("groupId")] = JsonArray();
+    object[ANIME_STR("isPoint")] = node.isPoint;
+    object[ANIME_STR("isNewForFill")] = node.isNewForFill;
+    object[ANIME_STR("selected")] = node.selected;
     return object;
 }
 
-AnimeVectorStrokeNode strokeNodeFromJson(const QJsonValue &value)
+AnimeVectorStrokeNode strokeNodeFromJson(const JsonValue &value)
 {
-    const QJsonObject object = value.toObject();
+    const JsonObject object = value.toObject();
     AnimeVectorStrokeNode node;
-    node.stroke = strokeFromJson(object.value(QStringLiteral("stroke")));
-    node.isPoint = object.value(QStringLiteral("isPoint")).toBool(false);
-    node.isNewForFill = object.value(QStringLiteral("isNewForFill")).toBool(true);
-    node.selected = object.value(QStringLiteral("selected")).toBool(false);
+    node.stroke = strokeFromJson(object.value(ANIME_STR("stroke")));
+    node.isPoint = object.value(ANIME_STR("isPoint")).toBool(false);
+    node.isNewForFill = object.value(ANIME_STR("isNewForFill")).toBool(true);
+    node.selected = object.value(ANIME_STR("selected")).toBool(false);
     return node;
 }
 
-QJsonObject fillRegionToJson(const AnimeVectorFillRegion &fill)
+JsonObject fillRegionToJson(const AnimeVectorFillRegion &fill)
 {
-    QJsonObject object;
-    object[QStringLiteral("id")] = fill.id;
-    object[QStringLiteral("property")] = fill.property;
-    object[QStringLiteral("seedPoint")] = pointToJson(fill.seedPoint);
-    object[QStringLiteral("path")] = pathToJson(fill.path);
-    object[QStringLiteral("boundsX")] = fill.bounds.x();
-    object[QStringLiteral("boundsY")] = fill.bounds.y();
-    object[QStringLiteral("boundsW")] = fill.bounds.width();
-    object[QStringLiteral("boundsH")] = fill.bounds.height();
-    object[QStringLiteral("color")] = colorToJson(fill.color);
-    object[QStringLiteral("sourceLayerIndex")] = fill.sourceLayerIndex;
-    object[QStringLiteral("basedOnAllLayers")] = fill.basedOnAllLayers;
+    JsonObject object;
+    object[ANIME_STR("id")] = fill.id;
+    object[ANIME_STR("property")] = fill.property;
+    object[ANIME_STR("seedPoint")] = pointToJson(fill.seedPoint);
+    object[ANIME_STR("path")] = pathToJson(fill.path);
+    object[ANIME_STR("boundsX")] = fill.bounds.x();
+    object[ANIME_STR("boundsY")] = fill.bounds.y();
+    object[ANIME_STR("boundsW")] = fill.bounds.width();
+    object[ANIME_STR("boundsH")] = fill.bounds.height();
+    object[ANIME_STR("color")] = colorToJson(fill.color);
+    object[ANIME_STR("sourceLayerIndex")] = fill.sourceLayerIndex;
+    object[ANIME_STR("basedOnAllLayers")] = fill.basedOnAllLayers;
     return object;
 }
 
-AnimeVectorFillRegion fillRegionFromJson(const QJsonValue &value)
+AnimeVectorFillRegion fillRegionFromJson(const JsonValue &value)
 {
-    const QJsonObject object = value.toObject();
+    const JsonObject object = value.toObject();
     AnimeVectorFillRegion fill;
-    fill.id = object.value(QStringLiteral("id")).toInt();
-    fill.property = object.value(QStringLiteral("property")).toString();
-    fill.seedPoint = pointFromJson(object.value(QStringLiteral("seedPoint")));
-    fill.path = pathFromJson(object.value(QStringLiteral("path")));
-    fill.bounds = QRectF(object.value(QStringLiteral("boundsX")).toDouble(),
-                         object.value(QStringLiteral("boundsY")).toDouble(),
-                         object.value(QStringLiteral("boundsW")).toDouble(),
-                         object.value(QStringLiteral("boundsH")).toDouble());
-    fill.color = colorFromJson(object.value(QStringLiteral("color")));
-    fill.sourceLayerIndex = object.value(QStringLiteral("sourceLayerIndex")).toInt(-1);
-    fill.basedOnAllLayers = object.value(QStringLiteral("basedOnAllLayers")).toBool(false);
+    fill.id = object.value(ANIME_STR("id")).toInt();
+    fill.property = object.value(ANIME_STR("property")).toString();
+    fill.seedPoint = pointFromJson(object.value(ANIME_STR("seedPoint")));
+    fill.path = pathFromJson(object.value(ANIME_STR("path")));
+    fill.bounds = RectF(object.value(ANIME_STR("boundsX")).toDouble(),
+                         object.value(ANIME_STR("boundsY")).toDouble(),
+                         object.value(ANIME_STR("boundsW")).toDouble(),
+                         object.value(ANIME_STR("boundsH")).toDouble());
+    fill.color = colorFromJson(object.value(ANIME_STR("color")));
+    fill.sourceLayerIndex = object.value(ANIME_STR("sourceLayerIndex")).toInt(-1);
+    fill.basedOnAllLayers = object.value(ANIME_STR("basedOnAllLayers")).toBool(false);
     return fill;
 }
 
-QJsonObject rasterToJson(const AnimeRasterImage &raster)
+JsonObject rasterToJson(const AnimeRasterImage &raster)
 {
-    QJsonObject object;
+    JsonObject object;
     QByteArray bytes;
     QBuffer buffer(&bytes);
     buffer.open(QIODevice::WriteOnly);
     raster.image.save(&buffer, "PNG");
-    object[QStringLiteral("imageBase64")] = QString::fromLatin1(bytes.toBase64());
-    object[QStringLiteral("topLeftX")] = raster.topLeft.x();
-    object[QStringLiteral("topLeftY")] = raster.topLeft.y();
+    object[ANIME_STR("imageBase64")] = String::fromLatin1(bytes.toBase64());
+    object[ANIME_STR("topLeftX")] = raster.topLeft.x();
+    object[ANIME_STR("topLeftY")] = raster.topLeft.y();
     return object;
 }
 
-AnimeRasterImage rasterFromJson(const QJsonValue &value)
+AnimeRasterImage rasterFromJson(const JsonValue &value)
 {
-    const QJsonObject object = value.toObject();
+    const JsonObject object = value.toObject();
     AnimeRasterImage raster;
-    const QByteArray bytes = QByteArray::fromBase64(object.value(QStringLiteral("imageBase64")).toString().toLatin1());
+    const QByteArray bytes = QByteArray::fromBase64(object.value(ANIME_STR("imageBase64")).toString().toLatin1());
     raster.image.loadFromData(bytes, "PNG");
-    raster.topLeft = QPointF(object.value(QStringLiteral("topLeftX")).toDouble(),
-                             object.value(QStringLiteral("topLeftY")).toDouble());
+    raster.topLeft = PointF(object.value(ANIME_STR("topLeftX")).toDouble(),
+                             object.value(ANIME_STR("topLeftY")).toDouble());
     return raster;
 }
 
-QJsonObject imageToJson(const AnimeVectorImageModel &image)
+JsonObject imageToJson(const AnimeVectorImageModel &image)
 {
-    QJsonObject object;
+    JsonObject object;
     if (image.hasRaster()) {
-        object[QStringLiteral("raster")] = rasterToJson(image.raster());
+        object[ANIME_STR("raster")] = rasterToJson(image.raster());
     }
 
-    QJsonArray strokes;
+    JsonArray strokes;
     for (const AnimeVectorStrokeNode &node : image.strokeNodes()) {
         strokes.append(strokeNodeToJson(node));
     }
-    object[QStringLiteral("strokes")] = strokes;
+    object[ANIME_STR("strokes")] = strokes;
 
-    QJsonArray fills;
+    JsonArray fills;
     for (const AnimeVectorFillRegion &fill : image.fillRegions()) {
         fills.append(fillRegionToJson(fill));
     }
-    object[QStringLiteral("fills")] = fills;
+    object[ANIME_STR("fills")] = fills;
     return object;
 }
 
-void loadImageFromJson(AnimeVectorImageModel *image, const QJsonValue &value)
+void loadImageFromJson(AnimeVectorImageModel *image, const JsonValue &value)
 {
     if (!image) {
         return;
     }
 
     image->clear();
-    const QJsonObject object = value.toObject();
-    if (object.contains(QStringLiteral("raster"))) {
-        const AnimeRasterImage raster = rasterFromJson(object.value(QStringLiteral("raster")));
+    const JsonObject object = value.toObject();
+    if (object.contains(ANIME_STR("raster"))) {
+        const AnimeRasterImage raster = rasterFromJson(object.value(ANIME_STR("raster")));
         if (!raster.image.isNull()) {
             image->setRasterImage(raster.image, raster.topLeft);
         }
     }
 
-    const QJsonArray strokes = object.value(QStringLiteral("strokes")).toArray();
-    for (const QJsonValue &stroke : strokes) {
+    const JsonArray strokes = object.value(ANIME_STR("strokes")).toArray();
+    for (const JsonValue &stroke : strokes) {
         image->addStrokeNode(strokeNodeFromJson(stroke));
     }
 
-    const QJsonArray fills = object.value(QStringLiteral("fills")).toArray();
-    for (const QJsonValue &fill : fills) {
+    const JsonArray fills = object.value(ANIME_STR("fills")).toArray();
+    for (const JsonValue &fill : fills) {
         image->addFillRegion(fillRegionFromJson(fill));
     }
 }
 }
 
-QString projectOpenFilter()
+String projectOpenFilter()
 {
-    return QStringLiteral("AnimeAn Projects (*.anproj);;All Files (*)");
+    return ANIME_STR("AnimeAn Projects (*.anproj);;All Files (*)");
 }
 
-QString projectSaveFilter()
+String projectSaveFilter()
 {
-    return QStringLiteral("AnimeAn Projects (*.anproj);;All Files (*)");
+    return ANIME_STR("AnimeAn Projects (*.anproj);;All Files (*)");
 }
 
-QString textureViewOpenFilter()
+String textureViewOpenFilter()
 {
-    return QStringLiteral("AnimeAn Texture Views (*.textureview);;All Files (*)");
+    return ANIME_STR("AnimeAn Texture Views (*.textureview);;All Files (*)");
 }
 
-QString textureViewSaveFilter()
+String textureViewSaveFilter()
 {
-    return QStringLiteral("AnimeAn Texture Views (*.textureview);;All Files (*)");
+    return ANIME_STR("AnimeAn Texture Views (*.textureview);;All Files (*)");
 }
 
 namespace {
-QString ensureFileExtension(const QString &fileName, const QString &extension)
+String ensureFileExtension(const String &fileName, const String &extension)
 {
     if (fileName.isEmpty()) {
         return fileName;
     }
 
     const QFileInfo info(fileName);
-    const QString suffix = info.suffix();
+    const String suffix = info.suffix();
     if (suffix.compare(extension, Qt::CaseInsensitive) == 0) {
         return fileName;
     }
@@ -348,12 +352,12 @@ QString ensureFileExtension(const QString &fileName, const QString &extension)
     // Replace extensions that AnimeAn owns, so saving one document type over
     // a name carrying the other type's suffix produces drawing.anproj rather
     // than drawing.textureview.anproj.
-    if (suffix.compare(QStringLiteral("anproj"), Qt::CaseInsensitive) == 0
-        || suffix.compare(QStringLiteral("textureview"), Qt::CaseInsensitive) == 0) {
+    if (suffix.compare(ANIME_STR("anproj"), Qt::CaseInsensitive) == 0
+        || suffix.compare(ANIME_STR("textureview"), Qt::CaseInsensitive) == 0) {
         return fileName.left(fileName.size() - suffix.size()) + extension;
     }
 
-    return fileName + QLatin1Char('.') + extension;
+    return fileName + Latin1Char('.') + extension;
 }
 
 // The format/version envelope belongs to the FILE; a scene payload describes
@@ -361,59 +365,59 @@ QString ensureFileExtension(const QString &fileName, const QString &extension)
 // own envelope on top of sceneToJson, and each reader validates it before
 // handing the object to sceneFromJson. This keeps embedded payloads free to
 // evolve without a second, hidden version field.
-QJsonObject sceneToJson(const AnimeSceneModel &model);
-bool sceneFromJson(const QJsonObject &root, AnimeSceneModel *model, QString *error);
+JsonObject sceneToJson(const AnimeSceneModel &model);
+bool sceneFromJson(const JsonObject &root, AnimeSceneModel *model, String *error);
 
-bool sceneHasData(const QJsonObject &root)
+bool sceneHasData(const JsonObject &root)
 {
     // Every writer emits both keys, even for an empty scene. A file carrying
     // a valid envelope but neither key is damaged; loading it as a blank
     // scene and reporting success would invite an overwrite of the original.
-    return root.value(QStringLiteral("xsheet")).isObject()
-           || root.value(QStringLiteral("assets")).isArray();
+    return root.value(ANIME_STR("xsheet")).isObject()
+           || root.value(ANIME_STR("assets")).isArray();
 }
 }
 
-QString ensureProjectFileExtension(const QString &fileName)
+String ensureProjectFileExtension(const String &fileName)
 {
-    return ensureFileExtension(fileName, QStringLiteral("anproj"));
+    return ensureFileExtension(fileName, ANIME_STR("anproj"));
 }
 
-QString ensureTextureViewFileExtension(const QString &fileName)
+String ensureTextureViewFileExtension(const String &fileName)
 {
-    return ensureFileExtension(fileName, QStringLiteral("textureview"));
+    return ensureFileExtension(fileName, ANIME_STR("textureview"));
 }
 
 namespace {
-QJsonObject sceneToJson(const AnimeSceneModel &model)
+JsonObject sceneToJson(const AnimeSceneModel &model)
 {
-    QJsonObject root;
-    root[QStringLiteral("sceneName")] = model.textId();
-    root[QStringLiteral("sceneId")] = model.intId();
-    root[QStringLiteral("currentFrame")] = model.currentFrame();
-    root[QStringLiteral("currentLayer")] = model.currentLayer();
-    root[QStringLiteral("currentAsset")] = model.currentAsset();
-    root[QStringLiteral("scriptData")] = model.scriptData();
+    JsonObject root;
+    root[ANIME_STR("sceneName")] = model.textId();
+    root[ANIME_STR("sceneId")] = model.intId();
+    root[ANIME_STR("currentFrame")] = model.currentFrame();
+    root[ANIME_STR("currentLayer")] = model.currentLayer();
+    root[ANIME_STR("currentAsset")] = model.currentAsset();
+    root[ANIME_STR("scriptData")] = model.scriptData();
 
     const AnimeScene &scene = model.scene();
-    root[QStringLiteral("canvasWidth")] = model.canvasSize().width();
-    root[QStringLiteral("canvasHeight")] = model.canvasSize().height();
-    root[QStringLiteral("playbackFps")] = model.playbackFps();
-    QJsonObject xsheet;
-    xsheet[QStringLiteral("frameCount")] = scene.xsheet.frameCount;
+    root[ANIME_STR("canvasWidth")] = model.canvasSize().width();
+    root[ANIME_STR("canvasHeight")] = model.canvasSize().height();
+    root[ANIME_STR("playbackFps")] = model.playbackFps();
+    JsonObject xsheet;
+    xsheet[ANIME_STR("frameCount")] = scene.xsheet.frameCount;
 
     // Which column ids actually reach the file. Internal columns are skipped
     // below, so both the layer tree AND a parent link that names one has to
     // be filtered against this - a saved id nobody writes is a dangling
     // reference the loader would have to guess about.
-    QSet<int> savedColumnIds;
+    Set<int> savedColumnIds;
     for (const AnimeColumn &column : scene.xsheet.columns) {
         if (!column.internal) {
             savedColumnIds.insert(column.id);
         }
     }
 
-    QJsonArray columns;
+    JsonArray columns;
     for (int columnIndex = 0; columnIndex < scene.xsheet.columns.size(); ++columnIndex) {
         const AnimeColumn &column = scene.xsheet.columns[columnIndex];
         if (column.internal) {
@@ -422,85 +426,85 @@ QJsonObject sceneToJson(const AnimeSceneModel &model)
             // gesture), so skipping them cannot shift saved layer indices.
             continue;
         }
-        QJsonObject columnObject;
-        columnObject[QStringLiteral("name")] = column.name;
-        columnObject[QStringLiteral("id")] = column.id;
-        columnObject[QStringLiteral("type")] = columnTypeName(column.type);
-        columnObject[QStringLiteral("visible")] = column.visible;
-        columnObject[QStringLiteral("locked")] = column.locked;
-        columnObject[QStringLiteral("opacity")] = column.opacity;
+        JsonObject columnObject;
+        columnObject[ANIME_STR("name")] = column.name;
+        columnObject[ANIME_STR("id")] = column.id;
+        columnObject[ANIME_STR("type")] = columnTypeName(column.type);
+        columnObject[ANIME_STR("visible")] = column.visible;
+        columnObject[ANIME_STR("locked")] = column.locked;
+        columnObject[ANIME_STR("opacity")] = column.opacity;
         // Optional, like penStyle: a project with no parented layer stays
         // byte-identical to what earlier builds wrote, and a link to a column
         // that is not being saved is dropped rather than written dangling.
         if (column.parentLayerId > 0 && savedColumnIds.contains(column.parentLayerId)) {
-            columnObject[QStringLiteral("parentLayerId")] = column.parentLayerId;
+            columnObject[ANIME_STR("parentLayerId")] = column.parentLayerId;
         }
 
-        QJsonArray cells;
+        JsonArray cells;
         for (int row = 0; row < scene.xsheet.frameCount; ++row) {
             const AnimeCell cell = column.cellAt(row);
             if (cell.isEmpty()) {
                 continue;
             }
-            QJsonObject cellObject;
-            cellObject[QStringLiteral("row")] = row;
-            cellObject[QStringLiteral("assetIndex")] = cell.assetIndex;
-            cellObject[QStringLiteral("frameId")] = cell.frameId;
+            JsonObject cellObject;
+            cellObject[ANIME_STR("row")] = row;
+            cellObject[ANIME_STR("assetIndex")] = cell.assetIndex;
+            cellObject[ANIME_STR("frameId")] = cell.frameId;
             cells.append(cellObject);
         }
-        columnObject[QStringLiteral("cells")] = cells;
+        columnObject[ANIME_STR("cells")] = cells;
         columns.append(columnObject);
     }
-    xsheet[QStringLiteral("columns")] = columns;
+    xsheet[ANIME_STR("columns")] = columns;
 
     // Frame names. Written only when a row actually carries one, so a file
     // from a project nobody renamed stays byte-identical to what earlier
     // builds produced; a reader without the key sees the row numbers.
-    QJsonObject frameNames;
+    JsonObject frameNames;
     for (auto it = scene.xsheet.frameNames.constBegin();
          it != scene.xsheet.frameNames.constEnd(); ++it) {
         if (it.key() < 0 || it.key() >= scene.xsheet.frameCount || it.value().isEmpty()) {
             continue;
         }
-        frameNames[QString::number(it.key())] = it.value();
+        frameNames[String::number(it.key())] = it.value();
     }
     if (!frameNames.isEmpty()) {
-        xsheet[QStringLiteral("frameNames")] = frameNames;
+        xsheet[ANIME_STR("frameNames")] = frameNames;
     }
-    root[QStringLiteral("xsheet")] = xsheet;
+    root[ANIME_STR("xsheet")] = xsheet;
 
     // Layer groups. Internal (script-owned) columns are skipped above and
     // their leaves are simply dropped here; on load, normalizeLayerTree
     // re-appends anything the tree does not mention, so a file written by an
     // older build - or one whose tree lost entries - still opens with every
     // layer present and ungrouped.
-    std::function<QJsonValue(const AnimeLayerNode &)> nodeToJson =
-        [&](const AnimeLayerNode &node) -> QJsonValue {
+    std::function<JsonValue(const AnimeLayerNode &)> nodeToJson =
+        [&](const AnimeLayerNode &node) -> JsonValue {
         if (!node.isGroup()) {
-            return QJsonValue(node.layerId);
+            return JsonValue(node.layerId);
         }
-        QJsonObject groupObject;
-        groupObject[QStringLiteral("groupId")] = node.groupId;
-        groupObject[QStringLiteral("name")] = node.name;
-        groupObject[QStringLiteral("collapsed")] = node.collapsed;
+        JsonObject groupObject;
+        groupObject[ANIME_STR("groupId")] = node.groupId;
+        groupObject[ANIME_STR("name")] = node.name;
+        groupObject[ANIME_STR("collapsed")] = node.collapsed;
         if (!node.tag.isEmpty()) {
-            groupObject[QStringLiteral("tag")] = node.tag;
+            groupObject[ANIME_STR("tag")] = node.tag;
         }
-        QJsonArray children;
+        JsonArray children;
         for (const AnimeLayerNode &child : node.children) {
             children.append(nodeToJson(child));
         }
-        groupObject[QStringLiteral("children")] = children;
+        groupObject[ANIME_STR("children")] = children;
         return groupObject;
     };
-    std::function<QJsonArray(const QVector<AnimeLayerNode> &)> treeToJson =
-        [&](const QVector<AnimeLayerNode> &nodes) -> QJsonArray {
-        QJsonArray array;
+    std::function<JsonArray(const Vector<AnimeLayerNode> &)> treeToJson =
+        [&](const Vector<AnimeLayerNode> &nodes) -> JsonArray {
+        JsonArray array;
         for (const AnimeLayerNode &node : nodes) {
             if (node.isGroup()) {
-                QJsonObject groupObject = nodeToJson(node).toObject();
-                groupObject[QStringLiteral("children")] = treeToJson(node.children);
-                if (!groupObject.value(QStringLiteral("children")).toArray().isEmpty()) {
+                JsonObject groupObject = nodeToJson(node).toObject();
+                groupObject[ANIME_STR("children")] = treeToJson(node.children);
+                if (!groupObject.value(ANIME_STR("children")).toArray().isEmpty()) {
                     array.append(groupObject);
                 }
             } else if (savedColumnIds.contains(node.layerId)) {
@@ -509,9 +513,9 @@ QJsonObject sceneToJson(const AnimeSceneModel &model)
         }
         return array;
     };
-    root[QStringLiteral("layerTree")] = treeToJson(scene.layerTree);
+    root[ANIME_STR("layerTree")] = treeToJson(scene.layerTree);
 
-    QJsonArray assets;
+    JsonArray assets;
     for (const AnimeAsset &asset : scene.assets) {
         if (asset.internal) {
             // Ephemeral working-layer asset: like internal columns it only
@@ -519,105 +523,105 @@ QJsonObject sceneToJson(const AnimeSceneModel &model)
             // the asset indices the saved cells reference.
             continue;
         }
-        QJsonObject assetObject;
-        assetObject[QStringLiteral("name")] = asset.name;
-        assetObject[QStringLiteral("type")] = columnTypeName(asset.type);
+        JsonObject assetObject;
+        assetObject[ANIME_STR("name")] = asset.name;
+        assetObject[ANIME_STR("type")] = columnTypeName(asset.type);
 
-        QJsonArray frames;
+        JsonArray frames;
         for (int frameId : asset.frameIds()) {
             const AnimeVectorImageModel *image = asset.frame(frameId);
             if (!image) {
                 continue;
             }
-            QJsonObject frameObject;
-            frameObject[QStringLiteral("frameId")] = frameId;
-            frameObject[QStringLiteral("image")] = imageToJson(*image);
+            JsonObject frameObject;
+            frameObject[ANIME_STR("frameId")] = frameId;
+            frameObject[ANIME_STR("image")] = imageToJson(*image);
             frames.append(frameObject);
         }
-        assetObject[QStringLiteral("frames")] = frames;
+        assetObject[ANIME_STR("frames")] = frames;
         assets.append(assetObject);
     }
-    root[QStringLiteral("assets")] = assets;
+    root[ANIME_STR("assets")] = assets;
     return root;
 }
 
-bool sceneFromJson(const QJsonObject &root, AnimeSceneModel *model, QString *error)
+bool sceneFromJson(const JsonObject &root, AnimeSceneModel *model, String *error)
 {
     Q_UNUSED(error);
     AnimeSceneModel loaded;
     AnimeScene &scene = loaded.scene();
     scene = AnimeScene();
-    const QJsonValue sceneNameValue = root.value(QStringLiteral("sceneName"));
-    const QJsonValue sceneIdValue = root.value(QStringLiteral("sceneId"));
+    const JsonValue sceneNameValue = root.value(ANIME_STR("sceneName"));
+    const JsonValue sceneIdValue = root.value(ANIME_STR("sceneId"));
     if (sceneIdValue.isDouble()) {
         scene.setIntId(sceneIdValue.toInt());
     }
-    QString sceneName = sceneNameValue.toString(sceneIdValue.isString() ? sceneIdValue.toString() : QString());
+    String sceneName = sceneNameValue.toString(sceneIdValue.isString() ? sceneIdValue.toString() : String());
     if (isUuidText(sceneName)) {
         sceneName.clear();
     }
     scene.setTextId(sceneName);
-    scene.scriptData = root.value(QStringLiteral("scriptData")).toString();
+    scene.scriptData = root.value(ANIME_STR("scriptData")).toString();
 
-    const QJsonObject xsheet = root.value(QStringLiteral("xsheet")).toObject();
-    scene.xsheet.frameCount = qMax(1, xsheet.value(QStringLiteral("frameCount")).toInt(1));
+    const JsonObject xsheet = root.value(ANIME_STR("xsheet")).toObject();
+    scene.xsheet.frameCount = std::max(1, xsheet.value(ANIME_STR("frameCount")).toInt(1));
 
     // Optional: a file without the key simply has no named rows.
-    const QJsonObject frameNames = xsheet.value(QStringLiteral("frameNames")).toObject();
+    const JsonObject frameNames = xsheet.value(ANIME_STR("frameNames")).toObject();
     for (auto it = frameNames.constBegin(); it != frameNames.constEnd(); ++it) {
         bool ok = false;
         const int row = it.key().toInt(&ok);
-        const QString name = it.value().toString();
+        const String name = it.value().toString();
         if (!ok || row < 0 || row >= scene.xsheet.frameCount || name.isEmpty()) {
             continue;
         }
         scene.xsheet.frameNames.insert(row, name);
     }
 
-    const QJsonArray assets = root.value(QStringLiteral("assets")).toArray();
+    const JsonArray assets = root.value(ANIME_STR("assets")).toArray();
     scene.assets.reserve(assets.size());
-    for (const QJsonValue &assetValue : assets) {
-        const QJsonObject assetObject = assetValue.toObject();
+    for (const JsonValue &assetValue : assets) {
+        const JsonObject assetObject = assetValue.toObject();
         AnimeAsset asset;
-        asset.name = assetObject.value(QStringLiteral("name")).toString();
-        asset.type = columnTypeFromName(assetObject.value(QStringLiteral("type")).toString());
+        asset.name = assetObject.value(ANIME_STR("name")).toString();
+        asset.type = columnTypeFromName(assetObject.value(ANIME_STR("type")).toString());
 
-        const QJsonArray frames = assetObject.value(QStringLiteral("frames")).toArray();
-        for (const QJsonValue &frameValue : frames) {
-            const QJsonObject frameObject = frameValue.toObject();
-            const int frameId = frameObject.value(QStringLiteral("frameId")).toInt();
+        const JsonArray frames = assetObject.value(ANIME_STR("frames")).toArray();
+        for (const JsonValue &frameValue : frames) {
+            const JsonObject frameObject = frameValue.toObject();
+            const int frameId = frameObject.value(ANIME_STR("frameId")).toInt();
             if (frameId <= 0) {
                 continue;
             }
-            loadImageFromJson(asset.frame(frameId, true), frameObject.value(QStringLiteral("image")));
+            loadImageFromJson(asset.frame(frameId, true), frameObject.value(ANIME_STR("image")));
         }
         scene.assets.append(asset);
     }
 
-    const QJsonArray columns = xsheet.value(QStringLiteral("columns")).toArray();
+    const JsonArray columns = xsheet.value(ANIME_STR("columns")).toArray();
     scene.xsheet.columns.reserve(columns.size());
-    for (const QJsonValue &columnValue : columns) {
-        const QJsonObject columnObject = columnValue.toObject();
+    for (const JsonValue &columnValue : columns) {
+        const JsonObject columnObject = columnValue.toObject();
         AnimeColumn column;
-        column.name = columnObject.value(QStringLiteral("name")).toString();
-        column.id = columnObject.value(QStringLiteral("id")).toInt(0);
+        column.name = columnObject.value(ANIME_STR("name")).toString();
+        column.id = columnObject.value(ANIME_STR("id")).toInt(0);
         // Absent in files from before layer parenting, and in every file where
         // no layer tracks another: default independent. normalizeLayerTree
         // zeroes anything that turns out not to name a live column.
-        column.parentLayerId = columnObject.value(QStringLiteral("parentLayerId")).toInt(0);
-        column.type = columnTypeFromName(columnObject.value(QStringLiteral("type")).toString());
-        column.visible = columnObject.value(QStringLiteral("visible")).toBool(true);
-        column.locked = columnObject.value(QStringLiteral("locked")).toBool(false);
-        column.opacity = columnObject.value(QStringLiteral("opacity")).toDouble(1.0);
+        column.parentLayerId = columnObject.value(ANIME_STR("parentLayerId")).toInt(0);
+        column.type = columnTypeFromName(columnObject.value(ANIME_STR("type")).toString());
+        column.visible = columnObject.value(ANIME_STR("visible")).toBool(true);
+        column.locked = columnObject.value(ANIME_STR("locked")).toBool(false);
+        column.opacity = columnObject.value(ANIME_STR("opacity")).toDouble(1.0);
 
-        const QJsonArray cells = columnObject.value(QStringLiteral("cells")).toArray();
-        for (const QJsonValue &cellValue : cells) {
-            const QJsonObject cellObject = cellValue.toObject();
+        const JsonArray cells = columnObject.value(ANIME_STR("cells")).toArray();
+        for (const JsonValue &cellValue : cells) {
+            const JsonObject cellObject = cellValue.toObject();
             AnimeCell cell;
-            cell.assetIndex = cellObject.value(QStringLiteral("assetIndex")).toInt(-1);
-            cell.frameId = cellObject.value(QStringLiteral("frameId")).toInt(0);
+            cell.assetIndex = cellObject.value(ANIME_STR("assetIndex")).toInt(-1);
+            cell.frameId = cellObject.value(ANIME_STR("frameId")).toInt(0);
             if (cell.assetIndex >= 0 && cell.assetIndex < scene.assets.size() && cell.frameId > 0) {
-                column.setCell(cellObject.value(QStringLiteral("row")).toInt(), cell);
+                column.setCell(cellObject.value(ANIME_STR("row")).toInt(), cell);
             }
         }
         scene.xsheet.columns.append(column);
@@ -627,21 +631,21 @@ bool sceneFromJson(const QJsonObject &root, AnimeSceneModel *model, QString *err
     // no column ids either; normalizeLayerTree (called below through the
     // model) then hands out fresh ids and puts every layer at the top level,
     // which is exactly the pre-grouping look.
-    std::function<QVector<AnimeLayerNode>(const QJsonArray &)> treeFromJson =
-        [&](const QJsonArray &array) -> QVector<AnimeLayerNode> {
-        QVector<AnimeLayerNode> nodes;
-        for (const QJsonValue &value : array) {
+    std::function<Vector<AnimeLayerNode>(const JsonArray &)> treeFromJson =
+        [&](const JsonArray &array) -> Vector<AnimeLayerNode> {
+        Vector<AnimeLayerNode> nodes;
+        for (const JsonValue &value : array) {
             AnimeLayerNode node;
             if (value.isObject()) {
-                const QJsonObject groupObject = value.toObject();
-                node.groupId = groupObject.value(QStringLiteral("groupId")).toInt(0);
+                const JsonObject groupObject = value.toObject();
+                node.groupId = groupObject.value(ANIME_STR("groupId")).toInt(0);
                 if (node.groupId <= 0) {
                     continue;
                 }
-                node.name = groupObject.value(QStringLiteral("name")).toString();
-                node.collapsed = groupObject.value(QStringLiteral("collapsed")).toBool(false);
-                node.tag = groupObject.value(QStringLiteral("tag")).toString();
-                node.children = treeFromJson(groupObject.value(QStringLiteral("children")).toArray());
+                node.name = groupObject.value(ANIME_STR("name")).toString();
+                node.collapsed = groupObject.value(ANIME_STR("collapsed")).toBool(false);
+                node.tag = groupObject.value(ANIME_STR("tag")).toString();
+                node.children = treeFromJson(groupObject.value(ANIME_STR("children")).toArray());
             } else {
                 node.layerId = value.toInt(0);
                 if (node.layerId <= 0) {
@@ -652,95 +656,95 @@ bool sceneFromJson(const QJsonObject &root, AnimeSceneModel *model, QString *err
         }
         return nodes;
     };
-    scene.layerTree = treeFromJson(root.value(QStringLiteral("layerTree")).toArray());
+    scene.layerTree = treeFromJson(root.value(ANIME_STR("layerTree")).toArray());
 
     // A file from before the canvas was a document property has neither key;
     // it gets the default page rather than a zero one.
-    const QSize defaultCanvas = AnimeSceneModel::defaultCanvasSize();
-    loaded.setCanvasSize(QSize(root.value(QStringLiteral("canvasWidth")).toInt(defaultCanvas.width()),
-                               root.value(QStringLiteral("canvasHeight")).toInt(defaultCanvas.height())));
+    const Size defaultCanvas = AnimeSceneModel::defaultCanvasSize();
+    loaded.setCanvasSize(Size(root.value(ANIME_STR("canvasWidth")).toInt(defaultCanvas.width()),
+                               root.value(ANIME_STR("canvasHeight")).toInt(defaultCanvas.height())));
 
-    loaded.setPlaybackFps(root.value(QStringLiteral("playbackFps")).toInt(12));
+    loaded.setPlaybackFps(root.value(ANIME_STR("playbackFps")).toInt(12));
 
-    loaded.setCurrentFrame(root.value(QStringLiteral("currentFrame")).toInt(0));
-    loaded.setCurrentLayer(root.value(QStringLiteral("currentLayer")).toInt(-1));
-    loaded.setCurrentAsset(root.value(QStringLiteral("currentAsset")).toInt(-1));
+    loaded.setCurrentFrame(root.value(ANIME_STR("currentFrame")).toInt(0));
+    loaded.setCurrentLayer(root.value(ANIME_STR("currentLayer")).toInt(-1));
+    loaded.setCurrentAsset(root.value(ANIME_STR("currentAsset")).toInt(-1));
     loaded.normalizeLayerTree();
     *model = loaded;
     return true;
 }
 }
 
-QJsonObject projectToJson(const AnimeSceneModel &mainModel, const AnimeSceneModel &textureModel)
+JsonObject projectToJson(const AnimeSceneModel &mainModel, const AnimeSceneModel &textureModel)
 {
-    QJsonObject root;
+    JsonObject root;
     // A distinct format id, not a version bump on the v1 marker: pre-bundle
     // builds validate only the format string, so they must fail cleanly on a
     // bundled project instead of opening it as a blank scene and offering to
     // save that blankness back over it.
-    root[QStringLiteral("format")] = QStringLiteral("AnimeAn Project 2");
-    root[QStringLiteral("version")] = 2;
-    root[QStringLiteral("mainView")] = sceneToJson(mainModel);
-    root[QStringLiteral("textureView")] = sceneToJson(textureModel);
+    root[ANIME_STR("format")] = ANIME_STR("AnimeAn Project 2");
+    root[ANIME_STR("version")] = 2;
+    root[ANIME_STR("mainView")] = sceneToJson(mainModel);
+    root[ANIME_STR("textureView")] = sceneToJson(textureModel);
     return root;
 }
 
-bool projectFromJson(const QJsonObject &root,
+bool projectFromJson(const JsonObject &root,
                      AnimeSceneModel *mainModel,
                      AnimeSceneModel *textureModel,
-                     QString *error)
+                     String *error)
 {
     if (!mainModel || !textureModel) {
         if (error) {
-            *error = QStringLiteral("Project destination is missing.");
+            *error = ANIME_STR("Project destination is missing.");
         }
         return false;
     }
 
-    if (root.value(QStringLiteral("format")).toString() != QStringLiteral("AnimeAn Project 2")) {
+    if (root.value(ANIME_STR("format")).toString() != ANIME_STR("AnimeAn Project 2")) {
         if (error) {
-            *error = QStringLiteral("Unsupported project file.");
+            *error = ANIME_STR("Unsupported project file.");
         }
         return false;
     }
-    if (root.value(QStringLiteral("version")).toInt(0) != 2) {
+    if (root.value(ANIME_STR("version")).toInt(0) != 2) {
         if (error) {
-            *error = QStringLiteral("Unsupported project version.");
+            *error = ANIME_STR("Unsupported project version.");
         }
         return false;
     }
-    const QJsonValue mainView = root.value(QStringLiteral("mainView"));
-    const QJsonValue textureView = root.value(QStringLiteral("textureView"));
+    const JsonValue mainView = root.value(ANIME_STR("mainView"));
+    const JsonValue textureView = root.value(ANIME_STR("textureView"));
     if (!mainView.isObject() || !textureView.isObject()) {
         if (error) {
-            *error = QStringLiteral("The project file is missing view data.");
+            *error = ANIME_STR("The project file is missing view data.");
         }
         return false;
     }
     // Guard each embedded payload exactly like a standalone document: a
     // damaged bundle whose view lost its scene keys must be rejected, not
     // loaded as a blank board that the next silent Ctrl+S writes back.
-    const QJsonObject mainObject = mainView.toObject();
-    const QJsonObject textureObject = textureView.toObject();
+    const JsonObject mainObject = mainView.toObject();
+    const JsonObject textureObject = textureView.toObject();
     if (!sceneHasData(mainObject) || !sceneHasData(textureObject)) {
         if (error) {
-            *error = QStringLiteral("The project file does not contain scene data.");
+            *error = ANIME_STR("The project file does not contain scene data.");
         }
         return false;
     }
 
     AnimeSceneModel loadedMain;
     AnimeSceneModel loadedTexture;
-    QString modelError;
+    String modelError;
     if (!sceneFromJson(mainObject, &loadedMain, &modelError)) {
         if (error) {
-            *error = QStringLiteral("Invalid main view: %1").arg(modelError);
+            *error = ANIME_STR("Invalid main view: %1").arg(modelError);
         }
         return false;
     }
     if (!sceneFromJson(textureObject, &loadedTexture, &modelError)) {
         if (error) {
-            *error = QStringLiteral("Invalid texture view: %1").arg(modelError);
+            *error = ANIME_STR("Invalid texture view: %1").arg(modelError);
         }
         return false;
     }
@@ -750,34 +754,34 @@ bool projectFromJson(const QJsonObject &root,
     return true;
 }
 
-QJsonObject textureViewToJson(const AnimeSceneModel &model)
+JsonObject textureViewToJson(const AnimeSceneModel &model)
 {
-    QJsonObject root = sceneToJson(model);
-    root[QStringLiteral("format")] = QStringLiteral("AnimeAn Texture View");
-    root[QStringLiteral("version")] = 1;
+    JsonObject root = sceneToJson(model);
+    root[ANIME_STR("format")] = ANIME_STR("AnimeAn Texture View");
+    root[ANIME_STR("version")] = 1;
     return root;
 }
 
-bool textureViewFromJson(const QJsonObject &root, AnimeSceneModel *model, QString *error)
+bool textureViewFromJson(const JsonObject &root, AnimeSceneModel *model, String *error)
 {
     if (!model) {
         if (error) {
-            *error = QStringLiteral("Texture view destination is missing.");
+            *error = ANIME_STR("Texture view destination is missing.");
         }
         return false;
     }
 
-    const QString format = root.value(QStringLiteral("format")).toString();
-    if (format == QStringLiteral("AnimeAn Texture View")) {
-        if (root.value(QStringLiteral("version")).toInt(1) != 1) {
+    const String format = root.value(ANIME_STR("format")).toString();
+    if (format == ANIME_STR("AnimeAn Texture View")) {
+        if (root.value(ANIME_STR("version")).toInt(1) != 1) {
             if (error) {
-                *error = QStringLiteral("Unsupported texture view version.");
+                *error = ANIME_STR("Unsupported texture view version.");
             }
             return false;
         }
         if (!sceneHasData(root)) {
             if (error) {
-                *error = QStringLiteral("The file does not contain scene data.");
+                *error = ANIME_STR("The file does not contain scene data.");
             }
             return false;
         }
@@ -785,7 +789,7 @@ bool textureViewFromJson(const QJsonObject &root, AnimeSceneModel *model, QStrin
     }
 
     if (error) {
-        *error = QStringLiteral("Unsupported texture view file.");
+        *error = ANIME_STR("Unsupported texture view file.");
     }
     return false;
 }
