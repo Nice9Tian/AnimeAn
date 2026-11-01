@@ -2,6 +2,7 @@
 #define ANIMECORE_IMAGE_H
 
 #include "algorithm/core/bridge.h"
+#include "algorithm/core/geometry.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -102,6 +103,7 @@ public:
 
     bool isNull() const;
     int width() const;
+    Size size() const { return Size(width(), height()); }
     int height() const;
     Format format() const;
     int bytesPerLine() const;

@@ -24,6 +24,8 @@ add_library(animean_corelib STATIC
     json.h
     path.cpp
     path.h
+    pathbool.cpp
+    pathbool.h
     pathops.cpp
     pathops.h
     string.cpp
@@ -40,6 +42,29 @@ target_include_directories(animean_corelib
         ${ANIMEAN_CORE_ROOT}/external/clipper2/include
         ${ANIMEAN_CORE_ROOT}/external/stb
 )
+
+# The computation layer. It has no Qt on its include path either, which is what
+# keeps it portable; the Qt program converts at the boundary (qtbridge.h).
+add_library(animean_core STATIC
+    ${ANIMEAN_CORE_ROOT}/algorithm/animemodel.cpp
+    ${ANIMEAN_CORE_ROOT}/algorithm/animemodel.h
+    ${ANIMEAN_CORE_ROOT}/algorithm/beziersplit.cpp
+    ${ANIMEAN_CORE_ROOT}/algorithm/beziersplit.h
+    ${ANIMEAN_CORE_ROOT}/algorithm/scenehistory.cpp
+    ${ANIMEAN_CORE_ROOT}/algorithm/scenehistory.h
+    ${ANIMEAN_CORE_ROOT}/algorithm/vectorlogic.cpp
+    ${ANIMEAN_CORE_ROOT}/algorithm/vectorlogic.h
+    ${ANIMEAN_CORE_ROOT}/algorithm/viewscale.h
+    ${ANIMEAN_CORE_ROOT}/clipreader.cpp
+    ${ANIMEAN_CORE_ROOT}/clipreader.h
+    ${ANIMEAN_CORE_ROOT}/projectio.cpp
+    ${ANIMEAN_CORE_ROOT}/projectio.h
+)
+target_include_directories(animean_core PUBLIC
+    ${ANIMEAN_CORE_ROOT}
+    ${ANIMEAN_CORE_ROOT}/algorithm
+)
+target_link_libraries(animean_core PUBLIC animean_corelib)
 
 # Differential tests: each one links the real Qt type and checks the core type
 # gives the same answer. The tests may use Qt; the library above must not, and

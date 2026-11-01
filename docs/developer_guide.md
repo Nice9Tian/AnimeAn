@@ -95,7 +95,7 @@
 | 项 | 命令 | 什么时候必跑 |
 |---|---|---|
 | Python 回归（无 GUI） | `py -m unittest discover -s tests`（`test_legacy_suites.py` 把 `t_*.py` 逐个当子测试跑）；单跑 `py tests\t_<名>.py` | 改到 `pyfile/` |
-| C++ 单测 | 配置时 `BUILD_TESTING` 开着，`ctest` 跑 `projectio_tests`、`animemodel_tests`、`strokefit_tests` | 改到 `algorithm/`、`projectio.*` |
+| C++ 单测 | 配置时 `BUILD_TESTING` 开着，`ctest` 跑 `projectio_tests`、`animemodel_tests`、`strokefit_tests`，以及和真实 Qt 比较的 `core_*` | 改到 `algorithm/`、`projectio.*` |
 | 编译检查 | `cmake --build build\wt-check --target AnimeAn --parallel 10`（新 worktree 先 `git submodule update --init --depth 1`） | 改到 C++，合并前 |
 | 部署构建 | `PowerShell -ExecutionPolicy Bypass -File .\build_scripts\agent_build.ps1`，结束行 `===== AGENT BUILD DONE EXIT_CODE=0 =====`；必须在沙箱外 | 改到 C++ 合并后；发布前 |
 | 脚本同步 | `powershell -ExecutionPolicy Bypass -File sync_pyfiles.ps1` | 每次改 `.py` 而不重建 |

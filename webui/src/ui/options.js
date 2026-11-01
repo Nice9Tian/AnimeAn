@@ -34,15 +34,19 @@ function slider(control, send) {
     return Math.round(min + t * (max - min));
   };
   const set = (next) => { if (next !== value) { value = next; draw(); send("slider", value); } };
+  const trackX = (e) => e.clientX - track.getBoundingClientRect().left;
+  // How far off its centre the handle was pressed: pressing it must not move it.
+  let grab = 0;
   track.addEventListener("pointerdown", (e) => {
     track.setPointerCapture(e.pointerId);
     track.classList.add("pressed");
-    set(fromX(e.offsetX));
+    grab = e.target === handle ? trackX(e) - (handle.offsetLeft + HANDLE / 2) : 0;
+    set(fromX(trackX(e) - grab));
   });
   track.addEventListener("pointermove", (e) => {
-    if (track.hasPointerCapture(e.pointerId)) set(fromX(e.clientX - track.getBoundingClientRect().left));
+    if (track.hasPointerCapture(e.pointerId)) set(fromX(trackX(e) - grab));
   });
-  track.addEventListener("pointerup", () => track.classList.remove("pressed"));
+  track.addEventListener("lostpointercapture", () => track.classList.remove("pressed"));
   new ResizeObserver(draw).observe(track);
   queueMicrotask(draw);
   return wrap;

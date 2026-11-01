@@ -11,11 +11,16 @@
 - 一个主画板（中央区 Drawing 页）和一块纹理板；纹理板是无限画布，可在中央 Texture 页、子控件框、停车位三处之间搬迁，任一时刻只在一处。现有。机制（三级）：`mechanism/windows_theme.md`。
 - 视口滚轮缩放、中键平移、滚动条联动，两块板都有。现有。机制（三级）：`mechanism/modules.md`。
 - 面板都是带页签的父窗，Windows 菜单开关；浮动的无边框窗口可拉四边改大小。现有。机制（三级）：`mechanism/windows_theme.md`。
-- 深 / 浅主题，下次启动沿用；画纸恒白。现有。
+- Tools 面板把 Painting、Mapping 两组工具放在一起，每组可以单独折叠，折叠状态下次启动沿用；工具换到折叠的组时自动展开，收起的组里有选中的工具时标题亮蓝点。现有。机制（三级）：`mechanism/windows_theme.md`。
+- Tools 面板放不下全部工具时可以滚动：底部出现向下箭头，滚动后顶部出现向上箭头，滚轮也能滚；放得下时不显示箭头。现有。机制（三级）：`mechanism/windows_theme.md`。
+- 鼠标停在工具按钮上显示工具名和一句说明。现有。机制（三级）：`mechanism/windows_theme.md`。
+- 时间轴帧条放不下时出现和其它面板一样的滚动条，手柄可以拖；手动滚开后，只有当前帧变了才跟回去，按住手柄时不跟。收起帧条时高度让给画板，展开时回到收起前的高度；同一停靠区还开着别的面板时不缩。现有。
+- Tools 面板拖宽拖窄时，工具按钮大小不变，按整列增减：一列、两列、三列……N 列；停靠时面板宽度吸附到整列，不留半列空白。现有。机制（三级）：`mechanism/windows_theme.md`。
+- 深 / 浅主题，下次启动沿用；画纸恒白；画布外的填充色跟着画纸深浅走，白纸周围不用接近全黑的颜色。现有。
 - 画板渲染器在 Settings ▸ Board Renderer 里切换 WebGL 或 Canvas 2D，切换时画面不丢，下次启动沿用；缺省 WebGL，显卡不支持时用 Canvas 2D。现有。机制（三级）：`mechanism/backend_protocol.md`。
 - 启动时和 File ▸ Canvas Size… 都能设画布尺寸；取消保留原尺寸。现有。
 - 纹理板分页栏：同时放多页纹理，每页一个独立场景。规划。
-- 「映射纹理」下拉：Mapping 页工具的选项块里选用哪一页纹理；选中 Auto-Mapping 图层时选项块自动显示，在那里改该单元的目标纹理；一个单元只映射一页。规划。
+- 「映射纹理」下拉：Mapping 组工具的选项块里选用哪一页纹理；选中 Auto-Mapping 图层时选项块自动显示，在那里改该单元的目标纹理；一个单元只映射一页。规划。
 
 ## 绘画工具
 
@@ -27,7 +32,7 @@
 - **Transfer**：当前层内容的缩放、拉伸、平移、旋转框，修饰键锁比例锁轴吸附角度；栅格不旋转。现有。机制（三级）：`mechanism/painting_tools.md`。
 - **Connect**：两点之间生成连接笔画，Auto Snap 吸端点拐角顶点，PolyMode / CurveMode / SmoothMode，接受 / 删除按钮或 Auto Accept。现有。机制（三级）：`mechanism/painting_tools.md`。
 - **Repulsion Pad**：手柄把当前帧重叠或贴近的线推开，实时预览，拓扑不变，锁定层不动。现有。机制（三级）：`mechanism/painting_tools.md`。
-- 图层决定工具：Auto-Mapping 单元里的层切到 Mapping 页；跟随线稿的填充层锁 Pen / Eraser / Connect / Transfer，只留 Arrow 和 Fill；独立填充层锁 Connect。现有。机制（三级）：`mechanism/fill_layers.md`。
+- 图层决定工具：Auto-Mapping 单元里的层展开 Mapping 组；跟随线稿的填充层锁 Pen / Eraser / Connect / Transfer，只留 Arrow 和 Fill；独立填充层锁 Connect。现有。机制（三级）：`mechanism/fill_layers.md`。
 - 图层锁定：模型里有锁，现在只有 Transfer 尊重它、面板没有开关。规划：Layers 面板加锁定开关，锁定的层所有工具都不改。
 
 ## 逐帧动画：帧、图层与时间轴

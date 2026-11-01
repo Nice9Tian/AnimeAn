@@ -29,6 +29,7 @@
 |---|---|---|
 | Python 回归（无 GUI） | `py tests\t_<名>.py`，或一次全跑 `py -m unittest discover -s tests`（`test_legacy_suites.py` 把 `t_*.py` 逐个当子测试） | 改到 `pyfile/` |
 | C++ 单测 | 配置时 `BUILD_TESTING` 开着，目标 `projectio_tests`、`animemodel_tests`、`strokefit_tests`，`ctest` 跑（待核：是否在日常验证里） | 改到 `algorithm/`、`projectio` |
+| 基础类型差分测试 | 配置时 `BUILD_TESTING` 开着，`core_*` 目标和真实 Qt 比较；只测这一层时单独配置 `algorithm/core`，见 `algorithm/core/README.md` | 改到 `algorithm/core/` |
 | 部署验证 | `agent_build.ps1` 结束行 `EXIT_CODE=0` | 改到 C++ 后合并前 |
 
 `t_*.py` 把 `pyfile` 加进 `sys.path`，用 `types.ModuleType` 造一个 `animean_python` 桩，直接 `import auto_mapping`：纯几何函数和 `build_mapper` 不需要 GUI。系统 PATH 上的 `python` 是无效的 Store 存根，用 `py` 启动器或 `dist\AnimeAn\python312\python.exe`。

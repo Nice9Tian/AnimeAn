@@ -1,4 +1,5 @@
 #include "openglwidget.h"
+#include "algorithm/core/qtbridge.h"
 #include "theme.h"
 
 #include <QLineF>
@@ -12,6 +13,8 @@
 #include <QDebug>
 
 namespace {
+// The artwork's ground, not chrome: it stays white in both themes.
+const QColor kPaperColor(Qt::white);
 const qreal kOverlayHandleSize = 14.0;
 // The zoom limits the wheel has always enforced, named so the programmatic
 // paths (setViewTransform, fitViewToContent) cannot drift away from what a
@@ -606,7 +609,7 @@ void PaintOpenGLWidget::modelReplaced()
 
 void PaintOpenGLWidget::setCanvasSize(const QSize &size)
 {
-    if (m_model.canvasSize() == size) {
+    if (QSize(m_model.canvasSize()) == size) {
         return;
     }
     m_model.setCanvasSize(size);
@@ -697,7 +700,7 @@ bool PaintOpenGLWidget::fitViewToContent(bool cover)
     // Centre it: solve toScreen(centre) == viewport centre for the pan
     // (algorithm/viewscale.h owns the conversion, here as everywhere else).
     const QPointF pan = QPointF(width() * 0.5, height() * 0.5)
-                        - AnimeViewScale::toScreen(target.center(), zoom, QPointF());
+                        - QPointF(AnimeViewScale::toScreen(target.center(), zoom, QPointF()));
     setViewTransform(zoom, pan);
     return true;
 }
@@ -771,7 +774,7 @@ void PaintOpenGLWidget::wheelEvent(QWheelEvent *event)
     const QPointF docAnchor = mapToDocument(anchor);
     m_zoom = newZoom;
     // Solve toScreen(docAnchor) == anchor for the pan (algorithm/viewscale.h).
-    m_panOffset = anchor - AnimeViewScale::toScreen(docAnchor, m_zoom, QPointF());
+    m_panOffset = anchor - QPointF(AnimeViewScale::toScreen(docAnchor, m_zoom, QPointF()));
     clampPan();
     update();
     notifyViewTransformChanged();
@@ -967,7 +970,16 @@ void PaintOpenGLWidget::focusInEvent(QFocusEvent *event)
         m_swallowNextPress = true;
     }
     PaintBoardBase::focusInEvent(event);
+    m_hasInputFocus = true;
+    update();
     emit focusGained();
+}
+
+void PaintOpenGLWidget::focusOutEvent(QFocusEvent *event)
+{
+    PaintBoardBase::focusOutEvent(event);
+    m_hasInputFocus = false;
+    update();
 }
 
 void PaintOpenGLWidget::setPenColor(const QColor &color)
@@ -1469,7 +1481,7 @@ QPointF PaintOpenGLWidget::applyAxisSnap(Qt::KeyboardModifiers modifiers, const 
 
     if (m_axisSnapState == AxisSnapState::Inactive) {
         // Alt engaged mid-stroke: constrain from the latest drawn point on.
-        resetAxisSnap(modifiers, m_points.isEmpty() ? point : m_points.last());
+        resetAxisSnap(modifiers, m_points.isEmpty() ? point : QPointF(m_points.last()));
     }
 
     if (m_axisSnapState == AxisSnapState::Pending) {
@@ -1543,7 +1555,7 @@ void PaintOpenGLWidget::engageStraightLine()
     // No stabilizer lag left to cover: the line ends exactly at the cursor.
     m_hasRawPenPos = false;
     updateStraightLine(straightLineTip(QGuiApplication::keyboardModifiers(),
-                                       m_hasHoverPos ? m_hoverPos : m_points.last()));
+                                       m_hasHoverPos ? m_hoverPos : QPointF(m_points.last())));
 }
 
 QPointF PaintOpenGLWidget::straightLineTip(Qt::KeyboardModifiers modifiers,
@@ -2141,6 +2153,7 @@ void PaintOpenGLWidget::paintSceneContent(QPainter &painter, int frameIndex, boo
             ? filter->excludeLayerTag
             : nullptr;
     const AnimeScene &scene = m_model.scene();
+    QHash<qint64, QImage> nextRasterCache;
     const auto paintColumn = [&](int columnIndex) {
         const AnimeColumn &column = scene.xsheet.columns[columnIndex];
         if (!column.visible) {
@@ -2158,12 +2171,22 @@ void PaintOpenGLWidget::paintSceneContent(QPainter &painter, int frameIndex, boo
         if (image) {
             if (drawRaster && image->hasRaster()) {
                 const AnimeRasterImage &raster = image->raster();
-                painter.drawImage(raster.topLeft, raster.image);
+                // Reuse the same QImage wrapper across frames so its QImage::cacheKey()
+                // stays stable for RecordingPaintEngine's incremental prefix hash.
+                const qint64 cacheKey = raster.image.cacheKey();
+                QImage rasterImage = m_rasterCache.value(cacheKey);
+                if (rasterImage.isNull() && !raster.image.isNull()) {
+                    rasterImage = QImage(raster.image);
+                }
+                if (!rasterImage.isNull()) {
+                    nextRasterCache.insert(cacheKey, rasterImage);
+                }
+                painter.drawImage(QPointF(raster.topLeft), rasterImage);
             }
             if (drawFills) {
                 painter.setPen(Qt::NoPen);
                 for (const AnimeVectorFillRegion &fill : image->fillRegions()) {
-                    painter.setBrush(fill.color);
+                    painter.setBrush(QColor(fill.color));
                     painter.drawPath(fill.path);
                 }
             }
@@ -2171,7 +2194,7 @@ void PaintOpenGLWidget::paintSceneContent(QPainter &painter, int frameIndex, boo
             for (const VectorStrokeNode &node : image->strokeNodes()) {
                 const VectorStroke &stroke = node.stroke;
                 const bool isGuide = guideProperties && !stroke.property.isEmpty()
-                                     && guideProperties->contains(stroke.property);
+                                     && guideProperties->contains(QString(stroke.property));
                 if (!(isGuide ? drawGuideStrokes : drawStrokes)) {
                     continue;
                 }
@@ -2184,7 +2207,7 @@ void PaintOpenGLWidget::paintSceneContent(QPainter &painter, int frameIndex, boo
                         : Qt::SolidLine;
                 // Floored on-screen width: zoomed out, the raw width fades
                 // into an invisible sub-pixel smear. Display only.
-                QPen pen(stroke.color,
+                QPen pen(QColor(stroke.color),
                          AnimeVectorLogic::displayStrokeWidth(stroke.width, m_zoom),
                          penStyle, Qt::RoundCap, Qt::RoundJoin);
                 painter.setPen(pen);
@@ -2194,7 +2217,7 @@ void PaintOpenGLWidget::paintSceneContent(QPainter &painter, int frameIndex, boo
 
         if (includeCurrentStroke && drawStrokes && columnIndex == m_model.currentLayer()
             && m_hasCurrentStroke) {
-            painter.setPen(QPen(m_currentStroke.color,
+            painter.setPen(QPen(QColor(m_currentStroke.color),
                                 AnimeVectorLogic::displayStrokeWidth(m_currentStroke.width, m_zoom),
                                 Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
             painter.drawPath(m_currentStroke.path);
@@ -2214,6 +2237,13 @@ void PaintOpenGLWidget::paintSceneContent(QPainter &painter, int frameIndex, boo
             continue;
         }
         paintColumn(columnIndex);
+    }
+    if (!filter) {
+        m_rasterCache.swap(nextRasterCache);
+    } else {
+        for (auto it = nextRasterCache.cbegin(); it != nextRasterCache.cend(); ++it) {
+            m_rasterCache.insert(it.key(), it.value());
+        }
     }
     painter.setOpacity(1.0);
 }
@@ -2786,7 +2816,7 @@ void PaintOpenGLWidget::paintGL()
         if (m_unboundedCanvas) {
             paintBackground(painter, QRectF(rect()));
         } else {
-            painter.fillRect(rect(), AnimeTheme::color(AnimeTheme::Role::ViewportSurround));
+            painter.fillRect(rect(), AnimeTheme::surroundFor(kPaperColor));
         }
         // Map the cached pixels from the view they were rendered for onto the
         // view we are looking at now. A cache pixel p is document
@@ -2805,11 +2835,7 @@ void PaintOpenGLWidget::paintGL()
         } else {
             painter.drawImage(QPointF(0.0, 0.0), m_playbackFrames[m_playbackIndex]);
         }
-        if (m_activeIndicator) {
-            painter.setBrush(Qt::NoBrush);
-            painter.setPen(QPen(AnimeTheme::color(AnimeTheme::Role::Accent), 3.0));
-            painter.drawRect(QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5));
-        }
+        paintActiveIndicator(painter);
         return;
     }
 
@@ -2817,7 +2843,7 @@ void PaintOpenGLWidget::paintGL()
         // Infinite reference board: the whole viewport is paper.
         paintBackground(painter, rect());
     } else {
-        painter.fillRect(rect(), AnimeTheme::color(AnimeTheme::Role::ViewportSurround));
+        painter.fillRect(rect(), AnimeTheme::surroundFor(kPaperColor));
     }
 
     painter.save();
@@ -2827,7 +2853,7 @@ void PaintOpenGLWidget::paintGL()
         const QRectF page = documentRect();
         // The paper is white in both themes: it is the artwork's ground, not
         // chrome, and its colour is what the drawing is composed against.
-        painter.fillRect(page, Qt::white);
+        painter.fillRect(page, kPaperColor);
         // The page can now be smaller than the viewport, so say where it ends.
         painter.setBrush(Qt::NoBrush);
         painter.setPen(QPen(AnimeTheme::color(AnimeTheme::Role::Divider), 1.0 / m_zoom));
@@ -2898,12 +2924,19 @@ void PaintOpenGLWidget::paintGL()
     // Edit handles live in screen space, above everything on the paper.
     paintEditHandles(painter);
 
-    // The active-view indicator hugs the viewport, not the document.
-    if (m_activeIndicator) {
-        painter.setBrush(Qt::NoBrush);
-        painter.setPen(QPen(AnimeTheme::color(AnimeTheme::Role::Accent), 3.0));
-        painter.drawRect(QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5));
+    paintActiveIndicator(painter);
+}
+
+// The active-view indicator hugs the viewport, not the document. It stays on
+// the active board when focus leaves, but only lights up while keys reach it.
+void PaintOpenGLWidget::paintActiveIndicator(QPainter &painter) const
+{
+    if (!m_activeIndicator) {
+        return;
     }
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(QPen(AnimeTheme::color(m_hasInputFocus ? AnimeTheme::Role::Accent : AnimeTheme::Role::BoardFrameIdle), 3.0));
+    painter.drawRect(QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5));
 }
 
 void PaintOpenGLWidget::paintOverlayItems(QPainter &painter)
@@ -3638,7 +3671,7 @@ void PaintOpenGLWidget::updateCurrentStroke()
     // move handler. Rebuilding it through the fitter would hand the frozen-
     // prefix machinery a buffer that straight mode rewrites wholesale.
     if (m_straightLineMode) {
-        updateStraightLine(m_points.isEmpty() ? m_straightLineStart : m_points.last());
+        updateStraightLine(m_points.isEmpty() ? m_straightLineStart : QPointF(m_points.last()));
         return;
     }
 
@@ -3653,7 +3686,7 @@ void PaintOpenGLWidget::updateCurrentStroke()
         m_liveFitThrottle.start();
         AnimeStrokeFitSettings liveSettings = m_fitSettings;
         liveSettings.pixelScale = m_liveFitPixelScale;
-        const QPainterPath live =
+        const AnimeCore::Path live =
             AnimeVectorLogic::liveFitStrokePath(m_liveFit, m_points, liveSettings);
         m_currentStroke = AnimeVectorLogic::makeStrokeFromPath(
             live, m_points, m_currentStroke.color, m_currentStroke.width, 0);
@@ -3684,7 +3717,7 @@ void PaintOpenGLWidget::finishCurrentStroke()
     if (!m_straightLineMode && !m_points.isEmpty()) {
         AnimeStrokeFitSettings liveSettings = m_fitSettings;
         liveSettings.pixelScale = m_liveFitPixelScale;
-        const QPainterPath live =
+        const AnimeCore::Path live =
             AnimeVectorLogic::liveFitStrokePath(m_liveFit, m_points, liveSettings, true);
         m_currentStroke = AnimeVectorLogic::makeStrokeFromPath(
             live, m_points, m_currentStroke.color, m_currentStroke.width, 0);
@@ -3901,7 +3934,7 @@ bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
     // Walls: every OTHER stroke of this layer. The target is excluded, so a
     // stroke that crosses itself is not chopped at its own crossing - the
     // user asked for crossings with the other lines.
-    QVector<VectorStroke> walls;
+    AnimeCore::Vector<VectorStroke> walls;
     QVector<int> wallStrokeIndex;
     for (int i = 0; i < image->strokeCount(); ++i) {
         if (i == targetIndex) {
@@ -3997,7 +4030,7 @@ bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
         return true;   // the remaining boundaries are self-crossing partners
     };
 
-    QVector<VectorStroke> pieces;
+    AnimeCore::Vector<VectorStroke> pieces;
     qreal previous = 0.0;
     for (int i = 0; i <= boundaries.size(); ++i) {
         const qreal next = i < boundaries.size() ? boundaries[i] : 1.0;
@@ -4030,8 +4063,8 @@ bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
     int currentTarget = targetIndex;
     for (int strokeIndex : editOrder) {
         const VectorStroke wall = image->strokeAt(strokeIndex);
-        QVector<qreal> usedWallArcs;
-        QVector<VectorStroke> wallPieces = AnimeVectorLogic::splitStrokeAt(
+        AnimeCore::Vector<double> usedWallArcs;
+        AnimeCore::Vector<VectorStroke> wallPieces = AnimeVectorLogic::splitStrokeAt(
             wall, wallCuts[strokeIndex], m_fitSettings, 1e-3, &usedWallArcs);
         if (wallPieces.size() < 2) {
             continue;   // the crossing was already at one of the wall's ends
@@ -4167,7 +4200,7 @@ bool PaintOpenGLWidget::fillAt(const QPointF &pos)
         const AnimeVectorFillRegion &existing = image->fillRegions()[i];
         const bool sameReferMode = existing.basedOnAllLayers == allLayers;
         const bool sameSourceLayer = allLayers || existing.sourceLayerIndex == sourceLayerIndex;
-        const bool sameProperty = existing.property == m_strokeProperty;
+        const bool sameProperty = QString(existing.property) == m_strokeProperty;
         if (!sameReferMode || !sameSourceLayer || !sameProperty || !existing.path.contains(pos)) {
             continue;
         }
@@ -4269,14 +4302,14 @@ bool PaintOpenGLWidget::eraseStrokeAt(int strokeIndex, const QPointF &pos)
         return false;
     }
 
-    const QVector<AnimeVectorRange> keepRanges = AnimeVectorLogic::keepRangesForCircle(stroke, pos, m_eraserRadius);
+    const AnimeCore::Vector<AnimeVectorRange> keepRanges = AnimeVectorLogic::keepRangesForCircle(stroke, pos, m_eraserRadius);
     const qreal epsilon = AnimeVectorLogic::epsilon();
     if (keepRanges.size() == 1 && keepRanges.first().first <= epsilon &&
         keepRanges.first().second >= 1.0 - epsilon) {
         return false;
     }
 
-    QVector<VectorStroke> pieces;
+    AnimeCore::Vector<VectorStroke> pieces;
     for (const AnimeVectorRange &range : keepRanges) {
         pieces.append(AnimeVectorLogic::subStroke(stroke, range.first, range.second, m_fitSettings));
     }
@@ -4302,14 +4335,14 @@ bool PaintOpenGLWidget::eraseStrokeBetween(int strokeIndex, const QPointF &from,
         return false;
     }
 
-    const QVector<AnimeVectorRange> keepRanges = AnimeVectorLogic::keepRangesForCapsule(stroke, from, to, m_eraserRadius);
+    const AnimeCore::Vector<AnimeVectorRange> keepRanges = AnimeVectorLogic::keepRangesForCapsule(stroke, from, to, m_eraserRadius);
     const qreal epsilon = AnimeVectorLogic::epsilon();
     if (keepRanges.size() == 1 && keepRanges.first().first <= epsilon &&
         keepRanges.first().second >= 1.0 - epsilon) {
         return false;
     }
 
-    QVector<VectorStroke> pieces;
+    AnimeCore::Vector<VectorStroke> pieces;
     for (const AnimeVectorRange &range : keepRanges) {
         pieces.append(AnimeVectorLogic::subStroke(stroke, range.first, range.second, m_fitSettings));
     }

@@ -4,7 +4,7 @@ Tools ▸ Painting 的 **Eraser**，工具提示 "Erase, delete line, cut line"�
 
 ## 在哪
 
-- Painting 页图标 **Eraser**。
+- Painting 组图标 **Eraser**。
 - Options 面板：**Eraser Mode**（AreaMode / LineMode / CutMode）。
 
 ## 怎么用

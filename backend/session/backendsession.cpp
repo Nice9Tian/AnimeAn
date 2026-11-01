@@ -1,9 +1,10 @@
 #include "session/backendsession.h"
 
+#include "algorithm/core/qtbridge.h"
 #include "algorithm/beziersplit.h"
 #include "board/boardsurface.h"
 #include "business/animeanbusiness.h"
-#include "clipreader.cpp"
+#include "clipreader.h"
 #include "net/wsserver.h"
 #include "openglwidget.h"
 #include "theme.h"
@@ -331,7 +332,7 @@ void appendQuadraticMetricPoints(QVector<QPointF> *points,
         points->append(p0);
     }
 
-    QPointF cubic[4];
+    AnimeCore::PointF cubic[4];
     AnimeBezierSplit::quadToCubic(p0, p1, p2, cubic);
     sampleCount = std::max(2, sampleCount);
     for (int i = 1; i <= sampleCount; ++i) {
@@ -1473,6 +1474,8 @@ void BackendSession::handleInputMessage(const QJsonObject &msg)
         const bool focused = msg.value(QStringLiteral("focused")).toBool(true);
         if (focused) {
             board->injectFocus();
+        } else {
+            board->injectBlur();
         }
     }
 }
@@ -2389,7 +2392,7 @@ QJsonObject BackendSession::handleFileImportCall(const QJsonObject &params)
             if (!document.valid) {
                 return makeError(document.error.isEmpty()
                                      ? QStringLiteral("Unable to read this .clip file.")
-                                     : document.error);
+                                     : QString(document.error));
             }
             QVector<PaintOpenGLWidget::ImportedVectorFrame> frames;
             PaintOpenGLWidget::ImportedVectorFrame frame;

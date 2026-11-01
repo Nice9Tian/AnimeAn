@@ -1,14 +1,19 @@
 #include "beziersplit.h"
 
-#include <QLineF>
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 
+#include "algorithm/core/containers.h"
+#include "algorithm/core/geometry.h"
+#include "algorithm/core/path.h"
+
+using namespace AnimeCore;
+
 namespace {
 
-QPointF lerpPoint(const QPointF &a, const QPointF &b, qreal t)
+PointF lerpPoint(const PointF &a, const PointF &b, double t)
 {
     return a + (b - a) * t;
 }
@@ -16,7 +21,7 @@ QPointF lerpPoint(const QPointF &a, const QPointF &b, qreal t)
 // An interval between two consecutive samples is refinable when it spans a
 // real stretch of one curve; the duplicated joint samples produce degenerate
 // (cross-curve, zero-length) intervals that must be stepped over.
-bool refinableInterval(const QVector<AnimeBezierPathSample> &samples, int i0, int i1)
+bool refinableInterval(const Vector<AnimeBezierPathSample> &samples, int i0, int i1)
 {
     return i0 >= 0 && i1 < samples.size()
            && samples[i0].curve == samples[i1].curve
@@ -28,27 +33,27 @@ struct LocateCost {
     // between branches of a self-overlapping stroke. Pure-arc mode (no
     // anchor): the arc IS the target.
     bool anchored = false;
-    QPointF nearTo;
-    qreal w = 0.0;
-    qreal total = 0.0;
-    qreal branchPull = 0.05;
+    PointF nearTo;
+    double w = 0.0;
+    double total = 0.0;
+    double branchPull = 0.05;
 
-    qreal operator()(const QPointF &point, qreal length) const
+    double operator()(const PointF &point, double length) const
     {
-        const qreal arcMiss = std::abs(length - w * total);
+        const double arcMiss = std::abs(length - w * total);
         if (!anchored) {
             return arcMiss;
         }
-        return QLineF(point, nearTo).length() + branchPull * arcMiss;
+        return LineF(point, nearTo).length() + branchPull * arcMiss;
     }
 };
 
 AnimeBezierPathPosition locateWithCost(const AnimeBezierPathRun &run,
-                                       qreal w,
+                                       double w,
                                        const LocateCost &cost,
                                        const AnimeBezierSplitOptions &options)
 {
-    const QVector<AnimeBezierPathSample> &samples = run.samples;
+    const Vector<AnimeBezierPathSample> &samples = run.samples;
     AnimeBezierPathPosition position;
     if (w <= 1e-9) {
         position.point = samples.first().point;
@@ -62,9 +67,9 @@ AnimeBezierPathPosition locateWithCost(const AnimeBezierPathRun &run,
     }
 
     int best = 0;
-    qreal bestCost = std::numeric_limits<qreal>::max();
+    double bestCost = std::numeric_limits<double>::max();
     for (int j = 0; j < samples.size(); ++j) {
-        const qreal candidate = cost(samples[j].point, samples[j].length);
+        const double candidate = cost(samples[j].point, samples[j].length);
         if (candidate < bestCost) {
             bestCost = candidate;
             best = j;
@@ -87,10 +92,10 @@ AnimeBezierPathPosition locateWithCost(const AnimeBezierPathRun &run,
             continue;
         }
         const AnimeBezierCurve &curve = run.curves[samples[i0].curve];
-        qreal tA = samples[i0].t;
-        qreal tB = samples[i1].t;
-        qreal lengthA = samples[i0].length;
-        qreal lengthB = samples[i1].length;
+        double tA = samples[i0].t;
+        double tB = samples[i1].t;
+        double lengthA = samples[i0].length;
+        double lengthB = samples[i1].length;
 
         // Iterative subdivision: each round narrows to the slice around the
         // round's winner, so precision reaches roughly
@@ -98,13 +103,13 @@ AnimeBezierPathPosition locateWithCost(const AnimeBezierPathRun &run,
         const int steps = std::max(2, options.refineSteps);
         for (int round = 0; round < std::max(1, options.refineRounds); ++round) {
             int bestStep = 0;
-            qreal bestStepCost = std::numeric_limits<qreal>::max();
+            double bestStepCost = std::numeric_limits<double>::max();
             for (int k = 0; k <= steps; ++k) {
-                const qreal blend = qreal(k) / steps;
-                const qreal t = tA + (tB - tA) * blend;
-                const QPointF point = AnimeBezierSplit::curvePoint(curve, t);
-                const qreal length = lengthA + (lengthB - lengthA) * blend;
-                const qreal candidate = cost(point, length);
+                const double blend = double(k) / steps;
+                const double t = tA + (tB - tA) * blend;
+                const PointF point = AnimeBezierSplit::curvePoint(curve, t);
+                const double length = lengthA + (lengthB - lengthA) * blend;
+                const double candidate = cost(point, length);
                 if (candidate < bestStepCost) {
                     bestStepCost = candidate;
                     bestStep = k;
@@ -116,12 +121,12 @@ AnimeBezierPathPosition locateWithCost(const AnimeBezierPathRun &run,
                     position.point = point;
                 }
             }
-            const qreal loBlend = qreal(std::max(0, bestStep - 1)) / steps;
-            const qreal hiBlend = qreal(std::min(steps, bestStep + 1)) / steps;
-            const qreal nextTA = tA + (tB - tA) * loBlend;
-            const qreal nextTB = tA + (tB - tA) * hiBlend;
-            const qreal nextLengthA = lengthA + (lengthB - lengthA) * loBlend;
-            const qreal nextLengthB = lengthA + (lengthB - lengthA) * hiBlend;
+            const double loBlend = double(std::max(0, bestStep - 1)) / steps;
+            const double hiBlend = double(std::min(steps, bestStep + 1)) / steps;
+            const double nextTA = tA + (tB - tA) * loBlend;
+            const double nextTB = tA + (tB - tA) * hiBlend;
+            const double nextLengthA = lengthA + (lengthB - lengthA) * loBlend;
+            const double nextLengthB = lengthA + (lengthB - lengthA) * hiBlend;
             tA = nextTA;
             tB = nextTB;
             lengthA = nextLengthA;
@@ -141,7 +146,7 @@ bool positionBefore(const AnimeBezierPathPosition &a, const AnimeBezierPathPosit
 
 // Appends the [t0, t1] part of one curve to a path whose current point is
 // already the part's start.
-void appendSegment(QPainterPath &path, const AnimeBezierCurve &curve, qreal t0, qreal t1)
+void appendSegment(Path &path, const AnimeBezierCurve &curve, double t0, double t1)
 {
     if (t1 - t0 <= 1e-9) {
         return;
@@ -150,21 +155,21 @@ void appendSegment(QPainterPath &path, const AnimeBezierCurve &curve, qreal t0, 
         path.lineTo(lerpPoint(curve.p[0], curve.p[3], t1));
         return;
     }
-    QPointF part[4];
+    PointF part[4];
     AnimeBezierSplit::cubicSegment(curve.p, t0, t1, part);
     path.cubicTo(part[1], part[2], part[3]);
 }
 
 } // namespace
 
-QPointF AnimeBezierSplit::splitCubic(const QPointF p[4], qreal t, QPointF *left, QPointF *right)
+PointF AnimeBezierSplit::splitCubic(const PointF p[4], double t, PointF *left, PointF *right)
 {
-    const QPointF p01 = lerpPoint(p[0], p[1], t);
-    const QPointF p12 = lerpPoint(p[1], p[2], t);
-    const QPointF p23 = lerpPoint(p[2], p[3], t);
-    const QPointF p012 = lerpPoint(p01, p12, t);
-    const QPointF p123 = lerpPoint(p12, p23, t);
-    const QPointF mid = lerpPoint(p012, p123, t);
+    const PointF p01 = lerpPoint(p[0], p[1], t);
+    const PointF p12 = lerpPoint(p[1], p[2], t);
+    const PointF p23 = lerpPoint(p[2], p[3], t);
+    const PointF p012 = lerpPoint(p01, p12, t);
+    const PointF p123 = lerpPoint(p12, p23, t);
+    const PointF mid = lerpPoint(p012, p123, t);
     if (left) {
         left[0] = p[0];
         left[1] = p01;
@@ -180,13 +185,13 @@ QPointF AnimeBezierSplit::splitCubic(const QPointF p[4], qreal t, QPointF *left,
     return mid;
 }
 
-void AnimeBezierSplit::cubicSegment(const QPointF p[4], qreal t0, qreal t1, QPointF out[4])
+void AnimeBezierSplit::cubicSegment(const PointF p[4], double t0, double t1, PointF out[4])
 {
     if (t1 <= t0) {
         out[0] = out[1] = out[2] = out[3] = splitCubic(p, t0, nullptr, nullptr);
         return;
     }
-    QPointF right[4];
+    PointF right[4];
     if (t0 > 0.0) {
         splitCubic(p, t0, nullptr, right);
     } else {
@@ -205,20 +210,20 @@ void AnimeBezierSplit::cubicSegment(const QPointF p[4], qreal t0, qreal t1, QPoi
     }
 }
 
-QPointF AnimeBezierSplit::evaluateCubic(const QPointF p[4], qreal t)
+PointF AnimeBezierSplit::evaluateCubic(const PointF p[4], double t)
 {
     return splitCubic(p, t, nullptr, nullptr);
 }
 
-QPointF AnimeBezierSplit::cubicDerivative(const QPointF p[4], qreal t)
+PointF AnimeBezierSplit::cubicDerivative(const PointF p[4], double t)
 {
-    const qreal v = 1.0 - t;
+    const double v = 1.0 - t;
     return (p[1] - p[0]) * (3.0 * v * v)
            + (p[2] - p[1]) * (6.0 * v * t)
            + (p[3] - p[2]) * (3.0 * t * t);
 }
 
-void AnimeBezierSplit::lineToCubic(const QPointF &a, const QPointF &b, QPointF out[4])
+void AnimeBezierSplit::lineToCubic(const PointF &a, const PointF &b, PointF out[4])
 {
     out[0] = a;
     out[1] = a + (b - a) / 3.0;
@@ -226,8 +231,8 @@ void AnimeBezierSplit::lineToCubic(const QPointF &a, const QPointF &b, QPointF o
     out[3] = b;
 }
 
-void AnimeBezierSplit::quadToCubic(const QPointF &a, const QPointF &control, const QPointF &b,
-                                   QPointF out[4])
+void AnimeBezierSplit::quadToCubic(const PointF &a, const PointF &control, const PointF &b,
+                                   PointF out[4])
 {
     out[0] = a;
     out[1] = a + (control - a) * (2.0 / 3.0);
@@ -235,13 +240,13 @@ void AnimeBezierSplit::quadToCubic(const QPointF &a, const QPointF &control, con
     out[3] = b;
 }
 
-qreal AnimeBezierSplit::cubicHullLength(const QPointF p[4])
+double AnimeBezierSplit::cubicHullLength(const PointF p[4])
 {
-    return QLineF(p[0], p[1]).length() + QLineF(p[1], p[2]).length()
-           + QLineF(p[2], p[3]).length();
+    return LineF(p[0], p[1]).length() + LineF(p[1], p[2]).length()
+           + LineF(p[2], p[3]).length();
 }
 
-QPointF AnimeBezierSplit::curvePoint(const AnimeBezierCurve &curve, qreal t)
+PointF AnimeBezierSplit::curvePoint(const AnimeBezierCurve &curve, double t)
 {
     if (curve.isLine) {
         return lerpPoint(curve.p[0], curve.p[3], t);
@@ -249,10 +254,10 @@ QPointF AnimeBezierSplit::curvePoint(const AnimeBezierCurve &curve, qreal t)
     return splitCubic(curve.p, t, nullptr, nullptr);
 }
 
-bool AnimeBezierSplit::parsePath(const QPainterPath &path, QVector<AnimeBezierCurve> *out)
+bool AnimeBezierSplit::parsePath(const Path &path, Vector<AnimeBezierCurve> *out)
 {
     out->clear();
-    QVector<QVector<AnimeBezierCurve>> subpaths;
+    Vector<Vector<AnimeBezierCurve>> subpaths;
     if (!parseSubpaths(path, &subpaths) || subpaths.size() != 1) {
         return false;
     }
@@ -268,16 +273,16 @@ bool AnimeBezierSplit::parsePath(const QPainterPath &path, QVector<AnimeBezierCu
     return !out->isEmpty();
 }
 
-bool AnimeBezierSplit::parseSubpaths(const QPainterPath &path,
-                                     QVector<QVector<AnimeBezierCurve>> *out)
+bool AnimeBezierSplit::parseSubpaths(const Path &path,
+                                     Vector<Vector<AnimeBezierCurve>> *out)
 {
     out->clear();
     const int count = path.elementCount();
-    if (count < 1 || path.elementAt(0).type != QPainterPath::MoveToElement) {
+    if (count < 1 || path.elementAt(0).type != Path::MoveToElement) {
         return false;
     }
-    QVector<AnimeBezierCurve> run;
-    QPointF current;
+    Vector<AnimeBezierCurve> run;
+    PointF current;
     const auto flush = [out, &run]() {
         if (!run.isEmpty()) {
             out->append(run);
@@ -286,33 +291,33 @@ bool AnimeBezierSplit::parseSubpaths(const QPainterPath &path,
     };
     int i = 0;
     while (i < count) {
-        const QPainterPath::Element element = path.elementAt(i);
-        if (element.type == QPainterPath::MoveToElement) {
+        const Path::Element element = path.elementAt(i);
+        if (element.type == Path::MoveToElement) {
             flush();
-            current = QPointF(element.x, element.y);
+            current = PointF(element.x, element.y);
             ++i;
             continue;
         }
-        if (element.type == QPainterPath::LineToElement) {
+        if (element.type == Path::LineToElement) {
             AnimeBezierCurve curve;
             curve.isLine = true;
             curve.p[0] = current;
-            curve.p[3] = QPointF(element.x, element.y);
+            curve.p[3] = PointF(element.x, element.y);
             current = curve.p[3];
             run.append(curve);
             ++i;
             continue;
         }
-        if (element.type != QPainterPath::CurveToElement || i + 2 >= count
-            || path.elementAt(i + 1).type != QPainterPath::CurveToDataElement
-            || path.elementAt(i + 2).type != QPainterPath::CurveToDataElement) {
+        if (element.type != Path::CurveToElement || i + 2 >= count
+            || path.elementAt(i + 1).type != Path::CurveToDataElement
+            || path.elementAt(i + 2).type != Path::CurveToDataElement) {
             break;   // malformed trailing data ends the walk
         }
         AnimeBezierCurve curve;
         curve.p[0] = current;
-        curve.p[1] = QPointF(element.x, element.y);
-        curve.p[2] = QPointF(path.elementAt(i + 1).x, path.elementAt(i + 1).y);
-        curve.p[3] = QPointF(path.elementAt(i + 2).x, path.elementAt(i + 2).y);
+        curve.p[1] = PointF(element.x, element.y);
+        curve.p[2] = PointF(path.elementAt(i + 1).x, path.elementAt(i + 1).y);
+        curve.p[3] = PointF(path.elementAt(i + 2).x, path.elementAt(i + 2).y);
         current = curve.p[3];
         run.append(curve);
         i += 3;
@@ -321,36 +326,36 @@ bool AnimeBezierSplit::parseSubpaths(const QPainterPath &path,
     return !out->isEmpty();
 }
 
-AnimeBezierPathRun AnimeBezierSplit::buildRun(const QPainterPath &path,
+AnimeBezierPathRun AnimeBezierSplit::buildRun(const Path &path,
                                               const AnimeBezierSplitOptions &options)
 {
     AnimeBezierPathRun run;
     if (!parsePath(path, &run.curves)) {
         return run;
     }
-    const qreal spacing = std::max<qreal>(0.25, options.targetSpacing);
+    const double spacing = std::max<double>(0.25, options.targetSpacing);
     const int cap = std::max(2, options.maxSamplesPerCurve);
     for (int c = 0; c < run.curves.size(); ++c) {
         const AnimeBezierCurve &curve = run.curves[c];
-        const qreal hullLength = curve.isLine ? QLineF(curve.p[0], curve.p[3]).length()
+        const double hullLength = curve.isLine ? LineF(curve.p[0], curve.p[3]).length()
                                               : cubicHullLength(curve.p);
         const int steps = std::max(2, std::min(cap, int(hullLength / spacing) + 2));
         for (int k = 0; k <= steps; ++k) {
             AnimeBezierPathSample sample;
             sample.curve = c;
-            sample.t = qreal(k) / steps;
+            sample.t = double(k) / steps;
             sample.point = curvePoint(curve, sample.t);
             sample.length = run.samples.isEmpty()
                                 ? 0.0
                                 : run.samples.last().length
-                                      + QLineF(run.samples.last().point, sample.point).length();
+                                      + LineF(run.samples.last().point, sample.point).length();
             run.samples.append(sample);
         }
     }
     return run;
 }
 
-AnimeBezierPathPosition AnimeBezierSplit::locate(const AnimeBezierPathRun &run, qreal w,
+AnimeBezierPathPosition AnimeBezierSplit::locate(const AnimeBezierPathRun &run, double w,
                                                  const AnimeBezierSplitOptions &options)
 {
     LocateCost cost;
@@ -360,8 +365,8 @@ AnimeBezierPathPosition AnimeBezierSplit::locate(const AnimeBezierPathRun &run, 
     return locateWithCost(run, w, cost, options);
 }
 
-AnimeBezierPathPosition AnimeBezierSplit::locate(const AnimeBezierPathRun &run, qreal w,
-                                                 const QPointF &nearTo,
+AnimeBezierPathPosition AnimeBezierSplit::locate(const AnimeBezierPathRun &run, double w,
+                                                 const PointF &nearTo,
                                                  const AnimeBezierSplitOptions &options)
 {
     LocateCost cost;
@@ -376,8 +381,8 @@ AnimeBezierPathPosition AnimeBezierSplit::locate(const AnimeBezierPathRun &run, 
 bool AnimeBezierSplit::slice(const AnimeBezierPathRun &run,
                             const AnimeBezierPathPosition &from,
                             const AnimeBezierPathPosition &to,
-                            QPainterPath *path,
-                            QVector<QPointF> *polyline)
+                            Path *path,
+                            Vector<PointF> *polyline)
 {
     if (!positionBefore(from, to) || !path) {
         return false;
@@ -408,11 +413,11 @@ bool AnimeBezierSplit::slice(const AnimeBezierPathRun &run,
         if (!positionBefore(from, at) || !positionBefore(at, to)) {
             continue;
         }
-        if (QLineF(polyline->last(), sample.point).length() > 1e-9) {
+        if (LineF(polyline->last(), sample.point).length() > 1e-9) {
             polyline->append(sample.point);
         }
     }
-    if (QLineF(polyline->last(), to.point).length() > 1e-9) {
+    if (LineF(polyline->last(), to.point).length() > 1e-9) {
         polyline->append(to.point);
     }
     return polyline->size() >= 2;

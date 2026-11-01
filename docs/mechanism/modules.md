@@ -8,7 +8,7 @@
 |---|---|---|---|
 | **应用壳** | `main.cpp`、`mainwindow.*`、`parentwindow.*`、`centralpaintarea.*`、`paintviewcontainer.*`、`subcontrolframe.*`、`windowedgeresize.*`、`theme.*`、`selectionattention.*` | 启动、嵌入 Python 解释器、菜单栏、窗口层级（带页签的父窗）、面板归属（纹理板单一所有权路由）、主题、帧 / 层 / 资产的选择约束、导入导出、历史的全局排序 | 工具语义、几何算法 |
 | **画板** | `openglwidget.*` | 渲染场景与覆盖层、视图变换（缩放 / 平移）、交互事件路由（Tool 枚举）、控制手柄 / 覆盖层 / 视图按钮机制、hook 事件派发、历史提交、播放缓存、轴向吸附与拟合调用 | 任何工具"意味着什么" |
-| **核心模型库** `animean_core` | `algorithm/animemodel.*`、`algorithm/vectorlogic.*`、`algorithm/beziersplit.*`、`algorithm/scenehistory.*`、`algorithm/viewscale.h`、`projectio.*` | 场景 / xsheet 数据模型（列、帧、资产、单元格、图层组与 tag、父层、锁定）、矢量几何与笔画拟合、精确贝塞尔劈分、快照式历史、`.anproj` / `.textureview` 的 JSON 读写 | 界面、Python |
+| **核心模型库** `animean_core` | `algorithm/animemodel.*`、`algorithm/vectorlogic.*`、`algorithm/beziersplit.*`、`algorithm/scenehistory.*`、`algorithm/viewscale.h`、`projectio.*`、`clipreader.*`，建在不依赖 Qt 的 `algorithm/core/` 上，本身也不链接 Qt | 场景 / xsheet 数据模型（列、帧、资产、单元格、图层组与 tag、父层、锁定）、矢量几何与笔画拟合、精确贝塞尔劈分、快照式历史、`.anproj` / `.textureview` 的 JSON 读写 | 界面、Python |
 | **面板** | `childrenpanel/*` | 工具栏、声明式选项面板、图层树、资产表、历史表、时间轴、纹理面板、调色板控件、斥力板、新建对话框 | 工具语义 |
 | **Python 绑定** | `pythonbind/python_bindings.*`（`animean_python` 模块）、`pythonbind/animemodel.py`（高层封装） | 把模型、几何、`ui` 门面暴露给 Python；把 Python 值转成 Qt 类型 | 任何策略 |
 | **工具脚本** | `pyfile/*.py` | 模块装载顺序、hook / 菜单 / 设置 / 视图按钮注册表、工具选项布局、每个工具的行为、Auto Mapping 引擎、第三方库加载 | 渲染、交互事件采集、模型存储 |
@@ -32,7 +32,7 @@ AnimeAn.exe
  5. 构造 MainWindow：中央区（Drawing | Texture）、各父窗与面板、菜单、时间轴、两块板各自的历史基线、Python Debug 窗
  6. 运行 initalize.main()：按 BOOTSTRAP_MODULES → PYTHON_FILE_MODULES 的顺序导入，再发现目录里其余脚本；
     模块在导入时登记 hook、菜单、设置窗、视图按钮、受保护属性、洋葱皮引导属性
- 7. extra_tools.tools_json() 生成 Mapping 页按钮；脚本菜单挂上两条菜单栏；状态栏显示 hello_world
+ 7. extra_tools.tools_json() 生成 Mapping 组按钮；脚本菜单挂上两条菜单栏；状态栏显示 hello_world
  8. 新建对话框询问画布尺寸；主窗口显示
 ```
 
@@ -76,7 +76,7 @@ AnimeAn.exe
 |---|---|
 | `pyfile/initalize.py` | 装载顺序与目录发现；`bind_test()` |
 | `pyfile/python_hooks.py` | 注册表：hook（含订阅掩码推送）、菜单（按宿主 main / child）、菜单提供者、设置窗、视图按钮、受保护属性、洋葱皮引导属性与层 tag；`dispatch` |
-| `pyfile/toolcontrol.py` | 内建与脚本工具的选项布局：Mapping 页所有工具共用的运行策略块、Stabilizer 滑条只是稳定器 |
+| `pyfile/toolcontrol.py` | 内建与脚本工具的选项布局：Mapping 组所有工具共用的运行策略块、Stabilizer 滑条只是稳定器 |
 | `pyfile/draw_settings.py` | Draw 菜单与 Draw Setting 窗：稳定器 / 简化 / 尖角三参数推给 C++ |
 | `pyfile/tool_colors.py` | 每个工具自己的颜色缓存与策略 |
 | `pyfile/palette_box.py` | 调色板的色块集合（存 scriptData） |
@@ -95,7 +95,7 @@ AnimeAn.exe
 | `pyfile/script_store.py` | scriptData 的命名空间读写 |
 | `pyfile/viewscale.py`、`pyfile/bezier.py` | 两只共享轮子的 Python 镜像 |
 | `pyfile/pydeps.py` | 第三方库自愈安装 |
-| `pyfile/extra_tools.py` | Mapping 页按钮清单与处理器解析 |
+| `pyfile/extra_tools.py` | Mapping 组按钮清单与处理器解析 |
 | `pyfile/auto_mapping.py` | Auto Mapping 引擎全体：轴线 / Mapping Area / 附加线 / 视平线资产、映射器、曲线重建、裁断、折痕、单元与实时重跑、参考网格、遮挡染色、洋葱皮引导、To 3D、Auto Mapping 菜单与两块板的 View 菜单、设置窗、图层右键菜单 |
 | `pyfile/hook_test.py`、`hello_world.py`、`linefinish.py`、`bind_test.py` | 示例、调试与兼容垫片 |
 | `pyfile/three_vendor.py` | 离线 three.js（以 `.py` 形式随脚本通道部署） |

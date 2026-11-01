@@ -113,6 +113,12 @@ void BoardSurface::injectFocus()
     focusInEvent(&ev);
 }
 
+void BoardSurface::injectBlur()
+{
+    QFocusEvent ev(QEvent::FocusOut, Qt::OtherFocusReason);
+    focusOutEvent(&ev);
+}
+
 void BoardSurface::resizeSurface(int w, int h, qreal dpr)
 {
     const QSize oldSize(m_width, m_height);
@@ -252,10 +258,12 @@ int BoardSurface::metric(PaintDeviceMetric m) const
     case PdmDpiY:
     case PdmPhysicalDpiY:
         return 96;
+    // The op list is in logical pixels and the page applies its own ratio. Telling
+    // QPainter the real one would scale the transforms too, so it counts twice.
     case PdmDevicePixelRatio:
-        return std::max(1, int(std::lround(m_dpr)));
+        return 1;
     case PdmDevicePixelRatioScaled:
-        return int(std::lround(m_dpr * devicePixelRatioFScale()));
+        return int(devicePixelRatioFScale());
     default:
         return QPaintDevice::metric(m);
     }

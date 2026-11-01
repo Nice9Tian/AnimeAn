@@ -122,7 +122,7 @@ export interface WebGL2ContextLike {
   createBuffer(): WebGLBuffer | null;
   bindBuffer(target: number, buffer: WebGLBuffer | null): void;
   bufferData(target: number, data: ArrayBufferView | ArrayBuffer | number, usage: number): void;
-  bufferSubData?(target: number, dstByteOffset: number, srcData: ArrayBufferView): void;
+  bufferSubData(target: number, dstByteOffset: number, srcData: ArrayBufferView): void;
   deleteBuffer(buffer: WebGLBuffer | null): void;
 
   enableVertexAttribArray(index: number): void;
@@ -470,11 +470,11 @@ export class GlBoardRenderer {
   private arenaUploadedFloats = 0;
   private arenaGpuCapFloats = 0;
   private arenaVbo: WebGLBuffer | null = null;
-  private readonly maxArenaFloats = 64 * 1024 * 1024;
+  private readonly maxArenaFloats = 128 * 1024 * 1024;
 
   private geoCache = new Map<string, CachedGeometry>();
   private strokeRefCache = new WeakMap<object, FastStrokeRef>();
-  private readonly maxGeoCacheEntries = 8192;
+  private readonly maxGeoCacheEntries = 256 * 1024;
 
   private shapeProg: WebGLProgram | null = null;
   private shapeLocs: {
@@ -582,8 +582,8 @@ export class GlBoardRenderer {
           frame: 0,
           w: this.logicalW,
           h: this.logicalH,
-          keep: this.fullOps.length,
-          ops: [],
+          keep: 0,
+          ops: this.fullOps,
         });
       }
     };
@@ -595,7 +595,9 @@ export class GlBoardRenderer {
 
     if (this.client) {
       this.unsubImage = this.client.onImage?.((meta, data) => {
-        this.putImage(meta, data);
+        if (!meta.key.startsWith("cur_")) {
+          this.putImage(meta, data);
+        }
       });
       this.unsubBoard = this.client.onBoard?.(this.view, (msg) => {
         this.renderFrame(msg);
@@ -666,7 +668,12 @@ export class GlBoardRenderer {
     }
     if (prevAny.images instanceof Map) {
       for (const [k, v] of prevAny.images.entries()) {
-        this.importImageValue(String(k), v);
+        // The raw bytes above are exact; reading a 2D canvas back is not.
+        if (this.rawImages.has(String(k))) {
+          this.images.set(String(k), v);
+        } else {
+          this.importImageValue(String(k), v);
+        }
       }
     }
     for (const op of this.fullOps) {
@@ -697,8 +704,8 @@ export class GlBoardRenderer {
         frame: 0,
         w,
         h,
-        keep: this.fullOps.length,
-        ops: [],
+        keep: 0,
+        ops: this.fullOps,
       });
     }
   }
@@ -898,8 +905,10 @@ export class GlBoardRenderer {
     gl.enable(gl.BLEND);
   }
 
-  private resetArenaIfOverflow(needFloats: number): void {
-    if (this.arenaFloatCount + needFloats <= this.maxArenaFloats && this.geoCache.size <= this.maxGeoCacheEntries) {
+  // Only between frames: entries handed out earlier in a frame, and a batch being
+  // gathered, still point into the arena, so a reset mid-frame draws wrong geometry.
+  private trimGeometryCache(): void {
+    if (this.arenaFloatCount <= this.maxArenaFloats && this.geoCache.size <= this.maxGeoCacheEntries) {
       return;
     }
     this.geoCache.clear();
@@ -911,7 +920,6 @@ export class GlBoardRenderer {
   private appendArenaFloats(src: Float32Array): number {
     const len = src.length;
     if (len === 0) return 0;
-    this.resetArenaIfOverflow(len);
     if (this.arenaFloatCount + len > this.arenaData.length) {
       let nextCap = Math.max(this.arenaData.length * 4, 8 * 1024 * 1024);
       while (nextCap < this.arenaFloatCount + len) {
@@ -964,21 +972,16 @@ export class GlBoardRenderer {
       this.arenaGpuCapFloats = 0;
     }
     gl.bindBuffer(gl.ARRAY_BUFFER, this.arenaVbo);
-    if (
-      this.arenaUploadedFloats > 0 &&
-      this.arenaFloatCount <= this.arenaGpuCapFloats &&
-      typeof gl.bufferSubData === "function"
-    ) {
-      const slice = this.arenaData.subarray(this.arenaUploadedFloats, this.arenaFloatCount);
-      gl.bufferSubData(gl.ARRAY_BUFFER, this.arenaUploadedFloats * 4, slice);
-      this.arenaUploadedFloats = this.arenaFloatCount;
-      return;
+    // Reserve the arena's whole capacity. A buffer sized to the data alone is
+    // outgrown by the next append, and every new stroke re-sends all geometry.
+    if (this.arenaGpuCapFloats < this.arenaData.length) {
+      gl.bufferData(gl.ARRAY_BUFFER, this.arenaData.length * 4, gl.DYNAMIC_DRAW);
+      this.arenaGpuCapFloats = this.arenaData.length;
+      this.arenaUploadedFloats = 0;
     }
-
-    const slice = this.arenaData.subarray(0, this.arenaFloatCount);
-    gl.bufferData(gl.ARRAY_BUFFER, slice, gl.STATIC_DRAW);
+    const slice = this.arenaData.subarray(this.arenaUploadedFloats, this.arenaFloatCount);
+    gl.bufferSubData(gl.ARRAY_BUFFER, this.arenaUploadedFloats * 4, slice);
     this.arenaUploadedFloats = this.arenaFloatCount;
-    this.arenaGpuCapFloats = this.arenaFloatCount;
   }
 
   private emitDrawArrays(mode: number, first: number, count: number): void {
@@ -1067,6 +1070,7 @@ export class GlBoardRenderer {
 
   private drawFrame(msg: BoardMessage): void {
     if (this.contextLost) return;
+    this.trimGeometryCache();
     this.lastDrawCalls = 0;
     const gl = this.gl;
     const dpr = Math.max(0.1, Number(this.getDpr()) || 1);
@@ -1784,7 +1788,8 @@ export class GlBoardRenderer {
           const join = mapLineJoin(op[7]);
           const miter = Number(op[8] ?? 2);
           const cosmetic = Boolean(op[9]);
-          const dash = Array.isArray(op[10]) ? (op[10] as number[]) : null;
+          const rawDash = Array.isArray(op[10]) ? (op[10] as unknown[]) : [];
+          const dash = rawDash.length > 0 ? rawDash.map((n) => Number(n) || 0) : null;
           state.pen = {
             r,
             g,

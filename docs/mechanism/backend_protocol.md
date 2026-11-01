@@ -12,7 +12,7 @@ Tauri 外壳（Rust，只启动和回收）
 AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfile/）
 ```
 
-后端用 `QGuiApplication` 跑在 `offscreen` 平台上，暂时依赖 QtCore、QtGui、QtNetwork，不依赖 QtWidgets 和 QtOpenGL。去掉 Qt 是迁移计划第 1 步的事，不在这里做。
+后端用 `QGuiApplication` 跑在 `offscreen` 平台上，暂时依赖 QtCore、QtGui、QtNetwork，不依赖 QtWidgets 和 QtOpenGL。计算层 `animean_core` 已经不依赖 Qt，还在用 Qt 的是画板（`QPainter`、`QMouseEvent`）、会话层和 WebSocket，要等迁移计划第 5 步抽出画板引擎。
 
 启动参数：`AnimeAnBackend.exe --port <端口，0 表示自动> --token <随机串>`。监听成功后向 stdout 打一行 `ANIMEAN_BACKEND_PORT=<端口>`，只监听 127.0.0.1。
 
@@ -103,6 +103,7 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 - 上表是 RTX 3080 上的实测，比较页是 `webui/tests/webgl_compare.html`。
 - WebGL2 不许把多重采样缓冲 blit 到另一个多重采样缓冲，所以前缀不能直接复制，要先解析成纹理。模板缓冲也带不过去，后缀开始时裁剪要重新写一次。
 - 笔画几何按路径内容缓存，缩小时复用，放大超过 1.75 倍才重建。展平误差不超过 0.1 屏幕像素。
+- 几何放在一个大顶点缓冲里，GPU 缓冲按整个容量预留，新几何只传新增部分。擦除时一帧要新增几十条切片，缓冲只按数据量分配时每条都会全量上传，单帧要几十毫秒。
 - 选择存在页面的 `localStorage`，键是 `animean.boardRenderer`，属于机器级偏好，不进工程文件，也不经过后端。菜单项由 `webui/src/ui/app.js` 加在后端的菜单后面。
 - 切换时新建 canvas，因为同一个 canvas 只能拿到一种上下文。新渲染器用 `adopt` 接手指令表和图片，不需要后端重发。
 - 显卡不支持 WebGL2 或上下文创建失败时退回 Canvas 2D。要读背景的合成模式（`multiply`、`screen` 等）WebGL 没有实现，退回 `source-over`；画板现在不发这些模式，唯一的 `setCompositionMode` 作用在离屏 `QImage` 上。

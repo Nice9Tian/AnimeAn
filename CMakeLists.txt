@@ -34,37 +34,14 @@ find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets OpenGLWidgets)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets OpenGLWidgets)
 
 include(CTest)
+# One home for the scene-model / file-format core: the app, the backend, the
+# Python module and the C++ unit tests all link animean_core, which has no Qt.
+add_subdirectory(algorithm/core)
 add_subdirectory(backend)
-
-# One home for the scene-model / file-format core. The app and the C++ unit
-# tests link this library instead of re-listing (and re-compiling) the same
-# translation units per target. The optional pybind11 module below keeps its
-# own source list on purpose: it compiles the same files under
-# ANIMEAN_BUILDING_PYTHON_MODULE, so it cannot share these object files.
-add_library(animean_core STATIC
-    algorithm/animemodel.cpp
-    algorithm/animemodel.h
-    algorithm/beziersplit.cpp
-    algorithm/beziersplit.h
-    algorithm/scenehistory.cpp
-    algorithm/scenehistory.h
-    algorithm/vectorlogic.cpp
-    algorithm/vectorlogic.h
-    algorithm/viewscale.h
-    projectio.cpp
-    projectio.h
-)
-target_include_directories(animean_core PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/algorithm
-)
-target_link_libraries(animean_core PUBLIC Qt${QT_VERSION_MAJOR}::Widgets)
 
 set(PROJECT_SOURCES
     centralpaintarea.cpp
     centralpaintarea.h
-    clipreader.cpp
-    clipreader.h
     main.cpp
     mainwindow.cpp
     mainwindow.h
@@ -430,10 +407,10 @@ if(ANIMEAN_BUILD_PYTHON_MODULE)
         message(FATAL_ERROR "ANIMEAN_BUILD_PYTHON_MODULE is ON, but ANIMEAN_PYTHON_BINDINGS does not exist: ${ANIMEAN_PYTHON_BINDINGS}")
     endif()
 
-    pybind11_add_module(animean_python MODULE "${ANIMEAN_PYTHON_BINDINGS}" algorithm/animemodel.cpp algorithm/animemodel.h algorithm/beziersplit.cpp algorithm/beziersplit.h algorithm/vectorlogic.cpp algorithm/vectorlogic.h)
+    pybind11_add_module(animean_python MODULE "${ANIMEAN_PYTHON_BINDINGS}")
     target_include_directories(animean_python PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/algorithm ${CMAKE_CURRENT_SOURCE_DIR}/pythonbind)
     target_compile_definitions(animean_python PRIVATE ANIMEAN_BUILDING_PYTHON_MODULE)
-    target_link_libraries(animean_python PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::OpenGLWidgets)
+    target_link_libraries(animean_python PRIVATE animean_core Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::OpenGLWidgets)
 endif()
 
 if(${QT_VERSION} VERSION_LESS 6.1.0)

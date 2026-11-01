@@ -1,0 +1,17 @@
+{
+  "type": "QtGroupHeader",
+  "label": "分组标题",
+  "description": "可折叠分组的标题行；open 决定箭头方向，收起且 active 为真时右侧亮一个点",
+  "defaultSize": {
+    "width": 110,
+    "height": 22
+  },
+  "entry": "index.js",
+  "style": "style.css",
+  "props": {
+    "label": { "type": "string", "default": "Group", "logic": true },
+    "open": { "type": "boolean", "default": true, "logic": true },
+    "active": { "type": "boolean", "default": false, "logic": true }
+  },
+  "children": false
+}

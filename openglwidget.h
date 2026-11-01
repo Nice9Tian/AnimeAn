@@ -1,6 +1,7 @@
 #ifndef OPENGLWIDGET_H
 #define OPENGLWIDGET_H
 
+#include "algorithm/core/qtbridge.h"
 #include "algorithm/animemodel.h"
 #include "algorithm/scenehistory.h"
 #include "algorithm/vectorlogic.h"
@@ -308,6 +309,7 @@ protected:
     void wheelEvent(QWheelEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     void focusInEvent(QFocusEvent *event) override;
+    void focusOutEvent(QFocusEvent *event) override;
     // The brush ring belongs to the cursor, so it has to leave with it.
     void leaveEvent(QEvent *event) override;
     // Rebuilds the pointer for the current tool: the pen wears a ring the
@@ -442,6 +444,7 @@ private:
     // Latches the axis like applyAxisSnap does, so it mutates the snap state.
     QPointF straightLineTip(Qt::KeyboardModifiers modifiers, const QPointF &cursor);
     void paintBackground(QPainter &painter, const QRectF &target) const;
+    void paintActiveIndicator(QPainter &painter) const;
     QPointF mapToDocument(const QPointF &screenPos) const;
     void clampPan();
     void notifyViewTransformChanged();
@@ -494,8 +497,9 @@ private:
     FillScope m_fillScope = FillScope::CurrentLayer;
     QString m_viewName = QStringLiteral("main");
     bool m_activeIndicator = false;
+    bool m_hasInputFocus = false;
     QColor m_penColor = Qt::black;
-    QVector<QPointF> m_points;
+    AnimeCore::Vector<AnimeCore::PointF> m_points;
     // Realtime input conditioning: 1 Euro filter with lag compensation over
     // the raw samples of the CURRENT stroke, plus the raw pen tip so paintGL
     // can draw the unfiltered predictive preview at the very front.
@@ -646,6 +650,7 @@ private:
     // than the redraw, so the cache is dropped rather than grown.
     static constexpr int kMaxOnionGhosts = 16;
     bool m_swallowNextPress = false;
+    QHash<qint64, QImage> m_rasterCache;
     QVector<OverlayItem> m_overlayItems;
     QVector<OverlayHandle> m_overlayHandles;
 };

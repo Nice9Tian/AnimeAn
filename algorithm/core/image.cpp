@@ -414,39 +414,260 @@ Image Image::scaled(int targetWidth, int targetHeight) const
     if (out.isNull()) {
         return out;
     }
+
     const int srcW = m_data->width;
     const int srcH = m_data->height;
     const int bpp = bytesPerPixelForFormat(m_data->format);
-    for (int y = 0; y < targetHeight; ++y) {
-        const double sy = (targetHeight > 1)
-                              ? ((y + 0.5) * double(srcH) / double(targetHeight) - 0.5)
-                              : 0.0;
-        const int y0 = std::clamp(int(std::floor(sy)), 0, srcH - 1);
-        const int y1 = std::clamp(y0 + 1, 0, srcH - 1);
-        const double fy = std::clamp(sy - std::floor(sy), 0.0, 1.0);
-        const unsigned char *row0 = constScanLine(y0);
-        const unsigned char *row1 = constScanLine(y1);
+    if (bpp <= 0) {
+        return Image();
+    }
+
+    struct ScaleTap {
+        int index = 0;
+        std::int64_t weight = 0;
+    };
+    struct ScaleSpan {
+        int offset = 0;
+        int count = 0;
+    };
+
+    constexpr std::int64_t kWeightUnit = 1 << 14;
+
+    auto buildAxisKernel = [](int srcLen,
+                              int dstLen,
+                              std::vector<ScaleSpan> &spans,
+                              std::vector<ScaleTap> &taps) {
+        spans.resize(static_cast<std::size_t>(dstLen));
+        taps.clear();
+
+        // Each axis independently uses linear interpolation when enlarging and
+        // box area averaging when shrinking so downscaling does not alias.
+        if (dstLen >= srcLen) {
+            taps.reserve(static_cast<std::size_t>(dstLen) * 2);
+            const std::int64_t step = (static_cast<std::int64_t>(srcLen) << 16)
+                                      / static_cast<std::int64_t>(dstLen);
+            std::int64_t pos = step / 2 - 32768;
+            const std::int64_t maxPos = static_cast<std::int64_t>(srcLen - 1) << 16;
+            for (int d = 0; d < dstLen; ++d) {
+                const std::int64_t clamped = std::clamp<std::int64_t>(pos, 0, maxPos);
+                const int i0 = static_cast<int>(clamped >> 16);
+                const int i1 = std::min(i0 + 1, srcLen - 1);
+                const std::int64_t f8 = (clamped & 0xffff) >> 8;
+                const std::int64_t w1 = f8 << 6;
+                const std::int64_t w0 = kWeightUnit - w1;
+
+                ScaleSpan span;
+                span.offset = static_cast<int>(taps.size());
+                if (i0 == i1 || w1 == 0) {
+                    taps.push_back({i0, kWeightUnit});
+                    span.count = 1;
+                } else {
+                    taps.push_back({i0, w0});
+                    taps.push_back({i1, w1});
+                    span.count = 2;
+                }
+                spans[static_cast<std::size_t>(d)] = span;
+                pos += step;
+            }
+            return;
+        }
+
+        const std::int64_t Cp = ((static_cast<std::int64_t>(dstLen) << 14) + srcLen - 1)
+                                / static_cast<std::int64_t>(srcLen);
+        taps.reserve(static_cast<std::size_t>(srcLen + dstLen * 2));
+        for (int d = 0; d < dstLen; ++d) {
+            const std::int64_t pos =
+                (static_cast<std::int64_t>(d) * (static_cast<std::int64_t>(srcLen) << 14))
+                / static_cast<std::int64_t>(dstLen);
+            ScaleSpan span;
+            span.offset = static_cast<int>(taps.size());
+            int s = std::clamp(static_cast<int>(pos >> 14), 0, srcLen - 1);
+            const std::int64_t frac = pos & 0x3fff;
+            std::int64_t rem = kWeightUnit;
+
+            if (frac != 0) {
+                const std::int64_t w0 = std::min(rem, ((0x4000 - frac) * Cp) >> 14);
+                if (w0 > 0) {
+                    taps.push_back({s, w0});
+                    ++span.count;
+                    rem -= w0;
+                }
+                ++s;
+            }
+
+            while (rem > 0 && s < srcLen) {
+                if (rem <= Cp || s == srcLen - 1) {
+                    taps.push_back({s, rem});
+                    ++span.count;
+                    rem = 0;
+                    break;
+                }
+                taps.push_back({s, Cp});
+                ++span.count;
+                rem -= Cp;
+                ++s;
+            }
+
+            if (span.count == 0) {
+                taps.push_back({srcLen - 1, kWeightUnit});
+                span.count = 1;
+            }
+            spans[static_cast<std::size_t>(d)] = span;
+        }
+    };
+
+    std::vector<ScaleSpan> xSpans;
+    std::vector<ScaleTap> xTaps;
+    std::vector<ScaleSpan> ySpans;
+    std::vector<ScaleTap> yTaps;
+    buildAxisKernel(srcW, targetWidth, xSpans, xTaps);
+    buildAxisKernel(srcH, targetHeight, ySpans, yTaps);
+
+    const bool bothEnlarged = (targetWidth >= srcW && targetHeight >= srcH);
+    const int vertShift = bothEnlarged ? 14 : 0;
+    const int horizShift = bothEnlarged ? 14 : 28;
+
+    if (m_data->format == Format_Grayscale8) {
+        std::vector<std::int64_t> vertRow(static_cast<std::size_t>(srcW));
+        for (int dy = 0; dy < targetHeight; ++dy) {
+            const ScaleSpan ySpan = ySpans[static_cast<std::size_t>(dy)];
+            for (int sx = 0; sx < srcW; ++sx) {
+                std::int64_t sumY = 0;
+                for (int k = 0; k < ySpan.count; ++k) {
+                    const ScaleTap &tap = yTaps[static_cast<std::size_t>(ySpan.offset + k)];
+                    sumY += static_cast<std::int64_t>(constScanLine(tap.index)[sx]) * tap.weight;
+                }
+                vertRow[static_cast<std::size_t>(sx)] = sumY >> vertShift;
+            }
+
+            unsigned char *dstRow =
+                out.m_data->pixels.data()
+                + static_cast<std::size_t>(dy) * static_cast<std::size_t>(out.m_data->bytesPerLine);
+            for (int dx = 0; dx < targetWidth; ++dx) {
+                const ScaleSpan xSpan = xSpans[static_cast<std::size_t>(dx)];
+                std::int64_t sumX = 0;
+                for (int k = 0; k < xSpan.count; ++k) {
+                    const ScaleTap &tap = xTaps[static_cast<std::size_t>(xSpan.offset + k)];
+                    sumX += vertRow[static_cast<std::size_t>(tap.index)] * tap.weight;
+                }
+                dstRow[dx] = static_cast<unsigned char>(
+                    std::clamp<std::int64_t>(sumX >> horizShift, 0, 255));
+            }
+        }
+        return out;
+    }
+
+    // Straight-alpha pixels must be converted to premultiplied form before
+    // filtering so transparent neighbors do not bleed their RGB values into
+    // semi-transparent edges.
+    const bool needsPremul = (m_data->format == Format_RGBA8888
+                              || m_data->format == Format_ARGB32);
+    const std::size_t srcRowStride = static_cast<std::size_t>(srcW) * 4;
+    std::vector<unsigned char> srcPremul(static_cast<std::size_t>(srcH) * srcRowStride);
+
+    if (needsPremul) {
+        for (int sy = 0; sy < srcH; ++sy) {
+            const unsigned char *srcRow = constScanLine(sy);
+            unsigned char *dstPremul = srcPremul.data() + static_cast<std::size_t>(sy) * srcRowStride;
+            for (int sx = 0; sx < srcW; ++sx) {
+                const unsigned char *p = srcRow + static_cast<std::size_t>(sx) * 4;
+                unsigned char *q = dstPremul + static_cast<std::size_t>(sx) * 4;
+                const unsigned int a = p[3];
+                const unsigned int t0 = static_cast<unsigned int>(p[0]) * a + 0x7fu;
+                const unsigned int t1 = static_cast<unsigned int>(p[1]) * a + 0x7fu;
+                const unsigned int t2 = static_cast<unsigned int>(p[2]) * a + 0x7fu;
+                q[0] = static_cast<unsigned char>((t0 + (t0 >> 8)) >> 8);
+                q[1] = static_cast<unsigned char>((t1 + (t1 >> 8)) >> 8);
+                q[2] = static_cast<unsigned char>((t2 + (t2 >> 8)) >> 8);
+                q[3] = static_cast<unsigned char>(a);
+            }
+        }
+    }
+
+    std::vector<std::int64_t> vertRow(srcRowStride);
+    for (int dy = 0; dy < targetHeight; ++dy) {
+        const ScaleSpan ySpan = ySpans[static_cast<std::size_t>(dy)];
+        for (int sx = 0; sx < srcW; ++sx) {
+            std::int64_t c0 = 0;
+            std::int64_t c1 = 0;
+            std::int64_t c2 = 0;
+            std::int64_t c3 = 0;
+            for (int k = 0; k < ySpan.count; ++k) {
+                const ScaleTap &tap = yTaps[static_cast<std::size_t>(ySpan.offset + k)];
+                const unsigned char *rowPtr =
+                    needsPremul
+                        ? (srcPremul.data() + static_cast<std::size_t>(tap.index) * srcRowStride)
+                        : constScanLine(tap.index);
+                const unsigned char *p = rowPtr + static_cast<std::size_t>(sx) * 4;
+                c0 += static_cast<std::int64_t>(p[0]) * tap.weight;
+                c1 += static_cast<std::int64_t>(p[1]) * tap.weight;
+                c2 += static_cast<std::int64_t>(p[2]) * tap.weight;
+                c3 += static_cast<std::int64_t>(p[3]) * tap.weight;
+            }
+            std::int64_t *v = vertRow.data() + static_cast<std::size_t>(sx) * 4;
+            v[0] = c0 >> vertShift;
+            v[1] = c1 >> vertShift;
+            v[2] = c2 >> vertShift;
+            v[3] = c3 >> vertShift;
+        }
+
         unsigned char *dstRow =
             out.m_data->pixels.data()
-            + static_cast<std::size_t>(y) * static_cast<std::size_t>(out.m_data->bytesPerLine);
+            + static_cast<std::size_t>(dy) * static_cast<std::size_t>(out.m_data->bytesPerLine);
+        for (int dx = 0; dx < targetWidth; ++dx) {
+            const ScaleSpan xSpan = xSpans[static_cast<std::size_t>(dx)];
+            std::int64_t c0 = 0;
+            std::int64_t c1 = 0;
+            std::int64_t c2 = 0;
+            std::int64_t c3 = 0;
+            for (int k = 0; k < xSpan.count; ++k) {
+                const ScaleTap &tap = xTaps[static_cast<std::size_t>(xSpan.offset + k)];
+                const std::int64_t *p = vertRow.data() + static_cast<std::size_t>(tap.index) * 4;
+                c0 += p[0] * tap.weight;
+                c1 += p[1] * tap.weight;
+                c2 += p[2] * tap.weight;
+                c3 += p[3] * tap.weight;
+            }
 
-        for (int x = 0; x < targetWidth; ++x) {
-            const double sx = (targetWidth > 1)
-                                  ? ((x + 0.5) * double(srcW) / double(targetWidth) - 0.5)
-                                  : 0.0;
-            const int x0 = std::clamp(int(std::floor(sx)), 0, srcW - 1);
-            const int x1 = std::clamp(x0 + 1, 0, srcW - 1);
-            const double fx = std::clamp(sx - std::floor(sx), 0.0, 1.0);
+            unsigned char *dst = dstRow + static_cast<std::size_t>(dx) * 4;
+            if (m_data->format == Format_RGB32) {
+                dst[0] = static_cast<unsigned char>(std::clamp<std::int64_t>(c0 >> horizShift, 0, 255));
+                dst[1] = static_cast<unsigned char>(std::clamp<std::int64_t>(c1 >> horizShift, 0, 255));
+                dst[2] = static_cast<unsigned char>(std::clamp<std::int64_t>(c2 >> horizShift, 0, 255));
+                dst[3] = 0xffu;
+                continue;
+            }
 
-            for (int c = 0; c < bpp; ++c) {
-                const double v00 = row0[x0 * bpp + c];
-                const double v10 = row0[x1 * bpp + c];
-                const double v01 = row1[x0 * bpp + c];
-                const double v11 = row1[x1 * bpp + c];
-                const double top = v00 + (v10 - v00) * fx;
-                const double bot = v01 + (v11 - v01) * fx;
-                const int val = std::clamp(int(std::lround(top + (bot - top) * fy)), 0, 255);
-                dstRow[x * bpp + c] = static_cast<unsigned char>(val);
+            const int a = static_cast<int>(std::clamp<std::int64_t>(c3 >> horizShift, 0, 255));
+            const int p0 = static_cast<int>(std::clamp<std::int64_t>(c0 >> horizShift, 0, a));
+            const int p1 = static_cast<int>(std::clamp<std::int64_t>(c1 >> horizShift, 0, a));
+            const int p2 = static_cast<int>(std::clamp<std::int64_t>(c2 >> horizShift, 0, a));
+
+            if (!needsPremul) {
+                dst[0] = static_cast<unsigned char>(p0);
+                dst[1] = static_cast<unsigned char>(p1);
+                dst[2] = static_cast<unsigned char>(p2);
+                dst[3] = static_cast<unsigned char>(a);
+            } else if (a == 0) {
+                dst[0] = 0;
+                dst[1] = 0;
+                dst[2] = 0;
+                dst[3] = 0;
+            } else if (a == 255) {
+                dst[0] = static_cast<unsigned char>(p0);
+                dst[1] = static_cast<unsigned char>(p1);
+                dst[2] = static_cast<unsigned char>(p2);
+                dst[3] = 255u;
+            } else {
+                const unsigned int ua = static_cast<unsigned int>(a);
+                const unsigned int bias = (ua - 1u) >> 1;
+                dst[0] = static_cast<unsigned char>(
+                    std::min(255u, (static_cast<unsigned int>(p0) * 255u + bias) / ua));
+                dst[1] = static_cast<unsigned char>(
+                    std::min(255u, (static_cast<unsigned int>(p1) * 255u + bias) / ua));
+                dst[2] = static_cast<unsigned char>(
+                    std::min(255u, (static_cast<unsigned int>(p2) * 255u + bias) / ua));
+                dst[3] = static_cast<unsigned char>(a);
             }
         }
     }

@@ -1,0 +1,8 @@
+.chip { position: relative; width: 100%; height: 100%; border-radius: 8px; background: var(--chip-rest, #fbfbfc); color: var(--chip-rest-fg, #4a4c51); }
+.chip svg { position: absolute; left: 10px; top: 10px; width: 24px; height: 24px; overflow: visible; }
+.chip:hover { background: var(--chip-hover, #ffffff); color: var(--chip-hover-fg, #1d1f20); }
+.chip.on { background: var(--accent, #3d8ec9); color: var(--on-accent, #ffffff); }
+.chip.locked { color: var(--text-dim, #6b6d72); background: var(--chip-rest, #fbfbfc); }
+.chip-tip { position: fixed; z-index: 1000; width: max-content; max-width: 220px; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--frame, #bdbdbe); border-radius: 4px;
+  background: var(--surface, #ffffff); color: var(--text-dim, #6b6d72); box-shadow: 0 2px 8px rgba(0, 0, 0, .18); font: 12px/16px "Segoe UI", sans-serif; pointer-events: none; }
+.chip-tip b { display: block; font-weight: 600; color: var(--text, #1d1f20); }

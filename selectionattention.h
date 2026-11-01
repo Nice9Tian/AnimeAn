@@ -1,6 +1,7 @@
 #ifndef SELECTIONATTENTION_H
 #define SELECTIONATTENTION_H
 
+#include "algorithm/core/qtbridge.h"
 #include "algorithm/animemodel.h"
 
 struct AttentionUpdate {

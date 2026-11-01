@@ -6,13 +6,13 @@
 
 - Tools ▸ Mapping 的按钮 **Auto Mapping**：手动跑一次（没有单元的旧文档用它）。它的画布交互事件是 Arrow 的：不画线，只拖引导。
 - **Layers（Main Layers）右键**：**New Auto-Mapping Layer**、**Duplicate Auto-Mapping Layer**、**To Editable Layer**、**Advanced Settings…**；旧的手工图层组上有 **Convert to Auto-Mapping Layer**。
-- **Options 面板**（Mapping 页所有工具共用）：**RDP**（只在 Spline / Polyline 模式显示）、**Front/Back Split**、**Crease Line**（拆分开着时显示）、**补全拓扑**、**Bridge k**（补全拓扑开着时显示）；画线类工具再加 Stabilizer、Width；最后一行嵌着纹理板。
+- **Options 面板**（Mapping 组所有工具共用）：**RDP**（只在 Spline / Polyline 模式显示）、**Front/Back Split**、**Crease Line**（拆分开着时显示）、**补全拓扑**、**Bridge k**（补全拓扑开着时显示）；画线类工具再加 Stabilizer、Width；最后一行嵌着纹理板。
 - 菜单 **Auto Mapping**：**Line Display Settings…**、**Calculation Mode**（Bezier / Spline / Polyline）、Additional Line Falloff、约束外轮廓、视平线、To 3D。
 - 每块板的 **View** 菜单：**Mapping Refer Rect**、**Refer Rect Divisions**；纹理板另有 **Occluded Areas**。
 
 ## 怎么用
 
-1. 右键 **New Auto-Mapping Layer** 建一个单元：一个带常驻成员层的图层组。选中它的任一成员层（点组行也算），Tools 切到 Mapping 页，这个单元的轴线、Mapping Area、附加线、红色手柄、参考网格按它的设置显示；选到别的层全部隐藏。
+1. 右键 **New Auto-Mapping Layer** 建一个单元：一个带常驻成员层的图层组。选中它的任一成员层（点组行也算），Tools 展开 Mapping 组，这个单元的轴线、Mapping Area、附加线、红色手柄、参考网格按它的设置显示；选到别的层全部隐藏。
 2. 在纹理板画轴线和图案，在主画板画轴线（见 `center_line.md`）。规划：纹理板有多页纹理时，Options 的 Auto Mapping 选项块里多一个「映射纹理」下拉，点开列出纹理页，选一页；选中 Auto-Mapping 图层时 Options 自动切到映射选项，在那里改这个单元的目标纹理。多页纹理各自映射到同一块主画板，靠多个单元。
 3. 单元有焦点时不用按按钮：拖轴线松手、重画轴线、增删附加线、拖红色手柄、删 Mapping Area、改 Options 里的选项、改纹理板上的图案，都会就地重跑（**Live Re-render**）。
 4. 结果进单元组：**front** 层（正面）、**back** 层（背面，衬里色）、**crease** 层（折痕，虚线）。折叠的叠放次序由主画板上的红色"最近端"手柄决定，拖它换哪一侧在上。

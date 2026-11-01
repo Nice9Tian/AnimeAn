@@ -1,7 +1,7 @@
 // The panels that start hidden, drawn to match the Qt build: History, Assets, the
 // Repulsion Pad, Python Debug, the New Project dialog and the texture board's
 // frame. Each takes plain data and reports what the user did.
-import { tabBar, scrollBar, createMenuBar } from "./panels.js";
+import { tabBar, scrollArea, scrollBar, createMenuBar } from "./panels.js";
 import { onThemeChange, cosmeticStroke, flattenCubic, hintedTracking, trackedDiv } from "./timeline.js";
 
 function div(cls, text) {
@@ -27,25 +27,6 @@ function singleTab(root, title) {
   tabs.select(0);
   tabs.el.firstChild.style.width = `${TAB_WIDTH[title]}px`;
   root.append(tabs.el);
-}
-
-// ---- QAbstractScrollArea --------------------------------------------------------
-// A framed view with the Fusion scroll bar the rest of the app uses, not the
-// browser's. Native scrolling stays, so the wheel and the keyboard just work.
-function scrollArea(cls) {
-  const frame = div(`qframe ${cls}`);
-  const view = div("qframe-view");
-  const bar = scrollBar(true, (value) => { view.scrollTop = value; });
-  frame.append(view, bar.el);
-  const sync = () => {
-    const page = view.clientHeight, max = view.scrollHeight - page;
-    const needed = max > 0;
-    frame.classList.toggle("scrolls", needed);
-    if (needed) bar.set({ min: 0, max, page, value: view.scrollTop });
-  };
-  view.addEventListener("scroll", sync);
-  new ResizeObserver(sync).observe(view);
-  return { frame, view, sync };
 }
 
 // ---- QListWidget ----------------------------------------------------------------
