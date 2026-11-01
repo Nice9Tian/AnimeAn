@@ -1470,7 +1470,7 @@ QPointF PaintOpenGLWidget::applyAxisSnap(Qt::KeyboardModifiers modifiers, const 
 
     if (m_axisSnapState == AxisSnapState::Inactive) {
         // Alt engaged mid-stroke: constrain from the latest drawn point on.
-        resetAxisSnap(modifiers, m_points.isEmpty() ? point : m_points.last());
+        resetAxisSnap(modifiers, m_points.isEmpty() ? point : QPointF(m_points.last()));
     }
 
     if (m_axisSnapState == AxisSnapState::Pending) {
@@ -1544,7 +1544,7 @@ void PaintOpenGLWidget::engageStraightLine()
     // No stabilizer lag left to cover: the line ends exactly at the cursor.
     m_hasRawPenPos = false;
     updateStraightLine(straightLineTip(QGuiApplication::keyboardModifiers(),
-                                       m_hasHoverPos ? m_hoverPos : m_points.last()));
+                                       m_hasHoverPos ? m_hoverPos : QPointF(m_points.last())));
 }
 
 QPointF PaintOpenGLWidget::straightLineTip(Qt::KeyboardModifiers modifiers,
@@ -3657,7 +3657,7 @@ void PaintOpenGLWidget::updateCurrentStroke()
     // move handler. Rebuilding it through the fitter would hand the frozen-
     // prefix machinery a buffer that straight mode rewrites wholesale.
     if (m_straightLineMode) {
-        updateStraightLine(m_points.isEmpty() ? m_straightLineStart : m_points.last());
+        updateStraightLine(m_points.isEmpty() ? m_straightLineStart : QPointF(m_points.last()));
         return;
     }
 

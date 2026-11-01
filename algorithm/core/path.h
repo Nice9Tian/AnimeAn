@@ -139,6 +139,12 @@ public:
     bool operator==(const Path &other) const;
     bool operator!=(const Path &other) const { return !operator==(other); }
 
+    // Lets a bridge keep its converted copy beside the path data, so painting an
+    // unchanged path does not rebuild it every frame. Copies of this path share
+    // it, and any write drops it.
+    std::shared_ptr<const void> bridgedCopy() const;
+    void setBridgedCopy(std::shared_ptr<const void> copy) const;
+
     bool isDetached() const noexcept { return !m_d || m_d.use_count() == 1; }
     bool isSharedWith(const Path &other) const noexcept { return m_d == other.m_d; }
 

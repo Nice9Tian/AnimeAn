@@ -318,6 +318,7 @@ struct Path::Data
     int cStart = 0;
     FillRule fillRule = OddEvenFill;
     bool require_moveTo = false;
+    std::shared_ptr<const void> bridged;
 };
 
 Path::Path(const PointF &startPoint)
@@ -343,6 +344,19 @@ void Path::detach()
     } else if (m_d.use_count() > 1) {
         m_d = std::make_shared<Data>(*m_d);
     }
+    m_d->bridged.reset();
+}
+
+std::shared_ptr<const void> Path::bridgedCopy() const
+{
+    return m_d ? m_d->bridged : nullptr;
+}
+
+void Path::setBridgedCopy(std::shared_ptr<const void> copy) const
+{
+    if (m_d) {
+        m_d->bridged = std::move(copy);
+    }
 }
 
 void Path::maybeMoveTo()
@@ -363,6 +377,7 @@ void Path::clear()
         m_d->elements.clear();
         m_d->cStart = 0;
         m_d->require_moveTo = false;
+        m_d->bridged.reset();
         if (m_d->fillRule == OddEvenFill && m_d->elements.capacity() == 0) {
             m_d.reset();
         }

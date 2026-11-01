@@ -85,6 +85,9 @@ inline Path Bridge<QPainterPath>::toCore(const QPainterPath &qp)
 
 inline QPainterPath Bridge<QPainterPath>::fromCore(const Path &p)
 {
+    if (const std::shared_ptr<const void> cached = p.bridgedCopy()) {
+        return *static_cast<const QPainterPath *>(cached.get());
+    }
     const int count = p.elementCount();
     const Qt::FillRule rule = p.fillRule() == WindingFill ? Qt::WindingFill : Qt::OddEvenFill;
     if (count <= 0) {
@@ -147,6 +150,7 @@ inline QPainterPath Bridge<QPainterPath>::fromCore(const Path &p)
             ++i;
         }
     }
+    p.setBridgedCopy(std::make_shared<const QPainterPath>(out));
     return out;
 }
 
