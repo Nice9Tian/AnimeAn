@@ -9314,6 +9314,9 @@ def _refresh_proxy_axes():
             changed = True
     if changed:
         _invalidate_additional_thirds("main")
+        # Whatever was cached without this axis describes the old frame, or
+        # no frame at all if the axis was just deleted.
+        _invalidate_grid_cache()
     return changed
 
 
@@ -10260,7 +10263,7 @@ def _maybe_auto_run():
     if not _RUN_GUARD["depth"] and _refresh_proxy_axes():
         # A texture axis moved under contour-owned main axes.
         _save_assets("main")
-        _push_overlay("main")
+        _overlays_changed("main")
         try:
             _animean().ui.history_commit("Contour axes", "main")
         except Exception:
