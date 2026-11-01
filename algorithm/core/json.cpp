@@ -356,7 +356,7 @@ JsonObject::JsonObject(std::initializer_list<std::pair<String, JsonValue>> args)
         insert(kv.first, kv.second);
 }
 
-std::vector<String> JsonObject::keys() const
+StringList JsonObject::keys() const
 {
     std::vector<String> out;
     if (!m_d)
@@ -1328,6 +1328,127 @@ bool JsonDocument::operator==(const JsonDocument &other) const noexcept
     if (m_kind == Kind::Array)
         return m_array == other.m_array;
     return true;
+}
+
+bool JsonVariant::toBool() const noexcept
+{
+    if (m_val.isBool())
+        return m_val.toBool();
+    if (m_val.isDouble())
+        return m_val.toDouble() != 0.0;
+    if (m_val.isString()) {
+        const String s = m_val.toString().toLower();
+        return !s.isEmpty() && s != "0" && s != "false";
+    }
+    return false;
+}
+
+int JsonVariant::toInt(bool *ok) const noexcept
+{
+    if (m_val.isDouble()) {
+        if (m_val.isInt64()) {
+            if (ok)
+                *ok = true;
+            return static_cast<int>(m_val.int64Value());
+        }
+        const double d = m_val.toDouble();
+        if (std::isfinite(d)
+            && d >= static_cast<double>(std::numeric_limits<int>::min())
+            && d <= static_cast<double>(std::numeric_limits<int>::max())) {
+            if (ok)
+                *ok = true;
+            return static_cast<int>(std::lround(d));
+        }
+        if (ok)
+            *ok = false;
+        return 0;
+    }
+    if (m_val.isBool()) {
+        if (ok)
+            *ok = true;
+        return m_val.toBool() ? 1 : 0;
+    }
+    if (m_val.isString())
+        return m_val.toString().toInt(ok);
+    if (ok)
+        *ok = false;
+    return 0;
+}
+
+long long JsonVariant::toLongLong(bool *ok) const noexcept
+{
+    if (m_val.isDouble()) {
+        if (m_val.isInt64()) {
+            if (ok)
+                *ok = true;
+            return m_val.int64Value();
+        }
+        const double d = m_val.toDouble();
+        if (std::isfinite(d)
+            && d >= static_cast<double>(std::numeric_limits<long long>::min())
+            && d < 9223372036854775808.0) {
+            if (ok)
+                *ok = true;
+            return static_cast<long long>(std::llround(d));
+        }
+        if (ok)
+            *ok = false;
+        return 0;
+    }
+    if (m_val.isBool()) {
+        if (ok)
+            *ok = true;
+        return m_val.toBool() ? 1LL : 0LL;
+    }
+    if (m_val.isString())
+        return m_val.toString().toLongLong(ok);
+    if (ok)
+        *ok = false;
+    return 0;
+}
+
+double JsonVariant::toDouble(bool *ok) const noexcept
+{
+    if (m_val.isDouble()) {
+        if (ok)
+            *ok = true;
+        return m_val.toDouble();
+    }
+    if (m_val.isBool()) {
+        if (ok)
+            *ok = true;
+        return m_val.toBool() ? 1.0 : 0.0;
+    }
+    if (m_val.isString())
+        return m_val.toString().toDouble(ok);
+    if (ok)
+        *ok = false;
+    return 0.0;
+}
+
+String JsonVariant::toString() const
+{
+    if (m_val.isString())
+        return m_val.toString();
+    if (m_val.isBool())
+        return m_val.toBool() ? String("true") : String("false");
+    if (m_val.isDouble()) {
+        if (m_val.isInt64()) {
+            const long long v = m_val.int64Value();
+            if (v <= -(1LL << 53) || v >= (1LL << 53))
+                return String::number(v);
+        }
+        const double d = m_val.toDouble();
+        if (std::isnan(d) || std::isinf(d))
+            return String();
+        double norm = (d == 0.0) ? 0.0 : d;
+        char buf[128] = {};
+        auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), norm);
+        if (ec != std::errc())
+            return String();
+        return String(Latin1String(buf, static_cast<int>(ptr - buf)));
+    }
+    return String();
 }
 
 } // namespace AnimeCore

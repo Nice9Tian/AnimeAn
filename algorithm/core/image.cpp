@@ -1,4 +1,9 @@
 #include "algorithm/core/image.h"
+#include "algorithm/core/color.h"
+#include "algorithm/core/string.h"
+
+#include <filesystem>
+#include <fstream>
 
 #include <algorithm>
 #include <atomic>
@@ -288,6 +293,51 @@ void Image::fill(unsigned int pixelValue)
     const std::size_t count = m_data->pixels.size() / 4;
     for (std::size_t i = 0; i < count; ++i) {
         std::memcpy(dst + i * 4, &word, 4);
+    }
+}
+
+void Image::fill(const Color &color)
+{
+    if (!m_data) {
+        return;
+    }
+    const int r = color.isValid() ? color.red() : 0;
+    const int g = color.isValid() ? color.green() : 0;
+    const int b = color.isValid() ? color.blue() : 0;
+    const int a = color.isValid() ? color.alpha() : 255;
+
+    switch (m_data->format) {
+    case Format_ARGB32:
+        fill(qRgba(r, g, b, a));
+        break;
+    case Format_RGB32:
+        fill(qRgb(r, g, b));
+        break;
+    case Format_ARGB32_Premultiplied: {
+        const int pr = (r * a + 127) / 255;
+        const int pg = (g * a + 127) / 255;
+        const int pb = (b * a + 127) / 255;
+        fill(qRgba(pr, pg, pb, a));
+        break;
+    }
+    case Format_RGBA8888: {
+        const unsigned int word = (static_cast<unsigned int>(a) << 24)
+                                  | (static_cast<unsigned int>(b) << 16)
+                                  | (static_cast<unsigned int>(g) << 8)
+                                  | static_cast<unsigned int>(r);
+        fill(word);
+        break;
+    }
+    case Format_Grayscale8: {
+        const int pr = (r * a + 127) / 255;
+        const int pg = (g * a + 127) / 255;
+        const int pb = (b * a + 127) / 255;
+        fill(static_cast<unsigned int>(qGray(pr, pg, pb)));
+        break;
+    }
+    case Format_Invalid:
+    default:
+        break;
     }
 }
 
@@ -914,6 +964,56 @@ std::string encodeBase64(const unsigned char *data, std::size_t size)
 std::string encodeBase64(const std::vector<unsigned char> &data)
 {
     return toBase64(data.data(), data.size());
+}
+
+bool Image::save(const String &fileName, const char *format, int quality) const
+{
+    (void)format;
+    (void)quality;
+    if (isNull() || fileName.isEmpty()) {
+        return false;
+    }
+    const std::vector<unsigned char> png = encodePng();
+    if (png.empty()) {
+        return false;
+    }
+    std::error_code ec;
+    const std::filesystem::path fsPath(fileName.u16String());
+    std::ofstream out(fsPath, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) {
+        return false;
+    }
+    out.write(reinterpret_cast<const char *>(png.data()),
+              static_cast<std::streamsize>(png.size()));
+    return static_cast<bool>(out);
+}
+
+bool Image::load(const String &fileName, const char *format)
+{
+    (void)format;
+    if (fileName.isEmpty()) {
+        *this = Image();
+        return false;
+    }
+    const std::filesystem::path fsPath(fileName.u16String());
+    std::ifstream in(fsPath, std::ios::binary | std::ios::ate);
+    if (!in.is_open()) {
+        *this = Image();
+        return false;
+    }
+    const std::streamsize fileSize = in.tellg();
+    if (fileSize <= 0) {
+        *this = Image();
+        return false;
+    }
+    in.seekg(0, std::ios::beg);
+    std::vector<unsigned char> bytes(static_cast<std::size_t>(fileSize));
+    if (!in.read(reinterpret_cast<char *>(bytes.data()), fileSize)) {
+        *this = Image();
+        return false;
+    }
+    *this = decodePng(bytes);
+    return !isNull();
 }
 
 std::vector<unsigned char> fromBase64(const char *data, std::size_t size)

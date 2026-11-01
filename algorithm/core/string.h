@@ -13,6 +13,9 @@
 #include <vector>
 
 namespace AnimeCore {
+template <class T>
+class Vector;
+class StringList;
 
 enum CaseSensitivity {
     CaseInsensitive = 0,
@@ -193,6 +196,8 @@ public:
     String simplified() const;
     String toLower() const;
     String toUpper() const;
+    String leftJustified(int width, Char fill = Char(u' '), bool truncate = false) const;
+    String rightJustified(int width, Char fill = Char(u' '), bool truncate = false) const;
 
     int indexOf(const String &str, int from = 0, CaseSensitivity cs = CaseSensitive) const noexcept;
     int indexOf(Char c, int from = 0, CaseSensitivity cs = CaseSensitive) const noexcept;
@@ -251,14 +256,15 @@ public:
         return a.compare(b, cs);
     }
 
-    std::vector<String> split(Char sep, SplitBehavior behavior = KeepEmptyParts,
+    StringList split(Char sep, SplitBehavior behavior = KeepEmptyParts,
                               CaseSensitivity cs = CaseSensitive) const;
-    std::vector<String> split(Latin1Char sep, SplitBehavior behavior = KeepEmptyParts,
+    template <typename R = StringList>
+    R split(Latin1Char sep, SplitBehavior behavior = KeepEmptyParts,
                               CaseSensitivity cs = CaseSensitive) const
     {
         return split(Char(sep), behavior, cs);
     }
-    std::vector<String> split(const String &sep, SplitBehavior behavior = KeepEmptyParts,
+    StringList split(const String &sep, SplitBehavior behavior = KeepEmptyParts,
                               CaseSensitivity cs = CaseSensitive) const;
 
     String &replace(const String &before, const String &after, CaseSensitivity cs = CaseSensitive);
@@ -305,12 +311,15 @@ public:
     static String number(double n, char format = 'g', int precision = 6);
 
     int toInt(bool *ok = nullptr, int base = 10) const noexcept;
+    unsigned int toUInt(bool *ok = nullptr, int base = 10) const noexcept;
     long long toLongLong(bool *ok = nullptr, int base = 10) const noexcept;
+    unsigned long long toULongLong(bool *ok = nullptr, int base = 10) const noexcept;
     double toDouble(bool *ok = nullptr) const noexcept;
 
     std::string toUtf8() const;
     std::string toStdString() const { return toUtf8(); }
     std::string toLatin1() const;
+    std::string toLocal8Bit() const { return toUtf8(); }
 
     static String fromUtf8(const char *utf8, int size = -1);
     static String fromUtf8(const std::string &utf8);
@@ -318,6 +327,8 @@ public:
     static String fromLatin1(const char *latin1, int size = -1);
     static String fromLatin1(const std::string &latin1);
     static String fromUtf16(const char16_t *utf16, int size = -1);
+    static String fromLocal8Bit(const char *str, int size = -1) { return fromUtf8(str, size); }
+    static String fromLocal8Bit(const std::string &s) { return fromUtf8(s); }
 
     friend bool operator==(const String &a, const String &b) noexcept { return a.view() == b.view(); }
     friend bool operator!=(const String &a, const String &b) noexcept { return a.view() != b.view(); }
@@ -353,7 +364,235 @@ private:
     std::shared_ptr<std::u16string> m_d;
 };
 
-using StringList = std::vector<String>;
+class StringList : public std::vector<String>
+{
+    using Base = std::vector<String>;
+
+public:
+    using value_type = String;
+    using size_type = int;
+    using difference_type = std::ptrdiff_t;
+    using reference = String &;
+    using const_reference = const String &;
+    using pointer = String *;
+    using const_pointer = const String *;
+    using iterator = typename Base::iterator;
+    using const_iterator = typename Base::const_iterator;
+    using reverse_iterator = typename Base::reverse_iterator;
+    using const_reverse_iterator = typename Base::const_reverse_iterator;
+
+    using Base::back;
+    using Base::begin;
+    using Base::cbegin;
+    using Base::cend;
+    using Base::clear;
+    using Base::crbegin;
+    using Base::crend;
+    using Base::data;
+    using Base::emplace_back;
+    using Base::empty;
+    using Base::end;
+    using Base::erase;
+    using Base::front;
+    using Base::insert;
+    using Base::operator[];
+    using Base::pop_back;
+    using Base::push_back;
+    using Base::rbegin;
+    using Base::rend;
+    using Base::reserve;
+    using Base::resize;
+
+    StringList() noexcept = default;
+    StringList(const StringList &) = default;
+    StringList(StringList &&) noexcept = default;
+    StringList &operator=(const StringList &) = default;
+    StringList &operator=(StringList &&) noexcept = default;
+    ~StringList() = default;
+
+    explicit StringList(int count)
+        : Base(static_cast<std::size_t>(count > 0 ? count : 0))
+    {
+    }
+
+    StringList(int count, const String &val)
+        : Base(static_cast<std::size_t>(count > 0 ? count : 0), val)
+    {
+    }
+
+    explicit StringList(const String &item)
+        : Base{item}
+    {
+    }
+
+    StringList(std::initializer_list<String> args)
+        : Base(args)
+    {
+    }
+
+    StringList(const std::vector<String> &v)
+        : Base(v)
+    {
+    }
+
+    StringList(std::vector<String> &&v) noexcept
+        : Base(std::move(v))
+    {
+    }
+
+    template <typename InputIt, typename = decltype(*std::declval<InputIt>())>
+    StringList(InputIt firstIt, InputIt lastIt)
+        : Base(firstIt, lastIt)
+    {
+    }
+
+    template <typename Container,
+              typename = std::enable_if_t<std::is_same<std::decay_t<Container>, Vector<String>>::value>>
+    StringList(const Container &c)
+        : Base(c.begin(), c.end())
+    {
+    }
+
+    template <typename Foreign,
+              typename VecS = Vector<String>,
+              typename = std::enable_if_t<
+                  BridgesToCore<Foreign, StringList>::value ||
+                  BridgesToCore<Foreign, VecS>::value>,
+              typename = void>
+    StringList(const Foreign &foreign)
+        : StringList(Bridge<Foreign>::toCore(foreign))
+    {
+    }
+
+    template <typename Foreign,
+              typename VecS = Vector<String>,
+              typename = std::enable_if_t<
+                  BridgesFromCore<Foreign, StringList>::value ||
+                  BridgesFromCore<Foreign, VecS>::value>>
+    operator Foreign() const
+    {
+        typename Bridge<Foreign>::Core core(begin(), end());
+        return Bridge<Foreign>::fromCore(core);
+    }
+
+    bool isEmpty() const noexcept { return Base::empty(); }
+    int size() const noexcept { return static_cast<int>(Base::size()); }
+    int count() const noexcept { return size(); }
+    int length() const noexcept { return size(); }
+
+    const String &at(int i) const { return (*this)[static_cast<std::size_t>(i)]; }
+    String value(int i, const String &defaultValue = String()) const
+    {
+        if (i < 0 || i >= size())
+            return defaultValue;
+        return (*this)[static_cast<std::size_t>(i)];
+    }
+
+    String &first() { return Base::front(); }
+    const String &first() const { return Base::front(); }
+    String &last() { return Base::back(); }
+    const String &last() const { return Base::back(); }
+    const String &constFirst() const { return Base::front(); }
+    const String &constLast() const { return Base::back(); }
+
+    void append(const String &s) { Base::push_back(s); }
+    void append(String &&s) { Base::push_back(std::move(s)); }
+    void append(const StringList &other) { Base::insert(Base::end(), other.begin(), other.end()); }
+
+    void prepend(const String &s) { Base::insert(Base::begin(), s); }
+    void prepend(String &&s) { Base::insert(Base::begin(), std::move(s)); }
+
+    StringList &operator<<(const String &s)
+    {
+        append(s);
+        return *this;
+    }
+    StringList &operator<<(String &&s)
+    {
+        append(std::move(s));
+        return *this;
+    }
+    StringList &operator<<(const StringList &other)
+    {
+        append(other);
+        return *this;
+    }
+
+    StringList &operator+=(const String &s)
+    {
+        append(s);
+        return *this;
+    }
+    StringList &operator+=(const StringList &other)
+    {
+        append(other);
+        return *this;
+    }
+
+    void removeAt(int i)
+    {
+        if (i >= 0 && i < size())
+            Base::erase(Base::begin() + i);
+    }
+    void removeFirst()
+    {
+        if (!Base::empty())
+            Base::erase(Base::begin());
+    }
+    void removeLast()
+    {
+        if (!Base::empty())
+            Base::pop_back();
+    }
+    bool removeOne(const String &s);
+    int removeAll(const String &s);
+    int removeDuplicates();
+
+    String takeAt(int i)
+    {
+        String res = (*this)[static_cast<std::size_t>(i)];
+        Base::erase(Base::begin() + i);
+        return res;
+    }
+    String takeFirst() { return takeAt(0); }
+    String takeLast()
+    {
+        String res = std::move(Base::back());
+        Base::pop_back();
+        return res;
+    }
+
+    int indexOf(const String &s, int from = 0, CaseSensitivity cs = CaseSensitive) const noexcept;
+    int lastIndexOf(const String &s, int from = -1, CaseSensitivity cs = CaseSensitive) const noexcept;
+    bool contains(const String &s, CaseSensitivity cs = CaseSensitive) const noexcept
+    {
+        return indexOf(s, 0, cs) != -1;
+    }
+
+    String join(const String &sep) const;
+    String join(Char sep) const { return join(String(sep)); }
+    String join(Latin1Char sep) const { return join(String(sep)); }
+    String join(Latin1String sep) const { return join(String(sep)); }
+
+    StringList mid(int pos, int len = -1) const;
+    void sort(CaseSensitivity cs = CaseSensitive);
+    StringList filter(const String &str, CaseSensitivity cs = CaseSensitive) const;
+
+    friend bool operator==(const StringList &a, const StringList &b) noexcept
+    {
+        return static_cast<const Base &>(a) == static_cast<const Base &>(b);
+    }
+    friend bool operator!=(const StringList &a, const StringList &b) noexcept
+    {
+        return !(a == b);
+    }
+    friend StringList operator+(const StringList &a, const StringList &b)
+    {
+        StringList out(a);
+        out.append(b);
+        return out;
+    }
+};
 
 } // namespace AnimeCore
 

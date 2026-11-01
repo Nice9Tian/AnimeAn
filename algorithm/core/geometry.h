@@ -68,6 +68,28 @@ constexpr inline const T &bound(const T &minVal, const T &val, const T &maxVal) 
     return (minVal < clampedMax) ? clampedMax : minVal;
 }
 
+class Path;
+
+constexpr inline float degreesToRadians(float degrees) noexcept
+{
+    return degrees * float(3.14159265358979323846 / 180.0);
+}
+
+constexpr inline double degreesToRadians(double degrees) noexcept
+{
+    return degrees * (3.14159265358979323846 / 180.0);
+}
+
+constexpr inline float radiansToDegrees(float radians) noexcept
+{
+    return radians * float(180.0 / 3.14159265358979323846);
+}
+
+constexpr inline double radiansToDegrees(double radians) noexcept
+{
+    return radians * (180.0 / 3.14159265358979323846);
+}
+
 class Point
 {
 public:
@@ -217,6 +239,9 @@ public:
     constexpr PointF() noexcept : m_x(0.0), m_y(0.0) {}
     constexpr PointF(const Point &p) noexcept : m_x(p.x()), m_y(p.y()) {}
     constexpr PointF(double xpos, double ypos) noexcept : m_x(xpos), m_y(ypos) {}
+
+    template <class F, std::enable_if_t<BridgesToCore<F, Point>::value, int> = 0>
+    constexpr PointF(const F &f) : PointF(Bridge<F>::toCore(f)) {}
 
     template <class F, std::enable_if_t<BridgesToCore<F, PointF>::value, int> = 0>
     constexpr PointF(const F &f) : PointF(Bridge<F>::toCore(f)) {}
@@ -461,6 +486,133 @@ public:
 private:
     int m_wd;
     int m_ht;
+};
+
+class SizeF
+{
+public:
+    constexpr SizeF() noexcept : m_wd(-1.0), m_ht(-1.0) {}
+    constexpr SizeF(const Size &sz) noexcept : m_wd(sz.width()), m_ht(sz.height()) {}
+    constexpr SizeF(double w, double h) noexcept : m_wd(w), m_ht(h) {}
+
+    template <class F, std::enable_if_t<BridgesToCore<F, Size>::value, int> = 0>
+    constexpr SizeF(const F &f) : SizeF(Bridge<F>::toCore(f)) {}
+
+    template <class F, std::enable_if_t<BridgesToCore<F, SizeF>::value, int> = 0>
+    constexpr SizeF(const F &f) : SizeF(Bridge<F>::toCore(f)) {}
+
+    template <class F, std::enable_if_t<BridgesFromCore<F, SizeF>::value, int> = 0>
+    constexpr operator F() const { return Bridge<F>::fromCore(*this); }
+
+    constexpr bool isNull() const noexcept { return m_wd == 0.0 && m_ht == 0.0; }
+    constexpr bool isEmpty() const noexcept { return m_wd <= 0.0 || m_ht <= 0.0; }
+    constexpr bool isValid() const noexcept { return m_wd >= 0.0 && m_ht >= 0.0; }
+
+    constexpr double width() const noexcept { return m_wd; }
+    constexpr double height() const noexcept { return m_ht; }
+    constexpr void setWidth(double w) noexcept { m_wd = w; }
+    constexpr void setHeight(double h) noexcept { m_ht = h; }
+
+    constexpr void transpose() noexcept
+    {
+        double tmp = m_wd;
+        m_wd = m_ht;
+        m_ht = tmp;
+    }
+
+    constexpr SizeF transposed() const noexcept { return SizeF(m_ht, m_wd); }
+
+    constexpr SizeF expandedTo(const SizeF &otherSize) const noexcept
+    {
+        return SizeF(std::max(m_wd, otherSize.m_wd), std::max(m_ht, otherSize.m_ht));
+    }
+
+    constexpr SizeF boundedTo(const SizeF &otherSize) const noexcept
+    {
+        return SizeF(m_wd < otherSize.m_wd ? m_wd : otherSize.m_wd,
+                     m_ht < otherSize.m_ht ? m_ht : otherSize.m_ht);
+    }
+
+    constexpr double &rwidth() noexcept { return m_wd; }
+    constexpr double &rheight() noexcept { return m_ht; }
+
+    Size toSize() const noexcept
+    {
+        return Size(round(m_wd), round(m_ht));
+    }
+
+    constexpr SizeF &operator+=(const SizeF &s) noexcept
+    {
+        m_wd += s.m_wd;
+        m_ht += s.m_ht;
+        return *this;
+    }
+
+    constexpr SizeF &operator-=(const SizeF &s) noexcept
+    {
+        m_wd -= s.m_wd;
+        m_ht -= s.m_ht;
+        return *this;
+    }
+
+    constexpr SizeF &operator*=(double c) noexcept
+    {
+        m_wd *= c;
+        m_ht *= c;
+        return *this;
+    }
+
+    constexpr SizeF &operator/=(double c)
+    {
+        m_wd /= c;
+        m_ht /= c;
+        return *this;
+    }
+
+    friend constexpr bool fuzzyCompare(const SizeF &s1, const SizeF &s2) noexcept
+    {
+        return detail::fuzzyCompareElement(s1.m_wd, s2.m_wd) &&
+               detail::fuzzyCompareElement(s1.m_ht, s2.m_ht);
+    }
+
+    friend constexpr bool operator==(const SizeF &s1, const SizeF &s2) noexcept
+    {
+        return fuzzyCompare(s1, s2);
+    }
+
+    friend constexpr bool operator!=(const SizeF &s1, const SizeF &s2) noexcept
+    {
+        return !fuzzyCompare(s1, s2);
+    }
+
+    friend constexpr SizeF operator+(const SizeF &s1, const SizeF &s2) noexcept
+    {
+        return SizeF(s1.m_wd + s2.m_wd, s1.m_ht + s2.m_ht);
+    }
+
+    friend constexpr SizeF operator-(const SizeF &s1, const SizeF &s2) noexcept
+    {
+        return SizeF(s1.m_wd - s2.m_wd, s1.m_ht - s2.m_ht);
+    }
+
+    friend constexpr SizeF operator*(const SizeF &s, double c) noexcept
+    {
+        return SizeF(s.m_wd * c, s.m_ht * c);
+    }
+
+    friend constexpr SizeF operator*(double c, const SizeF &s) noexcept
+    {
+        return SizeF(s.m_wd * c, s.m_ht * c);
+    }
+
+    friend constexpr SizeF operator/(const SizeF &s, double c)
+    {
+        return SizeF(s.m_wd / c, s.m_ht / c);
+    }
+
+private:
+    double m_wd;
+    double m_ht;
 };
 
 class LineF
@@ -1138,6 +1290,12 @@ public:
     constexpr RectF(const Rect &r) noexcept
         : m_xp(r.x()), m_yp(r.y()), m_w(r.width()), m_h(r.height()) {}
 
+    constexpr RectF(const PointF &topleft, const SizeF &size) noexcept
+        : m_xp(topleft.x()), m_yp(topleft.y()), m_w(size.width()), m_h(size.height()) {}
+
+    template <class F, std::enable_if_t<BridgesToCore<F, Rect>::value, int> = 0>
+    constexpr RectF(const F &f) : RectF(Bridge<F>::toCore(f)) {}
+
     template <class F, std::enable_if_t<BridgesToCore<F, RectF>::value, int> = 0>
     constexpr RectF(const F &f) : RectF(Bridge<F>::toCore(f)) {}
 
@@ -1285,6 +1443,8 @@ public:
     constexpr double height() const noexcept { return m_h; }
     constexpr void setWidth(double aaw) noexcept { m_w = aaw; }
     constexpr void setHeight(double aah) noexcept { m_h = aah; }
+    constexpr SizeF size() const noexcept { return SizeF(m_w, m_h); }
+    constexpr void setSize(const SizeF &s) noexcept { m_w = s.width(); m_h = s.height(); }
 
     constexpr bool contains(const PointF &p) const noexcept
     {
@@ -2296,6 +2456,13 @@ public:
         xmax = std::max(xmax, x);
         ymax = std::max(ymax, y);
         return RectF(xmin, ymin, xmax - xmin, ymax - ymin);
+    }
+
+    template <typename PathType = Path,
+              std::enable_if_t<std::is_same_v<PathType, Path>, int> = 0>
+    PathType map(const PathType &p) const
+    {
+        return p.transformed(*this);
     }
 
     Rect mapRect(const Rect &rect) const noexcept

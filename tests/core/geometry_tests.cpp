@@ -8,7 +8,13 @@
 #include <QPointF>
 #include <QRect>
 #include <QRectF>
+#include "algorithm/core/path.h"
+#include "algorithm/core/qtbridge_path.h"
+#include <QPainterPath>
+#include <QPolygonF>
 #include <QSize>
+#include <QSizeF>
+#include <QtMath>
 #include <QTransform>
 #include <QtGlobal>
 
@@ -750,6 +756,133 @@ static void testColor()
     }
 }
 
+static bool sameSizeF(const SizeF &a, const QSizeF &b)
+{
+    return sameBits(a.width(), b.width()) && sameBits(a.height(), b.height());
+}
+
+static void testNewGeometryAndColorMethods()
+{
+    std::mt19937_64 rng(0xA00AULL);
+    for (int i = 0; i < kNumSamples; ++i) {
+        const double d1 = std::clamp(randomDouble(rng), -1e6, 1e6);
+        const double d2 = std::clamp(randomDouble(rng), -1e6, 1e6);
+        const float f1 = static_cast<float>(d1);
+
+        CHECK(sameBits(degreesToRadians(d1), qDegreesToRadians(d1)),
+              "degreesToRadians(double) mismatch at i=%d", i);
+        CHECK(sameBits(radiansToDegrees(d1), qRadiansToDegrees(d1)),
+              "radiansToDegrees(double) mismatch at i=%d", i);
+        CHECK(sameBitsF(degreesToRadians(f1), qDegreesToRadians(f1)),
+              "degreesToRadians(float) mismatch at i=%d", i);
+        CHECK(sameBitsF(radiansToDegrees(f1), qRadiansToDegrees(f1)),
+              "radiansToDegrees(float) mismatch at i=%d", i);
+
+        // SizeF differential tests
+        double w1 = d1;
+        double h1 = d2;
+        if (i % 11 == 0) { w1 = 0.0; h1 = 0.0; }
+        else if (i % 11 == 1) { w1 = -0.0; h1 = 0.0; }
+        else if (i % 11 == 2) { w1 = -5.5; h1 = 3.25; }
+
+        const double w2 = std::clamp(randomDouble(rng), -1e5, 1e5);
+        const double h2 = std::clamp(randomDouble(rng), -1e5, 1e5);
+
+        SizeF cs1 = (i % 17 == 0) ? SizeF() : SizeF(w1, h1);
+        QSizeF qs1 = (i % 17 == 0) ? QSizeF() : QSizeF(w1, h1);
+        SizeF cs2(w2, h2);
+        QSizeF qs2(w2, h2);
+
+        CHECK(sameSizeF(cs1, qs1), "SizeF ctor mismatch at i=%d", i);
+        CHECK(cs1.isNull() == qs1.isNull(), "SizeF::isNull mismatch at i=%d", i);
+        CHECK(cs1.isEmpty() == qs1.isEmpty(), "SizeF::isEmpty mismatch at i=%d", i);
+        CHECK(cs1.isValid() == qs1.isValid(), "SizeF::isValid mismatch at i=%d", i);
+        CHECK(sameSizeF(cs1.transposed(), qs1.transposed()), "SizeF::transposed mismatch at i=%d", i);
+        CHECK(sameSizeF(cs1.expandedTo(cs2), qs1.expandedTo(qs2)), "SizeF::expandedTo mismatch at i=%d", i);
+        CHECK(sameSizeF(cs1.boundedTo(cs2), qs1.boundedTo(qs2)), "SizeF::boundedTo mismatch at i=%d", i);
+        CHECK(sameSize(cs1.toSize(), qs1.toSize()), "SizeF::toSize mismatch at i=%d", i);
+        CHECK(sameSizeF(cs1 + cs2, qs1 + qs2), "SizeF + mismatch at i=%d", i);
+        CHECK(sameSizeF(cs1 - cs2, qs1 - qs2), "SizeF - mismatch at i=%d", i);
+        CHECK(sameSizeF(cs1 * 2.5, qs1 * 2.5), "SizeF * mismatch at i=%d", i);
+        CHECK(sameSizeF(2.5 * cs1, 2.5 * qs1), "scalar * SizeF mismatch at i=%d", i);
+        CHECK(sameSizeF(cs1 / 2.0, qs1 / 2.0), "SizeF / mismatch at i=%d", i);
+        CHECK((cs1 == cs2) == (qs1 == qs2), "SizeF == mismatch at i=%d", i);
+        CHECK((cs1 != cs2) == (qs1 != qs2), "SizeF != mismatch at i=%d", i);
+        CHECK(fuzzyCompare(cs1, cs2) == qFuzzyCompare(qs1, qs2), "fuzzyCompare(SizeF) mismatch at i=%d", i);
+
+        // RectF(PointF, SizeF), RectF::size(), RectF::setSize()
+        PointF tl(w2, h2);
+        QPointF qtl(w2, h2);
+        RectF crFromPS(tl, cs1);
+        QRectF qrFromPS(qtl, qs1);
+        CHECK(sameRectF(crFromPS, qrFromPS), "RectF(PointF, SizeF) mismatch at i=%d", i);
+        CHECK(sameSizeF(crFromPS.size(), qrFromPS.size()), "RectF::size() mismatch at i=%d", i);
+        crFromPS.setSize(cs2);
+        qrFromPS.setSize(qs2);
+        CHECK(sameRectF(crFromPS, qrFromPS), "RectF::setSize(SizeF) mismatch at i=%d", i);
+
+        // Bridge<QSizeF> and mixed SizeF / QSizeF operators
+        QSizeF qsf = cs1;
+        SizeF csf = qsf;
+        CHECK(sameSizeF(csf, qs1), "Bridge<QSizeF> mismatch at i=%d", i);
+        CHECK((cs1 == qs1) && !(cs1 != qs1), "SizeF == QSizeF mixed operator mismatch at i=%d", i);
+
+        // Color::lightnessF() and Color::lightness()
+        const int r = (i * 17) % 300 - 20;
+        const int g = (i * 31) % 300 - 20;
+        const int b = (i * 47) % 300 - 20;
+        const int a = (i * 13) % 300 - 20;
+        Color cc = (i % 23 == 0) ? Color() : Color(r, g, b, a);
+        QColor qc = (i % 23 == 0) ? QColor() : QColor(r, g, b, a);
+        CHECK(sameBitsF(cc.lightnessF(), qc.lightnessF()),
+              "Color::lightnessF mismatch at i=%d (%d,%d,%d,%d): got=%.9g expected=%.9g",
+              i, r, g, b, a, cc.lightnessF(), qc.lightnessF());
+        CHECK(cc.lightness() == qc.lightness(),
+              "Color::lightness mismatch at i=%d (%d,%d,%d,%d): got=%d expected=%d",
+              i, r, g, b, a, cc.lightness(), qc.lightness());
+    }
+
+    // Bridge<Qt::GlobalColor>, Bridge<QPolygonF>, Transform::map(Path)
+    const Qt::GlobalColor kGlobals[] = {
+        Qt::color0, Qt::color1, Qt::black, Qt::white, Qt::darkGray, Qt::gray, Qt::lightGray,
+        Qt::red, Qt::green, Qt::blue, Qt::cyan, Qt::magenta, Qt::yellow,
+        Qt::darkRed, Qt::darkGreen, Qt::darkBlue, Qt::darkCyan, Qt::darkMagenta, Qt::darkYellow,
+        Qt::transparent
+    };
+    for (Qt::GlobalColor gc : kGlobals) {
+        Color cc = gc;
+        QColor qc(gc);
+        CHECK(cc.isValid() == qc.isValid() && cc.rgba() == qc.rgba(),
+              "Bridge<Qt::GlobalColor> mismatch for %d", static_cast<int>(gc));
+    }
+
+    QPolygonF qpoly;
+    qpoly << QPointF(1.5, -2.5) << QPointF(10.0, 20.25) << QPointF(-5.0, 8.75);
+    Vector<PointF> cpoly = qpoly;
+    QPolygonF qpolyBack = cpoly;
+    CHECK(cpoly.size() == 3 && qpolyBack == qpoly, "Bridge<QPolygonF> roundtrip mismatch");
+
+    Path cpath;
+    cpath.moveTo(PointF(0.0, 0.0));
+    cpath.lineTo(PointF(10.0, 5.0));
+    cpath.cubicTo(PointF(12.0, 8.0), PointF(15.0, 12.0), PointF(20.0, 10.0));
+    cpath.closeSubpath();
+    QPainterPath qpath = cpath;
+
+    Transform ct = Transform::fromTranslate(3.5, -7.25) * Transform::fromScale(2.0, -1.5);
+    QTransform qt = QTransform::fromTranslate(3.5, -7.25) * QTransform::fromScale(2.0, -1.5);
+    Path cMappedPath = ct.map(cpath);
+    QPainterPath qMappedPath = qt.map(qpath);
+    CHECK(cMappedPath.elementCount() == qMappedPath.elementCount(), "Transform::map(Path) elementCount mismatch");
+    for (int idx = 0; idx < cMappedPath.elementCount(); ++idx) {
+        auto ce = cMappedPath.elementAt(idx);
+        auto qe = qMappedPath.elementAt(idx);
+        CHECK(sameBits(ce.x, qe.x) && sameBits(ce.y, qe.y)
+              && static_cast<int>(ce.type) == static_cast<int>(qe.type),
+              "Transform::map(Path) element %d mismatch", idx);
+    }
+}
+
 static void testQtBridgeGeometry()
 {
     std::mt19937_64 rng(0x9009ULL);
@@ -819,6 +952,7 @@ int main()
     testTransform();
     testColor();
     testQtBridgeGeometry();
+    testNewGeometryAndColorMethods();
 
     if (g_failed == 0) {
         std::printf("ALL geometry_tests PASSED (%d random samples per suite)\n", kNumSamples);

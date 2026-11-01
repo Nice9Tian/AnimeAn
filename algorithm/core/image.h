@@ -14,6 +14,9 @@
 
 namespace AnimeCore {
 
+class Color;
+class String;
+
 template <class T = unsigned int, std::enable_if_t<std::is_integral_v<T>, int> = 0>
 constexpr int qRed(T rgb)
 {
@@ -87,6 +90,7 @@ public:
 
     Image() = default;
     Image(int width, int height, Format format);
+    Image(const Size &size, Format format) : Image(size.width(), size.height(), format) {}
     Image(const unsigned char *data, int width, int height, Format format);
     Image(const unsigned char *data, int width, int height, int bytesPerLine, Format format);
 
@@ -121,6 +125,7 @@ public:
     const unsigned char *scanLine(int y) const;
 
     void fill(unsigned int pixelValue);
+    void fill(const Color &color);
     unsigned int pixel(int x, int y) const;
     void setPixel(int x, int y, unsigned int indexOrRgb);
     int gray(int x, int y) const;
@@ -142,6 +147,9 @@ public:
     static Image decodePng(const std::vector<unsigned char> &bytes);
     static std::vector<unsigned char> encodePng(const Image &image);
     std::vector<unsigned char> encodePng() const;
+
+    bool save(const String &fileName, const char *format = nullptr, int quality = -1) const;
+    bool load(const String &fileName, const char *format = nullptr);
 
 private:
     struct Data;
