@@ -12,7 +12,7 @@ Tauri 外壳（Rust，只启动和回收）
 AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfile/）
 ```
 
-后端用 `QGuiApplication` 跑在 `offscreen` 平台上，暂时依赖 QtCore、QtGui、QtNetwork，不依赖 QtWidgets 和 QtOpenGL。去掉 Qt 是迁移计划第 1 步的事，不在这里做。
+后端用 `QGuiApplication` 跑在 `offscreen` 平台上，暂时依赖 QtCore、QtGui、QtNetwork，不依赖 QtWidgets 和 QtOpenGL。计算层 `animean_core` 已经不依赖 Qt，还在用 Qt 的是画板（`QPainter`、`QMouseEvent`）、会话层和 WebSocket，要等迁移计划第 5 步抽出画板引擎。
 
 启动参数：`AnimeAnBackend.exe --port <端口，0 表示自动> --token <随机串>`。监听成功后向 stdout 打一行 `ANIMEAN_BACKEND_PORT=<端口>`，只监听 127.0.0.1。
 

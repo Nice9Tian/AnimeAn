@@ -1,36 +1,31 @@
 #ifndef ANIMEMODEL_H
 #define ANIMEMODEL_H
 
-#include <QColor>
-#include <QHash>
-#include <QImage>
-#include <QLineF>
-#include <QMap>
-#include <QPainterPath>
-#include <QPointF>
-#include <QRectF>
-#include <QSize>
-#include <QString>
-#include <QTransform>
-#include <QVector>
+#include "algorithm/core/color.h"
+#include "algorithm/core/containers.h"
+#include "algorithm/core/geometry.h"
+#include "algorithm/core/image.h"
+#include "algorithm/core/path.h"
+#include "algorithm/core/string.h"
+
 
 struct AnimeVectorStroke {
     int id = 0;
-    QString property;
-    QVector<QPointF> points;
-    QVector<qreal> lengths;
-    qreal totalLength = 0.0;
-    QPainterPath path;
-    QRectF bounds;
-    QColor color;
-    qreal width = 3.0;
+    AnimeCore::String property;
+    AnimeCore::Vector<AnimeCore::PointF> points;
+    AnimeCore::Vector<double> lengths;
+    double totalLength = 0.0;
+    AnimeCore::Path path;
+    AnimeCore::RectF bounds;
+    AnimeCore::Color color;
+    double width = 3.0;
     // Qt::PenStyle as an int (1 = SolidLine, 2 = DashLine, ...). Generic
     // per-stroke line style; rendering clamps invalid values to solid.
     int penStyle = 1;
 };
 
 struct AnimeVectorGroupId {
-    QVector<int> ids;
+    AnimeCore::Vector<int> ids;
 
     bool isGrouped() const { return !ids.isEmpty(); }
     int depth() const { return ids.size(); }
@@ -46,63 +41,63 @@ struct AnimeVectorStrokeNode {
 
 struct AnimeVectorFillRegion {
     int id = 0;
-    QString property;
-    QPointF seedPoint;
-    QPainterPath path;
-    QRectF bounds;
-    QColor color;
+    AnimeCore::String property;
+    AnimeCore::PointF seedPoint;
+    AnimeCore::Path path;
+    AnimeCore::RectF bounds;
+    AnimeCore::Color color;
     int sourceLayerIndex = -1;
     bool basedOnAllLayers = false;
 };
 
 struct AnimeRasterImage {
-    QImage image;
-    QPointF topLeft;
+    AnimeCore::Image image;
+    AnimeCore::PointF topLeft;
 
     bool isEmpty() const { return image.isNull(); }
-    QRectF bounds() const { return QRectF(topLeft, image.size()); }
+    AnimeCore::RectF bounds() const { return AnimeCore::RectF(topLeft, image.size()); }
 };
 
 class AnimeVectorImageModel {
 public:
-    const QVector<AnimeVectorStrokeNode> &strokeNodes() const;
-    const QVector<AnimeVectorFillRegion> &fillRegions() const;
+    const AnimeCore::Vector<AnimeVectorStrokeNode> &strokeNodes() const;
+    const AnimeCore::Vector<AnimeVectorFillRegion> &fillRegions() const;
     int strokeCount() const;
     int fillCount() const;
     bool hasRaster() const;
     const AnimeRasterImage &raster() const;
     const AnimeVectorStroke &strokeAt(int index) const;
     const AnimeVectorStrokeNode &strokeNodeAt(int index) const;
-    QRectF bounds() const;
-    void setRasterImage(const QImage &image, const QPointF &topLeft = QPointF());
+    AnimeCore::RectF bounds() const;
+    void setRasterImage(const AnimeCore::Image &image, const AnimeCore::PointF &topLeft = AnimeCore::PointF());
     void clearRasterImage();
     void addStroke(const AnimeVectorStroke &stroke);
     void addStrokeNode(const AnimeVectorStrokeNode &node);
     void addFillRegion(const AnimeVectorFillRegion &fill);
-    void translate(const QPointF &delta);
+    void translate(const AnimeCore::PointF &delta);
     // Affine transform of everything in the image (strokes, fills,
     // raster placement). The GENERIC half of the Transfer tool: what a
     // drag on a box handle MEANS lives in pyfile/transfer_tool.py; this
     // is only "apply this matrix". Stroke widths follow the mean scale
     // so a scaled drawing keeps its line weight proportional.
-    void transform(const QTransform &matrix);
+    void transform(const AnimeCore::Transform &matrix);
     void remapFillSourceLayersAfterDelete(int deletedLayerIndex);
     void remapFillSourceLayersAfterMove(int fromIndex, int toIndex);
     bool setFillRegionAt(int index, const AnimeVectorFillRegion &fill);
-    bool setFillRegionPath(int index, const QPainterPath &path);
-    bool setFillRegionColor(int index, const QColor &color);
+    bool setFillRegionPath(int index, const AnimeCore::Path &path);
+    bool setFillRegionColor(int index, const AnimeCore::Color &color);
     bool removeFillRegionAt(int index);
     void removeStrokeAt(int index);
-    int replaceStrokeWithPieces(int index, const QVector<AnimeVectorStroke> &pieces);
+    int replaceStrokeWithPieces(int index, const AnimeCore::Vector<AnimeVectorStroke> &pieces);
     void clear();
 
 private:
     void rebuildBounds();
 
-    QVector<AnimeVectorStrokeNode> m_strokes;
-    QVector<AnimeVectorFillRegion> m_fills;
+    AnimeCore::Vector<AnimeVectorStrokeNode> m_strokes;
+    AnimeCore::Vector<AnimeVectorFillRegion> m_fills;
     AnimeRasterImage m_raster;
-    QRectF m_bounds;
+    AnimeCore::RectF m_bounds;
 };
 
 struct AnimeCell {
@@ -120,22 +115,22 @@ enum class AnimeColumnType {
 
 class AnimeAsset {
 public:
-    QString name;
+    AnimeCore::String name;
     AnimeColumnType type = AnimeColumnType::Vector;
     // Backing asset of a script-owned working layer: excluded from the asset
     // panel and project files, same contract as AnimeColumn::internal.
     bool internal = false;
     AnimeVectorImageModel *frame(int frameId, bool create);
     const AnimeVectorImageModel *frame(int frameId) const;
-    QVector<int> frameIds() const;
+    AnimeCore::Vector<int> frameIds() const;
 
 private:
-    QMap<int, AnimeVectorImageModel> m_frames;
+    AnimeCore::Map<int, AnimeVectorImageModel> m_frames;
 };
 
 class AnimeColumn {
 public:
-    QString name;
+    AnimeCore::String name;
     // Stable identity, handed out by the scene and never reused. The layer
     // GROUP tree references columns by this rather than by index, so adding,
     // deleting or reordering layers needs no index fix-up in the tree.
@@ -152,7 +147,7 @@ public:
     AnimeColumnType type = AnimeColumnType::Vector;
     bool visible = true;
     bool locked = false;
-    qreal opacity = 1.0;
+    double opacity = 1.0;
     // Ephemeral working layer owned by a script (e.g. a tool preview): renders
     // normally (on top of regular columns) but is excluded from the layer
     // panel, selection attention, and project files. Never persisted.
@@ -166,10 +161,10 @@ public:
     int maxRow() const;
 
 private:
-    QVector<AnimeCell> denseCells(int rowCount) const;
-    void setDenseCells(const QVector<AnimeCell> &cells);
+    AnimeCore::Vector<AnimeCell> denseCells(int rowCount) const;
+    void setDenseCells(const AnimeCore::Vector<AnimeCell> &cells);
 
-    QVector<AnimeCell> m_cells;
+    AnimeCore::Vector<AnimeCell> m_cells;
     int m_firstRow = 0;
 };
 
@@ -185,28 +180,28 @@ private:
 struct AnimeLayerNode {
     int layerId = 0;
     int groupId = 0;
-    QString name;          // groups only
+    AnimeCore::String name;          // groups only
     bool collapsed = false; // groups only
     // Groups only: an opaque KIND string a script tool stamps on a group it
     // owns (e.g. "automapping"). The C++ side never interprets it beyond
     // carrying it through persistence, history and the layer context menu -
     // it is what lets a tool recognise its own unit-of-work groups without
     // the name-prefix guessing that uniqueLayerName() defeats.
-    QString tag;
-    QVector<AnimeLayerNode> children;
+    AnimeCore::String tag;
+    AnimeCore::Vector<AnimeLayerNode> children;
 
     bool isGroup() const { return groupId > 0; }
 };
 
 class AnimeXsheet {
 public:
-    QVector<AnimeColumn> columns;
+    AnimeCore::Vector<AnimeColumn> columns;
     int frameCount = 1;
     // Per-row names, SPARSE: a row nobody renamed is absent and reads as its
     // own number. Sparse rather than a dense vector because the default is a
     // function of the row index, so storing it would mean rewriting every
     // entry on every insert instead of only the rows that carry a real name.
-    QHash<int, QString> frameNames;
+    AnimeCore::Hash<int, AnimeCore::String> frameNames;
 
     AnimeCell cellAt(int row, int column) const;
     void setCell(int row, int column, const AnimeCell &cell);
@@ -224,34 +219,34 @@ class AnimeScene {
 public:
     AnimeScene();
 
-    QString id() const;
-    void setId(const QString &id);
-    QString textId() const;
-    void setTextId(const QString &id);
+    AnimeCore::String id() const;
+    void setId(const AnimeCore::String &id);
+    AnimeCore::String textId() const;
+    void setTextId(const AnimeCore::String &id);
     int intId() const;
     void setIntId(int id);
 
-    QVector<AnimeAsset> assets;
+    AnimeCore::Vector<AnimeAsset> assets;
     AnimeXsheet xsheet;
     // Layer group tree (top level). Reconciled against the columns by
     // AnimeSceneModel::normalizeLayerTree, so it survives any layer edit and
     // any project file that predates it.
-    QVector<AnimeLayerNode> layerTree;
+    AnimeCore::Vector<AnimeLayerNode> layerTree;
     int nextColumnId = 1;
     int nextGroupId = 1;
     // The page. A DOCUMENT property, not a view one: it decides where the
     // paper is, what an export covers and what a bucket fill is bounded by,
     // none of which may change because someone resized the window.
-    QSize canvasSize = QSize(1280, 720);
+    AnimeCore::Size canvasSize = AnimeCore::Size(1280, 720);
     // Timeline playback rate. 24 is "on ones"; 12 (the default) is on twos.
     int playbackFps = 12;
     // Opaque storage for script-side (Python) state that must travel with the
     // scene: copied into history snapshots and saved with the project. The
     // C++ side never interprets it.
-    QString scriptData;
+    AnimeCore::String scriptData;
 
 private:
-    QString m_textId;
+    AnimeCore::String m_textId;
     int m_intId = 0;
 };
 
@@ -261,10 +256,10 @@ public:
 
     const AnimeScene &scene() const;
     AnimeScene &scene();
-    QString id() const;
-    void setId(const QString &id);
-    QString textId() const;
-    void setTextId(const QString &id);
+    AnimeCore::String id() const;
+    void setId(const AnimeCore::String &id);
+    AnimeCore::String textId() const;
+    void setTextId(const AnimeCore::String &id);
     int intId() const;
     void setIntId(int id);
 
@@ -279,21 +274,21 @@ public:
     int layerCount() const;
     int frameCount() const;
     int assetCount() const;
-    QString layerName(int layerIndex) const;
-    void setLayerName(int layerIndex, const QString &name);
-    QString uniqueLayerName(const QString &baseName, int excludeLayerIndex = -1, int excludeAssetIndex = -1) const;
+    AnimeCore::String layerName(int layerIndex) const;
+    void setLayerName(int layerIndex, const AnimeCore::String &name);
+    AnimeCore::String uniqueLayerName(const AnimeCore::String &baseName, int excludeLayerIndex = -1, int excludeAssetIndex = -1) const;
     // The row's name: whatever was stored for it, or its 1-based number when
     // nobody named it.
-    QString frameName(int frameIndex) const;
+    AnimeCore::String frameName(int frameIndex) const;
     // An empty name - or one that spells the row's own default - clears the
     // entry rather than storing it, so "never renamed" stays one state.
-    void setFrameName(int frameIndex, const QString &name);
+    void setFrameName(int frameIndex, const AnimeCore::String &name);
     // The name a duplicate of this row gets: the row's own name stripped of a
     // trailing "-<letters>" suffix, then the first free suffix in -a, -b, ...
     // -z, -aa. Free means "no row currently reads as that name".
-    QString nextDuplicateName(int frameIndex) const;
-    QString assetName(int assetIndex) const;
-    void setAssetName(int assetIndex, const QString &name);
+    AnimeCore::String nextDuplicateName(int frameIndex) const;
+    AnimeCore::String assetName(int assetIndex) const;
+    void setAssetName(int assetIndex, const AnimeCore::String &name);
     AnimeColumnType assetType(int assetIndex) const;
     bool assetInternal(int assetIndex) const;
     void setAssetInternal(int assetIndex, bool internal);
@@ -304,8 +299,8 @@ public:
     void setLayerInternal(int layerIndex, bool internal);
     bool layerLocked(int layerIndex) const;
     void setLayerLocked(int layerIndex, bool locked);
-    qreal layerOpacity(int layerIndex) const;
-    void setLayerOpacity(int layerIndex, qreal opacity);
+    double layerOpacity(int layerIndex) const;
+    void setLayerOpacity(int layerIndex, double opacity);
     AnimeColumnType layerType(int layerIndex) const;
     bool isFillLayer(int layerIndex) const;
 
@@ -315,16 +310,16 @@ public:
     // answers in INDICES because every other layer call here does.
     int layerParentId(int layerIndex) const;
     void setLayerParentId(int layerIndex, int parentLayerId);
-    QVector<int> childLayerIndices(int parentLayerIndex) const;
+    AnimeCore::Vector<int> childLayerIndices(int parentLayerIndex) const;
 
-    QString scriptData() const;
-    void setScriptData(const QString &data);
+    AnimeCore::String scriptData() const;
+    void setScriptData(const AnimeCore::String &data);
 
-    QSize canvasSize() const;
+    AnimeCore::Size canvasSize() const;
     // Clamped to a sane range; a zero or negative page would make the view
     // and every bounds-driven algorithm degenerate.
-    void setCanvasSize(const QSize &size);
-    static QSize defaultCanvasSize();
+    void setCanvasSize(const AnimeCore::Size &size);
+    static AnimeCore::Size defaultCanvasSize();
 
     // --- layer groups -----------------------------------------------------
     // The tree is RECONCILED rather than maintained in lockstep: every read
@@ -333,37 +328,37 @@ public:
     // deleteLayer, moveLayer, project loading and history snapshots stay
     // untouched by grouping.
     void normalizeLayerTree();
-    const QVector<AnimeLayerNode> &layerTree() const;
+    const AnimeCore::Vector<AnimeLayerNode> &layerTree() const;
     // Replaces the whole tree (then reconciles it, so anything the caller
     // forgot to mention simply reappears ungrouped rather than vanishing).
-    void setLayerTree(const QVector<AnimeLayerNode> &tree);
+    void setLayerTree(const AnimeCore::Vector<AnimeLayerNode> &tree);
     int layerIdAt(int layerIndex) const;
     int layerIndexForId(int layerId) const;
     // Members are given as layer INDICES and existing group ids; both are
     // detached from wherever they sit now and moved into the new group, which
     // takes the position of the first member. Returns the new group id, or 0
     // if nothing valid was named.
-    int createLayerGroup(const QString &name,
-                         const QVector<int> &layerIndices,
-                         const QVector<int> &groupIds,
+    int createLayerGroup(const AnimeCore::String &name,
+                         const AnimeCore::Vector<int> &layerIndices,
+                         const AnimeCore::Vector<int> &groupIds,
                          bool collapsed = false);
     bool setLayerGroupCollapsed(int groupId, bool collapsed);
-    bool setLayerGroupName(int groupId, const QString &name);
+    bool setLayerGroupName(int groupId, const AnimeCore::String &name);
     // Detaches the named layers from wherever they sit and appends them to
     // an EXISTING group - the missing half of createLayerGroup that lets a
     // tool refresh a unit-of-work group's members in place. Returns how many
     // layers moved.
-    int addLayersToGroup(int groupId, const QVector<int> &layerIndices);
+    int addLayersToGroup(int groupId, const AnimeCore::Vector<int> &layerIndices);
     // The opaque script-owned kind string on a group (see AnimeLayerNode::tag).
-    bool setLayerGroupTag(int groupId, const QString &tag);
-    QString layerGroupTag(int groupId) const;
+    bool setLayerGroupTag(int groupId, const AnimeCore::String &tag);
+    AnimeCore::String layerGroupTag(int groupId) const;
     // The innermost group that (transitively) contains this column, filtered
     // to groups carrying `tag` when it is non-empty; 0 when none does.
-    int groupIdForLayer(int layerIndex, const QString &tag = QString()) const;
+    int groupIdForLayer(int layerIndex, const AnimeCore::String &tag = AnimeCore::String()) const;
     // Removes the group itself, splicing its children into its parent.
     bool dissolveLayerGroup(int groupId);
     // Every column id at or below this group, in tree order.
-    QVector<int> layerIdsInGroup(int groupId) const;
+    AnimeCore::Vector<int> layerIdsInGroup(int groupId) const;
     // Deletes the group AND the layers inside it (subgroups included),
     // remapping fill sources as it goes. Returns how many layers went.
     int deleteLayerGroup(int groupId);
@@ -371,7 +366,7 @@ public:
 
     int addLayer();
     int addFillLayer();
-    int addAsset(AnimeColumnType type = AnimeColumnType::Vector, const QString &name = QString());
+    int addAsset(AnimeColumnType type = AnimeColumnType::Vector, const AnimeCore::String &name = AnimeCore::String());
     bool deleteAsset(int assetIndex);
     // Removes the column AND garbage-collects the assets it exposed that no
     // surviving cell references (the private asset addLayer paired with the
@@ -418,8 +413,8 @@ public:
     int addLayerForAsset(int row, int assetIndex);
     AnimeVectorImageModel *currentImage(bool create, AnimeColumnType assetType = AnimeColumnType::Vector);
     const AnimeVectorImageModel *imageForCell(const AnimeCell &cell) const;
-    bool setRasterImageAt(int row, int layerIndex, const QImage &image, const QPointF &topLeft);
-    int addRasterLayer(const QString &name, int frameIndex, const QImage &image, const QPointF &topLeft);
+    bool setRasterImageAt(int row, int layerIndex, const AnimeCore::Image &image, const AnimeCore::PointF &topLeft);
+    int addRasterLayer(const AnimeCore::String &name, int frameIndex, const AnimeCore::Image &image, const AnimeCore::PointF &topLeft);
     void remapFillSourceLayersAfterDelete(int deletedLayerIndex);
     void remapFillSourceLayersAfterMove(int fromIndex, int toIndex);
     AnimeColumn *currentColumn();
@@ -429,17 +424,17 @@ public:
     // Boundary geometry for region filling: every stroke segment on visible,
     // non-fill, non-internal columns at the given frame. layerIndex >= 0
     // restricts the walls to that single column.
-    QVector<QLineF> fillBoundarySegments(int frame, int layerIndex = -1) const;
+    AnimeCore::Vector<AnimeCore::LineF> fillBoundarySegments(int frame, int layerIndex = -1) const;
     // The bounding rect of exactly those segments. A bucket fill is clipped
     // against the ARTWORK, so the clip has to come from the same walls the
     // trace runs on - a bound that disagreed with them would slice regions
     // the tracer legitimately found.
-    QRectF fillBoundaryBounds(int frame, int layerIndex = -1) const;
+    AnimeCore::RectF fillBoundaryBounds(int frame, int layerIndex = -1) const;
     // Everything actually drawn on a frame, page or no page: the union of
     // every cell's bounds across every column. What the VIEW must be able
     // to reach is decided from this, not from the page - art drawn past
     // the paper is still art, and unreachable art cannot be edited.
-    QRectF contentBounds(int frame) const;
+    AnimeCore::RectF contentBounds(int frame) const;
 
 private:
     // normalizeLayerTree is logically const (it only reconciles bookkeeping),

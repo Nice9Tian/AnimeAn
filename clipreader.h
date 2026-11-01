@@ -1,10 +1,11 @@
 #ifndef CLIPREADER_H
 #define CLIPREADER_H
 
-#include <QColor>
-#include <QPointF>
-#include <QString>
-#include <QVector>
+#include "algorithm/core/color.h"
+#include "algorithm/core/containers.h"
+#include "algorithm/core/geometry.h"
+#include "algorithm/core/string.h"
+
 
 // Minimal, dependency-free reader for Clip Studio Paint ".clip" documents.
 //
@@ -29,20 +30,20 @@
 namespace ClipReader {
 
 struct ClipStroke {
-    QVector<QPointF> points;
-    QColor color = Qt::black;
-    qreal width = 3.0;
+    AnimeCore::Vector<AnimeCore::PointF> points;
+    AnimeCore::Color color = AnimeCore::Color(0, 0, 0);
+    double width = 3.0;
 };
 
 struct ClipDocument {
-    QVector<ClipStroke> strokes;
+    AnimeCore::Vector<ClipStroke> strokes;
     bool valid = false;
-    QString error;
+    AnimeCore::String error;
 };
 
 // Parses the file at absolutePath. On failure returns a document with
 // valid == false and a human-readable error string.
-ClipDocument readClipFile(const QString &absolutePath);
+ClipDocument readClipFile(const AnimeCore::String &absolutePath);
 
 } // namespace ClipReader
 

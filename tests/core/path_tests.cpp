@@ -606,6 +606,37 @@ void testPerformance()
     CHECK(ratio < 3.0, "Path::length() is too slow compared to QPainterPath::length(): %.2fx", ratio);
 }
 
+void testBridgedCopy()
+{
+    Path path;
+    path.moveTo(1.0, 2.0);
+    path.cubicTo(3.0, 4.0, 5.0, 6.0, 7.0, 8.0);
+
+    const QPainterPath first = path;
+    CHECK(path.bridgedCopy() != nullptr, "conversion should leave a bridged copy");
+    const std::shared_ptr<const void> kept = path.bridgedCopy();
+    const QPainterPath second = path;
+    CHECK(path.bridgedCopy() == kept, "an unchanged path should not be converted again");
+    CHECK(first == second, "the bridged copy should equal the first conversion");
+
+    Path shared = path;
+    CHECK(shared.bridgedCopy() == kept, "copies should share the bridged copy");
+    shared.lineTo(9.0, 10.0);
+    CHECK(shared.bridgedCopy() == nullptr, "a write should drop the bridged copy");
+    CHECK(path.bridgedCopy() == kept, "writing to a copy should not touch the original");
+    CHECK(QPainterPath(shared).elementCount() == first.elementCount() + 1,
+          "conversion after a write should see the write");
+
+    path.setElementPositionAt(0, 11.0, 12.0);
+    CHECK(QPainterPath(path).elementAt(0).x == 11.0, "moving an element should invalidate the copy");
+    path.setFillRule(WindingFill);
+    CHECK(QPainterPath(path).fillRule() == Qt::WindingFill, "fill rule should invalidate the copy");
+    path.translate(1.0, 0.0);
+    CHECK(QPainterPath(path).elementAt(0).x == 12.0, "translate should invalidate the copy");
+    path.clear();
+    CHECK(QPainterPath(path).isEmpty(), "clear should invalidate the copy");
+}
+
 void testAddSelf()
 {
     Path core;
@@ -629,6 +660,7 @@ void testAddSelf()
 int main()
 {
     testEdgeCases();
+    testBridgedCopy();
     testAddSelf();
     testImplicitSharing();
     testRandomDifferential();

@@ -1,13 +1,20 @@
 #include "animemodel.h"
 #include "algorithm/vectorlogic.h"
 
-#include <QRegularExpression>
-#include <QSet>
 
 #include <algorithm>
 #include <climits>
 #include <functional>
 #include <cmath>
+
+#include "algorithm/core/color.h"
+#include "algorithm/core/containers.h"
+#include "algorithm/core/geometry.h"
+#include "algorithm/core/image.h"
+#include "algorithm/core/path.h"
+#include "algorithm/core/string.h"
+
+using namespace AnimeCore;
 
 namespace {
 int &nextSceneIntIdValue()
@@ -30,9 +37,9 @@ void reserveSceneIntId(int id)
     }
 }
 
-QString defaultSceneName(int id)
+String defaultSceneName(int id)
 {
-    return QStringLiteral("Scene %1").arg(id);
+    return ANIME_STR("Scene %1").arg(id);
 }
 
 int maxInt(int a, int b)
@@ -42,11 +49,11 @@ int maxInt(int a, int b)
 
 // The duplicate suffix alphabet: 0 -> "a", 25 -> "z", 26 -> "aa". Bijective
 // base 26, so every index has exactly one spelling and no "-" run repeats.
-QString duplicateSuffix(int index)
+String duplicateSuffix(int index)
 {
-    QString suffix;
+    String suffix;
     for (int n = index + 1; n > 0; n = (n - 1) / 26) {
-        suffix.prepend(QChar(QLatin1Char('a' + ((n - 1) % 26))));
+        suffix.prepend(Char(Latin1Char('a' + ((n - 1) % 26))));
     }
     return suffix;
 }
@@ -54,16 +61,25 @@ QString duplicateSuffix(int index)
 // The stem a duplicate chain hangs off: a name that already ends in a
 // duplicate suffix names the SAME drawing family, so "3-b" duplicates to
 // "3-c" rather than "3-b-a".
-QString duplicateBaseName(const QString &name)
+String duplicateBaseName(const String &name)
 {
-    static const QRegularExpression suffixPattern(QStringLiteral("-[a-z]+$"));
-    const QRegularExpressionMatch match = suffixPattern.match(name);
-    return match.hasMatch() ? name.left(match.capturedStart()) : name;
+    int i = name.size();
+    while (i > 0) {
+        const char16_t ch = name[i - 1].unicode();
+        if (ch < u'a' || ch > u'z') {
+            break;
+        }
+        --i;
+    }
+    if (i > 0 && i < name.size() && name[i - 1] == Latin1Char('-')) {
+        return name.left(i - 1);
+    }
+    return name;
 }
 
-QString nextNumberedColumnName(const QVector<AnimeColumn> &columns, const QString &baseName)
+String nextNumberedColumnName(const Vector<AnimeColumn> &columns, const String &baseName)
 {
-    const QString prefix = baseName + QLatin1Char(' ');
+    const String prefix = baseName + Latin1Char(' ');
     int nextNumber = 1;
     for (const AnimeColumn &column : columns) {
         if (!column.name.startsWith(prefix)) {
@@ -76,10 +92,10 @@ QString nextNumberedColumnName(const QVector<AnimeColumn> &columns, const QStrin
             nextNumber = number + 1;
         }
     }
-    return QStringLiteral("%1 %2").arg(baseName).arg(nextNumber);
+    return ANIME_STR("%1 %2").arg(baseName).arg(nextNumber);
 }
 
-bool columnNameExists(const QVector<AnimeColumn> &columns, const QString &name, int excludeIndex)
+bool columnNameExists(const Vector<AnimeColumn> &columns, const String &name, int excludeIndex)
 {
     for (int i = 0; i < columns.size(); ++i) {
         if (i != excludeIndex && columns[i].name == name) {
@@ -89,26 +105,26 @@ bool columnNameExists(const QVector<AnimeColumn> &columns, const QString &name, 
     return false;
 }
 
-QString assetTypeName(AnimeColumnType type)
+String assetTypeName(AnimeColumnType type)
 {
     switch (type) {
     case AnimeColumnType::Raster:
-        return QStringLiteral("Raster");
+        return ANIME_STR("Raster");
     case AnimeColumnType::Fill:
-        return QStringLiteral("Fill");
+        return ANIME_STR("Fill");
     case AnimeColumnType::Vector:
     default:
-        return QStringLiteral("Vector");
+        return ANIME_STR("Vector");
     }
 }
 }
 
-const QVector<AnimeVectorStrokeNode> &AnimeVectorImageModel::strokeNodes() const
+const Vector<AnimeVectorStrokeNode> &AnimeVectorImageModel::strokeNodes() const
 {
     return m_strokes;
 }
 
-const QVector<AnimeVectorFillRegion> &AnimeVectorImageModel::fillRegions() const
+const Vector<AnimeVectorFillRegion> &AnimeVectorImageModel::fillRegions() const
 {
     return m_fills;
 }
@@ -143,12 +159,12 @@ const AnimeVectorStrokeNode &AnimeVectorImageModel::strokeNodeAt(int index) cons
     return m_strokes[index];
 }
 
-QRectF AnimeVectorImageModel::bounds() const
+RectF AnimeVectorImageModel::bounds() const
 {
     return m_bounds;
 }
 
-void AnimeVectorImageModel::setRasterImage(const QImage &image, const QPointF &topLeft)
+void AnimeVectorImageModel::setRasterImage(const Image &image, const PointF &topLeft)
 {
     m_raster.image = image;
     m_raster.topLeft = topLeft;
@@ -188,7 +204,7 @@ void AnimeVectorImageModel::addFillRegion(const AnimeVectorFillRegion &fill)
     }
 }
 
-void AnimeVectorImageModel::translate(const QPointF &delta)
+void AnimeVectorImageModel::translate(const PointF &delta)
 {
     if (delta.isNull()) {
         return;
@@ -203,7 +219,7 @@ void AnimeVectorImageModel::translate(const QPointF &delta)
         fill.bounds.translate(delta);
     }
     for (AnimeVectorStrokeNode &node : m_strokes) {
-        for (QPointF &point : node.stroke.points) {
+        for (PointF &point : node.stroke.points) {
             point += delta;
         }
         node.stroke.path.translate(delta);
@@ -212,7 +228,7 @@ void AnimeVectorImageModel::translate(const QPointF &delta)
     rebuildBounds();
 }
 
-void AnimeVectorImageModel::transform(const QTransform &matrix)
+void AnimeVectorImageModel::transform(const Transform &matrix)
 {
     if (matrix.isIdentity()) {
         return;
@@ -221,19 +237,18 @@ void AnimeVectorImageModel::transform(const QTransform &matrix)
     // Widths are a LENGTH, not a coordinate: they follow the transform's
     // mean linear scale (sqrt of |det|), so a uniformly scaled drawing keeps
     // its line weight in proportion and a pure translation leaves it alone.
-    const qreal determinant = std::abs(matrix.m11() * matrix.m22() - matrix.m12() * matrix.m21());
-    const qreal widthScale = determinant > 0.0 ? std::sqrt(determinant) : 1.0;
+    const double determinant = std::abs(matrix.m11() * matrix.m22() - matrix.m12() * matrix.m21());
+    const double widthScale = determinant > 0.0 ? std::sqrt(determinant) : 1.0;
 
     if (!m_raster.isEmpty()) {
         // The raster's PLACEMENT and its SIZE both follow the matrix: mapping
         // only the corner left a scaled layer with a full-size bitmap
         // hanging off it, so the scale grips read as no-ops on a raster.
-        const QRectF mapped = matrix.mapRect(m_raster.bounds());
-        const QSize target(qMax(1, qRound(mapped.width())),
-                           qMax(1, qRound(mapped.height())));
+        const RectF mapped = matrix.mapRect(m_raster.bounds());
+        const Size target(std::max(1, AnimeCore::round(mapped.width())),
+                           std::max(1, AnimeCore::round(mapped.height())));
         if (target != m_raster.image.size() && !m_raster.image.isNull()) {
-            m_raster.image = m_raster.image.scaled(target, Qt::IgnoreAspectRatio,
-                                                   Qt::SmoothTransformation);
+            m_raster.image = m_raster.image.scaled(target.width(), target.height());
         }
         // A negative determinant is a mirror; the pixels have to flip with
         // the box or the image reads back-to-front inside a correct frame.
@@ -246,35 +261,35 @@ void AnimeVectorImageModel::transform(const QTransform &matrix)
     }
     for (AnimeVectorFillRegion &fill : m_fills) {
         fill.seedPoint = matrix.map(fill.seedPoint);
-        fill.path = matrix.map(fill.path);
+        fill.path = fill.path.transformed(matrix);
         fill.bounds = fill.path.boundingRect();
     }
     for (AnimeVectorStrokeNode &node : m_strokes) {
-        for (QPointF &point : node.stroke.points) {
+        for (PointF &point : node.stroke.points) {
             point = matrix.map(point);
         }
-        if (widthScale > 0.0 && !qFuzzyCompare(widthScale, qreal(1.0))) {
+        if (widthScale > 0.0 && !AnimeCore::fuzzyCompare(widthScale, double(1.0))) {
             // Floored at a hair rather than at 0.1: the Transfer tool applies
             // a drag as a chain of incremental matrices, and a saturating
             // clamp is not invertible - shrinking and growing back left every
             // stroke permanently fattened.
-            node.stroke.width = std::max(qreal(1e-4), node.stroke.width * widthScale);
+            node.stroke.width = std::max(double(1e-4), node.stroke.width * widthScale);
         }
-        node.stroke.path = matrix.map(node.stroke.path);
+        node.stroke.path = node.stroke.path.transformed(matrix);
         if (!node.stroke.path.isEmpty()) {
             // PADDED by the stroke width, like every other producer of these
             // bounds: they are the cull box for erase/delete/cut and for the
             // fill-boundary extent, and an unpadded rect is EMPTY for an
             // axis-aligned stroke - which made such a stroke uneraseable.
-            const qreal pad = node.stroke.width;
+            const double pad = node.stroke.width;
             node.stroke.bounds = node.stroke.path.boundingRect()
                                      .adjusted(-pad, -pad, pad, pad);
         }
         // Arc-length tables are geometry, so they scale with it; leaving them
         // describing the pre-transform stroke made every arc-length consumer
         // (splitting, sampling, the mapping) read a scaled stroke wrong.
-        if (widthScale > 0.0 && !qFuzzyCompare(widthScale, qreal(1.0))) {
-            for (qreal &length : node.stroke.lengths) {
+        if (widthScale > 0.0 && !AnimeCore::fuzzyCompare(widthScale, double(1.0))) {
+            for (double &length : node.stroke.lengths) {
                 length *= widthScale;
             }
             node.stroke.totalLength *= widthScale;
@@ -322,7 +337,7 @@ bool AnimeVectorImageModel::setFillRegionAt(int index, const AnimeVectorFillRegi
     return true;
 }
 
-bool AnimeVectorImageModel::setFillRegionPath(int index, const QPainterPath &path)
+bool AnimeVectorImageModel::setFillRegionPath(int index, const Path &path)
 {
     if (index < 0 || index >= m_fills.size()) {
         return false;
@@ -334,7 +349,7 @@ bool AnimeVectorImageModel::setFillRegionPath(int index, const QPainterPath &pat
     return true;
 }
 
-bool AnimeVectorImageModel::setFillRegionColor(int index, const QColor &color)
+bool AnimeVectorImageModel::setFillRegionColor(int index, const Color &color)
 {
     if (index < 0 || index >= m_fills.size()) {
         return false;
@@ -365,7 +380,7 @@ void AnimeVectorImageModel::removeStrokeAt(int index)
     rebuildBounds();
 }
 
-int AnimeVectorImageModel::replaceStrokeWithPieces(int index, const QVector<AnimeVectorStroke> &pieces)
+int AnimeVectorImageModel::replaceStrokeWithPieces(int index, const Vector<AnimeVectorStroke> &pieces)
 {
     // Returns the number of pieces actually inserted, or -1 for an invalid
     // index, so callers can tell a real replacement from a silent no-op
@@ -393,12 +408,12 @@ void AnimeVectorImageModel::clear()
     m_strokes.clear();
     m_fills.clear();
     m_raster = AnimeRasterImage();
-    m_bounds = QRectF();
+    m_bounds = RectF();
 }
 
 void AnimeVectorImageModel::rebuildBounds()
 {
-    m_bounds = QRectF();
+    m_bounds = RectF();
     if (!m_raster.isEmpty()) {
         m_bounds = m_raster.bounds();
     }
@@ -447,7 +462,7 @@ const AnimeVectorImageModel *AnimeAsset::frame(int frameId) const
     return &it.value();
 }
 
-QVector<int> AnimeAsset::frameIds() const
+Vector<int> AnimeAsset::frameIds() const
 {
     return m_frames.keys().toVector();
 }
@@ -517,7 +532,7 @@ void AnimeColumn::insertCell(int row)
         return;
     }
 
-    QVector<AnimeCell> cells = denseCells(maxInt(maxRow() + 1, row + 1));
+    Vector<AnimeCell> cells = denseCells(maxInt(maxRow() + 1, row + 1));
     cells.insert(row, AnimeCell());
     setDenseCells(cells);
 }
@@ -528,7 +543,7 @@ void AnimeColumn::removeCell(int row)
         return;
     }
 
-    QVector<AnimeCell> cells = denseCells(maxInt(maxRow() + 1, row + 1));
+    Vector<AnimeCell> cells = denseCells(maxInt(maxRow() + 1, row + 1));
     if (row >= cells.size()) {
         return;
     }
@@ -542,7 +557,7 @@ void AnimeColumn::moveCell(int fromRow, int toRow)
         return;
     }
 
-    QVector<AnimeCell> cells = denseCells(maxInt(maxRow() + 1, maxInt(fromRow + 1, toRow + 1)));
+    Vector<AnimeCell> cells = denseCells(maxInt(maxRow() + 1, maxInt(fromRow + 1, toRow + 1)));
     if (fromRow >= cells.size() || toRow >= cells.size()) {
         return;
     }
@@ -560,9 +575,9 @@ int AnimeColumn::maxRow() const
     return m_firstRow + m_cells.size() - 1;
 }
 
-QVector<AnimeCell> AnimeColumn::denseCells(int rowCount) const
+Vector<AnimeCell> AnimeColumn::denseCells(int rowCount) const
 {
-    QVector<AnimeCell> cells;
+    Vector<AnimeCell> cells;
     cells.resize(maxInt(0, rowCount));
     for (int row = 0; row < cells.size(); ++row) {
         cells[row] = cellAt(row);
@@ -570,7 +585,7 @@ QVector<AnimeCell> AnimeColumn::denseCells(int rowCount) const
     return cells;
 }
 
-void AnimeColumn::setDenseCells(const QVector<AnimeCell> &cells)
+void AnimeColumn::setDenseCells(const Vector<AnimeCell> &cells)
 {
     m_cells.clear();
     m_firstRow = 0;
@@ -618,7 +633,7 @@ void AnimeXsheet::ensureColumnCount(int count)
 {
     while (columns.size() < count) {
         AnimeColumn column;
-        column.name = nextNumberedColumnName(columns, QStringLiteral("Layer"));
+        column.name = nextNumberedColumnName(columns, ANIME_STR("Layer"));
         columns.append(column);
     }
 }
@@ -635,7 +650,7 @@ void AnimeXsheet::shiftFrameNamesForInsert(int row)
     if (row < 0 || frameNames.isEmpty()) {
         return;
     }
-    QHash<int, QString> shifted;
+    Hash<int, String> shifted;
     shifted.reserve(frameNames.size());
     for (auto it = frameNames.constBegin(); it != frameNames.constEnd(); ++it) {
         shifted.insert(it.key() >= row ? it.key() + 1 : it.key(), it.value());
@@ -648,7 +663,7 @@ void AnimeXsheet::shiftFrameNamesForDelete(int row)
     if (row < 0 || frameNames.isEmpty()) {
         return;
     }
-    QHash<int, QString> shifted;
+    Hash<int, String> shifted;
     shifted.reserve(frameNames.size());
     for (auto it = frameNames.constBegin(); it != frameNames.constEnd(); ++it) {
         if (it.key() == row) {
@@ -667,8 +682,8 @@ void AnimeXsheet::shiftFrameNamesForMove(int fromRow, int toRow)
     // Same take-then-insert the cells go through, so the name lands wherever
     // its row landed: remove `fromRow`, then re-index against the insert slot.
     const bool named = frameNames.contains(fromRow);
-    const QString moved = frameNames.value(fromRow);
-    QHash<int, QString> shifted;
+    const String moved = frameNames.value(fromRow);
+    Hash<int, String> shifted;
     shifted.reserve(frameNames.size());
     for (auto it = frameNames.constBegin(); it != frameNames.constEnd(); ++it) {
         if (it.key() == fromRow) {
@@ -692,24 +707,24 @@ AnimeScene::AnimeScene()
     m_textId = defaultSceneName(m_intId);
 }
 
-QString AnimeScene::id() const
+String AnimeScene::id() const
 {
     return textId();
 }
 
-void AnimeScene::setId(const QString &id)
+void AnimeScene::setId(const String &id)
 {
     setTextId(id);
 }
 
-QString AnimeScene::textId() const
+String AnimeScene::textId() const
 {
     return m_textId;
 }
 
-void AnimeScene::setTextId(const QString &id)
+void AnimeScene::setTextId(const String &id)
 {
-    const QString name = id.trimmed();
+    const String name = id.trimmed();
     m_textId = name.isEmpty() ? defaultSceneName(m_intId) : name;
 }
 
@@ -743,22 +758,22 @@ AnimeScene &AnimeSceneModel::scene()
     return m_scene;
 }
 
-QString AnimeSceneModel::id() const
+String AnimeSceneModel::id() const
 {
     return textId();
 }
 
-void AnimeSceneModel::setId(const QString &id)
+void AnimeSceneModel::setId(const String &id)
 {
     setTextId(id);
 }
 
-QString AnimeSceneModel::textId() const
+String AnimeSceneModel::textId() const
 {
     return m_scene.textId();
 }
 
-void AnimeSceneModel::setTextId(const QString &id)
+void AnimeSceneModel::setTextId(const String &id)
 {
     m_scene.setTextId(id);
 }
@@ -849,37 +864,37 @@ int AnimeSceneModel::assetCount() const
     return m_scene.assets.size();
 }
 
-QString AnimeSceneModel::layerName(int layerIndex) const
+String AnimeSceneModel::layerName(int layerIndex) const
 {
     if (layerIndex < 0 || layerIndex >= m_scene.xsheet.columns.size()) {
-        return QString();
+        return String();
     }
     return m_scene.xsheet.columns[layerIndex].name;
 }
 
-void AnimeSceneModel::setLayerName(int layerIndex, const QString &name)
+void AnimeSceneModel::setLayerName(int layerIndex, const String &name)
 {
     if (layerIndex < 0 || layerIndex >= m_scene.xsheet.columns.size()) {
         return;
     }
     const int assetIndex = assetIndexAt(m_currentFrame, layerIndex);
-    const QString uniqueName = uniqueLayerName(name, layerIndex, assetIndex);
+    const String uniqueName = uniqueLayerName(name, layerIndex, assetIndex);
     m_scene.xsheet.columns[layerIndex].name = uniqueName;
     if (assetIndex >= 0 && assetIndex < m_scene.assets.size()) {
         m_scene.assets[assetIndex].name = uniqueName;
     }
 }
 
-QString AnimeSceneModel::uniqueLayerName(const QString &baseName, int excludeLayerIndex, int excludeAssetIndex) const
+String AnimeSceneModel::uniqueLayerName(const String &baseName, int excludeLayerIndex, int excludeAssetIndex) const
 {
-    QString candidate = baseName.trimmed();
+    String candidate = baseName.trimmed();
     if (candidate.isEmpty()) {
-        candidate = QStringLiteral("Layer");
+        candidate = ANIME_STR("Layer");
     }
 
-    QString uniqueName = candidate;
+    String uniqueName = candidate;
     int number = 1;
-    auto exists = [&](const QString &name) {
+    auto exists = [&](const String &name) {
         if (columnNameExists(m_scene.xsheet.columns, name, excludeLayerIndex)) {
             return true;
         }
@@ -892,70 +907,70 @@ QString AnimeSceneModel::uniqueLayerName(const QString &baseName, int excludeLay
     };
 
     while (exists(uniqueName)) {
-        uniqueName = QStringLiteral("%1%2").arg(candidate).arg(number);
+        uniqueName = ANIME_STR("%1%2").arg(candidate).arg(number);
         ++number;
     }
     return uniqueName;
 }
 
-QString AnimeSceneModel::frameName(int frameIndex) const
+String AnimeSceneModel::frameName(int frameIndex) const
 {
     if (frameIndex < 0) {
-        return QString();
+        return String();
     }
     const auto stored = m_scene.xsheet.frameNames.constFind(frameIndex);
     if (stored != m_scene.xsheet.frameNames.constEnd() && !stored->isEmpty()) {
         return *stored;
     }
-    return QString::number(frameIndex + 1);
+    return String::number(frameIndex + 1);
 }
 
-void AnimeSceneModel::setFrameName(int frameIndex, const QString &name)
+void AnimeSceneModel::setFrameName(int frameIndex, const String &name)
 {
     if (frameIndex < 0) {
         return;
     }
-    const QString trimmed = name.trimmed();
-    if (trimmed.isEmpty() || trimmed == QString::number(frameIndex + 1)) {
+    const String trimmed = name.trimmed();
+    if (trimmed.isEmpty() || trimmed == String::number(frameIndex + 1)) {
         m_scene.xsheet.frameNames.remove(frameIndex);
         return;
     }
     m_scene.xsheet.frameNames.insert(frameIndex, trimmed);
 }
 
-QString AnimeSceneModel::nextDuplicateName(int frameIndex) const
+String AnimeSceneModel::nextDuplicateName(int frameIndex) const
 {
     if (frameIndex < 0) {
-        return QString();
+        return String();
     }
-    const QString base = duplicateBaseName(frameName(frameIndex));
-    QSet<QString> taken;
+    const String base = duplicateBaseName(frameName(frameIndex));
+    Set<String> taken;
     taken.reserve(m_scene.xsheet.frameCount);
     for (int row = 0; row < m_scene.xsheet.frameCount; ++row) {
         taken.insert(frameName(row));
     }
     for (int index = 0;; ++index) {
-        const QString candidate = base + QLatin1Char('-') + duplicateSuffix(index);
+        const String candidate = base + Latin1Char('-') + duplicateSuffix(index);
         if (!taken.contains(candidate)) {
             return candidate;
         }
     }
 }
 
-QString AnimeSceneModel::assetName(int assetIndex) const
+String AnimeSceneModel::assetName(int assetIndex) const
 {
     if (assetIndex < 0 || assetIndex >= m_scene.assets.size()) {
-        return QString();
+        return String();
     }
     return m_scene.assets[assetIndex].name;
 }
 
-void AnimeSceneModel::setAssetName(int assetIndex, const QString &name)
+void AnimeSceneModel::setAssetName(int assetIndex, const String &name)
 {
     if (assetIndex < 0 || assetIndex >= m_scene.assets.size()) {
         return;
     }
-    const QString uniqueName = uniqueLayerName(name, -1, assetIndex);
+    const String uniqueName = uniqueLayerName(name, -1, assetIndex);
     m_scene.assets[assetIndex].name = uniqueName;
     for (int layerIndex = 0; layerIndex < m_scene.xsheet.columns.size(); ++layerIndex) {
         for (int row = 0; row < frameCount(); ++row) {
@@ -1039,7 +1054,7 @@ void AnimeSceneModel::setLayerLocked(int layerIndex, bool locked)
     m_scene.xsheet.columns[layerIndex].locked = locked;
 }
 
-qreal AnimeSceneModel::layerOpacity(int layerIndex) const
+double AnimeSceneModel::layerOpacity(int layerIndex) const
 {
     if (layerIndex < 0 || layerIndex >= m_scene.xsheet.columns.size()) {
         return 0.0;
@@ -1047,7 +1062,7 @@ qreal AnimeSceneModel::layerOpacity(int layerIndex) const
     return m_scene.xsheet.columns[layerIndex].opacity;
 }
 
-void AnimeSceneModel::setLayerOpacity(int layerIndex, qreal opacity)
+void AnimeSceneModel::setLayerOpacity(int layerIndex, double opacity)
 {
     if (layerIndex < 0 || layerIndex >= m_scene.xsheet.columns.size()) {
         return;
@@ -1096,9 +1111,9 @@ void AnimeSceneModel::setLayerParentId(int layerIndex, int parentLayerId)
     m_scene.xsheet.columns[layerIndex].parentLayerId = parentLayerId > 0 ? parentLayerId : 0;
 }
 
-QVector<int> AnimeSceneModel::childLayerIndices(int parentLayerIndex) const
+Vector<int> AnimeSceneModel::childLayerIndices(int parentLayerIndex) const
 {
-    QVector<int> children;
+    Vector<int> children;
     // layerIdAt normalizes, so dangling parent ids are already zeroed here.
     const int parentId = layerIdAt(parentLayerIndex);
     if (parentId <= 0) {
@@ -1112,41 +1127,41 @@ QVector<int> AnimeSceneModel::childLayerIndices(int parentLayerIndex) const
     return children;
 }
 
-QString AnimeSceneModel::scriptData() const
+String AnimeSceneModel::scriptData() const
 {
     return m_scene.scriptData;
 }
 
-void AnimeSceneModel::setScriptData(const QString &data)
+void AnimeSceneModel::setScriptData(const String &data)
 {
     m_scene.scriptData = data;
 }
 
-QSize AnimeSceneModel::defaultCanvasSize()
+Size AnimeSceneModel::defaultCanvasSize()
 {
-    return QSize(1280, 720);
+    return Size(1280, 720);
 }
 
-QSize AnimeSceneModel::canvasSize() const
+Size AnimeSceneModel::canvasSize() const
 {
-    const QSize size = m_scene.canvasSize;
+    const Size size = m_scene.canvasSize;
     return size.isValid() && size.width() > 0 && size.height() > 0
                ? size
                : defaultCanvasSize();
 }
 
-void AnimeSceneModel::setCanvasSize(const QSize &size)
+void AnimeSceneModel::setCanvasSize(const Size &size)
 {
     // 16 keeps a page usable at any zoom; 16384 is well past any raster the
     // app can hold and stops a typo from allocating an export nobody wanted.
     const int width = std::max(16, std::min(16384, size.width()));
     const int height = std::max(16, std::min(16384, size.height()));
-    m_scene.canvasSize = QSize(width, height);
+    m_scene.canvasSize = Size(width, height);
 }
 
 namespace {
 
-void collectTreeIds(const QVector<AnimeLayerNode> &nodes, QSet<int> &layerIds, QSet<int> &groupIds)
+void collectTreeIds(const Vector<AnimeLayerNode> &nodes, Set<int> &layerIds, Set<int> &groupIds)
 {
     for (const AnimeLayerNode &node : nodes) {
         if (node.isGroup()) {
@@ -1160,7 +1175,7 @@ void collectTreeIds(const QVector<AnimeLayerNode> &nodes, QSet<int> &layerIds, Q
 
 // Drops leaves whose column no longer exists, duplicate references, and the
 // groups that end up empty. Returns false when this node itself should go.
-bool pruneTree(QVector<AnimeLayerNode> &nodes, const QSet<int> &liveLayerIds, QSet<int> &seen)
+bool pruneTree(Vector<AnimeLayerNode> &nodes, const Set<int> &liveLayerIds, Set<int> &seen)
 {
     for (int i = nodes.size() - 1; i >= 0; --i) {
         AnimeLayerNode &node = nodes[i];
@@ -1179,7 +1194,7 @@ bool pruneTree(QVector<AnimeLayerNode> &nodes, const QSet<int> &liveLayerIds, QS
     return !nodes.isEmpty();
 }
 
-AnimeLayerNode *findGroup(QVector<AnimeLayerNode> &nodes, int groupId)
+AnimeLayerNode *findGroup(Vector<AnimeLayerNode> &nodes, int groupId)
 {
     for (AnimeLayerNode &node : nodes) {
         if (!node.isGroup()) {
@@ -1195,7 +1210,7 @@ AnimeLayerNode *findGroup(QVector<AnimeLayerNode> &nodes, int groupId)
     return nullptr;
 }
 
-const AnimeLayerNode *findGroupConst(const QVector<AnimeLayerNode> &nodes, int groupId)
+const AnimeLayerNode *findGroupConst(const Vector<AnimeLayerNode> &nodes, int groupId)
 {
     for (const AnimeLayerNode &node : nodes) {
         if (!node.isGroup()) {
@@ -1220,12 +1235,12 @@ const AnimeLayerNode *findGroupConst(const QVector<AnimeLayerNode> &nodes, int g
 // so a pointer taken on the way down is only safe under an ordering argument
 // nobody will remember. An id survives anything. `parents` collects every
 // distinct parent the members came from.
-void takeNodes(QVector<AnimeLayerNode> &nodes,
+void takeNodes(Vector<AnimeLayerNode> &nodes,
                int parentGroupId,
-               const QSet<int> &layerIds,
-               const QSet<int> &groupIds,
-               QVector<AnimeLayerNode> &taken,
-               QSet<int> &parents,
+               const Set<int> &layerIds,
+               const Set<int> &groupIds,
+               Vector<AnimeLayerNode> &taken,
+               Set<int> &parents,
                int *firstParentId,
                int *firstRow)
 {
@@ -1254,11 +1269,11 @@ void takeNodes(QVector<AnimeLayerNode> &nodes,
     }
 }
 
-bool spliceOutGroup(QVector<AnimeLayerNode> &nodes, int groupId)
+bool spliceOutGroup(Vector<AnimeLayerNode> &nodes, int groupId)
 {
     for (int i = 0; i < nodes.size(); ++i) {
         if (nodes[i].isGroup() && nodes[i].groupId == groupId) {
-            const QVector<AnimeLayerNode> children = nodes[i].children;
+            const Vector<AnimeLayerNode> children = nodes[i].children;
             nodes.removeAt(i);
             for (int k = 0; k < children.size(); ++k) {
                 nodes.insert(i + k, children[k]);
@@ -1290,7 +1305,7 @@ void AnimeSceneModel::normalizeLayerTreeInternal()
     for (const AnimeColumn &column : m_scene.xsheet.columns) {
         m_scene.nextColumnId = std::max(m_scene.nextColumnId, column.id + 1);
     }
-    QSet<int> liveLayerIds;
+    Set<int> liveLayerIds;
     bool anyParentLink = false;
     for (AnimeColumn &column : m_scene.xsheet.columns) {
         if (column.id <= 0) {
@@ -1307,14 +1322,14 @@ void AnimeSceneModel::normalizeLayerTreeInternal()
     //     comes through here, and a scene with no tracked layer must not pay
     //     an allocation for the feature.
     if (anyParentLink) {
-        QHash<int, int> indexById;
+        Hash<int, int> indexById;
         indexById.reserve(m_scene.xsheet.columns.size());
         for (int i = 0; i < m_scene.xsheet.columns.size(); ++i) {
             indexById.insert(m_scene.xsheet.columns[i].id, i);
         }
         // 0 = not walked yet, 1 = on the chain being walked, 2 = settled.
-        QVector<char> parentState(m_scene.xsheet.columns.size(), 0);
-        QVector<int> chain;
+        Vector<char> parentState(m_scene.xsheet.columns.size(), 0);
+        Vector<int> chain;
         for (int start = 0; start < m_scene.xsheet.columns.size(); ++start) {
             if (parentState[start] != 0) {
                 continue;
@@ -1350,7 +1365,7 @@ void AnimeSceneModel::normalizeLayerTreeInternal()
     }
 
     // 2. drop dead references, duplicates and emptied groups
-    QSet<int> seen;
+    Set<int> seen;
     pruneTree(m_scene.layerTree, liveLayerIds, seen);
 
     // 3. anything ungrouped joins the top level AT ITS PLACE IN THE COLUMN
@@ -1391,8 +1406,8 @@ void AnimeSceneModel::normalizeLayerTreeInternal()
     }
 
     // 4. keep the group counter ahead of anything loaded from a file
-    QSet<int> layerIds;
-    QSet<int> groupIds;
+    Set<int> layerIds;
+    Set<int> groupIds;
     collectTreeIds(m_scene.layerTree, layerIds, groupIds);
     int highestGroup = 0;
     for (int id : groupIds) {
@@ -1406,13 +1421,13 @@ void AnimeSceneModel::normalizeLayerTree()
     normalizeLayerTreeInternal();
 }
 
-const QVector<AnimeLayerNode> &AnimeSceneModel::layerTree() const
+const Vector<AnimeLayerNode> &AnimeSceneModel::layerTree() const
 {
     const_cast<AnimeSceneModel *>(this)->normalizeLayerTreeInternal();
     return m_scene.layerTree;
 }
 
-void AnimeSceneModel::setLayerTree(const QVector<AnimeLayerNode> &tree)
+void AnimeSceneModel::setLayerTree(const Vector<AnimeLayerNode> &tree)
 {
     m_scene.layerTree = tree;
     normalizeLayerTreeInternal();
@@ -1440,21 +1455,21 @@ int AnimeSceneModel::layerIndexForId(int layerId) const
     return -1;
 }
 
-int AnimeSceneModel::createLayerGroup(const QString &name,
-                                      const QVector<int> &layerIndices,
-                                      const QVector<int> &groupIds,
+int AnimeSceneModel::createLayerGroup(const String &name,
+                                      const Vector<int> &layerIndices,
+                                      const Vector<int> &groupIds,
                                       bool collapsed)
 {
     normalizeLayerTreeInternal();
 
-    QSet<int> wantedLayers;
+    Set<int> wantedLayers;
     for (int index : layerIndices) {
         const int id = layerIdAt(index);
         if (id > 0) {
             wantedLayers.insert(id);
         }
     }
-    QSet<int> wantedGroups;
+    Set<int> wantedGroups;
     for (int id : groupIds) {
         if (id > 0 && findGroup(m_scene.layerTree, id)) {
             wantedGroups.insert(id);
@@ -1466,10 +1481,10 @@ int AnimeSceneModel::createLayerGroup(const QString &name,
 
     AnimeLayerNode group;
     group.groupId = m_scene.nextGroupId++;
-    group.name = name.isEmpty() ? QStringLiteral("Group %1").arg(group.groupId) : name;
+    group.name = name.isEmpty() ? ANIME_STR("Group %1").arg(group.groupId) : name;
     group.collapsed = collapsed;
 
-    QSet<int> parents;
+    Set<int> parents;
     int firstParentId = 0;
     int row = 0;
     takeNodes(m_scene.layerTree, 0, wantedLayers, wantedGroups,
@@ -1483,7 +1498,7 @@ int AnimeSceneModel::createLayerGroup(const QString &name,
     // groups have no common place to sit, and burying the result inside
     // whichever one happened to come first (possibly a group the take just
     // emptied) would be arbitrary, so those land at the top level.
-    QVector<AnimeLayerNode> *parent = &m_scene.layerTree;
+    Vector<AnimeLayerNode> *parent = &m_scene.layerTree;
     if (parents.size() == 1 && firstParentId > 0) {
         if (AnimeLayerNode *host = findGroup(m_scene.layerTree, firstParentId)) {
             parent = &host->children;
@@ -1508,7 +1523,7 @@ bool AnimeSceneModel::setLayerGroupCollapsed(int groupId, bool collapsed)
     return false;
 }
 
-bool AnimeSceneModel::setLayerGroupName(int groupId, const QString &name)
+bool AnimeSceneModel::setLayerGroupName(int groupId, const String &name)
 {
     normalizeLayerTreeInternal();
     if (AnimeLayerNode *group = findGroup(m_scene.layerTree, groupId)) {
@@ -1526,16 +1541,16 @@ bool AnimeSceneModel::dissolveLayerGroup(int groupId)
     return spliceOutGroup(m_scene.layerTree, groupId);
 }
 
-QVector<int> AnimeSceneModel::layerIdsInGroup(int groupId) const
+Vector<int> AnimeSceneModel::layerIdsInGroup(int groupId) const
 {
     const_cast<AnimeSceneModel *>(this)->normalizeLayerTreeInternal();
-    QVector<int> ids;
+    Vector<int> ids;
     const AnimeLayerNode *group = findGroupConst(m_scene.layerTree, groupId);
     if (!group) {
         return ids;
     }
-    std::function<void(const QVector<AnimeLayerNode> &)> walk =
-        [&](const QVector<AnimeLayerNode> &nodes) {
+    std::function<void(const Vector<AnimeLayerNode> &)> walk =
+        [&](const Vector<AnimeLayerNode> &nodes) {
         for (const AnimeLayerNode &node : nodes) {
             if (node.isGroup()) {
                 walk(node.children);
@@ -1553,7 +1568,7 @@ int AnimeSceneModel::deleteLayerGroup(int groupId)
     // By ID, resolved one at a time: every deletion renumbers the columns
     // after it, so a list of indices captured up front would delete the wrong
     // layers from the second one on.
-    const QVector<int> ids = layerIdsInGroup(groupId);
+    const Vector<int> ids = layerIdsInGroup(groupId);
     int deleted = 0;
     for (int id : ids) {
         const int index = layerIndexForId(id);
@@ -1579,13 +1594,13 @@ bool AnimeSceneModel::layerGroupCollapsed(int groupId) const
     return group && group->collapsed;
 }
 
-int AnimeSceneModel::addLayersToGroup(int groupId, const QVector<int> &layerIndices)
+int AnimeSceneModel::addLayersToGroup(int groupId, const Vector<int> &layerIndices)
 {
     normalizeLayerTreeInternal();
     if (!findGroup(m_scene.layerTree, groupId)) {
         return 0;
     }
-    QSet<int> wantedLayers;
+    Set<int> wantedLayers;
     for (int index : layerIndices) {
         const int id = layerIdAt(index);
         if (id > 0) {
@@ -1595,11 +1610,11 @@ int AnimeSceneModel::addLayersToGroup(int groupId, const QVector<int> &layerIndi
     if (wantedLayers.isEmpty()) {
         return 0;
     }
-    QVector<AnimeLayerNode> taken;
-    QSet<int> parents;
+    Vector<AnimeLayerNode> taken;
+    Set<int> parents;
     int firstParentId = 0;
     int row = 0;
-    takeNodes(m_scene.layerTree, 0, wantedLayers, QSet<int>(),
+    takeNodes(m_scene.layerTree, 0, wantedLayers, Set<int>(),
               taken, parents, &firstParentId, &row);
     // Re-find after the take: detaching runs over the whole tree and the
     // by-id lookup survives any reshuffle a pointer would not.
@@ -1614,7 +1629,7 @@ int AnimeSceneModel::addLayersToGroup(int groupId, const QVector<int> &layerIndi
     return taken.size();
 }
 
-bool AnimeSceneModel::setLayerGroupTag(int groupId, const QString &tag)
+bool AnimeSceneModel::setLayerGroupTag(int groupId, const String &tag)
 {
     normalizeLayerTreeInternal();
     if (AnimeLayerNode *group = findGroup(m_scene.layerTree, groupId)) {
@@ -1624,14 +1639,14 @@ bool AnimeSceneModel::setLayerGroupTag(int groupId, const QString &tag)
     return false;
 }
 
-QString AnimeSceneModel::layerGroupTag(int groupId) const
+String AnimeSceneModel::layerGroupTag(int groupId) const
 {
     const_cast<AnimeSceneModel *>(this)->normalizeLayerTreeInternal();
     const AnimeLayerNode *group = findGroupConst(m_scene.layerTree, groupId);
-    return group ? group->tag : QString();
+    return group ? group->tag : String();
 }
 
-int AnimeSceneModel::groupIdForLayer(int layerIndex, const QString &tag) const
+int AnimeSceneModel::groupIdForLayer(int layerIndex, const String &tag) const
 {
     const int layerId = layerIdAt(layerIndex);
     if (layerId <= 0) {
@@ -1642,8 +1657,8 @@ int AnimeSceneModel::groupIdForLayer(int layerIndex, const QString &tag) const
     // unit does not hide the unit.
     const_cast<AnimeSceneModel *>(this)->normalizeLayerTreeInternal();
     int found = 0;
-    std::function<bool(const QVector<AnimeLayerNode> &, int)> walk =
-        [&](const QVector<AnimeLayerNode> &nodes, int best) -> bool {
+    std::function<bool(const Vector<AnimeLayerNode> &, int)> walk =
+        [&](const Vector<AnimeLayerNode> &nodes, int best) -> bool {
         for (const AnimeLayerNode &node : nodes) {
             if (node.isGroup()) {
                 const int next =
@@ -1682,12 +1697,12 @@ int AnimeSceneModel::addFillLayer()
     return addLayerForAsset(m_currentFrame, assetIndex);
 }
 
-int AnimeSceneModel::addAsset(AnimeColumnType type, const QString &name)
+int AnimeSceneModel::addAsset(AnimeColumnType type, const String &name)
 {
     AnimeAsset asset;
     asset.type = type;
-    const QString baseName = name.isEmpty()
-                                 ? QStringLiteral("%1 %2").arg(assetTypeName(type)).arg(m_scene.assets.size() + 1)
+    const String baseName = name.isEmpty()
+                                 ? ANIME_STR("%1 %2").arg(assetTypeName(type)).arg(m_scene.assets.size() + 1)
                                  : name;
     asset.name = uniqueLayerName(baseName);
     const int assetIndex = m_scene.assets.size();
@@ -1749,7 +1764,7 @@ bool AnimeSceneModel::deleteLayer(int layerIndex)
     // assets are candidates for collection below. An asset the user added in
     // the panel but never exposed is deliberately not a candidate - deleting
     // an unrelated layer must not eat it.
-    QSet<int> candidates;
+    Set<int> candidates;
     {
         const AnimeColumn &column = m_scene.xsheet.columns[layerIndex];
         for (int row = 0; row <= column.maxRow(); ++row) {
@@ -1774,7 +1789,7 @@ bool AnimeSceneModel::deleteLayer(int layerIndex)
     // deleteAsset renumbers every index above the removed one - lower
     // candidates stay valid that way. deleteAsset also keeps every remaining
     // cell and m_currentAsset pointing at the asset they meant.
-    QList<int> ordered = candidates.values();
+    Vector<int> ordered = candidates.values();
     std::sort(ordered.begin(), ordered.end(), std::greater<int>());
     for (int assetIndex : ordered) {
         if (!assetExposedAnywhere(assetIndex)) {
@@ -1848,7 +1863,7 @@ int AnimeSceneModel::duplicateFrame(int row)
         ++target;
     }
 
-    const QString name = nextDuplicateName(row);
+    const String name = nextDuplicateName(row);
     for (AnimeColumn &column : m_scene.xsheet.columns) {
         const AnimeCell source = column.cellAt(row);
         column.insertCell(target);
@@ -2119,7 +2134,7 @@ const AnimeVectorImageModel *AnimeSceneModel::imageForCell(const AnimeCell &cell
     return m_scene.assets[cell.assetIndex].frame(cell.frameId);
 }
 
-bool AnimeSceneModel::setRasterImageAt(int row, int layerIndex, const QImage &image, const QPointF &topLeft)
+bool AnimeSceneModel::setRasterImageAt(int row, int layerIndex, const Image &image, const PointF &topLeft)
 {
     if (image.isNull()) {
         return false;
@@ -2134,15 +2149,15 @@ bool AnimeSceneModel::setRasterImageAt(int row, int layerIndex, const QImage &im
     return true;
 }
 
-int AnimeSceneModel::addRasterLayer(const QString &name, int frameIndex, const QImage &image, const QPointF &topLeft)
+int AnimeSceneModel::addRasterLayer(const String &name, int frameIndex, const Image &image, const PointF &topLeft)
 {
     if (frameIndex < 0 || image.isNull()) {
         return -1;
     }
 
-    const QString assetName = uniqueLayerName(name.isEmpty()
-                                                  ? QStringLiteral("Raster %1").arg(m_scene.assets.size() + 1)
-                                                  : QStringLiteral("Raster %1").arg(name));
+    const String assetName = uniqueLayerName(name.isEmpty()
+                                                  ? ANIME_STR("Raster %1").arg(m_scene.assets.size() + 1)
+                                                  : ANIME_STR("Raster %1").arg(name));
     AnimeColumn column;
     column.name = assetName;
     column.type = AnimeColumnType::Raster;
@@ -2213,9 +2228,9 @@ bool AnimeSceneModel::currentColumnEditable() const
     return column && !column->locked && column->type == AnimeColumnType::Vector;
 }
 
-QVector<QLineF> AnimeSceneModel::fillBoundarySegments(int frame, int layerIndex) const
+Vector<LineF> AnimeSceneModel::fillBoundarySegments(int frame, int layerIndex) const
 {
-    QVector<QLineF> segments;
+    Vector<LineF> segments;
     if (frame < 0) {
         return segments;
     }
@@ -2243,12 +2258,12 @@ QVector<QLineF> AnimeSceneModel::fillBoundarySegments(int frame, int layerIndex)
     return segments;
 }
 
-QRectF AnimeSceneModel::contentBounds(int frame) const
+RectF AnimeSceneModel::contentBounds(int frame) const
 {
     // Deliberately NOT filtered by visibility or type: a hidden layer becomes
     // visible again, and a fill layer is content too. Reachability that came
     // and went with a checkbox would be worse than none.
-    QRectF bounds;
+    RectF bounds;
     if (frame < 0) {
         return bounds;
     }
@@ -2260,7 +2275,7 @@ QRectF AnimeSceneModel::contentBounds(int frame) const
         if (!image) {
             continue;
         }
-        const QRectF cell = image->bounds();
+        const RectF cell = image->bounds();
         if (cell.isNull()) {
             continue;
         }
@@ -2269,12 +2284,12 @@ QRectF AnimeSceneModel::contentBounds(int frame) const
     return bounds;
 }
 
-QRectF AnimeSceneModel::fillBoundaryBounds(int frame, int layerIndex) const
+RectF AnimeSceneModel::fillBoundaryBounds(int frame, int layerIndex) const
 {
     // Deliberately a line-for-line twin of fillBoundarySegments' column filter:
     // this rect bounds those segments, so the two must agree on which columns
     // are walls. stroke.bounds is already padded by the stroke width.
-    QRectF bounds;
+    RectF bounds;
     if (frame < 0) {
         return bounds;
     }

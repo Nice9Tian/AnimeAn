@@ -1,13 +1,14 @@
 #ifndef BEZIERSPLIT_H
 #define BEZIERSPLIT_H
 
-#include <QPainterPath>
-#include <QPointF>
-#include <QVector>
+#include "algorithm/core/containers.h"
+#include "algorithm/core/geometry.h"
+#include "algorithm/core/path.h"
+
 
 // ---------------------------------------------------------------------------
 // THE shared home of exact bezier splitting. Anything in AnimeAn that divides
-// a cubic, extracts the [t0, t1] stretch of one, or cuts a QPainterPath at an
+// a cubic, extracts the [t0, t1] stretch of one, or cuts a AnimeCore::Path at an
 // arc position belongs HERE - do not re-derive de Casteljau elsewhere. Every
 // call site should carry a short comment pointing back to this header so the
 // next reader knows where the wheel lives.
@@ -20,10 +21,10 @@
 // ---------------------------------------------------------------------------
 
 // One run element of a path: a straight edge or a cubic. Quads never appear -
-// QPainterPath stores quadTo as an elevated cubic.
+// AnimeCore::Path stores quadTo as an elevated cubic.
 struct AnimeBezierCurve {
     bool isLine = false;
-    QPointF p[4];   // cubics use all four; a line uses p[0] and p[3]
+    AnimeCore::PointF p[4];   // cubics use all four; a line uses p[0] and p[3]
 };
 
 // One labelled arc sample: where (curve, t) sits and how far along the whole
@@ -32,16 +33,16 @@ struct AnimeBezierCurve {
 // single curve.
 struct AnimeBezierPathSample {
     int curve = 0;
-    qreal t = 0.0;
-    QPointF point;
-    qreal length = 0.0;   // cumulative along the path
+    double t = 0.0;
+    AnimeCore::PointF point;
+    double length = 0.0;   // cumulative along the path
 };
 
 // A resolved position on the path, ready to split at.
 struct AnimeBezierPathPosition {
     int curve = 0;
-    qreal t = 0.0;
-    QPointF point;
+    double t = 0.0;
+    AnimeCore::PointF point;
 };
 
 // Precision / cost knobs. The defaults suit interactive editing: ~3 px arc
@@ -50,7 +51,7 @@ struct AnimeBezierPathPosition {
 // single curve the cap allows (512 * 3 px hull).
 struct AnimeBezierSplitOptions {
     // Arc-table density: one sample every ~targetSpacing px of hull length.
-    qreal targetSpacing = 3.0;
+    double targetSpacing = 3.0;
     // Ceiling per curve, so one enormous element cannot explode the table.
     // Spacing degrades to hull/maxSamplesPerCurve beyond the cap; the
     // refinement rounds keep located positions accurate regardless.
@@ -63,17 +64,17 @@ struct AnimeBezierSplitOptions {
     // the requested arc, per px of disagreement. Disambiguates the branches
     // of a stroke that passes close to itself; far too weak to move a point
     // off the locally nearest position.
-    qreal branchPull = 0.05;
+    double branchPull = 0.05;
 };
 
 // A parsed-and-sampled path, reusable across many locate/slice calls on the
 // same stroke.
 struct AnimeBezierPathRun {
-    QVector<AnimeBezierCurve> curves;
-    QVector<AnimeBezierPathSample> samples;
+    AnimeCore::Vector<AnimeBezierCurve> curves;
+    AnimeCore::Vector<AnimeBezierPathSample> samples;
 
     bool isValid() const { return !curves.isEmpty() && samples.size() >= 2; }
-    qreal totalLength() const { return samples.isEmpty() ? 0.0 : samples.last().length; }
+    double totalLength() const { return samples.isEmpty() ? 0.0 : samples.last().length; }
 };
 
 namespace AnimeBezierSplit {
@@ -81,54 +82,54 @@ namespace AnimeBezierSplit {
 // De Casteljau at t: returns the on-curve point and, when asked, the control
 // points of the two halves. The halves ARE the original curve restricted to
 // [0, t] and [t, 1].
-QPointF splitCubic(const QPointF p[4], qreal t, QPointF *left = nullptr, QPointF *right = nullptr);
+AnimeCore::PointF splitCubic(const AnimeCore::PointF p[4], double t, AnimeCore::PointF *left = nullptr, AnimeCore::PointF *right = nullptr);
 
 // The [t0, t1] stretch of one cubic, as a cubic (two de Casteljau splits).
-void cubicSegment(const QPointF p[4], qreal t0, qreal t1, QPointF out[4]);
+void cubicSegment(const AnimeCore::PointF p[4], double t0, double t1, AnimeCore::PointF out[4]);
 
 // The on-curve point alone (the lerp cascade, better conditioned than the
 // expanded Bernstein form).
-QPointF evaluateCubic(const QPointF p[4], qreal t);
+AnimeCore::PointF evaluateCubic(const AnimeCore::PointF p[4], double t);
 
 // First derivative r'(t) (the hodograph, evaluated in Bernstein form).
-QPointF cubicDerivative(const QPointF p[4], qreal t);
+AnimeCore::PointF cubicDerivative(const AnimeCore::PointF p[4], double t);
 
 // Degree elevations: the SAME curve one degree up, so every consumer can
 // work in cubics alone.
-void lineToCubic(const QPointF &a, const QPointF &b, QPointF out[4]);
-void quadToCubic(const QPointF &a, const QPointF &control, const QPointF &b, QPointF out[4]);
+void lineToCubic(const AnimeCore::PointF &a, const AnimeCore::PointF &b, AnimeCore::PointF out[4]);
+void quadToCubic(const AnimeCore::PointF &a, const AnimeCore::PointF &control, const AnimeCore::PointF &b, AnimeCore::PointF out[4]);
 
 // Control-hull length |p0p1|+|p1p2|+|p2p3| - the standard upper bound on a
 // cubic's arc length that drives every flattening density in the app. The
 // step-count each caller derives from it (floor, cap, rounding) is that
 // caller's policy and deliberately stays with the caller.
-qreal cubicHullLength(const QPointF p[4]);
+double cubicHullLength(const AnimeCore::PointF p[4]);
 
 // Evaluate one run element at t.
-QPointF curvePoint(const AnimeBezierCurve &curve, qreal t);
+AnimeCore::PointF curvePoint(const AnimeBezierCurve &curve, double t);
 
 // A path as one uninterrupted run of curves. False for anything else (empty,
 // several subpaths, malformed curve data).
-bool parsePath(const QPainterPath &path, QVector<AnimeBezierCurve> *out);
+bool parsePath(const AnimeCore::Path &path, AnimeCore::Vector<AnimeBezierCurve> *out);
 
 // Every subpath of a path as its own run of curves. Tolerant: malformed
 // trailing curve data ends the walk instead of failing, matching what the
 // serialization call sites always did. False only for an empty path.
-bool parseSubpaths(const QPainterPath &path, QVector<QVector<AnimeBezierCurve>> *out);
+bool parseSubpaths(const AnimeCore::Path &path, AnimeCore::Vector<AnimeCore::Vector<AnimeBezierCurve>> *out);
 
 // Parse + arc-sample in one step. Check isValid() on the result.
-AnimeBezierPathRun buildRun(const QPainterPath &path,
+AnimeBezierPathRun buildRun(const AnimeCore::Path &path,
                             const AnimeBezierSplitOptions &options = {});
 
 // Where the arc fraction `w` (0..1 of the run's own length) sits on the path.
-AnimeBezierPathPosition locate(const AnimeBezierPathRun &run, qreal w,
+AnimeBezierPathPosition locate(const AnimeBezierPathRun &run, double w,
                                const AnimeBezierSplitOptions &options = {});
 
 // Same, but anchored: `nearTo` is where the caller believes that arc is in
 // space (e.g. a point measured on a different parameterization of the same
 // stroke, or a crossing point). The answer is pulled to the locally nearest
 // path position around that anchor, with `w` only breaking self-overlap ties.
-AnimeBezierPathPosition locate(const AnimeBezierPathRun &run, qreal w, const QPointF &nearTo,
+AnimeBezierPathPosition locate(const AnimeBezierPathRun &run, double w, const AnimeCore::PointF &nearTo,
                                const AnimeBezierSplitOptions &options = {});
 
 // The stretch of the path between two positions: an exact sub-path, plus (if
@@ -137,8 +138,8 @@ AnimeBezierPathPosition locate(const AnimeBezierPathRun &run, qreal w, const QPo
 bool slice(const AnimeBezierPathRun &run,
            const AnimeBezierPathPosition &from,
            const AnimeBezierPathPosition &to,
-           QPainterPath *path,
-           QVector<QPointF> *polyline = nullptr);
+           AnimeCore::Path *path,
+           AnimeCore::Vector<AnimeCore::PointF> *polyline = nullptr);
 
 } // namespace AnimeBezierSplit
 

@@ -1,6 +1,7 @@
 // Source: Copied from C:/Users/admin/Documents/VibeFrontend/animean/business/animeanbusiness.cpp
 #include "animeanbusiness.h"
 
+#include "algorithm/core/qtbridge.h"
 #include "projectio.h"
 
 #include <QCoreApplication>
@@ -266,18 +267,18 @@ void renderSceneFrameContent(QPainter &painter,
             continue;
         }
         if (image->hasRaster()) {
-            painter.drawImage(image->raster().topLeft, image->raster().image);
+            painter.drawImage(QPointF(image->raster().topLeft), QImage(image->raster().image));
         }
         for (const AnimeVectorFillRegion &region : image->fillRegions()) {
             if (region.path.isEmpty()) {
                 continue;
             }
-            painter.setPen(QPen(region.color,
+            painter.setPen(QPen(QColor(region.color),
                                 AnimeVectorLogic::kVectorRegionOverpaintWidth,
                                 Qt::SolidLine,
                                 Qt::RoundCap,
                                 Qt::RoundJoin));
-            painter.setBrush(region.color);
+            painter.setBrush(QColor(region.color));
             painter.drawPath(region.path);
         }
         for (const AnimeVectorStrokeNode &node : image->strokeNodes()) {
@@ -290,7 +291,7 @@ void renderSceneFrameContent(QPainter &painter,
                     ? static_cast<Qt::PenStyle>(stroke.penStyle)
                     : Qt::SolidLine;
             painter.setBrush(Qt::NoBrush);
-            painter.setPen(QPen(stroke.color,
+            painter.setPen(QPen(QColor(stroke.color),
                                 AnimeVectorLogic::displayStrokeWidth(stroke.width, scale),
                                 penStyle,
                                 Qt::RoundCap,
@@ -906,7 +907,7 @@ void AnimeanBusiness::newProject(const QSize &canvasSize)
 void AnimeanBusiness::applyNewCanvasSize(const QSize &size)
 {
     AnimeSceneModel &mainModel = modelForView(QStringLiteral("main"));
-    if (mainModel.canvasSize() == size) {
+    if (QSize(mainModel.canvasSize()) == size) {
         setStatusMessage(QStringLiteral("Canvas: %1 x %2 px").arg(size.width()).arg(size.height()));
         return;
     }
@@ -1002,7 +1003,9 @@ bool AnimeanBusiness::loadProjectFrom(const QString &fileName, QString *errorOut
     AnimeSceneModel loadedMainModel;
     AnimeSceneModel loadedTextureModel;
     QString error;
-    if (!projectFromJson(root, &loadedMainModel, &loadedTextureModel, &error)) {
+    AnimeCore::String coreError;
+    if (!projectFromJson(root, &loadedMainModel, &loadedTextureModel, &coreError)) {
+        error = coreError;
         if (errorOut) {
             *errorOut = error.isEmpty() ? QStringLiteral("Unsupported project file.") : error;
         }
@@ -1037,7 +1040,9 @@ bool AnimeanBusiness::openTextureViewFrom(const QString &fileName, QString *erro
 
     AnimeSceneModel loadedModel;
     QString error;
-    if (!textureViewFromJson(root, &loadedModel, &error)) {
+    AnimeCore::String coreError;
+    if (!textureViewFromJson(root, &loadedModel, &coreError)) {
+        error = coreError;
         if (errorOut) {
             *errorOut = error.isEmpty() ? QStringLiteral("Unsupported texture file.") : error;
         }
@@ -1095,8 +1100,8 @@ QVector<AnimeLayerPanelRow> AnimeanBusiness::layerRowsForView(const QString &vie
     const int frame = model.currentFrame();
 
     QVector<AnimeLayerPanelRow> rows;
-    std::function<int(const QVector<AnimeLayerNode> &, int)> collect =
-        [&](const QVector<AnimeLayerNode> &nodes, int depth) {
+    std::function<int(const AnimeCore::Vector<AnimeLayerNode> &, int)> collect =
+        [&](const AnimeCore::Vector<AnimeLayerNode> &nodes, int depth) {
         int shown = 0;
         for (const AnimeLayerNode &node : nodes) {
             if (node.isGroup()) {

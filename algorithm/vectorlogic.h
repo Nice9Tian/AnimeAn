@@ -3,17 +3,18 @@
 
 #include "algorithm/animemodel.h"
 
-#include <QImage>
-#include <QLineF>
-#include <QPainterPath>
-#include <QPoint>
-#include <QPointF>
-#include <QRect>
-#include <QVector>
+#include "algorithm/core/color.h"
+#include "algorithm/core/containers.h"
+#include "algorithm/core/geometry.h"
+#include "algorithm/core/image.h"
+#include "algorithm/core/path.h"
+
+#include <cstdint>
+
 
 struct AnimeVectorRange {
-    qreal first = 0.0;
-    qreal second = 1.0;
+    double first = 0.0;
+    double second = 1.0;
 };
 
 // One place where a stroke crosses another - or ITSELF. Carries both sides of
@@ -28,9 +29,9 @@ struct AnimeStrokeCrossing {
         SelfCrossing = -2 // the stroke through itself; wallArc is its OTHER arc
     };
 
-    qreal arc = 0.0;       // normalised position along the cut stroke
+    double arc = 0.0;       // normalised position along the cut stroke
     int wallIndex = StrokeEnd;
-    qreal wallArc = 0.0;   // normalised position along the line it crossed
+    double wallArc = 0.0;   // normalised position along the line it crossed
 
     bool isJunction() const { return wallIndex != StrokeEnd; }
 };
@@ -57,28 +58,28 @@ struct AnimeCutPlan {
 class AnimeOneEuroFilter {
 public:
     // strength 0..1: 0 disables (passthrough), 1 is the heaviest smoothing.
-    void configure(qreal strength);
+    void configure(double strength);
     void reset();
     // timestampMs comes from the input event; a nonsense dt falls back to
     // assuming kFallbackHz.
-    QPointF filter(const QPointF &raw, qulonglong timestampMs);
+    AnimeCore::PointF filter(const AnimeCore::PointF &raw, std::uint64_t timestampMs);
 
     bool active() const { return m_strength > 0.0; }
 
 private:
-    static QPointF lowpass(const QPointF &value, const QPointF &previous, qreal alpha);
-    qreal alphaFor(qreal cutoff, qreal dt) const;
+    static AnimeCore::PointF lowpass(const AnimeCore::PointF &value, const AnimeCore::PointF &previous, double alpha);
+    double alphaFor(double cutoff, double dt) const;
 
-    qreal m_strength = 0.0;
-    qreal m_minCutoff = 1.0;   // Hz; floor of the adaptive cutoff
-    qreal m_beta = 0.0;        // cutoff gain per px/s of speed
-    qreal m_derivativeCutoff = 1.0;
-    qreal m_compensation = 0.0; // 0..1 share of the lag distance added back
+    double m_strength = 0.0;
+    double m_minCutoff = 1.0;   // Hz; floor of the adaptive cutoff
+    double m_beta = 0.0;        // cutoff gain per px/s of speed
+    double m_derivativeCutoff = 1.0;
+    double m_compensation = 0.0; // 0..1 share of the lag distance added back
     bool m_initialized = false;
-    QPointF m_position;
-    QPointF m_lastRaw;   // previous RAW sample: the velocity difference base
-    QPointF m_velocity;
-    qulonglong m_lastMs = 0;
+    AnimeCore::PointF m_position;
+    AnimeCore::PointF m_lastRaw;   // previous RAW sample: the velocity difference base
+    AnimeCore::PointF m_velocity;
+    std::uint64_t m_lastMs = 0;
 };
 
 // How a committed stroke is turned into lines + curves. SEPARATE from the
@@ -102,12 +103,12 @@ struct AnimeStrokeFitSettings {
     // in screen px and converted to document units with this factor. 1.0
     // (the default) reproduces the un-zoomed behavior exactly. Last member
     // on purpose: {simplify, corner} aggregate initializers stay valid.
-    qreal pixelScale = 1.0;
+    double pixelScale = 1.0;
 };
 
 struct AnimeVectorRegionFace {
-    QPainterPath path;
-    qreal signedArea = 0.0;
+    AnimeCore::Path path;
+    double signedArea = 0.0;
 };
 
 // State of one live-drawn stroke's incremental fit (see liveFitStrokePath):
@@ -115,22 +116,22 @@ struct AnimeVectorRegionFace {
 // pen-down.
 struct AnimeLiveFitState {
     // Everything baked EXCEPT the trailing open chord of straight mode.
-    QPainterPath frozenPath;
+    AnimeCore::Path frozenPath;
     int frozenSamples = 0;      // boundary sample index; also the tail's first
     // >= 0: straight mode - an open chord runs from chordAnchor to the
     // boundary seam, extended (never re-emitted) while the samples stay
     // within line tolerance of it. The straight test spans the WHOLE run,
     // so its scale is the drawing's, not the bake chunk's. -1: curved mode.
     int chordStartSample = -1;
-    QPointF chordAnchor;        // where the open chord is pinned
+    AnimeCore::PointF chordAnchor;        // where the open chord is pinned
     // Where the frozen prefix currently ends. In straight mode this is a
     // DENOISED endpoint (the offline fit chords the smoothed polyline too;
     // raw tremor at the endpoint made the pivot cap slice a ruler-straight
     // drag into many chords). The tail is pinned to it, so seams stay G0.
-    QPointF seamPoint;
+    AnimeCore::PointF seamPoint;
     bool hasSeam = false;
-    QPointF boundaryPoint;      // raw boundary sample - retro-edit guard
-    QPointF entryTangent;       // forward-travel unit tangent at the boundary
+    AnimeCore::PointF boundaryPoint;      // raw boundary sample - retro-edit guard
+    AnimeCore::PointF entryTangent;       // forward-travel unit tangent at the boundary
     bool hasEntryTangent = false;
     // The open CURVED RUN, for node-count consolidation: every bake refits
     // the whole run and REPLACES its elements when the part already on
@@ -138,8 +139,8 @@ struct AnimeLiveFitState {
     // doodle with 2.3x the nodes of the offline fit). -1: no open run.
     int runStartSample = -1;
     int runStartElement = 0;    // frozenPath element index where the run begins
-    QPointF runStartPoint;
-    QPointF runEntryTangent;
+    AnimeCore::PointF runStartPoint;
+    AnimeCore::PointF runEntryTangent;
     bool hasRunEntryTangent = false;
 };
 
@@ -148,17 +149,17 @@ namespace AnimeVectorLogic {
 // How far a traced fill region is grown so it tucks UNDER the stroke that
 // walls it instead of leaving a hairline of paper showing. Anything that
 // clips a region has to leave this much room, which is why it is public.
-inline constexpr qreal kVectorRegionOverpaintWidth = 2.0;
-qreal epsilon();
+inline constexpr double kVectorRegionOverpaintWidth = 2.0;
+double epsilon();
 
-QVector<QPointF> filteredPoints(const QVector<QPointF> &points);
-QPainterPath makeSmoothedPath(const QVector<QPointF> &points, int smoothValue);
-QPainterPath makePolylinePath(const QVector<QPointF> &points);
+AnimeCore::Vector<AnimeCore::PointF> filteredPoints(const AnimeCore::Vector<AnimeCore::PointF> &points);
+AnimeCore::Path makeSmoothedPath(const AnimeCore::Vector<AnimeCore::PointF> &points, int smoothValue);
+AnimeCore::Path makePolylinePath(const AnimeCore::Vector<AnimeCore::PointF> &points);
 // Hybrid polyline + Bezier fit: Gaussian denoise, split at corners and
 // inflections, classify each piece straight/curved, emit chords for the
 // straight ones and least-squares cubic Beziers for the curved ones, G1 at
 // every joint that is not a deliberate corner.
-QPainterPath fitStrokePath(const QVector<QPointF> &points,
+AnimeCore::Path fitStrokePath(const AnimeCore::Vector<AnimeCore::PointF> &points,
                            const AnimeStrokeFitSettings &settings = {});
 // Incremental fitting for the LIVE stroke. Ink far enough behind the pen is
 // fitted once and FROZEN (its curve never recomputed - recomputation is what
@@ -176,34 +177,34 @@ QPainterPath fitStrokePath(const QVector<QPointF> &points,
 // (on release): the tail is fitted like everything else, so the committed
 // stroke is pure lines + curves; the settle is bounded by the fit tolerance
 // and happens once, at pen-up.
-QPainterPath liveFitStrokePath(struct AnimeLiveFitState &state,
-                               const QVector<QPointF> &points,
+AnimeCore::Path liveFitStrokePath(struct AnimeLiveFitState &state,
+                               const AnimeCore::Vector<AnimeCore::PointF> &points,
                                const AnimeStrokeFitSettings &settings = {},
                                bool finalTail = false);
-AnimeVectorStroke makeStroke(const QVector<QPointF> &points,
-                             const QColor &color,
-                             qreal width,
+AnimeVectorStroke makeStroke(const AnimeCore::Vector<AnimeCore::PointF> &points,
+                             const AnimeCore::Color &color,
+                             double width,
                              int id = 0,
                              bool filterInput = true,
                              bool smoothPath = true,
                              const AnimeStrokeFitSettings &settings = {});
-AnimeVectorStroke makeStrokeFromPath(const QPainterPath &path,
-                                     const QVector<QPointF> &points,
-                                     const QColor &color,
-                                     qreal width,
+AnimeVectorStroke makeStrokeFromPath(const AnimeCore::Path &path,
+                                     const AnimeCore::Vector<AnimeCore::PointF> &points,
+                                     const AnimeCore::Color &color,
+                                     double width,
                                      int id = 0);
 
-bool strokeHitsCircle(const AnimeVectorStroke &stroke, const QPointF &center, qreal radius);
-bool strokeHitsCapsule(const AnimeVectorStroke &stroke, const QPointF &from, const QPointF &to, qreal radius);
+bool strokeHitsCircle(const AnimeVectorStroke &stroke, const AnimeCore::PointF &center, double radius);
+bool strokeHitsCapsule(const AnimeVectorStroke &stroke, const AnimeCore::PointF &from, const AnimeCore::PointF &to, double radius);
 
 // Distance from the brush AXIS to the stroke's centreline - `from == to` for
 // a click, the swept segment for a drag step. The stroke's own width is not
 // subtracted: this ranks candidates against the brush centre, and a thick
 // line should not win over a thin one it merely happens to be fatter than.
-qreal strokeDistanceToBrush(const AnimeVectorStroke &stroke, const QPointF &from, const QPointF &to);
-QVector<AnimeVectorRange> keepRangesForCircle(const AnimeVectorStroke &stroke, const QPointF &center, qreal radius);
-QVector<AnimeVectorRange> keepRangesForCapsule(const AnimeVectorStroke &stroke, const QPointF &from, const QPointF &to, qreal radius);
-QVector<AnimeVectorRange> complementRanges(const QVector<AnimeVectorRange> &eraseRanges);
+double strokeDistanceToBrush(const AnimeVectorStroke &stroke, const AnimeCore::PointF &from, const AnimeCore::PointF &to);
+AnimeCore::Vector<AnimeVectorRange> keepRangesForCircle(const AnimeVectorStroke &stroke, const AnimeCore::PointF &center, double radius);
+AnimeCore::Vector<AnimeVectorRange> keepRangesForCapsule(const AnimeVectorStroke &stroke, const AnimeCore::PointF &from, const AnimeCore::PointF &to, double radius);
+AnimeCore::Vector<AnimeVectorRange> complementRanges(const AnimeCore::Vector<AnimeVectorRange> &eraseRanges);
 
 // Every crossing of `stroke` with `walls` AND with itself, sorted by arc
 // along `stroke` and de-duplicated within `mergeTolerance` (a crossing that
@@ -216,9 +217,9 @@ QVector<AnimeVectorRange> complementRanges(const QVector<AnimeVectorRange> &eras
 // Adjoining segments and the closing vertex of a closed stroke are not
 // crossings; they are how a line is joined to itself, not where it cuts
 // across itself.
-QVector<AnimeStrokeCrossing> strokeCrossings(const AnimeVectorStroke &stroke,
-                                             const QVector<AnimeVectorStroke> &walls,
-                                             qreal mergeTolerance = 1e-4);
+AnimeCore::Vector<AnimeStrokeCrossing> strokeCrossings(const AnimeVectorStroke &stroke,
+                                             const AnimeCore::Vector<AnimeVectorStroke> &walls,
+                                             double mergeTolerance = 1e-4);
 
 // The span to cut out of `stroke` for a CutMode click at `pos`: the piece
 // between the crossing before the click and the crossing after it.
@@ -233,14 +234,14 @@ QVector<AnimeStrokeCrossing> strokeCrossings(const AnimeVectorStroke &stroke,
 //
 // Returns false when the stroke has no length (nothing to cut).
 bool planCutAt(const AnimeVectorStroke &stroke,
-               const QVector<AnimeVectorStroke> &walls,
-               const QPointF &pos,
+               const AnimeCore::Vector<AnimeVectorStroke> &walls,
+               const AnimeCore::PointF &pos,
                AnimeCutPlan *plan);
 
 // The span alone, for callers that do not care which junctions bounded it.
 bool cutSpanAt(const AnimeVectorStroke &stroke,
-               const QVector<AnimeVectorStroke> &walls,
-               const QPointF &pos,
+               const AnimeCore::Vector<AnimeVectorStroke> &walls,
+               const AnimeCore::PointF &pos,
                AnimeVectorRange *span);
 
 // Splits `stroke` at each normalised arc in `arcs`, in order. Arcs within
@@ -252,14 +253,14 @@ bool cutSpanAt(const AnimeVectorStroke &stroke,
 // (sorted, end-filtered, de-duplicated): pieces[k] and pieces[k+1] share the
 // boundary at usedArcs[k], so a caller can name each junction without
 // guessing by proximity.
-QVector<AnimeVectorStroke> splitStrokeAt(const AnimeVectorStroke &stroke,
-                                         QVector<qreal> arcs,
+AnimeCore::Vector<AnimeVectorStroke> splitStrokeAt(const AnimeVectorStroke &stroke,
+                                         AnimeCore::Vector<double> arcs,
                                          const AnimeStrokeFitSettings &settings = {},
-                                         qreal endTolerance = 1e-3,
-                                         QVector<qreal> *usedArcs = nullptr);
-AnimeVectorStroke subStroke(const AnimeVectorStroke &stroke, qreal fromW, qreal toW,
+                                         double endTolerance = 1e-3,
+                                         AnimeCore::Vector<double> *usedArcs = nullptr);
+AnimeVectorStroke subStroke(const AnimeVectorStroke &stroke, double fromW, double toW,
                             const AnimeStrokeFitSettings &settings = {});
-QPointF pointAtLength(const AnimeVectorStroke &stroke, qreal length);
+AnimeCore::PointF pointAtLength(const AnimeVectorStroke &stroke, double length);
 
 // The stroke with one TERMINAL point moved to `target` (path element and
 // polyline vertex together; lengths and bounds rebuilt). A junction belongs
@@ -269,16 +270,16 @@ QPointF pointAtLength(const AnimeVectorStroke &stroke, qreal length);
 // (vertex snap 0.001 px) can never close. The nudge is at most that same
 // fit tolerance, confined to the endpoint.
 AnimeVectorStroke snapStrokeEndpoint(const AnimeVectorStroke &stroke, bool atEnd,
-                                     const QPointF &target);
+                                     const AnimeCore::PointF &target);
 
 // The DOCUMENT-space width to hand the pen so a stroke never renders thinner
 // than `minScreenPx` on screen. Display only - the stored width is untouched.
 // A smooth maximum (6-norm) rather than a hard max: the width the user sees
 // is a differentiable function of zoom, with no kink at the floor, and above
 // the floor it converges to the true width almost immediately (0.07% at 3x).
-qreal displayStrokeWidth(qreal documentWidth, qreal zoom, qreal minScreenPx = 1.0);
+double displayStrokeWidth(double documentWidth, double zoom, double minScreenPx = 1.0);
 
-QVector<QLineF> segmentsFromPath(const QPainterPath &path);
+AnimeCore::Vector<AnimeCore::LineF> segmentsFromPath(const AnimeCore::Path &path);
 // healRadius > 0 additionally attaches every DANGLING end (a point where
 // exactly one segment terminates) to the nearest point of a segment it does
 // not terminate, when one lies within that distance. Drawings whose
@@ -287,10 +288,10 @@ QVector<QLineF> segmentsFromPath(const QPainterPath &path);
 // tolerance off the wall it was cut against - close into fillable faces.
 // Attaching to existing ink can never invent a boundary between two separate
 // lines, and interior vertices are untouched.
-QVector<AnimeVectorRegionFace> computeVectorRegionFaces(const QVector<QLineF> &segments,
-                                                        qreal healRadius = 0.0);
-QPainterPath vectorRegionPathAt(const QPointF &seed, const QVector<QLineF> &segments, const QRect &canvasRect);
-QPainterPath fillPathFromMask(const QPoint &seed, const QImage &boundary);
+AnimeCore::Vector<AnimeVectorRegionFace> computeVectorRegionFaces(const AnimeCore::Vector<AnimeCore::LineF> &segments,
+                                                        double healRadius = 0.0);
+AnimeCore::Path vectorRegionPathAt(const AnimeCore::PointF &seed, const AnimeCore::Vector<AnimeCore::LineF> &segments, const AnimeCore::Rect &canvasRect);
+AnimeCore::Path fillPathFromMask(const AnimeCore::Point &seed, const AnimeCore::Image &boundary);
 }
 
 #endif // VECTORLOGIC_H
