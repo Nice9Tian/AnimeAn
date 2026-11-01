@@ -220,7 +220,7 @@ def _chord_seed_residual(child, h_pts, v_pts, p):
     dx, dy = p[0] - child.origin[0], p[1] - child.origin[1]
     gh = (dx * ev[1] - dy * ev[0]) / det * 0.5 * ch
     gv = (eh[0] * dy - eh[1] * dx) / det * 0.5 * cv
-    return child.solve_full(p, gh, gv)[2]
+    return child._descend(p, gh, gv)[2]
 
 
 probes = [(-600.0, 800.0), (0.0, 800.0), (180.0, 650.0), (400.0, 400.0)]
