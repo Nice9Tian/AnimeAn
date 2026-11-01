@@ -27,6 +27,14 @@ const GLYPHS = {
   additional_line: `<g ${line}><path stroke-width="1" stroke-dasharray="1.4 2.85" d="M2.8 3.5 H21.2 M2.8 12 H21.2 M2.8 20.5 H21.2 M3.5 2.8 V21.2 M12 2.8 V21.2 M20.5 2.8 V21.2"/>`
     + `<path d="M3.5 20.5 A8.5 17 0 0 1 20.5 20.5"/></g>`
     + `<g fill="currentColor"><circle cx="3.5" cy="20.5" r="1.6"/><circle cx="20.5" cy="20.5" r="1.6"/></g>`,
+  free_out_line: `<path ${line} d="M7.2 4.6 C11.2 2.4 17.2 3.2 19.6 7.2 C21.8 11 18.6 13.2 18.2 16.4 C17.8 19.8 12.8 21.8 9.4 19.6 C6.4 17.6 7.4 14.8 5.2 12.6 C2.8 10.2 4 6.4 7.2 4.6 Z"/>`
+    + `<circle cx="7.2" cy="4.6" r="1.8" fill="currentColor"/>`,
+  choice_line: `<path ${line} d="M2.8 13.6 C6 8.6 8 9.4 11 10 C14 10.6 17.4 9 21.2 4.6"/>`
+    + `<g fill="currentColor"><circle cx="2.8" cy="13.6" r="1.6"/><circle cx="21.2" cy="4.6" r="1.6"/></g>`
+    + `<path ${line} stroke-width="1.3" d="M11 10 L11 19.6 L13.6 17.2 L15.2 21.2 L16.8 20.5 L15.2 16.6 L18.4 16.6 Z"/>`,
+  deform_line: `<g ${line}><path stroke-width="1.2" stroke-dasharray="1.3 2.7" d="M2.8 18.4 H21.2"/>`
+    + `<path d="M2.8 18.4 C8 18.4 8.4 8.6 12 8.6 C15.6 8.6 16 18.4 21.2 18.4"/>`
+    + `<path d="M12 15 L12 3.4"/><path d="M9.2 6.2 L12 3.2 L14.8 6.2"/></g>`,
   auto_mapping: `<g ${line}><path d="M5.4 3.2 L17 3.2 L13.8 12.7 L2.2 12.7 Z"/><path d="M5.8 11.1 L10.6 4.9 L11.3 11.1 M7.6 8.7 L11.1 8.7"/><path d="M4.4 14.1 L2.2 20.7 L13.8 20.7 L16 14.1"/><path fill="currentColor" stroke="currentColor" stroke-width=".6" stroke-linejoin="round" d="M18.8 3.2 L19 5 L19.1 6.7 L19.3 8.5 L19.5 10.2 L19.6 12 L19.8 13.7 L17.6 13.7 L20 17.7 L22.4 13.7 L20.2 13.7 L20.4 12 L20.5 10.2 L20.7 8.5 L20.9 6.7 L21 5 L21.2 3.2 Z"/>`
     + `<path stroke-width="1.2" d="M8.3 14.1 L6.1 20.7 M12.2 14.1 L9.9 20.7 M3.4 17.3 L15 17.3"/></g>`,
 };

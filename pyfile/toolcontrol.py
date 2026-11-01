@@ -71,7 +71,7 @@ def _automapping_controls(start_row=0):
     Curve Mode picks how the mapped strokes' geometry is rebuilt after the
     (non-linear) warp; RDP is the decimation tolerance for the samples
     inserted between original points (0.1px units; originals are never
-    decimated). The refer grid moved to each board's View menu.
+    decimated).
     MIGRATED OUT of this panel: Curve Mode now lives in the menu bar
     (Auto Mapping > Calculation Mode) and every DISPLAY setting - the guide
     axes, the crease and the lining - in Auto Mapping > Line Display
@@ -119,10 +119,6 @@ def _automapping_controls(start_row=0):
     # would open the panel with an empty gap where the slider is not.
     fold_row = start_row + len(controls)
     controls += [
-        # Refer Rect used to sit here. It moved onto each board's View
-        # menu: it is a display choice about a BOARD, not a property of
-        # the mapping tool, and a single shared checkbox could not answer
-        # it separately for the texture and the main view.
         # Where the map turns orientation-reversing (a fold past ~135 deg
         # or a U-turn) the pattern is mirrored - that is the BACK of the
         # fold. Split sends it to its own layer; Crease draws the fold
@@ -171,7 +167,52 @@ def _automapping_controls(start_row=0):
     bridge_slider["visible_when"] = {"name": "bridge_topology",
                                      "values": ["on"]}
     controls.append(bridge_slider)
-    return controls, fold_row + 4
+    grid, next_row = _refer_rect_controls(fold_row + 4)
+    return controls + grid, next_row
+
+
+def _refer_rect_controls(start_row=0):
+    """The refer grid's block: shown, density, reach past the axis ends. Empty
+    while units exist and none is focused (auto_mapping says so), since there
+    is then no setting to edit. Returns (controls, next_free_row)."""
+    try:
+        import auto_mapping
+        state = auto_mapping.refer_rect_options()
+    except Exception:
+        state = None
+    if state is None:
+        return [], start_row
+    shown = {"name": "refer_rect", "values": ["on"]}
+    extend = _slider("refer_rect_extend", "Refer Rect Extend (x50%)",
+                     "refer_rect_extend", 0, auto_mapping.GRID_EXTEND_MAX,
+                     state["extend"], start_row + 2)
+    extend["visible_when"] = shown
+    return [
+        {
+            "name": "refer_rect",
+            "type": "check",
+            "title": "Refer Rect",
+            "hook": "refer_rect",
+            "value": "on" if state["shown"] else "off",
+            "row": start_row,
+            "start_column": 0,
+            "end_column": 2,
+        },
+        {
+            "name": "refer_rect_divisions",
+            "type": "list",
+            "title": "Refer Rect Divisions",
+            "hook": "refer_rect_divisions",
+            "value": str(state["divisions"]),
+            "row": start_row + 1,
+            "start_column": 0,
+            "end_column": 2,
+            "options": [{"title": f"{n} x {n}", "value": str(n)}
+                        for n in auto_mapping.GRID_DIVISION_CHOICES],
+            "visible_when": shown,
+        },
+        extend,
+    ], start_row + 3
 
 
 def _texture_view_control(row):
@@ -374,14 +415,40 @@ def options_for_extra_tool(tool, state=None):
     state = state or {}
     tool = str(tool).lower()
 
-    if tool in ("h_center_line", "v_center_line",
+    if tool == "choice_line":
+        import auto_mapping
+        choice = auto_mapping.chosen_line()
+        return {
+            "row_spacing": 8,
+            "column_spacing": 6,
+            "controls": [{
+                "name": "ground_line",
+                "type": "check",
+                "title": f"地线（{auto_mapping.line_label(choice)}）" if choice else "地线（先点一条线）",
+                "hook": "ground_line",
+                "value": "on" if choice and auto_mapping.line_is_ground(choice) else "off",
+                "row": 0,
+                "start_column": 0,
+                "end_column": 2,
+            }, *_refer_rect_controls(1)[0]],
+        }
+    if tool == "deform_line":
+        import line_tools
+        return {
+            "row_spacing": 8,
+            "column_spacing": 6,
+            "controls": [_slider("deform_radius", "Radius", "deform_radius", 10, 300,
+                                 int(line_tools.DEFORM_RADIUS["value"]), 0),
+                         *_refer_rect_controls(1)[0]],
+        }
+    if tool in ("h_center_line", "v_center_line", "free_out_line",
                 "mapping_area", "additional_line", "auto_mapping_2"):
         # Every mapping tool shows the SAME run-policy block. The settings it
         # holds are global to auto_mapping, and the guide tools are where the
         # user stands when they matter - arming h_center_line only to discover
         # the fold split lives on another tool's panel was the complaint.
         controls, row = _automapping_controls(0)
-        if tool in ("h_center_line", "v_center_line",
+        if tool in ("h_center_line", "v_center_line", "free_out_line",
                     "additional_line"):
             # These three are pen strokes, so they honour the same smoothing
             # and width parameters as the pen tool. They come AFTER the shared

@@ -18,7 +18,10 @@
 | 中轴线（H / V Center Line） | center_line | Tools ▸ Mapping | `center_line.md` |
 | Mapping Area | mapping_area | Tools ▸ Mapping | `mapping_area.md` |
 | 附加线 | additional_line | Tools ▸ Mapping；菜单 Auto Mapping | `additional_line.md` |
-| 地线（规划，草稿待拍板） | ground_line | Tools ▸ Mapping | `groundline.md` |
+| 闭合轮廓 | free_out_line | Tools ▸ Mapping | `free_out_line.md` |
+| 选线 | choice_line | Tools ▸ Mapping | `choice_line.md` |
+| 拖线变形 | deform_line | Tools ▸ Mapping | `deform_line.md` |
+| 地线（单独的工具是规划，草稿待拍板；现在用选线设置） | ground_line | Tools ▸ Mapping | `groundline.md` |
 | Auto Mapping（运行与单元） | auto_mapping | Tools ▸ Mapping；Layers 右键；菜单 Auto Mapping | `auto_mapping.md` |
 | 视平线 | horizon_line | 菜单 Auto Mapping | `horizon_line.md` |
 | To 3D | to_3d | 菜单 Auto Mapping | `to_3d.md` |

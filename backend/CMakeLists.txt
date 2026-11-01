@@ -21,6 +21,8 @@ add_library(animean_core_headless STATIC
     board/inputevent.h
     board/recordingdevice.cpp
     board/recordingdevice.h
+    board/textpath.cpp
+    board/textpath.h
 )
 
 target_include_directories(animean_core_headless PUBLIC
@@ -31,7 +33,7 @@ target_include_directories(animean_core_headless PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/board
 )
 
-target_link_libraries(animean_core_headless PUBLIC animean_core animean_platform)
+target_link_libraries(animean_core_headless PUBLIC animean_core animean_platform gdi32)
 
 if(ANIMEAN_WITH_PYTHON)
     target_sources(animean_core_headless PRIVATE
@@ -67,6 +69,12 @@ add_executable(board_headless_test
 target_link_libraries(board_headless_test PRIVATE animean_core_headless)
 add_dependencies(AnimeAnBackend board_headless_test)
 
+add_executable(textpath_tests
+    board/tests/textpath_tests.cpp
+)
+target_link_libraries(textpath_tests PRIVATE animean_core_headless)
+add_dependencies(AnimeAnBackend textpath_tests)
+
 if(ANIMEAN_WITH_PYTHON)
     foreach(ANIMEAN_PYTHON_DLL python312.dll python3.dll vcruntime140.dll vcruntime140_1.dll)
         if(EXISTS "${ANIMEAN_PYTHON_HOME}/${ANIMEAN_PYTHON_DLL}")
@@ -87,5 +95,8 @@ endif()
 if(BUILD_TESTING)
     add_test(NAME board_headless_test
         COMMAND board_headless_test "${CMAKE_CURRENT_BINARY_DIR}/board_headless_ops.json"
+    )
+    add_test(NAME textpath_tests
+        COMMAND textpath_tests
     )
 endif()
