@@ -4,7 +4,7 @@ Tools ▸ Painting 的第一个图标，工具提示 "Select strokes and points"
 
 ## 在哪
 
-- Painting 页图标 **Arrow**。
+- Painting 组图标 **Arrow**。
 - Options 面板：**Edit Mode**（Default / Artist / Debug）。
 - 菜单栏 **Arrow ▸ Outline Display Settings…**：选中轮廓的颜色和线宽。
 

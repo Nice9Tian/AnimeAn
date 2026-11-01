@@ -12,4 +12,4 @@
 
 `tools_groups.html` 是用户审核过的设计稿，保留作记录；Mapping 组后来改成了图标格子，以软件为准。
 
-待办：一级文档（`user-workflow.md`、`tools_user_workflow/`）里的「Painting 页」「Mapping 页」等用户拍板后改。
+一级文档（`user-workflow.md`、`tools_user_workflow/`、`glossary.md`）的「Painting 组」「Mapping 组」用户 2026-11-01 批准。

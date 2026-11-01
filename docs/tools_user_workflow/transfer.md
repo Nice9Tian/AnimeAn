@@ -4,7 +4,7 @@ Tools ▸ Painting 的 **Transfer**。当前图层这一帧的全部内容被一
 
 ## 在哪
 
-- Painting 页图标 **Transfer**。
+- Painting 组图标 **Transfer**。
 - Options 面板：**Alt / Ctrl / Shift**（Keep ratio / lock axis 或 No constraint）。
 
 ## 怎么用
