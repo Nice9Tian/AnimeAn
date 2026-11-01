@@ -38,10 +38,12 @@ clipping, curve fitting - live in this file.
 """
 
 import bisect
+import colorsys
 import heapq
 import json
 import math
 import os
+import random
 import re
 import tempfile
 import time
@@ -173,6 +175,19 @@ _HORIZON_MAX_SIN = 0.5
 # Falloff shape and reach are tool options.
 ADDITIONAL_PROPERTY = "additional_line"
 ADDITIONAL_COLOR = (255, 105, 180, 255)
+PROXY_PROPERTY = "proxy_contour"
+PAIRING_KEY = "pairing"
+PROXY_COLOR = (214, 96, 40, 255)
+PROXY_HUES = 72
+PROXY_MIN_LENGTH = 60.0
+CHOICE_PROPERTY = "choice_line"
+DEFORM_PROPERTY = "deform_line"
+LINE_TOOL_PROPERTIES = (CHOICE_PROPERTY, DEFORM_PROPERTY)
+GROUND_FLAG = "ground"
+LINE_CHOSEN_COLOR = (255, 200, 40, 150)
+GROUND_PIN_COLOR = (220, 60, 40, 255)
+_LINE_TOOLS = {"armed": False, "chosen": None}
+_PROXY_PAIRING = {"key": None, "value": None}
 ADDITIONAL_FALLOFFS = ("linear", "quadratic")
 # constrain_outline (menu checkbox 约束外轮廓, default ON = the original
 # design): the MainView grid's outer contour - the outline the H/V axes
@@ -249,10 +264,9 @@ _RDP_STATE = {"eps": 0.3}
 def rdp_eps():
     return _RDP_STATE["eps"]
 
-# Refer-rect debug grid state, PER VIEW. It answers "is my mapping right?",
-# and the two boards answer it separately: the child shows the reference frame
-# itself, the main shows its image under the mapper, and wanting one is no
-# reason to be shown the other.
+# Refer-rect debug grid state, for documents with no unit (a unit keeps its
+# own, see _UNIT_SETTING_DEFAULTS). The child shows the reference frame itself,
+# the main shows its image under the mapper. One Tool Options tick sets both.
 _REFER_RECT = {"child": False, "main": False}
 # Refer-rect grid density: iso-lines per axis over [-1, 1]. 5 is the
 # historical look; finer settings are the debugging view the user asked
@@ -260,10 +274,26 @@ _REFER_RECT = {"child": False, "main": False}
 # placement check does. Sample density per iso-line scales with it so a
 # fine grid stays smooth through folds.
 GRID_DIVISION_CHOICES = (5, 9, 17, 33)
-_GRID = {"divisions": 5}
+# Refer-rect grid reach past the axis ends, in steps of half a half-axis. The
+# step is a whole number of cells at every density above, so the outward lines
+# keep the spacing and the lines inside stay where they were, and raising the
+# density does not pull the reach back in.
+GRID_EXTEND_MAX = 4
+_GRID = {"divisions": 5, "extend": 0}
 # Grid polylines are O(n^2) in guide points to build (intersection searches):
 # cache per view, invalidated whenever the guides change.
 _GRID_CACHE = {"child": None, "main": None}
+
+# Fold notes: a bubble on each board where the mapping turns over. Cells per
+# half-axis, so a short band at an axis end is not stepped over; a lone flipped
+# cell is numerical noise beside a line, not a fold.
+FOLD_NOTE_STEPS = 16
+FOLD_NOTE_MIN_CELLS = 2
+FOLD_NOTE_MAX = 3
+FOLD_NOTE_TURN_RUN = 6.0    # px the heading must stay turned: tremor is no turn
+FOLD_NOTE_COLOR = (232, 160, 40, 255)
+FOLD_NOTE_FILL = (40, 44, 52, 235)
+_FOLD_NOTES = {"regions": None}
 
 # The child-view "Occluded Areas" toggle (a script-defined view button):
 # tint the parts of the child board that the CURRENT mapping folds
@@ -276,7 +306,7 @@ _OCCLUSION_CACHE = {"items": None, "note": "", "share": 0.0}
 
 def refer_rect_enabled(view_name="main"):
     """Grid display policy: the active unit's setting in unit mode, the
-    per-board View-menu global otherwise."""
+    per-board global otherwise."""
     if _UNIT_META:
         uid = _ACTIVE_UNIT["id"]
         return bool(uid) and bool(_unit_settings(uid).get("show_grid", False))
@@ -297,6 +327,27 @@ def _grid_divisions():
     return int(_GRID.get("divisions", 5))
 
 
+def _grid_extend():
+    if _UNIT_META and _ACTIVE_UNIT["id"]:
+        value = int(_unit_settings().get("grid_extend", 0))
+    else:
+        value = int(_GRID.get("extend", 0))
+    return max(0, min(GRID_EXTEND_MAX, value))
+
+
+def refer_rect_options():
+    """What the Tool Options grid block shows, or None when units exist and
+    none is focused: there is then no setting for the block to edit."""
+    if _UNIT_META:
+        if not _ACTIVE_UNIT["id"]:
+            return None
+        shown = bool(_unit_settings().get("show_grid", False))
+    else:
+        shown = any(_REFER_RECT.values())
+    return {"shown": shown, "divisions": _grid_divisions(),
+            "extend": _grid_extend()}
+
+
 def curve_mode():
     return _CURVE_MODE["value"]
 
@@ -304,6 +355,7 @@ def curve_mode():
 def _invalidate_grid_cache():
     _GRID_CACHE["child"] = None
     _GRID_CACHE["main"] = None
+    _FOLD_NOTES["regions"] = None
     # Same lifetime: both displays are pure functions of the guide assets.
     _OCCLUSION_CACHE["items"] = None
 
@@ -502,6 +554,8 @@ def _sanitize_assets(data):
                     continue
                 if line.get("commands"):
                     loaded["commands"] = line["commands"]
+                if line.get(GROUND_FLAG):
+                    loaded[GROUND_FLAG] = True
                 third = [[float(t[0]), float(t[1])]
                          for t in line.get("third") or [] if len(t) >= 2]
                 # The stored Third polyline is only authoritative while it
@@ -527,6 +581,25 @@ def _sanitize_assets(data):
                 # undo or project load.
                 if item.get("commands"):
                     loaded["commands"] = item["commands"]
+                # Without these an undo froze the auto axes and dropped the
+                # Choice Line tick.
+                for key in ("auto", "source", GROUND_FLAG):
+                    if key in item:
+                        loaded[key] = item[key]
+                assets[prop] = loaded
+        elif prop == PROXY_PROPERTY:
+            points = [[float(p[0]), float(p[1])] for p in item.get("points") or []]
+            if len(points) >= 3:
+                loaded = {"points": points, "width": float(item.get("width", 3.0))}
+                if item.get(GROUND_FLAG):
+                    loaded[GROUND_FLAG] = True
+                pairing = item.get(PAIRING_KEY) or {}
+                stations = [[float(p[0]), float(p[1])]
+                            for p in pairing.get("stations") or []]
+                if stations and "id" in pairing:
+                    loaded[PAIRING_KEY] = {
+                        "id": int(pairing["id"]), "stations": stations,
+                        "corner_stations": [int(i) for i in pairing.get("corner_stations") or []]}
                 assets[prop] = loaded
     return assets
 
@@ -558,6 +631,7 @@ _UNIT_SETTING_DEFAULTS = {
     "show_horizon": True,    # orange horizon line (main)
     "show_grid": False,      # refer-rect grid
     "grid_divisions": 5,
+    "grid_extend": 0,        # reach past the axis ends, GRID_EXTEND_MAX steps
     "show_occlusion": False, # occluded-areas tint (texture board)
     "front_visible": True,   # front content/lines member layers
     "back_visible": True,    # back content/lines member layers
@@ -699,6 +773,14 @@ def _load_units(view_name, scene):
             _invalidate_grid_cache()
             _push_overlay("main")
             _push_overlay("child")
+        _refresh_tool_options()
+
+
+def _refresh_tool_options():
+    try:
+        _animean().ui.refresh_tool_options()
+    except Exception:
+        pass
 
 
 def _unit_for_layer(scene, layer_index):
@@ -726,6 +808,8 @@ def _activate_unit(uid):
         _animean().ui.refresh()
     except Exception:
         pass
+    # The grid block shows the active unit's settings.
+    _refresh_tool_options()
 
 
 def _layer_focus_event(message):
@@ -1749,9 +1833,9 @@ class _FlowFieldWarp:
                         f"additional line {index + 1} is neutral (both "
                         "sides ask for the identity flow) - bend or "
                         "rotate either side to shape the mapping")
-        for child_third, main_third, index in grounds:
+        for child_third, main_third, index, closed in grounds:
             line = self._prepare_ground([tuple(p) for p in child_third],
-                                        [tuple(p) for p in main_third], index)
+                                        [tuple(p) for p in main_third], index, closed)
             if line is not None:
                 self.grounds.append(line)
         if self.pairs or self.grounds:
@@ -1810,7 +1894,7 @@ class _FlowFieldWarp:
                 "radius": radius, "chord": chord, "arc": arc,
                 "neutral": neutral}
 
-    def _prepare_ground(self, child, main, index):
+    def _prepare_ground(self, child, main, index, closed=False):
         """One ground pair. Its stations are already paired, on the CANVAS
         (see build_mapper): resampling here, in Third, would slide them
         wherever the two sides of an axis scale differently (37.5 px along
@@ -1822,6 +1906,8 @@ class _FlowFieldWarp:
             return None
         # In Third, like _prepare: on the canvas a main frame turned past 90
         # degrees reads every unmoved partner as drawn backwards.
+        if closed:      # paired station by station, and a loop has no chord
+            return {"child": child, "main": main, "index": index, "closed": True}
         return {"child": child, "main": _partner_aligned(child, main),
                 "index": index}
 
@@ -2720,7 +2806,10 @@ class _FlowFieldWarp:
         # last-bit graze of zero from registering a phantom locus (and
         # from making the retreat count vary between runs).
         self._all_positive = bool(np.all(det > -self.DET_FOLD_TOL))
-        if ground_moved and not self._all_positive:
+        # A contour's outside folds on nearly every shape and nothing draws
+        # there, so the whole-field verdict says nothing about it.
+        if (ground_moved and not self._all_positive
+                and not any(line.get("closed") for line in grounds)):
             self.notes.append(
                 "ground lines fold the mapping: they cross their own parallel "
                 "axis, or ask for more than the ground between them can give")
@@ -2794,6 +2883,12 @@ class _FlowFieldWarp:
         target_y = np.zeros_like(X)
         stiffness = self.GROUND_STIFFNESS / (du * dv)
         for position, line in enumerate(self.grounds):
+            if line.get("closed"):
+                # A contour has no free end and decides everything inside it.
+                for k in (0, 1):
+                    for sign in (1.0, -1.0):
+                        release(k, sign)
+                continue
             c, m = line["child"], line["main"]
             k_orth = 1 if self._family_of(c) == "v" else 0   # axis it crosses
             k_side = 1 - k_orth                              # side it lives on
@@ -3490,14 +3585,21 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
         m = [(p[0], p[1]) for p in (main_item or {}).get("points") or []]
         if len(c) < 2 or len(m) < 2:
             return ({}, {})
+        if (child_item or {}).get("closed"):
+            return (child_item, main_item)     # already paired, station by station
         count = _FlowFieldWarp.GROUND_STATIONS
-        return ({"points": _resample_fractions(c, count)},
+        return ({"points": _resample_fractions(c, count),
+                 "same_third": (child_item or {}).get("same_third")},
                 {"points": _resample_fractions(m, count)})
 
     if additional_pairs or ground_pairs:
         thirds = lifted_pairs(additional_pairs or [], "additional line")
-        grounds = lifted_pairs(
-            [ground_stations(*pair) for pair in ground_pairs or []], "ground line")
+        stationed = [ground_stations(*pair) for pair in ground_pairs or []]
+        grounds = []
+        for child_third, main_third, index in lifted_pairs(stationed, "ground line"):
+            item = stationed[index][0]
+            grounds.append((child_third, child_third if item.get("same_third") else main_third,
+                            index, bool(item.get("closed"))))
         if thirds or grounds:
             candidate = _FlowFieldWarp(
                 thirds, _ADDITIONAL["falloff"],
@@ -4486,7 +4588,7 @@ def _direction_arrow_points(points, size):
 _MAPPER_CACHE = {"key": None, "mapper": None}
 
 
-def _mapper_fingerprint(child_assets, main_assets, pairs):
+def _mapper_fingerprint(child_assets, main_assets, pairs, grounds=None):
     """A cheap content key for _current_mapper's cache: the guide point
     lists, the pair geometry/authority, and the tool options that shape
     the mapping. Self-validating - no invalidation hooks to forget."""
@@ -4499,10 +4601,10 @@ def _mapper_fingerprint(child_assets, main_assets, pairs):
             # mapper when only the curve handles changed.
             parts.append((prop, tuple(map(tuple, item.get("points") or ())),
                           repr(item.get("commands"))))
-    for child_item, main_item in pairs or []:
+    for child_item, main_item in list(pairs or []) + list(grounds or []):
         for item in (child_item, main_item):
             item = item or {}
-            parts.append((item.get("id"),
+            parts.append((item.get("id"), item.get("closed"), item.get("same_third"),
                           tuple(map(tuple, item.get("points") or ())),
                           tuple(map(tuple, item.get("third") or ()))))
     parts.append((_ADDITIONAL["falloff"], _ADDITIONAL["radius_factor"],
@@ -4529,7 +4631,8 @@ def _current_mapper():
                             main_assets[V_PROPERTY]["points"]):
         return None, "the main center lines do not cross"
     pairs = _additional_pairs()
-    key = _mapper_fingerprint(child_assets, main_assets, pairs)
+    grounds = _ground_pairs()
+    key = _mapper_fingerprint(child_assets, main_assets, pairs, grounds)
     if _MAPPER_CACHE["key"] == key and _MAPPER_CACHE["mapper"] is not None:
         return _MAPPER_CACHE["mapper"], ""
     mapper, _ = build_mapper(
@@ -4538,7 +4641,7 @@ def _current_mapper():
         # The preview must show the mapping the RUN will use - with the
         # additional-line pairs. Without them the face-down bands sat at
         # the unwarped position (measured 6-7% of the domain mis-tinted).
-        additional_pairs=pairs)
+        additional_pairs=pairs, ground_pairs=grounds)
     if mapper is None:
         return None, "the mapper refuses these guides"
     _MAPPER_CACHE["key"] = key
@@ -4712,7 +4815,7 @@ def overlay_items(view_name):
         return settings is None or bool(settings.get(key, True))
 
     assets = _assets_for(view_name)
-    items = []
+    items = _chosen_line_items(view_name)    # first, so it sits under the line
     for prop, key in ((H_PROPERTY, "h"), (V_PROPERTY, "v")):
         if not wanted(f"show_{key}"):
             continue
@@ -4762,6 +4865,8 @@ def overlay_items(view_name):
             "pen_style": _display_style("additional_style"),
             "removable": True,
         })
+    items.extend(_contour_items(view_name))
+    items.extend(_line_mark_items(view_name))
     area = assets.get(MAPPING_AREA_PROPERTY) if wanted("show_area") else None
     if area:
         for polygon in area.get("polygons") or []:
@@ -4778,6 +4883,10 @@ def overlay_items(view_name):
         items.extend(_grid_overlay_items(view_name))
     except Exception as error:
         print(f"[auto_mapping] refer rect grid skipped: {error}")
+    try:
+        items.extend(_fold_note_items(view_name))
+    except Exception as error:
+        print(f"[auto_mapping] fold notes skipped: {error}")
     if view_name == "child":
         try:
             # UNDER the guides and area, so the tint never covers them.
@@ -5041,7 +5150,8 @@ def _child_frame():
 
 
 def _frame_point(frame, u_hat, v_hat):
-    """Child-space point at normalised grid coords (u_hat, v_hat in [-1, 1])."""
+    """Child-space point at normalised grid coords: [-1, 1] is the axes, past
+    that the guides run on along their end tangents (see _Curve.point_at)."""
     du = u_hat * (frame.h_side[1] if u_hat >= 0.0 else frame.h_side[0])
     dv = v_hat * (frame.v_side[1] if v_hat >= 0.0 else frame.v_side[0])
     return frame.hv(du, dv)
@@ -5095,9 +5205,12 @@ def _grid_overlay_items(view_name):
 
     items = []
     divisions = max(2, _grid_divisions())
-    levels = [i / (divisions - 1) * 2.0 - 1.0 for i in range(divisions)]
+    extend = _grid_extend() * (divisions - 1) // 4   # whole cells each way
+    levels = [(i - extend) / (divisions - 1) * 2.0 - 1.0
+              for i in range(divisions + 2 * extend)]
     count = 6 * (divisions - 1) + 1   # divisions=5 -> 25, the historical density
-    samples = [i / (count - 1) * 2.0 - 1.0 for i in range(count)]
+    samples = [(i - 6 * extend) / (count - 1) * 2.0 - 1.0
+               for i in range(count + 12 * extend)]
 
     # The MAIN board's grid shows the RENDERING mapping when it exists: the
     # child frame's lattice pushed through the full mapper, additional-line
@@ -5199,21 +5312,129 @@ def _grid_overlay_items(view_name):
     return items
 
 
-def _overlays_changed(view_name):
-    """Assets changed in view_name: refresh its overlay, and any OTHER view
-    whose display genuinely depends on those assets.
+def _axis_turnbacks(mapper):
+    """Where an axis turns back: (view, axis, grid coordinate on that axis, px to
+    the end past it, the point). Walking out from the crossing, the axis has
+    turned back once its heading crosses the other axis's: hv flips exactly
+    there, for a round U-turn as much as for a hook at the end of a stroke."""
+    found = []
+    for view, frame in (("child", mapper.child_frame), ("main", mapper.main_frame)):
+        for axis, curve, arc, sides, other, other_arc in (
+                ("H", frame.gh, frame.h_arc, frame.h_side, frame.gv, frame.v_arc),
+                ("V", frame.gv, frame.v_arc, frame.v_side, frame.gh, frame.h_arc)):
+            across = other.dir_at(other_arc)
+            here = curve.dir_at(arc)
+            base = here[0] * across[1] - here[1] * across[0]
+            points, arcs = curve.points, curve.flat_arcs
+            first = next((i for i, a in enumerate(arcs) if a >= arc), len(arcs) - 1)
+            for step, side in ((1, 1), (-1, 0)):
+                turn, run = None, 0.0
+                i = first
+                while 0 <= i + step < len(points):
+                    q, r = points[i], points[i + step]
+                    dx, dy = (r[0] - q[0]) * step, (r[1] - q[1]) * step
+                    length = math.hypot(dx, dy)
+                    if (dx * across[1] - dy * across[0]) * base < 0.0:
+                        turn = i if turn is None else turn
+                        run += length
+                        if run >= FOLD_NOTE_TURN_RUN:
+                            break
+                    else:
+                        turn, run = None, 0.0
+                    i += step
+                if turn is not None and run >= FOLD_NOTE_TURN_RUN:
+                    offset = arcs[turn] - arc
+                    tail = curve.total - arcs[turn] if step > 0 else arcs[turn]
+                    found.append((view, axis, offset / sides[side], tail, points[turn]))
+    return found
 
-    The occlusion tint is drawn on the texture but computed from the MAIN
-    guides, so a main-side edit re-pushes the child overlay. The MAIN refer
-    grid renders the full mapping (child lattice through the warp), so a
-    child-side edit re-pushes the main overlay. The CHILD grid stays a pure
+
+def _fold_regions():
+    """The folds of the current mapping, each with the one board and point its
+    note belongs on. An axis that turns back is a fold wherever the lattice can
+    see it or not (a short hook falls between its lines), so each gets a note at
+    the turn on its own board. The lattice adds what no turn explains, flipped
+    meaning against the cell at the crossing: the main board shows those, and
+    the note marks where the fold starts."""
+    regions = _FOLD_NOTES["regions"]
+    if regions is not None:
+        return regions
+    regions = []
+    mapper, _note = _current_mapper()
+    if mapper is not None:
+        frame = mapper.child_frame
+        half = int((1.0 + 0.5 * _grid_extend()) * FOLD_NOTE_STEPS)
+        levels = [i / FOLD_NOTE_STEPS for i in range(-half, half + 1)]
+        nodes = [[mapper(_frame_point(frame, u, v)) for u in levels] for v in levels]
+
+        def area(r, c):
+            p, q, s = nodes[r][c], nodes[r][c + 1], nodes[r + 1][c]
+            return (q[0] - p[0]) * (s[1] - p[1]) - (q[1] - p[1]) * (s[0] - p[0])
+
+        reference = area(half, half)
+        flipped = {(r, c) for r in range(2 * half) for c in range(2 * half)
+                   if area(r, c) * reference < 0.0}
+        groups = []
+        while flipped:
+            stack = [flipped.pop()]
+            cells = []
+            while stack:
+                r, c = stack.pop()
+                cells.append((r, c))
+                for near in ((r + 1, c), (r - 1, c), (r, c + 1), (r, c - 1)):
+                    if near in flipped:
+                        flipped.remove(near)
+                        stack.append(near)
+            if len(cells) >= FOLD_NOTE_MIN_CELLS:
+                groups.append(cells)
+        turnbacks = _axis_turnbacks(mapper)
+        board_title = {"child": "texture", "main": "main"}
+        # An axis the contours carried may only copy the same half of the texture
+        # axis's turn.
+        turnbacks = [turn for turn in turnbacks if not (
+            turn[0] == "main"
+            and _assets_for("main")[H_PROPERTY if turn[1] == "H" else V_PROPERTY].get("auto")
+            and any(other[0] == "child" and other[1] == turn[1]
+                    and (other[2] > 0.0) == (turn[2] > 0.0) for other in turnbacks))]
+        for view, axis, _hat, tail, point in turnbacks:
+            regions.append({"view": view, "point": point, "text": "\n".join((
+                "Fold here", f"The {axis} axis on the {board_title[view]} board",
+                f"doubles back {tail:.0f} px from its end"))})
+
+        def explained(cells):
+            for _view, axis, hat, _tail, _point in turnbacks:
+                span = [levels[cell[1 if axis == "H" else 0]] for cell in cells]
+                if min(span) - 1.0 / FOLD_NOTE_STEPS <= hat <= max(span) + 2.0 / FOLD_NOTE_STEPS:
+                    return True
+            return False
+
+        groups.sort(key=len, reverse=True)
+        for cells in [cells for cells in groups if not explained(cells)]:
+            r, c = min(cells, key=lambda cell: (cell[0] + 0.5 - half) ** 2
+                                               + (cell[1] + 0.5 - half) ** 2)
+            regions.append({"view": "main", "point": nodes[r][c],
+                            "text": "Fold: the pattern turns over here"})
+        del regions[FOLD_NOTE_MAX:]
+    _FOLD_NOTES["regions"] = regions
+    return regions
+
+
+def _fold_note_items(view_name):
+    return [{"id": f"fold_note:{index}", "points": [region["point"]],
+             "label": region["text"], "color": FOLD_NOTE_COLOR, "fill_color": FOLD_NOTE_FILL,
+             "width": 1.2, "removable": False}
+            for index, region in enumerate(_fold_regions()) if region["view"] == view_name]
+
+
+def _overlays_changed(view_name):
+    """Assets changed in view_name: refresh both boards. The fold notes stand
+    on both and read the mapping between them; so do the occlusion tint (drawn
+    on the texture, computed from the MAIN guides) and the main refer grid
+    (the child lattice through the warp). The CHILD grid alone stays a pure
     function of the child's own axes."""
     _invalidate_grid_cache()
     _push_overlay(view_name)
-    if _occlusion_enabled() and view_name != "child":
-        _push_overlay("child")
-    if refer_rect_enabled("main") and view_name != "main":
-        _push_overlay("main")
+    _push_overlay("child" if view_name == "main" else "main")
 
 
 def _main_guide_frame():
@@ -5295,6 +5516,8 @@ _GUIDE_DRAG = {}
 
 
 def _guide_drag_event(message):
+    if message.get("property") in LINE_TOOL_PROPERTIES:
+        return    # pyfile/line_tools.py owns the press under these tools
     overlay_id = str(message.get("handle") or "")
     is_guide = overlay_id in GUIDE_PROPERTIES
     is_additional = overlay_id.startswith(ADDITIONAL_PROPERTY + ":")
@@ -5309,15 +5532,14 @@ def _guide_drag_event(message):
     if phase == "press":
         if is_guide:
             item = assets.get(overlay_id)
-            points = list(item.get("points") or []) if item else []
         else:
-            index, line = _additional_line_by_overlay_id(view, overlay_id)
-            points = list(line.get("points") or []) if line else []
+            index, item = _additional_line_by_overlay_id(view, overlay_id)
+        points = list(item.get("points") or []) if item else []
         if len(points) < 2:
             return
         _GUIDE_DRAG[view] = {"id": overlay_id, "origin": point,
                              "points": [(float(x), float(y)) for x, y in points],
-                             "moved": False}
+                             "item": dict(item), "moved": False}
         return
 
     if phase == "cancel":
@@ -5329,16 +5551,13 @@ def _guide_drag_event(message):
         drag = _GUIDE_DRAG.pop(view, None)
         if drag is None or drag["id"] != overlay_id or not drag["moved"]:
             return
-        if is_guide:
-            item = assets.get(overlay_id)
-            if item is not None:
-                item["points"] = [list(p) for p in drag["points"]]
-        else:
-            _index, line = _additional_line_by_overlay_id(view, overlay_id)
-            if line is not None:
-                line["points"] = [list(p) for p in drag["points"]]
-        _push_overlay(view)
+        item = assets.get(overlay_id) if is_guide else (
+            _additional_line_by_overlay_id(view, overlay_id)[1])
+        if item is not None:
+            item.clear()
+            item.update(drag["item"])
         _invalidate_grid_cache()
+        _push_overlay(view)
         try:
             _animean().ui.refresh()
         except Exception:
@@ -5353,6 +5572,13 @@ def _guide_drag_event(message):
     delta = (point[0] - drag["origin"][0], point[1] - drag["origin"][1])
     if abs(delta[0]) > 1e-9 or abs(delta[1]) > 1e-9:
         drag["moved"] = True
+    if not drag["moved"]:
+        # A click: nothing below may touch the line, or it would lose its curve
+        # and its auto mark for no move at all.
+        if phase == "release":
+            _GUIDE_DRAG.pop(view, None)
+            _push_overlay(view)
+        return
     moved = [(x + delta[0], y + delta[1]) for x, y in drag["points"]]
 
     if is_guide:
@@ -5360,6 +5586,9 @@ def _guide_drag_event(message):
         if item is None:
             return
         item["points"] = moved
+        # Moved by hand: the contour no longer owns it.
+        item.pop("auto", None)
+        item.pop("source", None)
         # The stored Bezier commands describe the OLD position; dropping them
         # keeps the guide honest as a polyline rather than drawing it in two
         # places at once. A redraw restores the curve.
@@ -5373,8 +5602,10 @@ def _guide_drag_event(message):
         line.pop("third", None)
 
     if phase == "move":
+        # The line moves now; the mapping, and the refer grid and tint drawn
+        # from it, wait for the release. Rebuilding them here was a full solve
+        # per mouse move, and the moves queued up behind it.
         _push_overlay(view)
-        _invalidate_grid_cache()
         try:
             _animean().ui.refresh()
         except Exception:
@@ -5383,9 +5614,6 @@ def _guide_drag_event(message):
 
     # release
     _GUIDE_DRAG.pop(view, None)
-    if not drag["moved"]:
-        _push_overlay(view)
-        return
     if is_guide:
         # Third space IS the child arc plane, so a moved axis retires every
         # additional line's stored coordinates on this board.
@@ -8983,6 +9211,7 @@ def _perform_mapping():
         main_assets[V_PROPERTY],
         mapper_info,
         additional_pairs=additional,
+        ground_pairs=_ground_pairs(),
     )
     if map_point is None:
         print(f"[auto_mapping] cannot build mapping: {width_scale}")
@@ -9135,11 +9364,390 @@ def _run():
 # hooks + tool handlers
 # ---------------------------------------------------------------------------
 
+def _contour_points(view_name):
+    return (_assets_for(view_name).get(PROXY_PROPERTY) or {}).get("points")
+
+
+def _kept_pairing(child_item, main_item):
+    """The id both contours were paired under, or None. A redraw leaves the
+    two without a common id, which is what asks for a new pairing."""
+    child, main = child_item.get(PAIRING_KEY), main_item.get(PAIRING_KEY)
+    return child["id"] if child and main and child["id"] == main["id"] else None
+
+
+def _pairing_key(child_item, main_item):
+    return (tuple(map(tuple, child_item["points"])),
+            tuple(map(tuple, main_item["points"])),
+            _kept_pairing(child_item, main_item))
+
+
+def proxy_pairing():
+    """The two contours paired, station by station, or None.
+
+    Matched once, when a contour is drawn, then kept on both contours: Deform
+    carries the stations with the line (line_tools._deform), so a point of the
+    pattern stays the same point however far it is pulled. Matching again on
+    every edit let the shape search jump to the next corner of a near-rectangle
+    and turned the auto axes a quarter turn."""
+    child_item = _assets_for("child").get(PROXY_PROPERTY)
+    main_item = _assets_for("main").get(PROXY_PROPERTY)
+    if not (child_item and main_item and child_item.get("points") and main_item.get("points")):
+        return None
+    if _PROXY_PAIRING["key"] == _pairing_key(child_item, main_item):
+        return _PROXY_PAIRING["value"]
+    if _kept_pairing(child_item, main_item) is not None:
+        paired = {"child": child_item[PAIRING_KEY]["stations"],
+                  "main": main_item[PAIRING_KEY]["stations"],
+                  "corner_stations": child_item[PAIRING_KEY].get("corner_stations") or []}
+    else:
+        import proxy_shape
+        paired, why = proxy_shape.match(child_item["points"], main_item["points"])
+        if paired is None:
+            print(f"[auto_mapping] contours not paired: {why}")
+        else:
+            pairing = random.getrandbits(32)
+            corners = paired["corner_stations"]
+            child_item[PAIRING_KEY] = {"id": pairing, "stations": paired["child"],
+                                       "corner_stations": corners}
+            main_item[PAIRING_KEY] = {"id": pairing, "stations": paired["main"],
+                                      "corner_stations": corners}
+    _PROXY_PAIRING["key"] = _pairing_key(child_item, main_item)
+    _PROXY_PAIRING["value"] = paired
+    return paired
+
+
+def _refresh_proxy_axes():
+    """Main axes the user never drew or moved follow the contours (issue #9).
+    The texture axes are the user's and stay as they are."""
+    paired = proxy_pairing()
+    child_assets, main_assets = _assets_for("child"), _assets_for("main")
+    if paired is None or any(prop not in child_assets for prop in GUIDE_PROPERTIES):
+        return False
+    import proxy_shape
+    changed = False
+    for prop in GUIDE_PROPERTIES:
+        item = main_assets.get(prop)
+        if item is not None and not item.get("auto"):
+            continue
+        # What this axis was read from: re-reading it when nothing changed
+        # would cost a thin plate on every committed edit.
+        source = hash((tuple(map(tuple, child_assets[prop]["points"])), _PROXY_PAIRING["key"]))
+        if item is not None and item.get("source") == source:
+            continue
+        line = proxy_shape.carried_axis(paired, child_assets[prop]["points"])
+        if line:
+            flagged = bool(item and item.get(GROUND_FLAG))
+            main_assets[prop] = {"points": line, "width": 3.0, "auto": True, "source": source}
+            if flagged:
+                main_assets[prop][GROUND_FLAG] = True
+            changed = True
+    if changed:
+        _invalidate_additional_thirds("main")
+        # Whatever was cached without this axis describes the old frame, or
+        # no frame at all if the axis was just deleted.
+        _invalidate_grid_cache()
+    return changed
+
+
+def run_proxy_contour_tool(view_name, points, width=3.0):
+    """Install this board's closed proxy contour; a redraw replaces it."""
+    # The fitter turns a clean polygon into a few straight runs, and flattening
+    # gives a straight run only its ends: judge the length, not the point count.
+    cleaned = [(float(x), float(y)) for x, y in points or []]
+    if len(cleaned) < 3 or _cumulative_lengths(cleaned + cleaned[:1])[-1] < PROXY_MIN_LENGTH:
+        print("[auto_mapping] a contour needs a longer stroke.")
+        return False
+    cleaned = [list(p) for p in _densify(cleaned + cleaned[:1])[:-1]]
+    assets = _assets_for(view_name)
+    # A contour IS a ground line from the moment it is drawn (user 2026-11-01);
+    # Choice Line can still untick it.
+    assets[PROXY_PROPERTY] = {"points": cleaned, "width": float(width), GROUND_FLAG: True}
+    other = "main" if view_name == "child" else "child"
+    _refresh_proxy_axes()
+    _save_assets(view_name)
+    # The pairing also landed on the other board, and each scene owns its own
+    # history (the main axes moved with it, too).
+    if proxy_pairing() is not None:
+        _save_assets(other)
+        try:
+            _animean().ui.history_commit("Contour pairing", other)
+        except Exception:
+            pass
+    _overlays_changed("main")
+    print(f"[auto_mapping] contour set on the {view_name} board"
+          + ("" if _contour_points(other) else f"; draw one on the {other} board too."))
+    _maybe_auto_run()
+    return True
+
+
+def activate_proxy_contour_tool(name="free_out_line", property_value=PROXY_PROPERTY):
+    register_hooks()
+    arm_line_tools(False)
+    _set_draw_color(PROXY_COLOR)
+    print("[auto_mapping] Free Out Line: draw one closed shape on each board "
+          "(the end joins the start).")
+    return property_value
+
+
+def arm_line_tools(armed):
+    """The contour takes presses only while a line tool is armed; under the
+    pen it must not swallow a stroke that starts on it."""
+    if _LINE_TOOLS["armed"] != bool(armed):
+        _LINE_TOOLS["armed"] = bool(armed)
+        refresh_line_overlays()
+
+
+def refresh_line_overlays():
+    _push_overlay("main")
+    _push_overlay("child")
+
+
+def is_line(overlay_id):
+    return (overlay_id in GUIDE_PROPERTIES or overlay_id == PROXY_PROPERTY
+            or overlay_id.startswith(ADDITIONAL_PROPERTY + ":"))
+
+
+def line_item(view_name, overlay_id):
+    if overlay_id.startswith(ADDITIONAL_PROPERTY + ":"):
+        return _additional_line_by_overlay_id(view_name, overlay_id)[1]
+    return _assets_for(view_name).get(overlay_id)
+
+
+def line_label(overlay_id):
+    if overlay_id == H_PROPERTY:
+        return "H"
+    if overlay_id == V_PROPERTY:
+        return "V"
+    if overlay_id == PROXY_PROPERTY:
+        return "轮廓线"
+    return "辅助线"
+
+
+def chosen_line():
+    choice = _LINE_TOOLS["chosen"]
+    if choice and (line_item("child", choice) or line_item("main", choice)):
+        return choice
+    return None
+
+
+def choose_line(overlay_id):
+    _LINE_TOOLS["chosen"] = overlay_id
+
+
+def line_is_ground(overlay_id):
+    return any((line_item(view, overlay_id) or {}).get(GROUND_FLAG)
+               for view in ("child", "main"))
+
+
+def set_line_ground(overlay_id, value):
+    """A pair is one line: the flag sits on both boards and commits on both."""
+    for view in ("child", "main"):
+        item = line_item(view, overlay_id)
+        if item is None:
+            continue
+        if value:
+            item[GROUND_FLAG] = True
+        else:
+            item.pop(GROUND_FLAG, None)
+        _save_assets(view)
+        try:
+            _animean().ui.history_commit("Ground Line", view)
+        except Exception:
+            pass
+    _overlays_changed("main")
+    print(f"[auto_mapping] {line_label(overlay_id)} "
+          f"{'is a ground line' if value else 'is no longer a ground line'}")
+    _maybe_auto_run()
+
+
+def restore_line_item(view_name, overlay_id, saved):
+    """A cancelled Deform: the item as it stood, marks and all."""
+    item = line_item(view_name, overlay_id)
+    if item is None:
+        return
+    item.clear()
+    item.update(saved)
+    _overlays_changed(view_name)
+    try:
+        _animean().ui.refresh()
+    except Exception:
+        pass
+
+
+def replace_line_points(view_name, overlay_id, points, settled, stations=None):
+    """Deform's write. Not `settled` is a move: the line alone, the mapping waits
+    (see _guide_drag_event). `settled` is the release: history, axes, the mapping.
+    `stations` are a contour's paired stations, moved with it; a contour moved
+    without any lost what it was paired on, should it have paired mid-drag."""
+    item = line_item(view_name, overlay_id)
+    if item is None:
+        return
+    item["points"] = points
+    if stations is not None:
+        item[PAIRING_KEY] = dict(item[PAIRING_KEY], stations=stations)
+    elif overlay_id == PROXY_PROPERTY:
+        item.pop(PAIRING_KEY, None)
+    item.pop("commands", None)
+    item.pop("third", None)
+    item.pop("auto", None)
+    item.pop("source", None)
+    if not settled:
+        _push_overlay(view_name)
+        try:
+            _animean().ui.refresh()
+        except Exception:
+            pass
+        return
+    if overlay_id in GUIDE_PROPERTIES:
+        _invalidate_additional_thirds(view_name)
+    axes_moved = overlay_id == PROXY_PROPERTY and _refresh_proxy_axes()
+    # A release can be the first pairing, written on both contours.
+    paired_now = (overlay_id == PROXY_PROPERTY and stations is None
+                  and proxy_pairing() is not None)
+    other = "child" if view_name == "main" else "main"
+    other_moved = paired_now or (axes_moved and other == "main")
+    _save_assets(view_name)
+    if other_moved:
+        # The other board changed with this one: its own history.
+        _save_assets(other)
+    _overlays_changed(view_name)
+    try:
+        animean = _animean()
+        animean.ui.refresh()
+        animean.ui.history_commit("Deform Line", view_name)
+        if other_moved:
+            animean.ui.history_commit("Contour pairing" if paired_now else "Contour axes", other)
+    except Exception:
+        pass
+    _maybe_auto_run()
+
+
+def _contour_items(view_name):
+    """The contour as one grabbable ring, with the hues on top: equal hue on
+    the two boards is the same point of the pattern."""
+    points = _contour_points(view_name)
+    if not points:
+        return []
+    ring = [tuple(p) for p in points]
+    items = [{
+        "id": PROXY_PROPERTY,
+        "points": ring,
+        "closed": True,
+        "color": (PROXY_COLOR[0], PROXY_COLOR[1], PROXY_COLOR[2], 255),
+        "width": 2.0,
+        "removable": True,
+        "draggable": _LINE_TOOLS["armed"],
+    }]
+    paired = proxy_pairing()
+    if paired is None:
+        return items
+    stations = [tuple(p) for p in paired["child" if view_name == "child" else "main"]]
+    count = len(stations)
+    for index in range(PROXY_HUES):
+        first = index * count // PROXY_HUES
+        last = (index + 1) * count // PROXY_HUES
+        chunk = [stations[k % count] for k in range(first, last + 1)]
+        red, green, blue = colorsys.hsv_to_rgb(index / PROXY_HUES, 0.8, 0.92)
+        items.append({
+            "id": f"{PROXY_PROPERTY}_hue:{index}",
+            "points": chunk,
+            "color": (int(red * 255), int(green * 255), int(blue * 255), 255),
+            "width": 3.5,
+            "removable": False,
+        })
+    return items
+
+
+def _chosen_line_items(view_name):
+    """A halo under the line Choice Line picked."""
+    chosen = chosen_line() if _LINE_TOOLS["armed"] else None
+    points = (line_item(view_name, chosen) or {}).get("points") if chosen else None
+    if not points or len(points) < 2:
+        return []
+    return [{
+        "id": f"line_chosen:{chosen}",
+        "points": [tuple(p) for p in points],
+        "closed": chosen == PROXY_PROPERTY,
+        "color": LINE_CHOSEN_COLOR,
+        "width": 10.0,
+        "removable": False,
+    }]
+
+
+def _contour_pins(view_name, points):
+    """The contour has no ends: its pins stand on the paired corners, the same
+    points of the pattern on both boards."""
+    paired = proxy_pairing()
+    if paired is None:
+        import proxy_shape
+        return proxy_shape.corner_points(points)
+    stations = paired["child" if view_name == "child" else "main"]
+    return [stations[i] for i in paired["corner_stations"]]
+
+
+def _line_mark_items(view_name):
+    """Pins on ground lines."""
+    assets = _assets_for(view_name)
+    lines = [prop for prop in GUIDE_PROPERTIES if prop in assets]
+    lines += [f"{ADDITIONAL_PROPERTY}:{_line_id(line, index)}" for index, line in enumerate(
+        (assets.get(ADDITIONAL_PROPERTY) or {}).get("lines") or [])]
+    if PROXY_PROPERTY in assets:
+        lines.append(PROXY_PROPERTY)
+    items = []
+    for overlay_id in lines:
+        points = (line_item(view_name, overlay_id) or {}).get("points") or []
+        if len(points) < 2 or not line_is_ground(overlay_id):
+            continue
+        ends = (_contour_pins(view_name, points) if overlay_id == PROXY_PROPERTY
+                else [points[0], points[-1]])
+        for number, end in enumerate(ends):
+            items.append({
+                "id": f"line_pin:{overlay_id}:{number}",
+                "points": [(end[0] + 5.0 * math.cos(2.0 * math.pi * k / 16),
+                            end[1] + 5.0 * math.sin(2.0 * math.pi * k / 16))
+                           for k in range(16)],
+                "closed": True,
+                "color": GROUND_PIN_COLOR,
+                "fill_color": GROUND_PIN_COLOR,
+                "width": 1.0,
+                "removable": False,
+            })
+    return items
+
+
+def _ground_pairs():
+    """The (child, main) ground pairs: lines the user ticked 地线."""
+    child_assets, main_assets = _assets_for("child"), _assets_for("main")
+    pairs = []
+    for prop in GUIDE_PROPERTIES:
+        child_item, main_item = child_assets.get(prop), main_assets.get(prop)
+        if child_item and main_item and (child_item.get(GROUND_FLAG) or main_item.get(GROUND_FLAG)):
+            # The frame already takes this axis onto its partner: the pin is
+            # "stay where the frame puts you", whatever else lets the axis go.
+            pairs.append(({"points": child_item["points"], "same_third": True},
+                          {"points": main_item["points"]}))
+    child_lines = {_line_id(line, index): line for index, line in enumerate(
+        (child_assets.get(ADDITIONAL_PROPERTY) or {}).get("lines") or [])}
+    main_lines = {_line_id(line, index): line for index, line in enumerate(
+        (main_assets.get(ADDITIONAL_PROPERTY) or {}).get("lines") or [])}
+    for key in sorted(child_lines):
+        child_item, main_item = child_lines[key], main_lines.get(key)
+        if main_item and (child_item.get(GROUND_FLAG) or main_item.get(GROUND_FLAG)):
+            pairs.append(({"points": child_item["points"]}, {"points": main_item["points"]}))
+    if line_is_ground(PROXY_PROPERTY):
+        paired = proxy_pairing()
+        if paired is not None:
+            child, main = paired["child"], paired["main"]
+            pairs.append(({"points": child + child[:1], "closed": True},
+                          {"points": main + main[:1]}))
+    return pairs or None
+
+
 def _capture_mapping_item(cell, stroke, message):
     """Move a freshly drawn guide/area click out of the model into the dict."""
     prop = message.get("property")
     if prop not in (H_PROPERTY, V_PROPERTY, MAPPING_AREA_PROPERTY,
-                    ADDITIONAL_PROPERTY):
+                    ADDITIONAL_PROPERTY, PROXY_PROPERTY):
         return
     view = message.get("view") or "main"
     row = cell.get("row")
@@ -9206,6 +9814,11 @@ def _capture_mapping_item(cell, stroke, message):
             message["cancel_history"] = True
         _animean().ui.widget.refresh()
         return
+    elif prop == PROXY_PROPERTY:
+        if not run_proxy_contour_tool(view, points, width):
+            message["cancel_history"] = True
+        _animean().ui.widget.refresh()
+        return
     else:
         # Same entry point Re-expand uses; it saves and refreshes the overlays
         # itself, which is why the shared tail below only runs for the area.
@@ -9240,6 +9853,16 @@ def _overlay_removed(cell, stroke, message):
     if not item_id:
         return
     view = message.get("view") or "main"
+    if item_id == PROXY_PROPERTY:
+        _assets_for(view).pop(PROXY_PROPERTY, None)
+        _save_assets(view)
+        _overlays_changed(view)
+        try:
+            _animean().ui.history_commit("Remove Contour", view)
+        except Exception:
+            pass
+        _maybe_auto_run()
+        return
     if item_id.startswith(ADDITIONAL_PROPERTY + ":"):
         # Additional lines exist as PAIRS - removing one on either board
         # removes the pair (matched by id) on both, and each board's write
@@ -9470,56 +10093,29 @@ def _tool_option_changed(cell, stroke, message):
         print(f"[auto_mapping] back/lining shade -> {_FOLD['back_color'][:3]}")
         _maybe_auto_run()
         return
-    # The refer grid used to be a tool option here. It moved to a per-board
-    # View menu: it is a display choice about a BOARD, not a setting of the
-    # mapping tool, and as one shared option it could not be answered
-    # separately for the two views.
 
 
 VIEW_MENU_NAME = "view"
-REFER_RECT_ITEM = "refer_rect"
 
 
-def _view_menu_items(view_name):
-    """The View menu of one board, re-read on every open so ticks are true.
+def _view_menu_items():
+    """The texture board's View menu, re-read on every open so ticks are true.
 
-    In unit mode these entries EDIT THE ACTIVE UNIT's display settings (the
-    same state the Advanced Settings window shows) - leaving them wired to
-    the legacy globals would have made them dead controls that still looked
-    alive. With no unit focused they are disabled rather than hidden, so
-    the menu shape stays stable."""
-    def build():
-        unit_mode = bool(_UNIT_META)
-        settings = _unit_settings() if _ACTIVE_UNIT["id"] else None
-        enabled = (not unit_mode) or settings is not None
-        grid_on = (settings["show_grid"] if settings is not None
-                   else _REFER_RECT.get(view_name, False))
-        divisions = (settings["grid_divisions"] if settings is not None
-                     else _GRID["divisions"])
-        occlusion_on = (settings["show_occlusion"] if settings is not None
-                        else _OCCLUSION["enabled"])
-        items = [{"name": REFER_RECT_ITEM, "title": "Mapping Refer Rect",
-                  "kind": "check", "checked": grid_on, "enabled": enabled}]
-        # Grid density lives with the grid it densifies. One shared value
-        # for both boards: the point of the fine setting is COMPARING the
-        # two boards' grids cell by cell, which needs them to agree.
-        items.append({
-            "name": "refer_rect_divisions", "title": "Refer Rect Divisions",
-            "kind": "submenu",
-            "items": [{"name": f"grid_div_{n}", "title": f"{n} x {n}",
-                       "kind": "radio", "enabled": enabled,
-                       "checked": divisions == n}
-                      for n in GRID_DIVISION_CHOICES]})
-        if view_name == "child":
-            items.append({"name": OCCLUSION_BUTTON, "title": "Occluded Areas",
-                          "kind": "check", "checked": occlusion_on,
-                          "enabled": enabled})
-        return items
-    return build
+    In unit mode the entry EDITS THE ACTIVE UNIT's display settings (the
+    same state the Advanced Settings window shows) - leaving it wired to
+    the legacy globals would have made it a dead control that still looked
+    alive. With no unit focused it is disabled rather than hidden, so the
+    menu shape stays stable."""
+    settings = _unit_settings() if _ACTIVE_UNIT["id"] else None
+    enabled = (not _UNIT_META) or settings is not None
+    occlusion_on = (settings["show_occlusion"] if settings is not None
+                    else _OCCLUSION["enabled"])
+    return [{"name": OCCLUSION_BUTTON, "title": "Occluded Areas",
+             "kind": "check", "checked": occlusion_on, "enabled": enabled}]
 
 
 def _unit_view_setting(name, value):
-    """Route a View-menu toggle onto the active unit's settings."""
+    """Route a display toggle onto the active unit's settings."""
     uid = _ACTIVE_UNIT["id"]
     meta = _UNIT_META.get(uid)
     if not meta:
@@ -9541,44 +10137,8 @@ def _unit_view_setting(name, value):
 def _view_menu_action(message):
     if message.get("menu") != VIEW_MENU_NAME:
         return
-    view = message.get("view") or "main"
     name = message.get("name") or ""
     checked = bool(message.get("checked"))
-    if name == REFER_RECT_ITEM:
-        if _UNIT_META:
-            if _unit_view_setting("show_grid", checked):
-                print(f"[auto_mapping] unit refer rect grid "
-                      f"{'ON' if checked else 'OFF'}")
-            return
-        if _REFER_RECT.get(view) == checked:
-            return
-        _REFER_RECT[view] = checked
-        _invalidate_grid_cache()
-        _push_overlay(view)
-        print(f"[auto_mapping] refer rect grid on {view} "
-              f"{'ON' if checked else 'OFF'}")
-        return
-    if name.startswith("grid_div_"):
-        try:
-            divisions = int(name[len("grid_div_"):])
-        except ValueError:
-            return
-        if divisions not in GRID_DIVISION_CHOICES:
-            return
-        if _UNIT_META:
-            if _unit_view_setting("grid_divisions", divisions):
-                print(f"[auto_mapping] unit grid -> {divisions} x {divisions}")
-            return
-        if _GRID["divisions"] == divisions:
-            return
-        _GRID["divisions"] = divisions
-        _invalidate_grid_cache()
-        for board in ("child", "main"):
-            if _REFER_RECT.get(board):
-                _push_overlay(board)
-        print(f"[auto_mapping] refer rect grid -> {divisions} x {divisions} "
-              "iso-lines")
-        return
     if name == OCCLUSION_BUTTON:
         if _UNIT_META:
             if _unit_view_setting("show_occlusion", checked):
@@ -9586,6 +10146,46 @@ def _view_menu_action(message):
                       f"{'ON' if checked else 'OFF'}")
             return
         _set_occlusion(checked)
+
+
+def _refer_rect_option(message):
+    """The Refer Rect block of every Mapping tool's Tool Options panel. One
+    tick and one density for both boards: the point of the grid is comparing
+    the two boards cell by cell, which needs them to agree."""
+    hook = message.get("hook")
+    if hook == "refer_rect":
+        checked = str(message.get("value", "")).lower() == "on"
+        if _UNIT_META:
+            if _unit_view_setting("show_grid", checked):
+                print(f"[auto_mapping] unit refer rect grid "
+                      f"{'ON' if checked else 'OFF'}")
+            return
+        _REFER_RECT.update(child=checked, main=checked)
+    elif hook in ("refer_rect_divisions", "refer_rect_extend"):
+        try:
+            value = int(message.get("value"))
+        except (TypeError, ValueError):
+            return
+        if hook == "refer_rect_divisions":
+            if value not in GRID_DIVISION_CHOICES:
+                return
+            setting, key = "grid_divisions", "divisions"
+        else:
+            value = max(0, min(GRID_EXTEND_MAX, value))
+            setting, key = "grid_extend", "extend"
+        if _UNIT_META:
+            if _unit_view_setting(setting, value):
+                print(f"[auto_mapping] unit {setting} -> {value}")
+            return
+        if _GRID[key] == value:
+            return
+        _GRID[key] = value
+    else:
+        return
+    _invalidate_grid_cache()
+    _push_overlay("main")
+    _push_overlay("child")
+    print(f"[auto_mapping] refer rect grid -> {hook} {message.get('value')}")
 
 
 def _set_occlusion(enabled):
@@ -9818,6 +10418,14 @@ def _maybe_auto_run():
     pattern stroke). A no-op outside unit focus, while a run is already in
     flight, or when the unit's Live Re-render checkbox is off."""
     uid = _ACTIVE_UNIT["id"]
+    if not _RUN_GUARD["depth"] and _refresh_proxy_axes():
+        # A texture axis moved under contour-owned main axes.
+        _save_assets("main")
+        _overlays_changed("main")
+        try:
+            _animean().ui.history_commit("Contour axes", "main")
+        except Exception:
+            pass
     if uid is None or _RUN_GUARD["depth"]:
         return
     if not _unit_settings(uid).get("auto_render", True):
@@ -10477,12 +11085,17 @@ def _unit_settings_layout():
          "value": str(s.get("grid_divisions", 5)),
          "row": 6, "start_column": 0, "end_column": 1,
          "visible_when": {"name": "show_grid", "values": ["on"]}},
-        check("show_occlusion", "Occluded Areas (texture board)", 7),
-        check("front_visible", "Front / Front Lines", 8),
-        check("back_visible", "Back / Back Lines", 9),
-        check("seal_visible", "Crease Lines", 10),
-        check("auto_render", "Live Re-render", 11),
-        check("show_horizon", "Horizon Line", 12),
+        {"name": "grid_extend", "hook": "unit_setting", "type": "slider",
+         "title": "Grid Extend (x50%)", "min": 0, "max": GRID_EXTEND_MAX,
+         "value": int(s.get("grid_extend", 0)),
+         "row": 7, "start_column": 0, "end_column": 1,
+         "visible_when": {"name": "show_grid", "values": ["on"]}},
+        check("show_occlusion", "Occluded Areas (texture board)", 8),
+        check("front_visible", "Front / Front Lines", 9),
+        check("back_visible", "Back / Back Lines", 10),
+        check("seal_visible", "Crease Lines", 11),
+        check("auto_render", "Live Re-render", 12),
+        check("show_horizon", "Horizon Line", 13),
     ]
     return {"controls": controls}
 
@@ -10506,6 +11119,11 @@ def _unit_setting_changed(cell, stroke, message):
         if value not in GRID_DIVISION_CHOICES:
             return
         settings[name] = value
+    elif name == "grid_extend":
+        try:
+            settings[name] = max(0, min(GRID_EXTEND_MAX, int(raw)))
+        except (TypeError, ValueError):
+            return
     elif name in _UNIT_SETTING_DEFAULTS:
         settings[name] = str(raw).lower() in ("on", "true", "1")
     else:
@@ -10517,6 +11135,7 @@ def _unit_setting_changed(cell, stroke, message):
         _invalidate_grid_cache()
         _push_overlay("main")
         _push_overlay("child")
+        _refresh_tool_options()
     try:
         animean = _animean()
         animean.ui.refresh()
@@ -10834,6 +11453,8 @@ def _additional_pairs():
         if main_line is None:
             orphans += 1
             continue
+        if child_line.get(GROUND_FLAG) or main_line.get(GROUND_FLAG):
+            continue    # a ticked line pins position instead (_ground_pairs)
         if (len(child_line.get("points") or []) >= 2
                 and len(main_line.get("points") or []) >= 2):
             pairs.append((child_line, main_line))
@@ -10860,7 +11481,8 @@ def _mapper_from_assets(additional=True):
             return None, f"the H and V center lines on the {view} board do not cross"
     return build_mapper(specs[("child", H_PROPERTY)], specs[("child", V_PROPERTY)],
                         specs[("main", H_PROPERTY)], specs[("main", V_PROPERTY)],
-                        additional_pairs=_additional_pairs() if additional else None)
+                        additional_pairs=_additional_pairs() if additional else None,
+                        ground_pairs=_ground_pairs() if additional else None)
 
 
 def _nearest_additional_index(lines, points):
@@ -13099,19 +13721,17 @@ addEventListener('resize', () => {
 """
 
 
-# A View menu on each board. Both are named "view" and differ by HOST, which
-# is the point: "show the refer grid" is a question about one board, and the
-# answer for the texture is not the answer for the main view. Registered at
-# import time because the menus exist from startup, before any tool has been
-# armed (register_hooks() only runs on tool activation).
-for _host in ("main", "child"):
-    python_hooks.register_menu({
-        "name": VIEW_MENU_NAME,
-        "title": "View",
-        "host": _host,
-        "items": _view_menu_items(_host),   # callable: re-read on every open
-    })
+# The texture board's View menu. Registered at import time because the menus
+# exist from startup, before any tool has been armed (register_hooks() only
+# runs on tool activation); same for the Tool Options grid block.
+python_hooks.register_menu({
+    "name": VIEW_MENU_NAME,
+    "title": "View",
+    "host": "child",
+    "items": _view_menu_items,   # callable: re-read on every open
+})
 python_hooks.set_hook(_view_menu_action, menu=True)
+python_hooks.set_hook(_refer_rect_option, option=True)
 # The texture board can be locked against accidental edits; these are the
 # tools that still work while it is.
 python_hooks.register_protected_properties("child", [H_PROPERTY, V_PROPERTY,

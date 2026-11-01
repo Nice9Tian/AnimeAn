@@ -2,7 +2,7 @@
 
 用户从拿到程序到日常使用，主线是下面这几步。每一步写用户看到什么、做什么，不写怎么实现；实现见 `architecture.md`。每个工具的详细用法各有一页，在 `tools_user_workflow/`（索引在它的 README），本文只写主线，工具页与本文同为一级。界面文案以英文为主（菜单、按钮），本文照抄界面写法。
 
-> 状态：2026-09-28 用户拍板（一级，含 `tools_user_workflow/` 十三页）。
+> 状态：2026-09-28 用户拍板（一级，含 `tools_user_workflow/` 当时的十三页）。2026-11-02 用户授权加入 Free Out Line、Choice Line、Deform 三页。
 
 ## 1. 拿到程序与首次启动
 
@@ -15,7 +15,7 @@
 
 - **中央区**是两页：**Drawing** 是主画板，始终存在、随窗口放大；**Texture** 页在用户要把纹理板放大看时使用。
 - **面板窗**（Windows 菜单可开关）：**Tools**（Painting / Mapping 两组，可折叠）、**Options**（当前工具的选项）、**Layers**（Main Layers / Child Layers 两页，分别对应主画板和纹理板）、**Assets**、**History**、**Repulsion Pad**（默认隐藏）、**Python Debug**、时间轴。面板带页签，一页也显示页签（Tools 除外，它用分组）；可拖出浮动，浮动的无边框窗口能拉四边改大小。
-- **菜单栏**：**File**（Canvas Size…、Open…、Save、Save As…、Import ▸ Raster… / OpenToonz Lines… / Clip Studio Paint…、Texture ▸ 纹理板的同组命令）、**Edit**（Undo、Redo）、**Draw**（Draw Setting…）、**Arrow**（Outline Display Settings…）、**Auto Mapping**（见第 7 步）、**View**（主画板的参考网格开关）、**Theme**（Dark / Light）、**Windows**（Texture View 和各面板的显示开关）。Draw、Arrow、Auto Mapping、View 四个菜单由脚本提供。
+- **菜单栏**：**File**（Canvas Size…、Open…、Save、Save As…、Import ▸ Raster… / OpenToonz Lines… / Clip Studio Paint…、Texture ▸ 纹理板的同组命令）、**Edit**（Undo、Redo）、**Draw**（Draw Setting…）、**Arrow**（Outline Display Settings…）、**Auto Mapping**（见第 7 步）、**Theme**（Dark / Light）、**Windows**（Texture View 和各面板的显示开关）。Draw、Arrow、Auto Mapping 三个菜单由脚本提供。
 - 主题选 Dark 或 Light 后记住，下次启动沿用；画纸在两种主题下都是白的。
 
 ## 3. 画线稿（Tools ▸ Painting）
@@ -49,13 +49,13 @@ Painting 组一排图标，选中后 Options 面板换成该工具的选项。�
 
 - **Windows ▸ Texture View** 把纹理板的子控件显示出来：它可以浮动，也可以拖到 Options 或 Tools 面板里嵌成一行；中央区的 Texture 页则把它放大到整个中央区。任何时刻只有一个地方显示纹理板。选中 Mapping 组的任何工具时，Options 面板最后一行就嵌着它。
 - 纹理板是**无限画布**：没有页面边框，图案画在哪里都行，滚轮缩放、中键平移。
-- 纹理板自己有一条菜单栏：**File**（Import ▸ 三种格式导入到纹理板、Open Texture View…、Save Texture View、Save Texture View As…、Export Texture View Image…）、**Setting**（Changable Timeline：关着时时间轴始终指主画板；Changable Texture：关着时纹理板的图案受保护，只有引导线工具能画；Background：White / Black / Transparent）、**View**（Mapping Refer Rect、Refer Rect Divisions、Occluded Areas）。
+- 纹理板自己有一条菜单栏：**File**（Import ▸ 三种格式导入到纹理板、Open Texture View…、Save Texture View、Save Texture View As…、Export Texture View Image…）、**Setting**（Changable Timeline：关着时时间轴始终指主画板；Changable Texture：关着时纹理板的图案受保护，只有引导线工具能画；Background：White / Black / Transparent）、**View**（Occluded Areas）。
 - Layers 的 Child Layers 页固定对应纹理板；Changable Texture 只管能不能改图案，不改变面板的指向。
 - **规划**：纹理板会有分页栏，每页一个纹理，同时放多种纹理。用哪一页在 Auto Mapping 工具的选项里选：选项块里多一个「映射纹理」下拉，点开列出纹理页；选中一个 Auto-Mapping 图层时选项块自动显示，在那里改这个单元的目标纹理。现有版本只有一个纹理。
 
 ## 6. Auto Mapping 主线（Tools ▸ Mapping）
 
-Mapping 组的按钮：**H Center Line**、**V Center Line**、**Mapping Area**、**Additional Line**、**Auto Mapping**。（旧版本还有一个遗留的 Midline 示例按钮，只打印日志，已于 2026-09-28 删除。）它们的详细用法在 `tools_user_workflow/center_line.md`、`tools_user_workflow/mapping_area.md`、`tools_user_workflow/additional_line.md`、`tools_user_workflow/auto_mapping.md`，主线是：
+Mapping 组的按钮：**H Center Line**、**V Center Line**、**Mapping Area**、**Additional Line**、**Free Out Line**、**Choice Line**、**Deform**、**Auto Mapping**。（旧版本还有一个遗留的 Midline 示例按钮，只打印日志，已于 2026-09-28 删除。）它们的详细用法在 `tools_user_workflow/center_line.md`、`tools_user_workflow/mapping_area.md`、`tools_user_workflow/additional_line.md`、`tools_user_workflow/auto_mapping.md`，主线是：
 
 1. **建单元**：在 Main Layers 右键 New Auto-Mapping Layer，得到一个带常驻成员层的图层组。选中它的任一成员，Tools 展开 Mapping 组，这个单元的引导线显示出来；选到别的层，引导线隐藏。
 2. **画纹理板的轴线**：用 H Center Line 画一条横向轴（蓝），用 V Center Line 画一条纵向轴（绿），两条要真正相交。这两条线定义图案的坐标系。它们不进图层，画完即变成置顶的引导线，右上角有 × 可删，可以直接拖动。（规划：纹理板有多页时，先在选项块的「映射纹理」下拉里选好用哪一页。）
@@ -63,9 +63,10 @@ Mapping 组的按钮：**H Center Line**、**V Center Line**、**Mapping Area**�
 4. **画主画板的轴线**：在主画板上同样画一条 H、一条 V，位置、长度、弯曲随意；线的端点对应端点、交点对应交点，主画板的轴线弯，图案就弯。线的末端有方向小箭头，把一条线反着画，图案就镜像。
 5. **可选：Mapping Area**：像油漆桶一样在封闭形状里点一下（浅蓝）。画在主画板上，Auto Mapping 的输出被裁到形状里；画在纹理板上，只有形状里的图案参与 Auto Mapping。
 6. **可选：Additional Line**：在任一块板上画一条粉色细线，另一块板同步出它的弦；把线画弯，纹理就顺着这条线的走向流动，像多加了一条网格等参线。线可以跨过 H/V 轴线：跨越处的纹理顺着轴线滑到画的位置，轴线本身不变形。
+   **可选：Free Out Line**：在两块板各画一条闭合轮廓，花纹贴着轮廓走，主画板的轴线可以由轮廓生成。**Choice Line** 把一条线设成地线，**Deform** 拖线变形。见 `tools_user_workflow/free_out_line.md`、`tools_user_workflow/choice_line.md`、`tools_user_workflow/deform_line.md`。
 7. **生成**：单元有焦点时，拖动轴线、增删附加线、改生成选项、改纹理板图案，都会自动就地重跑（Live Re-render）；没有单元的旧文档按 Auto Mapping 按钮手动跑。结果是单元组里的 front 层（正面）、back 层（背面，衬里色）和 crease 层（折痕，虚线）。逐帧动画里每一帧都要有花纹：现有版本一个单元的轴线在所有帧上相同，规划是轴线可逐帧调整。
 8. **主画板上的红色手柄**是"最近端"：拖它决定折叠层的叠放次序，哪一侧在上面。
-9. **生成选项**分三处：Options 面板（Mapping 组所有工具共用）有 RDP、Front/Back Split、Crease Line、补全拓扑与 Bridge k；输出几何在菜单 Auto Mapping ▸ Calculation Mode（Bezier / Spline / Polyline）；颜色和线型在 Auto Mapping ▸ Line Display Settings…。参考网格在每块板的 View 菜单里开关。
+9. **生成选项**分三处：Options 面板（Mapping 组所有工具共用）有 RDP、Front/Back Split、Crease Line、补全拓扑与 Bridge k；输出几何在菜单 Auto Mapping ▸ Calculation Mode（Bezier / Spline / Polyline）；颜色和线型在 Auto Mapping ▸ Line Display Settings…。参考网格的开关、密度和延展也在 Options 面板。
 10. **右键单元 ▸ Advanced Settings…**：这个单元的显示开关、front / back / crease 各层的可见性、Live Re-render 总开关。**Duplicate Auto-Mapping Layer** 复制配置得到新单元；**To Editable Layer** 把单元烘焙成普通线稿层加填充层；旧的手工图层组可以 **Convert to Auto-Mapping Layer**。
 11. **规划：轮廓模式（Outline Mode）**。不画轴线，在纹理页用一个封闭轮廓框住纹理，在主画板画出这个轮廓变形后的样子，轴线和约束线自动生成。算法与交互未定，见 `tools_user_workflow/auto_mapping.md` 第 11 条。
 
@@ -100,7 +101,7 @@ Mapping 组的按钮：**H Center Line**、**V Center Line**、**Mapping Area**�
 
 ## 11. 各工具的详细用法
 
-每个工具一页，固定四节（在哪、怎么用、会看到什么、边界），索引在 `tools_user_workflow/README.md`。Painting 组：`arrow`、`pen`、`eraser`、`fill`、`transfer`、`connect`；面板窗：`repulsion_pad`；Mapping 组：`center_line`、`mapping_area`、`additional_line`、`auto_mapping`；Auto Mapping 菜单：`horizon_line`、`to_3d`。
+每个工具一页，固定四节（在哪、怎么用、会看到什么、边界），索引在 `tools_user_workflow/README.md`。Painting 组：`arrow`、`pen`、`eraser`、`fill`、`transfer`、`connect`；面板窗：`repulsion_pad`；Mapping 组：`center_line`、`mapping_area`、`additional_line`、`free_out_line`、`choice_line`、`deform_line`、`auto_mapping`；Auto Mapping 菜单：`horizon_line`、`to_3d`。
 
 ## 待核
 

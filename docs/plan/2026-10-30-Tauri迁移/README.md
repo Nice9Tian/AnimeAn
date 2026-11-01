@@ -30,7 +30,11 @@
 
 最终目标：网页版能完全替换 Qt 版，`pyfile/` 不用改。
 
-**验收：** 合并时 `git diff main -- pyfile/ pythonbind/animemodel.py opentoonz_tools/` 为空，`tests/t_*.py` 全过。为了合并而不得不改 Python 的地方，算迁移的缺陷，要改后端，不改 Python。
+**验收：** 合并时 `git diff $(git merge-base main HEAD) HEAD -- pyfile/ pythonbind/animemodel.py opentoonz_tools/` 为空，`tests/t_*.py` 全过。为了合并而不得不改 Python 的地方，算迁移的缺陷，要改后端，不改 Python。
+
+这条只管迁移分支自己的提交。PR #20 合入后功能开发回到 `main`，`main` 上的 `pyfile/` 会继续变，直接和 `main` 比会把新功能算成迁移缺陷，所以 2026-11-02 改成和 merge-base 比（用户授权）。迁移分支合并 `main` 时会带上这些改动，merge-base 跟着前移，这不算迁移改 Python。
+
+**PR #51 带来的新依赖：** 覆盖层多了 `label` 字段，气泡文字用 `QPainter::drawText` 经录制层转成路径，靠 Qt 的字体。第 5 步后端完全去 Qt 时要给它换实现：网页端画文字，或者另找字形来源。Python 这边发的还是 `ui.set_overlay` 的项，不用改。
 
 这条能成立，是因为 Python 看到的 C++ 接口可以保持不变：
 
@@ -115,7 +119,7 @@ Python 仍然嵌在后端进程里，所以 `pydeps` 的 pip 自装、To 3D 的 
 6. **补齐面板。** 按现有长相做菜单、工具、选项、时间轴、调色板、对话框、导入。
    预计 3.5–5 周。完成标志：按 `../../tools_user_workflow/README.md` 列出的工具页逐页手测通过。
 7. **打包和合并。** Tauri 与后端打成压缩包，在离线的新机器上验证，然后找时机合并进 `main`。
-   预计 1 周。完成标志：`pyfile/` 差异为空，`tests/t_*.py` 全过，文档里没有旧术语，R4 已处理。合并和删除 Qt 界面代码都由用户确认。
+   预计 1 周。完成标志：迁移分支相对 merge-base 的 `pyfile/` 差异为空，`tests/t_*.py` 全过，文档里没有旧术语，R4 已处理。合并和删除 Qt 界面代码都由用户确认。
 
 ## 对接真实软件
 

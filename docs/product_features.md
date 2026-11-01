@@ -52,11 +52,15 @@
 - **不糊合**：折叠处裁断拓扑，正面、背面、折痕各成一层，背面衬里色，折痕虚线；最近端红色手柄决定叠放次序；补全拓扑用三次曲线跨过缺口。现有。规格（一级）：`auto_mapping/topology_severing.md`、`auto_mapping/fold_crease_pipeline.md`。
 - **Mapping Area**：主画板上裁结果、纹理板上筛来源，每板一个。现有。规格（一级）：`auto_mapping/auto_mapping_2_spec.md` 第 7 节。
 - **Additional Line**：画下的线就是等参线，牵引本族纹理流向；另一侧同步出弦；近处重画即替换；同族嵌套过渡、正交族互不影响；跨过 H/V 轴线时照常生效：被跨过的那半条轴线沿自身滑动，轴线形状和原点不动（线同时画出了那一端的版心边时，这半条轴线不滑动）；Constrain Outline 与 Falloff 可选。现有。规格（一级）：`auto_mapping/flow_field_warp.md`。
-- **Ground Line（地线）**：把纹理板上的一段花纹钉到主画板的一条线上，整条线按弧长逐点对应，硬钉；画下即钉在当前位置，选中（发光描边）后重画即移动；移动时影响沿线延长到画布边缘，正交的轴线在它这一半让路、平行的轴线不动，外框跟着变（待确认），附加线在它附近让位；附加线可转换为地线；两端画图钉。规划（草稿，待拍板）。计划与可行性实验：`plan/2026-09-30-地线-GroundLine-计划.md`；用法草稿：`tools_user_workflow/groundline.md`。
+- **Ground Line（地线）**：把纹理板上的一段花纹钉到主画板的一条线上，整条线按弧长逐点对应，硬钉；画下即钉在当前位置，选中（发光描边）后重画即移动；移动时影响沿线延长到画布边缘，正交的轴线在它这一半让路、平行的轴线不动，外框跟着变（待确认），附加线在它附近让位；附加线可转换为地线；两端画图钉。现有部分：用 Choice Line 把轴线、附加线或轮廓设成地线，就地钉住。其余（单独的 Ground Line 工具、移动交互事件、外框跟随）规划（草稿，待拍板）。规格（一级）：`auto_mapping/ground_line.md`。计划与可行性实验：`plan/2026-09-30-地线-GroundLine-计划.md`；用法草稿：`tools_user_workflow/groundline.md`。
+- **闭合轮廓（Free Out Line）**：两块板各画一条闭合轮廓，自动按形状和角点配对，同色的位置是花纹上的同一点；轮廓画完就是地线；主画板没画过的 H、V 轴线由轮廓生成并跟随。现有。规格（一级）：`auto_mapping/closed_contour.md`。
+- **Choice Line**：点选轴线、附加线或轮廓，在 Options 里勾选是否为地线。现有。
+- **Deform**：拖动任意线变形，影响范围可调；拖轮廓时配对不变。拖动时只移动线，松手才重算。现有。
 - **输出几何**：Bezier / Spline / Polyline 三种 Calculation Mode 都跟随形变，原始顶点永远是锚点，RDP 只抽插入的采样点。现有。规格（一级）：`auto_mapping/stroke_mapping_pipeline.md`。Bezier 模式在轴线折点处先劈分再搬运控制柄的修复（2026-09-25，`tests/t_bezier_knots.py`）尚在工作区未提交。待办：提交。
 - **Auto-Mapping 单元**：一个单元一套配置（两边轴线、Mapping Area、附加线、锚点、选项），输出可随时重生成；焦点进入单元显示引导、离开隐藏；拖轴线、改附加线、改选项、改纹理图案都就地重跑（Live Re-render 可关）；Duplicate、To Editable Layer、Convert 旧组；Advanced Settings 管显示开关与 front / back / crease 可见性。现有。规格（一级）：`auto_mapping/layer_units.md`。
 - 无单元的旧文档：引导线常显，按钮手动跑，每次新建一层置顶。现有。
-- **参考网格与遮挡**：两块板叠橙色 Refer Rect，密度可选；纹理板 Occluded Areas 染出会折到背面的区域。现有。
+- **参考网格与遮挡**：两块板叠橙色 Refer Rect，在 Mapping 工具的 Options 里开关，密度可选，可向轴线端点外延展；纹理板 Occluded Areas 染出会折到背面的区域。现有。
+- **折叠气泡**：映射折叠的地方，画板上显示气泡。轴线折返时气泡指向折返点，只显示在这条轴所在的板上，并说明是哪条轴；其他折叠显示在主画板上。现有。规格（一级）：`auto_mapping/fold_notes.md`。
 - **Line Display Settings**：轴线、折痕、衬里的颜色线型线宽，遮挡染色。现有。
 - **视平线**：主画板一条可上下拖的橙色虚线，To 3D 用它定哪一端远。现有。规格（一级）：`auto_mapping/auto_mapping_2_spec.md` 第 11.6 节。
 - **To 3D**：从雅可比反推浮雕，导出离线 HTML 查看器（正交相机、浮雕滑条、翻转、线框、Transfer Grid、original camera）；需要纹理板有填充。现有。规格（一级）：同上。

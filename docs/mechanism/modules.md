@@ -88,13 +88,15 @@ AnimeAn.exe
 | `pyfile/visibility_tool.py` | 图层可见性开关的策略 |
 | `pyfile/repulsion_tool.py` | 斥力板：基线场、临时内部层预览、拓扑保持的施加 |
 | `pyfile/proxy_rect.py` | 代理矩形的角点对应，算出主画板轴线和边；未接入界面，规格（一级）：`../auto_mapping/proxy_rect.md` |
+| `pyfile/proxy_shape.py` | 自由闭合轮廓的配对和主画板自动轴线（纯函数），算法与常量是提案，见 issue #9 |
+| `pyfile/line_tools.py` | Choice Line 和 Deform：选中轴线、附加线、轮廓线，勾选地线，沿线局部拖动变形 |
 | `pyfile/window_manager.py` | 窗口 / 页策略（`ui.windows` 的调用方） |
 | `pyfile/overlay_stack.py` | 多个工具的覆盖层合成到一张显示列表 |
 | `pyfile/script_store.py` | scriptData 的命名空间读写 |
 | `pyfile/viewscale.py`、`pyfile/bezier.py` | 两只共享轮子的 Python 镜像 |
 | `pyfile/pydeps.py` | 第三方库自愈安装 |
 | `pyfile/extra_tools.py` | Mapping 组按钮清单与处理器解析 |
-| `pyfile/auto_mapping.py` | Auto Mapping 引擎全体：轴线 / Mapping Area / 附加线 / 视平线资产、映射器、曲线重建、裁断、折痕、单元与实时重跑、参考网格、遮挡染色、洋葱皮引导、To 3D、Auto Mapping 菜单与两块板的 View 菜单、设置窗、图层右键菜单 |
+| `pyfile/auto_mapping.py` | Auto Mapping 引擎全体（含折叠气泡 `_fold_regions`）：轴线 / Mapping Area / 附加线 / 视平线资产、映射器、曲线重建、裁断、折痕、单元与实时重跑、参考网格、遮挡染色、洋葱皮引导、To 3D、Auto Mapping 菜单与两块板的 View 菜单、设置窗、图层右键菜单 |
 | `pyfile/hook_test.py`、`hello_world.py`、`linefinish.py`、`bind_test.py` | 示例、调试与兼容垫片 |
 | `pyfile/three_vendor.py` | 离线 three.js（以 `.py` 形式随脚本通道部署） |
 | `pythonbind/animemodel.py` | `AnimeModel` / `LayerRef` 等高层封装、`ui` 门面、`current` |

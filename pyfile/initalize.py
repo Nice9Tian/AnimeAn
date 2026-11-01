@@ -17,6 +17,7 @@ PYTHON_FILE_MODULES = (
     # fill colours, and reads nothing if that cache does not exist yet.
     "palette_box",
     "transfer_tool",
+    "line_tools",
     "script_store",
     "overlay_stack",
     "window_manager",

@@ -5,6 +5,8 @@
 #include "algorithm/core/json.h"
 #include "algorithm/core/painter.h"
 #include "algorithm/core/path.h"
+#include "algorithm/core/pathbool.h"
+#include "backend/board/textpath.h"
 
 #include "algorithm/core/string.h"
 #include "openglwidget.h"
@@ -28,6 +30,9 @@ namespace {
 // The artwork's ground, not chrome: it stays white in both themes.
 const Color kPaperColor(255, 255, 255);
 const double kOverlayHandleSize = 14.0;
+// Screen px around a badge's centre that always mean the badge: a drawn badge
+// at ordinary zoom, a fingertip's worth of it when high zoom makes it huge.
+const double kOverlayBadgeSurePx = 12.0;
 // The zoom limits the wheel has always enforced, named so the programmatic
 // paths (setViewTransform, fitViewToContent) cannot drift away from what a
 // gesture is allowed to reach.
@@ -3016,6 +3021,11 @@ void PaintOpenGLWidget::paintOverlayItems(Painter &painter)
         }
     }
 
+    struct LabelsAtExit {
+        const PaintOpenGLWidget *self;
+        Painter &painter;
+        ~LabelsAtExit() { self->paintOverlayLabels(painter); }
+    } labelsAtExit{this, painter};
     for (const OverlayHandle &handle : m_overlayHandles) {
         Color badge = handle.badgeColor;
         badge.setAlpha(215);
@@ -3035,6 +3045,68 @@ void PaintOpenGLWidget::paintOverlayItems(Painter &painter)
             painter.drawLine(inner.topRight(), inner.bottomLeft());
         }
     }
+}
+
+void PaintOpenGLWidget::paintOverlayLabels(Painter &painter) const
+{
+    constexpr int kFontPx = 12;
+    constexpr double kPadding = 6.0;
+    constexpr double kTail = 9.0;
+    constexpr double kEdge = 4.0;
+
+    // In screen pixels, so a note stays readable at every zoom.
+    painter.save();
+    painter.setWorldTransform(Transform());
+    const TextMetrics metrics = textMetrics(kFontPx);
+    const RectF board = RectF(rect()).adjusted(kEdge, kEdge, -kEdge, -kEdge);
+
+    for (const OverlayItem &item : m_overlayItems) {
+        if (item.label.isEmpty() || item.points.isEmpty()) {
+            continue;
+        }
+        const StringList lines = item.label.split(Latin1Char('\n'));
+        double width = 0.0;
+        for (const String &line : lines) {
+            width = std::max(width, textWidth(line, kFontPx));
+        }
+        const SizeF size(width + 2.0 * kPadding,
+                         lines.size() * metrics.height + 2.0 * kPadding);
+        const PointF anchor = AnimeViewScale::toScreen(item.points.first(), m_zoom, m_panOffset);
+
+        // Below the point, or above it when the board's bottom edge is in the way:
+        // an item's x badge sits up and to the right of its end point, and a
+        // bubble on top of it would hide a badge that still takes the click.
+        RectF box(PointF(anchor.x() - size.width() / 2.0, anchor.y() + kTail), size);
+        if (box.bottom() > board.bottom()) {
+            box.moveBottom(anchor.y() - kTail);
+        }
+        box.moveLeft(std::clamp(box.left(), board.left(),
+                                std::max(board.left(), board.right() - box.width())));
+        box.moveTop(std::clamp(box.top(), board.top(),
+                               std::max(board.top(), board.bottom() - box.height())));
+
+        Path bubble;
+        bubble.addRoundedRect(box, 5.0, 5.0);
+        const double inset = std::min(2.0 * kTail, box.width() / 2.0);
+        const double foot = std::clamp(anchor.x(), box.left() + inset, box.right() - inset);
+        const double edge = anchor.y() >= box.center().y() ? box.bottom() - 1.0 : box.top() + 1.0;
+        Path tail;
+        tail.addPolygon(Vector<PointF>({PointF(foot - kTail / 2.0, edge),
+                                        PointF(foot + kTail / 2.0, edge), anchor}));
+        tail.closeSubpath();
+        painter.setPen(Pen(item.strokeColor, item.width));
+        painter.setBrush(item.fillColor);
+        painter.drawPath(united(bubble, tail));
+
+        painter.setPen(NoPen);
+        painter.setBrush(item.fillColor.lightness() < 128 ? Color(255, 255, 255) : Color(0, 0, 0));
+        double baseline = box.top() + kPadding + metrics.ascent;
+        for (const String &line : lines) {
+            painter.drawPath(textPath(line, kFontPx, PointF(box.left() + kPadding, baseline)));
+            baseline += metrics.height;
+        }
+    }
+    painter.restore();
 }
 
 RectF PaintOpenGLWidget::overlayHandleRect(const PointF &anchor, int slot, int slotCount) const
@@ -3167,7 +3239,9 @@ bool PaintOpenGLWidget::pressOverlayOrBadge(const PointF &screenPos,
             std::min(docPos.y() - badgeRect.top(), badgeRect.bottom() - docPos.y()));
         const double depthScreen = depthDoc * m_zoom;
         const double halfScreen = 0.5 * std::min(badgeRect.width(), badgeRect.height()) * m_zoom;
-        badgeWins = depthScreen >= 0.5 * halfScreen || depthScreen >= dragDistance;
+        const PointF offCentre = (docPos - badgeRect.center()) * m_zoom;
+        badgeWins = std::max(std::abs(offCentre.x()), std::abs(offCentre.y())) <= kOverlayBadgeSurePx
+                    || depthScreen >= 0.5 * halfScreen || depthScreen >= dragDistance;
     }
     if (badgeWins) {
         const OverlayHandle &handle = m_overlayHandles[badgeIndex];
