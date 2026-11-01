@@ -2,11 +2,13 @@
 #include "algorithm/core/qtbridge.h"
 #include "theme.h"
 
+#include <QFontMetricsF>
 #include <QLineF>
 #include <QGuiApplication>
 #include <QImage>
 #include <QCursor>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPixmap>
 #include <QPolygonF>
 #include <QtMath>
@@ -16,6 +18,9 @@ namespace {
 // The artwork's ground, not chrome: it stays white in both themes.
 const QColor kPaperColor(Qt::white);
 const qreal kOverlayHandleSize = 14.0;
+// Screen px around a badge's centre that always mean the badge: a drawn badge
+// at ordinary zoom, a fingertip's worth of it when high zoom makes it huge.
+const qreal kOverlayBadgeSurePx = 12.0;
 // The zoom limits the wheel has always enforced, named so the programmatic
 // paths (setViewTransform, fitViewToContent) cannot drift away from what a
 // gesture is allowed to reach.
@@ -3038,6 +3043,72 @@ void PaintOpenGLWidget::paintOverlayItems(QPainter &painter)
             painter.drawLine(inner.topRight(), inner.bottomLeft());
         }
     }
+
+    paintOverlayLabels(painter);
+}
+
+void PaintOpenGLWidget::paintOverlayLabels(QPainter &painter) const
+{
+    constexpr int kFontPx = 12;
+    constexpr qreal kPadding = 6.0;
+    constexpr qreal kTail = 9.0;
+    constexpr qreal kEdge = 4.0;
+
+    // In screen pixels, so a note stays readable at every zoom.
+    painter.save();
+    painter.resetTransform();
+    QFont font = painter.font();
+    font.setPixelSize(kFontPx);
+    painter.setFont(font);
+    const QFontMetricsF metrics(font);
+    const QRectF board = QRectF(rect()).adjusted(kEdge, kEdge, -kEdge, -kEdge);
+
+    for (const OverlayItem &item : m_overlayItems) {
+        if (item.label.isEmpty() || item.points.isEmpty()) {
+            continue;
+        }
+        const QStringList lines = item.label.split(QLatin1Char('\n'));
+        qreal textWidth = 0.0;
+        for (const QString &line : lines) {
+            textWidth = std::max(textWidth, metrics.horizontalAdvance(line));
+        }
+        const QSizeF size(textWidth + 2.0 * kPadding,
+                          lines.size() * metrics.lineSpacing() + 2.0 * kPadding);
+        const QPointF anchor = AnimeViewScale::toScreen(item.points.first(), m_zoom, m_panOffset);
+
+        // Below the point, or above it when the board's bottom edge is in the way:
+        // an item's x badge sits up and to the right of its end point, and a
+        // bubble on top of it would hide a badge that still takes the click.
+        QRectF box(QPointF(anchor.x() - size.width() / 2.0, anchor.y() + kTail), size);
+        if (box.bottom() > board.bottom()) {
+            box.moveBottom(anchor.y() - kTail);
+        }
+        box.moveLeft(std::clamp(box.left(), board.left(),
+                                std::max(board.left(), board.right() - box.width())));
+        box.moveTop(std::clamp(box.top(), board.top(),
+                               std::max(board.top(), board.bottom() - box.height())));
+
+        QPainterPath bubble;
+        bubble.addRoundedRect(box, 5.0, 5.0);
+        const qreal inset = std::min(2.0 * kTail, box.width() / 2.0);
+        const qreal foot = std::clamp(anchor.x(), box.left() + inset, box.right() - inset);
+        const qreal edge = anchor.y() >= box.center().y() ? box.bottom() - 1.0 : box.top() + 1.0;
+        QPainterPath tail;
+        tail.addPolygon(QPolygonF({QPointF(foot - kTail / 2.0, edge),
+                                   QPointF(foot + kTail / 2.0, edge), anchor}));
+        tail.closeSubpath();
+        painter.setPen(QPen(item.strokeColor, item.width));
+        painter.setBrush(item.fillColor);
+        painter.drawPath(bubble.united(tail));
+
+        painter.setPen(item.fillColor.lightness() < 128 ? Qt::white : Qt::black);
+        qreal baseline = box.top() + kPadding + metrics.ascent();
+        for (const QString &line : lines) {
+            painter.drawText(QPointF(box.left() + kPadding, baseline), line);
+            baseline += metrics.lineSpacing();
+        }
+    }
+    painter.restore();
 }
 
 QRectF PaintOpenGLWidget::overlayHandleRect(const QPointF &anchor, int slot, int slotCount) const
@@ -3153,12 +3224,15 @@ bool PaintOpenGLWidget::pressOverlayOrBadge(const QPointF &screenPos,
     // and fire accept/remove on the guide the user meant to move, while
     // draggable-first makes a low-zoom badge sitting on its own guide
     // permanently unclickable. So the tie is broken by how deep INSIDE the
-    // drawn badge the pointer is (screen px): the inner half of the glyph is
-    // always a deliberate badge click, and on the outer fringe the badge
-    // only wins when the pointer is deeper into it than it is close to the
-    // draggable geometry. (Comparing against the badge's centre point
-    // instead handicapped the badge by up to half its size and left the
-    // glyph's line-facing strip dead at every zoom.)
+    // drawn badge the pointer is (screen px): the inner half of the glyph and
+    // anything within kOverlayBadgeSurePx of its centre are always a
+    // deliberate badge click, and on the outer fringe the badge only wins
+    // when the pointer is deeper into it than it is close to the draggable
+    // geometry. (Comparing against the badge's centre point instead
+    // handicapped the badge by up to half its size and left the glyph's
+    // line-facing strip dead at every zoom. The sure zone is for a guide that
+    // runs through its own badge, which sits up and right of its end point:
+    // the fringe rule alone lost a third to a half of that badge to the grab.)
     const int badgeIndex = overlayActionHandleAt(docPos);
     qreal dragDistance = 0.0;
     const QString overlayId = draggableOverlayItemAt(screenPos, &dragDistance);
@@ -3170,7 +3244,9 @@ bool PaintOpenGLWidget::pressOverlayOrBadge(const QPointF &screenPos,
             std::min(docPos.y() - badgeRect.top(), badgeRect.bottom() - docPos.y()));
         const qreal depthScreen = depthDoc * m_zoom;
         const qreal halfScreen = 0.5 * std::min(badgeRect.width(), badgeRect.height()) * m_zoom;
-        badgeWins = depthScreen >= 0.5 * halfScreen || depthScreen >= dragDistance;
+        const QPointF offCentre = (docPos - badgeRect.center()) * m_zoom;
+        badgeWins = std::max(std::abs(offCentre.x()), std::abs(offCentre.y())) <= kOverlayBadgeSurePx
+                    || depthScreen >= 0.5 * halfScreen || depthScreen >= dragDistance;
     }
     if (badgeWins) {
         const OverlayHandle &handle = m_overlayHandles[badgeIndex];

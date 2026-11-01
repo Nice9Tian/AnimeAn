@@ -252,11 +252,11 @@ try {
         );
     }
 
-    // 2. Check menus are strictly ["File", "Edit", "View", "Auto Mapping", "Draw", "Theme", "Windows"] in exact order
+    // 2. Check menus are strictly ["File", "Edit", "Auto Mapping", "Draw", "Theme", "Windows"] in exact order
     const menus = stateMap.get("menus");
     assert(Array.isArray(menus), "menus state should be an array");
     const menuTitles = menus.map((m) => String(m.text ?? "").replace(/&/g, ""));
-    const expectedMenus = ["File", "Edit", "View", "Auto Mapping", "Draw", "Theme", "Windows"];
+    const expectedMenus = ["File", "Edit", "Auto Mapping", "Draw", "Theme", "Windows"];
     assert.deepEqual(
         menuTitles,
         expectedMenus,

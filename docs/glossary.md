@@ -99,7 +99,12 @@
 | Mapping Area | Mapping Area / `mapping_area`（浅蓝） | 现有 | 油漆桶式圈出的区域：主画板上裁结果，纹理板上筛来源。 |
 | 附加线 | Additional Line / `additional_line`（粉）、`_FlowFieldWarp` | 现有 | 画下的测地线（额外的网格等参线），引导本族纹理的流向；流场加权泊松积分。跨过 H/V 轴线时，被跨过的那半条轴线沿自身滑动，轴线不变形。 |
 | 族 | family（H 族 / V 族） | 现有 | 附加线按走向归族；正交族互不影响。 |
-| 地线 | Ground Line / `ground_line` | 规划 | 钉住花纹的线：纹理板上的线按弧长逐点落到主画板的伙伴线上，硬钉；优先于 H/V 轴线和附加线；附加线只引导流向，位置由地线负责。用户 2026-09-30 提出。 |
+| 地线 | Ground Line / `ground_line` | 部分现有 | 钉住花纹的线：纹理板上的线按弧长逐点落到主画板的伙伴线上，硬钉；优先于 H/V 轴线和附加线；附加线只引导流向，位置由地线负责。用户 2026-09-30 提出。 |
+| 闭合轮廓 | Free Out Line / `free_out_line`、`proxy_contour` | 现有 | 两块板各一条的闭合线，配对后同色即同一花纹点，画完就是地线。 |
+| 配对站点 | stations / `pairing` | 现有 | 闭合轮廓上序号对应的采样点；配对一次后固定，Deform 带着走。 |
+| 选线 | Choice Line / `choice_line` | 现有 | 选中一条线，决定它是不是地线。 |
+| 拖线变形 | Deform / `deform_line` | 现有 | 拖动线上一点，影响沿线渐弱。 |
+| 折叠气泡 | fold note / `_fold_note_items` | 现有 | 画板上标出折叠位置和原因的气泡。 |
 | 约束外轮廓 | Constrain Outline / `constrain_outline` | 现有 | 图案外框钉在参考架上；画出边的那一侧释放。 |
 | Auto-Mapping 单元 | mapping unit / Auto-Mapping Layer、组 tag `automapping`、`mapping_units` | 现有 | 带全套配置的图层组：两边轴线、Mapping Area、附加线、锚点、选项；输出随时可从配置重生成。 |
 | 实时重跑 | Live Re-render / `auto_render` | 现有 | 单元有焦点时，改引导、改选项、改纹理图案都就地重跑。 |
@@ -109,7 +114,7 @@
 | Calculation Mode / 曲线模式 | Bezier / Spline / Polyline、`_CURVE_MODE` | 现有 | 输出几何的重建方式；三种都跟随形变。 |
 | RDP | Ramer–Douglas–Peucker、`rdp_eps` | 通用 | 采样模式里对插入采样点的抽稀；原始顶点从不抽掉。 |
 | 结构折点 | structural knot / `_structural_knots` | 现有 | Auto Mapping 失去仿射性的位置，由轴线折点解析枚举。 |
-| 参考网格 | Refer Rect / Mapping Refer Rect、Refer Rect Divisions | 现有 | 两块板叠的橙色网格；纹理板显示参考架，主画板显示它的像。 |
+| 参考网格 | Refer Rect / Refer Rect Divisions、Refer Rect Extend | 现有 | 两块板叠的橙色网格；纹理板显示参考架，主画板显示它的像。 |
 | 遮挡区域 | Occluded Areas / `_OCCLUSION` | 现有 | 纹理板上染出会折到背面的区域。 |
 | 视平线 | Horizon Line / `fold_horizon` | 现有 | 主画板上的橙色虚线，To 3D 用它定哪一端远。 |
 | To 3D | `run_to_3d` | 现有 | 从 Auto Mapping 的雅可比反推浮雕，导出离线 HTML 查看器。 |

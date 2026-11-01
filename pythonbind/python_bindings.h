@@ -46,6 +46,9 @@ struct AnimeanOverlayItem {
     // the item's id, exactly like an edit handle - pure mechanism; what the
     // drag MEANS lives in Python.
     bool draggable = false;
+    // Text for a bubble at the item's first point; see
+    // PaintOpenGLWidget::paintOverlayLabels. An item with a label may be one point.
+    QString label;
 };
 
 // A draggable edit handle, drawn at constant SCREEN size above everything.
