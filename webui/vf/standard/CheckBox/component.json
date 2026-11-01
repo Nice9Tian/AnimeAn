@@ -1,0 +1,21 @@
+{
+  "type": "CheckBox",
+  "label": "复选框",
+  "description": "复选框，支持文字和双向绑定布尔状态",
+  "defaultSize": { "width": 140, "height": 28 },
+  "entry": "index.js",
+  "style": "style.css",
+  "props": {
+    "text":    { "type": "string",  "default": "选项", "logic": true },
+    "value":   { "type": "boolean", "default": false,  "logic": true },
+    "enabled": { "type": "boolean", "default": true,   "logic": true }
+  },
+  "bind": "boolean",
+  "events": ["change"],
+  "children": false,
+  "qt": {
+    "widget": "QCheckBox",
+    "props": { "text": "text", "value": "checked" },
+    "events": { "change": { "signal": "toggled", "type": "boolean" } }
+  }
+}

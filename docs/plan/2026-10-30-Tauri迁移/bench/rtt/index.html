@@ -1,0 +1,28 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Backend round trip</title></head><body><pre id="out">running…</pre>
+<script>
+const ws = new WebSocket(`ws://${location.host}/`);
+const median = (a) => a.slice().sort((x, y) => x - y)[a.length >> 1];
+const p95 = (a) => a.slice().sort((x, y) => x - y)[Math.floor(a.length * 0.95)];
+const once = () => new Promise((r) => { ws.onmessage = (e) => r(e.data); });
+async function trial(points, map, rounds) {
+  const pts = Array.from({ length: points }, (_, i) => [i * 0.3 - 100, 40 * Math.sin(i * 0.05)]);
+  const times = [];
+  for (let seq = 0; seq < rounds; seq++) {
+    const t = performance.now();
+    const wait = once();
+    ws.send(JSON.stringify({ seq, map, points: pts }));
+    JSON.parse(await wait);
+    times.push(performance.now() - t);
+  }
+  return { points, map, median_ms: +median(times).toFixed(2), p95_ms: +p95(times).toFixed(2) };
+}
+ws.onopen = async () => {
+  const rows = [];
+  for (const [n, m, r] of [[1, false, 400], [1, true, 400], [100, true, 300], [1000, false, 200], [1000, true, 200], [10000, false, 60]]) {
+    rows.push(await trial(n, m, r));
+  }
+  window.__result = rows;
+  document.getElementById("out").textContent = rows.map((x) => JSON.stringify(x)).join("\n");
+};
+</script></body></html>

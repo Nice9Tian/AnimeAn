@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>Feel Bench</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{--bg:#1b1d22;--panel:#24272e;--text:#e6e7ea;--dim:#9aa0ab;--line:#3a3f49;--accent:#6aa9ff;--bad:#ff7b72}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:13px/1.45 system-ui,"Microsoft YaHei",sans-serif}
+header{display:flex;gap:16px;align-items:center;padding:8px 12px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap}
+h1{font-size:14px;margin:0;font-weight:600}.stat{color:var(--dim);font-variant-numeric:tabular-nums}
+button{background:#333844;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:3px 10px;font:inherit;cursor:pointer}
+main{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:8px}
+figure{margin:0}figcaption{color:var(--dim);padding:0 2px 4px}
+canvas{width:100%;aspect-ratio:3/2;background:#fff;border-radius:4px;display:block;touch-action:none}
+#log{margin:0 8px 8px;padding:8px;background:var(--panel);border-radius:4px;white-space:pre-wrap;font:12px/1.4 Consolas,monospace;max-height:26vh;overflow:auto}
+.err{color:var(--bad)}
+</style></head><body>
+<header><h1>Feel Bench</h1>
+<span class="stat" id="status">启动中…</span>
+<span class="stat" id="rate">采样 — Hz</span>
+<span class="stat" id="timing">映射 — ms</span>
+<button id="clear">清空笔画</button>
+<button id="reset">重置轴线</button>
+</header>
+<main>
+<figure><figcaption>纹理板：在这里画图案，拖蓝色点改轴线</figcaption><canvas id="child" width="900" height="600"></canvas></figure>
+<figure><figcaption>主画板：拖蓝色点改轴线，图案经真实的 auto_mapping 实时映射</figcaption><canvas id="main" width="900" height="600"></canvas></figure>
+</main>
+<pre id="log"></pre>
+<script type="module">
+import { loadPyodide } from "/pyodide/pyodide.mjs";
+
+const $ = (id) => document.getElementById(id);
+const log = (text, bad) => {
+  const line = document.createElement("div");
+  if (bad) line.className = "err";
+  line.textContent = text;
+  $("log").prepend(line);
+};
+const W = 900, H = 600, CX = W / 2, CY = H / 2;
+const STORE = "feel-bench-state";
+
+function defaultAxes() {
+  const row = (fx) => Array.from({ length: 7 }, (_, i) => fx(-300 + 100 * i));
+  return {
+    child: { h: row((s) => [s, 0]), v: row((s) => [0, s * 0.8]) },
+    main: { h: row((s) => [s, 0]), v: row((s) => [0, s * 0.8]) },
+  };
+}
+const state = { axes: defaultAxes(), strokes: [] };
+try {
+  const saved = JSON.parse(localStorage.getItem(STORE));
+  if (saved?.axes) Object.assign(state, saved);
+} catch (error) { /* a blocked or empty store just starts fresh */ }
+const save = () => {
+  try { localStorage.setItem(STORE, JSON.stringify(state)); } catch (error) { /* per-viewer convenience only */ }
+};
+
+// Catmull-Rom through the handles: the guide Python receives is a dense polyline.
+function dense(handles, perSpan = 16) {
+  const out = [];
+  const at = (i) => handles[Math.max(0, Math.min(handles.length - 1, i))];
+  for (let i = 0; i < handles.length - 1; i++) {
+    const [p0, p1, p2, p3] = [at(i - 1), at(i), at(i + 1), at(i + 2)];
+    for (let k = 0; k < perSpan; k++) {
+      const t = k / perSpan, t2 = t * t, t3 = t2 * t;
+      out.push([0, 1].map((c) => 0.5 * (2 * p1[c] + (p2[c] - p0[c]) * t
+        + (2 * p0[c] - 5 * p1[c] + 4 * p2[c] - p3[c]) * t2
+        + (3 * p1[c] - p0[c] - 3 * p2[c] + p3[c]) * t3)));
+    }
+  }
+  out.push(handles[handles.length - 1].slice());
+  return out;
+}
+
+const ctxOf = (id) => $(id).getContext("2d");
+const toDoc = (canvas, e) => {
+  const r = canvas.getBoundingClientRect();
+  return [(e.clientX - r.left) * (W / r.width) - CX, (e.clientY - r.top) * (H / r.height) - CY];
+};
+function polyline(ctx, pts, color, width) {
+  if (pts.length < 2) return;
+  ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineCap = ctx.lineJoin = "round";
+  ctx.beginPath();
+  let pen = false;
+  for (const p of pts) {
+    if (!p) { pen = false; continue; }
+    if (pen) ctx.lineTo(p[0] + CX, p[1] + CY); else ctx.moveTo(p[0] + CX, p[1] + CY);
+    pen = true;
+  }
+  ctx.stroke();
+}
+function drawBoard(id, axes, strokes) {
+  const ctx = ctxOf(id);
+  ctx.clearRect(0, 0, W, H);
+  for (const s of strokes) polyline(ctx, s, "#1c1e24", 2);
+  polyline(ctx, dense(axes.h), "#d9534f", 1.5);
+  polyline(ctx, dense(axes.v), "#3aa76d", 1.5);
+  ctx.fillStyle = "#2f7de1";
+  for (const handle of [...axes.h, ...axes.v]) {
+    ctx.beginPath(); ctx.arc(handle[0] + CX, handle[1] + CY, 5, 0, 7); ctx.fill();
+  }
+}
+
+let py = null, mapStrokes = null, mapped = [], dirty = false;
+function remap() {
+  if (!mapStrokes) { mapped = []; return; }
+  const t = performance.now();
+  try {
+    const payload = JSON.stringify({
+      ch: dense(state.axes.child.h), cv: dense(state.axes.child.v),
+      mh: dense(state.axes.main.h), mv: dense(state.axes.main.v), strokes: state.strokes });
+    mapped = JSON.parse(mapStrokes(payload));
+    $("timing").textContent = `映射 ${(performance.now() - t).toFixed(1)} ms · ${state.strokes.reduce((n, s) => n + s.length, 0)} 点`;
+  } catch (error) {
+    log(String(error).split("\n").slice(-6).join("\n"), true);
+  }
+}
+function paint() {
+  if (dirty) { dirty = false; remap(); }
+  drawBoard("child", state.axes.child, state.strokes);
+  drawBoard("main", state.axes.main, mapped);
+}
+function render() {
+  paint();
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+window.__paint = paint;  // a hidden tab gets no animation frames; tests step it by hand
+window.__mapped = () => mapped;
+
+// Pointer input: coalesced events give the raw pen samples between frames.
+let samples = 0, windowStart = performance.now();
+function wire(id, board) {
+  const canvas = $(id);
+  let drag = null, stroke = null;
+  canvas.addEventListener("pointerdown", (e) => {
+    canvas.setPointerCapture(e.pointerId);
+    const p = toDoc(canvas, e);
+    const axes = state.axes[board];
+    for (const key of ["h", "v"]) {
+      const index = axes[key].findIndex((q) => Math.hypot(q[0] - p[0], q[1] - p[1]) < 12);
+      if (index >= 0) { drag = axes[key][index]; return; }
+    }
+    if (board === "child") { stroke = [p]; state.strokes.push(stroke); }
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    const events = e.getCoalescedEvents?.() ?? [e];
+    const list = events.length ? events : [e];
+    if (drag) {
+      const p = toDoc(canvas, list[list.length - 1]);
+      drag[0] = p[0]; drag[1] = p[1]; dirty = true;
+    } else if (stroke) {
+      for (const sample of list) stroke.push(toDoc(canvas, sample));
+      samples += list.length; dirty = true;
+      const now = performance.now();
+      if (now - windowStart > 500) {
+        $("rate").textContent = `采样 ${(samples * 1000 / (now - windowStart)).toFixed(0)} Hz · ${e.pointerType}`;
+        samples = 0; windowStart = now;
+      }
+    }
+  });
+  const end = () => { drag = stroke = null; dirty = true; save(); };
+  canvas.addEventListener("pointerup", end);
+  canvas.addEventListener("pointercancel", end);
+}
+wire("child", "child");
+wire("main", "main");
+$("clear").onclick = () => { state.strokes = []; dirty = true; save(); };
+$("reset").onclick = () => { state.axes = defaultAxes(); dirty = true; save(); };
+
+const HOST = `
+import importlib, json, sys, types
+sys.dont_write_bytecode = True
+sys.path.insert(0, "/py")
+sys.modules.setdefault("animean_python", types.ModuleType("animean_python"))
+
+def reload_all(changed):
+    path = f"/py/{changed}.py"
+    # A syntax error raises here, before any module is touched, so the last
+    # good version keeps running.
+    compile(open(path, encoding="utf8").read(), path, "exec")
+    importlib.invalidate_caches()
+    if changed in sys.modules:
+        importlib.reload(sys.modules[changed])
+    if changed != "auto_mapping":
+        importlib.reload(sys.modules["auto_mapping"])
+
+def map_strokes(text):
+    import auto_mapping
+    d = json.loads(text)
+    tup = lambda pts: [tuple(p) for p in pts]
+    mp, reason = auto_mapping.build_mapper(tup(d["ch"]), tup(d["cv"]), tup(d["mh"]), tup(d["mv"]), {})
+    if mp is None:
+        raise RuntimeError(f"build_mapper: {reason}")
+    out = []
+    for stroke in d["strokes"]:
+        line = []
+        for p in stroke:
+            q = mp(tuple(p))
+            line.append(None if q is None else [q[0], q[1]])
+        out.append(line)
+    return json.dumps(out)
+`;
+
+async function writePy(name) {
+  const text = await (await fetch("/py/" + name, { cache: "no-store" })).text();
+  py.FS.writeFile("/py/" + name, text);
+}
+
+async function boot() {
+  const t0 = performance.now();
+  py = await loadPyodide({ indexURL: "/pyodide/", stdout: () => {}, stderr: () => {} });
+  await py.loadPackage("numpy", { messageCallback: () => {} });
+  py.FS.mkdir("/py");
+  const names = await (await fetch("/py-list")).json();
+  await Promise.all(names.map(writePy));
+  py.runPython(HOST);
+  mapStrokes = py.globals.get("map_strokes");
+  py.runPython("import auto_mapping");
+  dirty = true;
+  window.__bench = { ready: true, reloads: [] };
+  $("status").textContent = `就绪 ${((performance.now() - t0) / 1000).toFixed(1)} s，存盘 .py 即生效`;
+
+  new EventSource("/events").onmessage = async (event) => {
+    const name = event.data, module = name.replace(/\.py$/, "");
+    const t = performance.now();
+    try {
+      await writePy(name);
+      py.globals.get("reload_all")(module);
+      dirty = true;
+      const ms = performance.now() - t;
+      window.__bench.reloads.push({ name, ms });
+      $("status").textContent = `已重载 ${name}：${ms.toFixed(0)} ms`;
+      log(`重载 ${name}：${ms.toFixed(0)} ms`);
+    } catch (error) {
+      $("status").textContent = `${name} 重载失败，继续用上一版`;
+      log(String(error).split("\n").slice(-8).join("\n"), true);
+    }
+  };
+}
+boot().catch((error) => { $("status").textContent = "启动失败"; log(String(error), true); });
+window.__state = state;
+</script></body></html>

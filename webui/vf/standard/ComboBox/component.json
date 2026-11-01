@@ -1,0 +1,21 @@
+{
+  "type": "ComboBox",
+  "label": "下拉框",
+  "description": "下拉选择框，options 用逗号分隔各选项，支持双向绑定字符串状态",
+  "defaultSize": { "width": 160, "height": 32 },
+  "entry": "index.js",
+  "style": "style.css",
+  "props": {
+    "options": { "type": "string",  "default": "", "logic": true },
+    "value":   { "type": "string",  "default": "", "logic": true },
+    "enabled": { "type": "boolean", "default": true, "logic": true }
+  },
+  "bind": "string",
+  "events": ["change"],
+  "children": false,
+  "qt": {
+    "widget": "QComboBox",
+    "props": { "options": "vfOptions", "value": "currentText" },
+    "events": { "change": { "signal": "currentTextChanged", "type": "string" } }
+  }
+}

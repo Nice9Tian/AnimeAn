@@ -11,7 +11,7 @@
 | 一级 | `product_purpose.md` | 产品目的：要解决什么、给谁用、承诺、不做什么、怎么判断做对了 | 用户 |
 | 一级 | `user-workflow.md` | 用户工作流：从拿到程序到日常使用的主线 | 用户 |
 | 一级 | `tools_user_workflow/<工具>.md` | 每个工具的用户操作：在哪、怎么用、会看到什么、边界（索引在它的 README） | 用户 |
-| 一级 | `architecture.md` | 软件架构：Qt 基座不变、C++ 只写基础函数、功能在 Python、工具归属 | 用户 |
+| 一级 | `architecture.md` | 软件架构：网页界面 + 原生后端、C++ 只写基础函数、功能在 Python、工具归属 | 用户 |
 | 一级 | `developer_guide.md` 的「语义分级」「规则」 | 开发规则 | 用户 |
 | 一级 | `auto_mapping/` | Auto Mapping 的算法规格、各条管线、映射单元，连阈值一起（索引在它的 README） | 用户 |
 | 二级 | `product_features.md` | 产品功能：承诺什么，标现有 / 规划 / 待办 / 已删除 | 计划时用户拍板，执行时可裁 |

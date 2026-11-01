@@ -1,20 +1,28 @@
 #include "clipreader.h"
 
-#include <QFile>
-#include <QtEndian>
-#include <QtGlobal>
 
+#include <cerrno>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <vector>
+
+#include "algorithm/core/containers.h"
+#include "algorithm/core/geometry.h"
+#include "algorithm/core/string.h"
+
+using namespace AnimeCore;
 
 namespace {
 
 // Sanity caps to keep a malformed or hostile file from forcing huge work.
-constexpr qint64 kMaxFileSize = 512LL * 1024 * 1024; // 512 MiB
-constexpr quint32 kMaxRecordSize = 1u << 16;         // 64 KiB per point record
-constexpr quint32 kMaxPointsPerObject = 5000000u;
-constexpr quint32 kMaxStrokesPerBlock = 100000u;
-constexpr quint32 kMinHeaderBody = 28u;              // must cover the header ints we read
+constexpr std::int64_t kMaxFileSize = 512LL * 1024 * 1024; // 512 MiB
+constexpr std::uint32_t kMaxRecordSize = 1u << 16;         // 64 KiB per point record
+constexpr std::uint32_t kMaxPointsPerObject = 5000000u;
+constexpr std::uint32_t kMaxStrokesPerBlock = 100000u;
+constexpr std::uint32_t kMinHeaderBody = 28u;              // must cover the header ints we read
 // Coordinates far outside any plausible canvas are treated as corruption:
 // letting them through would overflow the import path's bounds arithmetic.
 constexpr double kMaxCoordinate = 1e12;
@@ -24,40 +32,49 @@ constexpr double kMaxCoordinate = 1e12;
 // memory, so a truncated or crafted file can never read out of bounds.
 class Cursor {
 public:
-    Cursor(const char *data, qint64 size)
+    Cursor(const char *data, std::int64_t size)
         : m_data(data), m_size(size) {}
 
-    qint64 size() const { return m_size; }
+    std::int64_t size() const { return m_size; }
 
-    bool has(qint64 offset, qint64 count) const {
+    bool has(std::int64_t offset, std::int64_t count) const {
         return offset >= 0 && count >= 0 && offset <= m_size && count <= m_size - offset;
     }
 
-    bool matches(qint64 offset, const char *literal, qint64 length) const {
+    bool matches(std::int64_t offset, const char *literal, std::int64_t length) const {
         if (!has(offset, length)) {
             return false;
         }
         return std::memcmp(m_data + offset, literal, static_cast<size_t>(length)) == 0;
     }
 
-    bool u32(qint64 offset, quint32 *out) const {
+    bool u32(std::int64_t offset, std::uint32_t *out) const {
         if (!has(offset, 4)) {
             return false;
         }
-        *out = qFromBigEndian<quint32>(reinterpret_cast<const uchar *>(m_data + offset));
+        const auto b0 = static_cast<std::uint32_t>(static_cast<unsigned char>(m_data[offset + 0]));
+        const auto b1 = static_cast<std::uint32_t>(static_cast<unsigned char>(m_data[offset + 1]));
+        const auto b2 = static_cast<std::uint32_t>(static_cast<unsigned char>(m_data[offset + 2]));
+        const auto b3 = static_cast<std::uint32_t>(static_cast<unsigned char>(m_data[offset + 3]));
+        *out = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
         return true;
     }
 
-    bool u64(qint64 offset, quint64 *out) const {
+    bool u64(std::int64_t offset, std::uint64_t *out) const {
         if (!has(offset, 8)) {
             return false;
         }
-        *out = qFromBigEndian<quint64>(reinterpret_cast<const uchar *>(m_data + offset));
+        std::uint64_t value = 0;
+        for (int i = 0; i < 8; ++i) {
+            value = (value << 8)
+                    | static_cast<std::uint64_t>(static_cast<unsigned char>(m_data[offset + i]));
+        }
+        *out = value;
         return true;
     }
 
-    bool f64(qint64 offset, double *out) const {
-        quint64 bits = 0;
+    bool f64(std::int64_t offset, double *out) const {
+        std::uint64_t bits = 0;
         if (!u64(offset, &bits)) {
             return false;
         }
@@ -69,7 +86,7 @@ public:
 
 private:
     const char *m_data = nullptr;
-    qint64 m_size = 0;
+    std::int64_t m_size = 0;
 };
 
 // Attempts to decode [offset, offset+length) of the file as a Clip vector
@@ -79,36 +96,36 @@ private:
 // stroke files are simply the one-element case. Returns true and fills
 // strokes only if every stroke validates and the block is consumed exactly,
 // so raster "BlockData" tiles are never misread as vectors.
-bool decodeVectorBlock(const Cursor &cur, qint64 offset, qint64 length,
-                       QVector<ClipReader::ClipStroke> *strokes)
+bool decodeVectorBlock(const Cursor &cur, std::int64_t offset, std::int64_t length,
+                       Vector<ClipReader::ClipStroke> *strokes)
 {
     if (length < 8) {
         return false;
     }
 
-    QVector<ClipReader::ClipStroke> decoded;
-    qint64 pos = offset;
-    const qint64 end = offset + length;
-    quint32 strokeGuard = 0;
+    Vector<ClipReader::ClipStroke> decoded;
+    std::int64_t pos = offset;
+    const std::int64_t end = offset + length;
+    std::uint32_t strokeGuard = 0;
 
     while (pos + 8 <= end) {
-        quint64 total = 0;
+        std::uint64_t total = 0;
         if (!cur.u64(pos, &total)) {
             return false;
         }
         // Object payload is the `total` bytes following the 8-byte size field.
-        if (total < kMinHeaderBody || total > static_cast<quint64>(end - (pos + 8))) {
+        if (total < kMinHeaderBody || total > static_cast<std::uint64_t>(end - (pos + 8))) {
             return false;
         }
 
-        const qint64 objectBody = pos + 8;
-        const qint64 objectEnd = objectBody + static_cast<qint64>(total);
+        const std::int64_t objectBody = pos + 8;
+        const std::int64_t objectEnd = objectBody + static_cast<std::int64_t>(total);
 
-        qint64 strokePos = objectBody;
+        std::int64_t strokePos = objectBody;
         while (strokePos + kMinHeaderBody <= objectEnd) {
-            quint32 headerBody = 0;
-            quint32 recordSize = 0;
-            quint32 pointCount = 0;
+            std::uint32_t headerBody = 0;
+            std::uint32_t recordSize = 0;
+            std::uint32_t pointCount = 0;
             if (!cur.u32(strokePos + 0, &headerBody) ||
                 !cur.u32(strokePos + 8, &recordSize) ||
                 !cur.u32(strokePos + 16, &pointCount)) {
@@ -116,7 +133,7 @@ bool decodeVectorBlock(const Cursor &cur, qint64 offset, qint64 length,
             }
 
             if (headerBody < kMinHeaderBody ||
-                static_cast<quint64>(headerBody) > static_cast<quint64>(objectEnd - strokePos)) {
+                static_cast<std::uint64_t>(headerBody) > static_cast<std::uint64_t>(objectEnd - strokePos)) {
                 return false;
             }
             if (recordSize <= 16 || recordSize > kMaxRecordSize) {
@@ -125,16 +142,16 @@ bool decodeVectorBlock(const Cursor &cur, qint64 offset, qint64 length,
             if (pointCount == 0 || pointCount > kMaxPointsPerObject) {
                 return false;
             }
-            const quint64 pointBytes = static_cast<quint64>(recordSize) * pointCount;
-            if (pointBytes > static_cast<quint64>(objectEnd - strokePos - headerBody)) {
+            const std::uint64_t pointBytes = static_cast<std::uint64_t>(recordSize) * pointCount;
+            if (pointBytes > static_cast<std::uint64_t>(objectEnd - strokePos - headerBody)) {
                 return false;
             }
 
-            const qint64 pointsStart = strokePos + headerBody;
+            const std::int64_t pointsStart = strokePos + headerBody;
             ClipReader::ClipStroke stroke;
-            stroke.points.reserve(static_cast<qsizetype>(pointCount));
-            for (quint32 i = 0; i < pointCount; ++i) {
-                const qint64 rec = pointsStart + static_cast<qint64>(quint64(i) * recordSize);
+            stroke.points.reserve(static_cast<std::ptrdiff_t>(pointCount));
+            for (std::uint32_t i = 0; i < pointCount; ++i) {
+                const std::int64_t rec = pointsStart + static_cast<std::int64_t>(std::uint64_t(i) * recordSize);
                 double x = 0.0;
                 double y = 0.0;
                 if (!cur.f64(rec + 0, &x) || !cur.f64(rec + 8, &y)) {
@@ -144,13 +161,13 @@ bool decodeVectorBlock(const Cursor &cur, qint64 offset, qint64 length,
                     std::abs(x) > kMaxCoordinate || std::abs(y) > kMaxCoordinate) {
                     return false;
                 }
-                stroke.points.append(QPointF(x, y));
+                stroke.points.append(PointF(x, y));
             }
             if (stroke.points.size() >= 2) {
                 decoded.append(stroke);
             }
 
-            strokePos = pointsStart + static_cast<qint64>(pointBytes);
+            strokePos = pointsStart + static_cast<std::int64_t>(pointBytes);
             if (++strokeGuard > kMaxStrokesPerBlock) {
                 return false;
             }
@@ -177,32 +194,39 @@ bool decodeVectorBlock(const Cursor &cur, qint64 offset, qint64 length,
 
 namespace ClipReader {
 
-ClipDocument readClipFile(const QString &absolutePath)
+ClipDocument readClipFile(const String &absolutePath)
 {
     ClipDocument document;
 
-    QFile file(absolutePath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        document.error = QStringLiteral("Cannot open file: %1").arg(file.errorString());
+    const std::filesystem::path fsPath(absolutePath.u16String());
+    errno = 0;
+    std::ifstream file(fsPath, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) {
+        document.error = ANIME_STR("Cannot open file: %1")
+                             .arg(String::fromUtf8(errno != 0 ? std::strerror(errno) : "Unknown error"));
         return document;
     }
-    if (file.size() <= 0 || file.size() > kMaxFileSize) {
-        document.error = QStringLiteral("Unsupported file size.");
+    const std::int64_t fileSize = static_cast<std::int64_t>(file.tellg());
+    if (fileSize <= 0 || fileSize > kMaxFileSize) {
+        document.error = ANIME_STR("Unsupported file size.");
         return document;
     }
 
-    const QByteArray bytes = file.readAll();
-    const Cursor cur(bytes.constData(), bytes.size());
+    file.seekg(0, std::ios::beg);
+    std::vector<char> bytes(static_cast<std::size_t>(fileSize));
+    file.read(bytes.data(), static_cast<std::streamsize>(fileSize));
+    bytes.resize(static_cast<std::size_t>(file.gcount()));
+    const Cursor cur(bytes.data(), static_cast<std::int64_t>(bytes.size()));
 
     if (!cur.matches(0, "CSFCHUNK", 8)) {
-        document.error = QStringLiteral("Not a Clip Studio Paint file (missing CSFCHUNK header).");
+        document.error = ANIME_STR("Not a Clip Studio Paint file (missing CSFCHUNK header).");
         return document;
     }
 
     // Walk the chunk stream. Each chunk is an 8-byte tag + 8-byte big-endian
     // size + payload. We resync by scanning for known tags so a single odd
     // chunk cannot derail the walk.
-    qint64 pos = 8;
+    std::int64_t pos = 8;
     int guard = 0;
     while (pos + 16 <= cur.size()) {
         if (++guard > 1000000) {
@@ -217,30 +241,30 @@ ClipDocument readClipFile(const QString &absolutePath)
             continue;
         }
 
-        quint64 chunkSize = 0;
+        std::uint64_t chunkSize = 0;
         if (!cur.u64(pos + 8, &chunkSize)) {
             break;
         }
-        const qint64 payload = pos + 16;
-        if (!cur.has(payload, static_cast<qint64>(chunkSize))) {
+        const std::int64_t payload = pos + 16;
+        if (!cur.has(payload, static_cast<std::int64_t>(chunkSize))) {
             break; // truncated chunk; stop cleanly with whatever we found
         }
 
         if (isExternal) {
             // Payload: 8-byte id length + "extrnlid"+id + block data.
-            quint64 idLen = 0;
+            std::uint64_t idLen = 0;
             if (cur.u64(payload, &idLen) && idLen <= chunkSize && chunkSize - idLen >= 8) {
-                const qint64 dataStart = payload + 8 + static_cast<qint64>(idLen);
-                const qint64 dataLen = static_cast<qint64>(chunkSize) - 8 - static_cast<qint64>(idLen);
+                const std::int64_t dataStart = payload + 8 + static_cast<std::int64_t>(idLen);
+                const std::int64_t dataLen = static_cast<std::int64_t>(chunkSize) - 8 - static_cast<std::int64_t>(idLen);
                 decodeVectorBlock(cur, dataStart, dataLen, &document.strokes);
             }
         }
 
-        pos = payload + static_cast<qint64>(chunkSize);
+        pos = payload + static_cast<std::int64_t>(chunkSize);
     }
 
     if (document.strokes.isEmpty()) {
-        document.error = QStringLiteral("No vector strokes were found in this .clip file.");
+        document.error = ANIME_STR("No vector strokes were found in this .clip file.");
         return document;
     }
 

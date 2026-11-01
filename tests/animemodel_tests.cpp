@@ -1,7 +1,6 @@
 #include "animemodel.h"
 
-#include <QCoreApplication>
-#include <QDebug>
+#include <cstdio>
 
 namespace {
 int failures = 0;
@@ -9,7 +8,7 @@ int failures = 0;
 void check(bool condition, const char *message)
 {
     if (!condition) {
-        qCritical().noquote() << message;
+        std::fprintf(stderr, "%s\n", message);
         ++failures;
     }
 }
@@ -17,7 +16,8 @@ void check(bool condition, const char *message)
 
 int main(int argc, char *argv[])
 {
-    QCoreApplication app(argc, argv);
+    (void)argc;
+    (void)argv;
 
     // deleteLayer collects the column's private asset and renumbers the rest.
     {
@@ -26,7 +26,7 @@ int main(int argc, char *argv[])
         const int first = model.addLayer();
         const int second = model.addLayer();
         check(model.assetCount() == 2, "two addLayer calls must create two assets");
-        const QString keptName = model.assetName(model.assetIndexAt(0, second));
+        const AnimeCore::String keptName = model.assetName(model.assetIndexAt(0, second));
 
         check(model.deleteLayer(first), "deleting the first layer failed");
         check(model.assetCount() == 1, "the deleted layer's asset was not collected");
@@ -56,10 +56,10 @@ int main(int argc, char *argv[])
         AnimeSceneModel model;
         model.initializeScene(0, 1);
         model.addLayer();
-        model.addAsset(AnimeColumnType::Vector, QStringLiteral("panel asset"));
+        model.addAsset(AnimeColumnType::Vector, ANIME_STR("panel asset"));
 
         check(model.deleteLayer(0), "deleting the drawn layer failed");
-        check(model.assetCount() == 1 && model.assetName(0) == QStringLiteral("panel asset"),
+        check(model.assetCount() == 1 && model.assetName(0) == ANIME_STR("panel asset"),
               "an unexposed panel asset must survive an unrelated layer delete");
     }
 
@@ -70,7 +70,7 @@ int main(int argc, char *argv[])
         const int first = model.addLayer();
         const int second = model.addLayer();
         model.addLayer(); // an outsider that must keep its asset
-        const int groupId = model.createLayerGroup(QStringLiteral("unit"),
+        const int groupId = model.createLayerGroup(ANIME_STR("unit"),
                                                    {first, second}, {}, false);
         check(groupId > 0, "creating the layer group failed");
 
@@ -81,9 +81,9 @@ int main(int argc, char *argv[])
     }
 
     if (failures == 0) {
-        qInfo().noquote() << "animemodel asset GC tests passed";
+        std::printf("animemodel asset GC tests passed\n");
         return 0;
     }
-    qCritical().noquote() << failures << "check(s) failed";
+    std::fprintf(stderr, "%d check(s) failed\n", failures);
     return 1;
 }

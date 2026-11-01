@@ -1,8 +1,9 @@
 #ifndef VIEWSCALE_H
 #define VIEWSCALE_H
 
-#include <QPointF>
 #include <algorithm>
+
+#include "algorithm/core/geometry.h"
 
 // ---------------------------------------------------------------------------
 // THE shared home of screen <-> document (canvas) conversion. Anything in
@@ -30,19 +31,19 @@ namespace AnimeViewScale {
 
 // Zoom is a divisor throughout, so a non-finite or non-positive value would
 // poison every conversion. Callers pass raw view state; this is the one guard.
-inline qreal safeZoom(qreal zoom)
+inline double safeZoom(double zoom)
 {
     return (zoom > 0.0 && zoom < 1e9) ? zoom : 1.0;
 }
 
 // --- points -----------------------------------------------------------------
 
-inline QPointF toDocument(const QPointF &screen, qreal zoom, const QPointF &pan)
+inline AnimeCore::PointF toDocument(const AnimeCore::PointF &screen, double zoom, const AnimeCore::PointF &pan)
 {
     return (screen - pan) / safeZoom(zoom);
 }
 
-inline QPointF toScreen(const QPointF &document, qreal zoom, const QPointF &pan)
+inline AnimeCore::PointF toScreen(const AnimeCore::PointF &document, double zoom, const AnimeCore::PointF &pan)
 {
     return document * safeZoom(zoom) + pan;
 }
@@ -52,13 +53,13 @@ inline QPointF toScreen(const QPointF &document, qreal zoom, const QPointF &pan)
 
 // How much artwork one screen-sized measurement covers. Use this to spend a
 // screen-px budget (tremor, slop, a hold radius) on document geometry.
-inline qreal toDocumentLength(qreal screenPx, qreal zoom)
+inline double toDocumentLength(double screenPx, double zoom)
 {
     return screenPx / safeZoom(zoom);
 }
 
 // How big a piece of artwork looks right now.
-inline qreal toScreenLength(qreal documentPx, qreal zoom)
+inline double toScreenLength(double documentPx, double zoom)
 {
     return documentPx * safeZoom(zoom);
 }
@@ -74,8 +75,8 @@ inline qreal toScreenLength(qreal documentPx, qreal zoom)
 // they should - a capture floor that kept growing with the zoom-out would
 // visibly facet long sweeping strokes, and no budget buys anything once the
 // artwork is smaller than the tremor it is meant to reject.
-inline constexpr qreal kBudgetMinZoom = 0.25;
-inline constexpr qreal kBudgetMaxZoom = 16.0;
+inline constexpr double kBudgetMinZoom = 0.25;
+inline constexpr double kBudgetMaxZoom = 16.0;
 
 // Document px per screen px, with the zoom clamped first.
 //
@@ -86,10 +87,10 @@ inline constexpr qreal kBudgetMaxZoom = 16.0;
 // zoomed far out, a coarser one would visibly facet long sweeping strokes.
 // Pure geometry (a cursor position, a hit test, a hold radius) must NOT use
 // this - it needs the true zoom, so it stays exact at every magnification.
-inline qreal pixelScale(qreal zoom, qreal minZoom = kBudgetMinZoom,
-                        qreal maxZoom = kBudgetMaxZoom)
+inline double pixelScale(double zoom, double minZoom = kBudgetMinZoom,
+                        double maxZoom = kBudgetMaxZoom)
 {
-    const qreal z = std::max(minZoom, std::min(maxZoom, safeZoom(zoom)));
+    const double z = std::max(minZoom, std::min(maxZoom, safeZoom(zoom)));
     return 1.0 / z;
 }
 
@@ -97,8 +98,8 @@ inline qreal pixelScale(qreal zoom, qreal minZoom = kBudgetMinZoom,
 // code that receives the converted scale rather than the zoom. Kept as its
 // own function rather than inverting twice: round-tripping through 1/x moves
 // degenerate inputs (a zero or negative scale) to a different answer.
-inline qreal clampPixelScale(qreal scale, qreal minZoom = kBudgetMinZoom,
-                             qreal maxZoom = kBudgetMaxZoom)
+inline double clampPixelScale(double scale, double minZoom = kBudgetMinZoom,
+                             double maxZoom = kBudgetMaxZoom)
 {
     return std::max(1.0 / maxZoom, std::min(1.0 / minZoom, scale));
 }

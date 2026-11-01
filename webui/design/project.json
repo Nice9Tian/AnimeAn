@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "name": "AnimeAn",
+  "doc": "docs/window.md",
+  "windows": [
+    {
+      "id": "window",
+      "doc": "docs/window.md"
+    }
+  ]
+}

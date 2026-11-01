@@ -215,11 +215,11 @@ def activate_example_tool(name="example_tool", property_value="example_tool"):
 - 主画板是中央区 Drawing 页，只有一个；纹理板是可搬迁的面板（中央 Texture 页、`texture_view` 子控件框、停车位三个家之一），无限画布。将来纹理板有分页栏、每页一个纹理（规划，见 `../product_features.md`）。
 - 纹理板 Setting 菜单：`Changable Timeline`（默认关，关着时时间轴始终指主画板）、`Changable Texture`（默认开，关着时纹理板图案受保护，只有 `register_protected_properties("child", …)` 登记的属性能画）、Background。两个图层面板目标固定（Main / Child）。
 - 视口：滚轮缩放、中键平移、滚动条；屏幕 ↔ 画布换算经 `pyfile/viewscale.py`（`algorithm/viewscale.h` 的镜像）。
-- 撤销：快照制，两块板各一份，全局顺序；脚本改模型后调 `ui.history_commit(label, view)`；手势 hook 可置 `message["cancel_history"]`；撤销 / 重做 / 打开文件后派发 `historyrestore`，脚本据此重建缓存。机制见 `history_scriptdata.md`。
+- 撤销：快照制，两块板各一份，全局顺序；脚本改模型后调 `ui.history_commit(label, view)`；交互事件 hook 可置 `message["cancel_history"]`；撤销 / 重做 / 打开文件后派发 `historyrestore`，脚本据此重建缓存。机制见 `history_scriptdata.md`。
 - 文件：File 菜单的 Save / Open 是完整 `.anproj`（两块板加 scriptData）；纹理板的 File 菜单读写 `.textureview`；导入分别进主画板或纹理板。见 `project_files.md`。
 - Auto Mapping 一族（H/V Center Line、Mapping Area、Additional Line、Auto Mapping、视平线、To 3D）全在 `pyfile/auto_mapping.py`；资产不进图层，存 scriptData；输出进 Auto-Mapping 单元（带 `tag="automapping"` 的图层组），单元有焦点时就地重跑。规格是一级文档：`../auto_mapping/`。
 
-分工原则不变：C++ 只提供通用机制（场景模型、几何绑定、hook 派发、覆盖层显示、把手事件、声明式界面），工具的属性名、颜色、数据结构、区域探测、裁剪逻辑全部在 Python，改工具不需要重新编译。
+分工原则不变：C++ 只提供通用机制（场景模型、几何绑定、hook 派发、覆盖层显示、控制手柄事件、声明式界面），工具的属性名、颜色、数据结构、区域探测、裁剪逻辑全部在 Python，改工具不需要重新编译。
 
 ## AnimeModel 常用接口
 

@@ -12,6 +12,7 @@
 - 视口滚轮缩放、中键平移、滚动条联动，两块板都有。现有。机制（三级）：`mechanism/modules.md`。
 - 面板都是带页签的父窗，Windows 菜单开关；浮动的无边框窗口可拉四边改大小。现有。机制（三级）：`mechanism/windows_theme.md`。
 - 深 / 浅主题，下次启动沿用；画纸恒白。现有。
+- 画板渲染器在 Settings ▸ Board Renderer 里切换 WebGL 或 Canvas 2D，切换时画面不丢，下次启动沿用；缺省 WebGL，显卡不支持时用 Canvas 2D。现有。机制（三级）：`mechanism/backend_protocol.md`。
 - 启动时和 File ▸ Canvas Size… 都能设画布尺寸；取消保留原尺寸。现有。
 - 纹理板分页栏：同时放多页纹理，每页一个独立场景。规划。
 - 「映射纹理」下拉：Mapping 页工具的选项块里选用哪一页纹理；选中 Auto-Mapping 图层时选项块自动显示，在那里改该单元的目标纹理；一个单元只映射一页。规划。
@@ -67,8 +68,8 @@
 
 ## 脚本与调试
 
-- 工具行为在 `pyfile/` 里改，同步脚本后重启即生效，不重新编译；Python Debug 窗看输出、执行命令。现有。机制（三级）：`mechanism/hook_events.md`、`mechanism/build_deploy.md`。
-- 脚本注册的菜单、设置窗、选项面板、图层右键项由 C++ 按声明渲染。现有。机制（三级）：`mechanism/hook_events.md`。
+- 工具行为在 `pyfile/` 里改，不重新编译；Python Debug 窗看输出、执行命令。现有。机制（三级）：`mechanism/hook_events.md`、`mechanism/build_deploy.md`。
+- 脚本注册的菜单、设置窗、选项面板、图层右键项由网页界面按声明渲染。现有。机制（三级）：`mechanism/hook_events.md`。
 
 ## 部署
 

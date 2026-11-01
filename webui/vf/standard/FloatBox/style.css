@@ -1,0 +1,64 @@
+.vf-std-floatbox {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--color-border, #cbd5e1);
+  border-radius: 6px;
+  background: var(--color-surface, #ffffff);
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.vf-std-floatbox[data-floating="true"] {
+  border-color: var(--color-primary, #2563eb);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.35);
+}
+
+.vf-std-floatbox-header {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 8px;
+  height: 24px;
+  background: rgba(148, 163, 184, 0.14);
+  border-bottom: 1px solid var(--color-border, #cbd5e1);
+  color: var(--color-text, #1e293b);
+  font-size: 12px;
+  font-weight: 600;
+  user-select: none;
+  pointer-events: auto;
+  cursor: grab;
+}
+
+.vf-std-floatbox-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vf-std-floatbox-toggle {
+  padding: 1px 6px;
+  border: 1px solid var(--color-border, #cbd5e1);
+  border-radius: 4px;
+  background: var(--color-surface, #ffffff);
+  color: var(--color-text, #1e293b);
+  font-size: 11px;
+  line-height: 1.3;
+  cursor: pointer;
+}
+
+.vf-std-floatbox-toggle:hover:not(:disabled) {
+  border-color: var(--color-primary, #2563eb);
+  color: var(--color-primary, #2563eb);
+}
+
+.vf-std-floatbox-body {
+  flex: 1;
+  min-height: 0;
+  pointer-events: none;
+}

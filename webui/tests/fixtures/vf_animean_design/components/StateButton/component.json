@@ -1,0 +1,21 @@
+{
+  "type": "StateButton",
+  "label": "状态图片按钮",
+  "description": "基于同一套 5 状态 SVG（正常/悬停/按下/选中/不可用）九宫格绘制的按钮，状态切换带透明度过渡，文字由控件另外画在上面",
+  "entry": "index.js",
+  "defaultSize": { "width": 240, "height": 34 },
+  "stateImages": {
+    "normal": "normal.svg",
+    "hover": "hover.svg",
+    "pressed": "pressed.svg",
+    "selected": "selected.svg",
+    "disabled": "disabled.svg",
+    "slice": [8, 8, 8, 8],
+    "transitionMs": 120
+  },
+  "props": {
+    "text": { "type": "string", "label": "文字", "default": "收起调色盘", "logic": true },
+    "selected": { "type": "boolean", "label": "选中", "default": true, "logic": true }
+  },
+  "events": ["click", "change"]
+}

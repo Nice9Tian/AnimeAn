@@ -1,0 +1,13 @@
+{
+  "type": "QtTimeline",
+  "label": "时间轴",
+  "description": "时间轴，实现在 webui/src/ui",
+  "defaultSize": {
+    "width": 200,
+    "height": 200
+  },
+  "entry": "index.js",
+  "style": "style.css",
+  "props": {},
+  "children": false
+}

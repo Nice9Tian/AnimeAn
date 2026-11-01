@@ -1,0 +1,28 @@
+{
+  "type": "TextArea",
+  "label": "多行文本",
+  "description": "多行文本编辑框，支持占位提示、只读和双向绑定字符串状态",
+  "defaultSize": { "width": 220, "height": 100 },
+  "entry": "index.js",
+  "style": "style.css",
+  "props": {
+    "placeholder": { "type": "string",  "default": "", "logic": true },
+    "value":       { "type": "string",  "default": "", "logic": true },
+    "readOnly":    { "type": "boolean", "default": false, "logic": true },
+    "enabled":     { "type": "boolean", "default": true, "logic": true }
+  },
+  "bind": "string",
+  "events": ["change"],
+  "children": false,
+  "qt": {
+    "widget": "QPlainTextEdit",
+    "props": {
+      "placeholder": "placeholderText",
+      "value": "plainText",
+      "readOnly": "readOnly"
+    },
+    "events": {
+      "change": { "signal": "textChanged", "type": "string" }
+    }
+  }
+}

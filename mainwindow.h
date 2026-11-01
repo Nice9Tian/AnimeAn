@@ -1,6 +1,8 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
+#include "algorithm/core/qtbridge.h"
+
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>

@@ -1,0 +1,21 @@
+{
+  "type": "TextInput",
+  "label": "输入框",
+  "description": "单行文本输入框，支持双向绑定字符串状态",
+  "defaultSize": { "width": 200, "height": 32 },
+  "entry": "index.js",
+  "style": "style.css",
+  "props": {
+    "placeholder": { "type": "string",  "default": "", "logic": true },
+    "value":       { "type": "string",  "default": "", "logic": true },
+    "enabled":     { "type": "boolean", "default": true, "logic": true }
+  },
+  "bind": "string",
+  "events": ["change"],
+  "children": false,
+  "qt": {
+    "widget": "QLineEdit",
+    "props": { "placeholder": "placeholderText", "value": "text" },
+    "events": { "change": { "signal": "textEdited", "type": "string" } }
+  }
+}

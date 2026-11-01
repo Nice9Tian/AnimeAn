@@ -1,6 +1,7 @@
 #ifndef OPENGLWIDGET_H
 #define OPENGLWIDGET_H
 
+#include "algorithm/core/qtbridge.h"
 #include "algorithm/animemodel.h"
 #include "algorithm/scenehistory.h"
 #include "algorithm/vectorlogic.h"
@@ -12,7 +13,7 @@
 #include <QImage>
 #include <QLineF>
 #include <QMouseEvent>
-#include <QOpenGLWidget>
+#include "boardbase.h"
 #include <QPainterPath>
 #include <QSet>
 #include <QString>
@@ -22,7 +23,7 @@
 class QPainter;
 class QTimer;
 
-class PaintOpenGLWidget : public QOpenGLWidget
+class PaintOpenGLWidget : public PaintBoardBase
 {
     Q_OBJECT
 
@@ -495,7 +496,7 @@ private:
     QString m_viewName = QStringLiteral("main");
     bool m_activeIndicator = false;
     QColor m_penColor = Qt::black;
-    QVector<QPointF> m_points;
+    AnimeCore::Vector<AnimeCore::PointF> m_points;
     // Realtime input conditioning: 1 Euro filter with lag compensation over
     // the raw samples of the CURRENT stroke, plus the raw pen tip so paintGL
     // can draw the unfiltered predictive preview at the very front.
@@ -646,6 +647,7 @@ private:
     // than the redraw, so the cache is dropped rather than grown.
     static constexpr int kMaxOnionGhosts = 16;
     bool m_swallowNextPress = false;
+    QHash<qint64, QImage> m_rasterCache;
     QVector<OverlayItem> m_overlayItems;
     QVector<OverlayHandle> m_overlayHandles;
 };

@@ -1,0 +1,27 @@
+{
+  "type": "DataForm",
+  "label": "数据生成表单",
+  "description": "由结构化数据（各字段名、类型、范围、行列、显示条件）动态生成控件网格并向外发出修改事件",
+  "defaultSize": { "width": 220, "height": 180 },
+  "entry": "index.js",
+  "style": "style.css",
+  "props": {
+    "schema":    { "type": "object",  "default": {}, "logic": true },
+    "values":    { "type": "object",  "default": {}, "logic": true },
+    "emptyText": { "type": "string",  "default": "当前工具无可调选项" },
+    "enabled":   { "type": "boolean", "default": true, "logic": true }
+  },
+  "events": ["change"],
+  "children": false,
+  "qt": {
+    "widget": "QFrame",
+    "props": {
+      "schema": "vfSchema",
+      "values": "vfValues",
+      "emptyText": "vfEmptyText"
+    },
+    "events": {
+      "change": { "signal": "fieldChanged", "type": "string" }
+    }
+  }
+}

@@ -4,6 +4,7 @@
 
 #include "python_bindings.h"
 
+#include "algorithm/core/qtbridge.h"
 #include "algorithm/animemodel.h"
 
 #include <QTransform>
@@ -60,9 +61,9 @@ QString g_uiTheme = QStringLiteral("dark");
 // costs Python two floats per move instead of shipping every vertex across
 // the boundary.
 struct DisplacementEntry {
-    QVector<QPointF> base;
-    QVector<QPointF> offsets;
-    QColor color = QColor(0, 0, 0, 255);
+    AnimeCore::Vector<AnimeCore::PointF> base;
+    AnimeCore::Vector<AnimeCore::PointF> offsets;
+    AnimeCore::Color color = AnimeCore::Color(0, 0, 0, 255);
     qreal width = 3.0;
 };
 
@@ -70,7 +71,7 @@ struct DisplacementSession {
     AnimeSceneModel *model = nullptr;
     int row = -1;
     int layer = -1;
-    QVector<DisplacementEntry> entries;
+    AnimeCore::Vector<DisplacementEntry> entries;
 };
 
 DisplacementSession g_displacement;
@@ -98,7 +99,7 @@ void requestUiFreeze(bool frozen)
 
 AnimeSceneModel *sceneForViewName(const QString &view)
 {
-    const QString wanted = view + QStringLiteral("_paint_view");
+    const AnimeCore::String wanted = AnimeCore::String(view) + "_paint_view";
     for (AnimeSceneModel *model : g_uiScenes) {
         if (model && model->textId() == wanted) {
             return model;
@@ -130,11 +131,11 @@ void applyDisplacementScale(double scaleX, double scaleY)
     image->clear();
     int id = 1;
     for (const DisplacementEntry &entry : g_displacement.entries) {
-        QVector<QPointF> points;
+        AnimeCore::Vector<AnimeCore::PointF> points;
         points.reserve(entry.base.size());
         for (int i = 0; i < entry.base.size(); ++i) {
-            points.append(entry.base[i] + QPointF(scaleX * entry.offsets[i].x(),
-                                                  scaleY * entry.offsets[i].y()));
+            points.append(entry.base[i] + AnimeCore::PointF(scaleX * entry.offsets[i].x(),
+                                                            scaleY * entry.offsets[i].y()));
         }
         if (points.size() < 2) {
             continue;
@@ -155,18 +156,18 @@ AnimeVectorStroke makePolylineStroke(const std::vector<std::pair<double, double>
                                      double width)
 {
     AnimeVectorStroke stroke;
-    stroke.color = QColor(r, g, b, a);
+    stroke.color = AnimeCore::Color(r, g, b, a);
     stroke.width = width;
     stroke.points.reserve(static_cast<int>(points.size()));
     for (const auto &point : points) {
-        stroke.points.append(QPointF(point.first, point.second));
+        stroke.points.append(AnimeCore::PointF(point.first, point.second));
     }
 
     stroke.lengths.reserve(stroke.points.size());
     stroke.totalLength = 0.0;
     for (int i = 0; i < stroke.points.size(); ++i) {
         if (i > 0) {
-            stroke.totalLength += QLineF(stroke.points[i - 1], stroke.points[i]).length();
+            stroke.totalLength += AnimeCore::LineF(stroke.points[i - 1], stroke.points[i]).length();
         }
         stroke.lengths.append(stroke.totalLength);
     }
@@ -174,7 +175,7 @@ AnimeVectorStroke makePolylineStroke(const std::vector<std::pair<double, double>
     if (!stroke.points.isEmpty()) {
         stroke.path.moveTo(stroke.points.first());
         if (stroke.points.size() == 1) {
-            stroke.path.lineTo(stroke.points.first() + QPointF(0.01, 0.01));
+            stroke.path.lineTo(stroke.points.first() + AnimeCore::PointF(0.01, 0.01));
         } else {
             for (int i = 1; i < stroke.points.size(); ++i) {
                 stroke.path.lineTo(stroke.points[i]);
@@ -185,7 +186,7 @@ AnimeVectorStroke makePolylineStroke(const std::vector<std::pair<double, double>
     return stroke;
 }
 
-py::tuple rectToTuple(const QRectF &rect)
+py::tuple rectToTuple(const AnimeCore::RectF &rect)
 {
     return py::make_tuple(rect.x(), rect.y(), rect.width(), rect.height());
 }
@@ -204,75 +205,75 @@ bool hasKey(const py::dict &dict, const char *key)
     return dict.contains(py::str(key));
 }
 
-QPointF objectToPointF(const py::handle &value, const char *name = "point")
+AnimeCore::PointF objectToPointF(const py::handle &value, const char *name = "point")
 {
     if (py::isinstance<py::dict>(value)) {
         py::dict dict = py::reinterpret_borrow<py::dict>(value);
         if (hasKey(dict, "x") && hasKey(dict, "y")) {
-            return QPointF(objectToQreal(dict["x"], "point.x"), objectToQreal(dict["y"], "point.y"));
+            return AnimeCore::PointF(objectToQreal(dict["x"], "point.x"), objectToQreal(dict["y"], "point.y"));
         }
     }
 
     if (py::isinstance<py::sequence>(value) && !py::isinstance<py::str>(value)) {
         py::sequence seq = py::reinterpret_borrow<py::sequence>(value);
         if (seq.size() >= 2) {
-            return QPointF(objectToQreal(seq[0], "point[0]"), objectToQreal(seq[1], "point[1]"));
+            return AnimeCore::PointF(objectToQreal(seq[0], "point[0]"), objectToQreal(seq[1], "point[1]"));
         }
     }
 
     throw py::type_error(std::string(name) + " must be {'x': x, 'y': y} or (x, y).");
 }
 
-QPoint objectToPoint(const py::handle &value, const char *name = "point")
+AnimeCore::Point objectToPoint(const py::handle &value, const char *name = "point")
 {
-    const QPointF point = objectToPointF(value, name);
-    return QPoint(qRound(point.x()), qRound(point.y()));
+    const AnimeCore::PointF point = objectToPointF(value, name);
+    return AnimeCore::Point(AnimeCore::round(point.x()), AnimeCore::round(point.y()));
 }
 
-QRectF objectToRectF(const py::handle &value, const char *name = "rect")
+AnimeCore::RectF objectToRectF(const py::handle &value, const char *name = "rect")
 {
     if (py::isinstance<py::dict>(value)) {
         py::dict dict = py::reinterpret_borrow<py::dict>(value);
         if (hasKey(dict, "x") && hasKey(dict, "y") && hasKey(dict, "width") && hasKey(dict, "height")) {
-            return QRectF(objectToQreal(dict["x"], "rect.x"),
-                          objectToQreal(dict["y"], "rect.y"),
-                          objectToQreal(dict["width"], "rect.width"),
-                          objectToQreal(dict["height"], "rect.height"));
+            return AnimeCore::RectF(objectToQreal(dict["x"], "rect.x"),
+                                    objectToQreal(dict["y"], "rect.y"),
+                                    objectToQreal(dict["width"], "rect.width"),
+                                    objectToQreal(dict["height"], "rect.height"));
         }
         if (hasKey(dict, "left") && hasKey(dict, "top") && hasKey(dict, "right") && hasKey(dict, "bottom")) {
             const qreal left = objectToQreal(dict["left"], "rect.left");
             const qreal top = objectToQreal(dict["top"], "rect.top");
             const qreal right = objectToQreal(dict["right"], "rect.right");
             const qreal bottom = objectToQreal(dict["bottom"], "rect.bottom");
-            return QRectF(QPointF(left, top), QPointF(right, bottom)).normalized();
+            return AnimeCore::RectF(AnimeCore::PointF(left, top), AnimeCore::PointF(right, bottom)).normalized();
         }
     }
 
     if (py::isinstance<py::sequence>(value) && !py::isinstance<py::str>(value)) {
         py::sequence seq = py::reinterpret_borrow<py::sequence>(value);
         if (seq.size() >= 4) {
-            return QRectF(objectToQreal(seq[0], "rect[0]"),
-                          objectToQreal(seq[1], "rect[1]"),
-                          objectToQreal(seq[2], "rect[2]"),
-                          objectToQreal(seq[3], "rect[3]"));
+            return AnimeCore::RectF(objectToQreal(seq[0], "rect[0]"),
+                                    objectToQreal(seq[1], "rect[1]"),
+                                    objectToQreal(seq[2], "rect[2]"),
+                                    objectToQreal(seq[3], "rect[3]"));
         }
     }
 
     throw py::type_error(std::string(name) + " must be {'x','y','width','height'} or (x, y, width, height).");
 }
 
-QRect objectToRect(const py::handle &value, const char *name = "rect")
+AnimeCore::Rect objectToRect(const py::handle &value, const char *name = "rect")
 {
     return objectToRectF(value, name).toAlignedRect();
 }
 
-QColor objectToColor(const py::handle &value, const char *name = "color")
+AnimeCore::Color objectToColor(const py::handle &value, const char *name = "color")
 {
     if (py::isinstance<py::dict>(value)) {
         py::dict dict = py::reinterpret_borrow<py::dict>(value);
         if (hasKey(dict, "r") && hasKey(dict, "g") && hasKey(dict, "b")) {
             const int alpha = hasKey(dict, "a") ? dict["a"].cast<int>() : 255;
-            return QColor(dict["r"].cast<int>(), dict["g"].cast<int>(), dict["b"].cast<int>(), alpha);
+            return AnimeCore::Color(dict["r"].cast<int>(), dict["g"].cast<int>(), dict["b"].cast<int>(), alpha);
         }
     }
 
@@ -280,14 +281,14 @@ QColor objectToColor(const py::handle &value, const char *name = "color")
         py::sequence seq = py::reinterpret_borrow<py::sequence>(value);
         if (seq.size() == 3 || seq.size() >= 4) {
             const int alpha = seq.size() >= 4 ? seq[3].cast<int>() : 255;
-            return QColor(seq[0].cast<int>(), seq[1].cast<int>(), seq[2].cast<int>(), alpha);
+            return AnimeCore::Color(seq[0].cast<int>(), seq[1].cast<int>(), seq[2].cast<int>(), alpha);
         }
     }
 
     throw py::type_error(std::string(name) + " must be {'r','g','b','a'} or (r, g, b[, a]).");
 }
 
-py::dict pointToDict(const QPointF &point)
+py::dict pointToDict(const AnimeCore::PointF &point)
 {
     py::dict data;
     data["x"] = point.x();
@@ -295,16 +296,16 @@ py::dict pointToDict(const QPointF &point)
     return data;
 }
 
-py::list pointsToList(const QVector<QPointF> &points)
+py::list pointsToList(const AnimeCore::Vector<AnimeCore::PointF> &points)
 {
     py::list data;
-    for (const QPointF &point : points) {
+    for (const AnimeCore::PointF &point : points) {
         data.append(pointToDict(point));
     }
     return data;
 }
 
-py::dict rectToDict(const QRectF &rect)
+py::dict rectToDict(const AnimeCore::RectF &rect)
 {
     py::dict data;
     data["x"] = rect.x();
@@ -314,7 +315,7 @@ py::dict rectToDict(const QRectF &rect)
     return data;
 }
 
-py::dict colorToDict(const QColor &color)
+py::dict colorToDict(const AnimeCore::Color &color)
 {
     py::dict data;
     data["r"] = color.red();
@@ -324,7 +325,7 @@ py::dict colorToDict(const QColor &color)
     return data;
 }
 
-py::dict lineToDict(const QLineF &line)
+py::dict lineToDict(const AnimeCore::LineF &line)
 {
     py::dict data;
     data["from"] = pointToDict(line.p1());
@@ -333,13 +334,13 @@ py::dict lineToDict(const QLineF &line)
     return data;
 }
 
-QVector<QPointF> objectToPoints(const py::handle &value, const char *name = "points")
+AnimeCore::Vector<AnimeCore::PointF> objectToPoints(const py::handle &value, const char *name = "points")
 {
     if (!py::isinstance<py::sequence>(value) || py::isinstance<py::str>(value)) {
         throw py::type_error(std::string(name) + " must be a sequence of points.");
     }
 
-    QVector<QPointF> points;
+    AnimeCore::Vector<AnimeCore::PointF> points;
     py::sequence seq = py::reinterpret_borrow<py::sequence>(value);
     points.reserve(static_cast<int>(seq.size()));
     for (py::handle item : seq) {
@@ -348,41 +349,41 @@ QVector<QPointF> objectToPoints(const py::handle &value, const char *name = "poi
     return points;
 }
 
-QLineF objectToLine(const py::handle &value, const char *name = "line")
+AnimeCore::LineF objectToLine(const py::handle &value, const char *name = "line")
 {
     if (py::isinstance<py::dict>(value)) {
         py::dict dict = py::reinterpret_borrow<py::dict>(value);
         if (hasKey(dict, "from") && hasKey(dict, "to")) {
-            return QLineF(objectToPointF(dict["from"], "line.from"), objectToPointF(dict["to"], "line.to"));
+            return AnimeCore::LineF(objectToPointF(dict["from"], "line.from"), objectToPointF(dict["to"], "line.to"));
         }
         if (hasKey(dict, "p1") && hasKey(dict, "p2")) {
-            return QLineF(objectToPointF(dict["p1"], "line.p1"), objectToPointF(dict["p2"], "line.p2"));
+            return AnimeCore::LineF(objectToPointF(dict["p1"], "line.p1"), objectToPointF(dict["p2"], "line.p2"));
         }
     }
 
     if (py::isinstance<py::sequence>(value) && !py::isinstance<py::str>(value)) {
         py::sequence seq = py::reinterpret_borrow<py::sequence>(value);
         if (seq.size() == 2) {
-            return QLineF(objectToPointF(seq[0], "line[0]"), objectToPointF(seq[1], "line[1]"));
+            return AnimeCore::LineF(objectToPointF(seq[0], "line[0]"), objectToPointF(seq[1], "line[1]"));
         }
         if (seq.size() >= 4) {
-            return QLineF(objectToQreal(seq[0], "line[0]"),
-                          objectToQreal(seq[1], "line[1]"),
-                          objectToQreal(seq[2], "line[2]"),
-                          objectToQreal(seq[3], "line[3]"));
+            return AnimeCore::LineF(objectToQreal(seq[0], "line[0]"),
+                                    objectToQreal(seq[1], "line[1]"),
+                                    objectToQreal(seq[2], "line[2]"),
+                                    objectToQreal(seq[3], "line[3]"));
         }
     }
 
     throw py::type_error(std::string(name) + " must be {'from': p0, 'to': p1}, (p0, p1), or (x1, y1, x2, y2).");
 }
 
-QVector<QLineF> objectToLines(const py::handle &value, const char *name = "lines")
+AnimeCore::Vector<AnimeCore::LineF> objectToLines(const py::handle &value, const char *name = "lines")
 {
     if (!py::isinstance<py::sequence>(value) || py::isinstance<py::str>(value)) {
         throw py::type_error(std::string(name) + " must be a sequence of lines.");
     }
 
-    QVector<QLineF> lines;
+    AnimeCore::Vector<AnimeCore::LineF> lines;
     py::sequence seq = py::reinterpret_borrow<py::sequence>(value);
     lines.reserve(static_cast<int>(seq.size()));
     for (py::handle item : seq) {
@@ -409,13 +410,13 @@ AnimeVectorRange objectToRange(const py::handle &value, const char *name = "rang
     throw py::type_error(std::string(name) + " must be {'first': a, 'second': b} or (a, b).");
 }
 
-QVector<AnimeVectorRange> objectToRanges(const py::handle &value, const char *name = "ranges")
+AnimeCore::Vector<AnimeVectorRange> objectToRanges(const py::handle &value, const char *name = "ranges")
 {
     if (!py::isinstance<py::sequence>(value) || py::isinstance<py::str>(value)) {
         throw py::type_error(std::string(name) + " must be a sequence of ranges.");
     }
 
-    QVector<AnimeVectorRange> ranges;
+    AnimeCore::Vector<AnimeVectorRange> ranges;
     py::sequence seq = py::reinterpret_borrow<py::sequence>(value);
     ranges.reserve(static_cast<int>(seq.size()));
     for (py::handle item : seq) {
@@ -432,7 +433,7 @@ py::dict rangeToDict(const AnimeVectorRange &range)
     return data;
 }
 
-py::list rangesToList(const QVector<AnimeVectorRange> &ranges)
+py::list rangesToList(const AnimeCore::Vector<AnimeVectorRange> &ranges)
 {
     py::list data;
     for (const AnimeVectorRange &range : ranges) {
@@ -451,14 +452,14 @@ int sampleCountForCurve(const AnimeBezierCurve &curve, double polyStep)
     return std::max(1, static_cast<int>(std::ceil(AnimeBezierSplit::cubicHullLength(curve.p) / step)));
 }
 
-py::list pathCommandsToList(const QPainterPath &path)
+py::list pathCommandsToList(const AnimeCore::Path &path)
 {
     py::list commands;
-    QVector<QVector<AnimeBezierCurve>> subpaths;
+    AnimeCore::Vector<AnimeCore::Vector<AnimeBezierCurve>> subpaths;
     if (!AnimeBezierSplit::parseSubpaths(path, &subpaths)) {
         return commands;
     }
-    for (const QVector<AnimeBezierCurve> &run : subpaths) {
+    for (const AnimeCore::Vector<AnimeBezierCurve> &run : subpaths) {
         py::dict move;
         move["type"] = "move";
         move["to"] = pointToDict(run.first().p[0]);
@@ -480,15 +481,15 @@ py::list pathCommandsToList(const QPainterPath &path)
     return commands;
 }
 
-QVector<QVector<QPointF>> pathPolylines(const QPainterPath &path, double polyStep)
+AnimeCore::Vector<AnimeCore::Vector<AnimeCore::PointF>> pathPolylines(const AnimeCore::Path &path, double polyStep)
 {
-    QVector<QVector<QPointF>> polylines;
-    QVector<QVector<AnimeBezierCurve>> subpaths;
+    AnimeCore::Vector<AnimeCore::Vector<AnimeCore::PointF>> polylines;
+    AnimeCore::Vector<AnimeCore::Vector<AnimeBezierCurve>> subpaths;
     if (!AnimeBezierSplit::parseSubpaths(path, &subpaths)) {
         return polylines;
     }
-    for (const QVector<AnimeBezierCurve> &run : subpaths) {
-        QVector<QPointF> polyline;
+    for (const AnimeCore::Vector<AnimeBezierCurve> &run : subpaths) {
+        AnimeCore::Vector<AnimeCore::PointF> polyline;
         polyline.append(run.first().p[0]);
         for (const AnimeBezierCurve &curve : run) {
             if (curve.isLine) {
@@ -506,20 +507,20 @@ QVector<QVector<QPointF>> pathPolylines(const QPainterPath &path, double polySte
     return polylines;
 }
 
-py::list pathToPolylines(const QPainterPath &path, double polyStep)
+py::list pathToPolylines(const AnimeCore::Path &path, double polyStep)
 {
     py::list polylines;
-    for (const QVector<QPointF> &polyline : pathPolylines(path, polyStep)) {
+    for (const AnimeCore::Vector<AnimeCore::PointF> &polyline : pathPolylines(path, polyStep)) {
         polylines.append(pointsToList(polyline));
     }
     return polylines;
 }
 
-qreal perpendicularDistance(const QPointF &point, const QPointF &lineStart, const QPointF &lineEnd)
+qreal perpendicularDistance(const AnimeCore::PointF &point, const AnimeCore::PointF &lineStart, const AnimeCore::PointF &lineEnd)
 {
-    const qreal length = QLineF(lineStart, lineEnd).length();
+    const qreal length = AnimeCore::LineF(lineStart, lineEnd).length();
     if (length <= 0.0) {
-        return QLineF(point, lineStart).length();
+        return AnimeCore::LineF(point, lineStart).length();
     }
     const qreal numerator = std::abs((lineEnd.y() - lineStart.y()) * point.x() -
                                      (lineEnd.x() - lineStart.x()) * point.y() +
@@ -528,11 +529,11 @@ qreal perpendicularDistance(const QPointF &point, const QPointF &lineStart, cons
     return numerator / length;
 }
 
-void simplifyRdpRange(const QVector<QPointF> &points,
+void simplifyRdpRange(const AnimeCore::Vector<AnimeCore::PointF> &points,
                       int first,
                       int last,
                       qreal epsilon,
-                      QVector<bool> &keep)
+                      AnimeCore::Vector<bool> &keep)
 {
     if (last <= first + 1) {
         return;
@@ -555,18 +556,18 @@ void simplifyRdpRange(const QVector<QPointF> &points,
     }
 }
 
-QVector<QPointF> simplifyRdp(const QVector<QPointF> &points, qreal epsilon)
+AnimeCore::Vector<AnimeCore::PointF> simplifyRdp(const AnimeCore::Vector<AnimeCore::PointF> &points, qreal epsilon)
 {
     if (epsilon <= 0.0 || points.size() <= 2) {
         return points;
     }
 
-    QVector<bool> keep(points.size(), false);
+    AnimeCore::Vector<bool> keep(points.size(), false);
     keep[0] = true;
     keep[points.size() - 1] = true;
-    simplifyRdpRange(points, 0, points.size() - 1, epsilon, keep);
+    simplifyRdpRange(points, 0, static_cast<int>(points.size()) - 1, epsilon, keep);
 
-    QVector<QPointF> simplified;
+    AnimeCore::Vector<AnimeCore::PointF> simplified;
     simplified.reserve(points.size());
     for (int i = 0; i < points.size(); ++i) {
         if (keep[i]) {
@@ -576,21 +577,21 @@ QVector<QPointF> simplifyRdp(const QVector<QPointF> &points, qreal epsilon)
     return simplified;
 }
 
-QVector<QVector<QPointF>> samplePathToPolylines(const QPainterPath &path, double polyStep, double simplify)
+AnimeCore::Vector<AnimeCore::Vector<AnimeCore::PointF>> samplePathToPolylines(const AnimeCore::Path &path, double polyStep, double simplify)
 {
     // The same flattening as pathToPolylines (via algorithm/beziersplit.h),
     // decimated per polyline.
-    QVector<QVector<QPointF>> polylines;
-    for (const QVector<QPointF> &polyline : pathPolylines(path, polyStep)) {
+    AnimeCore::Vector<AnimeCore::Vector<AnimeCore::PointF>> polylines;
+    for (const AnimeCore::Vector<AnimeCore::PointF> &polyline : pathPolylines(path, polyStep)) {
         polylines.append(simplifyRdp(polyline, simplify));
     }
     return polylines;
 }
 
-py::list polylineVectorToList(const QVector<QVector<QPointF>> &polylines)
+py::list polylineVectorToList(const AnimeCore::Vector<AnimeCore::Vector<AnimeCore::PointF>> &polylines)
 {
     py::list data;
-    for (const QVector<QPointF> &polyline : polylines) {
+    for (const AnimeCore::Vector<AnimeCore::PointF> &polyline : polylines) {
         data.append(pointsToList(polyline));
     }
     return data;
@@ -604,19 +605,19 @@ py::object strokeLineList(const AnimeVectorStroke &stroke, bool ploy, double sim
     return polylineVectorToList(samplePathToPolylines(stroke.path, polyStep, simplify));
 }
 
-QPainterPath objectToPath(const py::handle &value, const char *name = "path")
+AnimeCore::Path objectToPath(const py::handle &value, const char *name = "path")
 {
-    QPainterPath path;
+    AnimeCore::Path path;
     if (!py::isinstance<py::sequence>(value) || py::isinstance<py::str>(value)) {
         throw py::type_error(std::string(name) + " must be path commands or a point sequence.");
     }
 
     py::sequence seq = py::reinterpret_borrow<py::sequence>(value);
     bool pathStarted = false;
-    QPointF current;
+    AnimeCore::PointF current;
     for (py::handle item : seq) {
         if (!py::isinstance<py::dict>(item)) {
-            const QPointF point = objectToPointF(item, "path point");
+            const AnimeCore::PointF point = objectToPointF(item, "path point");
             if (!pathStarted) {
                 path.moveTo(point);
                 pathStarted = true;
@@ -630,12 +631,12 @@ QPainterPath objectToPath(const py::handle &value, const char *name = "path")
         py::dict command = py::reinterpret_borrow<py::dict>(item);
         const std::string type = hasKey(command, "type") ? command["type"].cast<std::string>() : "line";
         if (type == "move") {
-            const QPointF point = objectToPointF(command["to"], "move.to");
+            const AnimeCore::PointF point = objectToPointF(command["to"], "move.to");
             path.moveTo(point);
             current = point;
             pathStarted = true;
         } else if (type == "line") {
-            const QPointF point = objectToPointF(command["to"], "line.to");
+            const AnimeCore::PointF point = objectToPointF(command["to"], "line.to");
             if (!pathStarted) {
                 if (hasKey(command, "from")) {
                     path.moveTo(objectToPointF(command["from"], "line.from"));
@@ -647,8 +648,8 @@ QPainterPath objectToPath(const py::handle &value, const char *name = "path")
             path.lineTo(point);
             current = point;
         } else if (type == "quad") {
-            const QPointF control = objectToPointF(command["control"], "quad.control");
-            const QPointF point = objectToPointF(command["to"], "quad.to");
+            const AnimeCore::PointF control = objectToPointF(command["control"], "quad.control");
+            const AnimeCore::PointF point = objectToPointF(command["to"], "quad.to");
             if (!pathStarted) {
                 if (hasKey(command, "from")) {
                     path.moveTo(objectToPointF(command["from"], "quad.from"));
@@ -660,9 +661,9 @@ QPainterPath objectToPath(const py::handle &value, const char *name = "path")
             path.quadTo(control, point);
             current = point;
         } else if (type == "cubic") {
-            const QPointF control1 = objectToPointF(command["control1"], "cubic.control1");
-            const QPointF control2 = objectToPointF(command["control2"], "cubic.control2");
-            const QPointF point = objectToPointF(command["to"], "cubic.to");
+            const AnimeCore::PointF control1 = objectToPointF(command["control1"], "cubic.control1");
+            const AnimeCore::PointF control2 = objectToPointF(command["control2"], "cubic.control2");
+            const AnimeCore::PointF point = objectToPointF(command["to"], "cubic.to");
             if (!pathStarted) {
                 if (hasKey(command, "from")) {
                     path.moveTo(objectToPointF(command["from"], "cubic.from"));
@@ -686,7 +687,7 @@ QPainterPath objectToPath(const py::handle &value, const char *name = "path")
     return path;
 }
 
-py::dict pathToDictValue(const QPainterPath &path, bool toPoly = false, double polyStep = 4.0)
+py::dict pathToDictValue(const AnimeCore::Path &path, bool toPoly = false, double polyStep = 4.0)
 {
     py::dict data;
     data["bounds"] = rectToDict(path.boundingRect());
@@ -754,20 +755,21 @@ py::dict strokeNodeToDict(const AnimeVectorStrokeNode &node, bool toPoly, double
     return data;
 }
 
-QImage objectToMaskImage(const py::handle &value, const char *name = "boundary")
+AnimeCore::Image objectToMaskImage(const py::handle &value, const char *name = "boundary")
 {
     if (py::isinstance<py::dict>(value)) {
         py::dict dict = py::reinterpret_borrow<py::dict>(value);
         if (hasKey(dict, "width") && hasKey(dict, "height") && hasKey(dict, "pixels")) {
             const int width = dict["width"].cast<int>();
             const int height = dict["height"].cast<int>();
-            QImage image(width, height, QImage::Format_Grayscale8);
+            AnimeCore::Image image(width, height, AnimeCore::Image::Format_Grayscale8);
             image.fill(0);
             py::sequence pixels = dict["pixels"].cast<py::sequence>();
-            for (int y = 0; y < height && y < pixels.size(); ++y) {
+            for (int y = 0; y < height && y < static_cast<int>(pixels.size()); ++y) {
                 py::sequence row = pixels[y].cast<py::sequence>();
-                for (int x = 0; x < width && x < row.size(); ++x) {
-                    image.setPixelColor(x, y, QColor(row[x].cast<int>(), row[x].cast<int>(), row[x].cast<int>()));
+                for (int x = 0; x < width && x < static_cast<int>(row.size()); ++x) {
+                    const int gray = row[x].cast<int>();
+                    image.setPixel(x, y, AnimeCore::qRgb(gray, gray, gray));
                 }
             }
             return image;
@@ -778,13 +780,13 @@ QImage objectToMaskImage(const py::handle &value, const char *name = "boundary")
         py::sequence rows = py::reinterpret_borrow<py::sequence>(value);
         const int height = static_cast<int>(rows.size());
         const int width = height > 0 ? static_cast<int>(rows[0].cast<py::sequence>().size()) : 0;
-        QImage image(width, height, QImage::Format_Grayscale8);
+        AnimeCore::Image image(width, height, AnimeCore::Image::Format_Grayscale8);
         image.fill(0);
         for (int y = 0; y < height; ++y) {
             py::sequence row = rows[y].cast<py::sequence>();
-            for (int x = 0; x < width && x < row.size(); ++x) {
+            for (int x = 0; x < width && x < static_cast<int>(row.size()); ++x) {
                 const int gray = row[x].cast<int>();
-                image.setPixelColor(x, y, QColor(gray, gray, gray));
+                image.setPixel(x, y, AnimeCore::qRgb(gray, gray, gray));
             }
         }
         return image;
@@ -836,12 +838,12 @@ const char *columnTypeToString(AnimeColumnType type)
     }
 }
 
-AnimeColumnType columnTypeFromString(const QString &type)
+AnimeColumnType columnTypeFromString(const AnimeCore::String &type)
 {
-    if (type == QStringLiteral("raster")) {
+    if (type == AnimeCore::String::fromUtf8("raster")) {
         return AnimeColumnType::Raster;
     }
-    if (type == QStringLiteral("fill")) {
+    if (type == AnimeCore::String::fromUtf8("fill")) {
         return AnimeColumnType::Fill;
     }
     return AnimeColumnType::Vector;
@@ -1571,7 +1573,7 @@ void bindAnimeanPythonModule(py::module_ &m)
                           return stroke.property.toStdString();
                       },
                       [](AnimeVectorStroke &stroke, const std::string &property) {
-                          stroke.property = QString::fromUtf8(property.c_str());
+                          stroke.property = AnimeCore::String::fromUtf8(property.c_str());
                       })
         .def_readwrite("width", &AnimeVectorStroke::width)
         .def_readwrite("pen_style", &AnimeVectorStroke::penStyle)
@@ -1603,7 +1605,7 @@ void bindAnimeanPythonModule(py::module_ &m)
              py::arg("color"))
         .def("fill_regions_info", [](const AnimeVectorImageModel &image) {
             py::list regions;
-            const QVector<AnimeVectorFillRegion> &fills = image.fillRegions();
+            const AnimeCore::Vector<AnimeVectorFillRegion> &fills = image.fillRegions();
             for (int i = 0; i < fills.size(); ++i) {
                 const AnimeVectorFillRegion &fill = fills[i];
                 py::dict data;
@@ -1620,7 +1622,7 @@ void bindAnimeanPythonModule(py::module_ &m)
         })
         .def("fill_region_contains",
              [](const AnimeVectorImageModel &image, int index, py::object point) {
-                 const QVector<AnimeVectorFillRegion> &fills = image.fillRegions();
+                 const AnimeCore::Vector<AnimeVectorFillRegion> &fills = image.fillRegions();
                  if (index < 0 || index >= fills.size()) {
                      return false;
                  }
@@ -1634,7 +1636,7 @@ void bindAnimeanPythonModule(py::module_ &m)
                 bool basedOnAllLayers) {
                  AnimeVectorFillRegion fill;
                  fill.id = image.fillCount() + 1;
-                 fill.property = QString::fromUtf8(property.c_str());
+                 fill.property = AnimeCore::String::fromUtf8(property.c_str());
                  fill.path = objectToPath(path, "path");
                  fill.bounds = fill.path.boundingRect();
                  fill.color = objectToColor(color, "color");
@@ -1655,7 +1657,7 @@ void bindAnimeanPythonModule(py::module_ &m)
         .def("set_fill_region",
              [](AnimeVectorImageModel &image, int index, py::object path, py::object color,
                 py::object seed) {
-                 const QVector<AnimeVectorFillRegion> &fills = image.fillRegions();
+                 const AnimeCore::Vector<AnimeVectorFillRegion> &fills = image.fillRegions();
                  if (index < 0 || index >= fills.size()) {
                      return false;
                  }
@@ -1690,13 +1692,13 @@ void bindAnimeanPythonModule(py::module_ &m)
         .def("transform",
              [](AnimeVectorImageModel &image, double m11, double m12, double m21,
                 double m22, double dx, double dy) {
-                 image.transform(QTransform(m11, m12, m21, m22, dx, dy));
+                 image.transform(AnimeCore::Transform(m11, m12, m21, m22, dx, dy));
              },
              py::arg("m11"), py::arg("m12"), py::arg("m21"), py::arg("m22"),
              py::arg("dx"), py::arg("dy"))
         .def("translate",
              [](AnimeVectorImageModel &image, double dx, double dy) {
-                 image.translate(QPointF(dx, dy));
+                 image.translate(AnimeCore::PointF(dx, dy));
              },
              py::arg("dx"), py::arg("dy"))
         .def("to_dict",
@@ -1735,7 +1737,7 @@ void bindAnimeanPythonModule(py::module_ &m)
                      // callers to say what they mean with remove_stroke().
                      throw py::value_error("replace_stroke_with_pieces: pieces is empty; use remove_stroke() to delete.");
                  }
-                 QVector<AnimeVectorStroke> strokes;
+                 AnimeCore::Vector<AnimeVectorStroke> strokes;
                  strokes.reserve(static_cast<int>(pieces.size()));
                  for (py::handle piece : pieces) {
                      strokes.append(piece.cast<AnimeVectorStroke>());
@@ -1751,13 +1753,13 @@ void bindAnimeanPythonModule(py::module_ &m)
             return model.id().toStdString();
         })
         .def("set_id", [](AnimeSceneModel &model, const std::string &id) {
-            model.setId(QString::fromUtf8(id.c_str()));
+            model.setId(AnimeCore::String::fromUtf8(id.c_str()));
         })
         .def("scene_name", [](const AnimeSceneModel &model) {
             return model.textId().toStdString();
         })
         .def("set_scene_name", [](AnimeSceneModel &model, const std::string &name) {
-            model.setTextId(QString::fromUtf8(name.c_str()));
+            model.setTextId(AnimeCore::String::fromUtf8(name.c_str()));
         })
         .def("scene_id", &AnimeSceneModel::intId)
         .def("set_scene_id", &AnimeSceneModel::setIntId)
@@ -1765,7 +1767,7 @@ void bindAnimeanPythonModule(py::module_ &m)
             return model.scriptData().toStdString();
         })
         .def("set_script_data", [](AnimeSceneModel &model, const std::string &data) {
-            model.setScriptData(QString::fromStdString(data));
+            model.setScriptData(AnimeCore::String::fromStdString(data));
         })
         .def("initialize_scene", &AnimeSceneModel::initializeScene, py::arg("layer_count"), py::arg("frame_count"))
         .def("set_current_layer", &AnimeSceneModel::setCurrentLayer)
@@ -1784,7 +1786,7 @@ void bindAnimeanPythonModule(py::module_ &m)
             return model.layerName(layerIndex).toStdString();
         })
         .def("set_layer_name", [](AnimeSceneModel &model, int layerIndex, const std::string &name) {
-            model.setLayerName(layerIndex, QString::fromUtf8(name.c_str()));
+            model.setLayerName(layerIndex, AnimeCore::String::fromUtf8(name.c_str()));
         })
         .def("frame_name", [](const AnimeSceneModel &model, int frameIndex) {
             return model.frameName(frameIndex).toStdString();
@@ -1793,7 +1795,7 @@ void bindAnimeanPythonModule(py::module_ &m)
             return model.assetName(assetIndex).toStdString();
         })
         .def("set_asset_name", [](AnimeSceneModel &model, int assetIndex, const std::string &name) {
-            model.setAssetName(assetIndex, QString::fromUtf8(name.c_str()));
+            model.setAssetName(assetIndex, AnimeCore::String::fromUtf8(name.c_str()));
         })
         .def("layer_visible", &AnimeSceneModel::layerVisible)
         .def("set_layer_visible", &AnimeSceneModel::setLayerVisible)
@@ -1824,8 +1826,8 @@ void bindAnimeanPythonModule(py::module_ &m)
              py::arg("layer_index"))
         .def("add_asset",
              [](AnimeSceneModel &model, const std::string &type, const std::string &name) {
-                 return model.addAsset(columnTypeFromString(QString::fromUtf8(type.c_str())),
-                                       QString::fromUtf8(name.c_str()));
+                 return model.addAsset(columnTypeFromString(AnimeCore::String::fromUtf8(type.c_str())),
+                                       AnimeCore::String::fromUtf8(name.c_str()));
              },
              py::arg("type") = "vector",
              py::arg("name") = "")
@@ -1841,8 +1843,8 @@ void bindAnimeanPythonModule(py::module_ &m)
         // get_structure, ...). An element that is an int IS a layer; an
         // element that is a dict is a group and carries its children.
         .def("layer_tree", [](const AnimeSceneModel &model) {
-            std::function<py::list(const QVector<AnimeLayerNode> &)> convert =
-                [&](const QVector<AnimeLayerNode> &nodes) {
+            std::function<py::list(const AnimeCore::Vector<AnimeLayerNode> &)> convert =
+                [&](const AnimeCore::Vector<AnimeLayerNode> &nodes) {
                 py::list out;
                 for (const AnimeLayerNode &node : nodes) {
                     if (node.isGroup()) {
@@ -1867,15 +1869,15 @@ void bindAnimeanPythonModule(py::module_ &m)
         .def("create_layer_group",
              [](AnimeSceneModel &model, const std::string &name,
                 const std::vector<int> &layers, const std::vector<int> &groups, bool collapsed) {
-                 QVector<int> layerIndices;
+                 AnimeCore::Vector<int> layerIndices;
                  for (int index : layers) {
                      layerIndices.append(index);
                  }
-                 QVector<int> groupIds;
+                 AnimeCore::Vector<int> groupIds;
                  for (int id : groups) {
                      groupIds.append(id);
                  }
-                 return model.createLayerGroup(QString::fromUtf8(name.c_str()),
+                 return model.createLayerGroup(AnimeCore::String::fromUtf8(name.c_str()),
                                                layerIndices, groupIds, collapsed);
              },
              py::arg("name"),
@@ -1886,13 +1888,13 @@ void bindAnimeanPythonModule(py::module_ &m)
         .def("layer_group_collapsed", &AnimeSceneModel::layerGroupCollapsed)
         .def("set_layer_group_name",
              [](AnimeSceneModel &model, int groupId, const std::string &name) {
-                 return model.setLayerGroupName(groupId, QString::fromUtf8(name.c_str()));
+                 return model.setLayerGroupName(groupId, AnimeCore::String::fromUtf8(name.c_str()));
              })
         .def("dissolve_layer_group", &AnimeSceneModel::dissolveLayerGroup)
         .def("delete_layer_group", &AnimeSceneModel::deleteLayerGroup)
         .def("add_layers_to_group",
              [](AnimeSceneModel &model, int groupId, const std::vector<int> &layers) {
-                 QVector<int> layerIndices;
+                 AnimeCore::Vector<int> layerIndices;
                  for (int index : layers) {
                      layerIndices.append(index);
                  }
@@ -1901,7 +1903,7 @@ void bindAnimeanPythonModule(py::module_ &m)
              py::arg("group_id"), py::arg("layers"))
         .def("set_layer_group_tag",
              [](AnimeSceneModel &model, int groupId, const std::string &tag) {
-                 return model.setLayerGroupTag(groupId, QString::fromUtf8(tag.c_str()));
+                 return model.setLayerGroupTag(groupId, AnimeCore::String::fromUtf8(tag.c_str()));
              })
         .def("layer_group_tag",
              [](const AnimeSceneModel &model, int groupId) {
@@ -1909,14 +1911,14 @@ void bindAnimeanPythonModule(py::module_ &m)
              })
         .def("group_id_for_layer",
              [](const AnimeSceneModel &model, int layerIndex, const std::string &tag) {
-                 return model.groupIdForLayer(layerIndex, QString::fromUtf8(tag.c_str()));
+                 return model.groupIdForLayer(layerIndex, AnimeCore::String::fromUtf8(tag.c_str()));
              },
              py::arg("layer_index"), py::arg("tag") = std::string())
         .def("canvas_size", [](const AnimeSceneModel &model) {
             return py::make_tuple(model.canvasSize().width(), model.canvasSize().height());
         })
         .def("set_canvas_size", [](AnimeSceneModel &model, int width, int height) {
-            model.setCanvasSize(QSize(width, height));
+            model.setCanvasSize(AnimeCore::Size(width, height));
         }, py::arg("width"), py::arg("height"))
         .def("layer_ids_in_group",
              [](const AnimeSceneModel &model, int groupId) {
@@ -1937,7 +1939,7 @@ void bindAnimeanPythonModule(py::module_ &m)
         .def("image_at",
              [](AnimeSceneModel &model, int row, int layerIndex, bool create, const std::string &assetType) {
                  return model.imageAt(row, layerIndex, create,
-                                      columnTypeFromString(QString::fromUtf8(assetType.c_str())));
+                                      columnTypeFromString(AnimeCore::String::fromUtf8(assetType.c_str())));
              },
              py::arg("row"),
              py::arg("layer_index"),
@@ -2015,9 +2017,9 @@ void bindAnimeanPythonModule(py::module_ &m)
              // caller's policy.
              [](const AnimeSceneModel &model, int frame, py::object seed, py::object bounds,
                 int layerIndex, bool toPoly, double polyStep) -> py::object {
-                 const QPointF seedPoint = objectToPointF(seed, "seed");
-                 const QRectF boundsRect = objectToRectF(bounds, "bounds");
-                 const QPainterPath path = AnimeVectorLogic::vectorRegionPathAt(
+                 const AnimeCore::PointF seedPoint = objectToPointF(seed, "seed");
+                 const AnimeCore::RectF boundsRect = objectToRectF(bounds, "bounds");
+                 const AnimeCore::Path path = AnimeVectorLogic::vectorRegionPathAt(
                      seedPoint, model.fillBoundarySegments(frame, layerIndex), boundsRect.toRect());
                  if (path.isEmpty()) {
                      return py::none();
@@ -2038,7 +2040,7 @@ void bindAnimeanPythonModule(py::module_ &m)
              // rect at the origin, and clamping a trace to one would silently
              // fill nothing).
              [](const AnimeSceneModel &model, int frame, int layerIndex) -> py::object {
-                 const QRectF bounds = model.fillBoundaryBounds(frame, layerIndex);
+                 const AnimeCore::RectF bounds = model.fillBoundaryBounds(frame, layerIndex);
                  if (bounds.isNull()) {
                      return py::none();
                  }
@@ -2104,7 +2106,7 @@ void bindAnimeanPythonModule(py::module_ &m)
         return pointToDict(objectToPointF(value));
     });
     modelPybind.def("point_i", [](py::object value) {
-        const QPoint point = objectToPoint(value);
+        const AnimeCore::Point point = objectToPoint(value);
         py::dict data;
         data["x"] = point.x();
         data["y"] = point.y();
@@ -2114,7 +2116,7 @@ void bindAnimeanPythonModule(py::module_ &m)
         return rectToDict(objectToRectF(value));
     });
     modelPybind.def("rect_i", [](py::object value) {
-        const QRect rect = objectToRect(value);
+        const AnimeCore::Rect rect = objectToRect(value);
         py::dict data;
         data["x"] = rect.x();
         data["y"] = rect.y();
@@ -2133,7 +2135,7 @@ void bindAnimeanPythonModule(py::module_ &m)
     });
     modelPybind.def("lines", [](py::object value) {
         py::list data;
-        for (const QLineF &line : objectToLines(value)) {
+        for (const AnimeCore::LineF &line : objectToLines(value)) {
             data.append(lineToDict(line));
         }
         return data;
@@ -2268,7 +2270,7 @@ void bindAnimeanPythonModule(py::module_ &m)
     vectorLogic.def("stroke_hits_circle",
                     [](py::object points, py::object center, qreal radius, qreal width) {
                         const AnimeVectorStroke stroke = AnimeVectorLogic::makeStroke(objectToPoints(points),
-                                                                                      QColor(0, 0, 0, 255),
+                                                                                      AnimeCore::Color(0, 0, 0, 255),
                                                                                       width,
                                                                                       0,
                                                                                       false,
@@ -2293,7 +2295,7 @@ void bindAnimeanPythonModule(py::module_ &m)
     vectorLogic.def("stroke_hits_capsule",
                     [](py::object points, py::object fromPoint, py::object toPoint, qreal radius, qreal width) {
                         const AnimeVectorStroke stroke = AnimeVectorLogic::makeStroke(objectToPoints(points),
-                                                                                      QColor(0, 0, 0, 255),
+                                                                                      AnimeCore::Color(0, 0, 0, 255),
                                                                                       width,
                                                                                       0,
                                                                                       false,
@@ -2350,7 +2352,7 @@ void bindAnimeanPythonModule(py::module_ &m)
                     py::arg("length"));
     vectorLogic.def("segments_from_path", [](py::object pathLike) {
         py::list data;
-        for (const QLineF &line : AnimeVectorLogic::segmentsFromPath(objectToPath(pathLike))) {
+        for (const AnimeCore::LineF &line : AnimeVectorLogic::segmentsFromPath(objectToPath(pathLike))) {
             data.append(lineToDict(line));
         }
         return data;

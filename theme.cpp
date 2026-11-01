@@ -1,10 +1,13 @@
 #include "theme.h"
 
+#include <QSettings>
+
+#ifndef ANIMEAN_HEADLESS
 #include <QApplication>
 #include <QPalette>
-#include <QSettings>
 #include <QStyle>
 #include <QStyleFactory>
+#endif
 
 #ifdef ANIMEAN_WITH_PYTHON
 #include "pythonbind/python_bindings.h"
@@ -73,6 +76,7 @@ const ThemeColors &colorsFor(AnimeTheme::Mode mode)
     return mode == AnimeTheme::Mode::Dark ? dark : light;
 }
 
+#ifndef ANIMEAN_HEADLESS
 QPalette buildPalette(AnimeTheme::Mode mode)
 {
     const ThemeColors &colors = colorsFor(mode);
@@ -146,6 +150,8 @@ QString appStyleSheet(AnimeTheme::Mode mode)
              colors.window.name());
 }
 
+#endif
+
 AnimeTheme::Mode g_mode = AnimeTheme::Mode::Dark;
 bool g_modeLoaded = false;
 }
@@ -184,7 +190,11 @@ void AnimeTheme::setMode(Mode mode)
     g_mode = mode;
     QSettings settings(QStringLiteral("AnimeAn"), QStringLiteral("AnimeAn"));
     settings.setValue(QStringLiteral("theme/mode"), modeName(mode));
+#ifndef ANIMEAN_HEADLESS
     apply(qApp);
+#elif defined(ANIMEAN_WITH_PYTHON)
+    setAnimeanUiTheme(modeName(mode));
+#endif
     emit instance()->themeChanged();
 }
 
@@ -228,6 +238,7 @@ QColor AnimeTheme::color(Role role)
     return colors.text;
 }
 
+#ifndef ANIMEAN_HEADLESS
 void AnimeTheme::apply(QApplication *app)
 {
     if (!app) {
@@ -252,6 +263,8 @@ void AnimeTheme::apply(QApplication *app)
     setAnimeanUiTheme(modeName(mode()));
 #endif
 }
+
+#endif
 
 QString AnimeTheme::modeName(Mode mode)
 {

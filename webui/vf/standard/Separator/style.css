@@ -1,0 +1,20 @@
+.vf-std-separator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+.vf-std-separator::after {
+  content: "";
+  display: block;
+  width: 100%;
+  height: 1px;
+  background: var(--color-border, #e2e8f0);
+}
+
+.vf-std-separator[data-orientation="vertical"]::after {
+  width: 1px;
+  height: 100%;
+}

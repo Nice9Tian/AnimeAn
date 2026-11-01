@@ -1,0 +1,13 @@
+{
+  "type": "QtHistory",
+  "label": "历史面板",
+  "description": "历史面板，实现在 webui/src/ui",
+  "defaultSize": {
+    "width": 200,
+    "height": 200
+  },
+  "entry": "index.js",
+  "style": "style.css",
+  "props": {},
+  "children": false
+}

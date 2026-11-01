@@ -5,7 +5,9 @@
 #include <QObject>
 #include <QString>
 
+#ifndef ANIMEAN_HEADLESS
 class QApplication;
+#endif
 
 // The one place the application's colours live. Widgets Qt can style through
 // QPalette need nothing from here; custom-painted widgets and the stylesheet
@@ -55,7 +57,9 @@ public:
     // Fusion, the full palette, and the little stylesheet the palette cannot
     // reach. Must run before the first widget is constructed: a widget reads
     // the application palette as it is built.
+#ifndef ANIMEAN_HEADLESS
     static void apply(QApplication *app);
+#endif
     // "dark" / "light" - what animean_python.ui.theme() reports.
     static QString modeName(Mode mode);
 

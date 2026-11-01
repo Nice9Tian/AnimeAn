@@ -1,6 +1,6 @@
 # 填充与图层策略（fill_layers）
 
-三级机制。从属于 `../architecture.md`，与它冲突时以它为准；用户看到什么在 `../tools_user_workflow/fill.md` 和 `../user-workflow.md` 第 4 步。代码：`pyfile/fill_tool.py`（填充策略）、`pyfile/layer_tool_policy.py`（图层决定工具）、`pyfile/visibility_tool.py`（可见性）、`algorithm/animemodel.*`（`fillBoundarySegments`、`AnimeColumn::parentLayerId`、`layerLocked`、图层组与 tag）、`openglwidget.cpp`（`fillrequest` 前置事件、内建兜底填充、`ui.set_fill_paint_mode` 的手势放行）、`mainwindow.cpp`（图层面板的嵌套显示、`ui.set_locked_tools` 的应用、右键菜单）。
+三级机制。从属于 `../architecture.md`，与它冲突时以它为准；用户看到什么在 `../tools_user_workflow/fill.md` 和 `../user-workflow.md` 第 4 步。代码：`pyfile/fill_tool.py`（填充策略）、`pyfile/layer_tool_policy.py`（图层决定工具）、`pyfile/visibility_tool.py`（可见性）、`algorithm/animemodel.*`（`fillBoundarySegments`、`AnimeColumn::parentLayerId`、`layerLocked`、图层组与 tag）、`openglwidget.cpp`（`fillrequest` 前置事件、内建兜底填充、`ui.set_fill_paint_mode` 的交互事件放行）、`mainwindow.cpp`（图层面板的嵌套显示、`ui.set_locked_tools` 的应用、右键菜单）。
 
 ## 一次填充
 
@@ -30,10 +30,10 @@
 |---|---|---|---|
 | Auto-Mapping 单元里的层 | Mapping | 无 | 单元用 Mapping 页的工具编辑 |
 | 普通线稿层 | Painting | 无 | |
-| 跟随线稿的填充层 | Painting | Pen、Eraser、Connect、Transfer | 内容由父层拓扑派生，手改会被下次重算覆盖；Arrow 留着能看，Fill 留着（填充手势只是升级自己的范围） |
+| 跟随线稿的填充层 | Painting | Pen、Eraser、Connect、Transfer | 内容由父层拓扑派生，手改会被下次重算覆盖；Arrow 留着能看，Fill 留着（填充交互事件只是升级自己的范围） |
 | 独立填充层 | Painting | Connect | `ui.set_fill_paint_mode` 打开：Pen 画完的笔迹经 `linefinish` 否决转成经过的每个封闭区域的填充，Eraser 原生擦填充区域 |
 
-- C++ 的两个开关不知道图层是什么：`ui.set_locked_tools(view, tools)` 拒绝一组工具、图标变暗、退回 Arrow（Arrow 永不锁，是逃生口；切换到被锁工具在芯片和主窗口两处都被拒）；`ui.set_fill_paint_mode(view, on)` 放行 Fill 列上的画笔 / 橡皮手势。锁定按活动板生效，活动板切换时重读那块板的锁定集。
+- C++ 的两个开关不知道图层是什么：`ui.set_locked_tools(view, tools)` 拒绝一组工具、图标变暗、退回 Arrow（Arrow 永不锁，是逃生口；切换到被锁工具在芯片和主窗口两处都被拒）；`ui.set_fill_paint_mode(view, on)` 放行 Fill 列上的画笔 / 橡皮交互事件。锁定按活动板生效，活动板切换时重读那块板的锁定集。
 - 主画板才有单元焦点；纹理板的图层焦点不影响单元。
 
 ## 可见性与锁定

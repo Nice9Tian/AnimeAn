@@ -1,0 +1,319 @@
+{
+  "version": 1,
+  "root": "window",
+  "windows": [
+    "window"
+  ],
+  "nodes": {
+    "window": {
+      "type": "Window",
+      "width": 1027,
+      "height": 732,
+      "title": "AnimeAn",
+      "central": "central",
+      "docks": [
+        "toolsDock",
+        "toolOptionsDock",
+        "layersDock",
+        "assetsDock",
+        "historyDock",
+        "forcePadDock",
+        "pythonDebugDock",
+        "timelineDock"
+      ],
+      "dockLayout": {
+        "areas": {
+          "left": {
+            "size": 144,
+            "groups": [
+              {
+                "tabs": [
+                  "toolsDock"
+                ],
+                "active": "toolsDock"
+              }
+            ]
+          },
+          "right": {
+            "size": 284,
+            "groups": [
+              {
+                "tabs": [
+                  "toolOptionsDock"
+                ],
+                "active": "toolOptionsDock",
+                "size": 358
+              },
+              {
+                "tabs": [
+                  "layersDock"
+                ],
+                "active": "layersDock",
+                "size": 374
+              },
+              {
+                "tabs": [
+                  "assetsDock"
+                ],
+                "active": "assetsDock",
+                "size": 240
+              },
+              {
+                "tabs": [
+                  "historyDock"
+                ],
+                "active": "historyDock",
+                "size": 240
+              },
+              {
+                "tabs": [
+                  "forcePadDock"
+                ],
+                "active": "forcePadDock",
+                "size": 300
+              }
+            ]
+          },
+          "bottom": {
+            "size": 200,
+            "groups": [
+              {
+                "tabs": [
+                  "timelineDock"
+                ],
+                "active": "timelineDock"
+              },
+              {
+                "tabs": [
+                  "pythonDebugDock"
+                ],
+                "active": "pythonDebugDock"
+              }
+            ]
+          }
+        },
+        "floating": []
+      },
+      "children": [
+        "toolsDock",
+        "central",
+        "toolOptionsDock",
+        "layersDock",
+        "assetsDock",
+        "historyDock",
+        "forcePadDock",
+        "pythonDebugDock",
+        "timelineDock"
+      ]
+    },
+    "toolsDock": {
+      "type": "Dock",
+      "dockArea": "left",
+      "width": 144,
+      "height": 732,
+      "headerHeight": 18,
+      "title": "Tools",
+      "layout": {
+        "kind": "vbox",
+        "padding": 0,
+        "gap": 0
+      },
+      "children": [
+        "toolsPanel"
+      ]
+    },
+    "toolsPanel": {
+      "type": "QtTools",
+      "width": 144,
+      "height": 714,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "expanding"
+      }
+    },
+    "toolOptionsDock": {
+      "type": "Dock",
+      "dockArea": "right",
+      "width": 284,
+      "height": 350,
+      "headerHeight": 18,
+      "title": "Tool Options",
+      "layout": {
+        "kind": "vbox",
+        "padding": 0,
+        "gap": 0
+      },
+      "children": [
+        "toolOptionsPanel"
+      ]
+    },
+    "toolOptionsPanel": {
+      "type": "QtToolOptions",
+      "width": 284,
+      "height": 332,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "expanding"
+      }
+    },
+    "layersDock": {
+      "type": "Dock",
+      "dockArea": "right",
+      "width": 284,
+      "height": 374,
+      "headerHeight": 18,
+      "title": "Layers",
+      "layout": {
+        "kind": "vbox",
+        "padding": 0,
+        "gap": 0
+      },
+      "children": [
+        "layersPanel"
+      ]
+    },
+    "layersPanel": {
+      "type": "QtLayers",
+      "width": 284,
+      "height": 356,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "expanding"
+      }
+    },
+    "assetsDock": {
+      "type": "Dock",
+      "dockArea": "right",
+      "width": 284,
+      "height": 240,
+      "headerHeight": 18,
+      "title": "Assets",
+      "layout": {
+        "kind": "vbox",
+        "padding": 0,
+        "gap": 0
+      },
+      "children": [
+        "assetsPanel"
+      ]
+    },
+    "assetsPanel": {
+      "type": "QtAssets",
+      "width": 284,
+      "height": 222,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "expanding"
+      }
+    },
+    "historyDock": {
+      "type": "Dock",
+      "dockArea": "right",
+      "width": 284,
+      "height": 240,
+      "headerHeight": 18,
+      "title": "History",
+      "layout": {
+        "kind": "vbox",
+        "padding": 0,
+        "gap": 0
+      },
+      "children": [
+        "historyPanel"
+      ]
+    },
+    "historyPanel": {
+      "type": "QtHistory",
+      "width": 284,
+      "height": 222,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "expanding"
+      }
+    },
+    "forcePadDock": {
+      "type": "Dock",
+      "dockArea": "right",
+      "width": 284,
+      "height": 300,
+      "headerHeight": 18,
+      "title": "Repulsion Pad",
+      "layout": {
+        "kind": "vbox",
+        "padding": 0,
+        "gap": 0
+      },
+      "children": [
+        "forcePadPanel"
+      ]
+    },
+    "forcePadPanel": {
+      "type": "QtForcePad",
+      "width": 284,
+      "height": 282,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "expanding"
+      }
+    },
+    "pythonDebugDock": {
+      "type": "Dock",
+      "dockArea": "bottom",
+      "width": 1027,
+      "height": 200,
+      "headerHeight": 18,
+      "title": "Python Debug",
+      "layout": {
+        "kind": "vbox",
+        "padding": 0,
+        "gap": 0
+      },
+      "children": [
+        "pythonDebugPanel"
+      ]
+    },
+    "pythonDebugPanel": {
+      "type": "QtPythonDebug",
+      "width": 1027,
+      "height": 182,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "expanding"
+      }
+    },
+    "timelineDock": {
+      "type": "Dock",
+      "dockArea": "bottom",
+      "width": 1027,
+      "height": 200,
+      "headerHeight": 18,
+      "title": "Timeline",
+      "layout": {
+        "kind": "vbox",
+        "padding": 0,
+        "gap": 0
+      },
+      "children": [
+        "timelinePanel"
+      ]
+    },
+    "timelinePanel": {
+      "type": "QtTimeline",
+      "width": 1027,
+      "height": 182,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "expanding"
+      }
+    },
+    "central": {
+      "type": "QtCentral",
+      "width": 583,
+      "height": 732,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "expanding"
+      }
+    }
+  }
+}

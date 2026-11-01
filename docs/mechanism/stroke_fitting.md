@@ -1,6 +1,6 @@
 # 画笔与橡皮：采样、稳定器、拟合、擦除（stroke_fitting）
 
-三级机制。从属于 `../architecture.md`，与它冲突时以它为准；用户看到什么在 `../tools_user_workflow/pen.md`、`../tools_user_workflow/eraser.md`。代码：`openglwidget.cpp`（手势采集、轴向吸附、按住画直线、橡皮路由）、`algorithm/vectorlogic.cpp`（1 Euro 稳定器、`liveFitStrokePath` / `fitStrokePath`、擦除区间、切断计划、`makeStroke`）、`algorithm/viewscale.h`（屏幕 ↔ 画布换算）、`pyfile/draw_settings.py`（三参数与 Draw 菜单）、`pyfile/toolcontrol.py`（Pen 选项面板）。Pen 与 Eraser 是 C++ 内建的基础工具；它们的选项面板和颜色仍由 Python 给出。
+三级机制。从属于 `../architecture.md`，与它冲突时以它为准；用户看到什么在 `../tools_user_workflow/pen.md`、`../tools_user_workflow/eraser.md`。代码：`openglwidget.cpp`（交互事件采集、轴向吸附、按住画直线、橡皮路由）、`algorithm/vectorlogic.cpp`（1 Euro 稳定器、`liveFitStrokePath` / `fitStrokePath`、擦除区间、切断计划、`makeStroke`）、`algorithm/viewscale.h`（屏幕 ↔ 画布换算）、`pyfile/draw_settings.py`（三参数与 Draw 菜单）、`pyfile/toolcontrol.py`（Pen 选项面板）。Pen 与 Eraser 是 C++ 内建的基础工具；它们的选项面板和颜色仍由 Python 给出。
 
 ## 一笔的流程
 
