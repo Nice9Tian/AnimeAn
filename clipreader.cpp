@@ -1,14 +1,17 @@
 #include "clipreader.h"
 
 
+#include <cerrno>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <vector>
 
 #include "algorithm/core/containers.h"
 #include "algorithm/core/geometry.h"
 #include "algorithm/core/string.h"
-
-#include <cstdint>
 
 using namespace AnimeCore;
 
@@ -49,7 +52,11 @@ public:
         if (!has(offset, 4)) {
             return false;
         }
-        *out = qFromBigEndian<std::uint32_t>(reinterpret_cast<const unsigned char *>(m_data + offset));
+        const auto b0 = static_cast<std::uint32_t>(static_cast<unsigned char>(m_data[offset + 0]));
+        const auto b1 = static_cast<std::uint32_t>(static_cast<unsigned char>(m_data[offset + 1]));
+        const auto b2 = static_cast<std::uint32_t>(static_cast<unsigned char>(m_data[offset + 2]));
+        const auto b3 = static_cast<std::uint32_t>(static_cast<unsigned char>(m_data[offset + 3]));
+        *out = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
         return true;
     }
 
@@ -57,7 +64,12 @@ public:
         if (!has(offset, 8)) {
             return false;
         }
-        *out = qFromBigEndian<std::uint64_t>(reinterpret_cast<const unsigned char *>(m_data + offset));
+        std::uint64_t value = 0;
+        for (int i = 0; i < 8; ++i) {
+            value = (value << 8)
+                    | static_cast<std::uint64_t>(static_cast<unsigned char>(m_data[offset + i]));
+        }
+        *out = value;
         return true;
     }
 
@@ -137,7 +149,7 @@ bool decodeVectorBlock(const Cursor &cur, std::int64_t offset, std::int64_t leng
 
             const std::int64_t pointsStart = strokePos + headerBody;
             ClipReader::ClipStroke stroke;
-            stroke.points.reserve(static_cast<qsizetype>(pointCount));
+            stroke.points.reserve(static_cast<std::ptrdiff_t>(pointCount));
             for (std::uint32_t i = 0; i < pointCount; ++i) {
                 const std::int64_t rec = pointsStart + static_cast<std::int64_t>(std::uint64_t(i) * recordSize);
                 double x = 0.0;
@@ -186,18 +198,25 @@ ClipDocument readClipFile(const String &absolutePath)
 {
     ClipDocument document;
 
-    QFile file(absolutePath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        document.error = ANIME_STR("Cannot open file: %1").arg(file.errorString());
+    const std::filesystem::path fsPath(absolutePath.u16String());
+    errno = 0;
+    std::ifstream file(fsPath, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) {
+        document.error = ANIME_STR("Cannot open file: %1")
+                             .arg(String::fromUtf8(errno != 0 ? std::strerror(errno) : "Unknown error"));
         return document;
     }
-    if (file.size() <= 0 || file.size() > kMaxFileSize) {
+    const std::int64_t fileSize = static_cast<std::int64_t>(file.tellg());
+    if (fileSize <= 0 || fileSize > kMaxFileSize) {
         document.error = ANIME_STR("Unsupported file size.");
         return document;
     }
 
-    const QByteArray bytes = file.readAll();
-    const Cursor cur(bytes.constData(), bytes.size());
+    file.seekg(0, std::ios::beg);
+    std::vector<char> bytes(static_cast<std::size_t>(fileSize));
+    file.read(bytes.data(), static_cast<std::streamsize>(fileSize));
+    bytes.resize(static_cast<std::size_t>(file.gcount()));
+    const Cursor cur(bytes.data(), static_cast<std::int64_t>(bytes.size()));
 
     if (!cur.matches(0, "CSFCHUNK", 8)) {
         document.error = ANIME_STR("Not a Clip Studio Paint file (missing CSFCHUNK header).");

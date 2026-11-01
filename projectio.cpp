@@ -6,6 +6,7 @@
 #include "algorithm/core/color.h"
 #include "algorithm/core/containers.h"
 #include "algorithm/core/geometry.h"
+#include "algorithm/core/image.h"
 #include "algorithm/core/json.h"
 #include "algorithm/core/path.h"
 #include "algorithm/core/string.h"
@@ -39,9 +40,26 @@ AnimeColumnType columnTypeFromName(const String &name)
 
 bool isUuidText(const String &text)
 {
-    static const QRegularExpression uuidPattern(
-        ANIME_STR("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"));
-    return uuidPattern.match(text.trimmed()).hasMatch();
+    const String s = text.trimmed();
+    if (s.size() != 36) {
+        return false;
+    }
+    for (int i = 0; i < 36; ++i) {
+        const char16_t c = s.at(i).unicode();
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            if (c != u'-') {
+                return false;
+            }
+        } else {
+            const bool isHex = (c >= u'0' && c <= u'9')
+                               || (c >= u'a' && c <= u'f')
+                               || (c >= u'A' && c <= u'F');
+            if (!isHex) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 JsonObject pointToJson(const PointF &point)
@@ -62,7 +80,7 @@ PointF pointFromJson(const JsonValue &value)
 JsonObject colorToJson(const Color &color)
 {
     JsonObject object;
-    object[ANIME_STR("name")] = color.name(Color::HexArgb);
+    object[ANIME_STR("name")] = String(color.name(Color::HexArgb));
     return object;
 }
 
@@ -70,7 +88,7 @@ Color colorFromJson(const JsonValue &value)
 {
     const JsonObject object = value.toObject();
     const Color color(object.value(ANIME_STR("name")).toString(ANIME_STR("#ff000000")));
-    return color.isValid() ? color : Color(Qt::black);
+    return color.isValid() ? color : Color(0, 0, 0);
 }
 
 JsonObject pathToJson(const Path &path)
@@ -96,7 +114,7 @@ Path pathFromJson(const JsonValue &value)
     const JsonObject object = value.toObject();
     const JsonArray elements = object.value(ANIME_STR("elements")).toArray();
     Path path;
-    path.setFillRule(static_cast<Qt::FillRule>(object.value(ANIME_STR("fillRule")).toInt(Qt::OddEvenFill)));
+    path.setFillRule(static_cast<FillRule>(object.value(ANIME_STR("fillRule")).toInt(OddEvenFill)));
 
     for (int i = 0; i < elements.size(); ++i) {
         const JsonObject element = elements[i].toObject();
@@ -247,11 +265,8 @@ AnimeVectorFillRegion fillRegionFromJson(const JsonValue &value)
 JsonObject rasterToJson(const AnimeRasterImage &raster)
 {
     JsonObject object;
-    QByteArray bytes;
-    QBuffer buffer(&bytes);
-    buffer.open(QIODevice::WriteOnly);
-    raster.image.save(&buffer, "PNG");
-    object[ANIME_STR("imageBase64")] = String::fromLatin1(bytes.toBase64());
+    const std::vector<unsigned char> bytes = encodePng(raster.image);
+    object[ANIME_STR("imageBase64")] = String::fromLatin1(toBase64(bytes));
     object[ANIME_STR("topLeftX")] = raster.topLeft.x();
     object[ANIME_STR("topLeftY")] = raster.topLeft.y();
     return object;
@@ -261,8 +276,8 @@ AnimeRasterImage rasterFromJson(const JsonValue &value)
 {
     const JsonObject object = value.toObject();
     AnimeRasterImage raster;
-    const QByteArray bytes = QByteArray::fromBase64(object.value(ANIME_STR("imageBase64")).toString().toLatin1());
-    raster.image.loadFromData(bytes, "PNG");
+    const std::vector<unsigned char> bytes = fromBase64(object.value(ANIME_STR("imageBase64")).toString().toLatin1());
+    raster.image = decodePng(bytes);
     raster.topLeft = PointF(object.value(ANIME_STR("topLeftX")).toDouble(),
                              object.value(ANIME_STR("topLeftY")).toDouble());
     return raster;
@@ -337,23 +352,33 @@ String textureViewSaveFilter()
 }
 
 namespace {
+String fileSuffix(const String &fileName)
+{
+    const int slash = std::max(fileName.lastIndexOf(Latin1Char('/')),
+                               fileName.lastIndexOf(Latin1Char('\\')));
+    const int dot = fileName.lastIndexOf(Latin1Char('.'));
+    if (dot <= slash) {
+        return String();
+    }
+    return fileName.mid(dot + 1);
+}
+
 String ensureFileExtension(const String &fileName, const String &extension)
 {
     if (fileName.isEmpty()) {
         return fileName;
     }
 
-    const QFileInfo info(fileName);
-    const String suffix = info.suffix();
-    if (suffix.compare(extension, Qt::CaseInsensitive) == 0) {
+    const String suffix = fileSuffix(fileName);
+    if (suffix.compare(extension, CaseInsensitive) == 0) {
         return fileName;
     }
 
     // Replace extensions that AnimeAn owns, so saving one document type over
     // a name carrying the other type's suffix produces drawing.anproj rather
     // than drawing.textureview.anproj.
-    if (suffix.compare(ANIME_STR("anproj"), Qt::CaseInsensitive) == 0
-        || suffix.compare(ANIME_STR("textureview"), Qt::CaseInsensitive) == 0) {
+    if (suffix.compare(ANIME_STR("anproj"), CaseInsensitive) == 0
+        || suffix.compare(ANIME_STR("textureview"), CaseInsensitive) == 0) {
         return fileName.left(fileName.size() - suffix.size()) + extension;
     }
 
@@ -547,7 +572,7 @@ JsonObject sceneToJson(const AnimeSceneModel &model)
 
 bool sceneFromJson(const JsonObject &root, AnimeSceneModel *model, String *error)
 {
-    Q_UNUSED(error);
+    (void)error;
     AnimeSceneModel loaded;
     AnimeScene &scene = loaded.scene();
     scene = AnimeScene();
