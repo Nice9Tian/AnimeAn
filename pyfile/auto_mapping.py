@@ -264,10 +264,9 @@ _RDP_STATE = {"eps": 0.3}
 def rdp_eps():
     return _RDP_STATE["eps"]
 
-# Refer-rect debug grid state, PER VIEW. It answers "is my mapping right?",
-# and the two boards answer it separately: the child shows the reference frame
-# itself, the main shows its image under the mapper, and wanting one is no
-# reason to be shown the other.
+# Refer-rect debug grid state, for documents with no unit (a unit keeps its
+# own, see _UNIT_SETTING_DEFAULTS). The child shows the reference frame itself,
+# the main shows its image under the mapper. One Tool Options tick sets both.
 _REFER_RECT = {"child": False, "main": False}
 # Refer-rect grid density: iso-lines per axis over [-1, 1]. 5 is the
 # historical look; finer settings are the debugging view the user asked
@@ -275,7 +274,12 @@ _REFER_RECT = {"child": False, "main": False}
 # placement check does. Sample density per iso-line scales with it so a
 # fine grid stays smooth through folds.
 GRID_DIVISION_CHOICES = (5, 9, 17, 33)
-_GRID = {"divisions": 5}
+# Refer-rect grid reach past the axis ends, in steps of half a half-axis. The
+# step is a whole number of cells at every density above, so the outward lines
+# keep the spacing and the lines inside stay where they were, and raising the
+# density does not pull the reach back in.
+GRID_EXTEND_MAX = 4
+_GRID = {"divisions": 5, "extend": 0}
 # Grid polylines are O(n^2) in guide points to build (intersection searches):
 # cache per view, invalidated whenever the guides change.
 _GRID_CACHE = {"child": None, "main": None}
@@ -291,7 +295,7 @@ _OCCLUSION_CACHE = {"items": None, "note": "", "share": 0.0}
 
 def refer_rect_enabled(view_name="main"):
     """Grid display policy: the active unit's setting in unit mode, the
-    per-board View-menu global otherwise."""
+    per-board global otherwise."""
     if _UNIT_META:
         uid = _ACTIVE_UNIT["id"]
         return bool(uid) and bool(_unit_settings(uid).get("show_grid", False))
@@ -310,6 +314,27 @@ def _grid_divisions():
         value = int(_unit_settings().get("grid_divisions", 5))
         return value if value in GRID_DIVISION_CHOICES else 5
     return int(_GRID.get("divisions", 5))
+
+
+def _grid_extend():
+    if _UNIT_META and _ACTIVE_UNIT["id"]:
+        value = int(_unit_settings().get("grid_extend", 0))
+    else:
+        value = int(_GRID.get("extend", 0))
+    return max(0, min(GRID_EXTEND_MAX, value))
+
+
+def refer_rect_options():
+    """What the Tool Options grid block shows, or None when units exist and
+    none is focused: there is then no setting for the block to edit."""
+    if _UNIT_META:
+        if not _ACTIVE_UNIT["id"]:
+            return None
+        shown = bool(_unit_settings().get("show_grid", False))
+    else:
+        shown = any(_REFER_RECT.values())
+    return {"shown": shown, "divisions": _grid_divisions(),
+            "extend": _grid_extend()}
 
 
 def curve_mode():
@@ -593,6 +618,7 @@ _UNIT_SETTING_DEFAULTS = {
     "show_horizon": True,    # orange horizon line (main)
     "show_grid": False,      # refer-rect grid
     "grid_divisions": 5,
+    "grid_extend": 0,        # reach past the axis ends, GRID_EXTEND_MAX steps
     "show_occlusion": False, # occluded-areas tint (texture board)
     "front_visible": True,   # front content/lines member layers
     "back_visible": True,    # back content/lines member layers
@@ -734,6 +760,14 @@ def _load_units(view_name, scene):
             _invalidate_grid_cache()
             _push_overlay("main")
             _push_overlay("child")
+        _refresh_tool_options()
+
+
+def _refresh_tool_options():
+    try:
+        _animean().ui.refresh_tool_options()
+    except Exception:
+        pass
 
 
 def _unit_for_layer(scene, layer_index):
@@ -761,6 +795,8 @@ def _activate_unit(uid):
         _animean().ui.refresh()
     except Exception:
         pass
+    # The grid block shows the active unit's settings.
+    _refresh_tool_options()
 
 
 def _layer_focus_event(message):
@@ -5097,7 +5133,8 @@ def _child_frame():
 
 
 def _frame_point(frame, u_hat, v_hat):
-    """Child-space point at normalised grid coords (u_hat, v_hat in [-1, 1])."""
+    """Child-space point at normalised grid coords: [-1, 1] is the axes, past
+    that the guides run on along their end tangents (see _Curve.point_at)."""
     du = u_hat * (frame.h_side[1] if u_hat >= 0.0 else frame.h_side[0])
     dv = v_hat * (frame.v_side[1] if v_hat >= 0.0 else frame.v_side[0])
     return frame.hv(du, dv)
@@ -5151,9 +5188,12 @@ def _grid_overlay_items(view_name):
 
     items = []
     divisions = max(2, _grid_divisions())
-    levels = [i / (divisions - 1) * 2.0 - 1.0 for i in range(divisions)]
+    extend = _grid_extend() * (divisions - 1) // 4   # whole cells each way
+    levels = [(i - extend) / (divisions - 1) * 2.0 - 1.0
+              for i in range(divisions + 2 * extend)]
     count = 6 * (divisions - 1) + 1   # divisions=5 -> 25, the historical density
-    samples = [i / (count - 1) * 2.0 - 1.0 for i in range(count)]
+    samples = [(i - 6 * extend) / (count - 1) * 2.0 - 1.0
+               for i in range(count + 12 * extend)]
 
     # The MAIN board's grid shows the RENDERING mapping when it exists: the
     # child frame's lattice pushed through the full mapper, additional-line
@@ -9892,56 +9932,29 @@ def _tool_option_changed(cell, stroke, message):
         print(f"[auto_mapping] back/lining shade -> {_FOLD['back_color'][:3]}")
         _maybe_auto_run()
         return
-    # The refer grid used to be a tool option here. It moved to a per-board
-    # View menu: it is a display choice about a BOARD, not a setting of the
-    # mapping tool, and as one shared option it could not be answered
-    # separately for the two views.
 
 
 VIEW_MENU_NAME = "view"
-REFER_RECT_ITEM = "refer_rect"
 
 
-def _view_menu_items(view_name):
-    """The View menu of one board, re-read on every open so ticks are true.
+def _view_menu_items():
+    """The texture board's View menu, re-read on every open so ticks are true.
 
-    In unit mode these entries EDIT THE ACTIVE UNIT's display settings (the
-    same state the Advanced Settings window shows) - leaving them wired to
-    the legacy globals would have made them dead controls that still looked
-    alive. With no unit focused they are disabled rather than hidden, so
-    the menu shape stays stable."""
-    def build():
-        unit_mode = bool(_UNIT_META)
-        settings = _unit_settings() if _ACTIVE_UNIT["id"] else None
-        enabled = (not unit_mode) or settings is not None
-        grid_on = (settings["show_grid"] if settings is not None
-                   else _REFER_RECT.get(view_name, False))
-        divisions = (settings["grid_divisions"] if settings is not None
-                     else _GRID["divisions"])
-        occlusion_on = (settings["show_occlusion"] if settings is not None
-                        else _OCCLUSION["enabled"])
-        items = [{"name": REFER_RECT_ITEM, "title": "Mapping Refer Rect",
-                  "kind": "check", "checked": grid_on, "enabled": enabled}]
-        # Grid density lives with the grid it densifies. One shared value
-        # for both boards: the point of the fine setting is COMPARING the
-        # two boards' grids cell by cell, which needs them to agree.
-        items.append({
-            "name": "refer_rect_divisions", "title": "Refer Rect Divisions",
-            "kind": "submenu",
-            "items": [{"name": f"grid_div_{n}", "title": f"{n} x {n}",
-                       "kind": "radio", "enabled": enabled,
-                       "checked": divisions == n}
-                      for n in GRID_DIVISION_CHOICES]})
-        if view_name == "child":
-            items.append({"name": OCCLUSION_BUTTON, "title": "Occluded Areas",
-                          "kind": "check", "checked": occlusion_on,
-                          "enabled": enabled})
-        return items
-    return build
+    In unit mode the entry EDITS THE ACTIVE UNIT's display settings (the
+    same state the Advanced Settings window shows) - leaving it wired to
+    the legacy globals would have made it a dead control that still looked
+    alive. With no unit focused it is disabled rather than hidden, so the
+    menu shape stays stable."""
+    settings = _unit_settings() if _ACTIVE_UNIT["id"] else None
+    enabled = (not _UNIT_META) or settings is not None
+    occlusion_on = (settings["show_occlusion"] if settings is not None
+                    else _OCCLUSION["enabled"])
+    return [{"name": OCCLUSION_BUTTON, "title": "Occluded Areas",
+             "kind": "check", "checked": occlusion_on, "enabled": enabled}]
 
 
 def _unit_view_setting(name, value):
-    """Route a View-menu toggle onto the active unit's settings."""
+    """Route a display toggle onto the active unit's settings."""
     uid = _ACTIVE_UNIT["id"]
     meta = _UNIT_META.get(uid)
     if not meta:
@@ -9963,44 +9976,8 @@ def _unit_view_setting(name, value):
 def _view_menu_action(message):
     if message.get("menu") != VIEW_MENU_NAME:
         return
-    view = message.get("view") or "main"
     name = message.get("name") or ""
     checked = bool(message.get("checked"))
-    if name == REFER_RECT_ITEM:
-        if _UNIT_META:
-            if _unit_view_setting("show_grid", checked):
-                print(f"[auto_mapping] unit refer rect grid "
-                      f"{'ON' if checked else 'OFF'}")
-            return
-        if _REFER_RECT.get(view) == checked:
-            return
-        _REFER_RECT[view] = checked
-        _invalidate_grid_cache()
-        _push_overlay(view)
-        print(f"[auto_mapping] refer rect grid on {view} "
-              f"{'ON' if checked else 'OFF'}")
-        return
-    if name.startswith("grid_div_"):
-        try:
-            divisions = int(name[len("grid_div_"):])
-        except ValueError:
-            return
-        if divisions not in GRID_DIVISION_CHOICES:
-            return
-        if _UNIT_META:
-            if _unit_view_setting("grid_divisions", divisions):
-                print(f"[auto_mapping] unit grid -> {divisions} x {divisions}")
-            return
-        if _GRID["divisions"] == divisions:
-            return
-        _GRID["divisions"] = divisions
-        _invalidate_grid_cache()
-        for board in ("child", "main"):
-            if _REFER_RECT.get(board):
-                _push_overlay(board)
-        print(f"[auto_mapping] refer rect grid -> {divisions} x {divisions} "
-              "iso-lines")
-        return
     if name == OCCLUSION_BUTTON:
         if _UNIT_META:
             if _unit_view_setting("show_occlusion", checked):
@@ -10008,6 +9985,46 @@ def _view_menu_action(message):
                       f"{'ON' if checked else 'OFF'}")
             return
         _set_occlusion(checked)
+
+
+def _refer_rect_option(message):
+    """The Refer Rect block of every Mapping tool's Tool Options panel. One
+    tick and one density for both boards: the point of the grid is comparing
+    the two boards cell by cell, which needs them to agree."""
+    hook = message.get("hook")
+    if hook == "refer_rect":
+        checked = str(message.get("value", "")).lower() == "on"
+        if _UNIT_META:
+            if _unit_view_setting("show_grid", checked):
+                print(f"[auto_mapping] unit refer rect grid "
+                      f"{'ON' if checked else 'OFF'}")
+            return
+        _REFER_RECT.update(child=checked, main=checked)
+    elif hook in ("refer_rect_divisions", "refer_rect_extend"):
+        try:
+            value = int(message.get("value"))
+        except (TypeError, ValueError):
+            return
+        if hook == "refer_rect_divisions":
+            if value not in GRID_DIVISION_CHOICES:
+                return
+            setting, key = "grid_divisions", "divisions"
+        else:
+            value = max(0, min(GRID_EXTEND_MAX, value))
+            setting, key = "grid_extend", "extend"
+        if _UNIT_META:
+            if _unit_view_setting(setting, value):
+                print(f"[auto_mapping] unit {setting} -> {value}")
+            return
+        if _GRID[key] == value:
+            return
+        _GRID[key] = value
+    else:
+        return
+    _invalidate_grid_cache()
+    _push_overlay("main")
+    _push_overlay("child")
+    print(f"[auto_mapping] refer rect grid -> {hook} {message.get('value')}")
 
 
 def _set_occlusion(enabled):
@@ -10907,12 +10924,17 @@ def _unit_settings_layout():
          "value": str(s.get("grid_divisions", 5)),
          "row": 6, "start_column": 0, "end_column": 1,
          "visible_when": {"name": "show_grid", "values": ["on"]}},
-        check("show_occlusion", "Occluded Areas (texture board)", 7),
-        check("front_visible", "Front / Front Lines", 8),
-        check("back_visible", "Back / Back Lines", 9),
-        check("seal_visible", "Crease Lines", 10),
-        check("auto_render", "Live Re-render", 11),
-        check("show_horizon", "Horizon Line", 12),
+        {"name": "grid_extend", "hook": "unit_setting", "type": "slider",
+         "title": "Grid Extend (x50%)", "min": 0, "max": GRID_EXTEND_MAX,
+         "value": int(s.get("grid_extend", 0)),
+         "row": 7, "start_column": 0, "end_column": 1,
+         "visible_when": {"name": "show_grid", "values": ["on"]}},
+        check("show_occlusion", "Occluded Areas (texture board)", 8),
+        check("front_visible", "Front / Front Lines", 9),
+        check("back_visible", "Back / Back Lines", 10),
+        check("seal_visible", "Crease Lines", 11),
+        check("auto_render", "Live Re-render", 12),
+        check("show_horizon", "Horizon Line", 13),
     ]
     return {"controls": controls}
 
@@ -10936,6 +10958,11 @@ def _unit_setting_changed(cell, stroke, message):
         if value not in GRID_DIVISION_CHOICES:
             return
         settings[name] = value
+    elif name == "grid_extend":
+        try:
+            settings[name] = max(0, min(GRID_EXTEND_MAX, int(raw)))
+        except (TypeError, ValueError):
+            return
     elif name in _UNIT_SETTING_DEFAULTS:
         settings[name] = str(raw).lower() in ("on", "true", "1")
     else:
@@ -10947,6 +10974,7 @@ def _unit_setting_changed(cell, stroke, message):
         _invalidate_grid_cache()
         _push_overlay("main")
         _push_overlay("child")
+        _refresh_tool_options()
     try:
         animean = _animean()
         animean.ui.refresh()
@@ -13532,19 +13560,17 @@ addEventListener('resize', () => {
 """
 
 
-# A View menu on each board. Both are named "view" and differ by HOST, which
-# is the point: "show the refer grid" is a question about one board, and the
-# answer for the texture is not the answer for the main view. Registered at
-# import time because the menus exist from startup, before any tool has been
-# armed (register_hooks() only runs on tool activation).
-for _host in ("main", "child"):
-    python_hooks.register_menu({
-        "name": VIEW_MENU_NAME,
-        "title": "View",
-        "host": _host,
-        "items": _view_menu_items(_host),   # callable: re-read on every open
-    })
+# The texture board's View menu. Registered at import time because the menus
+# exist from startup, before any tool has been armed (register_hooks() only
+# runs on tool activation); same for the Tool Options grid block.
+python_hooks.register_menu({
+    "name": VIEW_MENU_NAME,
+    "title": "View",
+    "host": "child",
+    "items": _view_menu_items,   # callable: re-read on every open
+})
 python_hooks.set_hook(_view_menu_action, menu=True)
+python_hooks.set_hook(_refer_rect_option, option=True)
 # The texture board can be locked against accidental edits; these are the
 # tools that still work while it is.
 python_hooks.register_protected_properties("child", [H_PROPERTY, V_PROPERTY,
