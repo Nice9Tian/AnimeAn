@@ -42,4 +42,28 @@ inline QString Bridge<QString>::fromCore(const String &c)
 
 } // namespace AnimeCore
 
+namespace AnimeCore {
+
+inline bool operator==(const String &a, const QString &b) noexcept
+{
+    return a == Bridge<QString>::toCore(b);
+}
+
+inline bool operator==(const QString &a, const String &b) noexcept
+{
+    return Bridge<QString>::toCore(a) == b;
+}
+
+inline bool operator!=(const String &a, const QString &b) noexcept
+{
+    return !(a == b);
+}
+
+inline bool operator!=(const QString &a, const String &b) noexcept
+{
+    return !(a == b);
+}
+
+} // namespace AnimeCore
+
 #endif // ANIMECORE_QTBRIDGE_QSTRING_H

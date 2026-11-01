@@ -444,7 +444,75 @@ bool testContainerApiAndImplicitSharing()
     obj.insert(ANIME_STR("a"), ANIME_STR("hello"));
     obj[ANIME_STR("m")] = true;
 
-    std::vector<String> keys = obj.keys();
+    AnimeCore::StringList keys = obj.keys();
+    std::vector<String> keysVec = obj.keys();
+    if (keys.size() != 3 || keysVec.size() != 3 || keys.join(ANIME_STR(",")) != ANIME_STR("a,m,z")) {
+        std::cerr << "FAIL: JsonObject::keys() as StringList\n";
+        return false;
+    }
+
+    // JsonValue(std::string), JsonValue::toVariant(), Bridge<QVariant>, JsonDocument::fromJson(QByteArray)
+    {
+        std::string utf8Str = "测试_utf8";
+        JsonValue jvStr(utf8Str);
+        QJsonValue qjvStr(QString::fromStdString(utf8Str));
+        if (jvStr.toString().toStdString() != qjvStr.toString().toStdString()) {
+            std::cerr << "FAIL: JsonValue(std::string) mismatch\n";
+            return false;
+        }
+
+        const JsonValue cVals[] = {
+            JsonValue(),
+            JsonValue(true),
+            JsonValue(false),
+            JsonValue(42),
+            JsonValue(-1234567890123LL),
+            JsonValue(3.25),
+            JsonValue(ANIME_STR("hello")),
+        };
+        const QJsonValue qVals[] = {
+            QJsonValue(),
+            QJsonValue(true),
+            QJsonValue(false),
+            QJsonValue(42),
+            QJsonValue(-1234567890123LL),
+            QJsonValue(3.25),
+            QJsonValue(QStringLiteral("hello")),
+        };
+        for (std::size_t idx = 0; idx < sizeof(cVals) / sizeof(cVals[0]); ++idx) {
+            AnimeCore::JsonVariant cv = cVals[idx].toVariant();
+            QVariant qv = qVals[idx].toVariant();
+            QVariant bridgedQv = cv;
+            if (cv.isNull() != qv.isNull()
+                || cv.toBool() != qv.toBool()
+                || cv.toInt() != qv.toInt()
+                || cv.toLongLong() != qv.toLongLong()
+                || cv.toDouble() != qv.toDouble()
+                || cv.toString().toStdString() != qv.toString().toStdString()
+                || bridgedQv.toString() != qv.toString()) {
+                std::cerr << "FAIL: JsonValue::toVariant() mismatch at index " << idx
+                          << " null=(" << cv.isNull() << "," << qv.isNull() << ")"
+                          << " bool=(" << cv.toBool() << "," << qv.toBool() << ")"
+                          << " int=(" << cv.toInt() << "," << qv.toInt() << ")"
+                          << " ll=(" << cv.toLongLong() << "," << qv.toLongLong() << ")"
+                          << " dbl=(" << cv.toDouble() << "," << qv.toDouble() << ")"
+                          << " str=(" << cv.toString().toStdString() << "," << qv.toString().toStdString() << ")\n";
+                return false;
+            }
+        }
+
+        QByteArray rawJson("{\"k\":123}");
+        JsonParseError cErr;
+        QJsonParseError qErr;
+        JsonDocument cFromQba = JsonDocument::fromJson(rawJson, &cErr);
+        QJsonDocument qFromQba = QJsonDocument::fromJson(rawJson, &qErr);
+        if ((cErr.error == JsonParseError::NoError) != (qErr.error == QJsonParseError::NoError)
+            || !compareBytes(cFromQba.toJson(JsonDocument::Compact),
+                             qFromQba.toJson(QJsonDocument::Compact),
+                             "fromJson(QByteArray)")) {
+            return false;
+        }
+    }
     if (keys.size() != 3 || keys[0] != ANIME_STR("a") || keys[1] != ANIME_STR("m") || keys[2] != ANIME_STR("z")) {
         std::cerr << "FAIL: JsonObject key sorting\n";
         return false;

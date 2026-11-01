@@ -226,6 +226,34 @@ public:
         return static_cast<float>(m_a) / 65535.0f;
     }
 
+    constexpr float lightnessF() const noexcept
+    {
+        if (!m_valid)
+            return 0.0f;
+        const std::uint32_t maxC = std::max({static_cast<std::uint32_t>(m_r),
+                                             static_cast<std::uint32_t>(m_g),
+                                             static_cast<std::uint32_t>(m_b)});
+        const std::uint32_t minC = std::min({static_cast<std::uint32_t>(m_r),
+                                             static_cast<std::uint32_t>(m_g),
+                                             static_cast<std::uint32_t>(m_b)});
+        const std::uint32_t l16 = (maxC + minC + 1u) >> 1;
+        return static_cast<float>(l16) / 65535.0f;
+    }
+
+    constexpr int lightness() const noexcept
+    {
+        if (!m_valid)
+            return 0;
+        const std::uint32_t maxC = std::max({static_cast<std::uint32_t>(m_r),
+                                             static_cast<std::uint32_t>(m_g),
+                                             static_cast<std::uint32_t>(m_b)});
+        const std::uint32_t minC = std::min({static_cast<std::uint32_t>(m_r),
+                                             static_cast<std::uint32_t>(m_g),
+                                             static_cast<std::uint32_t>(m_b)});
+        const std::uint32_t l16 = (maxC + minC + 1u) >> 1;
+        return static_cast<int>((l16 + 128u) / 257u);
+    }
+
     void setRedF(float red) noexcept
     {
         if (red < 0.0f || red > 1.0f) {
