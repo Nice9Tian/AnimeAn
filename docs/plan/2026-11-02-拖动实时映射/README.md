@@ -73,7 +73,7 @@ issue 里的 160ms 对应 C 装置的求解加叠加层。
 ```
 
 - `F` 打开一段场作用域，`f` 关闭。作用域里是普通指令（`P`、`B`、`S` 等），坐标在**源画板**空间。
-- `passes` 是 `[[tagLo, tagHi, opacity], ...]`，从后往前画。每一遍把作用域里的全部指令画一次。
+- `passes` 是 `[[tagLo, tagHi, opacity, r, g, b, a], ...]`，从后往前画。每一遍把作用域里的全部指令画一次。`r, g, b, a` 是 0 到 255 的换色，`a` 为 0 时不换色，否则按 `a / 255` 把片元颜色混向它，用于背面的衬里色。
 - 顶点位置 = `p + D(p)`，`D` 由 `(dx, dy)` 在节点上双线性插值。片元用未变形的 `p` 取最近节点的 `tag`，不在 `[tagLo, tagHi]` 里或 `p` 在 `rect` 外就丢弃。
 - `maxEdge` 是画布单位：几何的边长不许超过它，长边先细分，否则两个顶点之间不跟场走。填充的覆盖四边形要盖满视口。
 - `key` 没到网页、或版本对不上时整段不画。Canvas 2D 渲染器跳过整段作用域。
@@ -94,8 +94,9 @@ ui.call_later(ms, callable)              # 一次性定时，回主线程调
 {"field": key, "rect": (x, y, w, h), "max_edge": 8.0,
  "source_view": "child", "columns": [列下标...], "frame": 帧号,
  "width_scale": 1.0,
- "passes": [{"tag": (lo, hi), "opacity": 1.0}, ...],
- "hide_columns": [目标画板的列下标...]}
+ "passes": [{"tag": (lo, hi), "opacity": 1.0, "tint": (r, g, b, a)}, ...],
+ "hide_columns": [目标画板的列下标...],
+ "skip_properties": [源画板上不画的笔画属性...]}
 ```
 
 - C++ 在 `paintSceneContent` 之后、覆盖层之前发 `F`，用源画板的模型画那些列的填充和笔画（不含引导线属性的笔画由调用方挑列决定），线宽乘 `width_scale`，再发 `f`。
