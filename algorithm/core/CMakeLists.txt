@@ -32,6 +32,8 @@ add_library(animean_corelib STATIC
     pathbool.h
     pathops.cpp
     pathops.h
+    rasterdevice.cpp
+    rasterdevice.h
     settings.cpp
     settings.h
     string.cpp
@@ -77,7 +79,7 @@ target_link_libraries(animean_core PUBLIC animean_corelib)
 # since it has no Qt on its include path, a stray include fails the build.
 if(BUILD_TESTING)
     find_package(Qt6 REQUIRED COMPONENTS Core Gui)
-    foreach(ANIMEAN_CORE_TEST geometry containers string json path pathops image file settings)
+    foreach(ANIMEAN_CORE_TEST geometry containers string json path pathops image file settings raster)
         set(ANIMEAN_CORE_TEST_SOURCE ${ANIMEAN_CORE_ROOT}/tests/core/${ANIMEAN_CORE_TEST}_tests.cpp)
         if(EXISTS ${ANIMEAN_CORE_TEST_SOURCE})
             add_executable(core_${ANIMEAN_CORE_TEST}_tests ${ANIMEAN_CORE_TEST_SOURCE})

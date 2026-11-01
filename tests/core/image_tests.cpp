@@ -786,8 +786,38 @@ void testScaledDifferential()
 
 } // namespace
 
-int main()
+void testPremultipliedConversions()
 {
+    // Every channel value at every alpha, through real QImage and the core type.
+    QImage premul(256, 256, QImage::Format_ARGB32_Premultiplied);
+    QImage straight(256, 256, QImage::Format_ARGB32);
+    for (int a = 0; a < 256; ++a) {
+        for (int c = 0; c < 256; ++c) {
+            reinterpret_cast<QRgb *>(premul.scanLine(a))[c] = qRgba(std::min(c, a), std::min(c, a) / 2, 0, a);
+            reinterpret_cast<QRgb *>(straight.scanLine(a))[c] = qRgba(c, 255 - c, c / 2, a);
+        }
+    }
+    const AnimeCore::Image corePremul = AnimeCore::Image(premul.constBits(), 256, 256, premul.bytesPerLine(),
+                                                         AnimeCore::Image::Format_ARGB32_Premultiplied);
+    const AnimeCore::Image coreStraight = AnimeCore::Image(straight.constBits(), 256, 256, straight.bytesPerLine(),
+                                                           AnimeCore::Image::Format_ARGB32);
+    const QImage qtToRgba = premul.convertToFormat(QImage::Format_RGBA8888);
+    const AnimeCore::Image coreToRgba = corePremul.convertToFormat(AnimeCore::Image::Format_RGBA8888);
+    const QImage qtToPremul = straight.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    const AnimeCore::Image coreToPremul = coreStraight.convertToFormat(AnimeCore::Image::Format_ARGB32_Premultiplied);
+    for (int y = 0; y < 256; ++y) {
+        // One level of rounding apart at most: Qt's fixed-point inverse is not exact.
+        for (int i = 0; i < 256 * 4; ++i) {
+            check(std::abs(qtToRgba.constScanLine(y)[i] - coreToRgba.constScanLine(y)[i]) <= 1, "premultiplied to RGBA8888");
+        }
+        check(std::memcmp(qtToPremul.constScanLine(y), coreToPremul.constScanLine(y), 256 * 4) == 0, "ARGB32 to premultiplied");
+        for (int x = 0; x < 256; ++x) {
+            check(premul.pixel(x, y) == corePremul.pixel(x, y), "pixel of a premultiplied image");
+        }
+    }
+}
+
+int main(){
     testNullAndZeroSizedImages();
     testBasicOperationsAndGrayscale();
     testImplicitSharingAndCacheKey();
@@ -796,5 +826,6 @@ int main()
     testBase64Differential();
     testQtBridge();
     testScaledDifferential();
+    testPremultipliedConversions();
     return failures == 0 ? 0 : 1;
 }

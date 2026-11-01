@@ -61,6 +61,42 @@ bool hasPngSignature(const unsigned char *data, std::size_t size)
 
 } // namespace
 
+namespace {
+
+// The page and PNG want straight alpha while the raster device paints premultiplied.
+// Exact division, half rounding down; Qt's fixed-point inverse can land one level off.
+unsigned int unpremultiply(unsigned int argb)
+{
+    const unsigned int alpha = argb >> 24;
+    if (alpha == 255u) {
+        return argb;
+    }
+    if (alpha == 0u) {
+        return 0u;
+    }
+    const auto scale = [alpha](unsigned int channel) {
+        return std::min(255u, (channel * 510u + alpha - 1u) / (2u * alpha));
+    };
+    return (alpha << 24) | (scale((argb >> 16) & 0xffu) << 16) | (scale((argb >> 8) & 0xffu) << 8)
+           | scale(argb & 0xffu);
+}
+
+unsigned int premultiply(unsigned int argb)
+{
+    const unsigned int alpha = argb >> 24;
+    if (alpha == 255u) {
+        return argb;
+    }
+    const auto scale = [alpha](unsigned int channel) {
+        const unsigned int t = channel * alpha;
+        return (t + (t >> 8) + 0x80u) >> 8;
+    };
+    return (alpha << 24) | (scale((argb >> 16) & 0xffu) << 16) | (scale((argb >> 8) & 0xffu) << 8)
+           | scale(argb & 0xffu);
+}
+
+} // namespace
+
 struct Image::Data {
     std::vector<unsigned char> pixels;
     int width = 0;
@@ -364,12 +400,13 @@ Image Image::convertToFormat(Format targetFormat) const
     }
     for (int y = 0; y < m_data->height; ++y) {
         for (int x = 0; x < m_data->width; ++x) {
-            const unsigned int c = pixel(x, y);
+            // pixel() hands back premultiplied values untouched, as QImage's does.
+            const unsigned int c = m_data->format == Format_ARGB32_Premultiplied ? unpremultiply(pixel(x, y)) : pixel(x, y);
             if (targetFormat == Format_Grayscale8) {
                 out.m_data->pixels[static_cast<std::size_t>(y) * static_cast<std::size_t>(out.m_data->bytesPerLine)
                                    + static_cast<std::size_t>(x)] = static_cast<unsigned char>(qGray(c));
             } else {
-                out.setPixel(x, y, c);
+                out.setPixel(x, y, targetFormat == Format_ARGB32_Premultiplied ? premultiply(c) : c);
             }
         }
     }
