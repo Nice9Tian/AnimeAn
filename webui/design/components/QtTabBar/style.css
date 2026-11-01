@@ -1,0 +1,5 @@
+.qt-tabs { display: flex; width: 100%; height: 23px; background: var(--window, #f5f5f6); }
+.qt-tab { flex: 0 1 auto; min-width: 0; margin-right: 2px; height: 23px; box-sizing: border-box; background: var(--chip-rest, #fbfbfc); color: var(--chip-rest-fg, #4a4c51);
+  border: 1px solid var(--divider, #bcbdc0); border-bottom: 0; text-align: center; font: 12px/23px "Segoe UI", sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qt-tab:hover { background: var(--chip-hover, #ffffff); color: var(--chip-hover-fg, #1d1f20); }
+.qt-tab.sel { background: var(--accent, #3d8ec9); color: var(--on-accent, #ffffff); border-color: var(--accent, #3d8ec9); }

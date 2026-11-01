@@ -11,6 +11,7 @@
 - 一个主画板（中央区 Drawing 页）和一块纹理板；纹理板是无限画布，可在中央 Texture 页、子控件框、停车位三处之间搬迁，任一时刻只在一处。现有。机制（三级）：`mechanism/windows_theme.md`。
 - 视口滚轮缩放、中键平移、滚动条联动，两块板都有。现有。机制（三级）：`mechanism/modules.md`。
 - 面板都是带页签的父窗，Windows 菜单开关；浮动的无边框窗口可拉四边改大小。现有。机制（三级）：`mechanism/windows_theme.md`。
+- Tools 面板拖宽拖窄时，Painting 页的工具按钮大小不变，按整列增减：一列、两列、三列……N 列；停靠时面板宽度吸附到整列，不留半列空白。现有。机制（三级）：`mechanism/windows_theme.md`。
 - 深 / 浅主题，下次启动沿用；画纸恒白。现有。
 - 画板渲染器在 Settings ▸ Board Renderer 里切换 WebGL 或 Canvas 2D，切换时画面不丢，下次启动沿用；缺省 WebGL，显卡不支持时用 Canvas 2D。现有。机制（三级）：`mechanism/backend_protocol.md`。
 - 启动时和 File ▸ Canvas Size… 都能设画布尺寸；取消保留原尺寸。现有。

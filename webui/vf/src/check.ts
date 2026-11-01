@@ -558,6 +558,12 @@ export function check(project: Project): Problem[] {
         error(`节点 ${id}：layout.kind 应为 ${validLayouts.join("、")} 之一，现在是“${node.layout.kind}”`, id);
       }
     }
+    if (node.widthStep !== undefined && !(node.type === "Dock" && node.widthStep > 0)) {
+      error(`节点 ${id}：widthStep 只能写在 Dock 上，而且要大于 0`, id);
+    }
+    if (node.widthBase !== undefined && (node.widthStep === undefined || !(node.widthBase >= 0))) {
+      error(`节点 ${id}：widthBase 要和 widthStep 一起写，而且不能小于 0`, id);
+    }
     if (node.dockArea && !["left", "right", "top", "bottom"].includes(node.dockArea)) {
       error(`停靠面板 ${id}：dockArea 应为 left、right、top、bottom 之一，现在是“${node.dockArea}”`, id);
     }

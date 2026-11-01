@@ -1,5 +1,145 @@
 version: 1
-state: {}
+state:
+  tools:
+    page: { type: number, initial: 0 }
+    armed: { type: string, initial: pen, owner: business }
+    locked:
+      arrow: { type: boolean, initial: false, owner: business }
+      pen: { type: boolean, initial: false, owner: business }
+      eraser: { type: boolean, initial: false, owner: business }
+      fill: { type: boolean, initial: false, owner: business }
+      transfer: { type: boolean, initial: false, owner: business }
+      connect: { type: boolean, initial: false, owner: business }
+      h_center_line: { type: boolean, initial: false, owner: business }
+      v_center_line: { type: boolean, initial: false, owner: business }
+      mapping_area: { type: boolean, initial: false, owner: business }
+      additional_line: { type: boolean, initial: false, owner: business }
+      auto_mapping_2: { type: boolean, initial: false, owner: business }
 conditions: {}
-events: {}
-objects: {}
+events:
+  toolSelect:
+    owner: business
+    text: 用户点了 Painting 页的工具
+    simulate:
+      - set: tools.armed = param.tool
+  toolSelectExtra:
+    owner: business
+    text: 用户点了 Python 注册的工具
+    simulate:
+      - set: tools.armed = param.name
+objects:
+  toolsTabs:
+    bind: tools.page
+  toolsPages:
+    props:
+      currentPage: "tools.page == 0 ? 'paintingPage' : 'mappingPage'"
+  toolArrow:
+    props:
+      armed: tools.armed == 'arrow' and not tools.locked.arrow
+      enabled: not tools.locked.arrow
+    events:
+      click:
+        - emit:
+            name: toolSelect
+            args:
+              tool: "'arrow'"
+  toolPen:
+    props:
+      armed: tools.armed == 'pen' and not tools.locked.pen
+      enabled: not tools.locked.pen
+    events:
+      click:
+        - emit:
+            name: toolSelect
+            args:
+              tool: "'pen'"
+  toolEraser:
+    props:
+      armed: tools.armed == 'eraser' and not tools.locked.eraser
+      enabled: not tools.locked.eraser
+    events:
+      click:
+        - emit:
+            name: toolSelect
+            args:
+              tool: "'eraser'"
+  toolFill:
+    props:
+      armed: tools.armed == 'fill' and not tools.locked.fill
+      enabled: not tools.locked.fill
+    events:
+      click:
+        - emit:
+            name: toolSelect
+            args:
+              tool: "'fill'"
+  toolTransfer:
+    props:
+      armed: tools.armed == 'transfer' and not tools.locked.transfer
+      enabled: not tools.locked.transfer
+    events:
+      click:
+        - emit:
+            name: toolSelect
+            args:
+              tool: "'transfer'"
+  toolConnect:
+    props:
+      armed: tools.armed == 'connect' and not tools.locked.connect
+      enabled: not tools.locked.connect
+    events:
+      click:
+        - emit:
+            name: toolSelect
+            args:
+              tool: "'connect'"
+  toolHCenterLine:
+    props:
+      checked: tools.armed == 'h_center_line'
+      enabled: not tools.locked.h_center_line
+    events:
+      click:
+        - emit:
+            name: toolSelectExtra
+            args:
+              name: "'h_center_line'"
+  toolVCenterLine:
+    props:
+      checked: tools.armed == 'v_center_line'
+      enabled: not tools.locked.v_center_line
+    events:
+      click:
+        - emit:
+            name: toolSelectExtra
+            args:
+              name: "'v_center_line'"
+  toolMappingArea:
+    props:
+      checked: tools.armed == 'mapping_area'
+      enabled: not tools.locked.mapping_area
+    events:
+      click:
+        - emit:
+            name: toolSelectExtra
+            args:
+              name: "'mapping_area'"
+  toolAdditionalLine:
+    props:
+      checked: tools.armed == 'additional_line'
+      enabled: not tools.locked.additional_line
+    events:
+      click:
+        - emit:
+            name: toolSelectExtra
+            args:
+              name: "'additional_line'"
+  toolAutoMapping:
+    props:
+      checked: tools.armed == 'auto_mapping_2'
+      enabled: not tools.locked.auto_mapping_2
+    events:
+      click:
+        - emit:
+            name: toolSelectExtra
+            args:
+              name: "'auto_mapping_2'"

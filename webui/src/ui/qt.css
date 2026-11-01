@@ -32,12 +32,6 @@ html, body { margin: 0; padding: 0; background: var(--window); overflow: hidden;
 .tab:hover { background: var(--chip-hover); color: var(--chip-hover-fg); }
 .tab.sel { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 
-.rail { background: var(--surface-alt); border: 1px solid var(--divider); border-radius: 10px; }
-.chip { position: absolute; width: 44px; height: 44px; border-radius: 8px; background: var(--chip-rest); color: var(--chip-rest-fg); }
-.chip svg { position: absolute; left: 10px; top: 10px; width: 24px; height: 24px; overflow: visible; }
-.chip:hover { background: var(--chip-hover); color: var(--chip-hover-fg); }
-.chip.on { background: var(--accent); color: var(--on-accent); }
-
 .palette { background: var(--surface); border: 1px solid var(--divider); }
 .pal-chip { position: absolute; box-sizing: border-box; border: 1px solid var(--divider); }
 .pal-hex { position: absolute; font: bold 13px/15px "Courier New", monospace; color: var(--text); white-space: nowrap; }
@@ -89,17 +83,6 @@ html, body { margin: 0; padding: 0; background: var(--window); overflow: hidden;
 }
 .tabbar-row { position: relative; height: 23px; display: flex; background: var(--window); flex: none; }
 .tabbar-row .tab { position: static; margin-right: 2px; flex: none; }
-.tools-page { position: relative; padding: 8px; }
-.tools-page .rail { position: relative; width: 110px; height: 160px; box-sizing: border-box; }
-.rail .chip { position: absolute; }
-.rail .chip:nth-child(1), .rail .chip:nth-child(3), .rail .chip:nth-child(5) { left: 7px; }
-.rail .chip:nth-child(2), .rail .chip:nth-child(4), .rail .chip:nth-child(6) { left: 57px; }
-.rail .chip:nth-child(1), .rail .chip:nth-child(2) { top: 7px; }
-.rail .chip:nth-child(3), .rail .chip:nth-child(4) { top: 57px; }
-.rail .chip:nth-child(5), .rail .chip:nth-child(6) { top: 107px; }
-.chip.locked { color: var(--text-dim); background: var(--chip-rest); }
-.tools-extra { display: flex; flex-direction: column; gap: 6px; }
-.tools-extra:not(:empty) { margin-top: 8px; }
 
 .qbutton { box-sizing: border-box; min-height: 24px; border: 1px solid var(--btn-border); border-radius: 2px; padding: 0 8px;
   background: linear-gradient(var(--btn-top), var(--btn-bottom)); color: var(--text); font: 12px "Segoe UI"; line-height: 22px; }

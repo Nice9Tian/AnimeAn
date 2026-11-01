@@ -1,0 +1,17 @@
+{
+  "type": "QtButton",
+  "label": "Qt 按钮",
+  "description": "和 Qt 版一样的按钮，checked 为真时高亮",
+  "defaultSize": {
+    "width": 128,
+    "height": 24
+  },
+  "entry": "index.js",
+  "style": "style.css",
+  "props": {
+    "label": { "type": "string", "default": "Button", "logic": true },
+    "checked": { "type": "boolean", "default": false, "logic": true },
+    "enabled": { "type": "boolean", "default": true, "logic": true }
+  },
+  "children": false
+}

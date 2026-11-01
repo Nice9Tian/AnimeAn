@@ -3,7 +3,7 @@
 import { BoardRenderer } from "../board/renderer.ts";
 import { GlBoardRenderer } from "../board/glrenderer.ts";
 import { attachBoardInput } from "../board/input.ts";
-import { createCentral, createLayers, createMenuBar, createTools, popupMenu } from "./panels.js";
+import { createCentral, createLayers, createMenuBar, popupMenu } from "./panels.js";
 import { createToolOptions } from "./options.js";
 import { createPalette, toHexArgb } from "./palette.js";
 import { createAssets, createForcePad, createHistory, createNewProjectDialog, createPythonDebug } from "./panels2.js";
@@ -55,14 +55,6 @@ export const DOCK_FOR_WINDOW = {
 export function panelFactories(store, client) {
   const { on, call } = store;
   return {
-    QtTools(el) {
-      const panel = createTools(el, {
-        onTool: (tool) => call("tool.select", { tool }),
-        onExtra: (name) => call("tool.selectExtra", { name }),
-      });
-      on("tools", (value) => panel.update(value));
-    },
-
     QtToolOptions(el) {
       el.classList.add("dock-page", "toolopt-gap");
       const tabs = document.createElement("div");
@@ -354,6 +346,36 @@ export function syncDocks(runtime, store) {
       runtime.dockSetVisible(dock, Boolean(value?.[name]?.visible));
     }
     runtime.dockSetVisible("timelineDock", Boolean(value?.timeline?.visible));
+  });
+}
+
+// Business events of the design logic and the backend calls they become.
+const BUSINESS_CALLS = { toolSelect: "tool.select", toolSelectExtra: "tool.selectExtra" };
+
+export function raiseBusiness(store, name, args) {
+  const method = BUSINESS_CALLS[name];
+  if (!method) return false;
+  store.call(method, args);
+  return true;
+}
+
+const ERASERS = new Set(["eraser", "delete_line", "cut_line"]);
+
+// Writes the backend's tool state into the state the Tools nodes read. The
+// lockable names are the design logic's, so a tool needs a node to show up.
+export function syncTools(runtime, store, lockable) {
+  const write = (path, value) => {
+    const error = runtime.setBusinessState(path, value);
+    if (error) fail(error);
+  };
+  store.on("tools", (state) => {
+    if (!state) return;
+    write("tools.armed", state.activeExtraTool || (ERASERS.has(state.current) ? "eraser" : state.current ?? ""));
+    const locked = new Set(state.lockedTools ?? []);
+    for (const name of lockable) write(`tools.locked.${name}`, locked.has(name));
+    for (const tool of state.extraTools ?? []) {
+      if (!lockable.includes(tool.name)) fail(`Tools 面板没有 ${tool.name} 的节点`);
+    }
   });
 }
 

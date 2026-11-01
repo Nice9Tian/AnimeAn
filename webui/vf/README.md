@@ -23,7 +23,7 @@
 
 ## 相对上游版本的改动说明
 
-其余文件均保持与上游 `00ff26b` 原样一致，仅对以下两处作了必要修改：
+其余文件均保持与上游 `00ff26b` 原样一致，仅对以下三处作了必要修改：
 
 1. **`webui/vf/src/runtime.ts`（增量刷新与依赖缓存）**
    - 在 `reset()` 中建立静态场景索引（`menuItemById`、`parentById`、`windowById`、`stackParentById`、`dependentNodesByNode`），避免每次 `computeView(id)` 全量遍历场景树与菜单项。
@@ -36,3 +36,6 @@
    - 移除对编辑器本地文件模块 `./fs` 的导入，改为由 `loadProject(io: ProjectIO, previous)` 接收调用方提供的 `ProjectIO`。
    - `importSource` 在无 `document` 环境（如 Node 测试）下回退使用 `data:text/javascript` URL 导入。
    - 导出 `importSource`、`applyComponentStylesToDoc`、`injectComponentStyles`。
+
+3. **`webui/vf/src/dock.ts`、`model.ts`、`check.ts`（停靠面板的 `widthStep`、`widthBase`）**
+   - 从 VibeFrontend 的提交 `6ebf46e`（分支 `work/editor-interaction`）同步：左右停靠区的宽度吸附到 `widthBase + n × widthStep`。这三个文件以那边为准。

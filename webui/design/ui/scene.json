@@ -12,19 +12,42 @@
       "title": "AnimeAn",
       "central": "central",
       "docks": [
+        "timelineDock",
+        "pythonDebugDock",
         "toolsDock",
         "toolOptionsDock",
         "layersDock",
         "assetsDock",
         "historyDock",
-        "forcePadDock",
-        "pythonDebugDock",
-        "timelineDock"
+        "forcePadDock"
       ],
       "dockLayout": {
         "areas": {
+          "top": {
+            "groups": []
+          },
+          "bottom": {
+            "size": 200,
+            "splitOrientation": "horizontal",
+            "groups": [
+              {
+                "tabs": [
+                  "timelineDock"
+                ],
+                "active": "timelineDock",
+                "size": 514
+              },
+              {
+                "tabs": [
+                  "pythonDebugDock"
+                ],
+                "active": "pythonDebugDock",
+                "size": 513
+              }
+            ]
+          },
           "left": {
-            "size": 144,
+            "size": 110,
             "groups": [
               {
                 "tabs": [
@@ -36,58 +59,42 @@
           },
           "right": {
             "size": 284,
+            "splitOrientation": "vertical",
             "groups": [
               {
                 "tabs": [
                   "toolOptionsDock"
                 ],
                 "active": "toolOptionsDock",
-                "size": 358
+                "size": 126
               },
               {
                 "tabs": [
                   "layersDock"
                 ],
                 "active": "layersDock",
-                "size": 374
+                "size": 132
               },
               {
                 "tabs": [
                   "assetsDock"
                 ],
                 "active": "assetsDock",
-                "size": 240
+                "size": 84
               },
               {
                 "tabs": [
                   "historyDock"
                 ],
                 "active": "historyDock",
-                "size": 240
+                "size": 84
               },
               {
                 "tabs": [
                   "forcePadDock"
                 ],
                 "active": "forcePadDock",
-                "size": 300
-              }
-            ]
-          },
-          "bottom": {
-            "size": 200,
-            "groups": [
-              {
-                "tabs": [
-                  "timelineDock"
-                ],
-                "active": "timelineDock"
-              },
-              {
-                "tabs": [
-                  "pythonDebugDock"
-                ],
-                "active": "pythonDebugDock"
+                "size": 106
               }
             ]
           }
@@ -109,9 +116,11 @@
     "toolsDock": {
       "type": "Dock",
       "dockArea": "left",
-      "width": 144,
+      "width": 110,
       "height": 732,
       "headerHeight": 18,
+      "widthStep": 50,
+      "widthBase": 10,
       "title": "Tools",
       "layout": {
         "kind": "vbox",
@@ -119,17 +128,9 @@
         "gap": 0
       },
       "children": [
-        "toolsPanel"
+        "toolsTabs",
+        "toolsPages"
       ]
-    },
-    "toolsPanel": {
-      "type": "QtTools",
-      "width": 144,
-      "height": 714,
-      "size": {
-        "horizontal": "expanding",
-        "vertical": "expanding"
-      }
     },
     "toolOptionsDock": {
       "type": "Dock",
@@ -313,6 +314,206 @@
       "size": {
         "horizontal": "expanding",
         "vertical": "expanding"
+      }
+    },
+    "toolsTabs": {
+      "type": "QtTabBar",
+      "width": 144,
+      "height": 23,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "fixed"
+      },
+      "props": {
+        "tabs": "Painting,Mapping",
+        "widths": "66,70"
+      }
+    },
+    "toolsPages": {
+      "type": "Stack",
+      "width": 144,
+      "height": 691,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "expanding"
+      },
+      "layout": {
+        "kind": "stack",
+        "padding": 0
+      },
+      "props": {
+        "currentPage": "paintingPage"
+      },
+      "children": [
+        "mappingPage",
+        "paintingPage"
+      ]
+    },
+    "paintingPage": {
+      "type": "Flow",
+      "width": 144,
+      "height": 691,
+      "children": [
+        "toolArrow",
+        "toolPen",
+        "toolEraser",
+        "toolFill",
+        "toolTransfer",
+        "toolConnect"
+      ],
+      "layout": {
+        "kind": "flow",
+        "padding": 8,
+        "gap": 6
+      }
+    },
+    "toolArrow": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "arrow"
+      }
+    },
+    "toolPen": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "pen"
+      }
+    },
+    "toolEraser": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "eraser"
+      }
+    },
+    "toolFill": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "fill"
+      }
+    },
+    "toolTransfer": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "transfer"
+      }
+    },
+    "toolConnect": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "connect"
+      }
+    },
+    "mappingPage": {
+      "type": "VBox",
+      "width": 144,
+      "height": 691,
+      "layout": {
+        "kind": "vbox",
+        "padding": 8,
+        "gap": 6
+      },
+      "children": [
+        "toolHCenterLine",
+        "toolVCenterLine",
+        "toolMappingArea",
+        "toolAdditionalLine",
+        "toolAutoMapping"
+      ]
+    },
+    "toolHCenterLine": {
+      "type": "QtButton",
+      "width": 128,
+      "height": 24,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "fixed"
+      },
+      "props": {
+        "label": "H Center Line"
+      }
+    },
+    "toolVCenterLine": {
+      "type": "QtButton",
+      "width": 128,
+      "height": 24,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "fixed"
+      },
+      "props": {
+        "label": "V Center Line"
+      }
+    },
+    "toolMappingArea": {
+      "type": "QtButton",
+      "width": 128,
+      "height": 24,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "fixed"
+      },
+      "props": {
+        "label": "Mapping Area"
+      }
+    },
+    "toolAdditionalLine": {
+      "type": "QtButton",
+      "width": 128,
+      "height": 24,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "fixed"
+      },
+      "props": {
+        "label": "Additional Line"
+      }
+    },
+    "toolAutoMapping": {
+      "type": "QtButton",
+      "width": 128,
+      "height": 24,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "fixed"
+      },
+      "props": {
+        "label": "Auto Mapping"
       }
     }
   }

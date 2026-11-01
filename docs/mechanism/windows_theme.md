@@ -10,6 +10,15 @@
 - 时间轴是停靠窗但不是父窗（没有页），`ui.windows` 不列它；它的播放条就是标题栏，停在底边是横条，停在左右是竖条加细标题。
 - 无边框浮动的顶层窗由 `WindowEdgeResize` 提供四边拉伸。
 
+## Tools 面板的列数（网页界面）
+
+- Painting 页 `paintingPage` 是 `Flow` 排版：内边距 8、间距 6，按钮 `QtToolChip` 固定 44×44。列数 = ⌊(面板宽 − 16 + 6) / 50⌋，夹在 1 到按钮总数之间，所以宽度跨过 110、160、210…… 才变一列。
+- 按钮不写坐标，新工具加进 `paintingPage` 的 `children` 就排进去。定义在 `webui/design/ui/scene.json`。
+- 停靠在左右区时，宽度取最近的整列宽：n 列是 50n + 10，即 110、160、210……，最大 860。一列是 60，但停靠区最小宽度 80，所以一列时停在 80。
+- 这条规则写在 `webui/design/ui/scene.json` 的 `toolsDock` 上：`widthStep` 是按钮宽加间距（44 + 6），`widthBase` 是两侧内边距减一个间距（16 − 6）。改按钮尺寸、间距或内边距时要一起改这两个值。
+- 吸附由 VibeFrontend 运行层的 `normalizeDockLayout`（`webui/vf/src/dock.ts`）完成，网页页面和 VibeFrontend 编辑器用同一份规则。拖分隔条、打开设计文件、把面板移到另一侧都会吸附。
+- 浮动、停在顶部底部、同一区沿宽度方向并排时不吸附，按钮照常换行。
+
 ## 纹理板的单一所有权
 
 - 纹理面板（菜单栏 + 选项行 + 画板容器）是一个可搬迁的部件，有三个家：中央 Texture 页、名为 `texture_view` 的子控件框（可嵌进 Options 或 Tools 面板，也可浮动）、停车位。任一时刻只在一处，`updateTextureHome` 是唯一路由。
