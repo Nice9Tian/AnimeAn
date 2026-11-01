@@ -372,4 +372,57 @@ assert len(ids) == 1 and kept not in ids
 print("16) a redraw pairs again")
 
 
+def counted_builds():
+    calls = []
+    original = am.build_mapper
+
+    def build_mapper(*args, **kwargs):
+        calls.append(args)
+        return original(*args, **kwargs)
+
+    am.build_mapper = build_mapper
+    return calls, lambda: setattr(am, "build_mapper", original)
+
+
+def guide_drag(phase, x, y):
+    am._guide_drag_event({"handle": am.V_PROPERTY, "phase": phase, "view": "main",
+                          "position": {"x": x, "y": y}})
+
+
+# 17) A drag moves the line and nothing else: with the refer grid on, no move
+#     rebuilds the mapping or the grid; the release does, once. Same for Deform
+#     and for an axis dragged whole.
+reset()
+texture()
+contours()
+am._refresh_proxy_axes()
+am.arm_line_tools(True)
+am._REFER_RECT.update(child=True, main=True)
+assert am._grid_overlay_items("main")
+frozen = am._grid_overlay_items("main")
+calls, restore = counted_builds()
+seam = am._assets_for("main")[am.PROXY_PROPERTY]["points"][0]
+handle(am.PROXY_PROPERTY, "press", seam[0], seam[1], am.DEFORM_PROPERTY)
+for step in (1, 2, 3):
+    handle(am.PROXY_PROPERTY, "move", seam[0] - 8.0 * step, seam[1], am.DEFORM_PROPERTY)
+    assert math.dist(am._assets_for("main")[am.PROXY_PROPERTY]["points"][0],
+                     (seam[0] - 8.0 * step, seam[1])) < 0.1
+assert not calls and am._grid_overlay_items("main") is frozen
+handle(am.PROXY_PROPERTY, "release", seam[0] - 24.0, seam[1], am.DEFORM_PROPERTY)
+assert len(calls) == 1 and am._grid_overlay_items("main") is not frozen
+
+frozen = am._grid_overlay_items("main")
+del calls[:]
+grab = am._assets_for("main")[am.V_PROPERTY]["points"][0]
+guide_drag("press", grab[0], grab[1])
+for step in (1, 2, 3):
+    guide_drag("move", grab[0] + 4.0 * step, grab[1])
+assert not calls and am._grid_overlay_items("main") is frozen
+guide_drag("release", grab[0] + 12.0, grab[1])
+restore()
+assert len(calls) == 1 and am._grid_overlay_items("main") is not frozen
+am._REFER_RECT.update(child=False, main=False)
+print("17) a drag rebuilds nothing until the release")
+
+
 print("ALL OK")

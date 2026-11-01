@@ -119,7 +119,8 @@ def _deform(message, overlay_id, view):
     moved = _pulled(drag["points"], drag["weights"], dx, dy)
     stations = drag["stations"] and _pulled(drag["stations"], drag["station_weights"], dx, dy)
     if phase == "move":
-        am.replace_line_points(view, overlay_id, moved, settled=False, stations=stations)
+        am.replace_line_points(view, overlay_id, moved, settled=False, stations=stations,
+                               live=True)
         return
     _DRAG.pop(view, None)
     if drag["moved"]:

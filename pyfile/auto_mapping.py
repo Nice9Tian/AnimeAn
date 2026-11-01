@@ -5434,8 +5434,10 @@ def _guide_drag_event(message):
         line.pop("third", None)
 
     if phase == "move":
+        # The line moves now; the mapping, and the refer grid and tint drawn
+        # from it, wait for the release. Rebuilding them here was a full solve
+        # per mouse move, and the moves queued up behind it.
         _push_overlay(view)
-        _invalidate_grid_cache()
         try:
             _animean().ui.refresh()
         except Exception:
@@ -9387,8 +9389,10 @@ def set_line_ground(overlay_id, value):
     _maybe_auto_run()
 
 
-def replace_line_points(view_name, overlay_id, points, settled, stations=None):
-    """Deform's write. `settled` is the release: history, axes, the mapping.
+def replace_line_points(view_name, overlay_id, points, settled, stations=None,
+                        live=False):
+    """Deform's write. `live` is a move: the line alone, the mapping waits (see
+    _guide_drag_event). `settled` is the release: history, axes, the mapping.
     `stations` are a contour's paired stations, moved with it."""
     item = line_item(view_name, overlay_id)
     if item is None:
@@ -9400,6 +9404,13 @@ def replace_line_points(view_name, overlay_id, points, settled, stations=None):
     item.pop("third", None)
     item.pop("auto", None)
     item.pop("source", None)
+    if live:
+        _push_overlay(view_name)
+        try:
+            _animean().ui.refresh()
+        except Exception:
+            pass
+        return
     _invalidate_grid_cache()
     if settled:
         if overlay_id in GUIDE_PROPERTIES:
