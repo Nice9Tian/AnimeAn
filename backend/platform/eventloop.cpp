@@ -66,9 +66,6 @@ struct LoopState {
     std::vector<TimerEntry> timers;
     std::vector<SocketEntry> sockets;
 
-    // 过渡，后端去掉 Qt 时删
-    std::function<void()> idlePump;
-
     LoopState()
     {
         ensureWinsockInitialized();
@@ -177,11 +174,6 @@ struct LoopState {
             }
         }
 
-        // 过渡，后端去掉 Qt 时删
-        if (idlePump && (timeoutMs < 0 || timeoutMs > 1)) {
-            timeoutMs = 1;
-        }
-
         std::vector<WSAPOLLFD> pollFds;
         std::vector<EventLoop::SocketHandle> pollHandles;
         pollFds.reserve(sockets.size());
@@ -279,14 +271,6 @@ int EventLoop::exec()
         ++s.iteration;
         ++s.iterationCount;
 
-        // 过渡，后端去掉 Qt 时删
-        if (s.idlePump) {
-            s.idlePump();
-            if (s.quitRequested) {
-                break;
-            }
-        }
-
         // Run only the tasks already queued before this round began so newly
         // posted tasks wait for the next round and cannot starve sockets.
         std::vector<std::function<void()>> batch;
@@ -364,12 +348,6 @@ void EventLoop::removeSocket(SocketHandle socket)
             return;
         }
     }
-}
-
-// 过渡，后端去掉 Qt 时删
-void EventLoop::setIdlePump(std::function<void()> pump)
-{
-    state().idlePump = std::move(pump);
 }
 
 std::uint64_t EventLoop::iterationCount() const noexcept

@@ -5,7 +5,7 @@
 #include "algorithm/core/path.h"
 #include <cstdint>
 #include <string>
-#include "algorithm/core/qtbridge.h"
+
 #include "algorithm/animemodel.h"
 #include "algorithm/scenehistory.h"
 #include "algorithm/vectorlogic.h"

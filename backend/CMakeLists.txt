@@ -4,8 +4,6 @@ if(NOT ANIMEAN_BUILD_BACKEND)
     return()
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui)
-
 add_subdirectory(platform)
 add_subdirectory(net)
 
@@ -33,7 +31,7 @@ target_include_directories(animean_core_headless PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/board
 )
 
-target_link_libraries(animean_core_headless PUBLIC animean_core animean_platform Qt6::Core Qt6::Gui)
+target_link_libraries(animean_core_headless PUBLIC animean_core animean_platform)
 
 if(ANIMEAN_WITH_PYTHON)
     target_sources(animean_core_headless PRIVATE
@@ -68,28 +66,6 @@ add_executable(board_headless_test
 )
 target_link_libraries(board_headless_test PRIVATE animean_core_headless)
 add_dependencies(AnimeAnBackend board_headless_test)
-
-if(WIN32)
-    find_program(ANIMEAN_BACKEND_WINDEPLOYQT windeployqt HINTS "${Qt6_DIR}/../../../bin")
-    if(ANIMEAN_BACKEND_WINDEPLOYQT)
-        add_custom_command(TARGET AnimeAnBackend POST_BUILD
-            COMMAND "${ANIMEAN_BACKEND_WINDEPLOYQT}"
-                --no-translations
-                --no-system-d3d-compiler
-                --no-opengl-sw
-                --dir "$<TARGET_FILE_DIR:AnimeAnBackend>"
-                "$<TARGET_FILE:AnimeAnBackend>"
-        )
-    endif()
-    if(EXISTS "${Qt6_DIR}/../../../plugins/platforms/qoffscreen.dll")
-        add_custom_command(TARGET AnimeAnBackend POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:AnimeAnBackend>/platforms"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${Qt6_DIR}/../../../plugins/platforms/qoffscreen.dll"
-                "$<TARGET_FILE_DIR:AnimeAnBackend>/platforms"
-        )
-    endif()
-endif()
 
 if(ANIMEAN_WITH_PYTHON)
     foreach(ANIMEAN_PYTHON_DLL python312.dll python3.dll vcruntime140.dll vcruntime140_1.dll)

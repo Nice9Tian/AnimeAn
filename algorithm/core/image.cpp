@@ -11,7 +11,7 @@
 #include <cstring>
 #include <limits>
 
-#define STBI_ONLY_PNG
+
 #define STBI_NO_STDIO
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -450,7 +450,7 @@ Image Image::convertToFormat(Format targetFormat) const
     }
     for (int y = 0; y < m_data->height; ++y) {
         for (int x = 0; x < m_data->width; ++x) {
-            // pixel() hands back premultiplied values untouched, as QImage's does.
+            // pixel() hands back premultiplied values untouched, as Qt's image does.
             const unsigned int c = m_data->format == Format_ARGB32_Premultiplied ? unpremultiply(pixel(x, y)) : pixel(x, y);
             if (targetFormat == Format_Grayscale8) {
                 out.m_data->pixels[static_cast<std::size_t>(y) * static_cast<std::size_t>(out.m_data->bytesPerLine)
@@ -800,9 +800,9 @@ bool Image::operator!=(const Image &other) const
     return !(*this == other);
 }
 
-Image Image::decodePng(const unsigned char *data, std::size_t size)
+static Image decodeImageBytes(const unsigned char *data, std::size_t size)
 {
-    if (!hasPngSignature(data, size)
+    if (!data || size == 0
         || size > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
         return Image();
     }
@@ -817,9 +817,9 @@ Image Image::decodePng(const unsigned char *data, std::size_t size)
         if (!decoded16) {
             return Image();
         }
-        Image out(w, h, Format_RGBA8888);
+        Image out(w, h, Image::Format_RGBA8888);
         if (!out.isNull()) {
-            unsigned char *dst = out.m_data->pixels.data();
+            unsigned char *dst = out.bits();
             const std::size_t total = static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4;
             for (std::size_t i = 0; i < total; ++i) {
                 dst[i] = static_cast<unsigned char>((static_cast<unsigned int>(decoded16[i]) + 128u) / 257u);
@@ -833,9 +833,9 @@ Image Image::decodePng(const unsigned char *data, std::size_t size)
     if (!decoded8) {
         return Image();
     }
-    Image out(w, h, Format_RGBA8888);
+    Image out(w, h, Image::Format_RGBA8888);
     if (!out.isNull()) {
-        std::memcpy(out.m_data->pixels.data(),
+        std::memcpy(out.bits(),
                     decoded8,
                     static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4);
     }
@@ -843,7 +843,7 @@ Image Image::decodePng(const unsigned char *data, std::size_t size)
     return out;
 }
 
-Image Image::decodePng(const std::vector<unsigned char> &bytes)
+Image Image::decodePng(const unsigned char *data, std::size_t size) { return hasPngSignature(data, size) ? decodeImageBytes(data, size) : Image(); } Image Image::decodePng(const std::vector<unsigned char> &bytes)
 {
     return decodePng(bytes.data(), bytes.size());
 }
@@ -1012,7 +1012,7 @@ bool Image::load(const String &fileName, const char *format)
         *this = Image();
         return false;
     }
-    *this = decodePng(bytes);
+    *this = decodeImageBytes(bytes.data(), bytes.size());
     return !isNull();
 }
 

@@ -6,7 +6,7 @@
 #include <memory>
 #include <string>
 #include <utility>
-#include "algorithm/core/qtbridge.h"
+
 #include "algorithm/animemodel.h"
 #include "algorithm/scenehistory.h"
 #include "algorithm/vectorlogic.h"

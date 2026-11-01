@@ -61,9 +61,6 @@ public:
     void updateSocket(SocketHandle socket, unsigned int events);
     void removeSocket(SocketHandle socket);
 
-    // 过渡，后端去掉 Qt 时删
-    void setIdlePump(std::function<void()> pump);
-
     std::uint64_t iterationCount() const noexcept;
 
 private:

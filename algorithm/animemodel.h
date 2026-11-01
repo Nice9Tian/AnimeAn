@@ -19,7 +19,7 @@ struct AnimeVectorStroke {
     AnimeCore::RectF bounds;
     AnimeCore::Color color;
     double width = 3.0;
-    // Qt::PenStyle as an int (1 = SolidLine, 2 = DashLine, ...). Generic
+    // PenStyle as an int (1 = SolidLine, 2 = DashLine, ...). Generic
     // per-stroke line style; rendering clamps invalid values to solid.
     int penStyle = 1;
 };

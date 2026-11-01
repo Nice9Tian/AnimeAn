@@ -7,10 +7,8 @@
     1. 在 webui/ 目录下执行 npm run build，生成前端静态产物 webui/dist/。
     2. 执行 cargo build --release --manifest-path src-tauri/Cargo.toml（启用 tauri/custom-protocol 内嵌前端产物），
        将生成的 animean-shell.exe 改名为 AnimeAn.exe 放入 dist/AnimeAn/。
-    3. 从 -BackendDir 指定的后端构建目录复制 AnimeAnBackend.exe，以及其同目录下的全部 .dll、
-       插件子目录（如 platforms/、plugins/ 等）与已有的 Python 相关运行文件。
-    4. 部署后端所需的最小 Qt 运行库与平台插件（仅保留 Qt6Core.dll、Qt6Gui.dll、Qt6Network.dll、Qt6Svg.dll、
-       platforms/qoffscreen.dll，以及 MinGW 运行库 libgcc_s_seh-1.dll、libstdc++-6.dll、libwinpthread-1.dll）。
+    3. 从 -BackendDir 指定的后端构建目录复制 AnimeAnBackend.exe，以及其同目录下的全部 .dll 与已有的 Python 相关运行文件。
+    4. 部署后端所需的 MinGW 运行库（libgcc_s_seh-1.dll、libstdc++-6.dll、libwinpthread-1.dll）。
     5. 依据 backend/CMakeLists.txt 与 backend/main.cpp 的路径查找规则补齐自包含 Python 环境与脚本：
        - backend/main.cpp 启动时在 <appDir>/python312 下查找 python312.dll 设置 PYTHONHOME，
          且 AnimeAnBackend.exe 进程加载时直接依赖同目录的 python312.dll / vcruntime140*.dll；
@@ -28,9 +26,6 @@
 .PARAMETER PythonHome
     Python 3.12 运行时目录路径（包含 python.exe、python312.dll、Lib/、DLLs/ 等）。
     若不传则默认使用仓库下的 tools/python312。
-
-.PARAMETER QtDir
-    Qt 6.9.1 MinGW 64-bit 安装目录，默认 C:/Qt/6.9.1/mingw_64。
 
 .PARAMETER MingwBin
     MinGW 工具链 bin 目录，默认 C:/Qt/Tools/mingw1310_64/bin。
@@ -53,9 +48,6 @@ param(
     [string]$PythonHome = "",
 
     [Parameter(Mandatory = $false)]
-    [string]$QtDir = "C:/Qt/6.9.1/mingw_64",
-
-    [Parameter(Mandatory = $false)]
     [string]$MingwBin = "C:/Qt/Tools/mingw1310_64/bin",
 
     [Parameter(Mandatory = $false)]
@@ -75,9 +67,6 @@ $repoRoot = (Resolve-Path (Join-Path $scriptDir "..")).ProviderPath
 $qtEnvFile = Join-Path $scriptDir "qt_env_location.ps1"
 if (Test-Path -LiteralPath $qtEnvFile -PathType Leaf) {
     . $qtEnvFile
-    if (-not $PSBoundParameters.ContainsKey("QtDir") -and $qtPrefixPath) {
-        $QtDir = $qtPrefixPath
-    }
     if (-not $PSBoundParameters.ContainsKey("MingwBin") -and $mingwBin) {
         $MingwBin = $mingwBin
     }
@@ -163,7 +152,6 @@ Write-Host "===== Package AnimeAn (Tauri) ====="
 Write-Host "RepoRoot   : $repoRoot"
 Write-Host "BackendDir : $resolvedBackendDir"
 Write-Host "PythonHome : $resolvedPythonHome"
-Write-Host "QtDir      : $QtDir"
 Write-Host "MingwBin   : $MingwBin"
 Write-Host "OutputDir  : $distDir"
 
@@ -221,17 +209,10 @@ Copy-Item -LiteralPath $builtShellExe -Destination (Join-Path $distDir "AnimeAn.
 # 复制 AnimeAnBackend.exe
 Copy-Item -LiteralPath $backendExeSrc -Destination (Join-Path $distDir "AnimeAnBackend.exe") -Force
 
-# 复制 -BackendDir 下 AnimeAnBackend.exe 旁边的全部 dll
+# 复制 -BackendDir 下 AnimeAnBackend.exe 旁边的非 Qt dll
 Get-ChildItem -LiteralPath $resolvedBackendDir -Filter "*.dll" -File -ErrorAction SilentlyContinue | ForEach-Object {
-    Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $distDir $_.Name) -Force
-}
-
-# 复制 -BackendDir 下可能存在的 plugins 子目录及各类 Qt 插件目录、Python 相关目录或脚本
-$pluginSubDirs = @("plugins", "platforms", "imageformats", "iconengines", "tls", "networkinformation", "generic", "styles")
-foreach ($subName in $pluginSubDirs) {
-    $srcSub = Join-Path $resolvedBackendDir $subName
-    if (Test-Path -LiteralPath $srcSub -PathType Container) {
-        Copy-Item -LiteralPath $srcSub -Destination (Join-Path $distDir $subName) -Recurse -Force
+    if ($_.Name -notlike "Qt6*.dll" -and $_.Name -notin @("opengl32sw.dll", "d3dcompiler_47.dll")) {
+        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $distDir $_.Name) -Force
     }
 }
 
@@ -247,91 +228,19 @@ foreach ($pyRelDir in @("pywheels", "python312", "childrenpanel")) {
 }
 
 # =========================
-# 步骤 4：部署并裁剪 Qt DLL、platforms/qoffscreen.dll 与 MinGW 运行库
+# 步骤 4：部署 MinGW 运行库
 # =========================
-Write-Host "[4/6] Deploying Qt DLLs (Core, Gui, Network, Svg), platforms/qoffscreen.dll, and MinGW runtime..."
-$qtBin = Join-Path $QtDir "bin"
-$qtPlugins = Join-Path $QtDir "plugins"
-$windeployqt = Join-Path $qtBin "windeployqt.exe"
-
-if (Test-Path -LiteralPath $windeployqt -PathType Leaf) {
-    & $windeployqt `
-        --release `
-        --no-translations `
-        --no-system-d3d-compiler `
-        --no-opengl-sw `
-        --no-quick-import `
-        --dir $distDir `
-        (Join-Path $distDir "AnimeAnBackend.exe") | Out-Null
-}
-
-# 确保 Core、Gui、Network、Svg 四个模块 DLL 存在
-$requiredQtDlls = @("Qt6Core.dll", "Qt6Gui.dll", "Qt6Network.dll", "Qt6Svg.dll")
-foreach ($dll in $requiredQtDlls) {
-    $targetDll = Join-Path $distDir $dll
-    if (-not (Test-Path -LiteralPath $targetDll -PathType Leaf)) {
-        $fromQt = Join-Path $qtBin $dll
-        if (Test-Path -LiteralPath $fromQt -PathType Leaf) {
-            Copy-Item -LiteralPath $fromQt -Destination $targetDll -Force
-        } else {
-            throw "缺少必需的 Qt DLL: $dll（在 $resolvedBackendDir 和 $qtBin 中均未找到）"
-        }
-    }
-}
-
-# 确保 MinGW 运行库存在
+Write-Host "[4/6] Deploying MinGW runtime DLLs..."
 $mingwRuntimeDlls = @("libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll")
 foreach ($dll in $mingwRuntimeDlls) {
     $targetDll = Join-Path $distDir $dll
     if (-not (Test-Path -LiteralPath $targetDll -PathType Leaf)) {
         $fromMingw = Join-Path $MingwBin $dll
-        $fromQtBin = Join-Path $qtBin $dll
         if (Test-Path -LiteralPath $fromMingw -PathType Leaf) {
             Copy-Item -LiteralPath $fromMingw -Destination $targetDll -Force
-        } elseif (Test-Path -LiteralPath $fromQtBin -PathType Leaf) {
-            Copy-Item -LiteralPath $fromQtBin -Destination $targetDll -Force
         } else {
-            throw "缺少 MinGW 运行库: $dll（在 $MingwBin 和 $qtBin 中均未找到）"
+            throw "缺少 MinGW 运行库: $dll（在 $MingwBin 中未找到）"
         }
-    }
-}
-
-# 确保 platforms/qoffscreen.dll 存在，且移除不需要的平台插件
-$distPlatformsDir = Join-Path $distDir "platforms"
-New-Item -ItemType Directory -Path $distPlatformsDir -Force | Out-Null
-$qoffscreenTarget = Join-Path $distPlatformsDir "qoffscreen.dll"
-if (-not (Test-Path -LiteralPath $qoffscreenTarget -PathType Leaf)) {
-    $qoffscreenCandidates = @(
-        (Join-Path $resolvedBackendDir "platforms\qoffscreen.dll"),
-        (Join-Path $resolvedBackendDir "plugins\platforms\qoffscreen.dll"),
-        (Join-Path $qtPlugins "platforms\qoffscreen.dll")
-    )
-    foreach ($cand in $qoffscreenCandidates) {
-        if (Test-Path -LiteralPath $cand -PathType Leaf) {
-            Copy-Item -LiteralPath $cand -Destination $qoffscreenTarget -Force
-            break
-        }
-    }
-}
-if (-not (Test-Path -LiteralPath $qoffscreenTarget -PathType Leaf)) {
-    throw "未找到 platforms/qoffscreen.dll。"
-}
-
-# 清理不需要的 Qt6*.dll（只保留 Core、Gui、Network、Svg）以及多余的平台插件和软件渲染库
-Get-ChildItem -LiteralPath $distDir -Filter "Qt6*.dll" -File -ErrorAction SilentlyContinue | ForEach-Object {
-    if ($requiredQtDlls -notcontains $_.Name) {
-        Remove-Item -LiteralPath $_.FullName -Force
-    }
-}
-foreach ($extraDll in @("opengl32sw.dll", "d3dcompiler_47.dll")) {
-    $p = Join-Path $distDir $extraDll
-    if (Test-Path -LiteralPath $p -PathType Leaf) {
-        Remove-Item -LiteralPath $p -Force
-    }
-}
-Get-ChildItem -LiteralPath $distPlatformsDir -Filter "*.dll" -File -ErrorAction SilentlyContinue | ForEach-Object {
-    if ($_.Name -ne "qoffscreen.dll") {
-        Remove-Item -LiteralPath $_.FullName -Force
     }
 }
 
@@ -408,11 +317,9 @@ if (Test-Path -LiteralPath $toolControlsSrc -PathType Container) {
 $expectedPaths = @(
     "AnimeAn.exe",
     "AnimeAnBackend.exe",
-    "Qt6Core.dll",
-    "Qt6Gui.dll",
-    "Qt6Network.dll",
-    "Qt6Svg.dll",
-    "platforms\qoffscreen.dll",
+    "libgcc_s_seh-1.dll",
+    "libstdc++-6.dll",
+    "libwinpthread-1.dll",
     "python312.dll",
     "python312\python312.dll",
     "initalize.py",
