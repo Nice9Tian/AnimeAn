@@ -127,7 +127,7 @@
 .qdialog-label { white-space: nowrap; }
 .qdialog-body > .qbutton { padding: 0; height: 24px; }
 .qbutton, .qcombo { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.118); }  /* Fusion's inner contrast line */
-.qbutton.qdefault { border-color: var(--accent-2); background: linear-gradient(var(--default-top), var(--default-bottom)); }
+.qbutton.qdefault { border-color: var(--accent-2-line); background: linear-gradient(var(--default-top), var(--default-bottom)); }
 
 .qcombo { box-sizing: border-box; height: 24px; border: 1px solid var(--btn-border); border-radius: 2px; background: linear-gradient(var(--btn-top), var(--btn-bottom)); color: var(--text); }
 .qcombo-text { position: absolute; left: 2px; top: 0; right: 20px; line-height: 22px; white-space: pre; overflow: hidden; }
