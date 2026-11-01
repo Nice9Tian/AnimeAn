@@ -158,4 +158,15 @@ am._invalidate_grid_cache()
 found = notes("main")
 assert len(found) == 1 and "The V axis on the main board" in found[0]["label"]
 
-print("t_fold_notes: 8 cases ok")
+# 9) Only the same half is a copy: the texture V hooks at its top, the carried main V
+#    at its bottom, and that is the main board's own turn. Same half: the copy says
+#    nothing.
+carried = lambda: am._assets_for("main")[am.V_PROPERTY].update(auto=True) or am._invalidate_grid_cache()
+setup(HOOKED, [[0.0, -100.0 + 3.0 * i] for i in range(6, 0, -1)] + STRAIGHT)
+carried()
+assert len(notes("child")) == 1 and len(notes("main")) == 1
+setup(HOOKED, HOOKED)
+carried()
+assert len(notes("child")) == 1 and notes("main") == []
+
+print("t_fold_notes: 9 cases ok")

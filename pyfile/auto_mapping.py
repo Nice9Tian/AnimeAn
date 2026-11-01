@@ -5389,11 +5389,13 @@ def _fold_regions():
                 groups.append(cells)
         turnbacks = _axis_turnbacks(mapper)
         board_title = {"child": "texture", "main": "main"}
-        # An axis the contours carried may only copy the texture axis's turn.
+        # An axis the contours carried may only copy the same half of the texture
+        # axis's turn.
         turnbacks = [turn for turn in turnbacks if not (
             turn[0] == "main"
             and _assets_for("main")[H_PROPERTY if turn[1] == "H" else V_PROPERTY].get("auto")
-            and any(other[0] == "child" and other[1] == turn[1] for other in turnbacks))]
+            and any(other[0] == "child" and other[1] == turn[1]
+                    and (other[2] > 0.0) == (turn[2] > 0.0) for other in turnbacks))]
         for view, axis, _hat, tail, point in turnbacks:
             regions.append({"view": view, "point": point, "text": "\n".join((
                 "Fold here", f"The {axis} axis on the {board_title[view]} board",
@@ -9599,17 +9601,22 @@ def replace_line_points(view_name, overlay_id, points, settled, stations=None):
     if overlay_id in GUIDE_PROPERTIES:
         _invalidate_additional_thirds(view_name)
     axes_moved = overlay_id == PROXY_PROPERTY and _refresh_proxy_axes()
+    # A release can be the first pairing, written on both contours.
+    paired_now = (overlay_id == PROXY_PROPERTY and stations is None
+                  and proxy_pairing() is not None)
+    other = "child" if view_name == "main" else "main"
+    other_moved = paired_now or (axes_moved and other == "main")
     _save_assets(view_name)
-    if axes_moved and view_name != "main":
-        # The main board's axes moved with a texture contour: its own history.
-        _save_assets("main")
+    if other_moved:
+        # The other board changed with this one: its own history.
+        _save_assets(other)
     _overlays_changed(view_name)
     try:
         animean = _animean()
         animean.ui.refresh()
         animean.ui.history_commit("Deform Line", view_name)
-        if axes_moved and view_name != "main":
-            animean.ui.history_commit("Contour axes", "main")
+        if other_moved:
+            animean.ui.history_commit("Contour pairing" if paired_now else "Contour axes", other)
     except Exception:
         pass
     _maybe_auto_run()

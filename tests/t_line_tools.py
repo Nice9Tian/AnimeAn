@@ -548,9 +548,12 @@ handle(am.PROXY_PROPERTY, "press", seam[0], seam[1], am.DEFORM_PROPERTY, "child"
 am._assets_for("main")[am.PROXY_PROPERTY] = {"points": ring(KEYSTONE), "width": 3.0}
 handle(am.PROXY_PROPERTY, "move", seam[0] - 10.0, seam[1] - 10.0, am.DEFORM_PROPERTY, "child")
 am.proxy_pairing()
+calls, restore = committed()
 handle(am.PROXY_PROPERTY, "release", seam[0] - 30.0, seam[1] - 30.0, am.DEFORM_PROPERTY, "child")
+restore()
 final = am._assets_for("child")[am.PROXY_PROPERTY]["points"]
 assert max(min(math.dist(s, p) for p in final) for s in am.proxy_pairing()["child"]) < 3.0
+assert ("Contour pairing", "main") in calls
 print("22) a pairing made mid-drag follows the release")
 
 # 23) Ground ticks and contours change the mapping, so the grid is rebuilt; unticking
