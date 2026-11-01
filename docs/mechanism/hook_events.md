@@ -23,6 +23,7 @@
 
 - Python 各工具通过 `overlay_stack.set_items(view, owner, items)` 合成一张列表交给 `ui.set_overlay`，按 owner 排序拼接；C++ 渲染在所有图层之上，从后往前命中。
 - 项是折线或闭合多边形，带颜色、线宽、线型；`removable` 的项有 × 徽章，点击派发 `overlayremove`（C++ 不删任何东西）；可带接受徽章（`overlayaction`，action = accept）；`draggable` 的项在任何工具下都能拖，拖动经 handle 事件报告。
+- 项可带 `label`：C++ 在第一个点处画一个屏幕尺寸不变的气泡，用项的颜色，文字按换行分行，这种项可以只有一个点。C++ 不知道文字是什么意思，Auto Mapping 用它标折叠（`_fold_note_items`）。文字由后端转成路径，所以 `backend/main.cpp` 把 `QT_QPA_FONTDIR` 指向系统字体目录，否则 offscreen 平台没有字体。
 - 徽章的命中框按视口换算到文档空间后再钳制。
 - 按下的点同时落在徽章和可拖动项的抓取带上时：离徽章中心 12 屏幕像素以内、或在徽章内圈，算点徽章；外圈再比进入徽章的深度和离线的距离。线穿过自己的徽章时，只靠外圈规则会丢掉三分之一到一半的面积。
 

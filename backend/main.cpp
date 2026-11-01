@@ -43,6 +43,11 @@ int main(int argc, char *argv[])
     if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) {
         qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
     }
+    // Offscreen looks for fonts beside Qt, where there are none: board text
+    // (overlay labels) would come out as empty boxes.
+    if (qEnvironmentVariableIsEmpty("QT_QPA_FONTDIR") && !qEnvironmentVariableIsEmpty("WINDIR")) {
+        qputenv("QT_QPA_FONTDIR", qgetenv("WINDIR") + QByteArrayLiteral("/Fonts"));
+    }
 
     QGuiApplication app(argc, argv);
 

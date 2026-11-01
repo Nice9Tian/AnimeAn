@@ -552,6 +552,7 @@ MainWindow::MainWindow(QWidget *parent)
             overlayItem.removable = item.removable;
             overlayItem.confirmable = item.confirmable;
             overlayItem.draggable = item.draggable;
+            overlayItem.label = item.label;
             converted.append(overlayItem);
         }
         target->setOverlayItems(converted);

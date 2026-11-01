@@ -2,11 +2,13 @@
 #include "algorithm/core/qtbridge.h"
 #include "theme.h"
 
+#include <QFontMetricsF>
 #include <QLineF>
 #include <QGuiApplication>
 #include <QImage>
 #include <QCursor>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPixmap>
 #include <QPolygonF>
 #include <QtMath>
@@ -3041,6 +3043,72 @@ void PaintOpenGLWidget::paintOverlayItems(QPainter &painter)
             painter.drawLine(inner.topRight(), inner.bottomLeft());
         }
     }
+
+    paintOverlayLabels(painter);
+}
+
+void PaintOpenGLWidget::paintOverlayLabels(QPainter &painter) const
+{
+    constexpr int kFontPx = 12;
+    constexpr qreal kPadding = 6.0;
+    constexpr qreal kTail = 9.0;
+    constexpr qreal kEdge = 4.0;
+
+    // In screen pixels, so a note stays readable at every zoom.
+    painter.save();
+    painter.resetTransform();
+    QFont font = painter.font();
+    font.setPixelSize(kFontPx);
+    painter.setFont(font);
+    const QFontMetricsF metrics(font);
+    const QRectF board = QRectF(rect()).adjusted(kEdge, kEdge, -kEdge, -kEdge);
+
+    for (const OverlayItem &item : m_overlayItems) {
+        if (item.label.isEmpty() || item.points.isEmpty()) {
+            continue;
+        }
+        const QStringList lines = item.label.split(QLatin1Char('\n'));
+        qreal textWidth = 0.0;
+        for (const QString &line : lines) {
+            textWidth = std::max(textWidth, metrics.horizontalAdvance(line));
+        }
+        const QSizeF size(textWidth + 2.0 * kPadding,
+                          lines.size() * metrics.lineSpacing() + 2.0 * kPadding);
+        const QPointF anchor = AnimeViewScale::toScreen(item.points.first(), m_zoom, m_panOffset);
+
+        // Below the point, or above it when the board's bottom edge is in the way:
+        // an item's x badge sits up and to the right of its end point, and a
+        // bubble on top of it would hide a badge that still takes the click.
+        QRectF box(QPointF(anchor.x() - size.width() / 2.0, anchor.y() + kTail), size);
+        if (box.bottom() > board.bottom()) {
+            box.moveBottom(anchor.y() - kTail);
+        }
+        box.moveLeft(std::clamp(box.left(), board.left(),
+                                std::max(board.left(), board.right() - box.width())));
+        box.moveTop(std::clamp(box.top(), board.top(),
+                               std::max(board.top(), board.bottom() - box.height())));
+
+        QPainterPath bubble;
+        bubble.setFillRule(Qt::WindingFill);
+        bubble.addRoundedRect(box, 5.0, 5.0);
+        const qreal foot = std::clamp(anchor.x(), box.left() + 2.0 * kTail, box.right() - 2.0 * kTail);
+        const qreal edge = anchor.y() >= box.center().y() ? box.bottom() - 1.0 : box.top() + 1.0;
+        QPolygonF tail;
+        tail << QPointF(foot - kTail / 2.0, edge) << QPointF(foot + kTail / 2.0, edge) << anchor;
+        bubble.addPolygon(tail);
+        bubble.closeSubpath();
+        painter.setPen(QPen(item.strokeColor, item.width));
+        painter.setBrush(item.fillColor);
+        painter.drawPath(bubble.simplified());
+
+        painter.setPen(item.fillColor.lightness() < 128 ? Qt::white : Qt::black);
+        qreal baseline = box.top() + kPadding + metrics.ascent();
+        for (const QString &line : lines) {
+            painter.drawText(QPointF(box.left() + kPadding, baseline), line);
+            baseline += metrics.lineSpacing();
+        }
+    }
+    painter.restore();
 }
 
 QRectF PaintOpenGLWidget::overlayHandleRect(const QPointF &anchor, int slot, int slotCount) const
