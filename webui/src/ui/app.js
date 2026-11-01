@@ -78,9 +78,13 @@ export function panelFactories(store, client) {
     QtLayers(el) {
       const panel = createLayers(el, {
         onAdd: (view) => call("layer.add", { view }),
-        onRemove: (view) => {
-          const selected = store.get(`layers/${view}`)?.selected ?? -1;
-          if (selected >= 0) call("layer.delete", { view, layerIndex: selected });
+        onRemove: (view, current) => {
+          if (current?.group && current.group_id > 0) {
+            call("layer.deleteGroup", { view, groupId: current.group_id });
+            return;
+          }
+          const layerIndex = current !== undefined ? (current?.layer ?? -1) : (store.get(`layers/${view}`)?.selected ?? -1);
+          if (layerIndex >= 0) call("layer.delete", { view, layerIndex });
         },
         onClear: (view) => call("layer.unselect", { view }),
         onSelect: (view, layerIndex) => call("layer.select", { view, layerIndex }),
@@ -88,6 +92,12 @@ export function panelFactories(store, client) {
         onCollapse: (view, groupId, collapsed) => call("layer.setCollapsed", { view, groupId, collapsed }),
         onMove: (view, from, to) => {
           if (from.layer !== undefined && to.layer !== undefined) call("layer.move", { view, fromIndex: from.layer, toIndex: to.layer });
+        },
+        assetTarget: () => store.assetView ?? activeView(store),
+        onDropAsset: (view, assetIndex) => {
+          if (view === (store.assetView ?? activeView(store)) && assetIndex >= 0) {
+            call("asset.addLayer", { view, assetIndex });
+          }
         },
         onContext: async (view, row, members, x, y) => {
           const target = {
@@ -107,18 +117,32 @@ export function panelFactories(store, client) {
     },
 
     QtAssets(el) {
+      const target = () => {
+        if (activeView(store) !== "child") return "main";
+        const find = (items) => {
+          for (const item of items ?? []) {
+            if (item.id === "child.setting.changeableTexture") return item.checked !== false;
+            if (item.children && !find(item.children)) return false;
+          }
+          return true;
+        };
+        return find(store.get("menus")) ? "child" : "main";
+      };
       const panel = createAssets(el, {
-        onSelect: (assetIndex) => call("asset.select", { assetIndex, view: activeView(store) }),
-        onAdd: () => call("asset.add", { view: activeView(store) }),
-        onClear: () => call("asset.unselect", { view: activeView(store) }),
+        onSelect: (assetIndex) => call("asset.select", { assetIndex, view: target() }),
+        onAdd: () => call("asset.add", { view: target() }),
+        onClear: () => call("asset.unselect", { view: target() }),
       });
       const show = () => {
-        const state = store.get(`assets/${activeView(store)}`);
+        const view = target();
+        store.assetView = view;
+        const state = store.get(`assets/${view}`);
         panel.update({ names: state?.names ?? [], selected: state?.selected ?? -1 });
       };
       on("assets/main", show);
       on("assets/child", show);
       on("window", show);
+      on("menus", show);
     },
 
     QtHistory(el) {

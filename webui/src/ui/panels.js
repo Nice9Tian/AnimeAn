@@ -113,6 +113,62 @@ export function createCentral(root, { onPage, onScroll, onPill }) {
 }
 
 // ---- Layer tree ---------------------------------------------------------------
+export const LAYER_DRAG_MIME = "application/x-animean-layer";
+export const ASSET_DRAG_MIME = "application/x-animean-asset";
+
+// A group row carries no layer of its own; selecting it resolves to the first
+// member layer in its subtree (mainwindow.cpp firstLayer).
+export function firstGroupLayer(rows, index) {
+  const head = rows?.[index];
+  if (!head) return -1;
+  if (!head.group) return head.layer >= 0 ? head.layer : -1;
+  for (let i = index + 1; i < rows.length && rows[i].depth > head.depth; i++) {
+    if (!rows[i].group && rows[i].layer >= 0) return rows[i].layer;
+  }
+  return -1;
+}
+
+// Highlights the outermost collapsed ancestor when the current layer sits
+// inside a collapsed group, or the clicked group row while its first member
+// stays the current layer (mainwindow.cpp refreshLayerList).
+export function selectedRowIndex(rows, selected, pickedGroupId = 0) {
+  if (!rows?.length || selected === undefined || selected < 0) return -1;
+  let index = rows.findIndex((r) => !r.group && r.layer === selected);
+  if (index < 0) return -1;
+  if (pickedGroupId > 0) {
+    const groupIndex = rows.findIndex((r) => r.group && r.group_id === pickedGroupId);
+    if (groupIndex >= 0 && firstGroupLayer(rows, groupIndex) === selected) index = groupIndex;
+  }
+  let display = index;
+  for (let i = index - 1, d = rows[index].depth; i >= 0 && d > 0; i--) {
+    if (rows[i].depth < d) {
+      d = rows[i].depth;
+      if (rows[i].group && rows[i].collapsed) display = i;
+    }
+  }
+  return display;
+}
+
+export function hasDragType(dt, mime) {
+  if (!dt) return false;
+  if (dt.types && Array.from(dt.types).includes(mime)) return true;
+  return typeof dt.getData === "function" && dt.getData(mime) !== "";
+}
+
+export function resolveAssetDrop(raw, view, assetTargetView) {
+  if (assetTargetView && view !== assetTargetView) return -1;
+  const text = String(raw ?? "").trim();
+  if (!text) return -1;
+  const colon = text.indexOf(":");
+  if (colon >= 0) {
+    if (text.slice(0, colon) !== view) return -1;
+    const idx = Number(text.slice(colon + 1));
+    return Number.isInteger(idx) && idx >= 0 ? idx : -1;
+  }
+  const idx = Number(text);
+  return Number.isInteger(idx) && idx >= 0 ? idx : -1;
+}
+
 export function createLayers(root, handlers) {
   const tabs = tabBar(["Main Layers", "Child Layers"], (i) => show(i));
   const pages = ["main", "child"].map((view) => {
@@ -123,22 +179,47 @@ export function createLayers(root, handlers) {
     const clear = document.createElement("button");
     add.textContent = "Add Layer"; del.textContent = "Remove Layer"; clear.textContent = "Clear Selection";
     for (const b of [add, del, clear]) { b.type = "button"; b.className = "qbutton"; }
+    const p = { frame: null, tree: list.view, view, current: null, pickedGroup: 0 };
     add.addEventListener("click", () => handlers.onAdd(view));
-    del.addEventListener("click", () => handlers.onRemove(view));
-    clear.addEventListener("click", () => handlers.onClear(view));
+    del.addEventListener("click", () => handlers.onRemove(view, p.current));
+    clear.addEventListener("click", () => { p.pickedGroup = 0; p.current = null; handlers.onClear(view); });
     const row = div("layer-buttons");
     row.append(add, del);
     page.append(list.frame, row, clear);
     const area = scrollArea("layer-scroll");
     area.view.append(page);
-    return { frame: area.frame, tree: list.view, view };
+    p.frame = area.frame;
+    return p;
   });
   root.append(tabs.el, ...pages.map((p) => p.frame));
+  const targetView = () => handlers.assetTarget?.();
+  const acceptAsset = (e, p) => {
+    if (!hasDragType(e.dataTransfer, ASSET_DRAG_MIME)) return false;
+    const target = targetView();
+    if (target && p.view !== target) return true;
+    const raw = e.dataTransfer?.getData?.(ASSET_DRAG_MIME);
+    if (raw && resolveAssetDrop(raw, p.view, target) < 0) return true;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    return true;
+  };
+  const dropAsset = (e, p) => {
+    if (!hasDragType(e.dataTransfer, ASSET_DRAG_MIME)) return false;
+    e.stopPropagation();
+    const raw = e.dataTransfer?.getData?.(ASSET_DRAG_MIME) ?? "";
+    const assetIndex = resolveAssetDrop(raw, p.view, targetView());
+    if (assetIndex < 0) return true;
+    e.preventDefault();
+    handlers.onDropAsset?.(p.view, assetIndex);
+    return true;
+  };
   for (const p of pages) {
     p.tree.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       handlers.onContext(p.view, null, [], e.clientX, e.clientY);
     });
+    p.tree.addEventListener("dragover", (e) => { acceptAsset(e, p); });
+    p.tree.addEventListener("drop", (e) => { dropAsset(e, p); });
   }
   function show(i) {
     tabs.select(i);
@@ -148,9 +229,17 @@ export function createLayers(root, handlers) {
 
   function paintRows(p, state) {
     p.tree.replaceChildren();
-    (state?.rows ?? []).forEach((row, index) => {
+    const rows = state?.rows ?? [];
+    const sel = selectedRowIndex(rows, state?.selected ?? -1, p.pickedGroup);
+    p.current = sel >= 0 ? rows[sel] : null;
+    p.pickedGroup = p.current?.group ? p.current.group_id : 0;
+    let hiddenBelow = null;
+    rows.forEach((row, index) => {
+      // Rows under a collapsed group stay in the state; only the tree hides them.
+      if (hiddenBelow !== null && row.depth > hiddenBelow) return;
+      hiddenBelow = row.group && row.collapsed ? row.depth : null;
       const r = div("layer-row");
-      r.classList.toggle("sel", row.group ? false : row.layer === state.selected);
+      r.classList.toggle("sel", index === sel);
       r.classList.toggle("child", !!row.child);
       r.style.paddingLeft = `${row.depth * 20 + 4}px`;
       if (row.group) {
@@ -169,27 +258,38 @@ export function createLayers(root, handlers) {
         check.addEventListener("change", () => handlers.onVisible(p.view, row.layer, check.checked));
         r.append(check);
       }
-      const name = div("layer-name", (row.child ? "↳ " : "") + row.name);
+      const name = div("layer-name", row.name);
       r.append(name);
-      if (!row.group) r.addEventListener("click", () => handlers.onSelect(p.view, row.layer));
+      r.addEventListener("click", () => {
+        p.pickedGroup = row.group ? row.group_id : 0;
+        p.current = row;
+        Array.from(p.tree.children).forEach((el) => el.classList.toggle("sel", el === r));
+        const layer = row.group ? firstGroupLayer(rows, index) : row.layer;
+        if (layer >= 0) handlers.onSelect(p.view, layer);
+      });
       r.addEventListener("contextmenu", (e) => {
         e.preventDefault();
         e.stopPropagation();
         const members = [];
         if (row.group) {
-          for (let i = index + 1; i < state.rows.length && state.rows[i].depth > row.depth; i++) {
-            if (!state.rows[i].group) members.push(state.rows[i].layer);
+          for (let i = index + 1; i < rows.length && rows[i].depth > row.depth; i++) {
+            if (!rows[i].group) members.push(rows[i].layer);
           }
         }
         handlers.onContext(p.view, row, members, e.clientX, e.clientY);
       });
       r.draggable = true;
-      r.addEventListener("dragstart", (e) => { e.dataTransfer.setData("text/plain", String(index)); });
-      r.addEventListener("dragover", (e) => e.preventDefault());
+      r.addEventListener("dragstart", (e) => { e.dataTransfer.setData(LAYER_DRAG_MIME, String(index)); });
+      r.addEventListener("dragover", (e) => {
+        if (acceptAsset(e, p)) return;
+        if (hasDragType(e.dataTransfer, LAYER_DRAG_MIME)) e.preventDefault();
+      });
       r.addEventListener("drop", (e) => {
+        if (dropAsset(e, p)) return;
+        if (!hasDragType(e.dataTransfer, LAYER_DRAG_MIME)) return;
         e.preventDefault();
-        const from = Number(e.dataTransfer.getData("text/plain"));
-        if (Number.isFinite(from) && from !== index) handlers.onMove(p.view, state.rows[from], row);
+        const from = Number(e.dataTransfer.getData(LAYER_DRAG_MIME));
+        if (Number.isFinite(from) && from !== index) handlers.onMove(p.view, rows[from], row);
       });
       p.tree.append(r);
     });
@@ -200,7 +300,7 @@ export function createLayers(root, handlers) {
 // ---- Menu bar and popup menus -----------------------------------------------
 let openMenu = null;
 function closeMenus() { if (openMenu) { openMenu.remove(); openMenu = null; } }
-window.addEventListener("pointerdown", (e) => { if (openMenu && !e.target.closest?.(".qmenu")) closeMenus(); }, true);
+if (typeof window !== "undefined") window.addEventListener("pointerdown", (e) => { if (openMenu && !e.target.closest?.(".qmenu")) closeMenus(); }, true);
 
 export function popupMenu(items, x, y, onTrigger, parent) {
   const m = div("qmenu");
