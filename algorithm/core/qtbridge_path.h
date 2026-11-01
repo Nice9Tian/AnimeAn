@@ -40,42 +40,22 @@ inline Path Bridge<QPainterPath>::toCore(const QPainterPath &qp)
         i = 1;
     }
 
+    int lastMoveStart = 0;
     while (i < count) {
         const QPainterPath::Element e = qp.elementAt(i);
         if (e.type == QPainterPath::MoveToElement) {
             const int before = out.elementCount();
             out.moveTo(e.x, e.y);
-            if (out.elementCount() == before) {
+            if (out.elementCount() == before && i > 0) {
+                const Path::Element m0 = out.elementAt(lastMoveStart);
                 const QPainterPath::Element prev = qp.elementAt(i - 1);
+                out.setElementPositionAt(i - 1, m0.x, m0.y);
                 out.closeSubpath();
-                if (i + 1 < count) {
-                    const QPainterPath::Element next = qp.elementAt(i + 1);
-                    if (next.type == QPainterPath::LineToElement) {
-                        const int b2 = out.elementCount();
-                        out.lineTo(next.x, next.y);
-                        if (out.elementCount() == b2) {
-                            out.lineTo(next.x + 1.0, next.y);
-                            out.setElementPositionAt(out.elementCount() - 1, next.x, next.y);
-                        }
-                        out.setElementPositionAt(i - 1, prev.x, prev.y);
-                        out.setElementPositionAt(i, e.x, e.y);
-                        i += 2;
-                        continue;
-                    } else if (next.type == QPainterPath::CurveToElement && i + 3 < count) {
-                        const QPainterPath::Element e1 = qp.elementAt(i + 2);
-                        const QPainterPath::Element e2 = qp.elementAt(i + 3);
-                        const int b2 = out.elementCount();
-                        out.cubicTo(next.x, next.y, e1.x, e1.y, e2.x, e2.y);
-                        if (out.elementCount() == b2) {
-                            out.cubicTo(next.x + 1.0, next.y, e1.x, e1.y, e2.x, e2.y);
-                            out.setElementPositionAt(out.elementCount() - 3, next.x, next.y);
-                        }
-                        out.setElementPositionAt(i - 1, prev.x, prev.y);
-                        out.setElementPositionAt(i, e.x, e.y);
-                        i += 4;
-                        continue;
-                    }
-                }
+                out.lineTo(m0.x, m0.y);
+                out.setElementPositionAt(i - 1, prev.x, prev.y);
+                out.setElementPositionAt(i, e.x, e.y);
+            } else {
+                lastMoveStart = i;
             }
             ++i;
         } else if (e.type == QPainterPath::LineToElement) {
@@ -127,42 +107,22 @@ inline QPainterPath Bridge<QPainterPath>::fromCore(const Path &p)
     }
     out.reserve(count);
 
+    int lastMoveStart = 0;
     while (i < count) {
         const Path::Element e = p.elementAt(i);
         if (e.type == Path::MoveToElement) {
             const int before = out.elementCount();
             out.moveTo(e.x, e.y);
             if (out.elementCount() == before && i > 0) {
+                const QPainterPath::Element m0 = out.elementAt(lastMoveStart);
                 const Path::Element prev = p.elementAt(i - 1);
+                out.setElementPositionAt(i - 1, m0.x, m0.y);
                 out.closeSubpath();
-                if (i + 1 < count) {
-                    const Path::Element next = p.elementAt(i + 1);
-                    if (next.type == Path::LineToElement) {
-                        const int b2 = out.elementCount();
-                        out.lineTo(next.x, next.y);
-                        if (out.elementCount() == b2) {
-                            out.lineTo(next.x + 1.0, next.y);
-                            out.setElementPositionAt(out.elementCount() - 1, next.x, next.y);
-                        }
-                        out.setElementPositionAt(i - 1, prev.x, prev.y);
-                        out.setElementPositionAt(i, e.x, e.y);
-                        i += 2;
-                        continue;
-                    } else if (next.type == Path::CurveToElement && i + 3 < count) {
-                        const Path::Element e1 = p.elementAt(i + 2);
-                        const Path::Element e2 = p.elementAt(i + 3);
-                        const int b2 = out.elementCount();
-                        out.cubicTo(next.x, next.y, e1.x, e1.y, e2.x, e2.y);
-                        if (out.elementCount() == b2) {
-                            out.cubicTo(next.x + 1.0, next.y, e1.x, e1.y, e2.x, e2.y);
-                            out.setElementPositionAt(out.elementCount() - 3, next.x, next.y);
-                        }
-                        out.setElementPositionAt(i - 1, prev.x, prev.y);
-                        out.setElementPositionAt(i, e.x, e.y);
-                        i += 4;
-                        continue;
-                    }
-                }
+                out.lineTo(m0.x, m0.y);
+                out.setElementPositionAt(i - 1, prev.x, prev.y);
+                out.setElementPositionAt(i, e.x, e.y);
+            } else {
+                lastMoveStart = i;
             }
             ++i;
         } else if (e.type == Path::LineToElement) {

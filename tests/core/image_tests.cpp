@@ -6,6 +6,7 @@
 #include <QImage>
 #include <QRgb>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -300,7 +301,7 @@ void testPngDecodeDifferential()
     for (const auto &sz : sizes) {
         QImage qRgba64(sz.w, sz.h, QImage::Format_RGBA64);
         for (int y = 0; y < sz.h; ++y) {
-            auto *row = reinterpret_cast< std::uint16_t * >(qRgba64.scanLine(y));
+            auto *row = reinterpret_cast<std::uint16_t *>(qRgba64.scanLine(y));
             for (int x = 0; x < sz.w; ++x) {
                 row[x * 4 + 0] = static_cast<std::uint16_t>((x * 6553 + y * 12345 + 100) & 0xffff);
                 row[x * 4 + 1] = static_cast<std::uint16_t>((x * 17321 + y * 4321 + 900) & 0xffff);
@@ -319,7 +320,7 @@ void testPngDecodeDifferential()
 
         QImage qGray16(sz.w, sz.h, QImage::Format_Grayscale16);
         for (int y = 0; y < sz.h; ++y) {
-            auto *row = reinterpret_cast< std::uint16_t * >(qGray16.scanLine(y));
+            auto *row = reinterpret_cast<std::uint16_t *>(qGray16.scanLine(y));
             for (int x = 0; x < sz.w; ++x) {
                 row[x] = static_cast<std::uint16_t>((x * 13579 + y * 24680 + 513) & 0xffff);
             }
@@ -527,6 +528,262 @@ void testQtBridge()
           "QImage cleanup handler must keep shared pixel buffer alive after AnimeCore::Image is destroyed");
 }
 
+void testScaledDifferential()
+{
+    AnimeCore::Image nullImg;
+    check(nullImg.scaled(10, 10).isNull(), "scaled on null Image should return null");
+
+    AnimeCore::Image validImg(4, 4, AnimeCore::Image::Format_RGBA8888);
+    check(validImg.scaled(0, 4).isNull() && validImg.scaled(4, -1).isNull(),
+          "scaled with non-positive target dimensions should return null");
+
+    enum Pattern {
+        Pattern_Noise = 0,
+        Pattern_Gradient,
+        Pattern_TransparentChecker,
+        Pattern_ThinLines,
+    };
+
+    const struct ScaleCase {
+        const char *name;
+        int srcW;
+        int srcH;
+        int dstW;
+        int dstH;
+    } cases[] = {
+        {"upscale_1", 11, 9, 29, 25},
+        {"upscale_2", 8, 12, 33, 41},
+        {"downscale_1", 37, 29, 13, 10},
+        {"downscale_2", 48, 36, 15, 11},
+        {"mixed_x_up_y_down", 13, 42, 38, 11},
+        {"mixed_x_down_y_up", 45, 11, 12, 35},
+        {"to_1x1", 31, 23, 1, 1},
+        {"to_1xN", 27, 19, 1, 9},
+        {"to_Nx1", 27, 19, 9, 1},
+        {"shrink_gt_8x_1", 96, 80, 9, 7},
+        {"shrink_gt_8x_2", 108, 90, 11, 8},
+    };
+
+    std::mt19937 rng(0x5CA1E123u);
+    int overallMaxDiff = 0;
+    std::uint64_t overallDiffSum = 0;
+    std::uint64_t overallChannelCount = 0;
+
+    for (int pat = Pattern_Noise; pat <= Pattern_ThinLines; ++pat) {
+        for (const auto &sc : cases) {
+            AnimeCore::Image coreSrc(sc.srcW, sc.srcH, AnimeCore::Image::Format_RGBA8888);
+            QImage qtSrc(sc.srcW, sc.srcH, QImage::Format_RGBA8888);
+
+            const int r0 = int(rng() & 0xffu);
+            const int g0 = int(rng() & 0xffu);
+            const int b0 = int(rng() & 0xffu);
+            const int r1 = int(rng() & 0xffu);
+            const int g1 = int(rng() & 0xffu);
+            const int b1 = int(rng() & 0xffu);
+            const int cellW = std::max(1, int(rng() % 5) + 2);
+            const int cellH = std::max(1, int(rng() % 5) + 2);
+            const int lineX = int(rng() % static_cast<unsigned int>(sc.srcW));
+            const int lineY = int(rng() % static_cast<unsigned int>(sc.srcH));
+
+            for (int y = 0; y < sc.srcH; ++y) {
+                for (int x = 0; x < sc.srcW; ++x) {
+                    int r = 0;
+                    int g = 0;
+                    int b = 0;
+                    int a = 255;
+
+                    switch (static_cast<Pattern>(pat)) {
+                    case Pattern_Noise: {
+                        r = int(rng() & 0xffu);
+                        g = int(rng() & 0xffu);
+                        b = int(rng() & 0xffu);
+                        const unsigned int mode = rng() % 6u;
+                        if (mode == 0u) {
+                            a = 0;
+                        } else if (mode == 1u) {
+                            a = 255;
+                        } else {
+                            a = int(rng() & 0xffu);
+                        }
+                        break;
+                    }
+                    case Pattern_Gradient: {
+                        const double tx = (sc.srcW > 1) ? double(x) / double(sc.srcW - 1) : 0.0;
+                        const double ty = (sc.srcH > 1) ? double(y) / double(sc.srcH - 1) : 0.0;
+                        const double t = 0.5 * (tx + ty);
+                        r = std::clamp(int(std::lround(r0 + (r1 - r0) * tx)), 0, 255);
+                        g = std::clamp(int(std::lround(g0 + (g1 - g0) * ty)), 0, 255);
+                        b = std::clamp(int(std::lround(b0 + (b1 - b0) * t)), 0, 255);
+                        a = std::clamp(int(std::lround(255.0 * tx)), 0, 255);
+                        break;
+                    }
+                    case Pattern_TransparentChecker: {
+                        const int cx = x / cellW;
+                        const int cy = y / cellH;
+                        if (((cx + cy) & 1) == 0) {
+                            // Deliberately store bright non-zero RGB under alpha 0 to verify
+                            // transparent pixels do not bleed into neighbors.
+                            r = 250;
+                            g = 10;
+                            b = 240;
+                            a = 0;
+                        } else if (((cx * 3 + cy) & 3) == 1) {
+                            r = r0;
+                            g = g0;
+                            b = b0;
+                            a = 140;
+                        } else {
+                            r = r1;
+                            g = g1;
+                            b = b1;
+                            a = 255;
+                        }
+                        break;
+                    }
+                    case Pattern_ThinLines: {
+                        const bool onLine = (x == lineX)
+                                            || (y == lineY)
+                                            || ((x * sc.srcH) / std::max(1, sc.srcW) == y);
+                        if (onLine) {
+                            r = r1;
+                            g = g1;
+                            b = b1;
+                            a = 255;
+                        } else {
+                            r = r0;
+                            g = g0;
+                            b = b0;
+                            a = 0;
+                        }
+                        break;
+                    }
+                    }
+
+                    coreSrc.setPixel(x, y, AnimeCore::qRgba(r, g, b, a));
+                    qtSrc.setPixel(x, y, qRgba(r, g, b, a));
+                }
+            }
+
+            const AnimeCore::Image coreScaled = coreSrc.scaled(sc.dstW, sc.dstH);
+            const QImage qtScaled = qtSrc.convertToFormat(QImage::Format_ARGB32_Premultiplied)
+                                        .scaled(sc.dstW,
+                                                sc.dstH,
+                                                Qt::IgnoreAspectRatio,
+                                                Qt::SmoothTransformation)
+                                        .convertToFormat(QImage::Format_RGBA8888);
+
+            check(coreScaled.width() == sc.dstW && coreScaled.height() == sc.dstH,
+                  "scaled dimensions should match target");
+
+            int caseMaxDiff = 0;
+            std::uint64_t caseDiffSum = 0;
+            std::uint64_t caseChannels = 0;
+
+            for (int y = 0; y < sc.dstH; ++y) {
+                const unsigned char *cRow = coreScaled.constScanLine(y);
+                const uchar *qRow = qtScaled.constScanLine(y);
+                for (int x = 0; x < sc.dstW; ++x) {
+                    const unsigned char *cp = cRow + x * 4;
+                    const uchar *qp = qRow + x * 4;
+
+                    const int da = std::abs(int(cp[3]) - int(qp[3]));
+                    caseMaxDiff = std::max(caseMaxDiff, da);
+                    caseDiffSum += static_cast<std::uint64_t>(da);
+                    ++caseChannels;
+
+                    if (cp[3] > 0 && qp[3] > 0) {
+                        for (int c = 0; c < 3; ++c) {
+                            const int dc = std::abs(int(cp[c]) - int(qp[c]));
+                            caseMaxDiff = std::max(caseMaxDiff, dc);
+                            caseDiffSum += static_cast<std::uint64_t>(dc);
+                            ++caseChannels;
+                        }
+                    }
+                }
+            }
+
+            overallMaxDiff = std::max(overallMaxDiff, caseMaxDiff);
+            overallDiffSum += caseDiffSum;
+            overallChannelCount += caseChannels;
+
+            const double caseMeanDiff =
+                (caseChannels > 0) ? (double(caseDiffSum) / double(caseChannels)) : 0.0;
+            if (caseMaxDiff > 3 || caseMeanDiff > 1.0) {
+                std::fprintf(stderr,
+                             "RGBA scaled mismatch pat=%d case=%s (%dx%d->%dx%d): maxDiff=%d meanDiff=%.4f\n",
+                             pat,
+                             sc.name,
+                             sc.srcW,
+                             sc.srcH,
+                             sc.dstW,
+                             sc.dstH,
+                             caseMaxDiff,
+                             caseMeanDiff);
+            }
+            check(caseMaxDiff <= 3, "RGBA8888 scaled max channel diff should be <= 3");
+            check(caseMeanDiff <= 1.0, "RGBA8888 scaled mean channel diff should be <= 1");
+
+            // Grayscale8 single-channel differential check.
+            AnimeCore::Image grayCoreSrc(sc.srcW, sc.srcH, AnimeCore::Image::Format_Grayscale8);
+            QImage grayQtSrc(sc.srcW, sc.srcH, QImage::Format_Grayscale8);
+            for (int y = 0; y < sc.srcH; ++y) {
+                uchar *qRow = grayQtSrc.scanLine(y);
+                for (int x = 0; x < sc.srcW; ++x) {
+                    const unsigned char v = static_cast<unsigned char>(
+                        AnimeCore::qGray(coreSrc.pixel(x, y)));
+                    grayCoreSrc.setPixel(x, y, v);
+                    qRow[x] = v;
+                }
+            }
+
+            const AnimeCore::Image grayCoreScaled = grayCoreSrc.scaled(sc.dstW, sc.dstH);
+            const QImage grayQtScaled = grayQtSrc
+                                            .scaled(sc.dstW,
+                                                    sc.dstH,
+                                                    Qt::IgnoreAspectRatio,
+                                                    Qt::SmoothTransformation)
+                                            .convertToFormat(QImage::Format_Grayscale8);
+
+            int grayMaxDiff = 0;
+            std::uint64_t grayDiffSum = 0;
+            for (int y = 0; y < sc.dstH; ++y) {
+                const unsigned char *cRow = grayCoreScaled.constScanLine(y);
+                const uchar *qRow = grayQtScaled.constScanLine(y);
+                for (int x = 0; x < sc.dstW; ++x) {
+                    const int d = std::abs(int(cRow[x]) - int(qRow[x]));
+                    grayMaxDiff = std::max(grayMaxDiff, d);
+                    grayDiffSum += static_cast<std::uint64_t>(d);
+                }
+            }
+            const std::uint64_t grayPixels =
+                static_cast<std::uint64_t>(sc.dstW) * static_cast<std::uint64_t>(sc.dstH);
+            const double grayMeanDiff = double(grayDiffSum) / double(grayPixels);
+            overallMaxDiff = std::max(overallMaxDiff, grayMaxDiff);
+            overallDiffSum += grayDiffSum;
+            overallChannelCount += grayPixels;
+
+            if (grayMaxDiff > 3 || grayMeanDiff > 1.0) {
+                std::fprintf(stderr,
+                             "Grayscale8 scaled mismatch pat=%d case=%s (%dx%d->%dx%d): maxDiff=%d meanDiff=%.4f\n",
+                             pat,
+                             sc.name,
+                             sc.srcW,
+                             sc.srcH,
+                             sc.dstW,
+                             sc.dstH,
+                             grayMaxDiff,
+                             grayMeanDiff);
+            }
+            check(grayMaxDiff <= 3, "Grayscale8 scaled max diff should be <= 3");
+            check(grayMeanDiff <= 1.0, "Grayscale8 scaled mean diff should be <= 1");
+        }
+    }
+
+    const double overallMeanDiff =
+        (overallChannelCount > 0) ? (double(overallDiffSum) / double(overallChannelCount)) : 0.0;
+    std::printf("scaled_diff_stats: maxDiff=%d meanDiff=%.6f\n", overallMaxDiff, overallMeanDiff);
+}
+
 } // namespace
 
 int main()
@@ -538,5 +795,6 @@ int main()
     testPngEncodeDifferential();
     testBase64Differential();
     testQtBridge();
+    testScaledDifferential();
     return failures == 0 ? 0 : 1;
 }
