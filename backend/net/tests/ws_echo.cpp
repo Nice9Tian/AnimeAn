@@ -1,45 +1,63 @@
 #include "wsserver.h"
 
-#include <QCommandLineOption>
-#include <QCommandLineParser>
-#include <QCoreApplication>
+#include "platform/eventloop.h"
 
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
+#include <string>
+
+namespace {
+
+bool parsePort(const char *str, std::uint16_t *portOut)
+{
+    if (!str || *str == '\0') {
+        return false;
+    }
+    char *end = nullptr;
+    const unsigned long val = std::strtoul(str, &end, 10);
+    if (!end || *end != '\0' || val > 65535UL) {
+        return false;
+    }
+    *portOut = static_cast<std::uint16_t>(val);
+    return true;
+}
+
+} // namespace
 
 int main(int argc, char *argv[])
 {
-    QCoreApplication app(argc, argv);
+    std::uint16_t requestedPort = 0;
+    std::string token;
 
-    QCommandLineParser parser;
-    QCommandLineOption portOption(
-        QStringLiteral("port"),
-        QStringLiteral("Port to listen on (0 for automatic)."),
-        QStringLiteral("port"),
-        QStringLiteral("0"));
-    QCommandLineOption tokenOption(
-        QStringLiteral("token"),
-        QStringLiteral("Required connection token."),
-        QStringLiteral("token"),
-        QString());
-
-    parser.addOption(portOption);
-    parser.addOption(tokenOption);
-    parser.process(app);
-
-    bool ok = false;
-    const uint parsedPort = parser.value(portOption).toUInt(&ok);
-    if (!ok || parsedPort > 65535) {
-        std::cerr << "Invalid port value\n";
-        return 1;
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i] ? argv[i] : "";
+        if (arg == "--port" && i + 1 < argc) {
+            if (!parsePort(argv[++i], &requestedPort)) {
+                std::cerr << "Invalid port value\n";
+                return 1;
+            }
+        } else if (arg.rfind("--port=", 0) == 0) {
+            if (!parsePort(arg.c_str() + 7, &requestedPort)) {
+                std::cerr << "Invalid port value\n";
+                return 1;
+            }
+        } else if (arg == "--token" && i + 1 < argc) {
+            token = argv[++i] ? argv[i] : "";
+        } else if (arg.rfind("--token=", 0) == 0) {
+            token = arg.substr(8);
+        }
     }
 
-    const quint16 requestedPort = static_cast<quint16>(parsedPort);
-    const QString token = parser.value(tokenOption);
-
-    WsServer server(token);
-    QObject::connect(&server, &WsServer::textReceived, &server, &WsServer::sendText);
-    QObject::connect(&server, &WsServer::binaryReceived, &server, &WsServer::sendBinary);
+    WsServer server(AnimeCore::String::fromUtf8(token));
+    server.textReceived.connect([&server](const std::string &data) {
+        server.sendText(data);
+    });
+    server.binaryReceived.connect([&server](const std::string &data) {
+        server.sendBinary(data);
+    });
 
     if (!server.listen(requestedPort)) {
         std::cerr << "Failed to listen on 127.0.0.1:" << requestedPort << "\n";
@@ -49,5 +67,5 @@ int main(int argc, char *argv[])
     std::cout << "ANIMEAN_BACKEND_PORT=" << server.port() << std::endl;
     std::fflush(stdout);
 
-    return app.exec();
+    return EventLoop::instance().exec();
 }

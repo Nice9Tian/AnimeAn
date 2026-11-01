@@ -4,7 +4,10 @@ if(NOT ANIMEAN_BUILD_BACKEND)
     return()
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Network)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui)
+
+add_subdirectory(platform)
+add_subdirectory(net)
 
 add_library(animean_core_headless STATIC
     ${CMAKE_SOURCE_DIR}/selectionattention.cpp
@@ -56,7 +59,7 @@ add_executable(AnimeAnBackend
     session/backendsession.cpp
     session/backendsession.h
 )
-target_link_libraries(AnimeAnBackend PRIVATE animean_core_headless Qt6::Network)
+target_link_libraries(AnimeAnBackend PRIVATE animean_core_headless animean_platform ws2_32)
 
 add_executable(board_headless_test
     board/tests/board_headless_test.cpp

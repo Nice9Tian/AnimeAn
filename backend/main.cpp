@@ -1,4 +1,5 @@
 #include "net/wsserver.h"
+#include "platform/eventloop.h"
 #include "session/backendsession.h"
 #include "theme.h"
 
@@ -107,7 +108,8 @@ int main(int argc, char *argv[])
     py::scoped_interpreter guard;
 #endif
 
-    WsServer ws(token);
+    const QByteArray tokenUtf8 = token.toUtf8();
+    WsServer ws(AnimeCore::String::fromUtf8(tokenUtf8.constData(), static_cast<int>(tokenUtf8.size())));
     BackendSession session(&ws);
     session.initializePythonStartup();
 
@@ -124,5 +126,10 @@ int main(int argc, char *argv[])
     std::printf("ANIMEAN_BACKEND_PORT=%u\n", static_cast<unsigned int>(ws.port()));
     std::fflush(stdout);
 
-    return app.exec();
+    // 过渡，后端去掉 Qt 时删
+    EventLoop::instance().setIdlePump([]() {
+        QCoreApplication::processEvents();
+    });
+
+    return EventLoop::instance().exec();
 }

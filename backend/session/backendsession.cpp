@@ -557,11 +557,11 @@ BackendSession::BackendSession(WsServer *ws, QObject *parent)
     m_childBoard->resetHistory(QStringLiteral("Initial"));
 
     if (m_ws) {
-        connect(m_ws, &WsServer::clientConnected, this, &BackendSession::onClientConnected);
-        connect(m_ws, &WsServer::clientDisconnected, this, &BackendSession::onClientDisconnected);
-        connect(m_ws, &WsServer::textReceived, this, [this](const QByteArray &data) {
+        m_ws->clientConnected.connect([this]() { onClientConnected(); });
+        m_ws->clientDisconnected.connect([this]() { onClientDisconnected(); });
+        m_ws->textReceived.connect([this](const std::string &data) {
             QJsonParseError err;
-            const QJsonDocument doc = QJsonDocument::fromJson(data, &err);
+            const QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(data), &err);
             if (err.error != QJsonParseError::NoError || !doc.isObject()) {
                 return;
             }
@@ -2843,7 +2843,7 @@ void BackendSession::handleFrameSink(const QString &viewName, const BoardFrame &
     payload.append(",\"ops\":");
     payload.append(frame.ops.isEmpty() ? QByteArrayLiteral("[]") : frame.ops);
     payload.append('}');
-    m_ws->sendText(payload);
+    m_ws->sendText(payload.toStdString());
 }
 
 void BackendSession::handleImageSink(const QString &key, const QImage &rgba)
@@ -2878,7 +2878,7 @@ void BackendSession::sendImagePacket(const QString &key, const QImage &rgba)
     };
     sendJson(header);
     if (rgba.bytesPerLine() == w * 4) {
-        m_ws->sendBinary(QByteArray(reinterpret_cast<const char *>(rgba.constBits()), expectedBytes));
+        m_ws->sendBinary(std::string(reinterpret_cast<const char *>(rgba.constBits()), static_cast<std::size_t>(expectedBytes)));
     } else {
         QByteArray tight;
         tight.resize(expectedBytes);
@@ -2886,7 +2886,7 @@ void BackendSession::sendImagePacket(const QString &key, const QImage &rgba)
         for (int y = 0; y < h; ++y) {
             std::memcpy(dst + y * w * 4, rgba.constScanLine(y), static_cast<size_t>(w * 4));
         }
-        m_ws->sendBinary(tight);
+        m_ws->sendBinary(tight.toStdString());
     }
 }
 
@@ -3006,7 +3006,7 @@ void BackendSession::sendJson(const QJsonObject &obj)
     if (!m_ws || !m_ws->hasClient()) {
         return;
     }
-    m_ws->sendText(QJsonDocument(obj).toJson(QJsonDocument::Compact));
+    m_ws->sendText(QJsonDocument(obj).toJson(QJsonDocument::Compact).toStdString());
 }
 
 QJsonValue BackendSession::buildStateValue(const QString &key) const
