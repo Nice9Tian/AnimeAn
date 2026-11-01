@@ -96,6 +96,18 @@ public:
 
     PointF currentPosition() const;
 
+    void arcMoveTo(const RectF &rect, double angle);
+    void arcMoveTo(double x, double y, double w, double h, double angle)
+    {
+        arcMoveTo(RectF(x, y, w, h), angle);
+    }
+
+    void arcTo(const RectF &rect, double startAngle, double sweepLength);
+    void arcTo(double x, double y, double w, double h, double startAngle, double sweepLength)
+    {
+        arcTo(RectF(x, y, w, h), startAngle, sweepLength);
+    }
+
     void addRect(const RectF &rect);
     void addRect(double x, double y, double w, double h) { addRect(RectF(x, y, w, h)); }
     void addEllipse(const RectF &rect);

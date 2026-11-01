@@ -19,6 +19,10 @@ function isPlainObject(val) {
 // Painted images differ at the edges with the antialiasing. Sixteen by sixteen cells,
 // so this catches a shifted, missing or recoloured picture and lets edge noise through.
 const IMAGE_GRID_TOLERANCE = 24;
+// A small image has about one pixel per cell, so a cell sees the full edge difference.
+// Cursors are the small ones, and their size and hot spot are compared exactly.
+const SMALL_IMAGE_GRID_TOLERANCE = 64;
+const SMALL_IMAGE_SIDE = 64;
 
 function gridDistance(a, b) {
   if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) {
@@ -56,7 +60,8 @@ export function compareRecords(oldRecords, newRecords, maxDiffs = 30) {
         const worst = gridDistance(a.grid, b.grid);
         softImages++;
         maxGridDiff = Math.max(maxGridDiff, worst);
-        if (worst > IMAGE_GRID_TOLERANCE) {
+        const tolerance = Math.min(a.w, a.h) < SMALL_IMAGE_SIDE ? SMALL_IMAGE_GRID_TOLERANCE : IMAGE_GRID_TOLERANCE;
+        if (worst > tolerance) {
           pushDiff(scenario, stepLabel, `${fieldPath}.grid`, a.sha256, `${b.sha256} worst=${worst}`);
         }
       }

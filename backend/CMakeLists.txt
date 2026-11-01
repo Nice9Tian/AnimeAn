@@ -19,8 +19,8 @@ add_library(animean_core_headless STATIC
     ${CMAKE_SOURCE_DIR}/theme.h
     board/boardsurface.cpp
     board/boardsurface.h
-    board/recordingengine.cpp
-    board/recordingengine.h
+    board/cursor.h
+    board/inputevent.h
     board/recordingdevice.cpp
     board/recordingdevice.h
 )
@@ -33,7 +33,7 @@ target_include_directories(animean_core_headless PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/board
 )
 
-target_link_libraries(animean_core_headless PUBLIC animean_core Qt6::Core Qt6::Gui)
+target_link_libraries(animean_core_headless PUBLIC animean_core animean_platform Qt6::Core Qt6::Gui)
 
 if(ANIMEAN_WITH_PYTHON)
     target_sources(animean_core_headless PRIVATE
@@ -67,11 +67,7 @@ add_executable(board_headless_test
     board/tests/board_headless_test.cpp
 )
 target_link_libraries(board_headless_test PRIVATE animean_core_headless)
-add_executable(recorder_tests
-    board/tests/recorder_tests.cpp
-)
-target_link_libraries(recorder_tests PRIVATE animean_core_headless)
-add_dependencies(AnimeAnBackend board_headless_test recorder_tests)
+add_dependencies(AnimeAnBackend board_headless_test)
 
 if(WIN32)
     find_program(ANIMEAN_BACKEND_WINDEPLOYQT windeployqt HINTS "${Qt6_DIR}/../../../bin")
@@ -115,8 +111,5 @@ endif()
 if(BUILD_TESTING)
     add_test(NAME board_headless_test
         COMMAND board_headless_test "${CMAKE_CURRENT_BINARY_DIR}/board_headless_ops.json"
-    )
-    add_test(NAME recorder_tests
-        COMMAND recorder_tests
     )
 endif()

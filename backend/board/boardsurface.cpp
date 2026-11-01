@@ -1,20 +1,20 @@
 #include "boardsurface.h"
 
-#include <QTimer>
-
 #include <algorithm>
-#include <climits>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
+#include <string>
+#include <utility>
 
-BoardSurface::BoardSurface(QObject *parent)
-    : QObject(parent)
-    , m_engine(std::make_unique<RecordingPaintEngine>())
-    , m_updateTimer(new QTimer(this))
+using namespace AnimeCore;
+
+BoardSurface::BoardSurface(void * /*parent*/)
+    : m_engine(std::make_unique<RecordingDevice>())
 {
-    m_updateTimer->setSingleShot(true);
-    m_updateTimer->setInterval(0);
-    connect(m_updateTimer, &QTimer::timeout, this, &BoardSurface::flushFrame);
+    m_updateTimer.setSingleShot(true);
+    m_updateTimer.setInterval(0);
+    m_updateTimer.timeout.connect([this]() { flushFrame(); });
 }
 
 BoardSurface::~BoardSurface() = default;
@@ -37,17 +37,23 @@ void BoardSurface::setCanSendFrame(std::function<bool()> canSend)
     }
 }
 
-void BoardSurface::setImageSink(std::function<void(const QString &key, const QImage &)> sink)
+void BoardSurface::setImageSink(std::function<void(const String &key, const Image &)> sink)
 {
-    m_engine->setImageSink(std::move(sink));
+    if (!sink) {
+        m_engine->setImageSink(nullptr);
+        return;
+    }
+    m_engine->setImageSink([s = std::move(sink)](const std::string &key, const Image &image) {
+        s(String::fromStdString(key), image);
+    });
 }
 
-void BoardSurface::setCursorSink(std::function<void(const QCursor &)> sink)
+void BoardSurface::setCursorSink(std::function<void(const Cursor &)> sink)
 {
     m_cursorSink = std::move(sink);
 }
 
-void BoardSurface::setCursor(const QCursor &cursor)
+void BoardSurface::setCursor(const Cursor &cursor)
 {
     m_cursor = cursor;
     if (m_cursorSink) {
@@ -57,82 +63,82 @@ void BoardSurface::setCursor(const QCursor &cursor)
 
 void BoardSurface::unsetCursor()
 {
-    m_cursor = QCursor(Qt::ArrowCursor);
+    m_cursor = Cursor(ArrowCursor);
     if (m_cursorSink) {
         m_cursorSink(m_cursor);
     }
 }
 
-void BoardSurface::injectMouse(QEvent::Type type,
-                               QPointF pos,
-                               Qt::MouseButton button,
-                               Qt::MouseButtons buttons,
-                               Qt::KeyboardModifiers modifiers,
-                               quint64 timestamp)
+void BoardSurface::injectMouse(Event::Type type,
+                               PointF pos,
+                               MouseButton button,
+                               MouseButtons buttons,
+                               KeyboardModifiers modifiers,
+                               std::uint64_t timestamp)
 {
     if (timestamp < m_lastMouseTimestamp) {
         timestamp = m_lastMouseTimestamp;
     } else {
         m_lastMouseTimestamp = timestamp;
     }
-    QMouseEvent ev(type, pos, pos, button, buttons, modifiers);
+    MouseEvent ev(type, pos, pos, button, buttons, modifiers);
     ev.setTimestamp(timestamp);
-    if (type == QEvent::MouseButtonPress) {
+    if (type == Event::MouseButtonPress) {
         mousePressEvent(&ev);
-    } else if (type == QEvent::MouseMove) {
+    } else if (type == Event::MouseMove) {
         mouseMoveEvent(&ev);
-    } else if (type == QEvent::MouseButtonRelease) {
+    } else if (type == Event::MouseButtonRelease) {
         mouseReleaseEvent(&ev);
     }
 }
 
-void BoardSurface::injectWheel(QPointF pos,
-                               QPoint angleDelta,
-                               Qt::KeyboardModifiers modifiers,
-                               Qt::MouseButtons buttons)
+void BoardSurface::injectWheel(PointF pos,
+                               Point angleDelta,
+                               KeyboardModifiers modifiers,
+                               MouseButtons buttons)
 {
-    QWheelEvent ev(pos, pos, QPoint(), angleDelta, buttons, modifiers, Qt::NoScrollPhase, false);
+    WheelEvent ev(pos, pos, Point(), angleDelta, buttons, modifiers, 0, false);
     wheelEvent(&ev);
 }
 
 void BoardSurface::injectEnter()
 {
-    QEnterEvent ev(QPointF(0.0, 0.0), QPointF(0.0, 0.0), QPointF(0.0, 0.0));
+    EnterEvent ev(PointF(0.0, 0.0), PointF(0.0, 0.0), PointF(0.0, 0.0));
     enterEvent(&ev);
 }
 
 void BoardSurface::injectLeave()
 {
-    QEvent ev(QEvent::Leave);
+    Event ev(Event::Leave);
     leaveEvent(&ev);
 }
 
 void BoardSurface::injectFocus()
 {
-    QFocusEvent ev(QEvent::FocusIn, Qt::OtherFocusReason);
+    FocusEvent ev(Event::FocusIn, OtherFocusReason);
     focusInEvent(&ev);
 }
 
 void BoardSurface::injectBlur()
 {
-    QFocusEvent ev(QEvent::FocusOut, Qt::OtherFocusReason);
+    FocusEvent ev(Event::FocusOut, OtherFocusReason);
     focusOutEvent(&ev);
 }
 
-void BoardSurface::resizeSurface(int w, int h, qreal dpr)
+void BoardSurface::resizeSurface(int w, int h, double dpr)
 {
-    const QSize oldSize(m_width, m_height);
+    const Size oldSize(m_width, m_height);
     m_width = std::max(0, w);
     m_height = std::max(0, h);
     m_dpr = (dpr > 0.0 && std::isfinite(dpr)) ? dpr : 1.0;
     m_forceFullFrame = true;
 
-    QResizeEvent ev(QSize(m_width, m_height), oldSize);
+    ResizeEvent ev(Size(m_width, m_height), oldSize);
     resizeEvent(&ev);
     update();
 }
 
-void BoardSurface::acknowledgeFrame(quint64 frame)
+void BoardSurface::acknowledgeFrame(std::uint64_t frame)
 {
     if (m_waitingForAck && frame >= m_lastSentFrame) {
         m_waitingForAck = false;
@@ -152,8 +158,8 @@ void BoardSurface::update()
 
 void BoardSurface::scheduleFlush()
 {
-    if (!m_updateTimer->isActive()) {
-        m_updateTimer->start(0);
+    if (!m_updateTimer.isActive()) {
+        m_updateTimer.start(0);
     }
 }
 
@@ -173,9 +179,6 @@ void BoardSurface::flushFrame()
     try {
         paintGL();
     } catch (...) {
-        if (m_engine->isActive()) {
-            m_engine->end();
-        }
         m_engine->resetFrame();
         return;
     }
@@ -184,10 +187,10 @@ void BoardSurface::flushFrame()
         return;
     }
 
-    const QVector<RecordedOp> &currOps = m_engine->ops();
+    const Vector<RecordedOp> &currOps = m_engine->ops();
     int keep = 0;
     if (!m_forceFullFrame) {
-        const int maxKeep = std::min(m_prevOps.size(), currOps.size());
+        const int maxKeep = std::min(int(m_prevOps.size()), int(currOps.size()));
         while (keep < maxKeep
                && m_prevOps[keep].hash == currOps[keep].hash
                && m_prevOps[keep].json == currOps[keep].json) {
@@ -197,23 +200,23 @@ void BoardSurface::flushFrame()
     m_forceFullFrame = false;
 
     int totalBytes = 2; // '[' and ']'
-    for (int i = keep; i < currOps.size(); ++i) {
+    for (int i = keep; i < int(currOps.size()); ++i) {
         if (i > keep) {
             ++totalBytes; // ','
         }
-        totalBytes += currOps[i].json.size();
+        totalBytes += int(currOps[i].json.size());
     }
 
-    QByteArray opsJson;
-    opsJson.resize(totalBytes);
+    std::string opsJson;
+    opsJson.resize(static_cast<std::size_t>(totalBytes));
     char *dst = opsJson.data();
     *dst++ = '[';
-    for (int i = keep; i < currOps.size(); ++i) {
+    for (int i = keep; i < int(currOps.size()); ++i) {
         if (i > keep) {
             *dst++ = ',';
         }
-        const QByteArray &item = currOps[i].json;
-        std::memcpy(dst, item.constData(), size_t(item.size()));
+        const std::string &item = currOps[i].json;
+        std::memcpy(dst, item.data(), item.size());
         dst += item.size();
     }
     *dst++ = ']';
@@ -232,50 +235,48 @@ void BoardSurface::flushFrame()
     m_frameSink(outFrame);
 }
 
-QPaintEngine *BoardSurface::paintEngine() const
+void BoardSurface::drawRects(const PaintState &state, const RectF *rects, int count)
 {
-    return m_engine.get();
+    m_engine->drawRects(state, rects, count);
 }
 
-int BoardSurface::metric(PaintDeviceMetric m) const
+void BoardSurface::drawLines(const PaintState &state, const LineF *lines, int count)
 {
-    switch (m) {
-    case PdmWidth:
-        return m_width;
-    case PdmHeight:
-        return m_height;
-    case PdmWidthMM:
-        return int(std::lround(m_width * 25.4 / 96.0));
-    case PdmHeightMM:
-        return int(std::lround(m_height * 25.4 / 96.0));
-    case PdmNumColors:
-        return INT_MAX;
-    case PdmDepth:
-        return 32;
-    case PdmDpiX:
-    case PdmPhysicalDpiX:
-        return 96;
-    case PdmDpiY:
-    case PdmPhysicalDpiY:
-        return 96;
-    // The op list is in logical pixels and the page applies its own ratio. Telling
-    // QPainter the real one would scale the transforms too, so it counts twice.
-    case PdmDevicePixelRatio:
-        return 1;
-    case PdmDevicePixelRatioScaled:
-        return int(devicePixelRatioFScale());
-    default:
-        return QPaintDevice::metric(m);
-    }
+    m_engine->drawLines(state, lines, count);
+}
+
+void BoardSurface::drawEllipse(const PaintState &state, const RectF &rect)
+{
+    m_engine->drawEllipse(state, rect);
+}
+
+void BoardSurface::drawPath(const PaintState &state, const Path &path)
+{
+    m_engine->drawPath(state, path);
+}
+
+void BoardSurface::drawPoints(const PaintState &state, const PointF *points, int count)
+{
+    m_engine->drawPoints(state, points, count);
+}
+
+void BoardSurface::drawPolygon(const PaintState &state, const PointF *points, int count, PolygonMode mode)
+{
+    m_engine->drawPolygon(state, points, count, mode);
+}
+
+void BoardSurface::drawImage(const PaintState &state, const RectF &target, const Image &image, const RectF &source)
+{
+    m_engine->drawImage(state, target, image, source);
 }
 
 void BoardSurface::paintGL() {}
-void BoardSurface::mousePressEvent(QMouseEvent *event) { event->ignore(); }
-void BoardSurface::mouseMoveEvent(QMouseEvent *event) { event->ignore(); }
-void BoardSurface::mouseReleaseEvent(QMouseEvent *event) { event->ignore(); }
-void BoardSurface::wheelEvent(QWheelEvent *event) { event->ignore(); }
-void BoardSurface::resizeEvent(QResizeEvent *event) { event->accept(); }
-void BoardSurface::focusInEvent(QFocusEvent *event) { event->accept(); }
-void BoardSurface::focusOutEvent(QFocusEvent *event) { event->accept(); }
-void BoardSurface::enterEvent(QEnterEvent *event) { event->accept(); }
-void BoardSurface::leaveEvent(QEvent *event) { event->accept(); }
+void BoardSurface::mousePressEvent(MouseEvent *event) { event->ignore(); }
+void BoardSurface::mouseMoveEvent(MouseEvent *event) { event->ignore(); }
+void BoardSurface::mouseReleaseEvent(MouseEvent *event) { event->ignore(); }
+void BoardSurface::wheelEvent(WheelEvent *event) { event->ignore(); }
+void BoardSurface::resizeEvent(ResizeEvent *event) { event->accept(); }
+void BoardSurface::focusInEvent(FocusEvent *event) { event->accept(); }
+void BoardSurface::focusOutEvent(FocusEvent *event) { event->accept(); }
+void BoardSurface::enterEvent(EnterEvent *event) { event->accept(); }
+void BoardSurface::leaveEvent(Event *event) { event->accept(); }

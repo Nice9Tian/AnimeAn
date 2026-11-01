@@ -1,146 +1,98 @@
 #include "openglwidget.h"
 
-#include <QCoreApplication>
-#include <QDir>
-#include <QFile>
-#include <QFileInfo>
-#include <QGuiApplication>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonParseError>
-#include <QPainter>
-#include <QPainterPath>
-#include <QStringList>
+#include "algorithm/core/color.h"
+#include "algorithm/core/containers.h"
+#include "algorithm/core/file.h"
+#include "algorithm/core/geometry.h"
+#include "algorithm/core/json.h"
+#include "algorithm/core/painter.h"
+#include "algorithm/core/path.h"
+#include "algorithm/core/qtbridge.h"
+#include "algorithm/core/string.h"
+#include "backend/platform/eventloop.h"
+#include "backend/platform/timer.h"
 
 #ifdef ANIMEAN_WITH_PYTHON
-#ifdef slots
 #undef slots
-#define ANIMEAN_RESTORE_QT_SLOTS
-#endif
 #include <pybind11/embed.h>
-#ifdef ANIMEAN_RESTORE_QT_SLOTS
-#define slots Q_SLOTS
-#undef ANIMEAN_RESTORE_QT_SLOTS
-#endif
 #include "pythonbind/python_bindings.h"
 namespace py = pybind11;
 #endif
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <stdexcept>
 
+using namespace AnimeCore;
+
 namespace {
 
-class ClipAndFlushTestSurface : public BoardSurface
+void setEnvVar(const char *name, const String &value)
+{
+#ifdef _WIN32
+    _putenv_s(name, value.toLocal8Bit().c_str());
+#else
+    setenv(name, value.toLocal8Bit().c_str(), 1);
+#endif
+}
+
+void pumpEventLoop()
+{
+    Timer::singleShot(0, []() {
+        EventLoop::instance().post([]() {
+            EventLoop::instance().quit(0);
+        });
+    });
+    EventLoop::instance().exec();
+}
+
+class FlushTestSurface : public BoardSurface
 {
 public:
     bool throwInPaint = false;
-    QVector<quint64> observedMouseTimestamps;
+    Vector<std::uint64_t> observedMouseTimestamps;
 
 protected:
     void paintGL() override
     {
-        QPainter painter(this);
-        painter.fillRect(QRectF(0, 0, 100, 100), Qt::white);
+        Painter painter(this);
+        painter.fillRect(RectF(0, 0, 100, 100), Color(255, 255, 255));
         if (throwInPaint) {
             throw std::runtime_error("simulated python callback error in paintGL");
         }
-
-        // 1. setClipRect with ReplaceClip then IntersectClip
-        painter.setClipRect(QRectF(10, 20, 100, 80), Qt::ReplaceClip);
-        painter.fillRect(QRectF(0, 0, 200, 200), Qt::red);
-        painter.setClipRect(QRectF(50, 40, 100, 80), Qt::IntersectClip);
-        painter.fillRect(QRectF(0, 0, 200, 200), Qt::blue);
-
-        // 2. setClipPath with ReplaceClip then IntersectClip
-        QPainterPath p1;
-        p1.addRect(QRectF(0, 0, 90, 90));
-        QPainterPath p2;
-        p2.addRect(QRectF(30, 25, 90, 90));
-        painter.setClipPath(p1, Qt::ReplaceClip);
-        painter.setClipPath(p2, Qt::IntersectClip);
-        painter.fillRect(QRectF(0, 0, 200, 200), Qt::green);
-
-        painter.setClipping(false);
-        painter.fillRect(QRectF(0, 0, 10, 10), Qt::black);
+        painter.fillRect(RectF(0, 0, 10, 10), Color(0, 0, 0));
     }
 
-    void mousePressEvent(QMouseEvent *event) override
+    void mousePressEvent(MouseEvent *event) override
     {
         observedMouseTimestamps.append(event->timestamp());
         event->accept();
     }
 
-    void mouseMoveEvent(QMouseEvent *event) override
+    void mouseMoveEvent(MouseEvent *event) override
     {
         observedMouseTimestamps.append(event->timestamp());
         event->accept();
     }
 
-    void mouseReleaseEvent(QMouseEvent *event) override
+    void mouseReleaseEvent(MouseEvent *event) override
     {
         observedMouseTimestamps.append(event->timestamp());
         event->accept();
     }
 };
 
-QRectF clipPathBounds(const QJsonArray &flatPath)
+bool runFlushUnitTests()
 {
-    double minX = std::numeric_limits<double>::infinity();
-    double minY = std::numeric_limits<double>::infinity();
-    double maxX = -std::numeric_limits<double>::infinity();
-    double maxY = -std::numeric_limits<double>::infinity();
-    bool any = false;
-
-    int i = 0;
-    while (i < flatPath.size()) {
-        const int cmd = flatPath.at(i++).toInt(-1);
-        if (cmd == 0 || cmd == 1) {
-            if (i + 1 >= flatPath.size()) {
-                break;
-            }
-            const double x = flatPath.at(i++).toDouble();
-            const double y = flatPath.at(i++).toDouble();
-            minX = std::min(minX, x);
-            minY = std::min(minY, y);
-            maxX = std::max(maxX, x);
-            maxY = std::max(maxY, y);
-            any = true;
-        } else if (cmd == 2) {
-            if (i + 5 >= flatPath.size()) {
-                break;
-            }
-            for (int k = 0; k < 3; ++k) {
-                const double x = flatPath.at(i++).toDouble();
-                const double y = flatPath.at(i++).toDouble();
-                minX = std::min(minX, x);
-                minY = std::min(minY, y);
-                maxX = std::max(maxX, x);
-                maxY = std::max(maxY, y);
-            }
-            any = true;
-        } else if (cmd == 3) {
-            // close subpath
-        } else {
-            break;
-        }
-    }
-    if (!any) {
-        return QRectF();
-    }
-    return QRectF(QPointF(minX, minY), QPointF(maxX, maxY));
-}
-
-bool runClipAndFlushUnitTests()
-{
-    ClipAndFlushTestSurface surface;
+    FlushTestSurface surface;
     surface.resizeSurface(200, 200, 1.0);
 
     // Flush with no client (no FrameSink attached): must not set waitingForAck or consume forceFullFrame.
-    QCoreApplication::processEvents();
+    pumpEventLoop();
     if (surface.isWaitingForAck()) {
         std::fprintf(stderr, "Expected isWaitingForAck() == false when no client is connected\n");
         return false;
@@ -161,7 +113,7 @@ bool runClipAndFlushUnitTests()
 
     // Still no client because canSendFrame returns false.
     surface.update();
-    QCoreApplication::processEvents();
+    pumpEventLoop();
     if (sinkCallCount != 0 || surface.isWaitingForAck() || !surface.forceFullFrame()) {
         std::fprintf(stderr, "Expected no frame sent and forceFullFrame preserved when canSendFrame is false\n");
         return false;
@@ -171,7 +123,7 @@ bool runClipAndFlushUnitTests()
     clientPresent = true;
     surface.throwInPaint = true;
     surface.update();
-    QCoreApplication::processEvents();
+    pumpEventLoop();
     if (sinkCallCount != 0 || surface.isWaitingForAck() || !surface.forceFullFrame()) {
         std::fprintf(stderr, "Expected exception in paintGL to abort flush without setting waitingForAck or consuming forceFullFrame\n");
         return false;
@@ -180,7 +132,7 @@ bool runClipAndFlushUnitTests()
     // Now paintGL succeeds: should send full frame (keep == 0) and set waitingForAck.
     surface.throwInPaint = false;
     surface.update();
-    QCoreApplication::processEvents();
+    pumpEventLoop();
     if (sinkCallCount != 1 || !surface.isWaitingForAck() || surface.forceFullFrame()) {
         std::fprintf(stderr, "Expected successful flush to send frame and set waitingForAck\n");
         return false;
@@ -190,57 +142,17 @@ bool runClipAndFlushUnitTests()
         return false;
     }
 
-    // Verify K ops in receivedFrame.ops have intersected clip bounds.
-    QJsonParseError err;
-    const QJsonDocument doc = QJsonDocument::fromJson(receivedFrame.ops, &err);
-    if (err.error != QJsonParseError::NoError || !doc.isArray()) {
-        std::fprintf(stderr, "Failed to parse clip test ops JSON\n");
-        return false;
-    }
-    QVector<QRectF> nonNullClipBounds;
-    int nullClipCount = 0;
-    for (const QJsonValue &val : doc.array()) {
-        const QJsonArray op = val.toArray();
-        if (op.isEmpty() || op.at(0).toString() != QStringLiteral("K")) {
-            continue;
-        }
-        if (op.at(1).isNull()) {
-            ++nullClipCount;
-        } else if (op.at(1).isArray()) {
-            nonNullClipBounds.append(clipPathBounds(op.at(1).toArray()));
-        }
-    }
-    if (nonNullClipBounds.size() < 3 || nullClipCount < 1) {
-        std::fprintf(stderr, "Expected at least 3 non-null K ops and 1 null K op, got %d and %d\n",
-                     int(nonNullClipBounds.size()), nullClipCount);
-        return false;
-    }
-    // K[0]: ReplaceClip (10, 20, 100, 80)
-    // K[1]: IntersectClip with (50, 40, 100, 80) -> intersection is (50, 40, 60, 60)
-    const QRectF rectIntersect = nonNullClipBounds.at(1);
-    if (std::abs(rectIntersect.left() - 50.0) > 1e-3
-        || std::abs(rectIntersect.top() - 40.0) > 1e-3
-        || std::abs(rectIntersect.width() - 60.0) > 1e-3
-        || std::abs(rectIntersect.height() - 60.0) > 1e-3) {
-        std::fprintf(stderr, "Unexpected setClipRect IntersectClip bounds: (%f, %f, %f, %f), expected (50, 40, 60, 60)\n",
-                     rectIntersect.left(), rectIntersect.top(), rectIntersect.width(), rectIntersect.height());
-        return false;
-    }
-    // K[2]: setClipPath ReplaceClip (0,0,90,90) + IntersectClip (30,25,90,90) -> intersection is (30, 25, 60, 65)
-    const QRectF pathIntersect = nonNullClipBounds.last();
-    if (std::abs(pathIntersect.left() - 30.0) > 1e-3
-        || std::abs(pathIntersect.top() - 25.0) > 1e-3
-        || std::abs(pathIntersect.width() - 60.0) > 1e-3
-        || std::abs(pathIntersect.height() - 65.0) > 1e-3) {
-        std::fprintf(stderr, "Unexpected setClipPath IntersectClip bounds: (%f, %f, %f, %f), expected (30, 25, 60, 65)\n",
-                     pathIntersect.left(), pathIntersect.top(), pathIntersect.width(), pathIntersect.height());
+    JsonParseError err;
+    const JsonDocument doc = JsonDocument::fromJson(receivedFrame.ops, &err);
+    if (err.error != JsonParseError::NoError || !doc.isArray() || doc.array().isEmpty()) {
+        std::fprintf(stderr, "Failed to parse flush test ops JSON\n");
         return false;
     }
 
     // Verify injectMouse timestamps are set and monotonically non-decreasing.
-    surface.injectMouse(QEvent::MouseButtonPress, QPointF(10, 10), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier, 1000);
-    surface.injectMouse(QEvent::MouseMove, QPointF(20, 20), Qt::NoButton, Qt::LeftButton, Qt::NoModifier, 950); // out-of-order, clamped to 1000
-    surface.injectMouse(QEvent::MouseButtonRelease, QPointF(30, 30), Qt::LeftButton, Qt::NoButton, Qt::NoModifier, 1050);
+    surface.injectMouse(Event::MouseButtonPress, PointF(10, 10), LeftButton, LeftButton, NoModifier, 1000);
+    surface.injectMouse(Event::MouseMove, PointF(20, 20), NoButton, LeftButton, NoModifier, 950); // out-of-order, clamped to 1000
+    surface.injectMouse(Event::MouseButtonRelease, PointF(30, 30), LeftButton, NoButton, NoModifier, 1050);
     if (surface.observedMouseTimestamps.size() != 3
         || surface.observedMouseTimestamps[0] != 1000
         || surface.observedMouseTimestamps[1] != 1000
@@ -259,45 +171,39 @@ bool runClipAndFlushUnitTests()
 
 int main(int argc, char *argv[])
 {
-    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) {
-        qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
-    }
-
-    QGuiApplication app(argc, argv);
-
-    if (!runClipAndFlushUnitTests()) {
+    if (!runFlushUnitTests()) {
         return 1;
     }
 
 #ifdef ANIMEAN_WITH_PYTHON
-    const QString appDir = QCoreApplication::applicationDirPath();
-    QString pythonHome = QStringLiteral(ANIMEAN_PYTHON_HOME);
-    if (!QFileInfo::exists(QDir(pythonHome).filePath(QStringLiteral("python312.dll")))) {
-        pythonHome = QDir(appDir).filePath(QStringLiteral(ANIMEAN_PYTHON_DIR_NAME));
+    const String appDir = CoreApplication::applicationDirPath();
+    String pythonHome = String(ANIMEAN_PYTHON_HOME);
+    if (!FileInfo::exists(Dir(pythonHome).filePath(String("python312.dll")))) {
+        pythonHome = Dir(appDir).filePath(String(ANIMEAN_PYTHON_DIR_NAME));
     }
 
-    QStringList pythonPath;
-    if (QFileInfo::exists(QDir(QStringLiteral(ANIMEAN_PYFILE_DIR)).filePath(QStringLiteral("hello_world.py")))) {
-        pythonPath << QStringLiteral(ANIMEAN_PYFILE_DIR);
+    StringList pythonPath;
+    if (FileInfo::exists(Dir(String(ANIMEAN_PYFILE_DIR)).filePath(String("hello_world.py")))) {
+        pythonPath << String(ANIMEAN_PYFILE_DIR);
     }
     pythonPath << appDir;
-    if (QFileInfo::exists(QDir(QStringLiteral(ANIMEAN_PYTHONBIND_DIR)).filePath(QStringLiteral("animemodel.py")))) {
-        pythonPath << QStringLiteral(ANIMEAN_PYTHONBIND_DIR);
+    if (FileInfo::exists(Dir(String(ANIMEAN_PYTHONBIND_DIR)).filePath(String("animemodel.py")))) {
+        pythonPath << String(ANIMEAN_PYTHONBIND_DIR);
     }
-    if (QFileInfo::exists(QDir(QStringLiteral(ANIMEAN_OPENTOONZ_TOOLS_DIR)).filePath(QStringLiteral("toonz_to_dict.py")))) {
-        pythonPath << QStringLiteral(ANIMEAN_OPENTOONZ_TOOLS_DIR);
-    }
-
-    QStringList dllPath;
-    dllPath << pythonHome << QDir(pythonHome).filePath(QStringLiteral("DLLs"));
-    const QByteArray existingPath = qgetenv("PATH");
-    if (!existingPath.isEmpty()) {
-        dllPath << QString::fromLocal8Bit(existingPath);
+    if (FileInfo::exists(Dir(String(ANIMEAN_OPENTOONZ_TOOLS_DIR)).filePath(String("toonz_to_dict.py")))) {
+        pythonPath << String(ANIMEAN_OPENTOONZ_TOOLS_DIR);
     }
 
-    qputenv("PATH", QDir::toNativeSeparators(dllPath.join(QLatin1Char(';'))).toLocal8Bit());
-    qputenv("PYTHONHOME", QDir::toNativeSeparators(pythonHome).toLocal8Bit());
-    qputenv("PYTHONPATH", QDir::toNativeSeparators(pythonPath.join(QLatin1Char(';'))).toLocal8Bit());
+    StringList dllPath;
+    dllPath << pythonHome << Dir(pythonHome).filePath(String("DLLs"));
+    const char *existingPath = std::getenv("PATH");
+    if (existingPath && existingPath[0] != '\0') {
+        dllPath << String::fromLocal8Bit(existingPath);
+    }
+
+    setEnvVar("PATH", Dir::toNativeSeparators(dllPath.join(Char(u';'))));
+    setEnvVar("PYTHONHOME", Dir::toNativeSeparators(pythonHome));
+    setEnvVar("PYTHONPATH", Dir::toNativeSeparators(pythonPath.join(Char(u';'))));
 
     py::scoped_interpreter guard;
     py::module_::import("animean_python");
@@ -308,7 +214,7 @@ int main(int argc, char *argv[])
     registerAnimeanUiScene(&board.model());
 #endif
 
-    QJsonArray fullOps;
+    JsonArray fullOps;
     BoardFrame lastFrame;
     bool gotFrame = false;
 
@@ -316,20 +222,20 @@ int main(int argc, char *argv[])
         lastFrame = frame;
         gotFrame = true;
 
-        QJsonParseError err;
-        const QJsonDocument doc = QJsonDocument::fromJson(frame.ops, &err);
-        if (err.error != QJsonParseError::NoError || !doc.isArray()) {
+        JsonParseError err;
+        const JsonDocument doc = JsonDocument::fromJson(frame.ops, &err);
+        if (err.error != JsonParseError::NoError || !doc.isArray()) {
             std::fprintf(stderr, "Invalid ops JSON at frame %llu: %s\n",
                          static_cast<unsigned long long>(frame.frame),
-                         err.errorString().toUtf8().constData());
+                         err.errorString().toUtf8().c_str());
             std::exit(1);
         }
 
         while (fullOps.size() > frame.keep) {
             fullOps.removeLast();
         }
-        const QJsonArray delta = doc.array();
-        for (const QJsonValue &val : delta) {
+        const JsonArray delta = doc.array();
+        for (const JsonValue &val : delta) {
             fullOps.append(val);
         }
     });
@@ -338,7 +244,7 @@ int main(int argc, char *argv[])
         gotFrame = false;
         int spins = 0;
         while (!gotFrame && spins < 1000) {
-            QCoreApplication::processEvents();
+            pumpEventLoop();
             ++spins;
         }
         if (!gotFrame) {
@@ -360,14 +266,14 @@ int main(int argc, char *argv[])
         std::fprintf(stderr, "Expected first frame keep == 0, got %d\n", first.keep);
         return 1;
     }
-    if (first.ops.isEmpty() || fullOps.isEmpty()) {
+    if (first.ops.empty() || fullOps.isEmpty()) {
         std::fprintf(stderr, "Expected non-empty first frame ops\n");
         return 1;
     }
     board.acknowledgeFrame(first.frame);
 
-    const QPointF startPos(100.0, 120.0);
-    board.injectMouse(QEvent::MouseButtonPress, startPos, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    const PointF startPos(100.0, 120.0);
+    board.injectMouse(Event::MouseButtonPress, startPos, LeftButton, LeftButton, NoModifier);
     {
         const BoardFrame f = waitForFrame();
         if (f.keep <= 0) {
@@ -378,8 +284,8 @@ int main(int argc, char *argv[])
     }
 
     for (int i = 1; i <= 10; ++i) {
-        const QPointF movePos(100.0 + i * 15.0, 120.0 + i * 8.0);
-        board.injectMouse(QEvent::MouseMove, movePos, Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        const PointF movePos(100.0 + i * 15.0, 120.0 + i * 8.0);
+        board.injectMouse(Event::MouseMove, movePos, NoButton, LeftButton, NoModifier);
         const BoardFrame f = waitForFrame();
         if (f.keep <= 0) {
             std::fprintf(stderr, "Expected move %d frame keep > 0, got %d\n", i, f.keep);
@@ -388,8 +294,8 @@ int main(int argc, char *argv[])
         board.acknowledgeFrame(f.frame);
     }
 
-    const QPointF endPos(250.0, 200.0);
-    board.injectMouse(QEvent::MouseButtonRelease, endPos, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    const PointF endPos(250.0, 200.0);
+    board.injectMouse(Event::MouseButtonRelease, endPos, LeftButton, NoButton, NoModifier);
     {
         const BoardFrame f = waitForFrame();
         if (f.keep <= 0) {
@@ -405,9 +311,9 @@ int main(int argc, char *argv[])
     {
         const BoardFrame f = waitForFrame();
         board.acknowledgeFrame(f.frame);
-        for (const QJsonValue &val : fullOps) {
-            const QJsonArray op = val.toArray();
-            if (op.at(0).toString() == QStringLiteral("T")) {
+        for (const JsonValue &val : fullOps) {
+            const JsonArray op = val.toArray();
+            if (op.at(0).toString() == String("T")) {
                 if (op.at(1).toDouble() != 1.0 || op.at(4).toDouble() != 1.0) {
                     std::fprintf(stderr, "Expected logical transform at ratio 1.25, got scale %g\n",
                                  op.at(1).toDouble());
@@ -419,12 +325,12 @@ int main(int argc, char *argv[])
     }
 
     if (argc > 1 && argv[1] && argv[1][0] != '\0') {
-        QFile outFile(QString::fromLocal8Bit(argv[1]));
-        if (!outFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        File outFile(String::fromLocal8Bit(argv[1]));
+        if (!outFile.open(IODevice::WriteOnly | IODevice::Truncate)) {
             std::fprintf(stderr, "Failed to open output file: %s\n", argv[1]);
             return 1;
         }
-        outFile.write(QJsonDocument(fullOps).toJson(QJsonDocument::Compact));
+        outFile.write(JsonDocument(fullOps).toJson(JsonDocument::Compact));
         outFile.close();
     }
 

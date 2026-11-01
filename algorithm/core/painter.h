@@ -138,6 +138,10 @@ public:
 class Painter
 {
 public:
+    using CompositionMode = AnimeCore::CompositionMode;
+    static constexpr CompositionMode CompositionMode_SourceOver = AnimeCore::CompositionMode_SourceOver;
+    static constexpr CompositionMode CompositionMode_SourceIn = AnimeCore::CompositionMode_SourceIn;
+
     enum RenderHint {
         Antialiasing = 0x01,
         SmoothPixmapTransform = 0x04

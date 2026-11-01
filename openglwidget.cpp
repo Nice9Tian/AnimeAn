@@ -1,49 +1,43 @@
-#include "openglwidget.h"
+#include "algorithm/core/color.h"
+#include "algorithm/core/containers.h"
+#include "algorithm/core/geometry.h"
+#include "algorithm/core/image.h"
+#include "algorithm/core/json.h"
+#include "algorithm/core/painter.h"
+#include "algorithm/core/path.h"
 #include "algorithm/core/qtbridge.h"
+#include "algorithm/core/string.h"
+#include "openglwidget.h"
 #include "theme.h"
 
-#include <QLineF>
-#include <QGuiApplication>
-#include <QImage>
-#include <QCursor>
-#include <QPainter>
-#include <QPixmap>
-#include <QPolygonF>
-#include <QtMath>
-#include <QDebug>
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <utility>
+
+#ifdef ANIMEAN_WITH_PYTHON
+#undef slots
+#include <pybind11/embed.h>
+#endif
+
+using namespace AnimeCore;
 
 namespace {
 // The artwork's ground, not chrome: it stays white in both themes.
-const QColor kPaperColor(Qt::white);
-const qreal kOverlayHandleSize = 14.0;
+const Color kPaperColor(255, 255, 255);
+const double kOverlayHandleSize = 14.0;
 // The zoom limits the wheel has always enforced, named so the programmatic
 // paths (setViewTransform, fitViewToContent) cannot drift away from what a
 // gesture is allowed to reach.
-constexpr qreal kMinZoom = 0.1;
-constexpr qreal kMaxZoom = 8.0;
-qreal clampZoom(qreal zoom)
+constexpr double kMinZoom = 0.1;
+constexpr double kMaxZoom = 8.0;
+double clampZoom(double zoom)
 {
     return zoom < kMinZoom ? kMinZoom : (zoom > kMaxZoom ? kMaxZoom : zoom);
 }
 }
-
-#ifdef ANIMEAN_WITH_PYTHON
-#ifdef slots
-#undef slots
-#define ANIMEAN_RESTORE_QT_SLOTS
-#endif
-#include <pybind11/embed.h>
-#ifdef ANIMEAN_RESTORE_QT_SLOTS
-#define slots Q_SLOTS
-#undef ANIMEAN_RESTORE_QT_SLOTS
-#endif
-#endif
-
-#include <QTimer>
-
-#include <algorithm>
-#include <cmath>
-#include <limits>
 
 #ifdef ANIMEAN_WITH_PYTHON
 #include "pythonbind/python_bindings.h"
@@ -51,30 +45,30 @@ qreal clampZoom(qreal zoom)
 namespace py = pybind11;
 
 namespace {
-QString toolName(PaintOpenGLWidget::Tool tool)
+String toolName(PaintOpenGLWidget::Tool tool)
 {
     switch (tool) {
     case PaintOpenGLWidget::Tool::Pen:
-        return QStringLiteral("pen");
+        return String("pen");
     case PaintOpenGLWidget::Tool::Eraser:
-        return QStringLiteral("eraser");
+        return String("eraser");
     case PaintOpenGLWidget::Tool::DeleteLine:
-        return QStringLiteral("delete_line");
+        return String("delete_line");
     case PaintOpenGLWidget::Tool::CutLine:
-        return QStringLiteral("cut_line");
+        return String("cut_line");
     case PaintOpenGLWidget::Tool::Fill:
-        return QStringLiteral("fill");
+        return String("fill");
     case PaintOpenGLWidget::Tool::Arrow:
-        return QStringLiteral("arrow");
+        return String("arrow");
     case PaintOpenGLWidget::Tool::Connect:
-        return QStringLiteral("connect");
+        return String("connect");
     case PaintOpenGLWidget::Tool::Transfer:
-        return QStringLiteral("transfer");
+        return String("transfer");
     }
-    return QStringLiteral("pen");
+    return String("pen");
 }
 
-py::dict pointToPythonDict(const QPointF &point)
+py::dict pointToPythonDict(const PointF &point)
 {
     py::dict pointInfo;
     pointInfo["x"] = point.x();
@@ -82,22 +76,19 @@ py::dict pointToPythonDict(const QPointF &point)
     return pointInfo;
 }
 
-py::object variantToPythonObject(const QVariant &value)
+py::object variantToPythonObject(const JsonVariant &value)
 {
-    switch (value.userType()) {
-    case QMetaType::Bool:
-        return py::bool_(value.toBool());
-    case QMetaType::Int:
-    case QMetaType::UInt:
-    case QMetaType::LongLong:
-    case QMetaType::ULongLong:
-        return py::int_(value.toLongLong());
-    case QMetaType::Float:
-    case QMetaType::Double:
-        return py::float_(value.toDouble());
-    default:
-        return py::str(value.toString().toStdString());
+    const JsonValue &v = value.toJsonValue();
+    if (v.isBool()) {
+        return py::bool_(v.toBool());
     }
+    if (v.isInt64()) {
+        return py::int_(v.toInteger());
+    }
+    if (v.isDouble()) {
+        return py::float_(v.toDouble());
+    }
+    return py::str(v.toString().toStdString());
 }
 
 py::dict strokeToPythonDict(const AnimeVectorStroke &stroke, int strokeIndex = -1)
@@ -116,18 +107,18 @@ py::dict strokeToPythonDict(const AnimeVectorStroke &stroke, int strokeIndex = -
 
 // Dispatches that produced no output at all print as "(no output)"; relaying
 // those to the debug dock buries real feedback under one line per event.
-bool isQuietHookOutput(const QString &output)
+bool isQuietHookOutput(const String &output)
 {
-    return output.isEmpty() || output.endsWith(QStringLiteral("(no output)"));
+    return output.isEmpty() || output.endsWith(String("(no output)"));
 }
 
-QString pythonHookSendMessage(const py::dict &message)
+String pythonHookSendMessage(const py::dict &message)
 {
     try {
         py::gil_scoped_acquire acquire;
         py::object hooks = py::module_::import("python_hooks");
         if (!hooks.attr("has_hooks")(message).cast<bool>()) {
-            return QString();
+            return String();
         }
         py::object io = py::module_::import("io");
         py::object contextlib = py::module_::import("contextlib");
@@ -138,17 +129,17 @@ QString pythonHookSendMessage(const py::dict &message)
 
         stdoutRedirect.attr("__enter__")();
         stderrRedirect.attr("__enter__")();
-        QString errorText;
+        String errorText;
         try {
             hooks.attr("dispatch")(message);
         } catch (const py::error_already_set &error) {
-            errorText = QString::fromUtf8(error.what());
+            errorText = String::fromUtf8(error.what());
         }
         stderrRedirect.attr("__exit__")(py::none(), py::none(), py::none());
         stdoutRedirect.attr("__exit__")(py::none(), py::none(), py::none());
 
-        QString output = QString::fromUtf8(stdoutBuffer.attr("getvalue")().cast<std::string>().c_str());
-        const QString stderrOutput = QString::fromUtf8(stderrBuffer.attr("getvalue")().cast<std::string>().c_str());
+        String output = String::fromUtf8(stdoutBuffer.attr("getvalue")().cast<std::string>().c_str());
+        const String stderrOutput = String::fromUtf8(stderrBuffer.attr("getvalue")().cast<std::string>().c_str());
         if (!stderrOutput.isEmpty()) {
             output += stderrOutput;
         }
@@ -156,7 +147,7 @@ QString pythonHookSendMessage(const py::dict &message)
             output += errorText;
         }
         if (output.trimmed().isEmpty()) {
-            output = QStringLiteral("(no output)");
+            output = String("(no output)");
         }
         // Defaulted lookups: py::dict has no dict-specific operator[], so a
         // missing key raises KeyError and would throw all the way out to the
@@ -165,27 +156,27 @@ QString pythonHookSendMessage(const py::dict &message)
         // thing that fails after the hook already ran.
         const auto text = [&message](const char *key, const char *fallback) {
             if (!message.contains(py::str(key))) {
-                return QString::fromUtf8(fallback);
+                return String::fromUtf8(fallback);
             }
-            return QString::fromUtf8(py::str(message[key]).cast<std::string>().c_str());
+            return String::fromUtf8(py::str(message[key]).cast<std::string>().c_str());
         };
-        const QString event = text("event", "?");
-        const QString tool = text("tool", "-");
-        return QStringLiteral("[python feedback] %1 tool=%2\n%3").arg(event, tool, output.trimmed());
+        const String event = text("event", "?");
+        const String tool = text("tool", "-");
+        return String("[python feedback] %1 tool=%2\n%3").arg(event, tool, output.trimmed());
     } catch (const py::error_already_set &error) {
-        return QStringLiteral("[python feedback] hook setup error: %1").arg(QString::fromUtf8(error.what()));
+        return String("[python feedback] hook setup error: %1").arg(String::fromUtf8(error.what()));
     }
 }
 }
 #endif
 
-PaintOpenGLWidget::PaintOpenGLWidget(QWidget *parent)
+PaintOpenGLWidget::PaintOpenGLWidget(void *parent)
     : PaintBoardBase(parent)
 {
     setAutoFillBackground(false);
     setMouseTracking(true);
-    setFocusPolicy(Qt::ClickFocus);
-    m_history.reset(QStringLiteral("Initial"), m_model);
+    setFocusPolicy(ClickFocus);
+    m_history.reset(String("Initial"), m_model);
 }
 
 SceneHistory &PaintOpenGLWidget::history()
@@ -198,24 +189,24 @@ const SceneHistory &PaintOpenGLWidget::history() const
     return m_history;
 }
 
-void PaintOpenGLWidget::commitHistory(const QString &label)
+void PaintOpenGLWidget::commitHistory(const String &label)
 {
     m_history.commit(label, m_model);
     // Any commit can have changed what a ghosted frame looks like, or how
     // many frames there are; the ghosts are pixels of the old scene.
     clearOnionCache();
-    emit historyChanged();
-    emit historyCommitted();
+    historyChanged();
+    historyCommitted();
 }
 
 void PaintOpenGLWidget::dropRedoTail()
 {
     if (m_history.truncateRedo()) {
-        emit historyChanged();
+        historyChanged();
     }
 }
 
-void PaintOpenGLWidget::resetHistory(const QString &label)
+void PaintOpenGLWidget::resetHistory(const String &label)
 {
     m_history.reset(label, m_model);
     // Scene content was (re)established outside the history flow (startup,
@@ -227,7 +218,7 @@ void PaintOpenGLWidget::resetHistory(const QString &label)
     m_pythonNotifiedLayer = m_model.currentLayer();
     m_pythonNotifiedLayerId =
         m_pythonNotifiedLayer >= 0 ? m_model.layerIdAt(m_pythonNotifiedLayer) : 0;
-    pythonHookSendMessage(QStringLiteral("historyrestore"));
+    pythonHookSendMessage(String("historyrestore"));
     // The onion state is NOT covered by that re-sync: historyrestore carries no
     // onion state, and the frame pre-sync above is exactly what stops
     // framechange - and with it the onion notifier - from firing. A restore
@@ -241,7 +232,7 @@ void PaintOpenGLWidget::resetHistory(const QString &label)
     // is deliberately valid from birth.
     notifyOnionChangedIfNeeded();
     clearOnionCache();
-    emit historyChanged();
+    historyChanged();
 }
 
 void PaintOpenGLWidget::cancelActiveOverlayDrag()
@@ -253,9 +244,9 @@ void PaintOpenGLWidget::cancelActiveOverlayDrag()
     if (m_activeOverlayDrag.isEmpty()) {
         return;
     }
-    const QString overlayId = m_activeOverlayDrag;
+    const String overlayId = m_activeOverlayDrag;
     m_activeOverlayDrag.clear();
-    sendPythonHandleMessage(QStringLiteral("cancel"), overlayId, QPointF());
+    sendPythonHandleMessage(String("cancel"), overlayId, PointF());
 }
 
 void PaintOpenGLWidget::notifyFrameChangedIfNeeded()
@@ -272,7 +263,7 @@ void PaintOpenGLWidget::notifyFrameChangedIfNeeded()
     }
     cancelActiveOverlayDrag();
     m_pythonNotifiedFrame = frame;
-    pythonHookSendMessage(QStringLiteral("framechange"));
+    pythonHookSendMessage(String("framechange"));
     // Which ghosts are past and which are ahead depends on where the playhead
     // is, so a frame move re-colours the whole ghost set. Guarded inside the
     // notifier: with onion off this is free.
@@ -298,7 +289,7 @@ void PaintOpenGLWidget::notifyLayerChangedIfNeeded()
     const int previous = m_pythonNotifiedLayer;
     m_pythonNotifiedLayer = layer;
     m_pythonNotifiedLayerId = layerId;
-    if (!animeanHookEventSubscribed(QStringLiteral("layerchange"))) {
+    if (!animeanHookEventSubscribed(String("layerchange"))) {
         return;
     }
 
@@ -320,15 +311,15 @@ void PaintOpenGLWidget::notifyLayerChangedIfNeeded()
     message["property"] = m_strokeProperty.toStdString();
     message["cell"] = cellInfo;
     message["stroke"] = py::dict();
-    message["position"] = pointToPythonDict(QPointF());
-    message["delta"] = pointToPythonDict(QPointF());
+    message["position"] = pointToPythonDict(PointF());
+    message["delta"] = pointToPythonDict(PointF());
     message["layer"] = layer;
     message["layer_id"] = layerId;
     message["previous"] = previous == -2 ? -1 : previous;
 
-    const QString output = ::pythonHookSendMessage(message);
+    const String output = ::pythonHookSendMessage(message);
     if (!isQuietHookOutput(output)) {
-        emit pythonDebugMessage(output);
+        pythonDebugMessage(output);
     }
 #endif
 }
@@ -365,7 +356,7 @@ bool PaintOpenGLWidget::goToHistory(int index)
     m_hasLastEraserPos = false;
     m_eraseGestureChanged = false;
     m_axisSnapState = AxisSnapState::Inactive;
-    pythonHookSendMessage(QStringLiteral("historyrestore"));
+    pythonHookSendMessage(String("historyrestore"));
     // Undo/redo can move the playhead (a history entry is a whole-model
     // snapshot), and past/ahead is read against the playhead - but the frame
     // pre-sync above is precisely what keeps framechange, and with it the onion
@@ -375,16 +366,16 @@ bool PaintOpenGLWidget::goToHistory(int index)
     notifyOnionChangedIfNeeded();
     clearOnionCache();
     update();
-    emit historyChanged();
+    historyChanged();
     return true;
 }
 
-void PaintOpenGLWidget::setViewName(const QString &name)
+void PaintOpenGLWidget::setViewName(const String &name)
 {
     m_viewName = name;
 }
 
-QString PaintOpenGLWidget::viewName() const
+String PaintOpenGLWidget::viewName() const
 {
     return m_viewName;
 }
@@ -398,12 +389,12 @@ void PaintOpenGLWidget::setActiveIndicator(bool active)
     update();
 }
 
-qreal PaintOpenGLWidget::zoom() const
+double PaintOpenGLWidget::zoom() const
 {
     return m_zoom;
 }
 
-QPointF PaintOpenGLWidget::panOffset() const
+PointF PaintOpenGLWidget::panOffset() const
 {
     return m_panOffset;
 }
@@ -415,17 +406,17 @@ void PaintOpenGLWidget::setScrollPosition(int horizontal, int vertical)
         // cache catches up once scrolling stops.
         schedulePlaybackCacheRefresh();
     }
-    m_panOffset = QPointF(-horizontal, -vertical);
+    m_panOffset = PointF(-horizontal, -vertical);
     clampPan();
     update();
     // A scroll bar only ever moves because a hand moved it: syncScrollBars
     // writes the bars back with its own guard up, so nothing programmatic
     // reaches here. No notifyViewTransformChanged() though - that would run
     // straight back into the bar that called this.
-    emit userTransformed();
+    userTransformed();
 }
 
-void PaintOpenGLWidget::setViewTransform(qreal zoom, const QPointF &pan)
+void PaintOpenGLWidget::setViewTransform(double zoom, const PointF &pan)
 {
     if (m_playbackActive) {
         // Same as the wheel: the cached frames are re-mapped onto the new view
@@ -439,11 +430,11 @@ void PaintOpenGLWidget::setViewTransform(qreal zoom, const QPointF &pan)
     notifyViewTransformChanged();
 }
 
-void PaintOpenGLWidget::paintBackground(QPainter &painter, const QRectF &target) const
+void PaintOpenGLWidget::paintBackground(Painter &painter, const RectF &target) const
 {
     switch (m_backgroundMode) {
     case BackgroundMode::Black:
-        painter.fillRect(target, Qt::black);
+        painter.fillRect(target, Color(0, 0, 0));
         return;
     case BackgroundMode::Transparent: {
         // The usual grey/white chequer. Drawn in SCREEN space (this runs
@@ -452,9 +443,9 @@ void PaintOpenGLWidget::paintBackground(QPainter &painter, const QRectF &target)
         // - a chequer that zoomed with the drawing would read as content.
         constexpr int kSquare = 8;
         painter.save();
-        painter.fillRect(target, QColor(255, 255, 255));
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(204, 204, 204));
+        painter.fillRect(target, Color(255, 255, 255));
+        painter.setPen(NoPen);
+        painter.setBrush(Color(204, 204, 204));
         const int left = int(std::floor(target.left()));
         const int top = int(std::floor(target.top()));
         const int right = int(std::ceil(target.right()));
@@ -462,7 +453,7 @@ void PaintOpenGLWidget::paintBackground(QPainter &painter, const QRectF &target)
         for (int y = top - (top % kSquare) - kSquare; y < bottom; y += kSquare) {
             for (int x = left - (left % kSquare) - kSquare; x < right; x += kSquare) {
                 if (((x / kSquare) + (y / kSquare)) % 2 == 0) {
-                    painter.drawRect(QRect(x, y, kSquare, kSquare));
+                    painter.drawRect(Rect(x, y, kSquare, kSquare));
                 }
             }
         }
@@ -471,7 +462,7 @@ void PaintOpenGLWidget::paintBackground(QPainter &painter, const QRectF &target)
     }
     case BackgroundMode::White:
     default:
-        painter.fillRect(target, Qt::white);
+        painter.fillRect(target, Color(255, 255, 255));
         return;
     }
 }
@@ -500,7 +491,7 @@ bool PaintOpenGLWidget::contentEditable() const
     return m_contentEditable;
 }
 
-void PaintOpenGLWidget::setEditablePropertyFilter(const QStringList &properties)
+void PaintOpenGLWidget::setEditablePropertyFilter(const StringList &properties)
 {
     m_editableProperties = properties;
 }
@@ -543,24 +534,24 @@ bool PaintOpenGLWidget::unboundedCanvas() const
     return m_unboundedCanvas;
 }
 
-QPointF PaintOpenGLWidget::mapToDocument(const QPointF &screenPos) const
+PointF PaintOpenGLWidget::mapToDocument(const PointF &screenPos) const
 {
     // The view transform lives in algorithm/viewscale.h - THE shared home of
     // screen<->canvas conversion. Do not re-derive it here or anywhere else.
     return AnimeViewScale::toDocument(screenPos, m_zoom, m_panOffset);
 }
 
-QRectF PaintOpenGLWidget::documentRect() const
+RectF PaintOpenGLWidget::documentRect() const
 {
     // The page comes from the DOCUMENT. It used to be the widget rect, which
     // made the paper resize with the window - the drawing area, the export
     // and every bounds-driven algorithm silently changed shape when the user
     // dragged a dock.
-    const QSize canvas = m_model.canvasSize();
-    return QRectF(0.0, 0.0, canvas.width(), canvas.height());
+    const Size canvas = m_model.canvasSize();
+    return RectF(0.0, 0.0, canvas.width(), canvas.height());
 }
 
-QRectF PaintOpenGLWidget::fillBoundsRect() const
+RectF PaintOpenGLWidget::fillBoundsRect() const
 {
     // What a bucket fill is clipped against, in DOCUMENT space - and it must
     // come from the ARTWORK, never from the viewport.
@@ -579,18 +570,18 @@ QRectF PaintOpenGLWidget::fillBoundsRect() const
     // Unioned over ALL boundary layers regardless of the caller's scope: a
     // superset of whatever fillAt or fill_tool finally traces, so the seed
     // gate below can never refuse a click the tracer would have served.
-    QRectF bounds = m_model.fillBoundaryBounds(m_model.currentFrame(), -1);
+    RectF bounds = m_model.fillBoundaryBounds(m_model.currentFrame(), -1);
     if (!m_unboundedCanvas) {
         // The page is a property of the document, not of the view, so it stays
         // in the clip - this can only ever GROW what the bounded board allowed.
         bounds = bounds.isNull() ? documentRect() : bounds.united(documentRect());
     }
     if (bounds.isNull()) {
-        return QRectF();   // no walls on this frame: there is nothing to fill
+        return RectF();   // no walls on this frame: there is nothing to fill
     }
     // Leave room for the halo that tucks a region under its own outline;
     // clipping tight to the ink would shave it back off.
-    const qreal pad = AnimeVectorLogic::kVectorRegionOverpaintWidth;
+    const double pad = AnimeVectorLogic::kVectorRegionOverpaintWidth;
     return bounds.adjusted(-pad, -pad, pad, pad);
 }
 
@@ -607,9 +598,9 @@ void PaintOpenGLWidget::modelReplaced()
     notifyViewTransformChanged();
 }
 
-void PaintOpenGLWidget::setCanvasSize(const QSize &size)
+void PaintOpenGLWidget::setCanvasSize(const Size &size)
 {
-    if (QSize(m_model.canvasSize()) == size) {
+    if (Size(m_model.canvasSize()) == size) {
         return;
     }
     m_model.setCanvasSize(size);
@@ -618,10 +609,10 @@ void PaintOpenGLWidget::setCanvasSize(const QSize &size)
     notifyViewTransformChanged();
 }
 
-QRectF PaintOpenGLWidget::reachableRect() const
+RectF PaintOpenGLWidget::reachableRect() const
 {
-    QRectF reach = documentRect();
-    const QRectF content = m_model.contentBounds(m_model.currentFrame());
+    RectF reach = documentRect();
+    const RectF content = m_model.contentBounds(m_model.currentFrame());
     if (!content.isNull()) {
         reach = reach.isNull() ? content : reach.united(content);
     }
@@ -631,17 +622,17 @@ QRectF PaintOpenGLWidget::reachableRect() const
     // Half a viewport of slack on every side, so ink at the very edge can be
     // brought to the middle of the screen to work on rather than being pinned
     // against the frame. Screen px -> document via algorithm/viewscale.h.
-    const qreal padX = AnimeViewScale::toDocumentLength(width() * 0.5, m_zoom);
-    const qreal padY = AnimeViewScale::toDocumentLength(height() * 0.5, m_zoom);
+    const double padX = AnimeViewScale::toDocumentLength(width() * 0.5, m_zoom);
+    const double padY = AnimeViewScale::toDocumentLength(height() * 0.5, m_zoom);
     return reach.adjusted(-padX, -padY, padX, padY);
 }
 
-QRectF PaintOpenGLWidget::visibleContentBounds() const
+RectF PaintOpenGLWidget::visibleContentBounds() const
 {
     // Same column filter the paint pass uses (invisible columns are skipped)
     // plus the internal ones, which are machinery rather than artwork - so this
     // bounds exactly what the user can see on this frame.
-    QRectF bounds;
+    RectF bounds;
     const int frame = m_model.currentFrame();
     if (frame < 0) {
         return bounds;
@@ -654,7 +645,7 @@ QRectF PaintOpenGLWidget::visibleContentBounds() const
         if (!image) {
             continue;
         }
-        const QRectF cell = image->bounds();
+        const RectF cell = image->bounds();
         if (cell.isNull()) {
             continue;
         }
@@ -669,7 +660,7 @@ bool PaintOpenGLWidget::fitViewToContent(bool cover)
         return false;
     }
 
-    QRectF target = visibleContentBounds();
+    RectF target = visibleContentBounds();
     if (target.isNull()) {
         // An empty frame still has a page worth framing. The page is a property
         // of the DOCUMENT, so the unbounded board has one too - what "unbounded"
@@ -685,22 +676,22 @@ bool PaintOpenGLWidget::fitViewToContent(bool cover)
     // divide the viewport by zero. Give the degenerate axis the other one's
     // span (or a document unit when both are flat) about the same centre.
     if (target.width() <= 0.0 || target.height() <= 0.0) {
-        const QPointF centre = target.center();
-        const qreal span = std::max<qreal>(std::max(target.width(), target.height()), 1.0);
-        target.setSize(QSizeF(target.width() > 0.0 ? target.width() : span,
+        const PointF centre = target.center();
+        const double span = std::max<double>(std::max(target.width(), target.height()), 1.0);
+        target.setSize(SizeF(target.width() > 0.0 ? target.width() : span,
                               target.height() > 0.0 ? target.height() : span));
         target.moveCenter(centre);
     }
 
-    const qreal scaleX = qreal(width()) / target.width();
-    const qreal scaleY = qreal(height()) / target.height();
+    const double scaleX = double(width()) / target.width();
+    const double scaleY = double(height()) / target.height();
     // COVER: the content spans the frame on BOTH axes and the longer one runs
     // off the edges (bleed). CONTAIN would leave a margin on one axis.
-    const qreal zoom = clampZoom(cover ? std::max(scaleX, scaleY) : std::min(scaleX, scaleY));
+    const double zoom = clampZoom(cover ? std::max(scaleX, scaleY) : std::min(scaleX, scaleY));
     // Centre it: solve toScreen(centre) == viewport centre for the pan
     // (algorithm/viewscale.h owns the conversion, here as everywhere else).
-    const QPointF pan = QPointF(width() * 0.5, height() * 0.5)
-                        - QPointF(AnimeViewScale::toScreen(target.center(), zoom, QPointF()));
+    const PointF pan = PointF(width() * 0.5, height() * 0.5)
+                        - PointF(AnimeViewScale::toScreen(target.center(), zoom, PointF()));
     setViewTransform(zoom, pan);
     return true;
 }
@@ -715,22 +706,22 @@ void PaintOpenGLWidget::clampPan()
     // not the page. Clamped to the page, zooming in walled the view inside
     // the paper: anything drawn past its edge could not be scrolled to, so it
     // could not be edited either.
-    const QRectF reach = reachableRect();
+    const RectF reach = reachableRect();
     if (reach.isNull()) {
         return;
     }
     // In screen space the reachable area spans [reach.left*zoom + pan,
     // reach.right*zoom + pan]; the pan may move until that span's far edge
     // meets the near edge of the viewport, and no further.
-    const qreal left = reach.left() * m_zoom;
-    const qreal right = reach.right() * m_zoom;
-    const qreal top = reach.top() * m_zoom;
-    const qreal bottom = reach.bottom() * m_zoom;
+    const double left = reach.left() * m_zoom;
+    const double right = reach.right() * m_zoom;
+    const double top = reach.top() * m_zoom;
+    const double bottom = reach.bottom() * m_zoom;
 
-    const qreal minX = std::min<qreal>(width() - right, -left);
-    const qreal maxX = std::max<qreal>(width() - right, -left);
-    const qreal minY = std::min<qreal>(height() - bottom, -top);
-    const qreal maxY = std::max<qreal>(height() - bottom, -top);
+    const double minX = std::min<double>(width() - right, -left);
+    const double maxX = std::max<double>(width() - right, -left);
+    const double minY = std::min<double>(height() - bottom, -top);
+    const double maxY = std::max<double>(height() - bottom, -top);
 
     m_panOffset.setX(std::min(maxX, std::max(minX, m_panOffset.x())));
     m_panOffset.setY(std::min(maxY, std::max(minY, m_panOffset.y())));
@@ -742,10 +733,10 @@ void PaintOpenGLWidget::notifyViewTransformChanged()
     // change funnels through here, which makes this the one place to rebuild
     // it from.
     updateBrushCursor();
-    emit viewTransformChanged();
+    viewTransformChanged();
 }
 
-void PaintOpenGLWidget::wheelEvent(QWheelEvent *event)
+void PaintOpenGLWidget::wheelEvent(WheelEvent *event)
 {
     // Zooming no longer leaves playback. paintGL maps the cached frames from
     // the view they were rendered for onto the current one, so the animation
@@ -756,41 +747,41 @@ void PaintOpenGLWidget::wheelEvent(QWheelEvent *event)
         schedulePlaybackCacheRefresh();
     }
 
-    const qreal steps = event->angleDelta().y() / 120.0;
-    if (qFuzzyIsNull(steps)) {
+    const double steps = event->angleDelta().y() / 120.0;
+    if (fuzzyIsNull(steps)) {
         PaintBoardBase::wheelEvent(event);
         return;
     }
 
-    const qreal factor = std::pow(1.25, steps);
-    const qreal newZoom = clampZoom(m_zoom * factor);
-    if (qFuzzyCompare(newZoom, m_zoom)) {
+    const double factor = std::pow(1.25, steps);
+    const double newZoom = clampZoom(m_zoom * factor);
+    if (fuzzyCompare(newZoom, m_zoom)) {
         event->accept();
         return;
     }
 
     // Zoom around the cursor: keep the document point under it fixed.
-    const QPointF anchor = event->position();
-    const QPointF docAnchor = mapToDocument(anchor);
+    const PointF anchor = event->position();
+    const PointF docAnchor = mapToDocument(anchor);
     m_zoom = newZoom;
     // Solve toScreen(docAnchor) == anchor for the pan (algorithm/viewscale.h).
-    m_panOffset = anchor - QPointF(AnimeViewScale::toScreen(docAnchor, m_zoom, QPointF()));
+    m_panOffset = anchor - PointF(AnimeViewScale::toScreen(docAnchor, m_zoom, PointF()));
     clampPan();
     update();
     notifyViewTransformChanged();
-    emit userTransformed();
+    userTransformed();
     // The artist-mode key-point filter is zoom-dependent (a perceptual
     // threshold in SCREEN space), so a zoom while handles are up re-asks
     // Python which handles survive at the new magnification. Connect's
     // button offsets are screen-sized too, so its handles re-place as well.
     if ((m_tool == Tool::Arrow || m_tool == Tool::Connect)
         && !m_editHandles.isEmpty() && m_activeHandleDrag.isEmpty()) {
-        sendPythonHandleMessage(QStringLiteral("view"), QString(), docAnchor);
+        sendPythonHandleMessage(String("view"), String(), docAnchor);
     }
     event->accept();
 }
 
-void PaintOpenGLWidget::resizeEvent(QResizeEvent *event)
+void PaintOpenGLWidget::resizeEvent(ResizeEvent *event)
 {
     PaintBoardBase::resizeEvent(event);
     if (m_playbackActive) {
@@ -808,43 +799,44 @@ namespace {
 // A circular arrow, ~20 px across: white so it reads over ink, outlined in
 // black so it reads over paper. Painted rather than shipped as a resource -
 // it has to follow the device pixel ratio of whatever screen it lands on.
-QPixmap buildRotateCursorPixmap(qreal dpr)
+Image buildRotateCursorPixmap(double dpr)
 {
-    constexpr qreal kSide = 24.0;
-    QPixmap pixmap(int(std::ceil(kSide * dpr)), int(std::ceil(kSide * dpr)));
+    constexpr double kSide = 24.0;
+    Image pixmap(int(std::ceil(kSide * dpr)), int(std::ceil(kSide * dpr)),
+                 Image::Format_ARGB32_Premultiplied);
     pixmap.setDevicePixelRatio(dpr);
-    pixmap.fill(Qt::transparent);
+    pixmap.fill(Color(0, 0, 0, 0));
 
-    const QPointF centre(kSide * 0.5, kSide * 0.5);
-    const qreal radius = 6.5;
-    const QRectF ring(centre.x() - radius, centre.y() - radius, radius * 2.0, radius * 2.0);
-    QPainterPath arc;
+    const PointF centre(kSide * 0.5, kSide * 0.5);
+    const double radius = 6.5;
+    const RectF ring(centre.x() - radius, centre.y() - radius, radius * 2.0, radius * 2.0);
+    Path arc;
     arc.arcMoveTo(ring, 55.0);
     arc.arcTo(ring, 55.0, 250.0);
 
-    // Qt's arc angles run counter-clockwise in a y-DOWN pixmap, so the end
+    // Arc angles run counter-clockwise in a y-DOWN pixmap, so the end
     // point and its tangent are (cos, -sin) and (-sin, -cos).
-    const qreal endAngle = qDegreesToRadians(55.0 + 250.0);
-    const QPointF tip(centre.x() + radius * std::cos(endAngle),
+    const double endAngle = degreesToRadians(55.0 + 250.0);
+    const PointF tip(centre.x() + radius * std::cos(endAngle),
                       centre.y() - radius * std::sin(endAngle));
-    const QPointF tangent(-std::sin(endAngle), -std::cos(endAngle));
-    const QPointF normal(-tangent.y(), tangent.x());
-    QPolygonF head;
+    const PointF tangent(-std::sin(endAngle), -std::cos(endAngle));
+    const PointF normal(-tangent.y(), tangent.x());
+    Vector<PointF> head;
     head << tip + tangent * 4.2
          << tip + normal * 3.2 - tangent * 1.4
          << tip - normal * 3.2 - tangent * 1.4;
 
     {
-        QPainter painter(&pixmap);
-        painter.setRenderHint(QPainter::Antialiasing, true);
+        Painter painter(&pixmap);
+        painter.setRenderHint(Painter::Antialiasing, true);
         // Drawn twice, wide black under narrow white: the same halo trick the
         // pen ring uses, and for the same reason.
         for (int pass = 0; pass < 2; ++pass) {
-            const QColor color = pass == 0 ? QColor(20, 20, 20, 235)
-                                           : QColor(255, 255, 255, 245);
-            const qreal width = pass == 0 ? 3.4 : 1.4;
-            painter.setPen(QPen(color, width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-            painter.setBrush(Qt::NoBrush);
+            const Color color = pass == 0 ? Color(20, 20, 20, 235)
+                                           : Color(255, 255, 255, 245);
+            const double width = pass == 0 ? 3.4 : 1.4;
+            painter.setPen(Pen(color, width, SolidLine, RoundCap, RoundJoin));
+            painter.setBrush(NoBrush);
             painter.drawPath(arc);
             painter.setBrush(color);
             painter.drawPolygon(head);
@@ -853,25 +845,25 @@ QPixmap buildRotateCursorPixmap(qreal dpr)
     return pixmap;
 }
 
-QCursor cursorForScriptName(const QString &name, qreal dpr)
+Cursor cursorForScriptName(const String &name, double dpr)
 {
-    if (name == QStringLiteral("rotate")) {
-        return QCursor(buildRotateCursorPixmap(dpr), 12, 12);
+    if (name == String("rotate")) {
+        return Cursor(buildRotateCursorPixmap(dpr), 12, 12);
     }
-    static const QHash<QString, Qt::CursorShape> shapes = {
-        {QStringLiteral("arrow"), Qt::ArrowCursor},
-        {QStringLiteral("size_all"), Qt::SizeAllCursor},
-        {QStringLiteral("size_h"), Qt::SizeHorCursor},
-        {QStringLiteral("size_v"), Qt::SizeVerCursor},
-        {QStringLiteral("size_bdiag"), Qt::SizeBDiagCursor},
-        {QStringLiteral("size_fdiag"), Qt::SizeFDiagCursor},
-        {QStringLiteral("cross"), Qt::CrossCursor},
+    static const Hash<String, CursorShape> shapes = {
+        {String("arrow"), ArrowCursor},
+        {String("size_all"), SizeAllCursor},
+        {String("size_h"), SizeHorCursor},
+        {String("size_v"), SizeVerCursor},
+        {String("size_bdiag"), SizeBDiagCursor},
+        {String("size_fdiag"), SizeFDiagCursor},
+        {String("cross"), CrossCursor},
     };
-    return QCursor(shapes.value(name, Qt::ArrowCursor));
+    return Cursor(shapes.value(name, ArrowCursor));
 }
 }   // namespace
 
-void PaintOpenGLWidget::setScriptCursor(const QString &name)
+void PaintOpenGLWidget::setScriptCursor(const String &name)
 {
     if (m_scriptCursor == name) {
         return;
@@ -899,57 +891,58 @@ void PaintOpenGLWidget::updateBrushCursor()
     // The ring is the mark the pen will leave, so its screen size is the
     // stroke width through the view transform - conversion from
     // algorithm/viewscale.h, the shared home of screen<->canvas.
-    const qreal diameter = AnimeViewScale::toScreenLength(m_penWidth, m_zoom);
+    const double diameter = AnimeViewScale::toScreenLength(m_penWidth, m_zoom);
 
     if (diameter > kMaxCursorRingPx) {
         // Too big to hand to the window system. Blank the pointer and let
         // paintGL draw the ring: the arrow still goes, which is the point.
         m_penRingOnCanvas = true;
-        setCursor(Qt::BlankCursor);
+        setCursor(BlankCursor);
         return;
     }
     m_penRingOnCanvas = false;
 
     // Leave room for the outline itself, and never go below a few pixels or
     // there is nothing to aim with.
-    const qreal ringPen = 1.25;
+    const double ringPen = 1.25;
     const int side = std::max(9, int(std::ceil(diameter + ringPen * 2.0 + 2.0)));
-    const qreal dpr = devicePixelRatioF();
-    QPixmap pixmap(int(std::ceil(side * dpr)), int(std::ceil(side * dpr)));
+    const double dpr = devicePixelRatioF();
+    Image pixmap(int(std::ceil(side * dpr)), int(std::ceil(side * dpr)),
+                 Image::Format_ARGB32_Premultiplied);
     pixmap.setDevicePixelRatio(dpr);
-    pixmap.fill(Qt::transparent);
+    pixmap.fill(Color(0, 0, 0, 0));
     {
-        QPainter painter(&pixmap);
-        painter.setRenderHint(QPainter::Antialiasing, true);
-        const QPointF centre(side * 0.5, side * 0.5);
-        const qreal radius = diameter * 0.5;
+        Painter painter(&pixmap);
+        painter.setRenderHint(Painter::Antialiasing, true);
+        const PointF centre(side * 0.5, side * 0.5);
+        const double radius = diameter * 0.5;
         // Drawn twice: a light halo under a dark line, so the ring stays
         // legible over black ink and over white paper alike.
-        painter.setBrush(Qt::NoBrush);
-        painter.setPen(QPen(QColor(255, 255, 255, 200), ringPen * 2.0));
+        painter.setBrush(NoBrush);
+        painter.setPen(Pen(Color(255, 255, 255, 200), ringPen * 2.0));
         painter.drawEllipse(centre, radius, radius);
-        painter.setPen(QPen(QColor(20, 20, 20, 230), ringPen));
+        painter.setPen(Pen(Color(20, 20, 20, 230), ringPen));
         painter.drawEllipse(centre, radius, radius);
         // A dot at the hotspot: with a wide pen the ring alone leaves the
         // exact point ambiguous, which is where the stroke actually starts.
         if (diameter >= 12.0) {
-            painter.setPen(QPen(QColor(255, 255, 255, 200), 2.0));
+            painter.setPen(Pen(Color(255, 255, 255, 200), 2.0));
             painter.drawPoint(centre);
-            painter.setPen(QPen(QColor(20, 20, 20, 230), 1.0));
+            painter.setPen(Pen(Color(20, 20, 20, 230), 1.0));
             painter.drawPoint(centre);
         }
     }
-    setCursor(QCursor(pixmap, side / 2, side / 2));
+    setCursor(Cursor(pixmap, side / 2, side / 2));
 }
 
-void PaintOpenGLWidget::leaveEvent(QEvent *event)
+void PaintOpenGLWidget::leaveEvent(Event *event)
 {
     // The brush ring is drawn at the last hovered point, and nothing used to
     // retract it: moving the pointer from one board to the other left a ring
     // stuck against the edge of the board being left, on both boards at once.
     // It is a cursor, so it goes when the cursor goes.
     //
-    // Safe during a stroke: Qt keeps delivering moves to the widget that
+    // Safe during a stroke: the board keeps delivering moves to the widget that
     // holds the mouse grab, and each one sets m_hoverPos again, so a drag
     // that wanders outside the viewport keeps its ring.
     if (m_hasHoverPos) {
@@ -959,30 +952,30 @@ void PaintOpenGLWidget::leaveEvent(QEvent *event)
     PaintBoardBase::leaveEvent(event);
 }
 
-void PaintOpenGLWidget::focusInEvent(QFocusEvent *event)
+void PaintOpenGLWidget::focusInEvent(FocusEvent *event)
 {
-    // Qt hands focus to a click target BEFORE delivering the press. When that
+    // Focus is handed to a click target BEFORE delivering the press. When that
     // click also ends playback (focusGained -> activate view -> stop), the
     // press must still be swallowed: by the time it arrives the playback flag
     // is already cleared, and without this it would draw into the frame the
     // user could not even see.
-    if (m_playbackActive && event->reason() == Qt::MouseFocusReason) {
+    if (m_playbackActive && event->reason() == MouseFocusReason) {
         m_swallowNextPress = true;
     }
     PaintBoardBase::focusInEvent(event);
     m_hasInputFocus = true;
     update();
-    emit focusGained();
+    focusGained();
 }
 
-void PaintOpenGLWidget::focusOutEvent(QFocusEvent *event)
+void PaintOpenGLWidget::focusOutEvent(FocusEvent *event)
 {
     PaintBoardBase::focusOutEvent(event);
     m_hasInputFocus = false;
     update();
 }
 
-void PaintOpenGLWidget::setPenColor(const QColor &color)
+void PaintOpenGLWidget::setPenColor(const Color &color)
 {
     // Picking a colour in the tool panel means "draw with this": it arms the
     // pen FIRST (which announces the tool change, so the colour policy in
@@ -993,7 +986,7 @@ void PaintOpenGLWidget::setPenColor(const QColor &color)
     setDrawingColor(color);
 }
 
-void PaintOpenGLWidget::setDrawingColor(const QColor &color)
+void PaintOpenGLWidget::setDrawingColor(const Color &color)
 {
     // Pure mechanism: "draw with this colour". WHICH colour each tool gets
     // is policy and lives in pyfile/tool_colors.py - the per-tool cache was
@@ -1003,7 +996,7 @@ void PaintOpenGLWidget::setDrawingColor(const QColor &color)
     updateBrushCursor();
 }
 
-void PaintOpenGLWidget::setPenWidth(qreal width)
+void PaintOpenGLWidget::setPenWidth(double width)
 {
     if (width < 1.0) {
         width = 1.0;
@@ -1019,7 +1012,7 @@ void PaintOpenGLWidget::setPenWidth(qreal width)
     update();
 }
 
-void PaintOpenGLWidget::setStrokeProperty(const QString &property)
+void PaintOpenGLWidget::setStrokeProperty(const String &property)
 {
     const bool changed = m_strokeProperty != property;
     if (changed) {
@@ -1029,33 +1022,33 @@ void PaintOpenGLWidget::setStrokeProperty(const QString &property)
         cancelActiveOverlayDrag();
     }
     m_strokeProperty = property;
-    m_activePythonTool = property.isEmpty() ? QString() : QStringLiteral("extra");
+    m_activePythonTool = property.isEmpty() ? String() : String("extra");
     if (changed) {
         // The property is the script tool's identity, so a change of it is a
         // change of armed tool - announced like setTool's, so the colour
         // policy in Python sees both halves of "this tool is now armed".
-        sendPythonHandleMessage(QStringLiteral("arm"), QString(), QPointF());
+        sendPythonHandleMessage(String("arm"), String(), PointF());
     }
     if (m_hasCurrentStroke) {
         m_currentStroke.property = property;
     }
 }
 
-void PaintOpenGLWidget::sendPythonExtraToolMessage(const QString &name, const QString &property)
+void PaintOpenGLWidget::sendPythonExtraToolMessage(const String &name, const String &property)
 {
-    const QString previousTool = m_activePythonTool;
-    const QString previousProperty = m_strokeProperty;
-    m_activePythonTool = name.isEmpty() ? QStringLiteral("extra") : name;
+    const String previousTool = m_activePythonTool;
+    const String previousProperty = m_strokeProperty;
+    m_activePythonTool = name.isEmpty() ? String("extra") : name;
     m_strokeProperty = property;
-    pythonHookSendMessage(QStringLiteral("extra"));
+    pythonHookSendMessage(String("extra"));
     m_activePythonTool = previousTool;
     m_strokeProperty = previousProperty;
 }
 
-void PaintOpenGLWidget::sendPythonToolOptionMessage(const QString &hook, const QString &name, const QString &type, const QVariant &value, int row, int startColumn, int endColumn)
+void PaintOpenGLWidget::sendPythonToolOptionMessage(const String &hook, const String &name, const String &type, const JsonVariant &value, int row, int startColumn, int endColumn)
 {
 #ifdef ANIMEAN_WITH_PYTHON
-    if (!animeanHookEventSubscribed(QStringLiteral("option"))) {
+    if (!animeanHookEventSubscribed(String("option"))) {
         return;
     }
     const int frameRow = m_model.currentFrame();
@@ -1086,8 +1079,8 @@ void PaintOpenGLWidget::sendPythonToolOptionMessage(const QString &hook, const Q
     message["property"] = m_strokeProperty.toStdString();
     message["cell"] = cellInfo;
     message["stroke"] = py::dict();
-    message["position"] = pointToPythonDict(QPointF());
-    message["delta"] = pointToPythonDict(QPointF());
+    message["position"] = pointToPythonDict(PointF());
+    message["delta"] = pointToPythonDict(PointF());
     message["option"] = optionInfo;
     message["name"] = name.toStdString();
     message["type"] = type.toStdString();
@@ -1097,25 +1090,25 @@ void PaintOpenGLWidget::sendPythonToolOptionMessage(const QString &hook, const Q
     message["start_column"] = startColumn;
     message["end_column"] = endColumn;
 
-    const QString output = ::pythonHookSendMessage(message);
+    const String output = ::pythonHookSendMessage(message);
     if (!isQuietHookOutput(output)) {
-        emit pythonDebugMessage(output);
+        pythonDebugMessage(output);
     }
 #else
-    Q_UNUSED(hook);
-    Q_UNUSED(name);
-    Q_UNUSED(type);
-    Q_UNUSED(value);
-    Q_UNUSED(row);
-    Q_UNUSED(startColumn);
-    Q_UNUSED(endColumn);
+    (void)hook;
+    (void)name;
+    (void)type;
+    (void)value;
+    (void)row;
+    (void)startColumn;
+    (void)endColumn;
 #endif
 }
 
-void PaintOpenGLWidget::sendPythonPadMessage(const QString &pad, const QString &phase, double x, double y)
+void PaintOpenGLWidget::sendPythonPadMessage(const String &pad, const String &phase, double x, double y)
 {
 #ifdef ANIMEAN_WITH_PYTHON
-    if (!animeanHookEventSubscribed(QStringLiteral("pad"))) {
+    if (!animeanHookEventSubscribed(String("pad"))) {
         return;
     }
     const int frameRow = m_model.currentFrame();
@@ -1137,30 +1130,30 @@ void PaintOpenGLWidget::sendPythonPadMessage(const QString &pad, const QString &
     message["property"] = m_strokeProperty.toStdString();
     message["cell"] = cellInfo;
     message["stroke"] = py::dict();
-    message["position"] = pointToPythonDict(QPointF());
-    message["delta"] = pointToPythonDict(QPointF());
+    message["position"] = pointToPythonDict(PointF());
+    message["delta"] = pointToPythonDict(PointF());
     message["pad"] = pad.toStdString();
     message["phase"] = phase.toStdString();
-    message["value"] = pointToPythonDict(QPointF(x, y));
+    message["value"] = pointToPythonDict(PointF(x, y));
 
-    const QString output = ::pythonHookSendMessage(message);
+    const String output = ::pythonHookSendMessage(message);
     // Pad moves stream continuously; quiet dispatches would flood the debug
     // dock with a line per mouse move.
     if (!isQuietHookOutput(output)) {
-        emit pythonDebugMessage(output);
+        pythonDebugMessage(output);
     }
 #else
-    Q_UNUSED(pad);
-    Q_UNUSED(phase);
-    Q_UNUSED(x);
-    Q_UNUSED(y);
+    (void)pad;
+    (void)phase;
+    (void)x;
+    (void)y;
 #endif
 }
 
 bool PaintOpenGLWidget::sendPythonLayerVisibilityMessage(int layerIndex, bool visible)
 {
 #ifdef ANIMEAN_WITH_PYTHON
-    if (!animeanHookEventSubscribed(QStringLiteral("visibility"))) {
+    if (!animeanHookEventSubscribed(String("visibility"))) {
         return false;
     }
 
@@ -1182,14 +1175,14 @@ bool PaintOpenGLWidget::sendPythonLayerVisibilityMessage(int layerIndex, bool vi
     message["property"] = m_strokeProperty.toStdString();
     message["cell"] = cellInfo;
     message["stroke"] = py::dict();
-    message["position"] = pointToPythonDict(QPointF());
-    message["delta"] = pointToPythonDict(QPointF());
+    message["position"] = pointToPythonDict(PointF());
+    message["delta"] = pointToPythonDict(PointF());
     message["layer"] = layerIndex;
     message["visible"] = visible;
 
-    const QString output = ::pythonHookSendMessage(message);
+    const String output = ::pythonHookSendMessage(message);
     if (!isQuietHookOutput(output)) {
-        emit pythonDebugMessage(output);
+        pythonDebugMessage(output);
     }
 
     try {
@@ -1201,16 +1194,16 @@ bool PaintOpenGLWidget::sendPythonLayerVisibilityMessage(int layerIndex, bool vi
     }
     return false;
 #else
-    Q_UNUSED(layerIndex);
-    Q_UNUSED(visible);
+    (void)layerIndex;
+    (void)visible;
     return false;
 #endif
 }
 
-void PaintOpenGLWidget::sendPythonViewButtonMessage(const QString &name, bool on)
+void PaintOpenGLWidget::sendPythonViewButtonMessage(const String &name, bool on)
 {
 #ifdef ANIMEAN_WITH_PYTHON
-    if (!animeanHookEventSubscribed(QStringLiteral("viewbutton"))) {
+    if (!animeanHookEventSubscribed(String("viewbutton"))) {
         return;
     }
 
@@ -1227,25 +1220,25 @@ void PaintOpenGLWidget::sendPythonViewButtonMessage(const QString &name, bool on
     message["name"] = name.toStdString();
     message["on"] = on;
 
-    const QString output = ::pythonHookSendMessage(message);
+    const String output = ::pythonHookSendMessage(message);
     if (!isQuietHookOutput(output)) {
-        emit pythonDebugMessage(output);
+        pythonDebugMessage(output);
     }
 #else
-    Q_UNUSED(name);
-    Q_UNUSED(on);
+    (void)name;
+    (void)on;
 #endif
 }
 
-void PaintOpenGLWidget::sendPythonLayerMenuMessage(const QString &action,
+void PaintOpenGLWidget::sendPythonLayerMenuMessage(const String &action,
                                                    int groupId,
-                                                   const QString &groupName,
+                                                   const String &groupName,
                                                    int layerIndex,
-                                                   const QString &layerName,
-                                                   const QVector<int> &memberLayers)
+                                                   const String &layerName,
+                                                   const Vector<int> &memberLayers)
 {
 #ifdef ANIMEAN_WITH_PYTHON
-    if (!animeanHookEventSubscribed(QStringLiteral("layermenu"))) {
+    if (!animeanHookEventSubscribed(String("layermenu"))) {
         return;
     }
 
@@ -1268,26 +1261,26 @@ void PaintOpenGLWidget::sendPythonLayerMenuMessage(const QString &action,
     message["layer_name"] = layerName.toStdString();
     message["members"] = members;
 
-    const QString output = ::pythonHookSendMessage(message);
+    const String output = ::pythonHookSendMessage(message);
     if (!isQuietHookOutput(output)) {
-        emit pythonDebugMessage(output);
+        pythonDebugMessage(output);
     }
 #else
-    Q_UNUSED(action);
-    Q_UNUSED(groupId);
-    Q_UNUSED(groupName);
-    Q_UNUSED(layerIndex);
-    Q_UNUSED(layerName);
-    Q_UNUSED(memberLayers);
+    (void)action;
+    (void)groupId;
+    (void)groupName;
+    (void)layerIndex;
+    (void)layerName;
+    (void)memberLayers;
 #endif
 }
 
-void PaintOpenGLWidget::sendPythonMenuMessage(const QString &menu,
-                                              const QString &item,
+void PaintOpenGLWidget::sendPythonMenuMessage(const String &menu,
+                                              const String &item,
                                               bool checked)
 {
 #ifdef ANIMEAN_WITH_PYTHON
-    if (!animeanHookEventSubscribed(QStringLiteral("menu"))) {
+    if (!animeanHookEventSubscribed(String("menu"))) {
         return;
     }
 
@@ -1302,21 +1295,21 @@ void PaintOpenGLWidget::sendPythonMenuMessage(const QString &menu,
     message["name"] = item.toStdString();
     message["checked"] = checked;
 
-    const QString output = ::pythonHookSendMessage(message);
+    const String output = ::pythonHookSendMessage(message);
     if (!isQuietHookOutput(output)) {
-        emit pythonDebugMessage(output);
+        pythonDebugMessage(output);
     }
 #else
-    Q_UNUSED(menu);
-    Q_UNUSED(item);
-    Q_UNUSED(checked);
+    (void)menu;
+    (void)item;
+    (void)checked;
 #endif
 }
 
-bool PaintOpenGLWidget::sendPythonFillRequestMessage(const QPointF &pos)
+bool PaintOpenGLWidget::sendPythonFillRequestMessage(const PointF &pos)
 {
 #ifdef ANIMEAN_WITH_PYTHON
-    if (!animeanHookEventSubscribed(QStringLiteral("fillrequest"))) {
+    if (!animeanHookEventSubscribed(String("fillrequest"))) {
         return false;
     }
 
@@ -1339,7 +1332,7 @@ bool PaintOpenGLWidget::sendPythonFillRequestMessage(const QPointF &pos)
 
     // Same canvas rect the built-in fill uses as its outer boundary - the
     // PAGE, in document space, which is the space `position` below is in.
-    const QRectF fillBounds = fillBoundsRect();
+    const RectF fillBounds = fillBoundsRect();
     py::dict boundsInfo;
     boundsInfo["x"] = fillBounds.x();
     boundsInfo["y"] = fillBounds.y();
@@ -1355,14 +1348,14 @@ bool PaintOpenGLWidget::sendPythonFillRequestMessage(const QPointF &pos)
     message["cell"] = cellInfo;
     message["stroke"] = py::dict();
     message["position"] = pointToPythonDict(pos);
-    message["delta"] = pointToPythonDict(QPointF());
+    message["delta"] = pointToPythonDict(PointF());
     message["fill_scope"] = (m_fillScope == FillScope::AllLayers ? "all" : "current");
     message["color"] = colorInfo;
     message["bounds"] = boundsInfo;
 
-    const QString output = ::pythonHookSendMessage(message);
+    const String output = ::pythonHookSendMessage(message);
     if (!isQuietHookOutput(output)) {
-        emit pythonDebugMessage(output);
+        pythonDebugMessage(output);
     }
 
     try {
@@ -1374,7 +1367,7 @@ bool PaintOpenGLWidget::sendPythonFillRequestMessage(const QPointF &pos)
     }
     return false;
 #else
-    Q_UNUSED(pos);
+    (void)pos;
     return false;
 #endif
 }
@@ -1397,7 +1390,7 @@ void PaintOpenGLWidget::setTool(Tool tool)
         // connection whose handles vanish whenever the hover leaves every
         // snap target, and skipping the cancel then left a live session
         // whose recorded stroke index later edited an innocent stroke.
-        sendPythonHandleMessage(QStringLiteral("cancel"), QString(), QPointF());
+        sendPythonHandleMessage(String("cancel"), String(), PointF());
         m_editHandles.clear();
         m_activeHandleDrag.clear();
     }
@@ -1406,7 +1399,7 @@ void PaintOpenGLWidget::setTool(Tool tool)
     // off this: Transfer builds its box and its 8 grips, tool_colors.py hands
     // the tool back the colour it was last used with (a script tool that
     // paints itself pink must not repaint the pen).
-    sendPythonHandleMessage(QStringLiteral("arm"), QString(), QPointF());
+    sendPythonHandleMessage(String("arm"), String(), PointF());
     m_points.clear();
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
@@ -1449,44 +1442,44 @@ AnimeStrokeFitSettings PaintOpenGLWidget::strokeFitSettings() const
     return m_fitSettings;
 }
 
-void PaintOpenGLWidget::setAxisSnapThreshold(qreal threshold)
+void PaintOpenGLWidget::setAxisSnapThreshold(double threshold)
 {
-    m_axisSnapThreshold = std::max<qreal>(1.0, threshold);
+    m_axisSnapThreshold = std::max<double>(1.0, threshold);
 }
 
-qreal PaintOpenGLWidget::axisSnapThreshold() const
+double PaintOpenGLWidget::axisSnapThreshold() const
 {
     return m_axisSnapThreshold;
 }
 
-void PaintOpenGLWidget::resetAxisSnap(Qt::KeyboardModifiers modifiers, const QPointF &anchor)
+void PaintOpenGLWidget::resetAxisSnap(KeyboardModifiers modifiers, const PointF &anchor)
 {
     m_axisSnapAnchor = anchor;
     m_axisSnapAnchorIndex = m_points.isEmpty() ? 0 : int(m_points.size()) - 1;
-    m_axisSnapState = (modifiers & (Qt::AltModifier | Qt::ShiftModifier))
+    m_axisSnapState = (modifiers & (AltModifier | ShiftModifier))
                           ? AxisSnapState::Pending
                           : AxisSnapState::Inactive;
 }
 
-QPointF PaintOpenGLWidget::applyAxisSnap(Qt::KeyboardModifiers modifiers, const QPointF &point, bool *retroChanged)
+PointF PaintOpenGLWidget::applyAxisSnap(KeyboardModifiers modifiers, const PointF &point, bool *retroChanged)
 {
     if (retroChanged) {
         *retroChanged = false;
     }
 
-    if (!(modifiers & (Qt::AltModifier | Qt::ShiftModifier))) {
+    if (!(modifiers & (AltModifier | ShiftModifier))) {
         m_axisSnapState = AxisSnapState::Inactive;
         return point;
     }
 
     if (m_axisSnapState == AxisSnapState::Inactive) {
         // Alt engaged mid-stroke: constrain from the latest drawn point on.
-        resetAxisSnap(modifiers, m_points.isEmpty() ? point : QPointF(m_points.last()));
+        resetAxisSnap(modifiers, m_points.isEmpty() ? point : PointF(m_points.last()));
     }
 
     if (m_axisSnapState == AxisSnapState::Pending) {
-        const qreal dx = std::abs(point.x() - m_axisSnapAnchor.x());
-        const qreal dy = std::abs(point.y() - m_axisSnapAnchor.y());
+        const double dx = std::abs(point.x() - m_axisSnapAnchor.x());
+        const double dy = std::abs(point.y() - m_axisSnapAnchor.y());
         // The threshold is how far the HAND must travel before the direction
         // is unambiguous, so it is SCREEN px, converted here through the
         // shared wheel (algorithm/viewscale.h). Compared raw against these
@@ -1512,22 +1505,21 @@ QPointF PaintOpenGLWidget::applyAxisSnap(Qt::KeyboardModifiers modifiers, const 
     }
 
     if (m_axisSnapState == AxisSnapState::Horizontal) {
-        return QPointF(point.x(), m_axisSnapAnchor.y());
+        return PointF(point.x(), m_axisSnapAnchor.y());
     }
     if (m_axisSnapState == AxisSnapState::Vertical) {
-        return QPointF(m_axisSnapAnchor.x(), point.y());
+        return PointF(m_axisSnapAnchor.x(), point.y());
     }
     return point;
 }
 
-void PaintOpenGLWidget::armHoldStill(const QPointF &anchor)
+void PaintOpenGLWidget::armHoldStill(const PointF &anchor)
 {
     m_holdStillAnchor = anchor;
     if (!m_holdStillTimer) {
-        m_holdStillTimer = new QTimer(this);
+        m_holdStillTimer = std::make_unique<Timer>();
         m_holdStillTimer->setSingleShot(true);
-        connect(m_holdStillTimer, &QTimer::timeout, this,
-                [this]() { engageStraightLine(); });
+        m_holdStillTimer->timeout.connect([this]() { engageStraightLine(); });
     }
     // Restarted only when the pen LEAVES the circle. Restarting on every move
     // would mean a hand that trembles - which is every hand - could never
@@ -1554,14 +1546,14 @@ void PaintOpenGLWidget::engageStraightLine()
     m_axisSnapState = AxisSnapState::Inactive;
     // No stabilizer lag left to cover: the line ends exactly at the cursor.
     m_hasRawPenPos = false;
-    updateStraightLine(straightLineTip(QGuiApplication::keyboardModifiers(),
-                                       m_hasHoverPos ? m_hoverPos : QPointF(m_points.last())));
+    updateStraightLine(straightLineTip(m_lastMouseModifiers,
+                                       m_hasHoverPos ? m_hoverPos : PointF(m_points.last())));
 }
 
-QPointF PaintOpenGLWidget::straightLineTip(Qt::KeyboardModifiers modifiers,
-                                           const QPointF &cursor)
+PointF PaintOpenGLWidget::straightLineTip(KeyboardModifiers modifiers,
+                                           const PointF &cursor)
 {
-    if (!(modifiers & (Qt::AltModifier | Qt::ShiftModifier))) {
+    if (!(modifiers & (AltModifier | ShiftModifier))) {
         m_axisSnapState = AxisSnapState::Inactive;
         return cursor;
     }
@@ -1574,8 +1566,8 @@ QPointF PaintOpenGLWidget::straightLineTip(Qt::KeyboardModifiers modifiers,
         m_axisSnapState = AxisSnapState::Pending;
     }
     if (m_axisSnapState == AxisSnapState::Pending) {
-        const qreal dx = std::abs(cursor.x() - m_straightLineStart.x());
-        const qreal dy = std::abs(cursor.y() - m_straightLineStart.y());
+        const double dx = std::abs(cursor.x() - m_straightLineStart.x());
+        const double dy = std::abs(cursor.y() - m_straightLineStart.y());
         // Same screen-px threshold and the same LATCH as applyAxisSnap: once
         // the direction is decided it is held until the modifier is released.
         // Re-deciding per event made the line flip 90 degrees at mouse rate
@@ -1587,20 +1579,20 @@ QPointF PaintOpenGLWidget::straightLineTip(Qt::KeyboardModifiers modifiers,
         m_axisSnapState = dx >= dy ? AxisSnapState::Horizontal : AxisSnapState::Vertical;
     }
     if (m_axisSnapState == AxisSnapState::Horizontal) {
-        return QPointF(cursor.x(), m_straightLineStart.y());
+        return PointF(cursor.x(), m_straightLineStart.y());
     }
     if (m_axisSnapState == AxisSnapState::Vertical) {
-        return QPointF(m_straightLineStart.x(), cursor.y());
+        return PointF(m_straightLineStart.x(), cursor.y());
     }
     return cursor;
 }
 
-void PaintOpenGLWidget::updateStraightLine(QPointF tip)
+void PaintOpenGLWidget::updateStraightLine(PointF tip)
 {
     if (!m_straightLineMode) {
         return;
     }
-    if (QLineF(m_straightLineStart, tip).length() <= 1e-9) {
+    if (LineF(m_straightLineStart, tip).length() <= 1e-9) {
         // Nothing to collapse to yet (held still from the very first sample).
         // Keeping the press's own dot avoids inventing a zero-length segment,
         // a shape no other code path in the app produces.
@@ -1609,7 +1601,7 @@ void PaintOpenGLWidget::updateStraightLine(QPointF tip)
     m_points.clear();
     m_points.append(m_straightLineStart);
     m_points.append(tip);
-    QPainterPath path(m_straightLineStart);
+    Path path(m_straightLineStart);
     path.lineTo(tip);
     m_currentStroke = AnimeVectorLogic::makeStrokeFromPath(
         path, m_points, m_currentStroke.color, m_currentStroke.width, 0);
@@ -1618,7 +1610,7 @@ void PaintOpenGLWidget::updateStraightLine(QPointF tip)
     // subscriber never runs at mouse rate.
     if (!m_updateHookThrottle.isValid() || m_updateHookThrottle.elapsed() >= kUpdateHookIntervalMs) {
         m_updateHookThrottle.start();
-        pythonHookSendMessage(QStringLiteral("update"));
+        pythonHookSendMessage(String("update"));
     }
     update();
 }
@@ -1663,22 +1655,22 @@ int PaintOpenGLWidget::assetCount() const
     return m_model.assetCount();
 }
 
-QString PaintOpenGLWidget::layerName(int layerIndex) const
+String PaintOpenGLWidget::layerName(int layerIndex) const
 {
     return m_model.layerName(layerIndex);
 }
 
-QString PaintOpenGLWidget::frameName(int frameIndex) const
+String PaintOpenGLWidget::frameName(int frameIndex) const
 {
     return m_model.frameName(frameIndex);
 }
 
-QString PaintOpenGLWidget::assetName(int assetIndex) const
+String PaintOpenGLWidget::assetName(int assetIndex) const
 {
     return m_model.assetName(assetIndex);
 }
 
-int PaintOpenGLWidget::importRasterLayer(const QImage &image, const QString &layerName)
+int PaintOpenGLWidget::importRasterLayer(const Image &image, const String &layerName)
 {
     if (image.isNull()) {
         return -1;
@@ -1687,21 +1679,21 @@ int PaintOpenGLWidget::importRasterLayer(const QImage &image, const QString &lay
     // Centre on the PAGE. Centring on the widget put the image wherever the
     // window happened to be, so the same file landed somewhere else after a
     // dock was dragged.
-    const QPointF canvasCenter = documentRect().center();
-    const QPointF rasterCenter(image.width() * 0.5, image.height() * 0.5);
-    const QPointF topLeft = canvasCenter - rasterCenter;
+    const PointF canvasCenter = documentRect().center();
+    const PointF rasterCenter(image.width() * 0.5, image.height() * 0.5);
+    const PointF topLeft = canvasCenter - rasterCenter;
     const int columnIndex = m_model.addRasterLayer(layerName, m_model.currentFrame(), image, topLeft);
     if (columnIndex >= 0) {
         m_points.clear();
         m_hasCurrentStroke = false;
         m_hasLastEraserPos = false;
-        commitHistory(QStringLiteral("Import Raster"));
+        commitHistory(String("Import Raster"));
         update();
     }
     return columnIndex;
 }
 
-int PaintOpenGLWidget::importVectorLineLayer(const QVector<ImportedVectorFrame> &frames, const QString &layerName)
+int PaintOpenGLWidget::importVectorLineLayer(const Vector<ImportedVectorFrame> &frames, const String &layerName)
 {
     if (frames.isEmpty()) {
         return -1;
@@ -1728,7 +1720,7 @@ int PaintOpenGLWidget::importVectorLineLayer(const QVector<ImportedVectorFrame> 
             if (importedStroke.path.isEmpty() || importedStroke.points.size() < 2) {
                 continue;
             }
-            const qreal width = std::max(qreal(1.0), importedStroke.width);
+            const double width = std::max(double(1.0), importedStroke.width);
             image->addStroke(AnimeVectorLogic::makeStrokeFromPath(importedStroke.path,
                                                                   importedStroke.points,
                                                                   importedStroke.color,
@@ -1763,9 +1755,9 @@ int PaintOpenGLWidget::importVectorLineLayer(const QVector<ImportedVectorFrame> 
     m_points.clear();
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
-    commitHistory(QStringLiteral("Import Vector Lines"));
-    emit assetListChanged(assetIndex);
-    emit layerListChanged(layerIndex);
+    commitHistory(String("Import Vector Lines"));
+    assetListChanged(assetIndex);
+    layerListChanged(layerIndex);
     update();
     return layerIndex;
 }
@@ -1777,7 +1769,7 @@ int PaintOpenGLWidget::addLayer()
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
     if (columnIndex >= 0) {
-        commitHistory(QStringLiteral("Add Layer"));
+        commitHistory(String("Add Layer"));
     }
     update();
     return columnIndex;
@@ -1791,7 +1783,7 @@ bool PaintOpenGLWidget::deleteLayer(int layerIndex)
 
     m_model.remapFillSourceLayersAfterDelete(layerIndex);
     removeInvalidFillRegions();
-    commitHistory(QStringLiteral("Delete Layer"));
+    commitHistory(String("Delete Layer"));
     // The columns shifted: the same current index can now be a different
     // column, which the id-aware baseline detects.
     notifyLayerChangedIfNeeded();
@@ -1810,8 +1802,8 @@ int PaintOpenGLWidget::deleteLayerGroup(int groupId)
     // ONE history entry for the whole group: deleting a mapping run is a
     // single act to the user, and undoing it layer by layer would be tedious
     // and would leave half-restored states in the list.
-    commitHistory(deleted == 1 ? QStringLiteral("Delete Group")
-                               : QStringLiteral("Delete Group (%1 layers)").arg(deleted));
+    commitHistory(deleted == 1 ? String("Delete Group")
+                               : String("Delete Group (%1 layers)").arg(deleted));
     notifyLayerChangedIfNeeded();
     update();
     return deleted;
@@ -1825,7 +1817,7 @@ bool PaintOpenGLWidget::moveLayer(int fromIndex, int toIndex)
 
     m_model.remapFillSourceLayersAfterMove(fromIndex, toIndex);
     removeInvalidFillRegions();
-    commitHistory(QStringLiteral("Move Layer"));
+    commitHistory(String("Move Layer"));
     notifyLayerChangedIfNeeded();
     update();
     return true;
@@ -1838,7 +1830,7 @@ int PaintOpenGLWidget::addFrame()
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
     if (row >= 0) {
-        commitHistory(QStringLiteral("Add Frame"));
+        commitHistory(String("Add Frame"));
     }
     update();
     return row;
@@ -1851,7 +1843,7 @@ int PaintOpenGLWidget::insertHoldFrameAfter(int row)
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
     if (inserted >= 0) {
-        commitHistory(QStringLiteral("Add Hold Frame"));
+        commitHistory(String("Add Hold Frame"));
     }
     update();
     return inserted;
@@ -1864,7 +1856,7 @@ int PaintOpenGLWidget::duplicateFrame(int row)
     m_hasCurrentStroke = false;
     m_hasLastEraserPos = false;
     if (duplicated >= 0) {
-        commitHistory(QStringLiteral("Duplicate Frame"));
+        commitHistory(String("Duplicate Frame"));
     }
     update();
     return duplicated;
@@ -1876,7 +1868,7 @@ bool PaintOpenGLWidget::deleteFrame(int frameIndex)
         return false;
     }
 
-    commitHistory(QStringLiteral("Delete Frame"));
+    commitHistory(String("Delete Frame"));
     update();
     return true;
 }
@@ -1887,7 +1879,7 @@ bool PaintOpenGLWidget::moveFrame(int fromIndex, int toIndex)
         return false;
     }
 
-    commitHistory(QStringLiteral("Move Frame"));
+    commitHistory(String("Move Frame"));
     update();
     return true;
 }
@@ -1897,12 +1889,12 @@ AnimeSceneModel &PaintOpenGLWidget::model()
     return m_model;
 }
 
-int PaintOpenGLWidget::addAsset(AnimeColumnType type, const QString &name)
+int PaintOpenGLWidget::addAsset(AnimeColumnType type, const String &name)
 {
     const int assetIndex = m_model.addAsset(type, name);
     if (assetIndex >= 0) {
-        commitHistory(QStringLiteral("Add Asset"));
-        emit assetListChanged(assetIndex);
+        commitHistory(String("Add Asset"));
+        assetListChanged(assetIndex);
     }
     return assetIndex;
 }
@@ -1923,7 +1915,7 @@ bool PaintOpenGLWidget::assignAssetToLayer(int layerIndex, int assetIndex)
         m_points.clear();
         m_hasCurrentStroke = false;
         m_hasLastEraserPos = false;
-        commitHistory(QStringLiteral("Assign Asset"));
+        commitHistory(String("Assign Asset"));
         update();
     }
     return assigned;
@@ -1936,7 +1928,7 @@ int PaintOpenGLWidget::addLayerForAsset(int assetIndex)
         m_points.clear();
         m_hasCurrentStroke = false;
         m_hasLastEraserPos = false;
-        commitHistory(QStringLiteral("Add Layer for Asset"));
+        commitHistory(String("Add Layer for Asset"));
         update();
     }
     return layerIndex;
@@ -1947,7 +1939,7 @@ const AnimeSceneModel &PaintOpenGLWidget::model() const
     return m_model;
 }
 
-void PaintOpenGLWidget::setOverlayItems(const QVector<OverlayItem> &items)
+void PaintOpenGLWidget::setOverlayItems(const Vector<OverlayItem> &items)
 {
     m_overlayItems = items;
     // A live overlay drag survives a re-push AS LONG AS its item is still in
@@ -1968,7 +1960,7 @@ void PaintOpenGLWidget::setOverlayItems(const QVector<OverlayItem> &items)
     update();
 }
 
-void PaintOpenGLWidget::setEditHandles(const QVector<EditHandle> &handles)
+void PaintOpenGLWidget::setEditHandles(const Vector<EditHandle> &handles)
 {
     m_editHandles = handles;
     // Python may legitimately clear or rebuild the set mid-drag (it re-pushes
@@ -1978,29 +1970,29 @@ void PaintOpenGLWidget::setEditHandles(const QVector<EditHandle> &handles)
 }
 
 namespace {
-constexpr qreal kEditHandleScreenPx = 9.0;   // drawn size
-constexpr qreal kEditHandleHitPx = 7.0;      // half-size of the hit box
-constexpr qreal kEditHandleButtonScale = 1.8; // button shapes (3, 4) grow by this
+constexpr double kEditHandleScreenPx = 9.0;   // drawn size
+constexpr double kEditHandleHitPx = 7.0;      // half-size of the hit box
+constexpr double kEditHandleButtonScale = 1.8; // button shapes (3, 4) grow by this
 }
 
-void PaintOpenGLWidget::paintEditHandles(QPainter &painter)
+void PaintOpenGLWidget::paintEditHandles(Painter &painter)
 {
     // SCREEN space: handles keep a constant size at any zoom, like every
     // vector editor's - a handle is a tool, not a mark on the paper.
     // Conversion via algorithm/viewscale.h, the shared wheel.
     for (const EditHandle &handle : m_editHandles) {
-        const QPointF screen = AnimeViewScale::toScreen(handle.pos, m_zoom, m_panOffset);
-        const qreal half = kEditHandleScreenPx * 0.5;
-        painter.setPen(QPen(QColor(30, 30, 30, 230), 1.2));
+        const PointF screen = AnimeViewScale::toScreen(handle.pos, m_zoom, m_panOffset);
+        const double half = kEditHandleScreenPx * 0.5;
+        painter.setPen(Pen(Color(30, 30, 30, 230), 1.2));
         painter.setBrush(handle.color);
         switch (handle.shape) {
         case 1:
             painter.drawEllipse(screen, half, half);
             break;
         case 2: {
-            const QPointF diamond[4] = {
-                screen + QPointF(0.0, -half - 1.5), screen + QPointF(half + 1.5, 0.0),
-                screen + QPointF(0.0, half + 1.5), screen + QPointF(-half - 1.5, 0.0)};
+            const PointF diamond[4] = {
+                screen + PointF(0.0, -half - 1.5), screen + PointF(half + 1.5, 0.0),
+                screen + PointF(0.0, half + 1.5), screen + PointF(-half - 1.5, 0.0)};
             painter.drawPolygon(diamond, 4);
             break;
         }
@@ -2008,33 +2000,33 @@ void PaintOpenGLWidget::paintEditHandles(QPainter &painter)
         // the point handles so a click target reads as one, with a matching
         // bigger hit box in editHandleAt.
         case 3: {
-            const qreal button = half * kEditHandleButtonScale;
+            const double button = half * kEditHandleButtonScale;
             painter.drawEllipse(screen, button, button);
-            painter.setPen(QPen(QColor(250, 250, 250, 245), 2.0));
-            const QPointF check[3] = {screen + QPointF(-button * 0.5, 0.05 * button),
-                                      screen + QPointF(-button * 0.12, button * 0.45),
-                                      screen + QPointF(button * 0.55, -button * 0.45)};
+            painter.setPen(Pen(Color(250, 250, 250, 245), 2.0));
+            const PointF check[3] = {screen + PointF(-button * 0.5, 0.05 * button),
+                                      screen + PointF(-button * 0.12, button * 0.45),
+                                      screen + PointF(button * 0.55, -button * 0.45)};
             painter.drawPolyline(check, 3);
             break;
         }
         case 4: {
-            const qreal button = half * kEditHandleButtonScale;
+            const double button = half * kEditHandleButtonScale;
             painter.drawEllipse(screen, button, button);
-            painter.setPen(QPen(QColor(250, 250, 250, 245), 2.0));
-            const qreal arm = button * 0.5;
-            painter.drawLine(screen + QPointF(-arm, -arm), screen + QPointF(arm, arm));
-            painter.drawLine(screen + QPointF(-arm, arm), screen + QPointF(arm, -arm));
+            painter.setPen(Pen(Color(250, 250, 250, 245), 2.0));
+            const double arm = button * 0.5;
+            painter.drawLine(screen + PointF(-arm, -arm), screen + PointF(arm, arm));
+            painter.drawLine(screen + PointF(-arm, arm), screen + PointF(arm, -arm));
             break;
         }
         default:
-            painter.drawRect(QRectF(screen.x() - half, screen.y() - half,
+            painter.drawRect(RectF(screen.x() - half, screen.y() - half,
                                     kEditHandleScreenPx, kEditHandleScreenPx));
             break;
         }
     }
 }
 
-QString PaintOpenGLWidget::editHandleAt(const QPointF &screenPos) const
+String PaintOpenGLWidget::editHandleAt(const PointF &screenPos) const
 {
     // Last drawn is on top, so scan backwards.
     for (int i = m_editHandles.size() - 1; i >= 0; --i) {
@@ -2043,9 +2035,9 @@ QString PaintOpenGLWidget::editHandleAt(const QPointF &screenPos) const
         }
         // Same doc->screen mapping the painter used (algorithm/viewscale.h):
         // the pick box must sit exactly where the handle was drawn.
-        const QPointF screen =
+        const PointF screen =
             AnimeViewScale::toScreen(m_editHandles[i].pos, m_zoom, m_panOffset);
-        const qreal hit = m_editHandles[i].shape >= 3
+        const double hit = m_editHandles[i].shape >= 3
                               ? kEditHandleHitPx * kEditHandleButtonScale
                               : kEditHandleHitPx;
         if (std::abs(screen.x() - screenPos.x()) <= hit
@@ -2053,17 +2045,17 @@ QString PaintOpenGLWidget::editHandleAt(const QPointF &screenPos) const
             return m_editHandles[i].id;
         }
     }
-    return QString();
+    return String();
 }
 
-QString PaintOpenGLWidget::sendPythonHandleMessage(const QString &phase,
-                                                  const QString &handleId,
-                                                  const QPointF &pos,
-                                                  Qt::KeyboardModifiers modifiers)
+String PaintOpenGLWidget::sendPythonHandleMessage(const String &phase,
+                                                  const String &handleId,
+                                                  const PointF &pos,
+                                                  KeyboardModifiers modifiers)
 {
 #ifdef ANIMEAN_WITH_PYTHON
-    if (!animeanHookEventSubscribed(QStringLiteral("handle"))) {
-        return QString();
+    if (!animeanHookEventSubscribed(String("handle"))) {
+        return String();
     }
 
     const int frameRow = m_model.currentFrame();
@@ -2086,7 +2078,7 @@ QString PaintOpenGLWidget::sendPythonHandleMessage(const QString &phase,
     message["cell"] = cellInfo;
     message["stroke"] = py::dict();
     message["position"] = pointToPythonDict(pos);
-    message["delta"] = pointToPythonDict(QPointF());
+    message["delta"] = pointToPythonDict(PointF());
     message["phase"] = phase.toStdString();
     message["handle"] = handleId.toStdString();
     // The colour in force right now: the per-tool colour cache
@@ -2104,18 +2096,18 @@ QString PaintOpenGLWidget::sendPythonHandleMessage(const QString &phase,
     // translation). Any of Alt/Ctrl/Shift reads as "constrain" - which one
     // is a house convention, so the flags travel separately too.
     py::dict keys;
-    keys["shift"] = bool(modifiers & Qt::ShiftModifier);
-    keys["ctrl"] = bool(modifiers & Qt::ControlModifier);
-    keys["alt"] = bool(modifiers & Qt::AltModifier);
-    keys["constrain"] = bool(modifiers & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier));
+    keys["shift"] = bool(modifiers & ShiftModifier);
+    keys["ctrl"] = bool(modifiers & ControlModifier);
+    keys["alt"] = bool(modifiers & AltModifier);
+    keys["constrain"] = bool(modifiers & (ShiftModifier | ControlModifier | AltModifier));
     message["modifiers"] = keys;
     // The perceptual key-point filter is zoom-dependent (the eye resolves a
     // fixed angular period, which maps through the zoom to document space).
     message["zoom"] = m_zoom;
 
-    const QString output = ::pythonHookSendMessage(message);
+    const String output = ::pythonHookSendMessage(message);
     if (!isQuietHookOutput(output)) {
-        emit pythonDebugMessage(output);
+        pythonDebugMessage(output);
     }
 
     // A "pick" may CLAIM the gesture: Python answers with the id of the
@@ -2124,36 +2116,36 @@ QString PaintOpenGLWidget::sendPythonHandleMessage(const QString &phase,
         if (message.contains(py::str("grab"))) {
             const std::string grabbed = message[py::str("grab")].cast<std::string>();
             if (!grabbed.empty()) {
-                return QString::fromStdString(grabbed);
+                return String::fromStdString(grabbed);
             }
         }
     } catch (const py::error_already_set &) {
     } catch (const py::cast_error &) {
     }
-    return QString();
+    return String();
 #else
-    Q_UNUSED(phase);
-    Q_UNUSED(handleId);
-    Q_UNUSED(modifiers);
-    Q_UNUSED(pos);
-    return QString();
+    (void)phase;
+    (void)handleId;
+    (void)modifiers;
+    (void)pos;
+    return String();
 #endif
 }
 
-void PaintOpenGLWidget::paintSceneContent(QPainter &painter, int frameIndex, bool includeCurrentStroke,
+void PaintOpenGLWidget::paintSceneContent(Painter &painter, int frameIndex, bool includeCurrentStroke,
                                           const SceneContentFilter *filter)
 {
     const bool drawStrokes = !filter || filter->strokes;
     const bool drawGuideStrokes = !filter || filter->guideStrokes;
     const bool drawFills = !filter || filter->fills;
     const bool drawRaster = !filter || filter->raster;
-    const QStringList *guideProperties = filter ? filter->guideProperties : nullptr;
-    const QString *excludeLayerTag =
+    const StringList *guideProperties = filter ? filter->guideProperties : nullptr;
+    const String *excludeLayerTag =
         (filter && filter->excludeLayerTag && !filter->excludeLayerTag->isEmpty())
             ? filter->excludeLayerTag
             : nullptr;
     const AnimeScene &scene = m_model.scene();
-    QHash<qint64, QImage> nextRasterCache;
+    Hash<std::int64_t, Image> nextRasterCache;
     const auto paintColumn = [&](int columnIndex) {
         const AnimeColumn &column = scene.xsheet.columns[columnIndex];
         if (!column.visible) {
@@ -2171,45 +2163,45 @@ void PaintOpenGLWidget::paintSceneContent(QPainter &painter, int frameIndex, boo
         if (image) {
             if (drawRaster && image->hasRaster()) {
                 const AnimeRasterImage &raster = image->raster();
-                // Reuse the same QImage wrapper across frames so its QImage::cacheKey()
-                // stays stable for RecordingPaintEngine's incremental prefix hash.
-                const qint64 cacheKey = raster.image.cacheKey();
-                QImage rasterImage = m_rasterCache.value(cacheKey);
+                // Reuse the same Image wrapper across frames so its Image::cacheKey()
+                // stays stable for RecordingDevice's incremental prefix hash.
+                const std::int64_t cacheKey = raster.image.cacheKey();
+                Image rasterImage = m_rasterCache.value(cacheKey);
                 if (rasterImage.isNull() && !raster.image.isNull()) {
-                    rasterImage = QImage(raster.image);
+                    rasterImage = Image(raster.image);
                 }
                 if (!rasterImage.isNull()) {
                     nextRasterCache.insert(cacheKey, rasterImage);
                 }
-                painter.drawImage(QPointF(raster.topLeft), rasterImage);
+                painter.drawImage(PointF(raster.topLeft), rasterImage);
             }
             if (drawFills) {
-                painter.setPen(Qt::NoPen);
+                painter.setPen(NoPen);
                 for (const AnimeVectorFillRegion &fill : image->fillRegions()) {
-                    painter.setBrush(QColor(fill.color));
+                    painter.setBrush(Color(fill.color));
                     painter.drawPath(fill.path);
                 }
             }
-            painter.setBrush(Qt::NoBrush);
+            painter.setBrush(NoBrush);
             for (const VectorStrokeNode &node : image->strokeNodes()) {
                 const VectorStroke &stroke = node.stroke;
                 const bool isGuide = guideProperties && !stroke.property.isEmpty()
-                                     && guideProperties->contains(QString(stroke.property));
+                                     && guideProperties->contains(String(stroke.property));
                 if (!(isGuide ? drawGuideStrokes : drawStrokes)) {
                     continue;
                 }
-                // penStyle is a generic per-stroke property (Qt::PenStyle).
+                // penStyle is a generic per-stroke property (PenStyle).
                 // Clamp out-of-range values to solid: 0 is NoPen, which would
                 // silently make the stroke invisible.
-                const Qt::PenStyle penStyle =
-                    (stroke.penStyle >= Qt::SolidLine && stroke.penStyle <= Qt::DashDotDotLine)
-                        ? static_cast<Qt::PenStyle>(stroke.penStyle)
-                        : Qt::SolidLine;
+                const PenStyle penStyle =
+                    (stroke.penStyle >= SolidLine && stroke.penStyle <= DashDotDotLine)
+                        ? static_cast<PenStyle>(stroke.penStyle)
+                        : SolidLine;
                 // Floored on-screen width: zoomed out, the raw width fades
                 // into an invisible sub-pixel smear. Display only.
-                QPen pen(QColor(stroke.color),
-                         AnimeVectorLogic::displayStrokeWidth(stroke.width, m_zoom),
-                         penStyle, Qt::RoundCap, Qt::RoundJoin);
+                Pen pen(Color(stroke.color),
+                        AnimeVectorLogic::displayStrokeWidth(stroke.width, m_zoom),
+                        penStyle, RoundCap, RoundJoin);
                 painter.setPen(pen);
                 painter.drawPath(stroke.path);
             }
@@ -2217,9 +2209,9 @@ void PaintOpenGLWidget::paintSceneContent(QPainter &painter, int frameIndex, boo
 
         if (includeCurrentStroke && drawStrokes && columnIndex == m_model.currentLayer()
             && m_hasCurrentStroke) {
-            painter.setPen(QPen(QColor(m_currentStroke.color),
-                                AnimeVectorLogic::displayStrokeWidth(m_currentStroke.width, m_zoom),
-                                Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            painter.setPen(Pen(Color(m_currentStroke.color),
+                               AnimeVectorLogic::displayStrokeWidth(m_currentStroke.width, m_zoom),
+                               SolidLine, RoundCap, RoundJoin));
             painter.drawPath(m_currentStroke.path);
         }
     };
@@ -2248,7 +2240,7 @@ void PaintOpenGLWidget::paintSceneContent(QPainter &painter, int frameIndex, boo
     painter.setOpacity(1.0);
 }
 
-bool PaintOpenGLWidget::buildPlaybackCache(int frameCount, QString *error)
+bool PaintOpenGLWidget::buildPlaybackCache(int frameCount, String *error)
 {
     m_playbackFrames.clear();
     m_playbackIndex = -1;
@@ -2256,19 +2248,19 @@ bool PaintOpenGLWidget::buildPlaybackCache(int frameCount, QString *error)
 
     if (frameCount <= 0 || width() <= 0 || height() <= 0) {
         if (error) {
-            *error = QStringLiteral("nothing to prerender");
+            *error = String("nothing to prerender");
         }
         return false;
     }
 
-    const qreal ratio = devicePixelRatioF();
-    const QSize pixelSize(std::max(1, int(std::lround(width() * ratio))),
+    const double ratio = devicePixelRatioF();
+    const Size pixelSize(std::max(1, int(std::lround(width() * ratio))),
                           std::max(1, int(std::lround(height() * ratio))));
-    const qint64 bytesPerFrame = qint64(pixelSize.width()) * pixelSize.height() * 4;
-    const qint64 budget = 512LL * 1024 * 1024;
+    const std::int64_t bytesPerFrame = std::int64_t(pixelSize.width()) * pixelSize.height() * 4;
+    const std::int64_t budget = 512LL * 1024 * 1024;
     if (bytesPerFrame * frameCount > budget) {
         if (error) {
-            *error = QStringLiteral("prerendering %1 frames at %2x%3 needs %4 MB (limit %5 MB)")
+            *error = String("prerendering %1 frames at %2x%3 needs %4 MB (limit %5 MB)")
                          .arg(frameCount)
                          .arg(pixelSize.width())
                          .arg(pixelSize.height())
@@ -2280,7 +2272,7 @@ bool PaintOpenGLWidget::buildPlaybackCache(int frameCount, QString *error)
 
     m_playbackFrames.reserve(frameCount);
     for (int frame = 0; frame < frameCount; ++frame) {
-        QImage image(pixelSize, QImage::Format_ARGB32_Premultiplied);
+        Image image(pixelSize, Image::Format_ARGB32_Premultiplied);
         image.setDevicePixelRatio(ratio);
         // CONTENT ONLY, on transparent. The background is painted live under
         // the blit instead of being baked in here: baked, it froze whatever
@@ -2288,15 +2280,15 @@ bool PaintOpenGLWidget::buildPlaybackCache(int frameCount, QString *error)
         // nothing while playing), and because the cache is blitted through a
         // pan/zoom correction the chequer would have travelled with the
         // drawing instead of staying screen-space.
-        image.fill(Qt::transparent);
+        image.fill(Color(0, 0, 0, 0));
 
-        QPainter painter(&image);
-        painter.setRenderHint(QPainter::Antialiasing);
-        painter.setRenderHint(QPainter::SmoothPixmapTransform);
+        Painter painter(&image);
+        painter.setRenderHint(Painter::Antialiasing);
+        painter.setRenderHint(Painter::SmoothPixmapTransform);
         painter.translate(m_panOffset);
         painter.scale(m_zoom, m_zoom);
         if (!m_unboundedCanvas) {
-            painter.fillRect(documentRect(), Qt::white);
+            painter.fillRect(documentRect(), Color(255, 255, 255));
         }
         // Overlays and the in-progress stroke are editing aids, not content.
         paintSceneContent(painter, frame, false);
@@ -2322,13 +2314,13 @@ void PaintOpenGLWidget::schedulePlaybackCacheRefresh()
         return;
     }
     if (!m_playbackCacheTimer) {
-        m_playbackCacheTimer = new QTimer(this);
+        m_playbackCacheTimer = std::make_unique<Timer>();
         m_playbackCacheTimer->setSingleShot(true);
-        connect(m_playbackCacheTimer, &QTimer::timeout, this, [this]() {
+        m_playbackCacheTimer->timeout.connect([this]() {
             if (!m_playbackActive || m_playbackCacheFrameCount <= 0) {
                 return;
             }
-            if (qFuzzyCompare(m_zoom, m_playbackCacheZoom)
+            if (fuzzyCompare(m_zoom, m_playbackCacheZoom)
                 && m_panOffset == m_playbackCachePan) {
                 return;   // the view came back to what the cache already holds
             }
@@ -2336,14 +2328,14 @@ void PaintOpenGLWidget::schedulePlaybackCacheRefresh()
             // index, and losing the user's position mid-playback would be a
             // worse artifact than the soft frame it is replacing.
             const int index = m_playbackIndex;
-            QString error;
+            String error;
             if (buildPlaybackCache(m_playbackCacheFrameCount, &error)) {
                 m_playbackIndex = std::min(index, int(m_playbackFrames.size()) - 1);
                 update();
             } else {
                 // Out of budget at the new size: stop rather than keep
                 // blitting a cache that no longer matches anything.
-                emit playbackInterrupted();
+                playbackInterrupted();
             }
         });
     }
@@ -2394,7 +2386,7 @@ bool PaintOpenGLWidget::onionEnabled() const
     return m_onionEnabled;
 }
 
-void PaintOpenGLWidget::setOnionFrames(const QSet<int> &frames)
+void PaintOpenGLWidget::setOnionFrames(const Set<int> &frames)
 {
     if (m_onionFrames == frames) {
         return;
@@ -2405,7 +2397,7 @@ void PaintOpenGLWidget::setOnionFrames(const QSet<int> &frames)
     update();
 }
 
-QSet<int> PaintOpenGLWidget::onionFrames() const
+Set<int> PaintOpenGLWidget::onionFrames() const
 {
     return m_onionFrames;
 }
@@ -2474,7 +2466,7 @@ bool PaintOpenGLWidget::onionAmLayers() const
     return m_onionAmLayers;
 }
 
-void PaintOpenGLWidget::setOnionExcludeProperties(const QStringList &properties)
+void PaintOpenGLWidget::setOnionExcludeProperties(const StringList &properties)
 {
     if (m_onionExcludeProperties == properties) {
         return;
@@ -2484,12 +2476,12 @@ void PaintOpenGLWidget::setOnionExcludeProperties(const QStringList &properties)
     update();
 }
 
-QStringList PaintOpenGLWidget::onionExcludeProperties() const
+StringList PaintOpenGLWidget::onionExcludeProperties() const
 {
     return m_onionExcludeProperties;
 }
 
-void PaintOpenGLWidget::setOnionLayerTag(const QString &tag)
+void PaintOpenGLWidget::setOnionLayerTag(const String &tag)
 {
     if (m_onionLayerTag == tag) {
         return;
@@ -2499,7 +2491,7 @@ void PaintOpenGLWidget::setOnionLayerTag(const QString &tag)
     update();
 }
 
-QString PaintOpenGLWidget::onionLayerTag() const
+String PaintOpenGLWidget::onionLayerTag() const
 {
     return m_onionLayerTag;
 }
@@ -2521,7 +2513,7 @@ void PaintOpenGLWidget::notifyOnionChangedIfNeeded()
     const bool fills = enabled && m_onionFills;
     const bool amLayers = enabled && m_onionAmLayers;
     const int current = enabled ? m_model.currentFrame() : -1;
-    QList<int> frames;
+    Vector<int> frames;
     if (enabled) {
         frames = m_onionFrames.values();
         std::sort(frames.begin(), frames.end());
@@ -2545,7 +2537,7 @@ void PaintOpenGLWidget::notifyOnionChangedIfNeeded()
     m_pythonNotifiedOnionCurrent = current;
     m_pythonNotifiedOnionFrames = frames;
 
-    if (!animeanHookEventSubscribed(QStringLiteral("onion"))) {
+    if (!animeanHookEventSubscribed(String("onion"))) {
         return;
     }
 
@@ -2573,8 +2565,8 @@ void PaintOpenGLWidget::notifyOnionChangedIfNeeded()
     message["property"] = m_strokeProperty.toStdString();
     message["cell"] = cellInfo;
     message["stroke"] = py::dict();
-    message["position"] = pointToPythonDict(QPointF());
-    message["delta"] = pointToPythonDict(QPointF());
+    message["position"] = pointToPythonDict(PointF());
+    message["delta"] = pointToPythonDict(PointF());
     message["enabled"] = enabled;
     message["guides"] = guides;
     message["lines"] = lines;
@@ -2583,9 +2575,9 @@ void PaintOpenGLWidget::notifyOnionChangedIfNeeded()
     message["frames"] = frameList;
     message["current"] = frameRow;
 
-    const QString output = ::pythonHookSendMessage(message);
+    const String output = ::pythonHookSendMessage(message);
     if (!isQuietHookOutput(output)) {
-        emit pythonDebugMessage(output);
+        pythonDebugMessage(output);
     }
 #endif
 }
@@ -2598,13 +2590,13 @@ void PaintOpenGLWidget::clearOnionCache()
 void PaintOpenGLWidget::scheduleOnionCacheRefresh()
 {
     if (!m_onionCacheTimer) {
-        m_onionCacheTimer = new QTimer(this);
+        m_onionCacheTimer = std::make_unique<Timer>();
         m_onionCacheTimer->setSingleShot(true);
-        connect(m_onionCacheTimer, &QTimer::timeout, this, [this]() {
+        m_onionCacheTimer->timeout.connect([this]() {
             if (!m_onionEnabled || m_onionCache.isEmpty()) {
                 return;
             }
-            if (qFuzzyCompare(m_zoom, m_onionCacheZoom)
+            if (fuzzyCompare(m_zoom, m_onionCacheZoom)
                 && m_panOffset == m_onionCachePan
                 && size() == m_onionCacheSize) {
                 return;   // the view came back to what the cache already holds
@@ -2619,17 +2611,17 @@ void PaintOpenGLWidget::scheduleOnionCacheRefresh()
 
 int PaintOpenGLWidget::maxOnionGhosts() const
 {
-    const qreal ratio = devicePixelRatioF();
-    const qint64 bytesPerGhost =
-        std::max<qint64>(1, qint64(std::max(1, int(std::lround(width() * ratio))))
+    const double ratio = devicePixelRatioF();
+    const std::int64_t bytesPerGhost =
+        std::max<std::int64_t>(1, std::int64_t(std::max(1, int(std::lround(width() * ratio))))
                                 * std::max(1, int(std::lround(height() * ratio))) * 4);
     // Half the playback cache's budget: the two can be live at the same time,
     // and the ghosts are the set the user did not ask to have prerendered.
-    const qint64 budget = 256LL * 1024 * 1024;
-    return int(std::min<qint64>(std::max<qint64>(1, budget / bytesPerGhost), kMaxOnionGhosts));
+    const std::int64_t budget = 256LL * 1024 * 1024;
+    return int(std::min<std::int64_t>(std::max<std::int64_t>(1, budget / bytesPerGhost), kMaxOnionGhosts));
 }
 
-QImage PaintOpenGLWidget::onionGhost(int frameIndex, bool past)
+Image PaintOpenGLWidget::onionGhost(int frameIndex, bool past)
 {
     const auto cached = m_onionCache.constFind(frameIndex);
     if (cached != m_onionCache.constEnd() && cached->past == past) {
@@ -2650,21 +2642,21 @@ QImage PaintOpenGLWidget::onionGhost(int frameIndex, bool past)
         m_onionCacheSize = size();
     }
 
-    const qreal ratio = devicePixelRatioF();
-    const QSize pixelSize(std::max(1, int(std::lround(m_onionCacheSize.width() * ratio))),
+    const double ratio = devicePixelRatioF();
+    const Size pixelSize(std::max(1, int(std::lround(m_onionCacheSize.width() * ratio))),
                           std::max(1, int(std::lround(m_onionCacheSize.height() * ratio))));
-    QImage image(pixelSize, QImage::Format_ARGB32_Premultiplied);
+    Image image(pixelSize, Image::Format_ARGB32_Premultiplied);
     if (image.isNull()) {
         // A failed allocation must not be remembered: a cached null would keep
         // this frame invisible until something else drops the whole set.
-        return QImage();
+        return Image();
     }
     image.setDevicePixelRatio(ratio);
-    image.fill(Qt::transparent);
+    image.fill(Color(0, 0, 0, 0));
 
-    QPainter painter(&image);
-    painter.setRenderHint(QPainter::Antialiasing);
-    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+    Painter painter(&image);
+    painter.setRenderHint(Painter::Antialiasing);
+    painter.setRenderHint(Painter::SmoothPixmapTransform);
     painter.translate(m_onionCachePan);
     painter.scale(m_onionCacheZoom, m_onionCacheZoom);
     // No page fill: a ghost is artwork, and a white ground would bury the
@@ -2686,9 +2678,9 @@ QImage PaintOpenGLWidget::onionGhost(int frameIndex, bool past)
     paintSceneContent(painter, frameIndex, false, &filter);
     // One flat tint: a ghost says WHEN, so the ink's own colours would only
     // compete with the frame that is being drawn.
-    painter.setWorldTransform(QTransform());
-    painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
-    painter.fillRect(QRect(QPoint(0, 0), m_onionCacheSize),
+    painter.setWorldTransform(Transform());
+    painter.setCompositionMode(Painter::CompositionMode_SourceIn);
+    painter.fillRect(Rect(Point(0, 0), m_onionCacheSize),
                      AnimeTheme::color(past ? AnimeTheme::Role::OnionPast
                                             : AnimeTheme::Role::OnionAhead));
     painter.end();
@@ -2700,7 +2692,7 @@ QImage PaintOpenGLWidget::onionGhost(int frameIndex, bool past)
     return ghost.image;
 }
 
-void PaintOpenGLWidget::paintOnionGhosts(QPainter &painter)
+void PaintOpenGLWidget::paintOnionGhosts(Painter &painter)
 {
     // Playback already shows every frame in turn; ghosting on top of it would
     // be noise, and the prerender pass has the pixels anyway.
@@ -2713,7 +2705,7 @@ void PaintOpenGLWidget::paintOnionGhosts(QPainter &painter)
 
     const int current = m_model.currentFrame();
     const int frameCount = m_model.frameCount();
-    QVector<int> frames;
+    Vector<int> frames;
     frames.reserve(m_onionFrames.size());
     for (int frame : m_onionFrames) {
         if (frame >= 0 && frame < frameCount && frame != current) {
@@ -2724,7 +2716,12 @@ void PaintOpenGLWidget::paintOnionGhosts(QPainter &painter)
         return;
     }
     std::sort(frames.begin(), frames.end(), [current](int a, int b) {
-        return qAbs(a - current) < qAbs(b - current);
+        const int da = std::abs(a - current);
+        const int db = std::abs(b - current);
+        if (da != db) {
+            return da < db;
+        }
+        return a < b;
     });
     const int ghostBudget = maxOnionGhosts();
     if (frames.size() > ghostBudget) {
@@ -2737,7 +2734,7 @@ void PaintOpenGLWidget::paintOnionGhosts(QPainter &painter)
     std::reverse(frames.begin(), frames.end());
 
     const bool stale = !m_onionCache.isEmpty()
-                       && (!qFuzzyCompare(m_zoom, m_onionCacheZoom)
+                       && (!fuzzyCompare(m_zoom, m_onionCacheZoom)
                            || m_panOffset != m_onionCachePan
                            || size() != m_onionCacheSize);
     if (stale) {
@@ -2748,51 +2745,51 @@ void PaintOpenGLWidget::paintOnionGhosts(QPainter &painter)
     // The ghosts carry their own transform, so they are blitted in widget
     // space; while the cache is stale they are re-mapped onto the current
     // view exactly the way the playback cache is.
-    painter.setWorldTransform(QTransform());
-    const qreal scale = m_onionCacheZoom > 0.0 ? m_zoom / m_onionCacheZoom : 1.0;
+    painter.setWorldTransform(Transform());
+    const double scale = m_onionCacheZoom > 0.0 ? m_zoom / m_onionCacheZoom : 1.0;
     if (stale) {
         painter.translate(m_panOffset - m_onionCachePan * scale);
         painter.scale(scale, scale);
     }
     for (int frame : frames) {
-        const QImage ghost = onionGhost(frame, frame < current);
+        const Image ghost = onionGhost(frame, frame < current);
         if (ghost.isNull()) {
             continue;
         }
-        const int distance = qAbs(frame - current);
-        painter.setOpacity(std::max<qreal>(0.12, 0.42 / (1.0 + 0.35 * (distance - 1))));
-        painter.drawImage(QPointF(0.0, 0.0), ghost);
+        const int distance = std::abs(frame - current);
+        painter.setOpacity(std::max<double>(0.12, 0.42 / (1.0 + 0.35 * (distance - 1))));
+        painter.drawImage(PointF(0.0, 0.0), ghost);
     }
     painter.restore();
 }
 
-QImage PaintOpenGLWidget::renderFrameThumbnail(int frameIndex, const QSize &size)
+Image PaintOpenGLWidget::renderFrameThumbnail(int frameIndex, const Size &size)
 {
     if (size.width() <= 0 || size.height() <= 0) {
-        return QImage();
+        return Image();
     }
-    QImage image(size, QImage::Format_ARGB32_Premultiplied);
-    image.fill(Qt::white);
+    Image image(size, Image::Format_ARGB32_Premultiplied);
+    image.fill(Color(255, 255, 255));
     if (frameIndex < 0 || frameIndex >= m_model.frameCount()) {
         return image;
     }
 
-    const QRectF page = documentRect();
+    const RectF page = documentRect();
     if (page.width() <= 0.0 || page.height() <= 0.0) {
         return image;
     }
-    const qreal scale = std::min(size.width() / page.width(), size.height() / page.height());
+    const double scale = std::min(size.width() / page.width(), size.height() / page.height());
 
-    QPainter painter(&image);
-    painter.setRenderHint(QPainter::Antialiasing);
-    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+    Painter painter(&image);
+    painter.setRenderHint(Painter::Antialiasing);
+    painter.setRenderHint(Painter::SmoothPixmapTransform);
     painter.translate((size.width() - page.width() * scale) * 0.5,
                       (size.height() - page.height() * scale) * 0.5);
     painter.scale(scale, scale);
     painter.translate(-page.topLeft());
     // Stroke widths are floored against the magnification they will be SEEN
     // at, and that is the thumbnail's, not the board's.
-    const qreal previousZoom = m_zoom;
+    const double previousZoom = m_zoom;
     m_zoom = scale;
     paintSceneContent(painter, frameIndex, false);
     m_zoom = previousZoom;
@@ -2802,19 +2799,19 @@ QImage PaintOpenGLWidget::renderFrameThumbnail(int frameIndex, const QSize &size
 
 void PaintOpenGLWidget::paintGL()
 {
-    QPainter painter(this);
-    painter.setRenderHint(QPainter::Antialiasing);
+    Painter painter(this);
+    painter.setRenderHint(Painter::Antialiasing);
     // Bilinear filtering for every image drawn under the zoom transform -
     // raster layers and the playback cache. Without it a scaled image is
     // sampled nearest-neighbour and pixelates the moment zoom leaves 1.0.
-    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+    painter.setRenderHint(Painter::SmoothPixmapTransform);
 
     if (m_playbackActive && m_playbackIndex >= 0 && m_playbackIndex < m_playbackFrames.size()) {
         // Always clear first: the widget can be larger than the cached frame
         // (a resize ends playback, but the repaint may arrive before that),
         // and uncovered pixels of a recreated FBO are undefined.
         if (m_unboundedCanvas) {
-            paintBackground(painter, QRectF(rect()));
+            paintBackground(painter, RectF(rect()));
         } else {
             painter.fillRect(rect(), AnimeTheme::surroundFor(kPaperColor));
         }
@@ -2824,16 +2821,16 @@ void PaintOpenGLWidget::paintGL()
         // pan + doc*zoom - so one scale and one translate covers it.
         // Without this the frame could only ever be blitted 1:1, which is why
         // zooming used to have to drop out of playback.
-        const qreal scale = m_playbackCacheZoom > 0.0 ? m_zoom / m_playbackCacheZoom : 1.0;
-        if (!qFuzzyCompare(scale, qreal(1.0)) || m_panOffset != m_playbackCachePan) {
+        const double scale = m_playbackCacheZoom > 0.0 ? m_zoom / m_playbackCacheZoom : 1.0;
+        if (!fuzzyCompare(scale, double(1.0)) || m_panOffset != m_playbackCachePan) {
             painter.save();
-            painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+            painter.setRenderHint(Painter::SmoothPixmapTransform, true);
             painter.translate(m_panOffset - m_playbackCachePan * scale);
             painter.scale(scale, scale);
-            painter.drawImage(QPointF(0.0, 0.0), m_playbackFrames[m_playbackIndex]);
+            painter.drawImage(PointF(0.0, 0.0), m_playbackFrames[m_playbackIndex]);
             painter.restore();
         } else {
-            painter.drawImage(QPointF(0.0, 0.0), m_playbackFrames[m_playbackIndex]);
+            painter.drawImage(PointF(0.0, 0.0), m_playbackFrames[m_playbackIndex]);
         }
         paintActiveIndicator(painter);
         return;
@@ -2850,13 +2847,13 @@ void PaintOpenGLWidget::paintGL()
     painter.translate(m_panOffset);
     painter.scale(m_zoom, m_zoom);
     if (!m_unboundedCanvas) {
-        const QRectF page = documentRect();
+        const RectF page = documentRect();
         // The paper is white in both themes: it is the artwork's ground, not
         // chrome, and its colour is what the drawing is composed against.
         painter.fillRect(page, kPaperColor);
         // The page can now be smaller than the viewport, so say where it ends.
-        painter.setBrush(Qt::NoBrush);
-        painter.setPen(QPen(AnimeTheme::color(AnimeTheme::Role::Divider), 1.0 / m_zoom));
+        painter.setBrush(NoBrush);
+        painter.setPen(Pen(AnimeTheme::color(AnimeTheme::Role::Divider), 1.0 / m_zoom));
         painter.drawRect(page);
     }
 
@@ -2874,23 +2871,23 @@ void PaintOpenGLWidget::paintGL()
     // preview would only draw a second line on top of the first.
     if (m_hasCurrentStroke && m_hasRawPenPos && !m_points.isEmpty()
         && m_inputFilter.active() && !m_straightLineMode) {
-        const QPointF tip = m_points.last();
+        const PointF tip = m_points.last();
         // Under an axis lock the ink is constrained to the axis; a preview
         // pointing at the free cursor would wag a wrong-direction tail off
         // the locked line, so the target is projected onto the lock too.
-        QPointF previewTarget = m_rawPenPos;
+        PointF previewTarget = m_rawPenPos;
         if (m_axisSnapState == AxisSnapState::Horizontal) {
             previewTarget.setY(m_axisSnapAnchor.y());
         } else if (m_axisSnapState == AxisSnapState::Vertical) {
             previewTarget.setX(m_axisSnapAnchor.x());
         }
-        if (QLineF(tip, previewTarget).length() > 0.5) {
-            QColor preview = m_currentStroke.color;
+        if (LineF(tip, previewTarget).length() > 0.5) {
+            Color preview = m_currentStroke.color;
             preview.setAlpha(110);
-            const qreal previewWidth =
-                std::max<qreal>(0.75 / m_zoom, m_currentStroke.width * 0.35);
-            painter.setBrush(Qt::NoBrush);
-            painter.setPen(QPen(preview, previewWidth, Qt::SolidLine, Qt::RoundCap));
+            const double previewWidth =
+                std::max<double>(0.75 / m_zoom, m_currentStroke.width * 0.35);
+            painter.setBrush(NoBrush);
+            painter.setPen(Pen(preview, previewWidth, SolidLine, RoundCap));
             painter.drawLine(tip, previewTarget);
         }
     }
@@ -2900,10 +2897,10 @@ void PaintOpenGLWidget::paintGL()
     if ((m_tool == Tool::Eraser || m_tool == Tool::DeleteLine || m_tool == Tool::CutLine
          || m_tool == Tool::Connect)
         && m_hasHoverPos) {
-        painter.setPen(QPen(QColor(220, 0, 180),
-                            AnimeVectorLogic::displayStrokeWidth(1.5, m_zoom),
-                            Qt::DashLine));
-        painter.setBrush(Qt::NoBrush);
+        painter.setPen(Pen(Color(220, 0, 180),
+                           AnimeVectorLogic::displayStrokeWidth(1.5, m_zoom),
+                           DashLine));
+        painter.setBrush(NoBrush);
         painter.drawEllipse(m_hoverPos, m_eraserRadius, m_eraserRadius);
     }
 
@@ -2912,10 +2909,10 @@ void PaintOpenGLWidget::paintGL()
     // when it grows past what a cursor bitmap may be: the pointer is blanked
     // and the ring is drawn here instead, in document units like the ink.
     if (m_tool == Tool::Pen && m_hasHoverPos && m_penRingOnCanvas) {
-        const qreal radius = m_penWidth * 0.5;
-        painter.setPen(QPen(QColor(40, 40, 40, 170),
-                            AnimeVectorLogic::displayStrokeWidth(0.75, m_zoom)));
-        painter.setBrush(Qt::NoBrush);
+        const double radius = m_penWidth * 0.5;
+        painter.setPen(Pen(Color(40, 40, 40, 170),
+                           AnimeVectorLogic::displayStrokeWidth(0.75, m_zoom)));
+        painter.setBrush(NoBrush);
         painter.drawEllipse(m_hoverPos, radius, radius);
     }
 
@@ -2929,17 +2926,17 @@ void PaintOpenGLWidget::paintGL()
 
 // The active-view indicator hugs the viewport, not the document. It stays on
 // the active board when focus leaves, but only lights up while keys reach it.
-void PaintOpenGLWidget::paintActiveIndicator(QPainter &painter) const
+void PaintOpenGLWidget::paintActiveIndicator(Painter &painter) const
 {
     if (!m_activeIndicator) {
         return;
     }
-    painter.setBrush(Qt::NoBrush);
-    painter.setPen(QPen(AnimeTheme::color(m_hasInputFocus ? AnimeTheme::Role::Accent : AnimeTheme::Role::BoardFrameIdle), 3.0));
-    painter.drawRect(QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5));
+    painter.setBrush(NoBrush);
+    painter.setPen(Pen(AnimeTheme::color(m_hasInputFocus ? AnimeTheme::Role::Accent : AnimeTheme::Role::BoardFrameIdle), 3.0));
+    painter.drawRect(RectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5));
 }
 
-void PaintOpenGLWidget::paintOverlayItems(QPainter &painter)
+void PaintOpenGLWidget::paintOverlayItems(Painter &painter)
 {
     m_overlayHandles.clear();
 
@@ -2948,7 +2945,7 @@ void PaintOpenGLWidget::paintOverlayItems(QPainter &painter)
             continue;
         }
 
-        QPainterPath path(item.points.first());
+        Path path(item.points.first());
         for (int i = 1; i < item.points.size(); ++i) {
             path.lineTo(item.points[i]);
         }
@@ -2956,15 +2953,15 @@ void PaintOpenGLWidget::paintOverlayItems(QPainter &painter)
             path.closeSubpath();
             painter.setBrush(item.fillColor);
         } else {
-            painter.setBrush(Qt::NoBrush);
+            painter.setBrush(NoBrush);
         }
-        const Qt::PenStyle overlayStyle =
-            (item.penStyle >= Qt::SolidLine && item.penStyle <= Qt::DashDotDotLine)
-                ? static_cast<Qt::PenStyle>(item.penStyle)
-                : Qt::SolidLine;   // 0 is NoPen: never let a guide vanish
-        painter.setPen(QPen(item.strokeColor,
-                            AnimeVectorLogic::displayStrokeWidth(item.width, m_zoom),
-                            overlayStyle, Qt::RoundCap, Qt::RoundJoin));
+        const PenStyle overlayStyle =
+            (item.penStyle >= SolidLine && item.penStyle <= DashDotDotLine)
+                ? static_cast<PenStyle>(item.penStyle)
+                : SolidLine;   // 0 is NoPen: never let a guide vanish
+        painter.setPen(Pen(item.strokeColor,
+                           AnimeVectorLogic::displayStrokeWidth(item.width, m_zoom),
+                           overlayStyle, RoundCap, RoundJoin));
         painter.drawPath(path);
 
         if (item.removable || item.confirmable) {
@@ -3020,18 +3017,18 @@ void PaintOpenGLWidget::paintOverlayItems(QPainter &painter)
     }
 
     for (const OverlayHandle &handle : m_overlayHandles) {
-        QColor badge = handle.badgeColor;
+        Color badge = handle.badgeColor;
         badge.setAlpha(215);
-        painter.setPen(Qt::NoPen);
+        painter.setPen(NoPen);
         painter.setBrush(badge);
         painter.drawRoundedRect(handle.rect, 3.0, 3.0);
 
-        const QRectF inner = handle.rect.adjusted(4.0, 4.0, -4.0, -4.0);
-        painter.setPen(QPen(Qt::white, 1.8, Qt::SolidLine, Qt::RoundCap));
+        const RectF inner = handle.rect.adjusted(4.0, 4.0, -4.0, -4.0);
+        painter.setPen(Pen(Color(255, 255, 255), 1.8, SolidLine, RoundCap));
         if (handle.accept) {
-            painter.drawLine(QPointF(inner.left(), inner.center().y()),
-                             QPointF(inner.center().x() - 1.0, inner.bottom()));
-            painter.drawLine(QPointF(inner.center().x() - 1.0, inner.bottom()),
+            painter.drawLine(PointF(inner.left(), inner.center().y()),
+                             PointF(inner.center().x() - 1.0, inner.bottom()));
+            painter.drawLine(PointF(inner.center().x() - 1.0, inner.bottom()),
                              inner.topRight());
         } else {
             painter.drawLine(inner.topLeft(), inner.bottomRight());
@@ -3040,12 +3037,12 @@ void PaintOpenGLWidget::paintOverlayItems(QPainter &painter)
     }
 }
 
-QRectF PaintOpenGLWidget::overlayHandleRect(const QPointF &anchor, int slot, int slotCount) const
+RectF PaintOpenGLWidget::overlayHandleRect(const PointF &anchor, int slot, int slotCount) const
 {
     // Just above and to the right of the anchor; slot 1 (the check badge)
     // sits one step to the left of slot 0 (the x badge).
-    const qreal slotStep = kOverlayHandleSize + 4.0;
-    QRectF handleRect(anchor.x() + 4.0 - slot * slotStep,
+    const double slotStep = kOverlayHandleSize + 4.0;
+    RectF handleRect(anchor.x() + 4.0 - slot * slotStep,
                       anchor.y() - kOverlayHandleSize - 4.0,
                       kOverlayHandleSize,
                       kOverlayHandleSize);
@@ -3058,10 +3055,10 @@ QRectF PaintOpenGLWidget::overlayHandleRect(const QPointF &anchor, int slot, int
     // side and fully visible - clamping first and offsetting afterwards
     // pushed a left-edge check badge outside the viewport, leaving the
     // pending transaction cancellable but never confirmable.
-    const QPointF docTopLeft = mapToDocument(QPointF(0.0, 0.0));
-    const QPointF docBottomRight = mapToDocument(QPointF(width(), height()));
-    const qreal maxRight = docBottomRight.x() - 2.0 - slot * slotStep;
-    const qreal minLeft = docTopLeft.x() + 2.0 + (slotCount - 1 - slot) * slotStep;
+    const PointF docTopLeft = mapToDocument(PointF(0.0, 0.0));
+    const PointF docBottomRight = mapToDocument(PointF(width(), height()));
+    const double maxRight = docBottomRight.x() - 2.0 - slot * slotStep;
+    const double minLeft = docTopLeft.x() + 2.0 + (slotCount - 1 - slot) * slotStep;
     if (handleRect.right() > maxRight) {
         handleRect.moveRight(maxRight);
     }
@@ -3077,7 +3074,7 @@ QRectF PaintOpenGLWidget::overlayHandleRect(const QPointF &anchor, int slot, int
     return handleRect;
 }
 
-int PaintOpenGLWidget::overlayActionHandleAt(const QPointF &pos) const
+int PaintOpenGLWidget::overlayActionHandleAt(const PointF &pos) const
 {
     for (int i = m_overlayHandles.size() - 1; i >= 0; --i) {
         if (m_overlayHandles[i].rect.contains(pos)) {
@@ -3087,7 +3084,7 @@ int PaintOpenGLWidget::overlayActionHandleAt(const QPointF &pos) const
     return -1;
 }
 
-bool PaintOpenGLWidget::overlayActionItemAt(const QPointF &pos)
+bool PaintOpenGLWidget::overlayActionItemAt(const PointF &pos)
 {
     const int index = overlayActionHandleAt(pos);
     if (index < 0) {
@@ -3095,41 +3092,41 @@ bool PaintOpenGLWidget::overlayActionItemAt(const QPointF &pos)
     }
     const OverlayHandle &handle = m_overlayHandles[index];
     sendOverlayActionMessage(handle.id,
-                             handle.accept ? QStringLiteral("accept")
-                                           : QStringLiteral("remove"));
+                             handle.accept ? String("accept")
+                                           : String("remove"));
     return true;
 }
 
-QString PaintOpenGLWidget::draggableOverlayItemAt(const QPointF &screenPos,
-                                                  qreal *screenDistance) const
+String PaintOpenGLWidget::draggableOverlayItemAt(const PointF &screenPos,
+                                                  double *screenDistance) const
 {
     // Same grab range as the edit handles, measured in SCREEN pixels so the
     // item stays grabbable when zoomed out. Distance is to the item's
     // segments, not just its vertices - a sparse ring must not have holes in
     // its hit area.
-    const qreal hit = kEditHandleHitPx;
+    const double hit = kEditHandleHitPx;
     for (int i = m_overlayItems.size() - 1; i >= 0; --i) {
         const OverlayItem &item = m_overlayItems[i];
         if (!item.draggable || item.points.size() < 2) {
             continue;
         }
         const int count = item.points.size() + (item.closed ? 1 : 0);
-        qreal bestSq = std::numeric_limits<qreal>::max();
+        double bestSq = std::numeric_limits<double>::max();
         for (int k = 0; k + 1 < count; ++k) {
-            const QPointF a = AnimeViewScale::toScreen(
+            const PointF a = AnimeViewScale::toScreen(
                 item.points[k % item.points.size()], m_zoom, m_panOffset);
-            const QPointF b = AnimeViewScale::toScreen(
+            const PointF b = AnimeViewScale::toScreen(
                 item.points[(k + 1) % item.points.size()], m_zoom, m_panOffset);
-            const QPointF delta = b - a;
-            const qreal lengthSq = delta.x() * delta.x() + delta.y() * delta.y();
-            qreal t = 0.0;
+            const PointF delta = b - a;
+            const double lengthSq = delta.x() * delta.x() + delta.y() * delta.y();
+            double t = 0.0;
             if (lengthSq > 0.0) {
                 t = ((screenPos.x() - a.x()) * delta.x()
                      + (screenPos.y() - a.y()) * delta.y()) / lengthSq;
                 t = std::min(1.0, std::max(0.0, t));
             }
-            const QPointF closest = a + delta * t;
-            const QPointF gap = screenPos - closest;
+            const PointF closest = a + delta * t;
+            const PointF gap = screenPos - closest;
             bestSq = std::min(bestSq, gap.x() * gap.x() + gap.y() * gap.y());
         }
         if (bestSq <= hit * hit) {
@@ -3139,12 +3136,12 @@ QString PaintOpenGLWidget::draggableOverlayItemAt(const QPointF &screenPos,
             return item.id;
         }
     }
-    return QString();
+    return String();
 }
 
-bool PaintOpenGLWidget::pressOverlayOrBadge(const QPointF &screenPos,
-                                            const QPointF &docPos,
-                                            Qt::KeyboardModifiers modifiers)
+bool PaintOpenGLWidget::pressOverlayOrBadge(const PointF &screenPos,
+                                            const PointF &docPos,
+                                            KeyboardModifiers modifiers)
 {
     // A press can land on an action badge AND within a draggable overlay
     // item's grab band at once, and each fixed order has a real failure:
@@ -3160,23 +3157,23 @@ bool PaintOpenGLWidget::pressOverlayOrBadge(const QPointF &screenPos,
     // instead handicapped the badge by up to half its size and left the
     // glyph's line-facing strip dead at every zoom.)
     const int badgeIndex = overlayActionHandleAt(docPos);
-    qreal dragDistance = 0.0;
-    const QString overlayId = draggableOverlayItemAt(screenPos, &dragDistance);
+    double dragDistance = 0.0;
+    const String overlayId = draggableOverlayItemAt(screenPos, &dragDistance);
     bool badgeWins = badgeIndex >= 0;
     if (badgeWins && !overlayId.isEmpty()) {
-        const QRectF badgeRect = m_overlayHandles[badgeIndex].rect;
-        const qreal depthDoc = std::min(
+        const RectF badgeRect = m_overlayHandles[badgeIndex].rect;
+        const double depthDoc = std::min(
             std::min(docPos.x() - badgeRect.left(), badgeRect.right() - docPos.x()),
             std::min(docPos.y() - badgeRect.top(), badgeRect.bottom() - docPos.y()));
-        const qreal depthScreen = depthDoc * m_zoom;
-        const qreal halfScreen = 0.5 * std::min(badgeRect.width(), badgeRect.height()) * m_zoom;
+        const double depthScreen = depthDoc * m_zoom;
+        const double halfScreen = 0.5 * std::min(badgeRect.width(), badgeRect.height()) * m_zoom;
         badgeWins = depthScreen >= 0.5 * halfScreen || depthScreen >= dragDistance;
     }
     if (badgeWins) {
         const OverlayHandle &handle = m_overlayHandles[badgeIndex];
         sendOverlayActionMessage(handle.id,
-                                 handle.accept ? QStringLiteral("accept")
-                                               : QStringLiteral("remove"));
+                                 handle.accept ? String("accept")
+                                               : String("remove"));
         return true;
     }
     if (!overlayId.isEmpty()) {
@@ -3184,19 +3181,19 @@ bool PaintOpenGLWidget::pressOverlayOrBadge(const QPointF &screenPos,
         // Each drag gets a fresh throttle window so its first "move" is never
         // swallowed by the previous overlay drag's timestamp.
         m_overlayDragHookThrottle.invalidate();
-        sendPythonHandleMessage(QStringLiteral("press"), overlayId, docPos, modifiers);
+        sendPythonHandleMessage(String("press"), overlayId, docPos, modifiers);
         return true;
     }
     return false;
 }
 
-void PaintOpenGLWidget::sendOverlayActionMessage(const QString &overlayId,
-                                                 const QString &action)
+void PaintOpenGLWidget::sendOverlayActionMessage(const String &overlayId,
+                                                 const String &action)
 {
 #ifdef ANIMEAN_WITH_PYTHON
-    const QString eventName = action == QStringLiteral("accept")
-                                  ? QStringLiteral("overlayaction")
-                                  : QStringLiteral("overlayremove");
+    const String eventName = action == String("accept")
+                                  ? String("overlayaction")
+                                  : String("overlayremove");
     if (!animeanHookEventSubscribed(eventName)) {
         return;
     }
@@ -3222,46 +3219,47 @@ void PaintOpenGLWidget::sendOverlayActionMessage(const QString &overlayId,
     message["property"] = m_strokeProperty.toStdString();
     message["cell"] = cellInfo;
     message["stroke"] = py::dict();
-    message["position"] = pointToPythonDict(QPointF());
-    message["delta"] = pointToPythonDict(QPointF());
+    message["position"] = pointToPythonDict(PointF());
+    message["delta"] = pointToPythonDict(PointF());
     message["overlay"] = overlayInfo;
 
-    const QString output = ::pythonHookSendMessage(message);
+    const String output = ::pythonHookSendMessage(message);
     if (!isQuietHookOutput(output)) {
-        emit pythonDebugMessage(output);
+        pythonDebugMessage(output);
     }
 #else
-    Q_UNUSED(overlayId);
-    Q_UNUSED(action);
+    (void)overlayId;
+    (void)action;
 #endif
 }
 
-void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
+void PaintOpenGLWidget::mousePressEvent(MouseEvent *event)
 {
+    m_lastMouseModifiers = event->modifiers();
     if (m_playbackActive || m_swallowNextPress) {
         // While prerendered frames are on screen a click means "stop
         // playing", not "draw into the frame you cannot currently see".
         m_swallowNextPress = false;
         if (m_playbackActive) {
-            emit playbackInterrupted();
+            playbackInterrupted();
         }
         event->accept();
         return;
     }
 
-    if (event->button() == Qt::MiddleButton) {
+    if (event->button() == MiddleButton) {
         m_panning = true;
         m_lastPanPos = event->position();
         event->accept();
         return;
     }
 
-    if (event->button() != Qt::LeftButton) {
+    if (event->button() != LeftButton) {
         PaintBoardBase::mousePressEvent(event);
         return;
     }
 
-    const QPointF pos = mapToDocument(event->position());
+    const PointF pos = mapToDocument(event->position());
     m_hoverPos = pos;
     m_hasHoverPos = true;
 
@@ -3292,10 +3290,10 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
     // so testing it first made handles under it ungrabbable - the click
     // deleted a guide instead of starting the drag the user aimed at.
     if (m_tool == Tool::Arrow || m_tool == Tool::Connect || m_tool == Tool::Transfer) {
-        const QString handleId = editHandleAt(event->position());
+        const String handleId = editHandleAt(event->position());
         if (!handleId.isEmpty()) {
             m_activeHandleDrag = handleId;
-            sendPythonHandleMessage(QStringLiteral("press"), handleId, pos, event->modifiers());
+            sendPythonHandleMessage(String("press"), handleId, pos, event->modifiers());
         } else if (pressOverlayOrBadge(event->position(), pos, event->modifiers())) {
             // A badge fired, or a draggable overlay item (Auto Mapping's
             // guides and nearest-point anchor) started its
@@ -3305,7 +3303,7 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
             // A pick that CLAIMS something (Transfer's box body, Arrow's
             // default-mode outline) turns this press into a drag under the
             // id Python answered with. Nothing claimed: it stays a click.
-            const QString grabbed = sendPythonHandleMessage(QStringLiteral("pick"), QString(),
+            const String grabbed = sendPythonHandleMessage(String("pick"), String(),
                                                             pos, event->modifiers());
             if (!grabbed.isEmpty()) {
                 m_activeHandleDrag = grabbed;
@@ -3332,9 +3330,9 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
             return;
         }
         if (fillAt(pos)) {
-            const bool cancelHistory = pythonHookSendMessage(QStringLiteral("fillfinish"), pos);
+            const bool cancelHistory = pythonHookSendMessage(String("fillfinish"), pos);
             if (!cancelHistory) {
-                commitHistory(QStringLiteral("Fill"));
+                commitHistory(String("Fill"));
             }
         }
         update();
@@ -3377,8 +3375,8 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
         return;
     }
     if (m_model.assetCount() != assetCountBefore) {
-        emit assetListChanged(m_model.currentAsset());
-        emit layerListChanged(m_model.currentLayer());
+        assetListChanged(m_model.currentAsset());
+        layerListChanged(m_model.currentLayer());
     }
 
     m_points.clear();
@@ -3415,15 +3413,16 @@ void PaintOpenGLWidget::mousePressEvent(QMouseEvent *event)
     event->accept();
 }
 
-void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
+void PaintOpenGLWidget::mouseMoveEvent(MouseEvent *event)
 {
-    if (m_panning && (event->buttons() & Qt::MiddleButton)) {
+    m_lastMouseModifiers = event->modifiers();
+    if (m_panning && (event->buttons() & MiddleButton)) {
         m_panOffset += event->position() - m_lastPanPos;
         m_lastPanPos = event->position();
         clampPan();
         update();
         notifyViewTransformChanged();
-        emit userTransformed();
+        userTransformed();
         event->accept();
         return;
     }
@@ -3431,7 +3430,7 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
     m_hoverPos = mapToDocument(event->position());
     m_hasHoverPos = true;
 
-    if (!(event->buttons() & Qt::LeftButton)) {
+    if (!(event->buttons() & LeftButton)) {
         // Connect snaps on HOVER: Python needs the cursor to show which
         // vertex a click would take. Transfer reads the same phase to name
         // the pointer for the region under it (a grip, the body, the rotate
@@ -3442,7 +3441,7 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
             && (!m_hoverHookThrottle.isValid()
                 || m_hoverHookThrottle.elapsed() >= kUpdateHookIntervalMs)) {
             m_hoverHookThrottle.restart();
-            sendPythonHandleMessage(QStringLiteral("hover"), QString(), m_hoverPos);
+            sendPythonHandleMessage(String("hover"), String(), m_hoverPos);
         }
         update();
         PaintBoardBase::mouseMoveEvent(event);
@@ -3457,7 +3456,7 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
         if (!m_overlayDragHookThrottle.isValid()
             || m_overlayDragHookThrottle.elapsed() >= kUpdateHookIntervalMs) {
             m_overlayDragHookThrottle.restart();
-            sendPythonHandleMessage(QStringLiteral("move"), m_activeOverlayDrag, m_hoverPos,
+            sendPythonHandleMessage(String("move"), m_activeOverlayDrag, m_hoverPos,
                                     event->modifiers());
         }
         update();
@@ -3467,7 +3466,7 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
 
     if (m_tool == Tool::Arrow || m_tool == Tool::Connect || m_tool == Tool::Transfer) {
         if (!m_activeHandleDrag.isEmpty()) {
-            sendPythonHandleMessage(QStringLiteral("move"), m_activeHandleDrag, m_hoverPos,
+            sendPythonHandleMessage(String("move"), m_activeHandleDrag, m_hoverPos,
                                     event->modifiers());
         }
         event->accept();
@@ -3522,17 +3521,17 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
     m_hasRawPenPos = true;
     // Stabilize in SCREEN space (hand speed is screen speed), then convert;
     // pan and zoom are constant during a drag, so the mapping commutes.
-    const QPointF stabilized =
+    const PointF stabilized =
         mapToDocument(m_inputFilter.filter(event->position(), event->timestamp()));
     bool axisRetroChanged = false;
-    const QPointF snappedPos = applyAxisSnap(event->modifiers(), stabilized, &axisRetroChanged);
+    const PointF snappedPos = applyAxisSnap(event->modifiers(), stabilized, &axisRetroChanged);
     // Has the hand left the still circle? Measured on the RAW cursor, since
     // this asks about the hand, not about the ink the filter has settled on.
     // The radius is SCREEN px converted through algorithm/viewscale.h (the
     // shared home of screen<->canvas conversion): holding still means holding
     // still on the display, at any magnification. The anchor is kept in
     // document space so zooming mid-stroke cannot drag it out from under us.
-    if (QLineF(m_holdStillAnchor, m_hoverPos).length()
+    if (LineF(m_holdStillAnchor, m_hoverPos).length()
         > AnimeViewScale::toDocumentLength(kHoldStillRadiusScreenPx, m_zoom)) {
         armHoldStill(m_hoverPos);
     }
@@ -3547,30 +3546,31 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
     event->accept();
 }
 
-void PaintOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
+void PaintOpenGLWidget::mouseReleaseEvent(MouseEvent *event)
 {
-    if (event->button() == Qt::MiddleButton) {
+    m_lastMouseModifiers = event->modifiers();
+    if (event->button() == MiddleButton) {
         m_panning = false;
         event->accept();
         return;
     }
 
-    if (event->button() != Qt::LeftButton) {
+    if (event->button() != LeftButton) {
         PaintBoardBase::mouseReleaseEvent(event);
         return;
     }
 
     if (!m_activeOverlayDrag.isEmpty()) {
-        const QString overlayId = m_activeOverlayDrag;
+        const String overlayId = m_activeOverlayDrag;
         m_activeOverlayDrag.clear();
-        const QPointF docPos = mapToDocument(event->position());
+        const PointF docPos = mapToDocument(event->position());
         // One final, un-throttled move first: the throttle may have swallowed
         // up to kUpdateHookIntervalMs of pointer travel, and not every owner
         // recomputes from the release position - the committed state must be
         // where the button actually came up.
-        sendPythonHandleMessage(QStringLiteral("move"), overlayId, docPos,
+        sendPythonHandleMessage(String("move"), overlayId, docPos,
                                 event->modifiers());
-        sendPythonHandleMessage(QStringLiteral("release"), overlayId, docPos,
+        sendPythonHandleMessage(String("release"), overlayId, docPos,
                                 event->modifiers());
         update();
         event->accept();
@@ -3579,9 +3579,9 @@ void PaintOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
 
     if (m_tool == Tool::Arrow || m_tool == Tool::Connect || m_tool == Tool::Transfer) {
         if (!m_activeHandleDrag.isEmpty()) {
-            const QString handleId = m_activeHandleDrag;
+            const String handleId = m_activeHandleDrag;
             m_activeHandleDrag.clear();
-            sendPythonHandleMessage(QStringLiteral("release"), handleId,
+            sendPythonHandleMessage(String("release"), handleId,
                                     mapToDocument(event->position()), event->modifiers());
         }
         event->accept();
@@ -3596,18 +3596,18 @@ void PaintOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
             // The cut already happened on PRESS; the release only reports it,
             // so a click-and-wander does not cut a second span under wherever
             // the button happened to come up.
-            cancelHistory = pythonHookSendMessage(QStringLiteral("deletefinish"), m_hoverPos, QPointF(), m_eraseGestureChanged);
+            cancelHistory = pythonHookSendMessage(String("deletefinish"), m_hoverPos, PointF(), m_eraseGestureChanged);
         } else if (m_tool == Tool::DeleteLine) {
             m_eraseGestureChanged = deleteLineAt(m_hoverPos) || m_eraseGestureChanged;
-            cancelHistory = pythonHookSendMessage(QStringLiteral("deletefinish"), m_hoverPos, QPointF(), m_eraseGestureChanged);
+            cancelHistory = pythonHookSendMessage(String("deletefinish"), m_hoverPos, PointF(), m_eraseGestureChanged);
         } else {
             m_eraseGestureChanged = eraseAt(m_hoverPos) || m_eraseGestureChanged;
-            cancelHistory = pythonHookSendMessage(QStringLiteral("erasefinish"), m_hoverPos, QPointF(), m_eraseGestureChanged);
+            cancelHistory = pythonHookSendMessage(String("erasefinish"), m_hoverPos, PointF(), m_eraseGestureChanged);
         }
         if (m_eraseGestureChanged && !cancelHistory) {
-            commitHistory(m_tool == Tool::CutLine ? QStringLiteral("Cut Line")
-                          : m_tool == Tool::DeleteLine ? QStringLiteral("Delete Line")
-                                                       : QStringLiteral("Erase"));
+            commitHistory(m_tool == Tool::CutLine ? String("Cut Line")
+                          : m_tool == Tool::DeleteLine ? String("Delete Line")
+                                                       : String("Erase"));
         }
         update();
         m_hasLastEraserPos = false;
@@ -3627,7 +3627,7 @@ void PaintOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
         // below, it follows the lock that governed the last MOVE rather than
         // the live modifier state: letting go of Alt a moment before the
         // button would otherwise commit a diagonal the preview never showed.
-        QPointF tip = mapToDocument(event->position());
+        PointF tip = mapToDocument(event->position());
         if (m_axisSnapState == AxisSnapState::Horizontal) {
             tip.setY(m_straightLineStart.y());
         } else if (m_axisSnapState == AxisSnapState::Vertical) {
@@ -3646,7 +3646,7 @@ void PaintOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
     // NOT the live modifier state: releasing Alt just before the button (with
     // no move in between) would otherwise append the raw cursor position and
     // weld a perpendicular tail onto a line whose preview ended on-axis.
-    QPointF releasePoint = mapToDocument(event->position());
+    PointF releasePoint = mapToDocument(event->position());
     if (m_axisSnapState == AxisSnapState::Horizontal) {
         releasePoint.setY(m_axisSnapAnchor.y());
     } else if (m_axisSnapState == AxisSnapState::Vertical) {
@@ -3671,7 +3671,7 @@ void PaintOpenGLWidget::updateCurrentStroke()
     // move handler. Rebuilding it through the fitter would hand the frozen-
     // prefix machinery a buffer that straight mode rewrites wholesale.
     if (m_straightLineMode) {
-        updateStraightLine(m_points.isEmpty() ? m_straightLineStart : QPointF(m_points.last()));
+        updateStraightLine(m_points.isEmpty() ? m_straightLineStart : PointF(m_points.last()));
         return;
     }
 
@@ -3697,7 +3697,7 @@ void PaintOpenGLWidget::updateCurrentStroke()
     // only guaranteed drawing event.
     if (!m_updateHookThrottle.isValid() || m_updateHookThrottle.elapsed() >= kUpdateHookIntervalMs) {
         m_updateHookThrottle.start();
-        pythonHookSendMessage(QStringLiteral("update"));
+        pythonHookSendMessage(String("update"));
     }
     update();
 }
@@ -3737,17 +3737,17 @@ void PaintOpenGLWidget::finishCurrentStroke()
             m_currentStroke.property = m_strokeProperty;
             image->addStroke(m_currentStroke);
             const bool cancelHistory =
-                pythonHookSendMessage(QStringLiteral("linefinish"), QPointF(), QPointF(), true, strokeIndex);
+                pythonHookSendMessage(String("linefinish"), PointF(), PointF(), true, strokeIndex);
             removeInvalidFillRegions();
             if (m_model.assetCount() != assetCountBefore) {
-                emit assetListChanged(m_model.currentAsset());
-                emit layerListChanged(m_model.currentLayer());
+                assetListChanged(m_model.currentAsset());
+                layerListChanged(m_model.currentLayer());
             }
             // Committed after the linefinish hooks so tool scripts that adjust
             // the model (e.g. guide capture) fold into the same history entry;
             // hooks that undid the stroke entirely veto the commit instead.
             if (!cancelHistory) {
-                commitHistory(m_strokeProperty.isEmpty() ? QStringLiteral("Stroke") : m_strokeProperty);
+                commitHistory(m_strokeProperty.isEmpty() ? String("Stroke") : m_strokeProperty);
             }
         }
     }
@@ -3757,7 +3757,7 @@ void PaintOpenGLWidget::finishCurrentStroke()
     update();
 }
 
-bool PaintOpenGLWidget::pythonHookSendMessage(const QString &event, const QPointF &pos, const QPointF &delta, bool changed, int strokeIndex)
+bool PaintOpenGLWidget::pythonHookSendMessage(const String &event, const PointF &pos, const PointF &delta, bool changed, int strokeIndex)
 {
 #ifdef ANIMEAN_WITH_PYTHON
     if (!changed) {
@@ -3784,7 +3784,7 @@ bool PaintOpenGLWidget::pythonHookSendMessage(const QString &event, const QPoint
     message["base_tool"] = toolName(m_tool).toStdString();
     message["property"] = m_strokeProperty.toStdString();
     message["cell"] = cellInfo;
-    if (m_hasCurrentStroke || event == QStringLiteral("linefinish")) {
+    if (m_hasCurrentStroke || event == String("linefinish")) {
         message["stroke"] = strokeToPythonDict(m_currentStroke, strokeIndex);
     } else {
         message["stroke"] = py::dict();
@@ -3792,9 +3792,9 @@ bool PaintOpenGLWidget::pythonHookSendMessage(const QString &event, const QPoint
     message["position"] = pointToPythonDict(pos);
     message["delta"] = pointToPythonDict(delta);
 
-    const QString output = ::pythonHookSendMessage(message);
+    const String output = ::pythonHookSendMessage(message);
     if (!isQuietHookOutput(output)) {
-        emit pythonDebugMessage(output);
+        pythonDebugMessage(output);
     }
 
     // Hooks may veto the caller's follow-up history commit (e.g. a tool click
@@ -3808,16 +3808,16 @@ bool PaintOpenGLWidget::pythonHookSendMessage(const QString &event, const QPoint
     }
     return false;
 #else
-    Q_UNUSED(event);
-    Q_UNUSED(pos);
-    Q_UNUSED(delta);
-    Q_UNUSED(changed);
-    Q_UNUSED(strokeIndex);
+    (void)event;
+    (void)pos;
+    (void)delta;
+    (void)changed;
+    (void)strokeIndex;
     return false;
 #endif
 }
 
-bool PaintOpenGLWidget::eraseAt(const QPointF &pos)
+bool PaintOpenGLWidget::eraseAt(const PointF &pos)
 {
     // Fill regions first, and outside the stroke gate: a Fill column carries
     // no strokes, so the bounds test below would refuse the gesture and the
@@ -3828,8 +3828,8 @@ bool PaintOpenGLWidget::eraseAt(const QPointF &pos)
         return fillsErased;
     }
 
-    const qreal imageRadius = m_eraserRadius + m_penWidth;
-    const QRectF eraserBounds(pos.x() - imageRadius, pos.y() - imageRadius,
+    const double imageRadius = m_eraserRadius + m_penWidth;
+    const RectF eraserBounds(pos.x() - imageRadius, pos.y() - imageRadius,
                               imageRadius * 2.0, imageRadius * 2.0);
     if (!image->bounds().intersects(eraserBounds)) {
         return fillsErased;
@@ -3845,7 +3845,7 @@ bool PaintOpenGLWidget::eraseAt(const QPointF &pos)
     return changed || fillsErased;
 }
 
-bool PaintOpenGLWidget::eraseBetween(const QPointF &from, const QPointF &to)
+bool PaintOpenGLWidget::eraseBetween(const PointF &from, const PointF &to)
 {
     const bool fillsErased = eraseFillRegionsBetween(from, to);
     VectorImageModel *image = currentImage(false);
@@ -3853,12 +3853,12 @@ bool PaintOpenGLWidget::eraseBetween(const QPointF &from, const QPointF &to)
         return fillsErased;
     }
 
-    const qreal imageRadius = m_eraserRadius + m_penWidth;
-    const qreal left = std::min(from.x(), to.x()) - imageRadius;
-    const qreal top = std::min(from.y(), to.y()) - imageRadius;
-    const qreal right = std::max(from.x(), to.x()) + imageRadius;
-    const qreal bottom = std::max(from.y(), to.y()) + imageRadius;
-    const QRectF eraserBounds(QPointF(left, top), QPointF(right, bottom));
+    const double imageRadius = m_eraserRadius + m_penWidth;
+    const double left = std::min(from.x(), to.x()) - imageRadius;
+    const double top = std::min(from.y(), to.y()) - imageRadius;
+    const double right = std::max(from.x(), to.x()) + imageRadius;
+    const double bottom = std::max(from.y(), to.y()) + imageRadius;
+    const RectF eraserBounds(PointF(left, top), PointF(right, bottom));
     if (!image->bounds().intersects(eraserBounds)) {
         return fillsErased;
     }
@@ -3874,8 +3874,8 @@ bool PaintOpenGLWidget::eraseBetween(const QPointF &from, const QPointF &to)
 }
 
 int PaintOpenGLWidget::nearestStrokeToBrush(const VectorImageModel *image,
-                                            const QPointF &from,
-                                            const QPointF &to) const
+                                            const PointF &from,
+                                            const PointF &to) const
 {
     // A wide brush covers several lines at once. Picking "the first one found"
     // or "the topmost" then acts on whichever the loop happened to reach,
@@ -3885,24 +3885,24 @@ int PaintOpenGLWidget::nearestStrokeToBrush(const VectorImageModel *image,
     if (!image) {
         return -1;
     }
-    const qreal imageRadius = m_eraserRadius + m_penWidth;
-    const QRectF hitBounds = QRectF(from, to).normalized()
+    const double imageRadius = m_eraserRadius + m_penWidth;
+    const RectF hitBounds = RectF(from, to).normalized()
                                  .adjusted(-imageRadius, -imageRadius, imageRadius, imageRadius);
 
     int best = -1;
-    qreal bestDistance = 0.0;
+    double bestDistance = 0.0;
     for (int i = 0; i < image->strokeCount(); ++i) {
         const VectorStroke &stroke = image->strokeAt(i);
         if (!stroke.bounds.intersects(hitBounds)) {
             continue;
         }
-        const bool hit = QLineF(from, to).length() <= AnimeVectorLogic::epsilon()
+        const bool hit = LineF(from, to).length() <= AnimeVectorLogic::epsilon()
                              ? AnimeVectorLogic::strokeHitsCircle(stroke, from, m_eraserRadius)
                              : AnimeVectorLogic::strokeHitsCapsule(stroke, from, to, m_eraserRadius);
         if (!hit) {
             continue;
         }
-        const qreal distance = AnimeVectorLogic::strokeDistanceToBrush(stroke, from, to);
+        const double distance = AnimeVectorLogic::strokeDistanceToBrush(stroke, from, to);
         // Ties go to the LATER index, which is the one drawn on top.
         if (best < 0 || distance <= bestDistance) {
             best = i;
@@ -3912,15 +3912,15 @@ int PaintOpenGLWidget::nearestStrokeToBrush(const VectorImageModel *image,
     return best;
 }
 
-bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
+bool PaintOpenGLWidget::cutLineAt(const PointF &pos)
 {
     VectorImageModel *image = currentImage(false);
     if (!image || !editingAllowed() || (m_model.currentLayer() >= 0 && !currentColumnEditable())) {
         return false;
     }
 
-    const qreal imageRadius = m_eraserRadius + m_penWidth;
-    const QRectF hitBounds(pos.x() - imageRadius, pos.y() - imageRadius,
+    const double imageRadius = m_eraserRadius + m_penWidth;
+    const RectF hitBounds(pos.x() - imageRadius, pos.y() - imageRadius,
                            imageRadius * 2.0, imageRadius * 2.0);
     if (!image->bounds().intersects(hitBounds)) {
         return false;
@@ -3935,7 +3935,7 @@ bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
     // stroke that crosses itself is not chopped at its own crossing - the
     // user asked for crossings with the other lines.
     AnimeCore::Vector<VectorStroke> walls;
-    QVector<int> wallStrokeIndex;
+    Vector<int> wallStrokeIndex;
     for (int i = 0; i < image->strokeCount(); ++i) {
         if (i == targetIndex) {
             continue;
@@ -3956,8 +3956,8 @@ bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
     // otherwise the wall still runs whole through a junction the drawing no
     // longer has. Only the one or two walls that BOUNDED this cut are
     // divided; every other stroke the target happens to cross is left alone.
-    QHash<int, QVector<qreal>> wallCuts;
-    QVector<qreal> selfCuts;
+    Hash<int, Vector<double>> wallCuts;
+    Vector<double> selfCuts;
     for (const AnimeStrokeCrossing *bound : {&plan.low, &plan.high}) {
         if (bound->wallIndex >= 0 && bound->wallIndex < wallStrokeIndex.size()) {
             wallCuts[wallStrokeIndex[bound->wallIndex]].append(bound->wallArc);
@@ -3975,13 +3975,13 @@ bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
     // stopped inheriting the parent's parameterization - their polyline is
     // re-sampled off the fitted path now, so the linear rescale landed the
     // junction pixels away from the crossing the user sees.
-    QVector<qreal> boundaries;
+    Vector<double> boundaries;
     boundaries.append(plan.span.first);
     boundaries.append(plan.span.second);
-    for (qreal arc : selfCuts) {
+    for (double arc : selfCuts) {
         // Interior arcs only, and not doubling a span bound - the same
         // endpoint rule splitStrokeAt applies (its endTolerance default).
-        const qreal tolerance = 1e-3;
+        const double tolerance = 1e-3;
         if (arc > tolerance && arc < 1.0 - tolerance
             && std::abs(arc - plan.span.first) > tolerance
             && std::abs(arc - plan.span.second) > tolerance) {
@@ -3999,7 +3999,7 @@ bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
     // recover the same polyline intersection point from their arcs, so
     // snapping every piece end there closes the drawing again; the nudge is
     // bounded by the fit tolerance and confined to the endpoint.
-    const auto junctionPoint = [&target](qreal arc) {
+    const auto junctionPoint = [&target](double arc) {
         return AnimeVectorLogic::pointAtLength(target, arc * target.totalLength);
     };
     // A snap must stay a NUDGE: bounded by the piece's own length (a short
@@ -4007,20 +4007,20 @@ bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
     // farther out than any plausible fit deviation means something else went
     // wrong, and leaving the end in place beats teleporting ink. The fill's
     // dangling-tip heal still catches an unsnapped end.
-    const auto snapEndBounded = [](VectorStroke piece, bool atEnd, const QPointF &junction) {
-        constexpr qreal kJunctionSnapLimitPx = 4.0;
+    const auto snapEndBounded = [](VectorStroke piece, bool atEnd, const PointF &junction) {
+        constexpr double kJunctionSnapLimitPx = 4.0;
         if (piece.points.size() < 2) {
             return piece;
         }
-        const QPointF end = atEnd ? piece.points.last() : piece.points.first();
-        const qreal nudge = QLineF(end, junction).length();
+        const PointF end = atEnd ? piece.points.last() : piece.points.first();
+        const double nudge = LineF(end, junction).length();
         if (nudge <= 1e-12 || nudge > kJunctionSnapLimitPx
             || nudge > piece.totalLength * 0.5) {
             return piece;
         }
         return AnimeVectorLogic::snapStrokeEndpoint(piece, atEnd, junction);
     };
-    const auto boundaryIsJunction = [&plan](qreal arc) {
+    const auto boundaryIsJunction = [&plan](double arc) {
         if (arc == plan.span.first) {
             return plan.low.isJunction();
         }
@@ -4031,10 +4031,10 @@ bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
     };
 
     AnimeCore::Vector<VectorStroke> pieces;
-    qreal previous = 0.0;
+    double previous = 0.0;
     for (int i = 0; i <= boundaries.size(); ++i) {
-        const qreal next = i < boundaries.size() ? boundaries[i] : 1.0;
-        const qreal middle = (previous + next) * 0.5;
+        const double next = i < boundaries.size() ? boundaries[i] : 1.0;
+        const double middle = (previous + next) * 0.5;
         const bool erased = middle >= plan.span.first && middle <= plan.span.second;
         if (next - previous > AnimeVectorLogic::epsilon() && !erased) {
             VectorStroke piece =
@@ -4057,7 +4057,7 @@ bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
     // bounds landing on the SAME wall arrive as one entry with two arcs, so
     // that wall is divided into three in a single pass rather than having its
     // second arc measured against a stroke the first pass already replaced.
-    QVector<int> editOrder = wallCuts.keys();
+    Vector<int> editOrder = wallCuts.keys();
     std::sort(editOrder.begin(), editOrder.end(), std::greater<int>());
     bool changed = false;
     int currentTarget = targetIndex;
@@ -4077,7 +4077,7 @@ bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
         // share usedWallArcs[k] - so no proximity guessing between two
         // junctions on one wall.
         for (int k = 0; k + 1 < wallPieces.size() && k < usedWallArcs.size(); ++k) {
-            const QPointF junction = AnimeVectorLogic::pointAtLength(
+            const PointF junction = AnimeVectorLogic::pointAtLength(
                 wall, usedWallArcs[k] * wall.totalLength);
             wallPieces[k] = snapEndBounded(wallPieces[k], true, junction);
             wallPieces[k + 1] = snapEndBounded(wallPieces[k + 1], false, junction);
@@ -4112,7 +4112,7 @@ bool PaintOpenGLWidget::cutLineAt(const QPointF &pos)
     return changed;
 }
 
-bool PaintOpenGLWidget::deleteLineAt(const QPointF &pos)
+bool PaintOpenGLWidget::deleteLineAt(const PointF &pos)
 {
     VectorImageModel *image = currentImage(false);
     if (!image || !editingAllowed() || (m_model.currentLayer() >= 0 && !currentColumnEditable())) {
@@ -4131,7 +4131,7 @@ bool PaintOpenGLWidget::deleteLineAt(const QPointF &pos)
     return true;
 }
 
-bool PaintOpenGLWidget::deleteLineBetween(const QPointF &from, const QPointF &to)
+bool PaintOpenGLWidget::deleteLineBetween(const PointF &from, const PointF &to)
 {
     VectorImageModel *image = currentImage(false);
     if (!image || !editingAllowed() || (m_model.currentLayer() >= 0 && !currentColumnEditable())) {
@@ -4150,7 +4150,7 @@ bool PaintOpenGLWidget::deleteLineBetween(const QPointF &from, const QPointF &to
     return true;
 }
 
-bool PaintOpenGLWidget::fillAt(const QPointF &pos)
+bool PaintOpenGLWidget::fillAt(const PointF &pos)
 {
     if (!currentLayerAcceptsFill() || !editingAllowed()) {
         return false;
@@ -4175,7 +4175,7 @@ bool PaintOpenGLWidget::fillAt(const QPointF &pos)
         sourceLayerIndex = -1;
     }
 
-    const QPainterPath fillPath = vectorRegionPathAt(pos, boundaryScope, originalLayer);
+    const Path fillPath = vectorRegionPathAt(pos, boundaryScope, originalLayer);
     if (fillPath.isEmpty()) {
         return false;
     }
@@ -4200,7 +4200,7 @@ bool PaintOpenGLWidget::fillAt(const QPointF &pos)
         const AnimeVectorFillRegion &existing = image->fillRegions()[i];
         const bool sameReferMode = existing.basedOnAllLayers == allLayers;
         const bool sameSourceLayer = allLayers || existing.sourceLayerIndex == sourceLayerIndex;
-        const bool sameProperty = QString(existing.property) == m_strokeProperty;
+        const bool sameProperty = String(existing.property) == m_strokeProperty;
         if (!sameReferMode || !sameSourceLayer || !sameProperty || !existing.path.contains(pos)) {
             continue;
         }
@@ -4233,8 +4233,8 @@ bool PaintOpenGLWidget::fillAt(const QPointF &pos)
     fill.basedOnAllLayers = allLayers;
     image->addFillRegion(fill);
     if (m_model.assetCount() != assetCountBefore) {
-        emit assetListChanged(m_model.currentAsset());
-        emit layerListChanged(m_model.currentLayer());
+        assetListChanged(m_model.currentAsset());
+        layerListChanged(m_model.currentLayer());
     }
     return true;
 }
@@ -4251,13 +4251,13 @@ bool PaintOpenGLWidget::currentLayerAcceptsFill() const
     return column && !column->locked;
 }
 
-QVector<QLineF> PaintOpenGLWidget::fillGraphSegments(FillScope scope, int layerIndex) const
+Vector<LineF> PaintOpenGLWidget::fillGraphSegments(FillScope scope, int layerIndex) const
 {
     const bool allLayers = scope == FillScope::AllLayers;
     return m_model.fillBoundarySegments(m_model.currentFrame(), allLayers ? -1 : layerIndex);
 }
 
-QPainterPath PaintOpenGLWidget::vectorRegionPathAt(const QPointF &seed, FillScope scope, int layerIndex) const
+Path PaintOpenGLWidget::vectorRegionPathAt(const PointF &seed, FillScope scope, int layerIndex) const
 {
     // The produced region is clipped to this rect, so a widget rect here made
     // a fill's SHAPE depend on the window size; it is the artwork's extent now.
@@ -4287,7 +4287,7 @@ void PaintOpenGLWidget::removeInvalidFillRegions()
     }
 }
 
-bool PaintOpenGLWidget::eraseStrokeAt(int strokeIndex, const QPointF &pos)
+bool PaintOpenGLWidget::eraseStrokeAt(int strokeIndex, const PointF &pos)
 {
     VectorImageModel *image = currentImage(false);
     if (!image || strokeIndex < 0 || strokeIndex >= image->strokeCount()) {
@@ -4295,15 +4295,15 @@ bool PaintOpenGLWidget::eraseStrokeAt(int strokeIndex, const QPointF &pos)
     }
 
     const VectorStroke stroke = image->strokeAt(strokeIndex);
-    const qreal effectiveRadius = m_eraserRadius + stroke.width * 0.5;
-    const QRectF eraserBounds(pos.x() - effectiveRadius, pos.y() - effectiveRadius,
+    const double effectiveRadius = m_eraserRadius + stroke.width * 0.5;
+    const RectF eraserBounds(pos.x() - effectiveRadius, pos.y() - effectiveRadius,
                               effectiveRadius * 2.0, effectiveRadius * 2.0);
     if (!stroke.bounds.intersects(eraserBounds)) {
         return false;
     }
 
     const AnimeCore::Vector<AnimeVectorRange> keepRanges = AnimeVectorLogic::keepRangesForCircle(stroke, pos, m_eraserRadius);
-    const qreal epsilon = AnimeVectorLogic::epsilon();
+    const double epsilon = AnimeVectorLogic::epsilon();
     if (keepRanges.size() == 1 && keepRanges.first().first <= epsilon &&
         keepRanges.first().second >= 1.0 - epsilon) {
         return false;
@@ -4317,7 +4317,7 @@ bool PaintOpenGLWidget::eraseStrokeAt(int strokeIndex, const QPointF &pos)
     return true;
 }
 
-bool PaintOpenGLWidget::eraseStrokeBetween(int strokeIndex, const QPointF &from, const QPointF &to)
+bool PaintOpenGLWidget::eraseStrokeBetween(int strokeIndex, const PointF &from, const PointF &to)
 {
     VectorImageModel *image = currentImage(false);
     if (!image || strokeIndex < 0 || strokeIndex >= image->strokeCount()) {
@@ -4325,18 +4325,18 @@ bool PaintOpenGLWidget::eraseStrokeBetween(int strokeIndex, const QPointF &from,
     }
 
     const VectorStroke stroke = image->strokeAt(strokeIndex);
-    const qreal effectiveRadius = m_eraserRadius + stroke.width * 0.5;
-    const qreal left = std::min(from.x(), to.x()) - effectiveRadius;
-    const qreal top = std::min(from.y(), to.y()) - effectiveRadius;
-    const qreal right = std::max(from.x(), to.x()) + effectiveRadius;
-    const qreal bottom = std::max(from.y(), to.y()) + effectiveRadius;
-    const QRectF eraserBounds(QPointF(left, top), QPointF(right, bottom));
+    const double effectiveRadius = m_eraserRadius + stroke.width * 0.5;
+    const double left = std::min(from.x(), to.x()) - effectiveRadius;
+    const double top = std::min(from.y(), to.y()) - effectiveRadius;
+    const double right = std::max(from.x(), to.x()) + effectiveRadius;
+    const double bottom = std::max(from.y(), to.y()) + effectiveRadius;
+    const RectF eraserBounds(PointF(left, top), PointF(right, bottom));
     if (!stroke.bounds.intersects(eraserBounds)) {
         return false;
     }
 
     const AnimeCore::Vector<AnimeVectorRange> keepRanges = AnimeVectorLogic::keepRangesForCapsule(stroke, from, to, m_eraserRadius);
-    const qreal epsilon = AnimeVectorLogic::epsilon();
+    const double epsilon = AnimeVectorLogic::epsilon();
     if (keepRanges.size() == 1 && keepRanges.first().first <= epsilon &&
         keepRanges.first().second >= 1.0 - epsilon) {
         return false;
@@ -4350,12 +4350,12 @@ bool PaintOpenGLWidget::eraseStrokeBetween(int strokeIndex, const QPointF &from,
     return true;
 }
 
-PaintOpenGLWidget::VectorStroke PaintOpenGLWidget::makeStroke(const QVector<QPointF> &points, const QColor &color, qreal width, int id, bool filterInput, bool smoothPath) const
+PaintOpenGLWidget::VectorStroke PaintOpenGLWidget::makeStroke(const Vector<PointF> &points, const Color &color, double width, int id, bool filterInput, bool smoothPath) const
 {
     return AnimeVectorLogic::makeStroke(points, color, width, id, filterInput, smoothPath, m_fitSettings);
 }
 
-bool PaintOpenGLWidget::appendPoint(const QPointF &point)
+bool PaintOpenGLWidget::appendPoint(const PointF &point)
 {
     if (m_points.isEmpty()) {
         m_points.append(point);
@@ -4372,7 +4372,7 @@ bool PaintOpenGLWidget::appendPoint(const QPointF &point)
     // visibly faceting big sweeping strokes.
     // Clamp range and conversion from algorithm/viewscale.h, the same one the
     // fitter's budgets use - they were two hand-written copies of it.
-    if (QLineF(m_points.last(), point).length()
+    if (LineF(m_points.last(), point).length()
         >= m_minPointDistance * AnimeViewScale::pixelScale(m_zoom)) {
         m_points.append(point);
         return true;
@@ -4418,7 +4418,7 @@ bool PaintOpenGLWidget::columnAcceptsGesture() const
     return column && !column->locked && column->type == AnimeColumnType::Fill;
 }
 
-bool PaintOpenGLWidget::eraseFillRegionsBetween(const QPointF &from, const QPointF &to)
+bool PaintOpenGLWidget::eraseFillRegionsBetween(const PointF &from, const PointF &to)
 {
     if (!m_fillPaintMode || !editingAllowed()) {
         return false;
@@ -4436,13 +4436,13 @@ bool PaintOpenGLWidget::eraseFillRegionsBetween(const QPointF &from, const QPoin
     // covers whatever distance the hand travelled since the last one, and a
     // small region the cursor crossed in between would otherwise survive a
     // stroke drawn straight through it.
-    const qreal step = std::max<qreal>(1.0, m_eraserRadius);
-    const qreal length = QLineF(from, to).length();
+    const double step = std::max<double>(1.0, m_eraserRadius);
+    const double length = LineF(from, to).length();
     const int steps = length <= step ? 0 : int(length / step);
     bool changed = false;
     for (int sample = 0; sample <= steps; ++sample) {
-        const qreal t = steps == 0 ? 1.0 : qreal(sample) / qreal(steps);
-        const QPointF pos = from + (to - from) * t;
+        const double t = steps == 0 ? 1.0 : double(sample) / double(steps);
+        const PointF pos = from + (to - from) * t;
         // Descending: removeFillRegionAt shifts everything above the index it
         // drops, and the lower ones still to visit keep theirs.
         for (int index = image->fillCount() - 1; index >= 0; --index) {
