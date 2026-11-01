@@ -2,6 +2,7 @@
 #ifndef ANIMEANBUSINESS_H
 #define ANIMEANBUSINESS_H
 
+#include "algorithm/core/qtbridge.h"
 #include "algorithm/animemodel.h"
 #include "algorithm/scenehistory.h"
 #include "algorithm/vectorlogic.h"
