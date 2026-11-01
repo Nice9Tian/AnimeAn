@@ -309,6 +309,7 @@ protected:
     void wheelEvent(QWheelEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     void focusInEvent(QFocusEvent *event) override;
+    void focusOutEvent(QFocusEvent *event) override;
     // The brush ring belongs to the cursor, so it has to leave with it.
     void leaveEvent(QEvent *event) override;
     // Rebuilds the pointer for the current tool: the pen wears a ring the
@@ -443,6 +444,7 @@ private:
     // Latches the axis like applyAxisSnap does, so it mutates the snap state.
     QPointF straightLineTip(Qt::KeyboardModifiers modifiers, const QPointF &cursor);
     void paintBackground(QPainter &painter, const QRectF &target) const;
+    void paintActiveIndicator(QPainter &painter) const;
     QPointF mapToDocument(const QPointF &screenPos) const;
     void clampPan();
     void notifyViewTransformChanged();
@@ -495,6 +497,7 @@ private:
     FillScope m_fillScope = FillScope::CurrentLayer;
     QString m_viewName = QStringLiteral("main");
     bool m_activeIndicator = false;
+    bool m_hasInputFocus = false;
     QColor m_penColor = Qt::black;
     AnimeCore::Vector<AnimeCore::PointF> m_points;
     // Realtime input conditioning: 1 Euro filter with lag compensation over

@@ -13,6 +13,8 @@
 #include <QDebug>
 
 namespace {
+// The artwork's ground, not chrome: it stays white in both themes.
+const QColor kPaperColor(Qt::white);
 const qreal kOverlayHandleSize = 14.0;
 // The zoom limits the wheel has always enforced, named so the programmatic
 // paths (setViewTransform, fitViewToContent) cannot drift away from what a
@@ -968,7 +970,16 @@ void PaintOpenGLWidget::focusInEvent(QFocusEvent *event)
         m_swallowNextPress = true;
     }
     PaintBoardBase::focusInEvent(event);
+    m_hasInputFocus = true;
+    update();
     emit focusGained();
+}
+
+void PaintOpenGLWidget::focusOutEvent(QFocusEvent *event)
+{
+    PaintBoardBase::focusOutEvent(event);
+    m_hasInputFocus = false;
+    update();
 }
 
 void PaintOpenGLWidget::setPenColor(const QColor &color)
@@ -2805,7 +2816,7 @@ void PaintOpenGLWidget::paintGL()
         if (m_unboundedCanvas) {
             paintBackground(painter, QRectF(rect()));
         } else {
-            painter.fillRect(rect(), AnimeTheme::color(AnimeTheme::Role::ViewportSurround));
+            painter.fillRect(rect(), AnimeTheme::surroundFor(kPaperColor));
         }
         // Map the cached pixels from the view they were rendered for onto the
         // view we are looking at now. A cache pixel p is document
@@ -2824,11 +2835,7 @@ void PaintOpenGLWidget::paintGL()
         } else {
             painter.drawImage(QPointF(0.0, 0.0), m_playbackFrames[m_playbackIndex]);
         }
-        if (m_activeIndicator) {
-            painter.setBrush(Qt::NoBrush);
-            painter.setPen(QPen(AnimeTheme::color(AnimeTheme::Role::Accent), 3.0));
-            painter.drawRect(QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5));
-        }
+        paintActiveIndicator(painter);
         return;
     }
 
@@ -2836,7 +2843,7 @@ void PaintOpenGLWidget::paintGL()
         // Infinite reference board: the whole viewport is paper.
         paintBackground(painter, rect());
     } else {
-        painter.fillRect(rect(), AnimeTheme::color(AnimeTheme::Role::ViewportSurround));
+        painter.fillRect(rect(), AnimeTheme::surroundFor(kPaperColor));
     }
 
     painter.save();
@@ -2846,7 +2853,7 @@ void PaintOpenGLWidget::paintGL()
         const QRectF page = documentRect();
         // The paper is white in both themes: it is the artwork's ground, not
         // chrome, and its colour is what the drawing is composed against.
-        painter.fillRect(page, Qt::white);
+        painter.fillRect(page, kPaperColor);
         // The page can now be smaller than the viewport, so say where it ends.
         painter.setBrush(Qt::NoBrush);
         painter.setPen(QPen(AnimeTheme::color(AnimeTheme::Role::Divider), 1.0 / m_zoom));
@@ -2917,12 +2924,19 @@ void PaintOpenGLWidget::paintGL()
     // Edit handles live in screen space, above everything on the paper.
     paintEditHandles(painter);
 
-    // The active-view indicator hugs the viewport, not the document.
-    if (m_activeIndicator) {
-        painter.setBrush(Qt::NoBrush);
-        painter.setPen(QPen(AnimeTheme::color(AnimeTheme::Role::Accent), 3.0));
-        painter.drawRect(QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5));
+    paintActiveIndicator(painter);
+}
+
+// The active-view indicator hugs the viewport, not the document. It stays on
+// the active board when focus leaves, but only lights up while keys reach it.
+void PaintOpenGLWidget::paintActiveIndicator(QPainter &painter) const
+{
+    if (!m_activeIndicator) {
+        return;
     }
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(QPen(AnimeTheme::color(m_hasInputFocus ? AnimeTheme::Role::Accent : AnimeTheme::Role::BoardFrameIdle), 3.0));
+    painter.drawRect(QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5));
 }
 
 void PaintOpenGLWidget::paintOverlayItems(QPainter &painter)

@@ -1,0 +1,15 @@
+{
+  "type": "QtScrollArrow",
+  "label": "滚动箭头",
+  "description": "内容放不下时用的上下滚动按钮，direction 写 up 或 down",
+  "defaultSize": {
+    "width": 110,
+    "height": 14
+  },
+  "entry": "index.js",
+  "style": "style.css",
+  "props": {
+    "direction": { "type": "string", "default": "down" }
+  },
+  "children": false
+}

@@ -72,7 +72,27 @@ export function scrollBar(vertical, onValue) {
     e.stopPropagation();
   });
   new ResizeObserver(draw).observe(s);
-  return { el: s, set(next) { ({ min, max, page, value } = next); draw(); } };
+  return { el: s, set(next) { ({ min, max, page, value } = next); draw(); }, held: () => handle.matches(":active") };
+}
+
+// ---- QAbstractScrollArea --------------------------------------------------------
+// A framed view with the Fusion scroll bar the rest of the app uses, not the
+// browser's. Native scrolling stays, so the wheel and the keyboard just work.
+export function scrollArea(cls) {
+  const frame = div(`qframe ${cls}`);
+  const view = div("qframe-view");
+  const bar = scrollBar(true, (value) => { view.scrollTop = value; });
+  frame.append(view, bar.el);
+  const sync = () => {
+    const page = view.clientHeight, max = view.scrollHeight - page;
+    const needed = max > 0;
+    frame.classList.toggle("scrolls", needed);
+    if (needed) bar.set({ min: 0, max, page, value: view.scrollTop });
+  };
+  view.addEventListener("scroll", sync);
+  new ResizeObserver(sync).observe(view);
+  new MutationObserver(sync).observe(view, { childList: true, subtree: true });
+  return { frame, view, sync };
 }
 
 // ---- Central area: Drawing / Texture pages around the board canvases ---------
@@ -97,7 +117,7 @@ export function createLayers(root, handlers) {
   const tabs = tabBar(["Main Layers", "Child Layers"], (i) => show(i));
   const pages = ["main", "child"].map((view) => {
     const page = div("layer-page");
-    const tree = div("layer-tree");
+    const list = scrollArea("layer-tree");
     const add = document.createElement("button");
     const del = document.createElement("button");
     const clear = document.createElement("button");
@@ -108,10 +128,12 @@ export function createLayers(root, handlers) {
     clear.addEventListener("click", () => handlers.onClear(view));
     const row = div("layer-buttons");
     row.append(add, del);
-    page.append(tree, row, clear);
-    return { page, tree, view };
+    page.append(list.frame, row, clear);
+    const area = scrollArea("layer-scroll");
+    area.view.append(page);
+    return { frame: area.frame, tree: list.view, view };
   });
-  root.append(tabs.el, ...pages.map((p) => p.page));
+  root.append(tabs.el, ...pages.map((p) => p.frame));
   for (const p of pages) {
     p.tree.addEventListener("contextmenu", (e) => {
       e.preventDefault();
@@ -120,7 +142,7 @@ export function createLayers(root, handlers) {
   }
   function show(i) {
     tabs.select(i);
-    pages.forEach((p, k) => { p.page.style.display = k === i ? "" : "none"; });
+    pages.forEach((p, k) => { p.frame.style.display = k === i ? "" : "none"; });
   }
   show(0);
 

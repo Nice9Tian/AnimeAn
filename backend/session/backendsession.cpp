@@ -1474,6 +1474,8 @@ void BackendSession::handleInputMessage(const QJsonObject &msg)
         const bool focused = msg.value(QStringLiteral("focused")).toBool(true);
         if (focused) {
             board->injectFocus();
+        } else {
+            board->injectBlur();
         }
     }
 }

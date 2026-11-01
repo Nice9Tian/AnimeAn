@@ -5,7 +5,8 @@ import { loadProject, type ProjectIO } from "../vf/src/project.ts";
 import { BackendClient } from "./net.ts";
 import { createPlayer } from "./player.ts";
 import { createChrome, createStore, DOCK_FOR_WINDOW, panelFactories, syncDocks } from "./ui/app.js";
-import { raiseBusiness, syncTools } from "./ui/tools.js";
+import { watchTimelineDock } from "./ui/timeline.js";
+import { raiseBusiness, syncTools, watchToolsScroll } from "./ui/tools.js";
 import "./ui/qt.css";
 import "./ui/qt3.css";
 import "./ui/shell.css";
@@ -119,6 +120,8 @@ async function bootstrap(): Promise<void> {
   syncDocks(player.runtime, store);
   const toolState = project.logic.state?.tools as { locked?: object } | undefined;
   syncTools(player.runtime, store, Object.keys(toolState?.locked ?? {}));
+  watchToolsScroll(appEl, player.runtime, store);
+  watchTimelineDock(player.runtime, store);
   const menuEl = document.getElementById("qt-menubar")!;
   const statusEl = document.getElementById("qt-statusbar")!;
   createChrome(menuEl, statusEl, store);

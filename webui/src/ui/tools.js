@@ -12,6 +12,10 @@ export function raiseBusiness(store, name, args) {
     store.toolGroups?.toggle(args.group);
     return true;
   }
+  if (name === "toolsScrollBy") {
+    store.toolsScroll?.(args.step);
+    return true;
+  }
   const method = BUSINESS_CALLS[name];
   if (!method) return false;
   store.call(method, args);
@@ -50,13 +54,45 @@ function createToolGroups(write) {
 
 const ERASERS = new Set(["eraser", "delete_line", "cut_line"]);
 
-// Writes the backend's tool state into the state the Tools nodes read. The
-// lockable names are the design logic's, so a tool needs a node to show up.
-export function syncTools(runtime, store, lockable) {
-  const write = (path, value) => {
+function stateWriter(runtime) {
+  return (path, value) => {
     const error = runtime.setBusinessState(path, value);
     if (error) fail(error);
   };
+}
+
+// One press or wheel notch moves one row of chips: their 44 plus the gap of 6.
+const TOOLS_SCROLL_STEP = 50;
+
+// Scrolls the Tools groups when the panel is too short for them, and shows each
+// arrow only while there is something that way. Layout moves the content by
+// writing style, so watching that catches folding and column changes too.
+export function watchToolsScroll(root, runtime, store) {
+  const area = root.querySelector('[data-vf-id="toolsScroll"]');
+  if (!area) return;
+  const write = stateWriter(runtime);
+  const update = () => {
+    const room = area.scrollHeight - area.clientHeight;
+    write("tools.canScrollUp", area.scrollTop > 0);
+    write("tools.canScrollDown", area.scrollTop < room);
+  };
+  store.toolsScroll = (step) => {
+    area.scrollTop += step * TOOLS_SCROLL_STEP;
+    update();
+  };
+  area.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    store.toolsScroll(Math.sign(event.deltaY));
+  }, { passive: false });
+  new ResizeObserver(update).observe(area);
+  new MutationObserver(update).observe(area, { subtree: true, attributes: true, attributeFilter: ["style"] });
+  update();
+}
+
+// Writes the backend's tool state into the state the Tools nodes read. The
+// lockable names are the design logic's, so a tool needs a node to show up.
+export function syncTools(runtime, store, lockable) {
+  const write = stateWriter(runtime);
   const groups = createToolGroups(write);
   store.toolGroups = groups;
   let armed = null;
