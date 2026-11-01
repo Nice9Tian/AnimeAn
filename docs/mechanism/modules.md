@@ -88,6 +88,8 @@ AnimeAn.exe
 | `pyfile/visibility_tool.py` | 图层可见性开关的策略 |
 | `pyfile/repulsion_tool.py` | 斥力板：基线场、临时内部层预览、拓扑保持的施加 |
 | `pyfile/proxy_rect.py` | 代理矩形的角点对应，算出主画板轴线和边；未接入界面，规格（一级）：`../auto_mapping/proxy_rect.md` |
+| `pyfile/proxy_shape.py` | 自由闭合轮廓的配对和主画板自动轴线（纯函数），算法与常量是提案，见 issue #9 |
+| `pyfile/line_tools.py` | Choice Line 和 Deform：选中轴线、附加线、轮廓线，勾选地线，沿线局部拖动变形 |
 | `pyfile/window_manager.py` | 窗口 / 页策略（`ui.windows` 的调用方） |
 | `pyfile/overlay_stack.py` | 多个工具的覆盖层合成到一张显示列表 |
 | `pyfile/script_store.py` | scriptData 的命名空间读写 |

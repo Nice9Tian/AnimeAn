@@ -38,6 +38,29 @@ def extra_tools():
             "page": "mapping",
         },
         {
+            "name": "free_out_line",
+            "title": "Free Out Line",
+            "property": auto_mapping.PROXY_PROPERTY,
+            "handler": "auto_mapping.activate_proxy_contour_tool",
+            "page": "mapping",
+        },
+        {
+            "name": "choice_line",
+            "title": "Choice Line",
+            "property": auto_mapping.CHOICE_PROPERTY,
+            "handler": "line_tools.activate_choice_line",
+            "base_tool": "arrow",
+            "page": "mapping",
+        },
+        {
+            "name": "deform_line",
+            "title": "Deform",
+            "property": auto_mapping.DEFORM_PROPERTY,
+            "handler": "line_tools.activate_deform",
+            "base_tool": "arrow",
+            "page": "mapping",
+        },
+        {
             # THE automapping (Coons interpolation, formerly "Auto Mapping 2").
             # The internal name/property keep the historical "_2" suffix so
             # old sessions keep their meaning; the retired spine-rotation
