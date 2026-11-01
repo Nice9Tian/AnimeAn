@@ -117,7 +117,7 @@ function runVerification(): void {
           "F",
           "verify_field",
           1,
-          RECT,
+          ...RECT,
           4,
           [
             [1, 1, 1.0, 0, 0, 0, 0],
@@ -132,7 +132,7 @@ function runVerification(): void {
           "F",
           "verify_field",
           1,
-          RECT,
+          ...RECT,
           4,
           [
             [1, 1, 1.0, 0, 0, 0, 0],
