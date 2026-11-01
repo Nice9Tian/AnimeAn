@@ -8,7 +8,7 @@
 |---|---|---|---|
 | **应用壳** | `main.cpp`、`mainwindow.*`、`parentwindow.*`、`centralpaintarea.*`、`paintviewcontainer.*`、`subcontrolframe.*`、`windowedgeresize.*`、`theme.*`、`selectionattention.*` | 启动、嵌入 Python 解释器、菜单栏、窗口层级（带页签的父窗）、面板归属（纹理板单一所有权路由）、主题、帧 / 层 / 资产的选择约束、导入导出、历史的全局排序 | 工具语义、几何算法 |
 | **画板** | `openglwidget.*` | 渲染场景与覆盖层、视图变换（缩放 / 平移）、交互事件路由（Tool 枚举）、控制手柄 / 覆盖层 / 视图按钮机制、hook 事件派发、历史提交、播放缓存、轴向吸附与拟合调用 | 任何工具"意味着什么" |
-| **核心模型库** `animean_core` | `algorithm/animemodel.*`、`algorithm/vectorlogic.*`、`algorithm/beziersplit.*`、`algorithm/scenehistory.*`、`algorithm/viewscale.h`、`projectio.*` | 场景 / xsheet 数据模型（列、帧、资产、单元格、图层组与 tag、父层、锁定）、矢量几何与笔画拟合、精确贝塞尔劈分、快照式历史、`.anproj` / `.textureview` 的 JSON 读写 | 界面、Python |
+| **核心模型库** `animean_core` | `algorithm/animemodel.*`、`algorithm/vectorlogic.*`、`algorithm/beziersplit.*`、`algorithm/scenehistory.*`、`algorithm/viewscale.h`、`projectio.*`、`clipreader.*`，建在不依赖 Qt 的 `algorithm/core/` 上，本身也不链接 Qt | 场景 / xsheet 数据模型（列、帧、资产、单元格、图层组与 tag、父层、锁定）、矢量几何与笔画拟合、精确贝塞尔劈分、快照式历史、`.anproj` / `.textureview` 的 JSON 读写 | 界面、Python |
 | **面板** | `childrenpanel/*` | 工具栏、声明式选项面板、图层树、资产表、历史表、时间轴、纹理面板、调色板控件、斥力板、新建对话框 | 工具语义 |
 | **Python 绑定** | `pythonbind/python_bindings.*`（`animean_python` 模块）、`pythonbind/animemodel.py`（高层封装） | 把模型、几何、`ui` 门面暴露给 Python；把 Python 值转成 Qt 类型 | 任何策略 |
 | **工具脚本** | `pyfile/*.py` | 模块装载顺序、hook / 菜单 / 设置 / 视图按钮注册表、工具选项布局、每个工具的行为、Auto Mapping 引擎、第三方库加载 | 渲染、交互事件采集、模型存储 |
