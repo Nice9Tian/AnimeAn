@@ -635,6 +635,8 @@ void testBridgedCopy()
     CHECK(QPainterPath(path).elementAt(0).x == 12.0, "translate should invalidate the copy");
     path.clear();
     CHECK(QPainterPath(path).isEmpty(), "clear should invalidate the copy");
+}
+
 void testAddSelf()
 {
     Path core;
