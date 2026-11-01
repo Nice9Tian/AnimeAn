@@ -168,7 +168,7 @@ void Painter::drawLine(const LineF &line)
 void Painter::drawEllipse(const RectF &rect)
 {
     if (m_device) {
-        m_device->drawEllipse(m_state, rect);
+        m_device->drawEllipse(m_state, rect.normalized());
     }
 }
 
@@ -186,7 +186,7 @@ void Painter::drawPoint(const PointF &point)
 
 void Painter::drawPolygon(const PointF *points, int count, FillRule rule)
 {
-    if (m_device) {
+    if (m_device && points && count >= 2) {
         m_device->drawPolygon(m_state, points, count,
                               rule == WindingFill ? PolygonMode::Winding : PolygonMode::OddEven);
     }
@@ -199,13 +199,17 @@ void Painter::drawPolygon(const Vector<PointF> &points, FillRule rule)
 
 void Painter::drawPolyline(const PointF *points, int count)
 {
-    if (m_device) {
+    if (m_device && points && count >= 2) {
         m_device->drawPolygon(m_state, points, count, PolygonMode::Polyline);
     }
 }
 
 void Painter::drawRoundedRect(const RectF &rect, double xRadius, double yRadius)
 {
+    if (xRadius <= 0.0 || yRadius <= 0.0) {
+        drawRect(rect);
+        return;
+    }
     Path path;
     path.addRoundedRect(rect, xRadius, yRadius);
     drawPath(path);
