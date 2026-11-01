@@ -16,6 +16,15 @@ export interface ImageMeta {
   bytes: number;
 }
 
+export interface FieldMeta {
+  t: "field";
+  key: string;
+  w: number;
+  h: number;
+  version: number;
+  bytes: number;
+}
+
 export type InputMessage =
   | {
       t?: "input";
@@ -95,8 +104,10 @@ export class BackendClient {
   private anyStateListeners = new Set<(key: string, value: unknown) => void>();
   private boardListeners = new Map<string, Set<(msg: BoardMessage) => void>>();
   private imageListeners = new Set<(meta: ImageMeta, data: Uint8Array) => void>();
+  private fieldListeners = new Set<(meta: FieldMeta, data: Float32Array) => void>();
   private disconnectListeners = new Set<(ev?: unknown) => void>();
   private pendingImageMeta: ImageMeta | null = null;
+  private pendingFieldMeta: FieldMeta | null = null;
   private createWebSocket: (url: string) => WebSocketLike;
 
   constructor(options: BackendClientOptions = {}) {
@@ -121,6 +132,7 @@ export class BackendClient {
       this.ws = null;
     }
     this.pendingImageMeta = null;
+    this.pendingFieldMeta = null;
 
     return new Promise<void>((resolve, reject) => {
       let opened = false;
@@ -152,6 +164,7 @@ export class BackendClient {
           this.ws = null;
         }
         this.pendingImageMeta = null;
+        this.pendingFieldMeta = null;
         const err = new Error("WebSocket 已断开");
         for (const [, pending] of this.pendingCalls) {
           pending.reject(err);
@@ -273,6 +286,13 @@ export class BackendClient {
     };
   }
 
+  onField(fn: (meta: FieldMeta, data: Float32Array) => void): () => void {
+    this.fieldListeners.add(fn);
+    return () => {
+      this.fieldListeners.delete(fn);
+    };
+  }
+
   private handleFrame(data: unknown): void {
     if (typeof data === "string") {
       let msg: Record<string, unknown>;
@@ -283,6 +303,7 @@ export class BackendClient {
       }
       const t = msg.t;
       if (t === "image") {
+        this.pendingFieldMeta = null;
         this.pendingImageMeta = {
           t: "image",
           key: String(msg.key ?? ""),
@@ -292,8 +313,21 @@ export class BackendClient {
         };
         return;
       }
-      // 若上一帧是未配对的 image 文本帧，被其它文本帧打断则丢弃挂起头
+      if (t === "field") {
+        this.pendingImageMeta = null;
+        this.pendingFieldMeta = {
+          t: "field",
+          key: String(msg.key ?? ""),
+          w: Number(msg.w ?? 0),
+          h: Number(msg.h ?? 0),
+          version: Number(msg.version ?? 0),
+          bytes: Number(msg.bytes ?? 0),
+        };
+        return;
+      }
+      // 若上一帧是未配对的 image 或 field 文本帧，被其它文本帧打断则丢弃挂起头
       this.pendingImageMeta = null;
+      this.pendingFieldMeta = null;
 
       if (t === "reply") {
         const id = Number(msg.id);
@@ -340,10 +374,12 @@ export class BackendClient {
       return;
     }
 
-    // 二进制帧：与上一条 image 文本帧配对
-    const meta = this.pendingImageMeta;
+    // 二进制帧：与上一条 image 或 field 文本帧配对
+    const imageMeta = this.pendingImageMeta;
+    const fieldMeta = this.pendingFieldMeta;
     this.pendingImageMeta = null;
-    if (!meta) return;
+    this.pendingFieldMeta = null;
+    if (!imageMeta && !fieldMeta) return;
 
     let bytes: Uint8Array | null = null;
     if (data instanceof ArrayBuffer) {
@@ -353,8 +389,26 @@ export class BackendClient {
     }
     if (!bytes) return;
 
-    for (const fn of this.imageListeners) {
-      fn(meta, bytes);
+    if (imageMeta) {
+      for (const fn of this.imageListeners) {
+        fn(imageMeta, bytes);
+      }
+      return;
+    }
+
+    if (fieldMeta) {
+      const floatCount = bytes.byteLength >> 2;
+      let floats: Float32Array;
+      if ((bytes.byteOffset & 3) === 0) {
+        floats = new Float32Array(bytes.buffer, bytes.byteOffset, floatCount);
+      } else {
+        const aligned = new Uint8Array(floatCount * 4);
+        aligned.set(bytes.subarray(0, floatCount * 4));
+        floats = new Float32Array(aligned.buffer);
+      }
+      for (const fn of this.fieldListeners) {
+        fn(fieldMeta, floats);
+      }
     }
   }
 }

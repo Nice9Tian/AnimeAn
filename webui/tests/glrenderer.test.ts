@@ -6,13 +6,14 @@ import {
   type WebGL2ContextLike,
 } from "../src/board/glrenderer.ts";
 import { BoardRenderer, type Canvas2DContextLike, type CanvasLike } from "../src/board/renderer.ts";
+import "./field_view.test.ts";
 
 interface GlCall {
   fn: string;
   args: unknown[];
 }
 
-function createMockGlCanvas() {
+export function createMockGlCanvas() {
   const calls: GlCall[] = [];
   const listeners = new Map<string, Array<(ev: Event) => void>>();
   let nextId = 1;
@@ -42,11 +43,13 @@ function createMockGlCanvas() {
     COLOR_ATTACHMENT0: 0x8ce0,
     DEPTH_STENCIL_ATTACHMENT: 0x821a,
     RGBA8: 0x8058,
+    RGBA32F: 0x8814,
     DEPTH24_STENCIL8: 0x88f0,
     MAX_SAMPLES: 0x8d57,
     FRAMEBUFFER_COMPLETE: 0x8cd5,
     TEXTURE_2D: 0x0de1,
     TEXTURE0: 0x84c0,
+    TEXTURE1: 0x84c1,
     TEXTURE_MIN_FILTER: 0x2801,
     TEXTURE_MAG_FILTER: 0x2800,
     TEXTURE_WRAP_S: 0x2802,
@@ -167,6 +170,9 @@ function createMockGlCanvas() {
     },
     uniform1i(loc, x) {
       calls.push({ fn: "uniform1i", args: [(loc as { name?: string })?.name, x] });
+    },
+    uniform2i(loc, x, y) {
+      calls.push({ fn: "uniform2i", args: [(loc as { name?: string })?.name, x, y] });
     },
     uniform1f(loc, x) {
       calls.push({ fn: "uniform1f", args: [(loc as { name?: string })?.name, x] });
@@ -938,5 +944,69 @@ describe("GlBoardRenderer", () => {
 
     assert.equal(renderer.getImage("img"), holder);
     assert.equal(readBack, 0);
+  });
+
+  it("manages RGBA32F field textures across version updates, context loss/restore, adopt, and destroy", () => {
+    const mock = createMockGlCanvas();
+    const renderer = new GlBoardRenderer(mock.canvas, { getDpr: () => 1 });
+
+    mock.calls.length = 0;
+    const f1 = new Float32Array(2 * 2 * 4);
+    f1[0] = 5;
+    f1[2] = 1;
+    renderer.putField({ t: "field", key: "fld_a", w: 2, h: 2, version: 1, bytes: 64 }, f1);
+
+    const texImg1 = mock.calls.find((c) => c.fn === "texImage2D" && c.args[2] === mock.gl.RGBA32F);
+    assert.ok(texImg1);
+    assert.equal(texImg1.args[3], 2);
+    assert.equal(texImg1.args[4], 2);
+    assert.equal(texImg1.args[6], mock.gl.RGBA);
+    assert.equal(texImg1.args[7], mock.gl.FLOAT);
+    assert.ok(
+      mock.calls.some(
+        (c) => c.fn === "texParameteri" && c.args[1] === mock.gl.TEXTURE_MIN_FILTER && c.args[2] === mock.gl.NEAREST,
+      ),
+    );
+    assert.ok(
+      mock.calls.some(
+        (c) => c.fn === "texParameteri" && c.args[1] === mock.gl.TEXTURE_MAG_FILTER && c.args[2] === mock.gl.NEAREST,
+      ),
+    );
+    assert.ok(
+      mock.calls.some(
+        (c) =>
+          c.fn === "texParameteri" && c.args[1] === mock.gl.TEXTURE_WRAP_S && c.args[2] === mock.gl.CLAMP_TO_EDGE,
+      ),
+    );
+    assert.ok(
+      mock.calls.some(
+        (c) =>
+          c.fn === "texParameteri" && c.args[1] === mock.gl.TEXTURE_WRAP_T && c.args[2] === mock.gl.CLAMP_TO_EDGE,
+      ),
+    );
+
+    // Same key new version overwrites and deletes previous texture
+    mock.calls.length = 0;
+    const f2 = new Float32Array(2 * 2 * 4);
+    f2[0] = 12;
+    f2[2] = 1;
+    renderer.putField({ t: "field", key: "fld_a", w: 2, h: 2, version: 2, bytes: 64 }, f2);
+    assert.equal(mock.calls.filter((c) => c.fn === "deleteTexture").length, 1);
+    assert.equal(renderer.getField("fld_a")?.version, 2);
+    assert.equal(renderer.getField("fld_a")?.data[0], 12);
+
+    // Context loss and restore rebuilds RGBA32F texture from CPU copy
+    mock.dispatchEvent("webglcontextlost", { preventDefault() {} } as unknown as Event);
+    mock.calls.length = 0;
+    mock.dispatchEvent("webglcontextrestored", {} as Event);
+    const restoredFieldTex = mock.calls.find((c) => c.fn === "texImage2D" && c.args[2] === mock.gl.RGBA32F);
+    assert.ok(restoredFieldTex, "context restore should rebuild RGBA32F texture from CPU copy");
+    assert.equal((restoredFieldTex.args[8] as Float32Array)[0], 12);
+
+    // Destroy deletes field texture and clears CPU map
+    mock.calls.length = 0;
+    renderer.destroy();
+    assert.ok(mock.calls.filter((c) => c.fn === "deleteTexture").length >= 1);
+    assert.equal(renderer.getField("fld_a"), undefined);
   });
 });

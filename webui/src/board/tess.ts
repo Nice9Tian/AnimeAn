@@ -113,6 +113,7 @@ export function parsePath(
   scale = 1,
   tolerance = 0.1,
   transform?: ReadonlyArray<number>,
+  maxEdge = 0,
 ): Subpath[] {
   const subpaths: Subpath[] = [];
   let current: Subpath | null = null;
@@ -196,7 +197,53 @@ export function parsePath(
     }
   }
 
+  if (maxEdge > 0) {
+    for (let s = 0; s < subpaths.length; s++) {
+      subpaths[s].points = subdivideSubpathPoints(subpaths[s].points, subpaths[s].closed, maxEdge);
+    }
+  }
+
   return subpaths;
+}
+
+export function subdivideSubpathPoints(
+  points: ReadonlyArray<number>,
+  closed: boolean,
+  maxEdge: number,
+): number[] {
+  if (maxEdge <= 0 || points.length < 4) return points.slice();
+  const nPts = points.length >> 1;
+  const out: number[] = [points[0], points[1]];
+  for (let i = 0; i < nPts - 1; i++) {
+    const x0 = points[i * 2];
+    const y0 = points[i * 2 + 1];
+    const x1 = points[(i + 1) * 2];
+    const y1 = points[(i + 1) * 2 + 1];
+    const dist = Math.hypot(x1 - x0, y1 - y0);
+    if (dist > maxEdge) {
+      const steps = Math.ceil(dist / maxEdge);
+      for (let s = 1; s < steps; s++) {
+        const t = s / steps;
+        out.push(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t);
+      }
+    }
+    out.push(x1, y1);
+  }
+  if (closed && nPts >= 2) {
+    const x0 = points[(nPts - 1) * 2];
+    const y0 = points[(nPts - 1) * 2 + 1];
+    const x1 = points[0];
+    const y1 = points[1];
+    const dist = Math.hypot(x1 - x0, y1 - y0);
+    if (dist > maxEdge) {
+      const steps = Math.ceil(dist / maxEdge);
+      for (let s = 1; s < steps; s++) {
+        const t = s / steps;
+        out.push(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t);
+      }
+    }
+  }
+  return out;
 }
 
 export function applyDash(
@@ -390,10 +437,12 @@ function parsePathFast(
   scale: number,
   tolerance: number,
   transform?: ReadonlyArray<number>,
+  maxEdge = 0,
 ): void {
   flatCount = 0;
   subCount = 0;
   let activeSub = -1;
+  void maxEdge;
   let startX = 0;
   let startY = 0;
   let curX = 0;
@@ -853,6 +902,63 @@ function strokeSubpathRange(
   }
 }
 
+function subdivideFlatSubpaths(maxEdge: number): void {
+  if (maxEdge <= 0 || subCount <= 0) return;
+  const newX: number[] = [];
+  const newY: number[] = [];
+  for (let s = 0; s < subCount; s++) {
+    const start = subStart[s];
+    const end = subEnd[s];
+    const closed = subClosed[s] !== 0;
+    const nPts = end - start;
+    subStart[s] = newX.length;
+    if (nPts > 0) {
+      newX.push(flatX[start]);
+      newY.push(flatY[start]);
+      for (let i = start; i < end - 1; i++) {
+        const x0 = flatX[i];
+        const y0 = flatY[i];
+        const x1 = flatX[i + 1];
+        const y1 = flatY[i + 1];
+        const dist = Math.hypot(x1 - x0, y1 - y0);
+        if (dist > maxEdge) {
+          const steps = Math.ceil(dist / maxEdge);
+          for (let k = 1; k < steps; k++) {
+            const t = k / steps;
+            newX.push(x0 + (x1 - x0) * t);
+            newY.push(y0 + (y1 - y0) * t);
+          }
+        }
+        newX.push(x1);
+        newY.push(y1);
+      }
+      if (closed && nPts >= 2) {
+        const x0 = flatX[end - 1];
+        const y0 = flatY[end - 1];
+        const x1 = flatX[start];
+        const y1 = flatY[start];
+        const dist = Math.hypot(x1 - x0, y1 - y0);
+        if (dist > maxEdge) {
+          const steps = Math.ceil(dist / maxEdge);
+          for (let k = 1; k < steps; k++) {
+            const t = k / steps;
+            newX.push(x0 + (x1 - x0) * t);
+            newY.push(y0 + (y1 - y0) * t);
+          }
+        }
+      }
+    }
+    subEnd[s] = newX.length;
+  }
+  flatCount = 0;
+  ensureFlatCap(newX.length);
+  for (let i = 0; i < newX.length; i++) {
+    flatX[i] = newX[i];
+    flatY[i] = newY[i];
+  }
+  flatCount = newX.length;
+}
+
 export function getLastFlattenedSubpaths(): Subpath[] {
   const out: Subpath[] = [];
   for (let s = 0; s < subCount; s++) {
@@ -873,6 +979,7 @@ export function tessellateStrokeView(
   scale = 1,
   tolerance = 0.1,
   transform?: ReadonlyArray<number>,
+  maxEdge = 0,
 ): Float32Array {
   outPos = 0;
   const effWidth = pen.width > 0 ? pen.width : 1;
@@ -889,7 +996,12 @@ export function tessellateStrokeView(
   const maxSkipOneMinusDot = (effTol * effTol) / Math.max(1e-12, 2 * r * r);
 
   if (pen.dash && pen.dash.length > 0) {
-    const subpaths = applyDash(parsePath(path, scale, tolerance, transform), pen.dash, effWidth);
+    const subpaths = applyDash(parsePath(path, scale, tolerance, transform, maxEdge), pen.dash, effWidth);
+    if (maxEdge > 0) {
+      for (let s = 0; s < subpaths.length; s++) {
+        subpaths[s].points = subdivideSubpathPoints(subpaths[s].points, subpaths[s].closed, maxEdge);
+      }
+    }
     for (let s = 0; s < subpaths.length; s++) {
       const pts = subpaths[s].points;
       const nPts = pts.length >> 1;
@@ -905,7 +1017,10 @@ export function tessellateStrokeView(
     return outBuf.subarray(0, outPos);
   }
 
-  parsePathFast(path, scale, tolerance, transform);
+  parsePathFast(path, scale, tolerance, transform, maxEdge);
+  if (maxEdge > 0) {
+    subdivideFlatSubpaths(maxEdge);
+  }
   for (let s = 0; s < subCount; s++) {
     strokeSubpathRange(
       subStart[s],
@@ -928,13 +1043,231 @@ export function tessellateStroke(
   scale = 1,
   tolerance = 0.1,
   transform?: ReadonlyArray<number>,
+  maxEdge = 0,
 ): Float32Array {
-  return tessellateStrokeView(path, pen, scale, tolerance, transform).slice();
+  return tessellateStrokeView(path, pen, scale, tolerance, transform, maxEdge).slice();
 }
 
 export function normalizeFillRule(rule: FillRuleInput = "evenodd"): CanvasFillRule {
   if (rule === 1 || rule === "nonzero") return "nonzero";
   return "evenodd";
+}
+
+export function tessellateFillBandsView(
+  path: ReadonlyArray<number>,
+  rule: FillRuleInput = "evenodd",
+  maxEdge = 4,
+  scale = 1,
+  tolerance = 0.1,
+  transform?: ReadonlyArray<number>,
+): Float32Array {
+  outPos = 0;
+  const effMaxEdge = Math.max(0.5, Number(maxEdge) || 4);
+  const fillRule = normalizeFillRule(rule);
+  parsePathFast(path, scale, tolerance, transform, 0);
+
+  interface BandEdge {
+    ax: number;
+    ay: number;
+    bx: number;
+    by: number;
+    ymin: number;
+    ymax: number;
+    dir: number;
+  }
+
+  const edges: BandEdge[] = [];
+  const rawYs: number[] = [];
+
+  for (let s = 0; s < subCount; s++) {
+    const start = subStart[s];
+    const end = subEnd[s];
+    const nPts = end - start;
+    if (nPts < 2) continue;
+    for (let i = 0; i < nPts; i++) {
+      const i0 = start + i;
+      const i1 = i + 1 < nPts ? i0 + 1 : start;
+      const ax = flatX[i0];
+      const ay = flatY[i0];
+      const bx = flatX[i1];
+      const by = flatY[i1];
+      if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(bx) || !Number.isFinite(by)) continue;
+      if (Math.abs(by - ay) <= 1e-9) continue;
+      const ymin = Math.min(ay, by);
+      const ymax = Math.max(ay, by);
+      const dir = by > ay ? 1 : -1;
+      edges.push({ ax, ay, bx, by, ymin, ymax, dir });
+      rawYs.push(ymin, ymax);
+    }
+  }
+
+  if (edges.length < 2) {
+    return outBuf.subarray(0, 0);
+  }
+
+  const xAt = (e: BandEdge, y: number): number => e.ax + ((y - e.ay) / (e.by - e.ay)) * (e.bx - e.ax);
+
+  if (edges.length <= 1024) {
+    for (let i = 0; i < edges.length; i++) {
+      const e1 = edges[i];
+      for (let j = i + 1; j < edges.length; j++) {
+        const e2 = edges[j];
+        const yA = Math.max(e1.ymin, e2.ymin);
+        const yB = Math.min(e1.ymax, e2.ymax);
+        if (yB - yA <= 1e-7) continue;
+        const dA = xAt(e1, yA) - xAt(e2, yA);
+        const dB = xAt(e1, yB) - xAt(e2, yB);
+        if ((dA < -1e-7 && dB > 1e-7) || (dA > 1e-7 && dB < -1e-7)) {
+          const yCross = yA + (yB - yA) * (Math.abs(dA) / (Math.abs(dA) + Math.abs(dB)));
+          rawYs.push(yCross);
+        }
+      }
+    }
+  }
+
+  rawYs.sort((a, b) => a - b);
+  const uniqueYs: number[] = [rawYs[0]];
+  for (let i = 1; i < rawYs.length; i++) {
+    if (rawYs[i] - uniqueYs[uniqueYs.length - 1] > 1e-6) {
+      uniqueYs.push(rawYs[i]);
+    }
+  }
+  if (uniqueYs.length < 2) {
+    return outBuf.subarray(0, 0);
+  }
+
+  const bandYs: number[] = [uniqueYs[0]];
+  for (let i = 0; i < uniqueYs.length - 1; i++) {
+    const yA = uniqueYs[i];
+    const yB = uniqueYs[i + 1];
+    const span = yB - yA;
+    const steps = Math.max(1, Math.ceil(span / effMaxEdge));
+    for (let k = 1; k <= steps; k++) {
+      bandYs.push(k === steps ? yB : yA + (span * k) / steps);
+    }
+  }
+
+  interface ActiveCross {
+    xTop: number;
+    xBot: number;
+    xMid: number;
+    dir: number;
+  }
+
+  for (let b = 0; b < bandYs.length - 1; b++) {
+    const y0 = bandYs[b];
+    const y1 = bandYs[b + 1];
+    const dy = y1 - y0;
+    if (dy <= 1e-7) continue;
+    const yMid = 0.5 * (y0 + y1);
+
+    const active: ActiveCross[] = [];
+    for (let i = 0; i < edges.length; i++) {
+      const e = edges[i];
+      if (e.ymin < yMid && e.ymax > yMid) {
+        const xTop = xAt(e, y0);
+        const xBot = xAt(e, y1);
+        active.push({ xTop, xBot, xMid: 0.5 * (xTop + xBot), dir: e.dir });
+      }
+    }
+    if (active.length < 2) continue;
+
+    active.sort((a, c) => a.xMid - c.xMid || a.xTop - c.xTop || a.xBot - c.xBot);
+
+    const intervals: Array<[number, number, number, number]> = [];
+    if (fillRule === "evenodd") {
+      for (let k = 0; k + 1 < active.length; k += 2) {
+        const e0 = active[k];
+        const e1 = active[k + 1];
+        intervals.push([
+          Math.min(e0.xTop, e1.xTop),
+          Math.max(e0.xTop, e1.xTop),
+          Math.min(e0.xBot, e1.xBot),
+          Math.max(e0.xBot, e1.xBot),
+        ]);
+      }
+    } else {
+      let winding = 0;
+      let startCross: ActiveCross | null = null;
+      for (let k = 0; k < active.length; k++) {
+        const cur = active[k];
+        if (winding === 0) {
+          startCross = cur;
+        }
+        winding += cur.dir;
+        if (winding === 0 && startCross !== null) {
+          intervals.push([
+            Math.min(startCross.xTop, cur.xTop),
+            Math.max(startCross.xTop, cur.xTop),
+            Math.min(startCross.xBot, cur.xBot),
+            Math.max(startCross.xBot, cur.xBot),
+          ]);
+          startCross = null;
+        }
+      }
+    }
+
+    for (let idx = 0; idx < intervals.length; idx++) {
+      const [tL, tR, bL, bR] = intervals[idx];
+      if (tR - tL <= 1e-8 && bR - bL <= 1e-8) continue;
+      const maxShiftX = Math.max(Math.abs(bL - tL), Math.abs(bR - tR));
+      const vSteps = Math.max(1, Math.ceil(Math.max(dy, maxShiftX * 2) / effMaxEdge));
+      for (let v = 0; v < vSteps; v++) {
+        const v0 = v / vSteps;
+        const v1 = (v + 1) / vSteps;
+        const sy0 = y0 + dy * v0;
+        const sy1 = y0 + dy * v1;
+        const stL = tL + (bL - tL) * v0;
+        const stR = tR + (bR - tR) * v0;
+        const sbL = tL + (bL - tL) * v1;
+        const sbR = tR + (bR - tR) * v1;
+        const topW = Math.max(0, stR - stL);
+        const botW = Math.max(0, sbR - sbL);
+        if (topW <= 1e-8 && botW <= 1e-8) continue;
+        const subShift = Math.max(Math.abs(sbL - stL), Math.abs(sbR - stR));
+        const availW = Math.max(0.25 * effMaxEdge, effMaxEdge - subShift);
+        const hSteps = Math.max(1, Math.ceil(Math.max(topW, botW) / availW));
+        ensureOutCap(outPos + hSteps * 12);
+        for (let h = 0; h < hSteps; h++) {
+          const u0 = h / hSteps;
+          const u1 = (h + 1) / hSteps;
+          const x00 = stL + topW * u0;
+          const x10 = stL + topW * u1;
+          const x01 = sbL + botW * u0;
+          const x11 = sbL + botW * u1;
+          if (topW > 1e-8) {
+            outBuf[outPos++] = x00;
+            outBuf[outPos++] = sy0;
+            outBuf[outPos++] = x10;
+            outBuf[outPos++] = sy0;
+            outBuf[outPos++] = x11;
+            outBuf[outPos++] = sy1;
+          }
+          if (botW > 1e-8) {
+            outBuf[outPos++] = x00;
+            outBuf[outPos++] = sy0;
+            outBuf[outPos++] = x11;
+            outBuf[outPos++] = sy1;
+            outBuf[outPos++] = x01;
+            outBuf[outPos++] = sy1;
+          }
+        }
+      }
+    }
+  }
+
+  return outBuf.subarray(0, outPos);
+}
+
+export function tessellateFillBands(
+  path: ReadonlyArray<number>,
+  rule: FillRuleInput = "evenodd",
+  maxEdge = 4,
+  scale = 1,
+  tolerance = 0.1,
+  transform?: ReadonlyArray<number>,
+): Float32Array {
+  return tessellateFillBandsView(path, rule, maxEdge, scale, tolerance, transform).slice();
 }
 
 export function tessellateFillView(
@@ -943,9 +1276,13 @@ export function tessellateFillView(
   scale = 1,
   tolerance = 0.1,
   transform?: ReadonlyArray<number>,
+  maxEdge = 0,
 ): Float32Array {
+  if (maxEdge > 0) {
+    return tessellateFillBandsView(path, _rule, maxEdge, scale, tolerance, transform);
+  }
   outPos = 0;
-  parsePathFast(path, scale, tolerance, transform);
+  parsePathFast(path, scale, tolerance, transform, 0);
 
   for (let s = 0; s < subCount; s++) {
     const start = subStart[s];
@@ -980,8 +1317,9 @@ export function tessellateFill(
   scale = 1,
   tolerance = 0.1,
   transform?: ReadonlyArray<number>,
+  maxEdge = 0,
 ): Float32Array {
-  return tessellateFillView(path, rule, scale, tolerance, transform).slice();
+  return tessellateFillView(path, rule, scale, tolerance, transform, maxEdge).slice();
 }
 
 export function computeBounds(vertices: Float32Array): [number, number, number, number] {
