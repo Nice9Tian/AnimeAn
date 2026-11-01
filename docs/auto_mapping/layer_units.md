@@ -60,6 +60,8 @@ role=front/back/seal 与 depth，由 `_MappedOutput.layer_roles` 提供）。
 单元的 Live Re-render 勾选可整体关掉自动重跑。重跑期间 `_RUN_GUARD`
 屏蔽自触发的 layerchange/图案事件回声。
 
+拖动预览不是提交点，不写模型、不进历史；Live Re-render 关掉时没有预览。
+
 ## 4. Advanced Settings（右键 → 设置窗）
 
 图层右键菜单现在支持 `kind:"settings"` 条目（与菜单栏同一 `ToolOptPanel`
