@@ -597,8 +597,9 @@ def _sanitize_assets(data):
                 stations = [[float(p[0]), float(p[1])]
                             for p in pairing.get("stations") or []]
                 if stations and "id" in pairing:
-                    loaded[PAIRING_KEY] = {"id": int(pairing["id"]),
-                                           "stations": stations}
+                    loaded[PAIRING_KEY] = {
+                        "id": int(pairing["id"]), "stations": stations,
+                        "corner_stations": [int(i) for i in pairing.get("corner_stations") or []]}
                 assets[prop] = loaded
     return assets
 
@@ -9393,7 +9394,8 @@ def proxy_pairing():
         return _PROXY_PAIRING["value"]
     if _kept_pairing(child_item, main_item) is not None:
         paired = {"child": child_item[PAIRING_KEY]["stations"],
-                  "main": main_item[PAIRING_KEY]["stations"]}
+                  "main": main_item[PAIRING_KEY]["stations"],
+                  "corner_stations": child_item[PAIRING_KEY].get("corner_stations") or []}
     else:
         import proxy_shape
         paired, why = proxy_shape.match(child_item["points"], main_item["points"])
@@ -9401,8 +9403,11 @@ def proxy_pairing():
             print(f"[auto_mapping] contours not paired: {why}")
         else:
             pairing = random.getrandbits(32)
-            child_item[PAIRING_KEY] = {"id": pairing, "stations": paired["child"]}
-            main_item[PAIRING_KEY] = {"id": pairing, "stations": paired["main"]}
+            corners = paired["corner_stations"]
+            child_item[PAIRING_KEY] = {"id": pairing, "stations": paired["child"],
+                                       "corner_stations": corners}
+            main_item[PAIRING_KEY] = {"id": pairing, "stations": paired["main"],
+                                      "corner_stations": corners}
     _PROXY_PAIRING["key"] = _pairing_key(child_item, main_item)
     _PROXY_PAIRING["value"] = paired
     return paired
@@ -9648,6 +9653,17 @@ def _chosen_line_items(view_name):
     }]
 
 
+def _contour_pins(view_name, points):
+    """The contour has no ends: its pins stand on the paired corners, the same
+    points of the pattern on both boards."""
+    paired = proxy_pairing()
+    if paired is None:
+        import proxy_shape
+        return proxy_shape.corner_points(points)
+    stations = paired["child" if view_name == "child" else "main"]
+    return [stations[i] for i in paired["corner_stations"]]
+
+
 def _line_mark_items(view_name):
     """Pins on ground lines."""
     assets = _assets_for(view_name)
@@ -9661,8 +9677,8 @@ def _line_mark_items(view_name):
         points = (line_item(view_name, overlay_id) or {}).get("points") or []
         if len(points) < 2 or not line_is_ground(overlay_id):
             continue
-        ends = ([points[k * len(points) // 4] for k in range(4)]
-                if overlay_id == PROXY_PROPERTY else [points[0], points[-1]])
+        ends = (_contour_pins(view_name, points) if overlay_id == PROXY_PROPERTY
+                else [points[0], points[-1]])
         for number, end in enumerate(ends):
             items.append({
                 "id": f"line_pin:{overlay_id}:{number}",

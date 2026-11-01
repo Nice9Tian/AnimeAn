@@ -425,4 +425,56 @@ am._REFER_RECT.update(child=False, main=False)
 print("17) a drag rebuilds nothing until the release")
 
 
+def rounded(points, index, radius, steps=12):
+    """`ring(points)` with one corner cut to a quadratic curve."""
+    corner = points[index]
+    before, after = points[index - 1], points[(index + 1) % len(points)]
+    near = [corner[k] + (before[k] - corner[k]) * radius / math.dist(corner, before) for k in (0, 1)]
+    far = [corner[k] + (after[k] - corner[k]) * radius / math.dist(corner, after) for k in (0, 1)]
+    curve = [[(1 - t) ** 2 * near[k] + 2 * t * (1 - t) * corner[k] + t ** 2 * far[k] for k in (0, 1)]
+             for t in (i / steps for i in range(steps + 1))]
+    outline = []
+    for a, b in zip(points, points[1:] + points[:1]):
+        i = points.index(a)
+        start = far if i == index else a
+        end = near if (i + 1) % len(points) == index else b
+        outline.extend([start[0] + (end[0] - start[0]) * j / 40, start[1] + (end[1] - start[1]) * j / 40]
+                       for j in range(40))
+        if (i + 1) % len(points) == index:
+            outline.extend(curve)
+    return outline
+
+
+# 18) A hand-drawn corner is round: it still pairs with the sharp corner it is, and
+#     the pins stand on the corners, one pattern point on both boards, whichever
+#     point each line was drawn from.
+reset()
+texture()
+am._assets_for("child")[am.PROXY_PROPERTY] = {"points": ring(RECT), "width": 3.0, am.GROUND_FLAG: True}
+main_ring = rounded(KEYSTONE, 1, 45.0)
+am._assets_for("main")[am.PROXY_PROPERTY] = {"points": main_ring[37:] + main_ring[:37], "width": 3.0,
+                                             am.GROUND_FLAG: True}
+paired = am.proxy_pairing()
+assert len(paired["corner_stations"]) == 4
+pin = lambda view: sorted(
+    (sum(p[0] for p in i["points"]) / 16, sum(p[1] for p in i["points"]) / 16)
+    for i in am._line_mark_items(view) if i["id"].startswith(f"line_pin:{am.PROXY_PROPERTY}"))
+child_pins, main_pins = pin("child"), pin("main")
+assert len(child_pins) == 4 and len(main_pins) == 4
+for corner in RECT:
+    assert min(math.dist(corner, p) for p in child_pins) < 4.0
+for corner in (KEYSTONE[0], KEYSTONE[2], KEYSTONE[3]):
+    assert min(math.dist(corner, p) for p in main_pins) < 4.0
+assert min(math.dist(KEYSTONE[1], p) for p in main_pins) < 30.0
+stored = {view: json.loads(json.dumps(am._assets_for(view))) for view in ("child", "main")}
+for view in stored:
+    am._MAPPING_ASSETS[view] = am._sanitize_assets(stored[view])
+am._PROXY_PAIRING.update({"key": None, "value": None})
+assert pin("child") == child_pins and pin("main") == main_pins
+
+# One contour alone has no partner yet and still pins its own corners.
+am._assets_for("main").pop(am.PROXY_PROPERTY)
+assert pin("child") and min(math.dist(RECT[0], p) for p in pin("child")) < 4.0
+print("18) pins stand on the paired corners")
+
 print("ALL OK")
