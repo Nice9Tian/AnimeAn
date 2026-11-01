@@ -1983,6 +1983,30 @@ constexpr qreal kEditHandleHitPx = 7.0;      // half-size of the hit box
 constexpr qreal kEditHandleButtonScale = 1.8; // button shapes (3, 4) grow by this
 }
 
+void PaintOpenGLWidget::setFieldViewSpec(const FieldViewSpec &spec)
+{
+    m_fieldViewSpec = spec;
+    update();
+}
+
+void PaintOpenGLWidget::clearFieldViewSpec()
+{
+    if (!m_fieldViewSpec.active) {
+        m_fieldViewSpec = FieldViewSpec();
+        return;
+    }
+    m_fieldViewSpec = FieldViewSpec();
+    update();
+}
+
+void PaintOpenGLWidget::setFieldLookup(
+    std::function<quint64(const QString &key)> versionLookup,
+    std::function<const AnimeSceneModel *(const QString &viewName)> sceneLookup)
+{
+    m_fieldVersionLookup = std::move(versionLookup);
+    m_fieldSceneLookup = std::move(sceneLookup);
+}
+
 void PaintOpenGLWidget::paintEditHandles(QPainter &painter)
 {
     // SCREEN space: handles keep a constant size at any zoom, like every
@@ -2140,6 +2164,107 @@ QString PaintOpenGLWidget::sendPythonHandleMessage(const QString &phase,
 #endif
 }
 
+#ifdef ANIMEAN_HEADLESS
+namespace {
+void paintFieldColumnContent(QPainter &painter,
+                             const AnimeVectorImageModel &image,
+                             qreal zoom,
+                             qreal widthScale,
+                             const QStringList *skipProperties)
+{
+    painter.setPen(Qt::NoPen);
+    for (const AnimeVectorFillRegion &fill : image.fillRegions()) {
+        painter.setBrush(QColor(fill.color));
+        painter.drawPath(fill.path);
+    }
+    painter.setBrush(Qt::NoBrush);
+    for (const AnimeVectorStrokeNode &node : image.strokeNodes()) {
+        const AnimeVectorStroke &stroke = node.stroke;
+        if (skipProperties && !stroke.property.isEmpty()
+            && skipProperties->contains(QString(stroke.property))) {
+            continue;
+        }
+        const Qt::PenStyle penStyle =
+            (stroke.penStyle >= Qt::SolidLine && stroke.penStyle <= Qt::DashDotDotLine)
+                ? static_cast<Qt::PenStyle>(stroke.penStyle)
+                : Qt::SolidLine;
+        QPen pen(QColor(stroke.color),
+                 AnimeVectorLogic::displayStrokeWidth(stroke.width * widthScale, zoom),
+                 penStyle, Qt::RoundCap, Qt::RoundJoin);
+        painter.setPen(pen);
+        painter.drawPath(stroke.path);
+    }
+}
+} // namespace
+
+void PaintOpenGLWidget::paintFieldScope(QPainter &painter)
+{
+    if (!m_fieldViewSpec.active || m_fieldViewSpec.fieldKey.isEmpty()) {
+        return;
+    }
+    RecordingPaintEngine *engine = recordingEngine();
+    if (!engine) {
+        return;
+    }
+    const AnimeSceneModel *sourceModel = nullptr;
+    if (m_fieldSceneLookup) {
+        sourceModel = m_fieldSceneLookup(m_fieldViewSpec.sourceView);
+    }
+#ifdef ANIMEAN_WITH_PYTHON
+    if (!sourceModel && !m_fieldViewSpec.sourceView.isEmpty()) {
+        sourceModel = animeanUiSceneForViewName(m_fieldViewSpec.sourceView);
+    }
+#endif
+    if (!sourceModel && (m_fieldViewSpec.sourceView.isEmpty() || m_fieldViewSpec.sourceView == m_viewName)) {
+        sourceModel = &m_model;
+    }
+
+    const quint64 version = m_fieldVersionLookup ? m_fieldVersionLookup(m_fieldViewSpec.fieldKey) : 0;
+    QVector<FieldScopePass> passes;
+    passes.reserve(m_fieldViewSpec.passes.size());
+    for (const FieldPass &p : m_fieldViewSpec.passes) {
+        FieldScopePass outPass;
+        outPass.tagLo = p.tagLo;
+        outPass.tagHi = p.tagHi;
+        outPass.opacity = p.opacity;
+        outPass.tintR = p.tintR;
+        outPass.tintG = p.tintG;
+        outPass.tintB = p.tintB;
+        outPass.tintA = p.tintA;
+        passes.append(outPass);
+    }
+
+    engine->beginFieldScope(m_fieldViewSpec.fieldKey,
+                            version,
+                            m_fieldViewSpec.rect,
+                            m_fieldViewSpec.maxEdge,
+                            passes);
+
+    if (sourceModel) {
+        const AnimeScene &sourceScene = sourceModel->scene();
+        const qreal widthScale = m_fieldViewSpec.widthScale;
+        const QStringList *skipProps =
+            m_fieldViewSpec.skipProperties.isEmpty() ? nullptr : &m_fieldViewSpec.skipProperties;
+        for (int columnIndex : m_fieldViewSpec.columns) {
+            if (columnIndex < 0 || columnIndex >= sourceScene.xsheet.columns.size()) {
+                continue;
+            }
+            const AnimeColumn &column = sourceScene.xsheet.columns[columnIndex];
+            const AnimeCell cell = column.cellAt(m_fieldViewSpec.frame);
+            const VectorImageModel *image = sourceModel->imageForCell(cell);
+            if (!image) {
+                continue;
+            }
+            painter.setOpacity(column.opacity);
+            paintFieldColumnContent(painter, *image, m_zoom, widthScale, skipProps);
+        }
+        painter.setOpacity(1.0);
+    }
+
+    engine->endFieldScope();
+}
+#endif
+
 void PaintOpenGLWidget::paintSceneContent(QPainter &painter, int frameIndex, bool includeCurrentStroke,
                                           const SceneContentFilter *filter)
 {
@@ -2156,6 +2281,9 @@ void PaintOpenGLWidget::paintSceneContent(QPainter &painter, int frameIndex, boo
     QHash<qint64, QImage> nextRasterCache;
     const auto paintColumn = [&](int columnIndex) {
         const AnimeColumn &column = scene.xsheet.columns[columnIndex];
+        if (!filter && m_fieldViewSpec.active && m_fieldViewSpec.hideColumns.contains(columnIndex)) {
+            return;
+        }
         if (!column.visible) {
             return;
         }
@@ -2299,7 +2427,8 @@ bool PaintOpenGLWidget::buildPlaybackCache(int frameCount, QString *error)
             painter.fillRect(documentRect(), Qt::white);
         }
         // Overlays and the in-progress stroke are editing aids, not content.
-        paintSceneContent(painter, frame, false);
+        SceneContentFilter filter;
+        paintSceneContent(painter, frame, false, &filter);
         painter.end();
 
         m_playbackFrames.append(image);
@@ -2794,7 +2923,8 @@ QImage PaintOpenGLWidget::renderFrameThumbnail(int frameIndex, const QSize &size
     // at, and that is the thumbnail's, not the board's.
     const qreal previousZoom = m_zoom;
     m_zoom = scale;
-    paintSceneContent(painter, frameIndex, false);
+    SceneContentFilter filter;
+    paintSceneContent(painter, frameIndex, false, &filter);
     m_zoom = previousZoom;
     painter.end();
     return image;
@@ -2864,6 +2994,9 @@ void PaintOpenGLWidget::paintGL()
     paintOnionGhosts(painter);
 
     paintSceneContent(painter, m_model.currentFrame(), true);
+#ifdef ANIMEAN_HEADLESS
+    paintFieldScope(painter);
+#endif
 
     // Predictive preview: a thin, translucent, UNFILTERED line from the
     // stabilized tip to the physical pen tip. The stabilized ink trails the

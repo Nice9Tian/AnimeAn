@@ -93,6 +93,7 @@ public:
     bool autoFillBackground() const { return m_autoFillBackground; }
 
     QPaintEngine *paintEngine() const override;
+    RecordingPaintEngine *recordingEngine() const { return m_engine.get(); }
 
 protected:
     int metric(PaintDeviceMetric m) const override;

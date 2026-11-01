@@ -18,6 +18,7 @@
 #include <QSet>
 #include <QString>
 #include <QVariant>
+#include <functional>
 #include <QVector>
 
 class QPainter;
@@ -96,10 +97,39 @@ public:
         bool interactive = true;
     };
 
+    struct FieldPass {
+        qreal tagLo = 0.0;
+        qreal tagHi = 0.0;
+        qreal opacity = 1.0;
+        int tintR = 0;
+        int tintG = 0;
+        int tintB = 0;
+        int tintA = 0;
+    };
+
+    struct FieldViewSpec {
+        bool active = false;
+        QString fieldKey;
+        QRectF rect;
+        qreal maxEdge = 8.0;
+        QString sourceView;
+        QVector<int> columns;
+        int frame = 0;
+        qreal widthScale = 1.0;
+        QVector<FieldPass> passes;
+        QVector<int> hideColumns;
+        QStringList skipProperties;
+    };
+
     explicit PaintOpenGLWidget(QWidget *parent = nullptr);
 
     void setOverlayItems(const QVector<OverlayItem> &items);
     void setEditHandles(const QVector<EditHandle> &handles);
+    void setFieldViewSpec(const FieldViewSpec &spec);
+    void clearFieldViewSpec();
+    const FieldViewSpec &fieldViewSpec() const { return m_fieldViewSpec; }
+    void setFieldLookup(std::function<quint64(const QString &key)> versionLookup,
+                        std::function<const AnimeSceneModel *(const QString &viewName)> sceneLookup = {});
     // The pointer a script asks for by NAME ("size_all", "rotate", ""); which
     // affordance sits under the cursor is the tool's decision, drawing the
     // name is this widget's. Empty restores the default. The pen ignores it:
@@ -378,6 +408,9 @@ private:
     // pan or zoom re-renders it once the gesture settles rather than per tick.
     void scheduleOnionCacheRefresh();
     void paintOverlayItems(QPainter &painter);
+#ifdef ANIMEAN_HEADLESS
+    void paintFieldScope(QPainter &painter);
+#endif
     // Badge just above-right of `anchor`, clamped into view. `slot` counts
     // leftwards from the x badge (1 = the check badge); `slotCount` is how
     // many badges the id carries, so an edge clamp keeps the pair side by
@@ -653,6 +686,9 @@ private:
     QHash<qint64, QImage> m_rasterCache;
     QVector<OverlayItem> m_overlayItems;
     QVector<OverlayHandle> m_overlayHandles;
+    FieldViewSpec m_fieldViewSpec;
+    std::function<quint64(const QString &key)> m_fieldVersionLookup;
+    std::function<const AnimeSceneModel *(const QString &viewName)> m_fieldSceneLookup;
 };
 
 #endif // OPENGLWIDGET_H

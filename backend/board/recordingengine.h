@@ -20,6 +20,16 @@ struct RecordedOp {
     QByteArray json;
 };
 
+struct FieldScopePass {
+    double tagLo = 0.0;
+    double tagHi = 0.0;
+    double opacity = 1.0;
+    int tintR = 0;
+    int tintG = 0;
+    int tintB = 0;
+    int tintA = 0;
+};
+
 class RecordingPaintEngine : public QPaintEngine
 {
 public:
@@ -55,6 +65,13 @@ public:
     void setImageSink(ImageSink sink);
     void resetFrame();
     const QVector<RecordedOp> &ops() const { return m_ops; }
+
+    void beginFieldScope(const QString &key,
+                         quint64 version,
+                         const QRectF &rect,
+                         double maxEdge,
+                         const QVector<FieldScopePass> &passes);
+    void endFieldScope();
 
 private:
     void syncCommonState();

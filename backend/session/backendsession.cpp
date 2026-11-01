@@ -581,6 +581,9 @@ BackendSession::BackendSession(WsServer *ws, QObject *parent)
 BackendSession::~BackendSession()
 {
 #ifdef ANIMEAN_WITH_PYTHON
+    clearAnimeanUiFieldDisplaySupportedCallback();
+    clearAnimeanUiFieldViewCallback();
+    clearAnimeanUiFieldCallback();
     clearAnimeanUiPadValueCallback();
     clearAnimeanUiHistoryCallback();
     clearAnimeanUiLockedToolsCallback();
@@ -816,6 +819,15 @@ void BackendSession::setupBoardSinks(const QString &viewName, PaintOpenGLWidget 
     paintView->setCursorSink([this, viewName](const QCursor &cursor) {
         handleCursorSink(viewName, cursor);
     });
+    paintView->setFieldLookup(
+        [this](const QString &key) -> quint64 {
+            const auto it = m_fields.constFind(key);
+            return it != m_fields.constEnd() ? it->version : 0;
+        },
+        [this](const QString &srcView) -> const AnimeSceneModel * {
+            PaintOpenGLWidget *b = boardForView(srcView);
+            return b ? &b->model() : nullptr;
+        });
     handleCursorSink(viewName, paintView->cursor());
 }
 
@@ -1290,6 +1302,64 @@ void BackendSession::registerPythonUiCallbacks()
         }
     });
 
+    registerAnimeanUiFieldCallback(
+        [this](const QString &key, int width, int height, const QByteArray &data) {
+            if (key.isEmpty()) {
+                return;
+            }
+            FieldEntry &entry = m_fields[key];
+            entry.w = width;
+            entry.h = height;
+            entry.version = m_nextFieldVersion++;
+            entry.data = data;
+            entry.pending = true;
+            for (PaintOpenGLWidget *board : {m_mainBoard.get(), m_childBoard.get()}) {
+                if (board && board->fieldViewSpec().active && board->fieldViewSpec().fieldKey == key) {
+                    board->update();
+                }
+            }
+        });
+
+    registerAnimeanUiFieldViewCallback(
+        [this](const QString &view, const AnimeanFieldViewSpec &spec) {
+            PaintOpenGLWidget *target = boardForView(view);
+            if (!target) {
+                return;
+            }
+            if (!spec.active) {
+                target->clearFieldViewSpec();
+                return;
+            }
+            PaintOpenGLWidget::FieldViewSpec converted;
+            converted.active = true;
+            converted.fieldKey = spec.fieldKey;
+            converted.rect = spec.rect;
+            converted.maxEdge = spec.maxEdge;
+            converted.sourceView = spec.sourceView;
+            converted.columns = spec.columns;
+            converted.frame = spec.frame;
+            converted.widthScale = spec.widthScale;
+            converted.passes.reserve(spec.passes.size());
+            for (const AnimeanFieldPass &p : spec.passes) {
+                PaintOpenGLWidget::FieldPass outPass;
+                outPass.tagLo = p.tagLo;
+                outPass.tagHi = p.tagHi;
+                outPass.opacity = p.opacity;
+                outPass.tintR = p.tintR;
+                outPass.tintG = p.tintG;
+                outPass.tintB = p.tintB;
+                outPass.tintA = p.tintA;
+                converted.passes.append(outPass);
+            }
+            converted.hideColumns = spec.hideColumns;
+            converted.skipProperties = spec.skipProperties;
+            target->setFieldViewSpec(converted);
+        });
+
+    registerAnimeanUiFieldDisplaySupportedCallback([this](const QString &view) {
+        return m_fieldDisplaySupported.value(resolveViewName(view), false);
+    });
+
     registerAnimeanUiPadValueCallback([this](const QString &pad, double x, double y) {
         const QPointF pt(x, y);
         m_padValues.insert(pad, pt);
@@ -1329,6 +1399,9 @@ QString BackendSession::resolveViewName(const QString &viewName) const
 
 void BackendSession::onClientConnected()
 {
+    for (auto it = m_fields.begin(); it != m_fields.end(); ++it) {
+        it->pending = true;
+    }
     for (auto it = m_cachedImages.cbegin(); it != m_cachedImages.cend(); ++it) {
         sendImagePacket(it.key(), it.value());
     }
@@ -1355,6 +1428,7 @@ void BackendSession::onClientConnected()
 void BackendSession::onClientDisconnected()
 {
     // Keep session alive and wait for next connection.
+    m_fieldDisplaySupported.clear();
 }
 
 void BackendSession::onMessageReceived(const QJsonObject &msg)
@@ -2247,6 +2321,16 @@ QJsonObject BackendSession::dispatchCall(const QString &method, const QJsonObjec
         };
     }
 
+    if (method == QStringLiteral("board.capabilities")) {
+        const QString targetView = resolveViewName(view);
+        const bool fieldDisplay = params.value(QStringLiteral("fieldDisplay")).toBool(false);
+        m_fieldDisplaySupported.insert(targetView, fieldDisplay);
+        return QJsonObject{
+            {QStringLiteral("view"), targetView},
+            {QStringLiteral("fieldDisplay"), fieldDisplay},
+        };
+    }
+
     return makeError(QStringLiteral("Unknown method: %1").arg(method));
 }
 
@@ -2828,6 +2912,7 @@ void BackendSession::handleFrameSink(const QString &viewName, const BoardFrame &
     if (!m_ws || !m_ws->hasClient()) {
         return;
     }
+    flushPendingFieldsForBoard(boardForView(viewName));
     QByteArray payload;
     payload.reserve(frame.ops.size() + 128);
     payload.append("{\"t\":\"board\",\"view\":\"");
@@ -2856,6 +2941,46 @@ void BackendSession::handleImageSink(const QString &key, const QImage &rgba)
                                  : rgba.convertToFormat(QImage::Format_RGBA8888);
     m_cachedImages.insert(key, formatted);
     sendImagePacket(key, formatted);
+}
+
+void BackendSession::sendFieldPacket(const QString &key, const FieldEntry &entry)
+{
+    if (!m_ws || !m_ws->hasClient() || key.isEmpty() || entry.data.isEmpty()) {
+        return;
+    }
+    const QJsonObject header{
+        {QStringLiteral("t"), QStringLiteral("field")},
+        {QStringLiteral("key"), key},
+        {QStringLiteral("w"), entry.w},
+        {QStringLiteral("h"), entry.h},
+        {QStringLiteral("version"), static_cast<qint64>(entry.version)},
+        {QStringLiteral("bytes"), entry.data.size()},
+    };
+    sendJson(header);
+    m_ws->sendBinary(entry.data);
+}
+
+void BackendSession::flushPendingFieldsForBoard(const PaintOpenGLWidget *board)
+{
+    if (!m_ws || !m_ws->hasClient()) {
+        return;
+    }
+    for (auto it = m_fields.begin(); it != m_fields.end(); ++it) {
+        if (!it->pending) {
+            continue;
+        }
+        const QString &key = it.key();
+        const bool usedByMain = m_mainBoard && m_mainBoard->fieldViewSpec().active
+                                && m_mainBoard->fieldViewSpec().fieldKey == key;
+        const bool usedByChild = m_childBoard && m_childBoard->fieldViewSpec().active
+                                 && m_childBoard->fieldViewSpec().fieldKey == key;
+        const bool usedByThisBoard = board && board->fieldViewSpec().active
+                                     && board->fieldViewSpec().fieldKey == key;
+        if (usedByThisBoard || (!usedByMain && !usedByChild)) {
+            sendFieldPacket(key, it.value());
+            it->pending = false;
+        }
+    }
 }
 
 void BackendSession::sendImagePacket(const QString &key, const QImage &rgba)

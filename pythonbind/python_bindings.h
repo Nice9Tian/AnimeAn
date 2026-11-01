@@ -1,7 +1,9 @@
 #ifndef PYTHON_BINDINGS_H
 #define PYTHON_BINDINGS_H
 
+#include <QByteArray>
 #include <QColor>
+#include <QRectF>
 #include <QPointF>
 #include <QString>
 #include <QStringList>
@@ -118,5 +120,40 @@ void setAnimeanUiTheme(const QString &mode);
 // skip the GIL/message work entirely for events nobody listens to. Until the
 // first push arrives, every event counts as subscribed.
 bool animeanHookEventSubscribed(const QString &event);
+
+struct AnimeanFieldPass {
+    double tagLo = 0.0;
+    double tagHi = 0.0;
+    double opacity = 1.0;
+    int tintR = 0;
+    int tintG = 0;
+    int tintB = 0;
+    int tintA = 0;
+};
+
+struct AnimeanFieldViewSpec {
+    bool active = false;
+    QString fieldKey;
+    QRectF rect;
+    double maxEdge = 8.0;
+    QString sourceView;
+    QVector<int> columns;
+    int frame = 0;
+    double widthScale = 1.0;
+    QVector<AnimeanFieldPass> passes;
+    QVector<int> hideColumns;
+    QStringList skipProperties;
+};
+
+void registerAnimeanUiFieldCallback(
+    std::function<void(const QString &key, int width, int height, const QByteArray &data)> callback);
+void clearAnimeanUiFieldCallback();
+void registerAnimeanUiFieldViewCallback(
+    std::function<void(const QString &view, const AnimeanFieldViewSpec &spec)> callback);
+void clearAnimeanUiFieldViewCallback();
+void registerAnimeanUiFieldDisplaySupportedCallback(
+    std::function<bool(const QString &view)> callback);
+void clearAnimeanUiFieldDisplaySupportedCallback();
+AnimeSceneModel *animeanUiSceneForViewName(const QString &view);
 
 #endif // PYTHON_BINDINGS_H

@@ -32,7 +32,7 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 
 ## 消息
 
-文本帧都是一个 JSON 对象，`t` 字段是类型。二进制帧只用于图片。
+文本帧都是一个 JSON 对象，`t` 字段是类型。二进制帧用于图片和场数据。
 
 ### 网页 → 后端
 
@@ -58,10 +58,12 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 {"t":"state","key":"layers/main","value":{}}
 {"t":"board","view":"main","frame":42,"w":567,"h":690,"keep":120,"ops":[]}
 {"t":"image","key":"a1b2","w":100,"h":80,"bytes":320000}
+{"t":"field","key":"f1","w":64,"h":64,"version":3,"bytes":65536}
 ```
 
 - 连接建立后，后端先把全部 `state` 键发一遍。之后只发变了的键，值是该键的完整新值。
 - `image` 文本帧之后紧跟一个二进制帧，内容是 RGBA8 非预乘像素，逐行从上到下。
+- `field` 文本帧之后紧跟一个二进制帧，内容是 `w * h * 4` 个小端 `Float32`（`RGBA32F`），逐行从上到下，每像素为 `(X, Y, valid, tag)`。`version` 为全局单调递增序号。场帧只在发送用到该场的 `board` 帧之前发出；同一 `key` 尚未发出的旧值会被新值直接覆盖，等待 `ack` 期间不发送。
 
 ## 绘制指令
 
@@ -80,6 +82,8 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 | `S` | path, rule | 按当前画笔、画刷画路径 |
 | `I` | key, sx, sy, sw, sh, dx, dy, dw, dh | 画图片，`key` 对应先发的 `image` 帧 |
 | `H` | smooth | 图片平滑开关，0 或 1 |
+| `F` | key, version, x, y, w, h, maxEdge, passes | 开启场作用域。`key`、`version` 对应先发的 `field` 帧，`x, y, w, h` 是场覆盖的画布矩形，`maxEdge` 是细分最大边长，`passes` 是 `[[tagLo, tagHi, opacity, r, g, b, a], ...]`（未指定 `tint` 时 `r, g, b, a` 均为 0）。作用域内的 `S` 指令按该场变形绘制 |
+| `f` | 无 | 结束场作用域 |
 
 `path` 是扁平数组，`[命令, 坐标...]` 连续排列。命令：0 移到（x, y），1 直线到（x, y），2 三次曲线到（c1x, c1y, c2x, c2y, x, y），3 闭合。
 
@@ -131,6 +135,6 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 
 ## 调用
 
-方法名在 `backend/session/backendsession.cpp` 的 `dispatchCall`。图层右键走 `layer.contextMenu`（返回菜单项，含 Python 注册的项）和 `layer.contextAction`。网页发 `input` 时带 `time`（毫秒），后端写进事件时间戳，稳定器要用它。
+方法名在 `backend/session/backendsession.cpp` 的 `dispatchCall`。图层右键走 `layer.contextMenu`（返回菜单项，含 Python 注册的项）和 `layer.contextAction`。网页发 `input` 时带 `time`（毫秒），后端写进事件时间戳，稳定器要用它。`board.capabilities`（参数 `{"view":"main"|"child","fieldDisplay":true|false}`）由网页在画板渲染器就绪后上报该视图是否支持场显示，供 `animean_python.ui.field_display_supported(view)` 查询（缺省 `False`，连接断开时清零）。
 
 Qt 版打开时先弹 New Project 对话框，网页版同样在收到第一个 `window` 状态后弹出。
