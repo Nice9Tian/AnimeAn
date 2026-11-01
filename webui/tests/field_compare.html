@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Running Field Compare...</title>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, sans-serif;
+        background: #1a1a1a;
+        color: #eaeaea;
+        margin: 24px;
+      }
+      #summary {
+        font-size: 18px;
+        font-weight: 600;
+        padding: 12px 16px;
+        border-radius: 6px;
+        margin-bottom: 16px;
+      }
+      .pass {
+        background: #143d22;
+        border: 1px solid #2ea043;
+        color: #7ee787;
+      }
+      .fail {
+        background: #491c1c;
+        border: 1px solid #f85149;
+        color: #ffa198;
+      }
+      canvas {
+        border: 1px solid #444;
+        background: #000;
+        display: block;
+        margin-bottom: 16px;
+      }
+      pre {
+        background: #111;
+        padding: 12px;
+        border-radius: 6px;
+        border: 1px solid #333;
+        overflow-x: auto;
+        line-height: 1.45;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>WebGL2 Field Texture &amp; Scope Verification</h2>
+    <div id="summary">Running...</div>
+    <canvas id="gl-canvas" width="400" height="300"></canvas>
+    <pre id="details"></pre>
+    <script type="module" src="./field_compare.ts"></script>
+  </body>
+</html>
