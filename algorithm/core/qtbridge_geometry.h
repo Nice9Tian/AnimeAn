@@ -1,12 +1,7 @@
 #ifndef ANIMECORE_QTBRIDGE_GEOMETRY_H
 #define ANIMECORE_QTBRIDGE_GEOMETRY_H
 
-#include "algorithm/core/qtbridge_qstring.h"
-
 #include "bridge.h"
-#include "color.h"
-#include "containers.h"
-#include "geometry.h"
 
 #include <QColor>
 #include <QHash>
@@ -22,6 +17,95 @@
 #include <QSize>
 #include <QTransform>
 
+namespace AnimeCore {
+
+class PointF;
+class Point;
+class LineF;
+class RectF;
+class Rect;
+class Size;
+class Transform;
+class Color;
+
+template <>
+struct Bridge<QPointF>
+{
+    using Core = PointF;
+
+    static PointF toCore(const QPointF &p) noexcept;
+    static QPointF fromCore(const PointF &p) noexcept;
+};
+
+template <>
+struct Bridge<QPoint>
+{
+    using Core = Point;
+
+    static Point toCore(const QPoint &p) noexcept;
+    static QPoint fromCore(const Point &p) noexcept;
+};
+
+template <>
+struct Bridge<QLineF>
+{
+    using Core = LineF;
+
+    static LineF toCore(const QLineF &l) noexcept;
+    static QLineF fromCore(const LineF &l) noexcept;
+};
+
+template <>
+struct Bridge<QRectF>
+{
+    using Core = RectF;
+
+    static RectF toCore(const QRectF &r) noexcept;
+    static QRectF fromCore(const RectF &r) noexcept;
+};
+
+template <>
+struct Bridge<QRect>
+{
+    using Core = Rect;
+
+    static Rect toCore(const QRect &r) noexcept;
+    static QRect fromCore(const Rect &r) noexcept;
+};
+
+template <>
+struct Bridge<QSize>
+{
+    using Core = Size;
+
+    static Size toCore(const QSize &s) noexcept;
+    static QSize fromCore(const Size &s) noexcept;
+};
+
+template <>
+struct Bridge<QTransform>
+{
+    using Core = Transform;
+
+    static Transform toCore(const QTransform &t) noexcept;
+    static QTransform fromCore(const Transform &t) noexcept;
+};
+
+template <>
+struct Bridge<QColor>
+{
+    using Core = Color;
+
+    static Color toCore(const QColor &c) noexcept;
+    static QColor fromCore(const Color &c) noexcept;
+};
+
+} // namespace AnimeCore
+
+#include "algorithm/core/qtbridge_qstring.h"
+#include "color.h"
+#include "containers.h"
+#include "geometry.h"
 
 namespace AnimeCore {
 
@@ -138,147 +222,94 @@ U fromCoreElement(const typename CoreOf<U>::type &c)
 
 } // namespace detail
 
-template <>
-struct Bridge<QPointF>
+inline PointF Bridge<QPointF>::toCore(const QPointF &p) noexcept
 {
-    using Core = PointF;
+    return PointF(p.x(), p.y());
+}
 
-    static constexpr PointF toCore(const QPointF &p) noexcept
-    {
-        return PointF(p.x(), p.y());
-    }
-
-    static constexpr QPointF fromCore(const PointF &p) noexcept
-    {
-        return QPointF(p.x(), p.y());
-    }
-};
-
-template <>
-struct Bridge<QPoint>
+inline QPointF Bridge<QPointF>::fromCore(const PointF &p) noexcept
 {
-    using Core = Point;
+    return QPointF(p.x(), p.y());
+}
 
-    static constexpr Point toCore(const QPoint &p) noexcept
-    {
-        return Point(p.x(), p.y());
-    }
-
-    static constexpr QPoint fromCore(const Point &p) noexcept
-    {
-        return QPoint(p.x(), p.y());
-    }
-};
-
-template <>
-struct Bridge<QLineF>
+inline Point Bridge<QPoint>::toCore(const QPoint &p) noexcept
 {
-    using Core = LineF;
+    return Point(p.x(), p.y());
+}
 
-    static constexpr LineF toCore(const QLineF &l) noexcept
-    {
-        return LineF(l.x1(), l.y1(), l.x2(), l.y2());
-    }
-
-    static constexpr QLineF fromCore(const LineF &l) noexcept
-    {
-        return QLineF(l.x1(), l.y1(), l.x2(), l.y2());
-    }
-};
-
-template <>
-struct Bridge<QRectF>
+inline QPoint Bridge<QPoint>::fromCore(const Point &p) noexcept
 {
-    using Core = RectF;
+    return QPoint(p.x(), p.y());
+}
 
-    static constexpr RectF toCore(const QRectF &r) noexcept
-    {
-        return RectF(r.x(), r.y(), r.width(), r.height());
-    }
-
-    static constexpr QRectF fromCore(const RectF &r) noexcept
-    {
-        return QRectF(r.x(), r.y(), r.width(), r.height());
-    }
-};
-
-template <>
-struct Bridge<QRect>
+inline LineF Bridge<QLineF>::toCore(const QLineF &l) noexcept
 {
-    using Core = Rect;
+    return LineF(l.x1(), l.y1(), l.x2(), l.y2());
+}
 
-    static constexpr Rect toCore(const QRect &r) noexcept
-    {
-        return Rect(QPointToPoint(r.topLeft()), QPointToPoint(r.bottomRight()));
-    }
-
-    static constexpr QRect fromCore(const Rect &r) noexcept
-    {
-        return QRect(QPoint(r.left(), r.top()), QPoint(r.right(), r.bottom()));
-    }
-
-private:
-    static constexpr Point QPointToPoint(const QPoint &p) noexcept
-    {
-        return Point(p.x(), p.y());
-    }
-};
-
-template <>
-struct Bridge<QSize>
+inline QLineF Bridge<QLineF>::fromCore(const LineF &l) noexcept
 {
-    using Core = Size;
+    return QLineF(l.x1(), l.y1(), l.x2(), l.y2());
+}
 
-    static constexpr Size toCore(const QSize &s) noexcept
-    {
-        return Size(s.width(), s.height());
-    }
-
-    static constexpr QSize fromCore(const Size &s) noexcept
-    {
-        return QSize(s.width(), s.height());
-    }
-};
-
-template <>
-struct Bridge<QTransform>
+inline RectF Bridge<QRectF>::toCore(const QRectF &r) noexcept
 {
-    using Core = Transform;
+    return RectF(r.x(), r.y(), r.width(), r.height());
+}
 
-    static Transform toCore(const QTransform &t) noexcept
-    {
-        return Transform(t.m11(), t.m12(), t.m13(),
-                         t.m21(), t.m22(), t.m23(),
-                         t.m31(), t.m32(), t.m33());
-    }
-
-    static QTransform fromCore(const Transform &t) noexcept
-    {
-        return QTransform(t.m11(), t.m12(), t.m13(),
-                          t.m21(), t.m22(), t.m23(),
-                          t.m31(), t.m32(), t.m33());
-    }
-};
-
-template <>
-struct Bridge<QColor>
+inline QRectF Bridge<QRectF>::fromCore(const RectF &r) noexcept
 {
-    using Core = Color;
+    return QRectF(r.x(), r.y(), r.width(), r.height());
+}
 
-    static Color toCore(const QColor &c) noexcept
-    {
-        if (!c.isValid())
-            return Color();
-        return Color(c.red(), c.green(), c.blue(), c.alpha());
-    }
+inline Rect Bridge<QRect>::toCore(const QRect &r) noexcept
+{
+    return Rect(Point(r.topLeft().x(), r.topLeft().y()),
+                Point(r.bottomRight().x(), r.bottomRight().y()));
+}
 
-    static QColor fromCore(const Color &c) noexcept
-    {
-        if (!c.isValid())
-            return QColor();
-        return QColor(c.red(), c.green(), c.blue(), c.alpha());
-    }
-};
+inline QRect Bridge<QRect>::fromCore(const Rect &r) noexcept
+{
+    return QRect(QPoint(r.left(), r.top()), QPoint(r.right(), r.bottom()));
+}
+
+inline Size Bridge<QSize>::toCore(const QSize &s) noexcept
+{
+    return Size(s.width(), s.height());
+}
+
+inline QSize Bridge<QSize>::fromCore(const Size &s) noexcept
+{
+    return QSize(s.width(), s.height());
+}
+
+inline Transform Bridge<QTransform>::toCore(const QTransform &t) noexcept
+{
+    return Transform(t.m11(), t.m12(), t.m13(),
+                     t.m21(), t.m22(), t.m23(),
+                     t.m31(), t.m32(), t.m33());
+}
+
+inline QTransform Bridge<QTransform>::fromCore(const Transform &t) noexcept
+{
+    return QTransform(t.m11(), t.m12(), t.m13(),
+                      t.m21(), t.m22(), t.m23(),
+                      t.m31(), t.m32(), t.m33());
+}
+
+inline Color Bridge<QColor>::toCore(const QColor &c) noexcept
+{
+    if (!c.isValid())
+        return Color();
+    return Color(c.red(), c.green(), c.blue(), c.alpha());
+}
+
+inline QColor Bridge<QColor>::fromCore(const Color &c) noexcept
+{
+    if (!c.isValid())
+        return QColor();
+    return QColor(c.red(), c.green(), c.blue(), c.alpha());
+}
 
 template <class U>
 struct Bridge<QList<U>>
