@@ -113,6 +113,12 @@ void BoardSurface::injectFocus()
     focusInEvent(&ev);
 }
 
+void BoardSurface::injectBlur()
+{
+    QFocusEvent ev(QEvent::FocusOut, Qt::OtherFocusReason);
+    focusOutEvent(&ev);
+}
+
 void BoardSurface::resizeSurface(int w, int h, qreal dpr)
 {
     const QSize oldSize(m_width, m_height);

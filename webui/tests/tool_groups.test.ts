@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
-import { raiseBusiness, syncTools } from "../src/ui/tools.js";
+import { raiseBusiness, syncTools, watchToolsScroll } from "../src/ui/tools.js";
 
 const KEY = "animean.toolGroups";
 const saved = new Map<string, string>();
@@ -81,4 +81,72 @@ test("图层策略切页时展开对应的组，首次收到页面状态不算�
   assert.deepEqual(h.open(), [true, false]);
   h.page("mapping");
   assert.deepEqual(h.open(), [true, true]);
+});
+
+class NoObserver {
+  observe() {}
+}
+
+function scrollHarness(contentHeight: number, viewHeight: number) {
+  const state = new Map<string, unknown>();
+  let top = 0;
+  let wheel: (event: { deltaY: number; preventDefault(): void }) => void = () => {};
+  const area = {
+    scrollHeight: contentHeight,
+    clientHeight: viewHeight,
+    get scrollTop() {
+      return top;
+    },
+    set scrollTop(value: number) {
+      top = Math.max(0, Math.min(contentHeight - viewHeight, value));
+    },
+    addEventListener: (_name: string, fn: typeof wheel) => {
+      wheel = fn;
+    },
+  };
+  const runtime = {
+    setBusinessState(path: string, value: unknown) {
+      state.set(path, value);
+      return null;
+    },
+  };
+  const store = { toolsScroll: undefined as unknown };
+  // The whole test process shares these globals, and board input looks for ResizeObserver.
+  const { ResizeObserver: resize, MutationObserver: mutation } = globalThis;
+  Object.assign(globalThis, { ResizeObserver: NoObserver, MutationObserver: NoObserver });
+  watchToolsScroll({ querySelector: () => area }, runtime, store);
+  Object.assign(globalThis, { ResizeObserver: resize, MutationObserver: mutation });
+  return {
+    arrows: () => [state.get("tools.canScrollUp"), state.get("tools.canScrollDown")],
+    press: (step: number) => raiseBusiness(store, "toolsScrollBy", { step }),
+    wheel: (deltaY: number) => wheel({ deltaY, preventDefault() {} }),
+    top: () => top,
+  };
+}
+
+test("放得下时两个箭头都不显示", () => {
+  assert.deepEqual(scrollHarness(400, 500).arrows(), [false, false]);
+});
+
+test("放不下时先只有向下，滚动后出现向上，到底后向下消失", () => {
+  const h = scrollHarness(620, 500);
+  assert.deepEqual(h.arrows(), [false, true]);
+  assert.equal(h.press(1), true);
+  assert.equal(h.top(), 50);
+  assert.deepEqual(h.arrows(), [true, true]);
+  h.press(1);
+  h.press(1);
+  assert.equal(h.top(), 120);
+  assert.deepEqual(h.arrows(), [true, false]);
+  h.press(-1);
+  assert.deepEqual(h.arrows(), [true, true]);
+});
+
+test("滚轮一格走一行，方向跟滚轮", () => {
+  const h = scrollHarness(620, 500);
+  h.wheel(240);
+  assert.equal(h.top(), 50);
+  h.wheel(-3);
+  assert.equal(h.top(), 0);
+  assert.deepEqual(h.arrows(), [false, true]);
 });

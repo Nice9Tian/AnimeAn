@@ -37,9 +37,12 @@ public:
         ChipRestFg,
         ChipHover,
         ChipHoverFg,
-        // The board surround around the page. The paper stays white in both
-        // modes, so the surround carries the whole light/dark difference.
+        // The board surround around the page: Deep for dark paper, the other
+        // for light paper. Ask surroundFor() rather than picking one here.
         ViewportSurround,
+        ViewportSurroundDeep,
+        // The active board's frame while focus is elsewhere; Accent while it has focus.
+        BoardFrameIdle,
         // Onion skin tints, identical in both modes: they mark time direction
         // on the artwork, not on the chrome.
         OnionPast,
@@ -54,6 +57,9 @@ public:
     // announces the change.
     static void setMode(Mode mode);
     static QColor color(Role role);
+    // The surround that suits this paper: white paper on a near-black surround
+    // glares, so the colour follows the paper and not only the mode.
+    static QColor surroundFor(const QColor &paper);
     // Fusion, the full palette, and the little stylesheet the palette cannot
     // reach. Must run before the first widget is constructed: a widget reads
     // the application palette as it is built.

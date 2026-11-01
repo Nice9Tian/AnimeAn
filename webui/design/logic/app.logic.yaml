@@ -4,6 +4,8 @@ state:
     paintingOpen: { type: boolean, initial: true, owner: business }
     mappingOpen: { type: boolean, initial: true, owner: business }
     armed: { type: string, initial: pen, owner: business }
+    canScrollUp: { type: boolean, initial: false, owner: business }
+    canScrollDown: { type: boolean, initial: false, owner: business }
     locked:
       arrow: { type: boolean, initial: false, owner: business }
       pen: { type: boolean, initial: false, owner: business }
@@ -45,7 +47,29 @@ events:
           - set: tools.paintingOpen = not tools.paintingOpen
         else:
           - set: tools.mappingOpen = not tools.mappingOpen
+  toolsScrollBy:
+    owner: business
+    text: 用户点了 Tools 面板的滚动箭头
+    simulate: []
 objects:
+  toolsScrollUp:
+    props:
+      visible: tools.canScrollUp
+    events:
+      click:
+        - emit:
+            name: toolsScrollBy
+            args:
+              step: -1
+  toolsScrollDown:
+    props:
+      visible: tools.canScrollDown
+    events:
+      click:
+        - emit:
+            name: toolsScrollBy
+            args:
+              step: 1
   paintingHeader:
     props:
       open: tools.paintingOpen
