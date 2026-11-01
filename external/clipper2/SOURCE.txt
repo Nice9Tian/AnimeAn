@@ -1,0 +1,3 @@
+Clipper2 tag Clipper2_2.0.1, commit 21ebba05db8894f0c7217ad35ea518080f324946
+https://github.com/AngusJohnson/Clipper2
+Files taken unchanged from CPP/Clipper2Lib. Licence: BSL-1.0, see LICENSE.
