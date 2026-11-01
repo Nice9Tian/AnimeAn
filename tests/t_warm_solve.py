@@ -133,11 +133,14 @@ class WarmSolveTests(unittest.TestCase):
 
     def test_2_warm_drag_accuracy_and_speed_rigs_b_and_c(self):
         steps = 20
-        for rig in ("B", "C"):
+        for rig in ("B", "C", "D"):
             step_drag = bdc._make_rig(rig)
+            cx0, cy0 = (640.0, 360.0) if rig == "D" else (0.0, 0.0)
+            sample_pts = bdc._make_uniform_grids(cx0, cy0)[33][::9]
             warm = {}
             times_ms = []
             max_errs_px = []
+            max_mapper_errs_px = []
 
             for s in range(steps):
                 step_drag(s)
@@ -159,19 +162,34 @@ class WarmSolveTests(unittest.TestCase):
                     (ux_warm - ux_cold) * sx,
                     (uy_warm - uy_cold) * sy,
                 )))
+                m_err = 0.0
+                for pt in sample_pts:
+                    qw = mp_warm(pt)
+                    qc = mp_cold(pt)
+                    if qw is not None and qc is not None:
+                        d = float(np.hypot(qw[0] - qc[0], qw[1] - qc[1]))
+                        if d > m_err:
+                            m_err = d
                 if s > 0:
                     times_ms.append(dt_ms)
                     max_errs_px.append(err_px)
+                    max_mapper_errs_px.append(m_err)
 
             med_ms = sorted(times_ms)[len(times_ms) // 2]
             worst_err = max(max_errs_px)
+            worst_m_err = max(max_mapper_errs_px)
             print(
                 f"2) Rig {rig} ({steps - 1} warm drag steps): "
-                f"median={med_ms:.2f} ms (<=25 ms), max_err={worst_err:.4f} px (<=0.5 px)"
+                f"median={med_ms:.2f} ms (<=25 ms), max_err={worst_err:.4f} px, "
+                f"max_mapper_err={worst_m_err:.4f} px (<=0.5 px)"
             )
             self.assertLessEqual(
                 worst_err, 0.5,
                 f"Rig {rig}: warm flow field drifted {worst_err:.4f} px > 0.5 px",
+            )
+            self.assertLessEqual(
+                worst_m_err, 0.5,
+                f"Rig {rig}: warm mapper(p) drifted {worst_m_err:.4f} px > 0.5 px",
             )
             self.assertLessEqual(
                 med_ms, 25.0,

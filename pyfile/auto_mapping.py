@@ -3004,6 +3004,7 @@ class _FlowFieldWarp:
         if warm is not None:
             if warm.get("shape") != X.shape:
                 warm["shape"] = X.shape
+                warm["deltas"] = {}
                 warm["solves"] = {}
             solves_cache = warm.setdefault("solves", {})
             scale_xy = warm.get("_scale", (1.0, 1.0))
@@ -3035,12 +3036,29 @@ class _FlowFieldWarp:
                     x0_solve[0, :] = x0_solve[-1, :] = 0.0
                     x0_solve[:, 0] = x0_solve[:, -1] = 0.0
                     x0_solve[mask] = 0.0
-                    cur_step_tol = 0.004 / max(scale_xy[component], 1e-6)
+                    delta_e = warm.setdefault("deltas", {}).get((round_key, component))
+                    if delta_e is not None and delta_e.shape == rhs.shape:
+                        d_e = delta_e.copy()
+                        d_e[0, :] = d_e[-1, :] = 0.0
+                        d_e[:, 0] = d_e[:, -1] = 0.0
+                        d_e[mask] = 0.0
+                        ad = apply_A(d_e, mask)
+                        dad = float(np.sum(d_e * ad))
+                        if dad > 1e-24:
+                            r0_tmp = R - apply_A(x0_solve, mask)
+                            beta = float(np.sum(d_e * r0_tmp)) / dad
+                            if -4.0 <= beta <= 4.0:
+                                x0_solve = x0_solve + beta * d_e
+                    cur_step_tol = 0.0012 / max(scale_xy[component], 1e-6)
                     cur_max_iter = 80
             E, _ = gridsolve.pcg(
                 lambda P: apply_A(P, mask), R, x0=x0_solve, precond=jacobi,
                 tol=cur_tol, max_iter=cur_max_iter, step_tol=cur_step_tol)
             if solves_cache is not None:
+                prev_e = solves_cache.get((round_key, component))
+                warm.setdefault("deltas", {})[(round_key, component)] = (
+                    (E - prev_e) if (prev_e is not None and prev_e.shape == E.shape) else None
+                )
                 solves_cache[(round_key, component)] = E
             return E + pin_val
 
@@ -3103,6 +3121,7 @@ class _FlowFieldWarp:
         g10m = (n10r + w_amb_x * amb_yx) / total_x
         g11m = (n11r + w_amb_y * amb_yy) / total_y
         ux, uy = assemble_and_solve(0)
+        ux0, uy0 = ux, uy
         for _round in range(self.BOOST_ROUNDS):
             duxx = np.gradient(ux, du, axis=0)
             duxy = np.gradient(ux, dv, axis=1)
@@ -3174,7 +3193,10 @@ class _FlowFieldWarp:
                     if float(np.max(np.abs(field["boost"]
                                            - field["ask"]))) < 1e-6:
                         field["boost"] = None
-            ux, uy = assemble_and_solve(("retreat", retreat))
+            if warm is not None:
+                ux, uy = 0.5 * (ux0 + ux), 0.5 * (uy0 + uy)
+            else:
+                ux, uy = assemble_and_solve(("retreat", retreat))
             det = det_of(ux, uy)
             retreat += 1
         # FULL retreat must actually be reached: three halvings still
@@ -3186,7 +3208,10 @@ class _FlowFieldWarp:
                 and any(field["boost"] is not None for field in fields):
             for field in fields:
                 field["boost"] = None
-            ux, uy = assemble_and_solve("full_retreat")
+            if warm is not None:
+                ux, uy = ux0, uy0
+            else:
+                ux, uy = assemble_and_solve("full_retreat")
             det = det_of(ux, uy)
 
         # Orientation bookkeeping: per-node det of grad U, marched by
