@@ -49,6 +49,7 @@ import tempfile
 import time
 
 import bezier
+import mapping_preview
 import gridsolve
 import python_hooks
 import overlay_stack
@@ -6025,6 +6026,7 @@ def _guide_drag_event(message):
         _GUIDE_DRAG[view] = {"id": overlay_id, "origin": point,
                              "points": [(float(x), float(y)) for x, y in points],
                              "moved": False}
+        mapping_preview.begin(view, overlay_id)
         return
 
     if phase == "cancel":
@@ -6034,7 +6036,10 @@ def _guide_drag_event(message):
         # this, the uncommitted placement would silently become the position
         # the next mapping run uses.
         drag = _GUIDE_DRAG.pop(view, None)
-        if drag is None or drag["id"] != overlay_id or not drag["moved"]:
+        if drag is None or drag["id"] != overlay_id:
+            return
+        if not drag["moved"]:
+            mapping_preview.cancel()
             return
         if is_guide:
             item = assets.get(overlay_id)
@@ -6044,6 +6049,7 @@ def _guide_drag_event(message):
             _index, line = _additional_line_by_overlay_id(view, overlay_id)
             if line is not None:
                 line["points"] = [list(p) for p in drag["points"]]
+        mapping_preview.cancel()
         _push_overlay(view)
         _invalidate_grid_cache()
         try:
@@ -6086,6 +6092,7 @@ def _guide_drag_event(message):
         # The line moves now; the mapping, and the refer grid and tint drawn
         # from it, wait for the release. Rebuilding them here was a full solve
         # per mouse move, and the moves queued up behind it.
+        mapping_preview.update()
         _push_overlay(view)
         try:
             _animean().ui.refresh()
@@ -6097,6 +6104,7 @@ def _guide_drag_event(message):
     _GUIDE_DRAG.pop(view, None)
     if not drag["moved"]:
         _push_overlay(view)
+        mapping_preview.end()
         return
     if is_guide:
         # Third space IS the child arc plane, so a moved axis retires every
@@ -6121,6 +6129,7 @@ def _guide_drag_event(message):
     # Editing an axis rebuilt the refer grid above; with unit focus the
     # mapping itself follows, no manual click.
     _maybe_auto_run()
+    mapping_preview.end()
 
 
 def _additional_line_by_overlay_id(view, overlay_id):
@@ -10053,8 +10062,11 @@ def replace_line_points(view_name, overlay_id, points, settled, stations=None,
     item.pop("third", None)
     item.pop("auto", None)
     item.pop("source", None)
+    if not live and not settled:
+        mapping_preview.cancel()
     if live:
         _push_overlay(view_name)
+        mapping_preview.update()
         try:
             _animean().ui.refresh()
         except Exception:
@@ -10163,12 +10175,12 @@ def _line_mark_items(view_name):
     return items
 
 
-def _ground_pairs():
+def _ground_pairs(main_axes=None, paired=None):
     """The (child, main) ground pairs: lines the user ticked 地线."""
     child_assets, main_assets = _assets_for("child"), _assets_for("main")
     pairs = []
     for prop in GUIDE_PROPERTIES:
-        child_item, main_item = child_assets.get(prop), main_assets.get(prop)
+        child_item, main_item = child_assets.get(prop), (main_axes or main_assets).get(prop)
         if child_item and main_item and (child_item.get(GROUND_FLAG) or main_item.get(GROUND_FLAG)):
             # The frame already takes this axis onto its partner: the pin is
             # "stay where the frame puts you", whatever else lets the axis go.
@@ -10183,7 +10195,7 @@ def _ground_pairs():
         if main_item and (child_item.get(GROUND_FLAG) or main_item.get(GROUND_FLAG)):
             pairs.append(({"points": child_item["points"]}, {"points": main_item["points"]}))
     if line_is_ground(PROXY_PROPERTY):
-        paired = proxy_pairing()
+        paired = proxy_pairing() if paired is None else paired
         if paired is not None:
             child, main = paired["child"], paired["main"]
             pairs.append(({"points": child + child[:1], "closed": True},
@@ -10445,6 +10457,7 @@ def _history_restored(cell, stroke, message):
     # Same reasoning for an in-flight guide/additional-line drag: the restore
     # replaced the assets the gesture was mutating.
     _GUIDE_DRAG.pop(message.get("view") or "main", None)
+    mapping_preview.cancel(restore_assets=False)
     if (message.get("view") or "main") == "main":
         _HORIZON_DRAG.pop("main", None)
     _load_assets(message.get("view") or "main")

@@ -95,6 +95,7 @@ AnimeAn.exe
 | `pyfile/script_store.py` | scriptData 的命名空间读写 |
 | `pyfile/viewscale.py`、`pyfile/bezier.py` | 两只共享轮子的 Python 镜像 |
 | `pyfile/gridsolve.py` | 二维规则网格上的通用预条件共轭梯度（PCG）求解器与四单侧模板最小雅可比行列式 |
+| `pyfile/mapping_preview.py` | 拖动轴线、附加线、轮廓线时的主画板实时场预览（热启动求解、批量采样、正反面与低频层序打包） |
 | `pyfile/pydeps.py` | 第三方库自愈安装 |
 | `pyfile/extra_tools.py` | Mapping 组按钮清单与处理器解析 |
 | `pyfile/auto_mapping.py` | Auto Mapping 引擎全体：轴线 / Mapping Area / 附加线 / 视平线资产、映射器、曲线重建、裁断、折痕、单元与实时重跑、参考网格、遮挡染色、洋葱皮引导、To 3D、Auto Mapping 菜单与两块板的 View 菜单、设置窗、图层右键菜单 |

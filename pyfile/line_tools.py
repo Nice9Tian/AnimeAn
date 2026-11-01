@@ -9,6 +9,7 @@ moves through the handle events, and the geometry is rewritten here.
 import math
 
 import auto_mapping as am
+import mapping_preview
 import python_hooks
 
 DEFORM_RADIUS = {"value": 60.0}     # canvas px along the line
@@ -96,6 +97,7 @@ def _deform(message, overlay_id, view):
             points[i][0] - point[0], points[i][1] - point[1]))
         weights = _falloff(cum, total, closed, cum[nearest], DEFORM_RADIUS["value"])
         stations = (item.get(am.PAIRING_KEY) or {}).get("stations")
+        mapping_preview.begin(view, overlay_id)
         _DRAG[view] = {
             "id": overlay_id, "origin": point, "points": points, "moved": False,
             "before": [list(p) for p in item["points"]], "weights": weights,
@@ -125,6 +127,7 @@ def _deform(message, overlay_id, view):
     _DRAG.pop(view, None)
     if drag["moved"]:
         am.replace_line_points(view, overlay_id, moved, settled=True, stations=stations)
+    mapping_preview.end()
 
 
 def _on_handle(message):
