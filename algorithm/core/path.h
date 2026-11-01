@@ -1,0 +1,4 @@
+#ifndef ANIMECORE_PATH_H
+#define ANIMECORE_PATH_H
+
+#endif // ANIMECORE_PATH_H
