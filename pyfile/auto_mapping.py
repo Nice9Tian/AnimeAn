@@ -284,6 +284,17 @@ _GRID = {"divisions": 5, "extend": 0}
 # cache per view, invalidated whenever the guides change.
 _GRID_CACHE = {"child": None, "main": None}
 
+# Fold notes: a bubble on each board where the mapping turns over. Cells per
+# half-axis, so a short band at an axis end is not stepped over; a lone flipped
+# cell is numerical noise beside a line, not a fold.
+FOLD_NOTE_STEPS = 16
+FOLD_NOTE_MIN_CELLS = 2
+FOLD_NOTE_MAX = 3
+FOLD_NOTE_TURN_RUN = 6.0    # px the heading must stay turned: tremor is no turn
+FOLD_NOTE_COLOR = (232, 160, 40, 255)
+FOLD_NOTE_FILL = (40, 44, 52, 235)
+_FOLD_NOTES = {"regions": None}
+
 # The child-view "Occluded Areas" toggle (a script-defined view button):
 # tint the parts of the child board that the CURRENT mapping folds
 # face-down, so the user can see what the lining hides before mapping.
@@ -344,6 +355,7 @@ def curve_mode():
 def _invalidate_grid_cache():
     _GRID_CACHE["child"] = None
     _GRID_CACHE["main"] = None
+    _FOLD_NOTES["regions"] = None
     # Same lifetime: both displays are pure functions of the guide assets.
     _OCCLUSION_CACHE["items"] = None
 
@@ -4870,6 +4882,10 @@ def overlay_items(view_name):
         items.extend(_grid_overlay_items(view_name))
     except Exception as error:
         print(f"[auto_mapping] refer rect grid skipped: {error}")
+    try:
+        items.extend(_fold_note_items(view_name))
+    except Exception as error:
+        print(f"[auto_mapping] fold notes skipped: {error}")
     if view_name == "child":
         try:
             # UNDER the guides and area, so the tint never covers them.
@@ -5295,21 +5311,126 @@ def _grid_overlay_items(view_name):
     return items
 
 
-def _overlays_changed(view_name):
-    """Assets changed in view_name: refresh its overlay, and any OTHER view
-    whose display genuinely depends on those assets.
+def _axis_turnbacks(mapper):
+    """Where an axis turns back: (view, axis, grid coordinate on that axis, px to
+    the end past it, the point). Walking out from the crossing, the axis has
+    turned back once its heading crosses the other axis's: hv flips exactly
+    there, for a round U-turn as much as for a hook at the end of a stroke."""
+    found = []
+    for view, frame in (("child", mapper.child_frame), ("main", mapper.main_frame)):
+        for axis, curve, arc, sides, other, other_arc in (
+                ("H", frame.gh, frame.h_arc, frame.h_side, frame.gv, frame.v_arc),
+                ("V", frame.gv, frame.v_arc, frame.v_side, frame.gh, frame.h_arc)):
+            across = other.dir_at(other_arc)
+            here = curve.dir_at(arc)
+            base = here[0] * across[1] - here[1] * across[0]
+            points, arcs = curve.points, curve.flat_arcs
+            first = next((i for i, a in enumerate(arcs) if a >= arc), len(arcs) - 1)
+            for step, side in ((1, 1), (-1, 0)):
+                start = first if step > 0 else max(first - 1, 0)
+                turn, run = None, 0.0
+                i = start
+                while 0 <= i + step < len(points):
+                    q, r = points[i], points[i + step]
+                    dx, dy = (r[0] - q[0]) * step, (r[1] - q[1]) * step
+                    length = math.hypot(dx, dy)
+                    if (dx * across[1] - dy * across[0]) * base < 0.0:
+                        turn = i if turn is None else turn
+                        run += length
+                        if run >= FOLD_NOTE_TURN_RUN:
+                            break
+                    else:
+                        turn, run = None, 0.0
+                    i += step
+                if turn is not None and run >= FOLD_NOTE_TURN_RUN:
+                    offset = arcs[turn] - arc
+                    tail = curve.total - arcs[turn] if step > 0 else arcs[turn]
+                    found.append((view, axis, offset / sides[side], tail, points[turn]))
+    return found
 
-    The occlusion tint is drawn on the texture but computed from the MAIN
-    guides, so a main-side edit re-pushes the child overlay. The MAIN refer
-    grid renders the full mapping (child lattice through the warp), so a
-    child-side edit re-pushes the main overlay. The CHILD grid stays a pure
+
+def _fold_regions():
+    """The folds of the current mapping, each with the one board and point its
+    note belongs on. An axis that turns back is a fold wherever the lattice can
+    see it or not (a short hook falls between its lines), so each gets a note at
+    the turn on its own board. The lattice adds what no turn explains, flipped
+    meaning against the cell at the crossing: the main board shows those, and
+    the note marks where the fold starts."""
+    regions = _FOLD_NOTES["regions"]
+    if regions is not None:
+        return regions
+    regions = []
+    mapper, _note = _current_mapper()
+    if mapper is not None:
+        frame = mapper.child_frame
+        half = int((1.0 + 0.5 * _grid_extend()) * FOLD_NOTE_STEPS)
+        levels = [i / FOLD_NOTE_STEPS for i in range(-half, half + 1)]
+        nodes = [[mapper(_frame_point(frame, u, v)) for u in levels] for v in levels]
+
+        def area(r, c):
+            p, q, s = nodes[r][c], nodes[r][c + 1], nodes[r + 1][c]
+            return (q[0] - p[0]) * (s[1] - p[1]) - (q[1] - p[1]) * (s[0] - p[0])
+
+        reference = area(half, half)
+        flipped = {(r, c) for r in range(2 * half) for c in range(2 * half)
+                   if area(r, c) * reference < 0.0}
+        groups = []
+        while flipped:
+            stack = [flipped.pop()]
+            cells = []
+            while stack:
+                r, c = stack.pop()
+                cells.append((r, c))
+                for near in ((r + 1, c), (r - 1, c), (r, c + 1), (r, c - 1)):
+                    if near in flipped:
+                        flipped.remove(near)
+                        stack.append(near)
+            if len(cells) >= FOLD_NOTE_MIN_CELLS:
+                groups.append(cells)
+        turnbacks = _axis_turnbacks(mapper)
+        board_title = {"child": "texture", "main": "main"}
+        for view, axis, _hat, tail, point in turnbacks:
+            # An axis the contours carried only copies the texture axis's turn.
+            if _assets_for(view)[H_PROPERTY if axis == "H" else V_PROPERTY].get("auto"):
+                continue
+            regions.append({"view": view, "point": point, "text": "\n".join((
+                "Fold here", f"The {axis} axis on the {board_title[view]} board",
+                f"doubles back {tail:.0f} px from its end"))})
+
+        def explained(cells):
+            for _view, axis, hat, _tail, _point in turnbacks:
+                span = [levels[cell[1 if axis == "H" else 0]] for cell in cells]
+                if min(span) - 1.0 / FOLD_NOTE_STEPS <= hat <= max(span) + 2.0 / FOLD_NOTE_STEPS:
+                    return True
+            return False
+
+        groups.sort(key=len, reverse=True)
+        for cells in [cells for cells in groups if not explained(cells)]:
+            r, c = min(cells, key=lambda cell: (cell[0] + 0.5 - half) ** 2
+                                               + (cell[1] + 0.5 - half) ** 2)
+            regions.append({"view": "main", "point": nodes[r][c],
+                            "text": "Fold: the pattern turns over here"})
+        del regions[FOLD_NOTE_MAX:]
+    _FOLD_NOTES["regions"] = regions
+    return regions
+
+
+def _fold_note_items(view_name):
+    return [{"id": f"fold_note:{index}", "points": [region["point"]],
+             "label": region["text"], "color": FOLD_NOTE_COLOR, "fill_color": FOLD_NOTE_FILL,
+             "width": 1.2, "removable": False}
+            for index, region in enumerate(_fold_regions()) if region["view"] == view_name]
+
+
+def _overlays_changed(view_name):
+    """Assets changed in view_name: refresh both boards. The fold notes stand
+    on both and read the mapping between them; so do the occlusion tint (drawn
+    on the texture, computed from the MAIN guides) and the main refer grid
+    (the child lattice through the warp). The CHILD grid alone stays a pure
     function of the child's own axes."""
     _invalidate_grid_cache()
     _push_overlay(view_name)
-    if _occlusion_enabled() and view_name != "child":
-        _push_overlay("child")
-    if refer_rect_enabled("main") and view_name != "main":
-        _push_overlay("main")
+    _push_overlay("child" if view_name == "main" else "main")
 
 
 def _main_guide_frame():
