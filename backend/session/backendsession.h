@@ -35,7 +35,7 @@ public:
     void setStatusText(const QString &text);
 
     WsServer *wsServer() const { return m_ws; }
-    AnimeanBusiness *business() const { return m_business; }
+    AnimeanBusiness *business() const { return m_business.get(); }
     PaintOpenGLWidget *mainBoard() const { return m_mainBoard.get(); }
     PaintOpenGLWidget *childBoard() const { return m_childBoard.get(); }
 
@@ -116,7 +116,7 @@ private:
     QJsonObject buildPadState() const;
 
     WsServer *m_ws = nullptr;
-    AnimeanBusiness *m_business = nullptr;
+    std::unique_ptr<AnimeanBusiness> m_business;
     std::unique_ptr<PaintOpenGLWidget> m_mainBoard;
     std::unique_ptr<PaintOpenGLWidget> m_childBoard;
 
