@@ -106,6 +106,7 @@ def _install_monkeypatches():
 
     target_r0_and_boost = (
         "    ux, uy = assemble_and_solve(0)\n"
+        "    ux0, uy0 = ux, uy\n"
         "    for _round in range(self.BOOST_ROUNDS):"
     )
     replacement_r0_and_boost = (
@@ -115,6 +116,7 @@ def _install_monkeypatches():
         "    _BENCH_TRACE['field_pre_proc'] += _t_pre_proc - _b_start_proc\n"
         "    _BENCH_TRACE['current_round'] = 'r0'\n"
         "    ux, uy = assemble_and_solve(0)\n"
+        "    ux0, uy0 = ux, uy\n"
         "    _t_r0_perf = time.perf_counter()\n"
         "    _t_r0_proc = time.process_time()\n"
         "    _BENCH_TRACE['cg_r0_perf'] += _t_r0_perf - _t_pre_perf\n"
@@ -153,13 +155,19 @@ def _install_monkeypatches():
 
     # Also track any retreat assemble_and_solve() separately from field_post
     target_retreat1 = (
-        "        ux, uy = assemble_and_solve((\"retreat\", retreat))\n"
+        "        if warm is not None:\n"
+        "            ux, uy = 0.5 * (ux0 + ux), 0.5 * (uy0 + uy)\n"
+        "        else:\n"
+        "            ux, uy = assemble_and_solve((\"retreat\", retreat))\n"
         "        det = det_of(ux, uy)\n"
         "        retreat += 1"
     )
     replacement_retreat1 = (
         "        _tr_p0, _tr_c0 = time.perf_counter(), time.process_time()\n"
-        "        ux, uy = assemble_and_solve((\"retreat\", retreat))\n"
+        "        if warm is not None:\n"
+        "            ux, uy = 0.5 * (ux0 + ux), 0.5 * (uy0 + uy)\n"
+        "        else:\n"
+        "            ux, uy = assemble_and_solve((\"retreat\", retreat))\n"
         "        _BENCH_TRACE['cg_retreat_perf'] += time.perf_counter() - _tr_p0\n"
         "        _BENCH_TRACE['cg_retreat_proc'] += time.process_time() - _tr_c0\n"
         "        det = det_of(ux, uy)\n"
@@ -171,14 +179,20 @@ def _install_monkeypatches():
     target_retreat2 = (
         "        for field in fields:\n"
         "            field[\"boost\"] = None\n"
-        "        ux, uy = assemble_and_solve(\"full_retreat\")\n"
+        "        if warm is not None:\n"
+        "            ux, uy = ux0, uy0\n"
+        "        else:\n"
+        "            ux, uy = assemble_and_solve(\"full_retreat\")\n"
         "        det = det_of(ux, uy)"
     )
     replacement_retreat2 = (
         "        for field in fields:\n"
         "            field[\"boost\"] = None\n"
         "        _tr_p0, _tr_c0 = time.perf_counter(), time.process_time()\n"
-        "        ux, uy = assemble_and_solve(\"full_retreat\")\n"
+        "        if warm is not None:\n"
+        "            ux, uy = ux0, uy0\n"
+        "        else:\n"
+        "            ux, uy = assemble_and_solve(\"full_retreat\")\n"
         "        _BENCH_TRACE['cg_retreat_perf'] += time.perf_counter() - _tr_p0\n"
         "        _BENCH_TRACE['cg_retreat_proc'] += time.process_time() - _tr_c0\n"
         "        det = det_of(ux, uy)"
@@ -312,6 +326,50 @@ def _make_rig(rig_name):
             for p in pts:
                 p[0] += 0.45
                 p[1] += 0.30
+
+        return step_drag
+
+    if rig_name == "D":
+        child_h = [[240.0, 360.0], [1040.0, 360.0]]
+        child_v = [[640.0, 90.0], [640.0, 630.0]]
+        main_v = [[640.0, 90.0], [640.0, 630.0]]
+        main_h = [
+            [
+                240.0 + 800.0 * (k / 60.0) + 170.0 * math.sin((k / 60.0) * math.pi * 3.0 + 0.6),
+                360.0 + 90.0 * math.sin((k / 60.0) * math.pi * 3.0),
+            ]
+            for k in range(61)
+        ]
+        child_lines = [{
+            "id": 1,
+            "width": 2.5,
+            "points": [[330.0 + 16.0 * k, 230.0] for k in range(41)],
+        }]
+        main_lines = [{
+            "id": 1,
+            "width": 2.5,
+            "points": [
+                [330.0 + 16.0 * k, 210.0 + 30.0 * math.sin(k / 40.0 * math.pi)]
+                for k in range(41)
+            ],
+        }]
+        am._MAPPING_ASSETS["child"] = {
+            am.H_PROPERTY: {"points": child_h, "width": 3.0},
+            am.V_PROPERTY: {"points": child_v, "width": 3.0},
+            am.ADDITIONAL_PROPERTY: {"lines": child_lines},
+        }
+        am._MAPPING_ASSETS["main"] = {
+            am.H_PROPERTY: {"points": main_h, "width": 3.0},
+            am.V_PROPERTY: {"points": main_v, "width": 3.0},
+            am.ADDITIONAL_PROPERTY: {"lines": main_lines},
+        }
+
+        def step_drag(step_idx):
+            for p in am._MAPPING_ASSETS["main"][am.H_PROPERTY]["points"]:
+                p[1] -= 0.6
+            for side in ("child", "main"):
+                for line in am._MAPPING_ASSETS[side][am.ADDITIONAL_PROPERTY]["lines"]:
+                    line.pop("third", None)
 
         return step_drag
 
@@ -475,12 +533,12 @@ def _clear_step_caches():
     am._invalidate_additional_thirds("main")
 
 
-def _make_uniform_grids():
+def _make_uniform_grids(cx=0.0, cy=0.0):
     """Pre-build 33x33, 65x65, 129x129 uniform sample grids on the texture board."""
     grids = {}
     for n in (33, 65, 129):
         pts = [
-            (-240.0 + 480.0 * i / (n - 1), -160.0 + 320.0 * j / (n - 1))
+            (cx - 240.0 + 480.0 * i / (n - 1), cy - 160.0 + 320.0 * j / (n - 1))
             for i in range(n)
             for j in range(n)
         ]
@@ -488,14 +546,14 @@ def _make_uniform_grids():
     return grids
 
 
-def _make_synthetic_strokes(num_strokes=200, num_segments=40):
+def _make_synthetic_strokes(num_strokes=200, num_segments=40, cx=0.0, cy=0.0):
     """Pre-build 200 synthetic strokes, each with 40 segments (41 vertices)."""
     polys = []
     strokes = []
     for s in range(num_strokes):
         row, col = divmod(s, 20)
-        bx = -210.0 + col * 19.0
-        by = -130.0 + row * 26.0
+        bx = cx - 210.0 + col * 19.0
+        by = cy - 130.0 + row * 26.0
         pts = [
             (bx + k * 1.2, by + 2.0 * math.sin(k * 0.2 + s * 0.1))
             for k in range(num_segments + 1)
@@ -530,8 +588,9 @@ def _stats_ms(samples_sec):
 def run_rig_benchmark(rig_name, steps=40, warm=False):
     _install_monkeypatches()
     step_drag = _make_rig(rig_name)
-    grids = _make_uniform_grids()
-    polys, strokes = _make_synthetic_strokes(200, 40)
+    cx, cy = (640.0, 360.0) if rig_name == "D" else (0.0, 0.0)
+    grids = _make_uniform_grids(cx, cy)
+    polys, strokes = _make_synthetic_strokes(200, 40, cx, cy)
 
     # Pre-build numpy arrays for 129x129 batch benchmarks
     pts_129 = grids[129]
@@ -620,6 +679,8 @@ def run_rig_benchmark(rig_name, steps=40, warm=False):
             elif rig_name == "C":
                 assert mapper.warp is not None and len(mapper.warp.pairs) == 3
                 assert len(mapper.warp.grounds) == 1 and mapper.can_fold()
+            elif rig_name == "D":
+                assert mapper.warp is not None and len(mapper.warp.pairs) == 1
             meta_checks = {
                 "can_fold": bool(mapper.can_fold()),
                 "warp_pairs": len(mapper.warp.pairs) if mapper.warp else 0,
@@ -791,7 +852,16 @@ def run_rig_benchmark(rig_name, steps=40, warm=False):
             dux = ( np.asarray(warp._grid["ux"], dtype=float) - np.asarray(cw._grid["ux"], dtype=float) ) * sx
             duy = ( np.asarray(warp._grid["uy"], dtype=float) - np.asarray(cw._grid["uy"], dtype=float) ) * sy
             err_px = float(np.max(np.hypot(dux, duy)))
-            warm_err_records.append(err_px)
+            # Also check mapped canvas point difference mapper(p) vs cold_mapper(p) on 33x33 grid
+            pts_33 = grids[33]
+            map_diffs = []
+            for pt in pts_33:
+                pw = mapper(pt)
+                pc = cold_mapper(pt)
+                if pw is not None and pc is not None:
+                    map_diffs.append(math.hypot(pw[0] - pc[0], pw[1] - pc[1]))
+            map_err_px = max(map_diffs) if map_diffs else 0.0
+            warm_err_records.append(max(err_px, map_err_px))
 
         ui_step_perf = bm_perf + gm_perf + gc_perf + occ_perf
         ui_step_proc = bm_proc + gm_proc + gc_proc + occ_proc
@@ -895,12 +965,12 @@ def run_rig_benchmark(rig_name, steps=40, warm=False):
     warm_err_max = max(warm_err_records) if warm_err_records else 0.0
     warm_err_med = _percentile(sorted(warm_err_records), 0.50) if warm_err_records else 0.0
 
-    if warm and rig_name in ("B", "C"):
+    if warm and rig_name in ("B", "C", "D"):
         bm_med, _ = _stats_ms(perf_records["1. 求解: build_mapper 总时长"])
         b_third_med, _ = _stats_ms(perf_records["2b. 批量 129x129 (16641点): third_of_batch"])
         b_main_med, _ = _stats_ms(perf_records["2b. 批量 129x129 (16641点): main_of_third_batch"])
         assert bm_med <= 25.0, f"Rig {rig_name} warm build_mapper median {bm_med:.2f}ms > 25ms"
-        assert warm_err_max <= 0.5, f"Rig {rig_name} warm max node error {warm_err_max:.4f}px > 0.5px"
+        assert warm_err_max <= 0.5, f"Rig {rig_name} warm max error {warm_err_max:.4f}px > 0.5px"
         assert b_third_med <= 15.0, f"Rig {rig_name} third_of_batch median {b_third_med:.2f}ms > 15ms"
         assert b_main_med <= 3.0, f"Rig {rig_name} main_of_third_batch median {b_main_med:.2f}ms > 3ms"
 
@@ -978,7 +1048,7 @@ def _print_report(results):
 
 def main():
     parser = argparse.ArgumentParser(description="Benchmark single-step guide drag cost.")
-    parser.add_argument("--rig", choices=("A", "B", "C"), help="Run single rig (A, B, or C).")
+    parser.add_argument("--rig", choices=("A", "B", "C", "D"), help="Run single rig (A, B, C, or D).")
     parser.add_argument("--all", action="store_true", help="Run A, B, C sequentially in subprocesses.")
     parser.add_argument("--warm", action="store_true", help="Enable warm solver state across drag steps.")
     parser.add_argument("--steps", type=int, default=40, help="Number of drag steps (default: 40, step 0 discarded).")
