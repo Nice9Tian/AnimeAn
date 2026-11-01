@@ -140,30 +140,29 @@ struct Cubic
         return {x1, y1, x12, y12, x123, y123, x1234, y1234};
     }
 
-    double tAtLength(double l, double error = 0.01) const
+    // Bisects until the prefix is within 0.01 of the wanted length. The result
+    // depends on where that stops, so the steps follow Qt's exactly: a different
+    // bisection lands on another t, about 1e-5 away.
+    double tAtLength(double l) const
     {
-        double len = length(error);
-        if (l >= len)
+        const double error = 0.01;
+        const double len = length();
+        if (l > len || fuzzyCompare(l, len))
             return 1.0;
-        if (l <= 0.0)
-            return 0.0;
 
+        double t = 0.5;
         double lastBigger = 1.0;
-        double t = 1.0;
-        double error2 = error * 0.5;
-        (void)error2;
-        double smaller = 0.5;
-        while (std::abs(len - l) > error) {
-            if (l < len) {
-                lastBigger = t;
-                t -= t * smaller;
-            } else {
-                smaller *= 0.5;
+        while (true) {
+            const double prefixLength = prefixTo(t).length();
+            if (std::abs(prefixLength - l) < error)
+                return t;
+            if (prefixLength < l) {
                 t += (lastBigger - t) * 0.5;
+            } else {
+                lastBigger = t;
+                t -= t * 0.5;
             }
-            len = prefixTo(t).length(error);
         }
-        return t;
     }
 };
 
@@ -1008,7 +1007,8 @@ Cubic bezierAtT(const Path &path, double t, double *startingLength, double *bezi
             const PointF p2(e);
             const LineF line(p1, p2);
             const double slen = line.length();
-            lastBezier = Cubic::fromPoints(p1, line.pointAt(1.0 / 3.0), line.pointAt(2.0 / 3.0), p2);
+            const PointF delta = p2 - p1;
+            lastBezier = Cubic::fromPoints(p1, p1 + delta / 3.0, p1 + 2.0 * delta / 3.0, p2);
             *startingLength = curLen;
             *bezierLength = slen;
             curLen += slen;

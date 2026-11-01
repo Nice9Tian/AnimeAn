@@ -487,7 +487,7 @@ void testRandomDifferential()
             if (sameBits(cPct, qPct)) {
                 ++pctExactCount;
             }
-            CHECK(closeRel(cPct, qPct, 1e-9, 1e-9),
+            CHECK(sameBits(cPct, qPct),
                   "case %d percentAtLength(%g) mismatch core=%.17g qt=%.17g", idx, targetLen, cPct, qPct);
 
             const PointF cPt = cp.pointAtPercent(tSample);
@@ -495,7 +495,7 @@ void testRandomDifferential()
             if (sameBits(cPt.x(), qPt.x()) && sameBits(cPt.y(), qPt.y())) {
                 ++ptExactCount;
             }
-            CHECK(closeRel(cPt.x(), qPt.x(), 1e-9, 1e-9) && closeRel(cPt.y(), qPt.y(), 1e-9, 1e-9),
+            CHECK(sameBits(cPt.x(), qPt.x()) && sameBits(cPt.y(), qPt.y()),
                   "case %d pointAtPercent(%g) mismatch core=(%.17g, %.17g) qt=(%.17g, %.17g)",
                   idx, tSample, cPt.x(), cPt.y(), qPt.x(), qPt.y());
 
