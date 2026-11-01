@@ -98,6 +98,8 @@ public:
 
     void addRect(const RectF &rect);
     void addRect(double x, double y, double w, double h) { addRect(RectF(x, y, w, h)); }
+    void addEllipse(const RectF &rect);
+    void addRoundedRect(const RectF &rect, double xRadius, double yRadius);
     void addPolygon(const Vector<PointF> &polygon);
     void addPath(const Path &path);
     void connectPath(const Path &path);

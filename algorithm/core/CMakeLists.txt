@@ -22,6 +22,8 @@ add_library(animean_corelib STATIC
     image.h
     json.cpp
     json.h
+    painter.cpp
+    painter.h
     path.cpp
     path.h
     pathbool.cpp

@@ -109,6 +109,8 @@ public:
     int bytesPerLine() const;
     std::size_t sizeInBytes() const;
     std::int64_t cacheKey() const;
+    double devicePixelRatio() const;
+    void setDevicePixelRatio(double ratio);
 
     const unsigned char *constBits() const;
     unsigned char *bits();
