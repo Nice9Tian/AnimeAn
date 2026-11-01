@@ -457,6 +457,48 @@
         "tip": "Draw extra lines that tell Auto Mapping which way the texture flows."
       }
     },
+    "toolFreeOutLine": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "free_out_line",
+        "tipTitle": "Free Out Line",
+        "tip": "Draw one closed outline on each board. The pattern is held to it; matching hues are the same point."
+      }
+    },
+    "toolChoiceLine": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "choice_line",
+        "tipTitle": "Choice Line",
+        "tip": "Click an axis, additional line or outline, then tick 地线 in Tool Options to pin the pattern to it."
+      }
+    },
+    "toolDeformLine": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "deform_line",
+        "tipTitle": "Deform",
+        "tip": "Drag any line to bend it. Radius sets how far along the line the pull spreads."
+      }
+    },
     "toolAutoMapping": {
       "type": "QtToolChip",
       "width": 44,
@@ -533,6 +575,9 @@
         "toolVCenterLine",
         "toolMappingArea",
         "toolAdditionalLine",
+        "toolFreeOutLine",
+        "toolChoiceLine",
+        "toolDeformLine",
         "toolAutoMapping"
       ]
     },
