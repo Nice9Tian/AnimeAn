@@ -329,7 +329,7 @@ void main() {
 }
 `;
 
-const FIELD_VS = `#version 300 es
+export const FIELD_VS = `#version 300 es
 precision highp float;
 layout(location = 0) in vec2 a_pos;
 uniform vec2 u_resolution;
@@ -338,7 +338,7 @@ uniform vec3 u_transform0;
 uniform vec3 u_transform1;
 uniform sampler2D u_fieldTex;
 uniform vec4 u_fieldRect;
-uniform ivec2 u_fieldGrid;
+uniform highp ivec2 u_fieldGrid;
 out vec2 v_localPos;
 vec2 sampleFieldDisp(vec2 p) {
   float u = (u_fieldGrid.x > 1 && u_fieldRect.z > 0.0) ? (p.x - u_fieldRect.x) / u_fieldRect.z * float(u_fieldGrid.x - 1) : 0.0;
@@ -366,11 +366,11 @@ void main() {
 }
 `;
 
-const FIELD_FS = `${SHAPE_FS.replace(
+export const FIELD_FS = `${SHAPE_FS.replace(
   "void main() {",
   `uniform sampler2D u_fieldTex;
 uniform vec4 u_fieldRect;
-uniform ivec2 u_fieldGrid;
+uniform highp ivec2 u_fieldGrid;
 uniform vec2 u_tagRange;
 uniform vec4 u_tint;
 void computeShapeColor() {`,
