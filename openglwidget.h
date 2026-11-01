@@ -1,6 +1,7 @@
 #ifndef OPENGLWIDGET_H
 #define OPENGLWIDGET_H
 
+#include "algorithm/core/qtbridge.h"
 #include "algorithm/animemodel.h"
 #include "algorithm/scenehistory.h"
 #include "algorithm/vectorlogic.h"
@@ -646,6 +647,7 @@ private:
     // than the redraw, so the cache is dropped rather than grown.
     static constexpr int kMaxOnionGhosts = 16;
     bool m_swallowNextPress = false;
+    QHash<qint64, QImage> m_rasterCache;
     QVector<OverlayItem> m_overlayItems;
     QVector<OverlayHandle> m_overlayHandles;
 };
