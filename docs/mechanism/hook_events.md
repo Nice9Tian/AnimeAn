@@ -6,7 +6,7 @@
 
 | 谁 ↔ 谁 | 方式 |
 |---|---|
-| C++ → Python | **hook 事件**：C++ 组一个 message dict 调 `python_hooks.dispatch`。事件族：绘制交互事件（`update`、`linefinish`、`erasefinish`、`deletefinish`、`fillfinish`、`movefinish`）；前置请求（`fillrequest`、`visibility`，Python 置 `handled` 则 C++ 不做内建行为）；工具面（`handle`：arm / pick / press / move / release / cancel / hover / view，带修饰键、缩放、颜色，`pick` 可回 `grab` 认领拖拽）；界面（`option`、`menu`、`layermenu`、`viewbutton`、`overlayremove`、`overlayaction`、`pad`）；状态（`framechange`、`layerchange`、`onion`、`historyrestore`）；脚本工具（`extra`）。Python 用 `ui.set_hook_events` 推订阅掩码，C++ 对无人订阅的事件早退；`update` 另有节流，`linefinish` 是唯一保证到达的绘制事件 |
+| C++ → Python | **hook 事件**：C++ 组一个 message dict 调 `python_hooks.dispatch`。事件族：绘制交互事件（`update`、`linefinish`、`erasefinish`、`deletefinish`、`fillfinish`、`movefinish`）；前置请求（`fillrequest`、`visibility`，Python 置 `handled` 则 C++ 不做内建行为）；工具面（`handle`：arm / pick / press / move / release / cancel / hover / view，带修饰键、缩放、颜色，`pick` 可回 `grab` 认领拖拽）；界面（`option`、`menu`、`layermenu`、`viewbutton`、`overlayremove`、`overlayaction`、`pad`）；状态（`framechange`、`layerchange`、`onion`、`historyrestore`）；脚本工具（`extra`）。Python 用 `ui.set_hook_events` 推订阅掩码，C++ 对无人订阅的事件早退；`update`、`hover` 与覆盖层拖动的 `move` 按 33ms 节流（覆盖层拖动在窗口结束时补发被跳过的末尾 `move`），`linefinish` 是唯一保证到达的绘制事件 |
 | Python → C++ | `animean_python` 绑定：模型操作（`SceneModel` / `VectorImage`）、几何（`vectorlogic`）、`ui` 门面（刷新与冻结、覆盖层、绘制颜色、光标、工具锁定、填充绘制模式、历史提交 / 撤销、窗口列表 / 显示 / 选页、位移预览、斥力板回写、绘制参数、主题、订阅掩码、刷新选项面板、打开设置窗） |
 | Python 全局 | `__main__` 里的 `model`、`main_model`、`child_model`、`active_view`、画布尺寸，随选择变化同步。`animean_python.get_scene()` 返回的是信息字典（`sceneName`、`scene`），不是模型对象 |
 | 声明式界面 | 选项面板 JSON（内建工具在 `tool_controls/*.json` 与 `toolcontrol.options_for_tool`，脚本工具由 `toolcontrol.options_for_extra_tool_json` 生成；控件类型 slider / list / check / button / color / subwindow / settings，`visible_when` 联动）；菜单 `register_menu`（`items` 可为可调用，打开时求值；`host` 指定挂主窗口还是纹理板的菜单栏，同名不同宿主是两个菜单）；设置窗 `register_settings`；视图按钮 `register_view_button`（目前无人注册）；图层右键 `register_menu_provider`（上下文带 `layer_id`、`tag`、`owner_group`、`owner_tag`；条目支持 `settings` / `separator`） |
@@ -22,7 +22,7 @@
 ## 覆盖层显示列表
 
 - Python 各工具通过 `overlay_stack.set_items(view, owner, items)` 合成一张列表交给 `ui.set_overlay`，按 owner 排序拼接；C++ 渲染在所有图层之上，从后往前命中。
-- 项是折线或闭合多边形，带颜色、线宽、线型；`removable` 的项有 × 徽章，点击派发 `overlayremove`（C++ 不删任何东西）；可带接受徽章（`overlayaction`，action = accept）；`draggable` 的项在任何工具下都能拖，拖动经 handle 事件报告。
+- 项是折线或闭合多边形，带颜色、线宽、线型；`removable` 的项有 × 徽章，点击派发 `overlayremove`（C++ 不删任何东西）；可带接受徽章（`overlayaction`，action = accept）；`draggable` 的项在任何工具下都能拖，拖动经 handle 事件报告（`move` 按 33ms 节流；被跳过的移动用单次定时器在窗口结束时补发最后位置与修饰键并刷新，松手、取消或拖动清空时定时器失效，松手前另补发一次最终 `move`）。
 - 项可带 `label`：C++ 在第一个点处画一个屏幕尺寸不变的气泡，用项的颜色，文字按换行分行，这种项可以只有一个点。C++ 不知道文字是什么意思，Auto Mapping 用它标折叠（`_fold_note_items`）。文字由后端转成路径，所以 `backend/main.cpp` 把 `QT_QPA_FONTDIR` 指向系统字体目录，否则 offscreen 平台没有字体。
 - 徽章的命中框按视口换算到文档空间后再钳制。
 - 按下的点同时落在徽章和可拖动项的抓取带上时：离徽章中心 12 屏幕像素以内、或在徽章内圈，算点徽章；外圈再比进入徽章的深度和离线的距离。线穿过自己的徽章时，只靠外圈规则会丢掉三分之一到一半的面积。

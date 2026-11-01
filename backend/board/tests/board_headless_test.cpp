@@ -729,6 +729,206 @@ bool runFieldScopeAndHideColumnsUnitTests()
     return true;
 }
 
+bool runOverlayDragThrottleUnitTests()
+{
+#ifdef ANIMEAN_WITH_PYTHON
+    PaintOpenGLWidget board;
+    board.setViewName(QStringLiteral("main"));
+    board.resizeSurface(400, 300, 1.0);
+
+    int frameCount = 0;
+    board.setFrameSink([&](const BoardFrame &frame) {
+        ++frameCount;
+        board.acknowledgeFrame(frame.frame);
+    });
+    QCoreApplication::processEvents();
+
+    PaintOpenGLWidget::OverlayItem item;
+    item.id = QStringLiteral("drag_item_1");
+    item.points = {QPointF(50.0, 50.0), QPointF(150.0, 50.0)};
+    item.draggable = true;
+    item.removable = false;
+    board.setOverlayItems({item});
+    QCoreApplication::processEvents();
+
+    py::dict ns;
+    py::exec(
+        "import python_hooks\n"
+        "events = []\n"
+        "def _on_handle(msg):\n"
+        "    if msg.get('handle') != 'drag_item_1':\n"
+        "        return\n"
+        "    pos = msg.get('position') or {}\n"
+        "    mods = msg.get('modifiers') or {}\n"
+        "    events.append({\n"
+        "        'phase': msg.get('phase'),\n"
+        "        'x': float(pos.get('x', 0.0)),\n"
+        "        'y': float(pos.get('y', 0.0)),\n"
+        "        'shift': bool(mods.get('shift', False)),\n"
+        "        'ctrl': bool(mods.get('ctrl', False)),\n"
+        "        'alt': bool(mods.get('alt', False)),\n"
+        "    })\n"
+        "python_hooks.set_hook(_on_handle, handle=True)\n",
+        ns, ns);
+
+    const auto cleanupHooks = [&]() {
+        py::exec("import python_hooks; python_hooks.del_hook(_on_handle)\n", ns, ns);
+    };
+
+    const auto waitMs = [](int ms) {
+        QElapsedTimer timer;
+        timer.start();
+        while (timer.elapsed() < ms) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+        }
+        QCoreApplication::processEvents();
+    };
+
+    const auto moveEvents = [&]() -> py::list {
+        return py::eval("[e for e in events if e['phase'] == 'move']", ns, ns).cast<py::list>();
+    };
+
+    // 1. Burst of moves within 33ms then pause 60ms: trailing timer delivers the last position
+    //    and last modifiers, triggers update(), and subsequent release/wait sends no extra move.
+    board.injectMouse(QEvent::MouseButtonPress, QPointF(80.0, 50.0), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    board.injectMouse(QEvent::MouseMove, QPointF(90.0, 60.0), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    board.injectMouse(QEvent::MouseMove, QPointF(100.0, 70.0), Qt::NoButton, Qt::LeftButton, Qt::ShiftModifier);
+    board.injectMouse(QEvent::MouseMove, QPointF(110.0, 80.0), Qt::NoButton, Qt::LeftButton, Qt::ControlModifier);
+    board.injectMouse(QEvent::MouseMove, QPointF(125.0, 95.0), Qt::NoButton, Qt::LeftButton, Qt::AltModifier);
+
+    if (moveEvents().size() != 1) {
+        std::fprintf(stderr, "Expected 1 immediate move in 33ms burst, got %d\n", int(moveEvents().size()));
+        cleanupHooks();
+        return false;
+    }
+    QCoreApplication::processEvents();
+    const int framesBeforeTail = frameCount;
+
+    waitMs(60);
+
+    const py::list movesAfterPause = moveEvents();
+    if (movesAfterPause.size() != 2) {
+        std::fprintf(stderr, "Expected trailing move after 60ms pause (total 2), got %d\n", int(movesAfterPause.size()));
+        cleanupHooks();
+        return false;
+    }
+    const py::dict tailMove = movesAfterPause[1].cast<py::dict>();
+    if (std::abs(tailMove["x"].cast<double>() - 125.0) > 1e-6
+        || std::abs(tailMove["y"].cast<double>() - 95.0) > 1e-6
+        || !tailMove["alt"].cast<bool>()
+        || tailMove["shift"].cast<bool>()
+        || tailMove["ctrl"].cast<bool>()) {
+        std::fprintf(stderr, "Trailing move did not carry last position/modifiers\n");
+        cleanupHooks();
+        return false;
+    }
+    if (frameCount <= framesBeforeTail) {
+        std::fprintf(stderr, "Expected trailing move to call update() and produce a board frame\n");
+        cleanupHooks();
+        return false;
+    }
+
+    board.injectMouse(QEvent::MouseButtonRelease, QPointF(125.0, 95.0), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    const int movesAtRelease1 = int(moveEvents().size());
+    waitMs(60);
+    if (int(moveEvents().size()) != movesAtRelease1) {
+        std::fprintf(stderr, "Expected no move after release following pause\n");
+        cleanupHooks();
+        return false;
+    }
+
+    // 2. Burst of moves within 33ms followed immediately by release: timer is invalidated,
+    //    waiting 60ms after release must not deliver any trailing move.
+    py::exec("events.clear()", ns, ns);
+    board.injectMouse(QEvent::MouseButtonPress, QPointF(80.0, 50.0), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    board.injectMouse(QEvent::MouseMove, QPointF(90.0, 60.0), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    board.injectMouse(QEvent::MouseMove, QPointF(105.0, 75.0), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    board.injectMouse(QEvent::MouseMove, QPointF(120.0, 90.0), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    board.injectMouse(QEvent::MouseButtonRelease, QPointF(120.0, 90.0), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+
+    const int totalEventsAfterImmediateRelease = py::len(ns["events"]);
+    const int movesAfterImmediateRelease = int(moveEvents().size());
+    waitMs(60);
+    if (int(py::len(ns["events"])) != totalEventsAfterImmediateRelease
+        || int(moveEvents().size()) != movesAfterImmediateRelease) {
+        std::fprintf(stderr, "Expected no move after immediate release when timer was pending\n");
+        cleanupHooks();
+        return false;
+    }
+
+    // 3. Burst of moves within 33ms followed immediately by cancel (and overlay clear):
+    //    waiting 60ms must not deliver any trailing move.
+    py::exec("events.clear()", ns, ns);
+    board.injectMouse(QEvent::MouseButtonPress, QPointF(80.0, 50.0), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    board.injectMouse(QEvent::MouseMove, QPointF(90.0, 60.0), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    board.injectMouse(QEvent::MouseMove, QPointF(105.0, 75.0), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    board.injectMouse(QEvent::MouseMove, QPointF(120.0, 90.0), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    board.setTool(PaintOpenGLWidget::Tool::Arrow); // triggers cancelActiveOverlayDrag()
+
+    const int movesAfterCancel = int(moveEvents().size());
+    waitMs(60);
+    if (int(moveEvents().size()) != movesAfterCancel) {
+        std::fprintf(stderr, "Expected no move after cancelActiveOverlayDrag()\n");
+        cleanupHooks();
+        return false;
+    }
+    board.injectMouse(QEvent::MouseButtonRelease, QPointF(120.0, 90.0), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    board.setTool(PaintOpenGLWidget::Tool::Pen);
+
+    // Also verify clearing the dragged overlay item via setOverlayItems invalidates the timer.
+    py::exec("events.clear()", ns, ns);
+    board.injectMouse(QEvent::MouseButtonPress, QPointF(80.0, 50.0), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    board.injectMouse(QEvent::MouseMove, QPointF(90.0, 60.0), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    board.injectMouse(QEvent::MouseMove, QPointF(110.0, 80.0), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    board.setOverlayItems({});
+    const int movesAfterOverlayClear = int(moveEvents().size());
+    waitMs(60);
+    if (int(moveEvents().size()) != movesAfterOverlayClear) {
+        std::fprintf(stderr, "Expected no move after active overlay item was removed\n");
+        cleanupHooks();
+        return false;
+    }
+    board.injectMouse(QEvent::MouseButtonRelease, QPointF(110.0, 80.0), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    board.setOverlayItems({item});
+
+    // 4. Continuous movement: move frequency never exceeds the 33ms throttle window.
+    py::exec("events.clear()", ns, ns);
+    board.injectMouse(QEvent::MouseButtonPress, QPointF(80.0, 50.0), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QElapsedTimer burstClock;
+    burstClock.start();
+    constexpr int kStepCount = 20;
+    for (int i = 1; i <= kStepCount; ++i) {
+        board.injectMouse(QEvent::MouseMove, QPointF(80.0 + i * 2.0, 50.0 + i), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        if (i < kStepCount) {
+            waitMs(5);
+        }
+    }
+    const qint64 burstElapsedMs = std::max<qint64>(1, burstClock.elapsed());
+    const int movesInBurst = int(moveEvents().size());
+    const int maxAllowedMoves = 1 + int(burstElapsedMs / 33) + 1;
+    if (movesInBurst > maxAllowedMoves || movesInBurst >= kStepCount) {
+        std::fprintf(stderr, "Continuous move exceeded throttle rate: %d moves in %lld ms (max allowed %d)\n",
+                     movesInBurst, static_cast<long long>(burstElapsedMs), maxAllowedMoves);
+        cleanupHooks();
+        return false;
+    }
+    waitMs(60);
+    const py::list finalMoves = moveEvents();
+    const py::dict lastContinuousMove = finalMoves[py::len(finalMoves) - 1].cast<py::dict>();
+    if (std::abs(lastContinuousMove["x"].cast<double>() - (80.0 + kStepCount * 2.0)) > 1e-6
+        || std::abs(lastContinuousMove["y"].cast<double>() - (50.0 + kStepCount)) > 1e-6) {
+        std::fprintf(stderr, "Expected final position after continuous move settles\n");
+        cleanupHooks();
+        return false;
+    }
+    board.injectMouse(QEvent::MouseButtonRelease, QPointF(80.0 + kStepCount * 2.0, 50.0 + kStepCount),
+                      Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+
+    cleanupHooks();
+#endif
+    return true;
+}
+
 int main(int argc, char *argv[])
 {
     if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) {
@@ -776,6 +976,9 @@ int main(int argc, char *argv[])
 #endif
 
     if (!runFieldScopeAndHideColumnsUnitTests()) {
+        return 1;
+    }
+    if (!runOverlayDragThrottleUnitTests()) {
         return 1;
     }
 #ifdef ANIMEAN_WITH_PYTHON

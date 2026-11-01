@@ -432,6 +432,8 @@ private:
     // Clears m_activeOverlayDrag and sends the owning tool a "cancel" so it
     // restores its persisted baseline. Safe to call with no drag in flight.
     void cancelActiveOverlayDrag();
+    void stopOverlayDragMoveTimer();
+    void flushPendingOverlayDragMove();
     // Emits "framechange" when the model's frame moved past the last frame
     // Python was told about - regardless of who moved it.
     void notifyFrameChangedIfNeeded();
@@ -615,8 +617,13 @@ private:
     // none. Routed through the same "handle" hook events as edit handles.
     QString m_activeOverlayDrag;
     // Overlay-drag "move" messages share the pointer-rate throttle cadence:
-    // the owning tool re-renders overlays per message.
+    // the owning tool re-renders overlays per message. When a move is skipped
+    // inside the throttle window, a single-shot timer flushes the latest
+    // position and modifiers at the end of the window.
     QElapsedTimer m_overlayDragHookThrottle;
+    QTimer *m_overlayDragMoveTimer = nullptr;
+    QPointF m_pendingOverlayDragPos;
+    Qt::KeyboardModifiers m_pendingOverlayDragModifiers = Qt::NoModifier;
     // The frame Python was last told about via "framechange". The frame lives
     // on the model and can be mutated behind the widget's back (ui.set_current,
     // addFrame, project load), so the notification baseline must be the
