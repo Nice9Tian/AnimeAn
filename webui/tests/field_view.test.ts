@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { GlBoardRenderer } from "../src/board/glrenderer.ts";
+import { FIELD_FS, FIELD_VS, GlBoardRenderer } from "../src/board/glrenderer.ts";
 import { BoardRenderer, findScopeStartContaining, type Canvas2DContextLike, type CanvasLike } from "../src/board/renderer.ts";
 import { createMockGlCanvas } from "./glrenderer.test.ts";
 
@@ -66,6 +66,39 @@ describe("Field Texture & F..f Scope Rendering", () => {
     assert.ok(fieldFs!.includes(sharedTail), "FIELD_FS must share the exact paint body with SHAPE_FS");
     assert.ok(fieldFs!.includes("uniform vec4 u_tint;"), "FIELD_FS must declare u_tint");
     assert.ok(!fieldFs!.includes("u_coverPass"), "FIELD_FS must not contain u_coverPass");
+  });
+
+  it("ensures shared uniforms between FIELD_VS and FIELD_FS have identical type and explicit precision, with highp on int types", () => {
+    const parseUniforms = (src: string): Map<string, { precision: string; type: string }> => {
+      const map = new Map<string, { precision: string; type: string }>();
+      const re = /^\s*uniform\s+(?:(lowp|mediump|highp)\s+)?(\w+)\s+(\w+)\s*;/gm;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(src)) !== null) {
+        map.set(m[3], { precision: m[1] ?? "", type: m[2] });
+      }
+      return map;
+    };
+
+    const vsUniforms = parseUniforms(FIELD_VS);
+    const fsUniforms = parseUniforms(FIELD_FS);
+    const intTypes = new Set(["int", "ivec2", "ivec3", "ivec4", "uint", "uvec2", "uvec3", "uvec4"]);
+
+    let sharedCount = 0;
+    for (const [name, vsU] of vsUniforms) {
+      const fsU = fsUniforms.get(name);
+      if (!fsU) continue;
+      sharedCount++;
+      assert.equal(fsU.type, vsU.type, `Shared uniform ${name} type mismatch: VS=${vsU.type}, FS=${fsU.type}`);
+      assert.equal(
+        fsU.precision,
+        vsU.precision,
+        `Shared uniform ${name} explicit precision mismatch: VS=${vsU.precision || "(default)"}, FS=${fsU.precision || "(default)"}`,
+      );
+      if (intTypes.has(vsU.type)) {
+        assert.equal(vsU.precision, "highp", `Shared integer uniform ${name} (${vsU.type}) must explicitly declare highp`);
+      }
+    }
+    assert.ok(sharedCount >= 3, "Expected shared uniforms (u_fieldTex, u_fieldRect, u_fieldGrid) between FIELD_VS and FIELD_FS");
   });
 
   it("executes F..f passes in reverse order, supports 7-element tint and 3-element legacy passes, restores entry state, and multiplies opacity", () => {
