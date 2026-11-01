@@ -302,6 +302,9 @@ export class BoardRenderer {
   private currentDpr = 1;
 
   private images = new Map<string, unknown>();
+  // The bytes as sent. A 2D canvas stores premultiplied alpha, so a renderer taking
+  // over must not read an image back from it.
+  private rawImages = new Map<string, { key: string; width: number; height: number; data: Uint8Array; source: unknown }>();
   private unsubBoard?: () => void;
   private unsubImage?: () => void;
 
@@ -321,7 +324,9 @@ export class BoardRenderer {
 
     if (this.client) {
       this.unsubImage = this.client.onImage((meta, data) => {
-        this.putImage(meta, data);
+        if (!meta.key.startsWith("cur_")) {
+          this.putImage(meta, data);
+        }
       });
       this.unsubBoard = this.client.onBoard(this.view, (msg) => {
         this.renderFrame(msg);
@@ -351,6 +356,7 @@ export class BoardRenderer {
         const imgData = new ImageData(clamped, w, h);
         hCtx.putImageData(imgData, 0, 0);
         this.images.set(meta.key, holder);
+        this.rawImages.set(meta.key, { key: meta.key, width: w, height: h, data, source: holder });
         return;
       }
     }
@@ -452,10 +458,21 @@ export class BoardRenderer {
 
   // Takes over from a renderer of the other kind, which keeps its op list and
   // images in the same shape, so the board repaints without a backend resend.
-  adopt(prev: { getOps(): ReadonlyArray<unknown[]>; images?: Map<string, unknown>; logicalW?: number; logicalH?: number }): void {
+  adopt(prev: {
+    getOps(): ReadonlyArray<unknown[]>;
+    images?: Map<string, unknown>;
+    rawImages?: Map<string, { key: string; width: number; height: number; data: Uint8Array | null; source: unknown }>;
+    logicalW?: number;
+    logicalH?: number;
+  }): void {
     this.fullOps = prev.getOps().map((op) => [...op]);
     for (const [key, image] of prev.images ?? []) {
       this.images.set(key, image);
+    }
+    for (const [key, raw] of prev.rawImages ?? []) {
+      if (raw.data) {
+        this.rawImages.set(key, { ...raw, data: raw.data });
+      }
     }
     const w = prev.logicalW ?? 0;
     const h = prev.logicalH ?? 0;
@@ -470,6 +487,7 @@ export class BoardRenderer {
     this.unsubBoard = undefined;
     this.unsubImage = undefined;
     this.images.clear();
+    this.rawImages.clear();
     this.fullOps = [];
   }
 

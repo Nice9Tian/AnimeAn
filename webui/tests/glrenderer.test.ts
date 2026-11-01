@@ -859,4 +859,59 @@ describe("GlBoardRenderer", () => {
     assert.equal(mock.calls.filter((c) => c.fn === "bufferData").length, 0, "Warm frame must do 0 bufferData uploads");
     assert.equal(renderer.getLastDrawCalls(), 2);
   });
+
+  it("drops cached geometry only between frames, so a frame past the limit still draws every stroke", () => {
+    const mock = createMockGlCanvas();
+    const renderer = new GlBoardRenderer(mock.canvas, { getDpr: () => 1 });
+    const internals = renderer as unknown as { maxGeoCacheEntries: number; geoCache: Map<string, unknown> };
+    internals.maxGeoCacheEntries = 2;
+    const frame = (n: number, firstY: number) => ({
+      t: "board" as const,
+      view: "main",
+      frame: n,
+      w: 400,
+      h: 400,
+      keep: 0,
+      ops: [
+        ["T", 1, 0, 0, 1, 0, 0],
+        ["B", 0, 0, 0, 0],
+        ["P", 20, 30, 40, 255, 3, 2, 2, 2, 0, null],
+        ...[0, 1, 2, 3, 4].map((i) => ["S", [0, 10, firstY + i * 10, 1, 50, firstY + i * 10], 0]),
+      ] as unknown[][],
+    });
+
+    mock.calls.length = 0;
+    renderer.renderFrame(frame(1, 10));
+    assert.equal(internals.geoCache.size, 5, "the frame keeps every entry it handed out");
+    const draws = mock.calls.filter((c) => c.fn === "drawArrays");
+    assert.equal(draws.length, 1);
+    assert.deepEqual(draws[0].args, [mock.gl.TRIANGLES, 0, 270], "all five strokes are drawn from one range");
+
+    renderer.renderFrame(frame(2, 110));
+    assert.equal(internals.geoCache.size, 5, "the next frame starts from a trimmed cache");
+  });
+
+  it("takes the exact bytes from a renderer that kept them instead of reading a canvas back", () => {
+    const mock = createMockGlCanvas();
+    const renderer = new GlBoardRenderer(mock.canvas, { getDpr: () => 1 });
+    const data = new Uint8Array([9, 8, 7, 1]);
+    let readBack = 0;
+    const holder = {
+      width: 1,
+      height: 1,
+      getContext: () => {
+        readBack += 1;
+        return null;
+      },
+    };
+    renderer.adopt({
+      getOps: () => [],
+      getImage: () => holder,
+      images: new Map([["img", holder]]),
+      rawImages: new Map([["img", { key: "img", width: 1, height: 1, data, source: holder }]]),
+    } as never);
+
+    assert.equal(renderer.getImage("img"), holder);
+    assert.equal(readBack, 0);
+  });
 });
