@@ -963,31 +963,87 @@ export function arrange(root, wanted) {
 // TimelineWindow::applyDockExtent: collapsing hands the strip's height to the board.
 // Only on the mode change: at any other moment the size is what the user dragged it
 // to. A dock beside the timeline shares its height, so it is left alone then.
+function targetDockArea(value) {
+  if (value?.dockArea === "left" || value?.dockArea === "right" || value?.dockArea === "bottom") return value.dockArea;
+  if (value?.vertical !== undefined) return value.vertical ? (value.leftAligned ? "left" : "right") : "bottom";
+  return null;
+}
+
 export function watchTimelineDock(runtime, store) {
   const panel = store.timeline;
   if (!panel) return;
-  let shrunkTo = 0, expanded = 0;
+  let shrunkTo = 0, expanded = 0, shrunkArea = "";
+  const findArea = (areas) => ["bottom", "top", "left", "right"].find((name) => areas[name]?.groups.some((g) => g.tabs.includes("timelineDock")));
   const fit = () => {
-    const { areas } = runtime.getDockLayout();
-    const area = ["bottom", "top"].find((name) => areas[name].groups.some((g) => g.tabs.includes("timelineDock")));
-    if (!area) return;
+    const layout = runtime.getDockLayout();
+    const isFloating = Boolean(layout.floating?.some((f) => f.dockId === "timelineDock"));
+    let area = findArea(layout.areas);
     const value = store.get("timeline");
-    const height = kDockTitleHeight + panel.extent().height;
-    if (!value?.collapsed || value.floating || value.vertical) {
-      if (shrunkTo) runtime.dockResizeArea(area, Math.max(height, expanded));
+    const targetArea = targetDockArea(value);
+    if (shrunkTo && (value?.floating || (targetArea && targetArea !== shrunkArea) || (area && area !== shrunkArea))) {
+      runtime.dockResizeArea(shrunkArea, expanded);
       shrunkTo = 0;
+      shrunkArea = "";
+    }
+    if (value?.floating) {
+      if (!isFloating) {
+        if (targetArea && area && area !== targetArea) runtime.dockMoveToArea?.("timelineDock", targetArea);
+        runtime.dockFloat?.("timelineDock");
+      }
       return;
     }
-    if (height === shrunkTo) return;
+    if (isFloating && value) {
+      if (runtime.dockRestore) runtime.dockRestore("timelineDock", targetArea ?? undefined);
+      else if (targetArea) runtime.dockMoveToArea?.("timelineDock", targetArea);
+    } else if (targetArea && area && area !== targetArea) {
+      runtime.dockMoveToArea?.("timelineDock", targetArea);
+    }
+    const { areas } = runtime.getDockLayout();
+    area = findArea(areas);
+    if (!area) return;
+    const vertical = area === "left" || area === "right";
+    const extent = panel.extent();
+    const size = vertical ? (extent.width ?? kCollapsedColumnWidth) : kDockTitleHeight + extent.height;
+
+    if (!value?.collapsed || value.floating) {
+      if (shrunkTo) runtime.dockResizeArea(area, Math.max(size, expanded));
+      shrunkTo = 0;
+      shrunkArea = "";
+      return;
+    }
+    if (size === shrunkTo && area === shrunkArea) return;
     const beside = areas[area].groups.some((g) => g.tabs.some((id) => id !== "timelineDock" && runtime.view(id).visible));
     if (beside && !shrunkTo) return;
     if (!shrunkTo) expanded = areas[area].size ?? 0;
-    shrunkTo = height;
-    runtime.dockResizeArea(area, height);
+    shrunkTo = size;
+    shrunkArea = area;
+    runtime.dockResizeArea(area, size);
+
   };
   store.on("timeline", fit);
   // A narrow window wraps the bar onto a second row.
   new ResizeObserver(fit).observe(panel.bar);
+  return (dockId) => {
+    if (dockId !== "timelineDock") return;
+    const layout = runtime.getDockLayout();
+    const floating = Boolean(layout.floating?.some((f) => f.dockId === "timelineDock"));
+    const value = store.get("timeline");
+    if (floating) {
+      if (!value?.floating) store.call?.("timeline.setFloating", { floating: true });
+      return;
+    }
+    let area = findArea(layout.areas);
+    if (area === "top") {
+      runtime.dockMoveToArea?.("timelineDock", "bottom");
+      area = "bottom";
+    }
+    const prevArea = targetDockArea(value) ?? "bottom";
+    if (area && area !== prevArea) {
+      store.call?.("timeline.setDockArea", { dockArea: area, floating: false });
+    } else if (value?.floating) {
+      store.call?.("timeline.setFloating", { floating: false });
+    }
+  };
 }
 
 function normalise(s) {
@@ -1019,7 +1075,8 @@ function normalise(s) {
 // handlers: on<TimelineCommand>, onRate(fps), onSelectFrame(frame),
 //   onMoveFrame(from, to), onFrameTyped(frame), onLaneToggled(frame, on). The toggle
 //   commands receive the value they ask for. All are optional.
-export function createTimeline(root, handlers = {}, { bottomChrome = null } = {}) {
+export function createTimeline(root, handlers = {}, options = {}) {
+  const { bottomChrome = null } = options;
   root.classList.add("tl-root");
   let state = normalise({});
 
@@ -1030,6 +1087,9 @@ export function createTimeline(root, handlers = {}, { bottomChrome = null } = {}
       case "OnionFills": args = [!state.onionFills]; break;
       case "OnionAmLayers": args = [!state.onionAmLayers]; break;
       case "GuideLines": args = [!state.guideLines]; break;
+      case "Collapse": args = [!state.collapsed]; break;
+      case "Float": args = [!state.floating]; break;
+      case "Orientation": args = [!state.vertical]; break;
       case "Loop":
         // The one flag the window flips itself before reporting it.
         state.loop = !state.loop;

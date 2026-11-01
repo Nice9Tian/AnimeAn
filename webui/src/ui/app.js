@@ -140,6 +140,10 @@ export const DOCK_FOR_WINDOW = {
 // Panels keyed by the component type the scene names.
 export function panelFactories(store, client) {
   const { on, call } = store;
+  // The transport sits under the canvas while the strip is docked to a side. The
+  // scene decides which panel is built first, so neither can ask the other for it.
+  const bottomChrome = document.createElement("div");
+  bottomChrome.className = "central-bottom";
   return {
     QtToolOptions(el) {
       el.classList.add("dock-page", "toolopt-gap");
@@ -254,7 +258,8 @@ export function panelFactories(store, client) {
     },
 
     QtTimeline(el) {
-      const panel = createTimeline(el, {
+      let sideArea = "right";
+      const handlers = ({
         onAddFrame: () => call("frame.add"),
         onAddHold: () => call("frame.addHold"),
         onDuplicate: () => call("frame.duplicate"),
@@ -273,15 +278,18 @@ export function panelFactories(store, client) {
         onClose: () => call("menu.trigger", { id: "windows.timeline" }),
         onCollapse: (collapsed) => call("timeline.setCollapsed", { collapsed }),
         onFloat: (floating) => call("timeline.setFloating", { floating }),
-        onOrientation: (vertical) => call("timeline.setDockArea", { dockArea: vertical ? "right" : "bottom" }),
+        onOrientation: (vertical) => call("timeline.setDockArea", { dockArea: vertical ? sideArea : "bottom", floating: false }),
         onSelectFrame: (frameIndex) => call("frame.select", { frameIndex }),
         onMoveFrame: (fromIndex, toIndex) => call("frame.move", { fromIndex, toIndex }),
         onFrameTyped: (frameIndex) => call("frame.select", { frameIndex }),
         onLaneToggled: (frame, on) => call("onion.toggleFrame", { frame, on }),
       });
+      const panel = createTimeline(el, handlers, { bottomChrome });
       store.timeline = panel;
       on("timeline", (value) => {
         if (!value) return;
+        if (value.dockArea === "left" || value.dockArea === "right") sideArea = value.dockArea;
+        else if (value.vertical) sideArea = value.leftAligned ? "left" : "right";
         panel.update({
           frames: (value.frames ?? []).map((f) => ({ index: f.index, name: f.name, held: f.hold })),
           current: value.currentFrame,
@@ -306,6 +314,7 @@ export function panelFactories(store, client) {
     QtCentral(el) {
       el.classList.add("central");
       const panel = createCentral(el, {
+        bottomChrome,
         onPage: (view) => { switchView(view); call("view.setActive", { viewName: view }); },
         onScroll: (axis, value) => call("board.scroll", { view: boards.current, axis, value }),
         onPill: () => call("menu.trigger", { id: "windows.timeline" }),
@@ -322,7 +331,11 @@ export function panelFactories(store, client) {
         boards.show(view);
         syncScroll(view)(store.get(`viewport/${view}`));
       };
-      on("windows", (value) => { panel.pill.style.display = value?.timeline?.visible ? "none" : ""; });
+      on("windows", (value) => {
+        const visible = Boolean(value?.timeline?.visible);
+        panel.pill.style.display = visible ? "none" : "";
+        bottomChrome.hidden = !visible;
+      });
       on("event", (event) => {
         if (event?.name === "textureView.surface") { panel.show(1); switchView("child"); }
         if (event?.name === "window.select" && event.args?.name === "paint") {

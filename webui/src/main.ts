@@ -109,7 +109,9 @@ async function bootstrap(): Promise<void> {
       return { update() {}, destroy() { el.replaceChildren(); } };
     };
   }
+  let onTimelineDockChanged: ((dockId: string) => void) | undefined;
   const player = createPlayer(appEl, project, {
+    onDockChanged: (dockId) => onTimelineDockChanged?.(dockId),
     raiseBusiness: (name, args) => raiseBusiness(store, name, args),
     onDockClosed(dockId: string) {
       const name = Object.entries(DOCK_FOR_WINDOW).find(([, dock]) => dock === dockId)?.[0];
@@ -121,7 +123,7 @@ async function bootstrap(): Promise<void> {
   const toolState = project.logic.state?.tools as { locked?: object } | undefined;
   syncTools(player.runtime, store, Object.keys(toolState?.locked ?? {}));
   watchToolsScroll(appEl, player.runtime, store);
-  watchTimelineDock(player.runtime, store);
+  onTimelineDockChanged = watchTimelineDock(player.runtime, store);
   const menuEl = document.getElementById("qt-menubar")!;
   const statusEl = document.getElementById("qt-statusbar")!;
   createChrome(menuEl, statusEl, store);
