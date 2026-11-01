@@ -456,10 +456,8 @@ void testRandomDifferential()
         {
             const RectF cb = cp.boundingRect();
             const QRectF qb = qp.boundingRect();
-            CHECK(closeRel(cb.x(), qb.x(), 1e-12, 1e-12) &&
-                  closeRel(cb.y(), qb.y(), 1e-12, 1e-12) &&
-                  closeRel(cb.width(), qb.width(), 1e-12, 1e-12) &&
-                  closeRel(cb.height(), qb.height(), 1e-12, 1e-12),
+            CHECK(sameBits(cb.x(), qb.x()) && sameBits(cb.y(), qb.y()) &&
+                  sameBits(cb.width(), qb.width()) && sameBits(cb.height(), qb.height()),
                   "case %d boundingRect mismatch core=(%.17g, %.17g, %.17g, %.17g) qt=(%.17g, %.17g, %.17g, %.17g)",
                   idx, cb.x(), cb.y(), cb.width(), cb.height(), qb.x(), qb.y(), qb.width(), qb.height());
 
@@ -637,6 +635,22 @@ void testBridgedCopy()
     CHECK(QPainterPath(path).elementAt(0).x == 12.0, "translate should invalidate the copy");
     path.clear();
     CHECK(QPainterPath(path).isEmpty(), "clear should invalidate the copy");
+void testAddSelf()
+{
+    Path core;
+    QPainterPath qt;
+    core.moveTo(1.0, 2.0);
+    core.lineTo(3.0, 4.0);
+    qt.moveTo(1.0, 2.0);
+    qt.lineTo(3.0, 4.0);
+    core.reserve(2);
+    core.addPath(core);
+    qt.addPath(qt);
+    CHECK(core.elementCount() == qt.elementCount(), "adding a path to itself should double it");
+    for (int i = 0; i < qt.elementCount(); ++i) {
+        CHECK(core.elementAt(i).x == qt.elementAt(i).x && core.elementAt(i).y == qt.elementAt(i).y,
+              "adding a path to itself should keep its elements");
+    }
 }
 
 } // namespace
@@ -645,6 +659,7 @@ int main()
 {
     testEdgeCases();
     testBridgedCopy();
+    testAddSelf();
     testImplicitSharing();
     testRandomDifferential();
     testPerformance();

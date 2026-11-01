@@ -313,4 +313,27 @@ describe("BoardRenderer", () => {
     assert.ok(main.calls.some((c) => c.op === "fillRect" && c.args[0] === 1));
     assert.deepEqual(acks, []);
   });
+
+  it("leaves cursor images to the page, which keeps the board's image table to what it draws", () => {
+    const main = createMockCanvas();
+    let deliver: (meta: { key: string; w: number; h: number }, data: Uint8Array) => void = () => {};
+    const client = {
+      onImage(handler: typeof deliver) {
+        deliver = handler;
+        return () => {};
+      },
+      onBoard: () => () => {},
+      sendAck() {},
+    };
+    const renderer = new BoardRenderer(main.canvas, {
+      client: client as never,
+      createCacheCanvas: () => createMockCanvas().canvas,
+    });
+
+    deliver({ key: "cur_arrow", w: 1, h: 1 }, new Uint8Array(4));
+    deliver({ key: "layer", w: 1, h: 1 }, new Uint8Array(4));
+
+    assert.equal(renderer.getImage("cur_arrow"), undefined);
+    assert.ok(renderer.getImage("layer"));
+  });
 });

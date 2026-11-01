@@ -167,46 +167,63 @@ struct Cubic
     }
 };
 
-void updateCubicExtrema1D(double p0, double p1, double p2, double p3, double &minVal, double &maxVal)
+// One curve's extent, widened into the path's by the caller. Bounds end up in
+// project files, so the last bit has to agree with Qt, which shapes this code:
+// each curve starts from its own end points, every stationary point updates
+// BOTH axes, the point is found by repeated interpolation rather than the
+// expanded polynomial, and the roots go through one reciprocal.
+struct CubicExtent {
+    double minX, minY, maxX, maxY;
+};
+
+CubicExtent cubicExtent(const PointF &p0, const PointF &p1, const PointF &p2, const PointF &p3)
 {
-    if (p0 < minVal) minVal = p0;
-    if (p0 > maxVal) maxVal = p0;
-    if (p3 < minVal) minVal = p3;
-    if (p3 > maxVal) maxVal = p3;
+    CubicExtent e;
+    e.minX = std::min(p0.x(), p3.x());
+    e.maxX = std::max(p0.x(), p3.x());
+    e.minY = std::min(p0.y(), p3.y());
+    e.maxY = std::max(p0.y(), p3.y());
 
-    if (p1 >= minVal && p1 <= maxVal && p2 >= minVal && p2 <= maxVal) {
-        return;
-    }
-
-    const double a = 3.0 * (-p0 + 3.0 * p1 - 3.0 * p2 + p3);
-    const double b = 6.0 * (p0 - 2.0 * p1 + p2);
-    const double c = 3.0 * (p1 - p0);
-
-    auto evalAt = [&](double t) {
-        if (t <= 0.0 || t >= 1.0)
-            return;
+    const auto interpolate = [](double v0, double v1, double v2, double v3, double t) {
         const double mt = 1.0 - t;
-        const double val = mt * mt * mt * p0
-                         + 3.0 * mt * mt * t * p1
-                         + 3.0 * mt * t * t * p2
-                         + t * t * t * p3;
-        if (val < minVal) minVal = val;
-        if (val > maxVal) maxVal = val;
+        double q0 = v0 * mt + v1 * t;
+        double q1 = v1 * mt + v2 * t;
+        const double q2 = v2 * mt + v3 * t;
+        q0 = q0 * mt + q1 * t;
+        q1 = q1 * mt + q2 * t;
+        return q0 * mt + q1 * t;
     };
-
-    if ( fuzzyIsNull(a) ) {
-        if (!fuzzyIsNull(b)) {
-            evalAt(-c / b);
+    const auto widenAt = [&](double t) {
+        if (t < 0.0 || t > 1.0)
+            return;
+        const double x = interpolate(p0.x(), p1.x(), p2.x(), p3.x(), t);
+        const double y = interpolate(p0.y(), p1.y(), p2.y(), p3.y(), t);
+        if (x < e.minX) e.minX = x;
+        if (x > e.maxX) e.maxX = x;
+        if (y < e.minY) e.minY = y;
+        if (y > e.maxY) e.maxY = y;
+    };
+    const auto widenAtStationary = [&](double v0, double v1, double v2, double v3) {
+        const double a = 3.0 * (-v0 + 3.0 * v1 - 3.0 * v2 + v3);
+        const double b = 6.0 * (v0 - 2.0 * v1 + v2);
+        const double c = 3.0 * (v1 - v0);
+        if (fuzzyIsNull(a)) {
+            if (!fuzzyIsNull(b)) {
+                widenAt(-c / b);
+            }
+            return;
         }
-        return;
-    }
-
-    const double disc = b * b - 4.0 * a * c;
-    if (disc < 0.0)
-        return;
-    const double s = std::sqrt(disc);
-    evalAt((-b + s) / (2.0 * a));
-    evalAt((-b - s) / (2.0 * a));
+        const double disc = b * b - 4.0 * a * c;
+        if (disc >= 0.0) {
+            const double s = std::sqrt(disc);
+            const double rcp = 1.0 / (2.0 * a);
+            widenAt((-b + s) * rcp);
+            widenAt((-b - s) * rcp);
+        }
+    };
+    widenAtStationary(p0.x(), p1.x(), p2.x(), p3.x());
+    widenAtStationary(p0.y(), p1.y(), p2.y(), p3.y());
+    return e;
 }
 
 void flattenCubicToPolygon(const Cubic &b, Vector<PointF> &poly, double threshold = 0.5)
@@ -533,8 +550,10 @@ void Path::addPolygon(const Vector<PointF> &polygon)
     }
 }
 
-void Path::addPath(const Path &other)
+void Path::addPath(const Path &source)
 {
+    // A copy keeps the elements alive and apart when a path is added to itself.
+    const Path other = source;
     if (other.isEmpty())
         return;
     detach();
@@ -549,8 +568,9 @@ void Path::addPath(const Path &other)
     m_d->require_moveTo = other.m_d->require_moveTo;
 }
 
-void Path::connectPath(const Path &other)
+void Path::connectPath(const Path &source)
 {
+    const Path other = source;
     if (other.isEmpty())
         return;
     detach();
@@ -722,8 +742,13 @@ RectF Path::boundingRect() const
             if (i + 2 < count) {
                 const Element &e1 = m_d->elements[i + 1];
                 const Element &e2 = m_d->elements[i + 2];
-                updateCubicExtrema1D(curPt.x(), e.x, e1.x, e2.x, minX, maxX);
-                updateCubicExtrema1D(curPt.y(), e.y, e1.y, e2.y, minY, maxY);
+                const CubicExtent extent = cubicExtent(curPt, PointF(e.x, e.y), PointF(e1.x, e1.y), PointF(e2.x, e2.y));
+                const double right = extent.minX + (extent.maxX - extent.minX);
+                const double bottom = extent.minY + (extent.maxY - extent.minY);
+                if (extent.minX < minX) minX = extent.minX;
+                if (right > maxX) maxX = right;
+                if (extent.minY < minY) minY = extent.minY;
+                if (bottom > maxY) maxY = bottom;
                 curPt = PointF(e2.x, e2.y);
                 i += 3;
             } else {
