@@ -326,9 +326,9 @@ try {
     # Step 3: Build
     # =========================
     # Intentionally no --verbose to avoid massive logs/context usage.
-    $arguments = "--build `"$buildDir`" --target deploy_AnimeAn --clean-first"
+    $arguments = "--build `"$buildDir`" --target AnimeAnBackend --clean-first"
 
-    Write-AgentSummary "deploy_AnimeAn:running"
+    Write-AgentSummary "build_backend:running"
     Write-FullLog "COMMAND=$cmake $arguments"
     Write-StepPassed "prepare_command"
 
@@ -398,9 +398,29 @@ try {
     Write-StepPassed "read_exit_code"
 
     if ($ec -eq 0) {
-        Write-AgentSummary "deploy_AnimeAn:passed"
+        Write-AgentSummary "build_backend:passed"
+
+        # =========================
+        # Step 4: Package
+        # =========================
+        Write-AgentSummary "package:running"
+        $packageScript = Join-Path -Path $scriptDir -ChildPath "package_tauri.ps1"
+        $backendBuildDir = Join-Path -Path $buildDir -ChildPath "backend"
+        $packageOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $packageScript -BackendDir $backendBuildDir 2>&1
+        $ec = $LASTEXITCODE
+        foreach ($line in $packageOutput) {
+            Write-FullLog "$line"
+        }
     } else {
-        Write-StepFailed "deploy_AnimeAn" "EXIT_CODE=$ec"
+        Write-StepFailed "build_backend" "EXIT_CODE=$ec"
+        Write-FullLogTailToSummary -Lines $FailureTailLines
+        $tailAlreadyWritten = $true
+    }
+
+    if ($ec -eq 0 -and -not $tailAlreadyWritten) {
+        Write-AgentSummary "package:passed"
+    } elseif (-not $tailAlreadyWritten) {
+        Write-StepFailed "package" "EXIT_CODE=$ec"
         Write-FullLogTailToSummary -Lines $FailureTailLines
         $tailAlreadyWritten = $true
     }
