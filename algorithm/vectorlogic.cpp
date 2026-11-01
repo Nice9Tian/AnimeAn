@@ -1,4 +1,4 @@
-﻿#include "vectorlogic.h"
+#include "vectorlogic.h"
 
 #include "beziersplit.h"
 #include "viewscale.h"
@@ -13,6 +13,7 @@
 #include "algorithm/core/geometry.h"
 #include "algorithm/core/image.h"
 #include "algorithm/core/path.h"
+#include "algorithm/core/pathbool.h"
 #include "algorithm/core/string.h"
 
 #include <cstdint>
@@ -2609,7 +2610,7 @@ Vector<AnimeVectorRegionFace> AnimeVectorLogic::computeVectorRegionFaces(const V
                 facePath.lineTo(facePoints[i]);
             }
             facePath.closeSubpath();
-            faces.append(AnimeVectorRegionFace{facePath.simplified(), area});
+            faces.append(AnimeVectorRegionFace{simplified(facePath), area});
         }
     }
 
@@ -2667,36 +2668,32 @@ Path AnimeVectorLogic::vectorRegionPathAt(const PointF &seed, const Vector<LineF
         if (!bestBounds.contains(face.path.boundingRect())) {
             continue;
         }
-        if (face.path.contains(seed) || !bestFace->path.contains(face.path)) {
+        if (face.path.contains(seed) || !contains(bestFace->path, face.path)) {
             continue;
         }
-        region = region.subtracted(face.path);
+        region = subtracted(region, face.path);
     }
 
     Path canvas;
     canvas.addRect(canvasRect);
 
-    QPainterPathStroker overpaintStroker;
-    overpaintStroker.setWidth(kVectorRegionOverpaintWidth);
-    overpaintStroker.setCapStyle(Qt::RoundCap);
-    overpaintStroker.setJoinStyle(Qt::RoundJoin);
     // Stroking the region AFTER the holes are cut tucks the paint under the
     // hole's outline too, the same way it tucks under the outer one - so a
     // hole does not show a hairline of paper around its ink.
-    return region.united(overpaintStroker.createStroke(region)).intersected(canvas).simplified();
+    return simplified(intersected(united(region, strokeOutline(region, kVectorRegionOverpaintWidth)), canvas));
 }
 
 Path AnimeVectorLogic::fillPathFromMask(const Point &seed, const Image &boundary)
 {
     Path path;
-    if (boundary.isNull() || !boundary.rect().contains(seed)) {
+    if (boundary.isNull() || !Rect(0, 0, boundary.width(), boundary.height()).contains(seed)) {
         return path;
     }
-    if (qGray(boundary.pixel(seed.x(), seed.y())) > 0) {
+    if (boundary.gray(seed.x(), seed.y()) > 0) {
         return path;
     }
 
-    Image visited(boundary.size(), Image::Format_Grayscale8);
+    Image visited(boundary.width(), boundary.height(), Image::Format_Grayscale8);
     visited.fill(0);
 
     Queue<Point> queue;
@@ -2718,11 +2715,11 @@ Path AnimeVectorLogic::fillPathFromMask(const Point &seed, const Image &boundary
         };
 
         for (const Point &next : neighbors) {
-            if (!boundary.rect().contains(next)) {
+            if (!Rect(0, 0, boundary.width(), boundary.height()).contains(next)) {
                 continue;
             }
-            if (qGray(visited.pixel(next.x(), next.y())) > 0 ||
-                qGray(boundary.pixel(next.x(), next.y())) > 0) {
+            if (visited.gray(next.x(), next.y()) > 0 ||
+                boundary.gray(next.x(), next.y()) > 0) {
                 continue;
             }
             visited.setPixel(next.x(), next.y(), 255);
@@ -2737,7 +2734,7 @@ Path AnimeVectorLogic::fillPathFromMask(const Point &seed, const Image &boundary
     for (int y = 0; y < visited.height(); ++y) {
         int runStart = -1;
         for (int x = 0; x < visited.width(); ++x) {
-            const bool filled = qGray(visited.pixel(x, y)) > 0;
+            const bool filled = visited.gray(x, y) > 0;
             if (filled && runStart < 0) {
                 runStart = x;
             } else if (!filled && runStart >= 0) {
@@ -2750,5 +2747,5 @@ Path AnimeVectorLogic::fillPathFromMask(const Point &seed, const Image &boundary
         }
     }
 
-    return path.simplified();
+    return simplified(path);
 }
