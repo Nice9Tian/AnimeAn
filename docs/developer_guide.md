@@ -42,6 +42,7 @@
 | 构建、同步脚本、测试、依赖、部署 | `mechanism/build_deploy.md` |
 | 模块在哪、启动链、装载顺序 | `mechanism/modules.md` |
 | 术语和界面文案 | `glossary.md` |
+| 新增或修改界面文字、界面语言 | `mechanism/i18n.md`（新文字要进 `zh-CN.json`、`ja.json`） |
 | 无人值守的长时间工作 | `long_time_work/README.md`（阶段权限、〔裁〕、任务记录） |
 
 ## 规则
@@ -100,6 +101,8 @@
 | 部署构建 | `PowerShell -ExecutionPolicy Bypass -File .\build_scripts\agent_build.ps1`，结束行 `===== AGENT BUILD DONE EXIT_CODE=0 =====`；必须在沙箱外 | 改到 C++ 合并后；发布前 |
 | 脚本同步 | `powershell -ExecutionPolicy Bypass -File sync_pyfiles.ps1` | 每次改 `.py` 而不重建 |
 | 真机验证 | 在 `dist\AnimeAn\AnimeAn.exe` 里按 `tools_user_workflow/` 的步骤手测 | 改到用户看得见的行为 |
+| 网页回归 | 在 `webui/` 里 `npm test`，含词条检查 | 改到 `webui/` |
+| 界面语言覆盖 | `node backend/tests/i18n_coverage.mjs <AnimeAnBackend.exe>` | 改到 Python 的菜单、选项或设置窗文字 |
 | 文档链接 | `py build_scripts\check_doc_links.py`（反引号里的 `.md` 路径都要存在） | 改到 `docs/` 或根目录的 README / AGENTS / CLAUDE |
 
 ## 提交与发布

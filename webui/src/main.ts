@@ -1,6 +1,8 @@
 /// <reference types="vite/client" />
 import { invoke } from "@tauri-apps/api/core";
-import { removeNodeReferences, type Project } from "../vf/src/model.ts";
+import { onLanguage, t } from "./i18n/index.js";
+import type { Value } from "../vf/src/expr.ts";
+import { removeNodeReferences, type ComponentCreate, type Project } from "../vf/src/model.ts";
 import { loadProject, type ProjectIO } from "../vf/src/project.ts";
 import { BackendClient } from "./net.ts";
 import { createPlayer } from "./player.ts";
@@ -88,6 +90,39 @@ function keepOnlyDock(project: Project, dockId: string): void {
   for (const id of removed) delete scene.nodes[id];
 }
 
+// Scene props holding words. The design keeps them in English and its components
+// know nothing of languages, so they are handed translated text.
+const SCENE_TEXT_PROPS = ["text", "label", "title"];
+
+function translatedProps(props: Record<string, Value>): Record<string, Value> {
+  const out = { ...props };
+  for (const key of SCENE_TEXT_PROPS) {
+    const text = out[key];
+    if (typeof text === "string") out[key] = t(text);
+  }
+  return out;
+}
+
+function translateComponent(component: { create?: ComponentCreate }): void {
+  const create = component.create;
+  if (!create) return;
+  component.create = (el, ctx) => {
+    let props = ctx.props;
+    const inner = create(el, { ...ctx, props: translatedProps(props) });
+    const stop = onLanguage(() => inner?.update?.(translatedProps(props)));
+    return {
+      update(next) {
+        props = next;
+        inner?.update?.(translatedProps(next));
+      },
+      destroy() {
+        stop();
+        inner?.destroy?.();
+      },
+    };
+  };
+}
+
 async function bootstrap(): Promise<void> {
   const appEl = document.getElementById("app");
   if (!appEl) throw new Error("找不到 #app 容器");
@@ -108,6 +143,9 @@ async function bootstrap(): Promise<void> {
       return { update() {}, destroy() { el.replaceChildren(); } };
     };
   }
+  for (const [type, component] of project.components) {
+    if (!(type in factories)) translateComponent(component);
+  }
   const player = createPlayer(appEl, project, {
     raiseBusiness: (name, args) => raiseBusiness(store, name, args),
     onDockClosed(dockId: string) {
@@ -123,6 +161,7 @@ async function bootstrap(): Promise<void> {
   const statusEl = document.getElementById("qt-statusbar")!;
   createChrome(menuEl, statusEl, store);
   menuEl.hidden = statusEl.hidden = Boolean(onlyDock);
+  onLanguage(() => player.refreshDockHeaders());
 
   const wsUrl = await resolveBackendWsUrl();
   if (wsUrl) {

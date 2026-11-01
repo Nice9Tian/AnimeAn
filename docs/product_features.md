@@ -15,6 +15,7 @@
 - Tools 面板拖宽拖窄时，工具按钮大小不变，按整列增减：一列、两列、三列……N 列；停靠时面板宽度吸附到整列，不留半列空白。现有。机制（三级）：`mechanism/windows_theme.md`。
 - 深 / 浅主题，下次启动沿用；画纸恒白。现有。
 - 画板渲染器在 Settings ▸ Board Renderer 里切换 WebGL 或 Canvas 2D，切换时画面不丢，下次启动沿用；缺省 WebGL，显卡不支持时用 Canvas 2D。现有。机制（三级）：`mechanism/backend_protocol.md`。
+- 界面语言在 Settings ▸ Language 里切换 English、简体中文、日本語，切换立即生效，不用重启，下次启动沿用；缺省 English。工程文件里的名字（图层名、资产名）不翻译。现有。机制（三级）：`mechanism/i18n.md`。
 - 启动时和 File ▸ Canvas Size… 都能设画布尺寸；取消保留原尺寸。现有。
 - 纹理板分页栏：同时放多页纹理，每页一个独立场景。规划。
 - 「映射纹理」下拉：Mapping 组工具的选项块里选用哪一页纹理；选中 Auto-Mapping 图层时选项块自动显示，在那里改该单元的目标纹理；一个单元只映射一页。规划。

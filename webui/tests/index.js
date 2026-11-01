@@ -5,3 +5,4 @@ import "./glrenderer.test.ts";
 import "./input.test.ts";
 import "./incremental_refresh.test.ts";
 import "./tool_groups.test.ts";
+import "./i18n.test.ts";

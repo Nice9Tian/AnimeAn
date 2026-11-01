@@ -83,6 +83,7 @@ AnimeAn.exe
 | `pyfile/edit_tool.py` | Arrow 的三种编辑模式；Arrow 菜单（选中轮廓的显示设置） |
 | `pyfile/transfer_tool.py` | Transfer 的框、控制手柄、旋转与修饰键 |
 | `pyfile/connect_tool.py` | Connect 的吸附与三种连接 |
+| `pyfile/ui_language.py` | 记下网页当前的界面语言，给 To 3D 页挑文字 |
 | `pyfile/fill_tool.py` | 填充策略：落在哪层、范围升级、重复点击、跟随线稿层、To Independent Layer |
 | `pyfile/layer_tool_policy.py` | 当前层决定 Tools 页与锁定的工具、填充层上的区域刷 |
 | `pyfile/visibility_tool.py` | 图层可见性开关的策略 |

@@ -1,3 +1,4 @@
+import { t } from "./i18n/index.js";
 import {
   computeDockWindowLayout,
   syncDockHeaderDom,
@@ -47,6 +48,7 @@ import { STANDARD_COMPONENT_LIST, STANDARD_COMPONENTS } from "../vf/standard/ind
 
 export interface PlayerInstance {
   runtime: Runtime;
+  refreshDockHeaders(): void;
   setExternal(id: string, el: HTMLElement | null): void;
   destroy(): void;
 }
@@ -60,6 +62,8 @@ interface Mounted {
   generation: number;
   lastBox?: ComputedBox;
 }
+
+const DOCK_ACTION_TIPS: Record<string, string> = { float: "Float panel", restore: "Dock panel", close: "Close panel" };
 
 type PopupMenuItem = { label: string; disabled?: boolean; action: () => void } | "separator";
 
@@ -911,7 +915,7 @@ export function createPlayer(
     getScene: () => project.scene,
     getDockLayout: () => runtime.getDockLayout(rootId),
     getWindowSize: () => getRootSize(),
-    getDockTitle: (did) => String(runtime.view(did).props.title ?? node(did)?.title ?? did),
+    getDockTitle: (did) => t(String(runtime.view(did).props.title ?? node(did)?.title ?? did)),
     onActivateTab: (did) => runtime.dockActivateTab(did),
     onTabify: (targetId, did) => runtime.dockTabify(targetId, did),
     onSplit: (targetId, did, pos, orient) => runtime.dockSplit(targetId, did, pos, orient),
@@ -921,6 +925,21 @@ export function createPlayer(
     onClose: (did) => { runtime.dockSetVisible(did, false); hooks.onDockClosed?.(did); },
     onResizeArea: (area, size) => runtime.dockResizeArea(area, size),
     onResizeSplit: (area, idx, size) => runtime.dockResizeSplit(area, idx, size),
+  };
+
+  // dock.ts writes its button tips in one language; the player owns what shows.
+  const syncDockHeader = (
+    wrapper: HTMLElement,
+    header: HTMLElement,
+    id: string,
+    height: number,
+    info: Parameters<typeof syncDockHeaderDom>[4],
+  ) => {
+    syncDockHeaderDom(wrapper, header, id, height, info, stageEl, dockCallbacks);
+    for (const button of header.querySelectorAll<HTMLElement>(".dock-action-btn")) {
+      const action = button.dataset.dockAction;
+      if (action) button.title = t(DOCK_ACTION_TIPS[action]);
+    }
   };
 
   let dockInfoMap:
@@ -1015,9 +1034,7 @@ export function createPlayer(
     if (n.type === "Dock") {
       const header = entry.wrapper.querySelector<HTMLElement>(".vf-dock-header");
       const info = dockInfoMap?.get(id);
-      if (header) {
-        syncDockHeaderDom(entry.wrapper, header, id, n.headerHeight ?? 26, info, stageEl, dockCallbacks);
-      }
+      if (header) syncDockHeader(entry.wrapper, header, id, n.headerHeight ?? 26, info);
       entry.wrapper.style.zIndex = info?.isFloating ? "30" : "";
     }
   };
@@ -1033,9 +1050,7 @@ export function createPlayer(
     if (n.type === "Dock") {
       const header = entry.wrapper.querySelector<HTMLElement>(".vf-dock-header");
       const info = dockInfoMap?.get(id);
-      if (header) {
-        syncDockHeaderDom(entry.wrapper, header, id, n.headerHeight ?? 26, info, stageEl, dockCallbacks);
-      }
+      if (header) syncDockHeader(entry.wrapper, header, id, n.headerHeight ?? 26, info);
       entry.wrapper.style.zIndex = info?.isFloating ? "30" : "";
     } else if (n.type === "FloatBox") {
       entry.wrapper.style.zIndex = view.props.floating ? "35" : "";
@@ -1258,6 +1273,11 @@ export function createPlayer(
 
   return {
     runtime,
+    refreshDockHeaders(): void {
+      for (const [id, entry] of mounted) {
+        if (node(id)?.type === "Dock") updateNodeProps(id, entry);
+      }
+    },
     setExternal(id: string, el: HTMLElement | null): void {
       if (el) externalElements.set(id, el);
       else externalElements.delete(id);

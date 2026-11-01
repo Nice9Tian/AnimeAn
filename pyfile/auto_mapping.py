@@ -50,6 +50,7 @@ import bezier
 import python_hooks
 import overlay_stack
 import script_store
+import ui_language
 
 H_PROPERTY = "h_center_line"
 V_PROPERTY = "v_center_line"
@@ -12850,7 +12851,10 @@ def _export_three_html(surface, path):
     }
     payload = json.dumps(data, separators=(",", ":")).replace("</", "<\\/")
     importmap = json.dumps(_three_importmap()).replace("</", "<\\/")
-    html = (_TO3D_TEMPLATE
+    html = _TO3D_TEMPLATE
+    for placeholder, text in ui_language.to3d_text().items():
+        html = html.replace(placeholder, text)
+    html = (html
             .replace("__ANIMEAN_IMPORTMAP__", importmap)
             .replace("__ANIMEAN_DATA__", payload))
     with open(path, "w", encoding="utf-8") as handle:
@@ -12858,7 +12862,7 @@ def _export_three_html(surface, path):
 
 
 _TO3D_TEMPLATE = r"""<!DOCTYPE html>
-<html lang="en">
+<html lang="__T_LANG__">
 <head>
 <meta charset="utf-8">
 <title>AnimeAn To 3D</title>
@@ -12873,18 +12877,17 @@ _TO3D_TEMPLATE = r"""<!DOCTYPE html>
 </head>
 <body>
 <div id="ui">
-  <div><b>AnimeAn To 3D</b> - reconstructed sheet</div>
-  <div>Relief scale <input id="relief" type="range" min="0" max="300"
+  <div><b>AnimeAn To 3D</b> - __T_SHEET__</div>
+  <div>__T_RELIEF__ <input id="relief" type="range" min="0" max="300"
        value="100"></div>
-  <div><label><input id="flip" type="checkbox"> flip relief</label>
+  <div><label><input id="flip" type="checkbox"> __T_FLIP__</label>
        <label style="margin-left:12px"><input id="wire" type="checkbox">
-       wireframe</label></div>
+       __T_WIRE__</label></div>
   <div><button id="homecam" type="button" style="margin-top:4px">
-       original camera</button>
+       __T_CAMERA__</button>
        <button id="transfergrid" type="button" style="margin-top:4px">
-       Transfer Grid</button></div>
-  <div style="opacity:.7">drag: rotate &middot; wheel: zoom &middot;
-       right-drag: pan</div>
+       __T_GRID__</button></div>
+  <div style="opacity:.7">__T_HELP__</div>
 </div>
 <script type="importmap">
 __ANIMEAN_IMPORTMAP__

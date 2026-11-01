@@ -3,7 +3,8 @@
 import { BoardRenderer } from "../board/renderer.ts";
 import { GlBoardRenderer } from "../board/glrenderer.ts";
 import { attachBoardInput } from "../board/input.ts";
-import { createCentral, createLayers, createMenuBar, popupMenu } from "./panels.js";
+import { label, language, LANGUAGES, onLanguage, setLanguage, t } from "../i18n/index.js";
+import { createCentral, createLayers, createMenuBar, popupMenu, tabBar } from "./panels.js";
 import { createToolOptions } from "./options.js";
 import { createPalette, toHexArgb } from "./palette.js";
 import { createAssets, createForcePad, createHistory, createNewProjectDialog, createPythonDebug } from "./panels2.js";
@@ -57,12 +58,11 @@ export function panelFactories(store, client) {
   return {
     QtToolOptions(el) {
       el.classList.add("dock-page", "toolopt-gap");
-      const tabs = document.createElement("div");
-      tabs.className = "tabbar-row";
-      tabs.innerHTML = `<div class="tab sel" style="width:64px">Options</div>`;
+      const tabs = tabBar(["Options"], () => {});
+      tabs.select(0);
       const body = document.createElement("div");
       body.className = "opt-body";
-      el.append(tabs, body);
+      el.append(tabs.el, body);
       const panel = createToolOptions(body, {
         onOption: (option) => call("tool.option", option),
         onPalette: (action, control) => call("tool.option", {
@@ -223,8 +223,7 @@ export function panelFactories(store, client) {
 function subWindowNote() {
   const note = document.createElement("div");
   note.className = "opt-title";
-  note.textContent = "Texture view: on the Texture page";
-  return note;
+  return label(note, "Texture view: on the Texture page");
 }
 
 function openNewColor(palette) {
@@ -236,7 +235,7 @@ function openNewColor(palette) {
   const add = document.createElement("button");
   add.type = "button";
   add.className = "qbutton";
-  add.textContent = "Add";
+  label(add, "Add");
   add.addEventListener("click", () => { palette.addSwatch(toHexArgb(inner.color())); shade.remove(); });
   shade.addEventListener("pointerdown", (e) => { if (e.target === shade) shade.remove(); });
   dialog.append(inner.el, add);
@@ -352,10 +351,15 @@ export function syncDocks(runtime, store) {
 // The chrome outside the docked scene: menu bar and status bar.
 export function createChrome(menuEl, statusEl, store) {
   const RENDERER_ITEM = "settings.renderer.";
+  const LANGUAGE_ITEM = "settings.language.";
   const trigger = (item) => {
     if (item.id?.startsWith(RENDERER_ITEM)) {
       store.boards?.setRenderer(item.id.slice(RENDERER_ITEM.length));
       paintMenus();
+      return undefined;
+    }
+    if (item.id?.startsWith(LANGUAGE_ITEM)) {
+      setLanguage(item.id.slice(LANGUAGE_ITEM.length));
       return undefined;
     }
     return store.call("menu.trigger", {
@@ -364,8 +368,8 @@ export function createChrome(menuEl, statusEl, store) {
     });
   };
   const bar = createMenuBar(menuEl, { onTrigger: trigger });
-  // The renderer belongs to this page, not the document, so its menu is added
-  // here rather than coming from the backend's menu state.
+  // The renderer and the language belong to this page, not the document, so
+  // their menus are added here rather than coming from the backend's menu state.
   const settingsMenu = () => {
     const kind = store.boards?.rendererKind ?? savedRendererKind();
     return {
@@ -380,20 +384,32 @@ export function createChrome(menuEl, statusEl, store) {
           { id: `${RENDERER_ITEM}webgl`, text: "WebGL", kind: "radio", checked: kind === "webgl", enabled: hasWebgl() },
           { id: `${RENDERER_ITEM}canvas2d`, text: "Canvas 2D", kind: "radio", checked: kind === "canvas2d" },
         ],
+      }, {
+        id: "settings.language",
+        text: "Language",
+        kind: "submenu",
+        children: LANGUAGES.map(({ id, name }) => ({ id: `${LANGUAGE_ITEM}${id}`, text: name, kind: "radio", checked: id === language() })),
       }],
     };
   };
   const paintMenus = () => bar.update([...(store.get("menus") ?? []), settingsMenu()]);
   store.on("menus", paintMenus);
+  onLanguage(paintMenus);
   const text = document.createElement("div");
   text.className = "status-text";
   const grip = document.createElement("div");
   grip.className = "size-grip";
   statusEl.append(text, grip);
-  store.on("window", (value) => {
-    text.textContent = value?.status ?? "";
-    if (value?.title) window.__TAURI__?.core.invoke("set_window_title", { title: value.title });
-  });
+  const paintWindow = () => {
+    const value = store.get("window");
+    text.textContent = t(value?.status);
+    if (value?.title) window.__TAURI__?.core.invoke("set_window_title", { title: t(value.title) });
+  };
+  store.on("window", paintWindow);
+  onLanguage(paintWindow);
+  // To 3D writes its page from Python, so Python has to hear the language too.
+  const tellPython = () => store.call("tool.option", { hook: "ui_language", name: "ui_language", type: "language", value: language() });
+  onLanguage(tellPython);
   store.on("theme", (value) => {
     document.documentElement.dataset.theme = value?.mode === "dark" ? "dark" : "light";
   });
@@ -409,12 +425,18 @@ export function createChrome(menuEl, statusEl, store) {
   store.on("window", (value) => {
     if (asked || !value?.canvasWidth) return;
     asked = true;
+    tellPython();
     canvasDialog.update({ width: value.canvasWidth, height: value.canvasHeight, open: true });
   });
 
   // Native pickers live in the shell; the page only says what to pick.
   const pick = (mode, title, filters, multiple = false) =>
-    window.__TAURI__?.core.invoke("pick_files", { mode, title, filters, multiple }) ?? Promise.resolve([]);
+    window.__TAURI__?.core.invoke("pick_files", {
+      mode,
+      title: t(title),
+      filters: filters.map((filter) => ({ ...filter, name: t(filter.name) })),
+      multiple,
+    }) ?? Promise.resolve([]);
   const PROJECT = [{ name: "AnimeAn Projects", extensions: ["anproj"] }];
   const TEXTURE = [{ name: "AnimeAn Texture Views", extensions: ["textureview"] }];
   const IMPORTS = {
@@ -490,12 +512,12 @@ function openSettings(store, { name, title, layout }) {
   dialog.className = "qdialog settings-dialog";
   const head = document.createElement("div");
   head.className = "qdialog-title";
-  head.textContent = title ?? name ?? "";
+  label(head, title ?? name ?? "");
   const body = document.createElement("div");
   const close = document.createElement("button");
   close.type = "button";
   close.className = "qbutton settings-close";
-  close.textContent = "Close";
+  label(close, "Close");
   close.addEventListener("click", () => shade.remove());
   dialog.append(head, body, close);
   shade.append(dialog);
