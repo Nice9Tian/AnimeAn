@@ -456,10 +456,8 @@ void testRandomDifferential()
         {
             const RectF cb = cp.boundingRect();
             const QRectF qb = qp.boundingRect();
-            CHECK(closeRel(cb.x(), qb.x(), 1e-12, 1e-12) &&
-                  closeRel(cb.y(), qb.y(), 1e-12, 1e-12) &&
-                  closeRel(cb.width(), qb.width(), 1e-12, 1e-12) &&
-                  closeRel(cb.height(), qb.height(), 1e-12, 1e-12),
+            CHECK(sameBits(cb.x(), qb.x()) && sameBits(cb.y(), qb.y()) &&
+                  sameBits(cb.width(), qb.width()) && sameBits(cb.height(), qb.height()),
                   "case %d boundingRect mismatch core=(%.17g, %.17g, %.17g, %.17g) qt=(%.17g, %.17g, %.17g, %.17g)",
                   idx, cb.x(), cb.y(), cb.width(), cb.height(), qb.x(), qb.y(), qb.width(), qb.height());
 
