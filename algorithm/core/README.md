@@ -22,7 +22,7 @@
 | `string.h`、`string.cpp` | `String`，内部是 UTF-16，下标含义和 `QString` 相同 |
 | `json.h`、`json.cpp` | `JsonValue`、`JsonObject`、`JsonArray`，读写工程文件 |
 | `path.h`、`path.cpp` | `Path`，对应 `QPainterPath` 除布尔运算以外的部分 |
-| `pathops.h`、`pathops.cpp` | 路径布尔运算和描边轮廓，建在 Clipper2 上 |
+| `pathops.h`、`pathops.cpp` | 折线的布尔运算和描边轮廓，建在 Clipper2 上 |
 | `image.h`、`image.cpp` | `Image`，像素缓冲和 PNG 编解码，建在 stb 上 |
 | `qtbridge.h`、`qtbridge_*.h` | Qt 一侧的转换，计算层不用 |
 

@@ -608,11 +608,30 @@ void testPerformance()
     CHECK(ratio < 3.0, "Path::length() is too slow compared to QPainterPath::length(): %.2fx", ratio);
 }
 
+void testAddSelf()
+{
+    Path core;
+    QPainterPath qt;
+    core.moveTo(1.0, 2.0);
+    core.lineTo(3.0, 4.0);
+    qt.moveTo(1.0, 2.0);
+    qt.lineTo(3.0, 4.0);
+    core.reserve(2);
+    core.addPath(core);
+    qt.addPath(qt);
+    CHECK(core.elementCount() == qt.elementCount(), "adding a path to itself should double it");
+    for (int i = 0; i < qt.elementCount(); ++i) {
+        CHECK(core.elementAt(i).x == qt.elementAt(i).x && core.elementAt(i).y == qt.elementAt(i).y,
+              "adding a path to itself should keep its elements");
+    }
+}
+
 } // namespace
 
 int main()
 {
     testEdgeCases();
+    testAddSelf();
     testImplicitSharing();
     testRandomDifferential();
     testPerformance();

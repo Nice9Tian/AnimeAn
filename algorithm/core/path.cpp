@@ -518,8 +518,10 @@ void Path::addPolygon(const Vector<PointF> &polygon)
     }
 }
 
-void Path::addPath(const Path &other)
+void Path::addPath(const Path &source)
 {
+    // A copy keeps the elements alive and apart when a path is added to itself.
+    const Path other = source;
     if (other.isEmpty())
         return;
     detach();
@@ -534,8 +536,9 @@ void Path::addPath(const Path &other)
     m_d->require_moveTo = other.m_d->require_moveTo;
 }
 
-void Path::connectPath(const Path &other)
+void Path::connectPath(const Path &source)
 {
+    const Path other = source;
     if (other.isEmpty())
         return;
     detach();

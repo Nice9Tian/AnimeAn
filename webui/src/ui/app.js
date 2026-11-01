@@ -305,6 +305,7 @@ function createBoards(host, client, store) {
   const slots = { main: { view: "main" }, child: { view: "child" } };
   const mount = (slot, kind) => {
     const { canvas, renderer, kind: started } = startRenderer(kind, { view: slot.view, client });
+    const hadFocus = slot.canvas && document.activeElement === slot.canvas;
     if (slot.canvas) slot.canvas.replaceWith(canvas);
     else host.append(canvas);
     if (slot.renderer) {
@@ -313,6 +314,7 @@ function createBoards(host, client, store) {
       slot.input.destroy();
     }
     Object.assign(slot, { canvas, renderer, input: attachBoardInput(canvas, { view: slot.view, client }) });
+    if (hadFocus) canvas.focus({ preventScroll: true });
     paintCursor(slot);
     return started;
   };
