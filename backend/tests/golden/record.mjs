@@ -242,7 +242,9 @@ async function main() {
 
   const token = "golden_tok_" + crypto.randomBytes(8).toString("hex");
   const backendDir = path.dirname(backendExe);
-  const env = { ...process.env };
+  // Hash seeds change the iteration order of QSet and of Python sets, and with it
+  // the order of equally distant onion ghosts, from one start to the next.
+  const env = { ...process.env, QT_HASH_SEED: "0", PYTHONHASHSEED: "0" };
   const extraPaths = [
     "C:/Qt/6.9.1/mingw_64/bin",
     "C:/Qt/Tools/mingw1310_64/bin",

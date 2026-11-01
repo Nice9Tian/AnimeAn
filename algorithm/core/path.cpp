@@ -432,9 +432,12 @@ void Path::closeSubpath()
     detach();
     m_d->require_moveTo = true;
     const Element &first = m_d->elements[static_cast<std::size_t>(m_d->cStart)];
-    const Element &last = m_d->elements.back();
+    Element &last = m_d->elements.back();
     if (first.x != last.x || first.y != last.y) {
-        if (!fuzzyCompare(PointF(first.x, first.y), PointF(last.x, last.y))) {
+        if (fuzzyCompare(PointF(first.x, first.y), PointF(last.x, last.y))) {
+            last.x = first.x;
+            last.y = first.y;
+        } else {
             m_d->elements.push_back(Element{first.x, first.y, LineToElement});
         }
     }
@@ -531,10 +534,10 @@ void Path::addRect(const RectF &r)
     const double x2 = r.x() + r.width();
     const double y2 = r.y() + r.height();
     moveTo(x1, y1);
-    lineTo(x2, y1);
-    lineTo(x2, y2);
-    lineTo(x1, y2);
-    lineTo(x1, y1);
+    m_d->elements.push_back(Element{x2, y1, LineToElement});
+    m_d->elements.push_back(Element{x2, y2, LineToElement});
+    m_d->elements.push_back(Element{x1, y2, LineToElement});
+    m_d->elements.push_back(Element{x1, y1, LineToElement});
     m_d->require_moveTo = true;
 }
 
@@ -558,6 +561,7 @@ void Path::addEllipse(const RectF &rect)
     cubicTo(cx - w2k, bottom, x, cy + h2k, x, cy);
     cubicTo(x, cy - h2k, cx - w2k, y, cx, y);
     cubicTo(cx + w2k, y, right, cy - h2k, right, cy);
+    m_d->require_moveTo = true;
 }
 
 void Path::addRoundedRect(const RectF &rect, double xRadius, double yRadius)
@@ -565,27 +569,41 @@ void Path::addRoundedRect(const RectF &rect, double xRadius, double yRadius)
     const RectF r = rect.normalized();
     if (r.isNull())
         return;
-    const double rx = std::min(xRadius, r.width() / 2.0);
-    const double ry = std::min(yRadius, r.height() / 2.0);
-    if (rx <= 0.0 || ry <= 0.0) {
+    // Qt turns an absolute radius into a percentage and back, and the round trip
+    // moves the corners by an ULP, so the same steps are taken here.
+    const double halfW = r.width() / 2.0;
+    const double halfH = r.height() / 2.0;
+    xRadius = (halfW == 0.0) ? 0.0 : (100.0 * std::min(xRadius, halfW) / halfW);
+    yRadius = (halfH == 0.0) ? 0.0 : (100.0 * std::min(yRadius, halfH) / halfH);
+    if (xRadius <= 0.0 || yRadius <= 0.0) {
         addRect(r);
         return;
     }
     const double kappa = 0.5522847498;
+    const double rxx2 = r.width() * xRadius / 100.0;
+    const double ryy2 = r.height() * yRadius / 100.0;
+    const double rx = rxx2 / 2.0;
+    const double ry = ryy2 / 2.0;
     const double kx = rx * kappa;
     const double ky = ry * kappa;
     const double left = r.x();
     const double top = r.y();
-    const double right = left + r.width();
-    const double bottom = top + r.height();
-    moveTo(left, top + ry);
-    cubicTo(left, top + ry - ky, left + rx - kx, top, left + rx, top);
-    lineTo(right - rx, top);
-    cubicTo(right - rx + kx, top, right, top + ry - ky, right, top + ry);
-    lineTo(right, bottom - ry);
-    cubicTo(right, bottom - ry + ky, right - rx + kx, bottom, right - rx, bottom);
-    lineTo(left + rx, bottom);
-    cubicTo(left + rx - kx, bottom, left, bottom - ry + ky, left, bottom - ry);
+    const double ex = left + r.width() - rxx2;
+    const double ey = top + r.height() - ryy2;
+    const double cxL = left + rx;
+    const double cyT = top + ry;
+    const double cxR = ex + rx;
+    const double cyB = ey + ry;
+    const double right = rxx2 + ex;
+    const double bottom = ryy2 + ey;
+    moveTo(-rx + cxL, cyT);
+    cubicTo(left, cyT - ky, cxL - kx, top, cxL, -ry + cyT);
+    lineTo(cxR, -ry + cyT);
+    cubicTo(cxR + kx, top, right, cyT - ky, rx + cxR, cyT);
+    lineTo(rx + cxR, cyB);
+    cubicTo(right, cyB + ky, cxR + kx, bottom, cxR, ry + cyB);
+    lineTo(cxL, ry + cyB);
+    cubicTo(cxL - kx, bottom, left, cyB + ky, -rx + cxL, cyB);
     closeSubpath();
 }
 
