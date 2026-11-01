@@ -28,6 +28,7 @@
 | `painter.h`、`painter.cpp` | `Pen`、`Brush`、`Painter`，对应画板用到的那部分 `QPainter`。`PaintDevice` 是它画到的地方：指令表或内存里的图片 |
 | `file.h`、`file.cpp` | `File`、`SaveFile`、`FileInfo`、`Dir`、`applicationDirPath`，文件与路径操作 |
 | `settings.h`、`settings.cpp` | `Settings`，机器级偏好设置（JSON 文件） |
+| `rasterdevice.h`、`rasterdevice.cpp` | `RasterDevice`，`Painter` 画到内存图片的软件光栅器：扫描线覆盖率填充、描边、虚线、图片采样 |
 | `qtbridge.h`、`qtbridge_*.h` | Qt 一侧的转换，计算层不用 |
 
 第三方库在 `../../external/`，版本记在各自的 `SOURCE.txt`。
