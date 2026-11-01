@@ -43,6 +43,7 @@ import heapq
 import json
 import math
 import os
+import random
 import re
 import tempfile
 import time
@@ -175,6 +176,7 @@ _HORIZON_MAX_SIN = 0.5
 ADDITIONAL_PROPERTY = "additional_line"
 ADDITIONAL_COLOR = (255, 105, 180, 255)
 PROXY_PROPERTY = "proxy_contour"
+PAIRING_KEY = "pairing"
 PROXY_COLOR = (214, 96, 40, 255)
 PROXY_HUES = 72
 PROXY_MIN_LENGTH = 60.0
@@ -9179,19 +9181,48 @@ def _contour_points(view_name):
     return (_assets_for(view_name).get(PROXY_PROPERTY) or {}).get("points")
 
 
+def _kept_pairing(child_item, main_item):
+    """The id both contours were paired under, or None. A redraw leaves the
+    two without a common id, which is what asks for a new pairing."""
+    child, main = child_item.get(PAIRING_KEY), main_item.get(PAIRING_KEY)
+    return child["id"] if child and main and child["id"] == main["id"] else None
+
+
+def _pairing_key(child_item, main_item):
+    return (tuple(map(tuple, child_item["points"])),
+            tuple(map(tuple, main_item["points"])),
+            _kept_pairing(child_item, main_item))
+
+
 def proxy_pairing():
-    """The two contours paired, station by station, or None."""
-    child, main = _contour_points("child"), _contour_points("main")
-    if not child or not main:
+    """The two contours paired, station by station, or None.
+
+    Matched once, when a contour is drawn, then kept on both contours: Deform
+    carries the stations with the line (line_tools._deform), so a point of the
+    pattern stays the same point however far it is pulled. Matching again on
+    every edit let the shape search jump to the next corner of a near-rectangle
+    and turned the auto axes a quarter turn."""
+    child_item = _assets_for("child").get(PROXY_PROPERTY)
+    main_item = _assets_for("main").get(PROXY_PROPERTY)
+    if not (child_item and main_item and child_item.get("points") and main_item.get("points")):
         return None
-    key = (tuple(map(tuple, child)), tuple(map(tuple, main)))
-    if _PROXY_PAIRING["key"] != key:
+    if _PROXY_PAIRING["key"] == _pairing_key(child_item, main_item):
+        return _PROXY_PAIRING["value"]
+    if _kept_pairing(child_item, main_item) is not None:
+        paired = {"child": child_item[PAIRING_KEY]["stations"],
+                  "main": main_item[PAIRING_KEY]["stations"]}
+    else:
         import proxy_shape
-        paired, why = proxy_shape.match(child, main)
+        paired, why = proxy_shape.match(child_item["points"], main_item["points"])
         if paired is None:
             print(f"[auto_mapping] contours not paired: {why}")
-        _PROXY_PAIRING["key"], _PROXY_PAIRING["value"] = key, paired
-    return _PROXY_PAIRING["value"]
+        else:
+            pairing = random.getrandbits(32)
+            child_item[PAIRING_KEY] = {"id": pairing, "stations": paired["child"]}
+            main_item[PAIRING_KEY] = {"id": pairing, "stations": paired["main"]}
+    _PROXY_PAIRING["key"] = _pairing_key(child_item, main_item)
+    _PROXY_PAIRING["value"] = paired
+    return paired
 
 
 def _refresh_proxy_axes():
@@ -9238,12 +9269,14 @@ def run_proxy_contour_tool(view_name, points, width=3.0):
     # Choice Line can still untick it.
     assets[PROXY_PROPERTY] = {"points": cleaned, "width": float(width), GROUND_FLAG: True}
     other = "main" if view_name == "child" else "child"
-    axes_moved = _refresh_proxy_axes()
+    _refresh_proxy_axes()
     _save_assets(view_name)
-    if axes_moved and view_name != "main":
-        _save_assets("main")
+    # The pairing also landed on the other board, and each scene owns its own
+    # history (the main axes moved with it, too).
+    if proxy_pairing() is not None:
+        _save_assets(other)
         try:
-            _animean().ui.history_commit("Contour axes", "main")
+            _animean().ui.history_commit("Contour pairing", other)
         except Exception:
             pass
     _push_overlay("main")
@@ -9334,12 +9367,15 @@ def set_line_ground(overlay_id, value):
     _maybe_auto_run()
 
 
-def replace_line_points(view_name, overlay_id, points, settled):
-    """Deform's write. `settled` is the release: history, axes, the mapping."""
+def replace_line_points(view_name, overlay_id, points, settled, stations=None):
+    """Deform's write. `settled` is the release: history, axes, the mapping.
+    `stations` are a contour's paired stations, moved with it."""
     item = line_item(view_name, overlay_id)
     if item is None:
         return
     item["points"] = points
+    if stations is not None:
+        item[PAIRING_KEY] = dict(item[PAIRING_KEY], stations=stations)
     item.pop("commands", None)
     item.pop("third", None)
     item.pop("auto", None)

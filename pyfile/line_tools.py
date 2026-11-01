@@ -70,6 +70,17 @@ def _falloff(cum, total, closed, centre, radius):
     return weights
 
 
+def _station_weights(stations, points, weights):
+    """Each paired station takes the pull of the contour point it sits on."""
+    return [weights[min(range(len(points)), key=lambda i: (points[i][0] - s[0]) ** 2
+                                                          + (points[i][1] - s[1]) ** 2)]
+            for s in stations]
+
+
+def _pulled(points, weights, dx, dy):
+    return [[p[0] + w * dx, p[1] + w * dy] for p, w in zip(points, weights)]
+
+
 def _deform(message, overlay_id, view):
     phase = message.get("phase")
     position = message.get("position") or {}
@@ -83,10 +94,13 @@ def _deform(message, overlay_id, view):
         cum, total = _arcs(points, closed)
         nearest = min(range(len(points)), key=lambda i: math.hypot(
             points[i][0] - point[0], points[i][1] - point[1]))
+        weights = _falloff(cum, total, closed, cum[nearest], DEFORM_RADIUS["value"])
+        stations = (item.get(am.PAIRING_KEY) or {}).get("stations")
         _DRAG[view] = {
             "id": overlay_id, "origin": point, "points": points, "moved": False,
-            "before": [list(p) for p in item["points"]],
-            "weights": _falloff(cum, total, closed, cum[nearest], DEFORM_RADIUS["value"]),
+            "before": [list(p) for p in item["points"]], "weights": weights,
+            "stations": stations,
+            "station_weights": stations and _station_weights(stations, points, weights),
         }
         return
     drag = _DRAG.get(view)
@@ -94,20 +108,22 @@ def _deform(message, overlay_id, view):
         return
     if phase == "cancel":
         _DRAG.pop(view, None)
-        am.replace_line_points(view, overlay_id, drag["before"], settled=False)
+        am.replace_line_points(view, overlay_id, drag["before"], settled=False,
+                               stations=drag["stations"])
         return
     if phase not in ("move", "release"):
         return
     dx, dy = point[0] - drag["origin"][0], point[1] - drag["origin"][1]
     if abs(dx) > 1e-9 or abs(dy) > 1e-9:
         drag["moved"] = True
-    moved = [[p[0] + w * dx, p[1] + w * dy] for p, w in zip(drag["points"], drag["weights"])]
+    moved = _pulled(drag["points"], drag["weights"], dx, dy)
+    stations = drag["stations"] and _pulled(drag["stations"], drag["station_weights"], dx, dy)
     if phase == "move":
-        am.replace_line_points(view, overlay_id, moved, settled=False)
+        am.replace_line_points(view, overlay_id, moved, settled=False, stations=stations)
         return
     _DRAG.pop(view, None)
     if drag["moved"]:
-        am.replace_line_points(view, overlay_id, moved, settled=True)
+        am.replace_line_points(view, overlay_id, moved, settled=True, stations=stations)
 
 
 def _on_handle(message):

@@ -279,4 +279,71 @@ assert sum(i["id"].startswith("line_pin:") for i in am._line_mark_items("child")
 print("12) contour overlays")
 
 
+def counted_matches():
+    calls = []
+    original = proxy_shape.match
+
+    def match(*args):
+        calls.append(args)
+        return original(*args)
+
+    proxy_shape.match = match
+    return calls, lambda: setattr(proxy_shape, "match", original)
+
+
+# 13) Deform keeps the pairing: the stations move with the line and nothing is
+#     matched again. This pull is one where matching from scratch lands a quarter
+#     turn off, which swung the auto H across the V until they no longer crossed.
+reset()
+texture()
+contours()
+am._refresh_proxy_axes()
+am.arm_line_tools(True)
+line_tools.DEFORM_RADIUS["value"] = 120.0
+paired = am.proxy_pairing()
+texture_stations = [list(p) for p in paired["child"]]
+drawn = [list(p) for p in paired["main"]]
+seam = am._assets_for("main")[am.PROXY_PROPERTY]["points"][0]
+near = min(range(len(drawn)), key=lambda k: math.dist(drawn[k], seam))
+far = (near + len(drawn) // 2) % len(drawn)
+calls, restore = counted_matches()
+handle(am.PROXY_PROPERTY, "press", seam[0], seam[1], am.DEFORM_PROPERTY)
+handle(am.PROXY_PROPERTY, "move", seam[0] + 100.0, seam[1] - 100.0, am.DEFORM_PROPERTY)
+handle(am.PROXY_PROPERTY, "move", seam[0] + 250.0, seam[1] - 250.0, am.DEFORM_PROPERTY)
+handle(am.PROXY_PROPERTY, "release", seam[0] + 250.0, seam[1] - 250.0, am.DEFORM_PROPERTY)
+restore()
+assert not calls
+paired = am.proxy_pairing()
+assert paired["child"] == texture_stations
+assert math.dist(paired["main"][near], (seam[0] + 250.0, seam[1] - 250.0)) < 20.0
+assert math.dist(paired["main"][far], drawn[far]) < 1.0
+contour = am._assets_for("main")[am.PROXY_PROPERTY]["points"]
+fresh, why = proxy_shape.match(am._assets_for("child")[am.PROXY_PROPERTY]["points"], contour)
+assert fresh and sum(math.dist(a, b) for a, b in zip(fresh["main"], paired["main"])) / len(drawn) > 100.0
+h_axis = am._assets_for("main")[am.H_PROPERTY]
+assert h_axis["auto"] and abs(h_axis["points"][-1][0] - h_axis["points"][0][0]) > abs(
+    h_axis["points"][-1][1] - h_axis["points"][0][1])
+assert am._polylines_cross(h_axis["points"], am._assets_for("main")[am.V_PROPERTY]["points"])
+print("13) Deform keeps the pairing")
+
+# 14) A cancelled pull puts the stations back with the line.
+before = [list(p) for p in am.proxy_pairing()["main"]]
+seam = am._assets_for("main")[am.PROXY_PROPERTY]["points"][0]
+handle(am.PROXY_PROPERTY, "press", seam[0], seam[1], am.DEFORM_PROPERTY)
+handle(am.PROXY_PROPERTY, "move", seam[0] + 40.0, seam[1], am.DEFORM_PROPERTY)
+handle(am.PROXY_PROPERTY, "cancel", seam[0] + 40.0, seam[1], am.DEFORM_PROPERTY)
+assert am.proxy_pairing()["main"] == before
+print("14) a cancelled pull restores the stations")
+
+# 16) Only a new line is a new pairing: a redraw matches again, on both contours.
+kept = am._assets_for("child")[am.PROXY_PROPERTY][am.PAIRING_KEY]["id"]
+calls, restore = counted_matches()
+am.run_proxy_contour_tool("main", ring(KEYSTONE))
+restore()
+assert len(calls) == 1
+ids = {am._assets_for(view)[am.PROXY_PROPERTY][am.PAIRING_KEY]["id"] for view in ("child", "main")}
+assert len(ids) == 1 and kept not in ids
+print("16) a redraw pairs again")
+
+
 print("ALL OK")
