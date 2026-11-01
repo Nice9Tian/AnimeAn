@@ -68,6 +68,7 @@ struct Image::Data {
     int bytesPerLine = 0;
     Format format = Format_Invalid;
     std::int64_t cacheKey = 0;
+    double devicePixelRatio = 1.0;
 };
 
 Image::Image(int width, int height, Format format)
@@ -169,6 +170,20 @@ int Image::bytesPerLine() const
 std::size_t Image::sizeInBytes() const
 {
     return m_data ? m_data->pixels.size() : 0;
+}
+
+double Image::devicePixelRatio() const
+{
+    return m_data ? m_data->devicePixelRatio : 1.0;
+}
+
+void Image::setDevicePixelRatio(double ratio)
+{
+    if (!m_data || m_data->devicePixelRatio == ratio) {
+        return;
+    }
+    detach();
+    m_data->devicePixelRatio = ratio;
 }
 
 std::int64_t Image::cacheKey() const

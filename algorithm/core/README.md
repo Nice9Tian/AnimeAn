@@ -25,6 +25,7 @@
 | `pathops.h`、`pathops.cpp` | 折线的布尔运算和描边轮廓，建在 Clipper2 上 |
 | `pathbool.h`、`pathbool.cpp` | 路径的布尔运算和描边轮廓，把 `Path` 展平后交给 `pathops` |
 | `image.h`、`image.cpp` | `Image`，像素缓冲和 PNG 编解码，建在 stb 上 |
+| `painter.h`、`painter.cpp` | `Pen`、`Brush`、`Painter`，对应画板用到的那部分 `QPainter`。`PaintDevice` 是它画到的地方：指令表或内存里的图片 |
 | `qtbridge.h`、`qtbridge_*.h` | Qt 一侧的转换，计算层不用 |
 
 第三方库在 `../../external/`，版本记在各自的 `SOURCE.txt`。

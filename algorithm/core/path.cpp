@@ -538,8 +538,58 @@ void Path::addRect(const RectF &r)
     m_d->require_moveTo = true;
 }
 
-void Path::addPolygon(const Vector<PointF> &polygon)
+void Path::addEllipse(const RectF &rect)
 {
+    if (rect.isNull())
+        return;
+    const double kappa = 0.5522847498;
+    const double x = rect.x();
+    const double y = rect.y();
+    const double w2 = rect.width() / 2.0;
+    const double h2 = rect.height() / 2.0;
+    const double w2k = w2 * kappa;
+    const double h2k = h2 * kappa;
+    const double cx = x + w2;
+    const double cy = y + h2;
+    const double right = x + rect.width();
+    const double bottom = y + rect.height();
+    moveTo(right, cy);
+    cubicTo(right, cy + h2k, cx + w2k, bottom, cx, bottom);
+    cubicTo(cx - w2k, bottom, x, cy + h2k, x, cy);
+    cubicTo(x, cy - h2k, cx - w2k, y, cx, y);
+    cubicTo(cx + w2k, y, right, cy - h2k, right, cy);
+}
+
+void Path::addRoundedRect(const RectF &rect, double xRadius, double yRadius)
+{
+    const RectF r = rect.normalized();
+    if (r.isNull())
+        return;
+    const double rx = std::min(xRadius, r.width() / 2.0);
+    const double ry = std::min(yRadius, r.height() / 2.0);
+    if (rx <= 0.0 || ry <= 0.0) {
+        addRect(r);
+        return;
+    }
+    const double kappa = 0.5522847498;
+    const double kx = rx * kappa;
+    const double ky = ry * kappa;
+    const double left = r.x();
+    const double top = r.y();
+    const double right = left + r.width();
+    const double bottom = top + r.height();
+    moveTo(left, top + ry);
+    cubicTo(left, top + ry - ky, left + rx - kx, top, left + rx, top);
+    lineTo(right - rx, top);
+    cubicTo(right - rx + kx, top, right, top + ry - ky, right, top + ry);
+    lineTo(right, bottom - ry);
+    cubicTo(right, bottom - ry + ky, right - rx + kx, bottom, right - rx, bottom);
+    lineTo(left + rx, bottom);
+    cubicTo(left + rx - kx, bottom, left, bottom - ry + ky, left, bottom - ry);
+    closeSubpath();
+}
+
+void Path::addPolygon(const Vector<PointF> &polygon){
     if (polygon.isEmpty())
         return;
     detach();
