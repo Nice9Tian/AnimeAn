@@ -2904,6 +2904,8 @@ void BackendSession::handleCursorSink(const QString &viewName, const QCursor &cu
         state.hy = cursor.hotSpot().y();
         state.w = rgba.width();
         state.h = rgba.height();
+        // The bitmap has the screen's pixels and the hotspot is in logical ones.
+        state.scale = pixmap.devicePixelRatio();
         if (!m_cachedImages.contains(key)) {
             m_cachedImages.insert(key, rgba);
             sendImagePacket(key, rgba);
@@ -3683,6 +3685,7 @@ QJsonObject BackendSession::buildCursorState(const QString &viewName) const
         {QStringLiteral("hy"), st.hy},
         {QStringLiteral("w"), st.w},
         {QStringLiteral("h"), st.h},
+        {QStringLiteral("scale"), st.scale},
     };
 }
 
