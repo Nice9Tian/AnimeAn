@@ -18,8 +18,6 @@ GRID_MAX_SIDE = 129
 GRID_MIN_SIDE = 33
 AREA_RASTER_STEP = 2.0
 DEPTH_STRIDE = 8
-DEPTH_BASE_INTERVAL = 0.200
-DEPTH_BUDGET = 0.030
 MIN_UPDATE_INTERVAL = 0.008
 SETTLE_DELAY_MS = 40     # no move for this long: the hand has stopped
 SETTLE_PASSES = 40       # a frame that never settles must not spin forever
@@ -552,9 +550,6 @@ def begin(view, overlay_id):
             "nearest_ci": nearest_ci,
             "nearest_cj": nearest_cj,
             "coarse_depth": None,
-            "last_depth_time": None,
-            "depth_interval": DEPTH_BASE_INTERVAL,
-            "last_depth_duration": 0.0,
             "last_passes": None,
             "last_finish_time": None,
             "last_duration": 0.0,
@@ -654,15 +649,6 @@ def _update_coarse_depth_table(am, np, session, mapper, l_h, l_v, valid, is_fron
 
     dt = _clock() - t0
     session["coarse_depth"] = depths
-    session["last_depth_time"] = _clock()
-    session["last_depth_duration"] = dt
-    if dt > DEPTH_BUDGET:
-        session["depth_interval"] = max(
-            DEPTH_BASE_INTERVAL,
-            min(2.0, dt * (DEPTH_BASE_INTERVAL / DEPTH_BUDGET)),
-        )
-    else:
-        session["depth_interval"] = DEPTH_BASE_INTERVAL
     return dt
 
 
@@ -805,7 +791,6 @@ def _inherit_region_depths(am, np, session, mapper, l_h, l_v, valid, is_front):
         session["prev_n_regions"] = 0
         session["prev_region_depths"] = np.zeros(1, dtype=np.int32)
         dt = _clock() - t0
-        session["last_depth_duration"] = dt
         return np.zeros_like(labels, dtype=np.int32), dt
 
     prev_labels = session.get("prev_labels")
@@ -910,7 +895,6 @@ def _inherit_region_depths(am, np, session, mapper, l_h, l_v, valid, is_front):
     session["prev_n_regions"] = n_regions
     session["prev_region_depths"] = region_depths
     dt = _clock() - t0
-    session["last_depth_duration"] = dt
     return depth, dt
 
 
