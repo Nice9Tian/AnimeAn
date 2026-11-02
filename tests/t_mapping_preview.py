@@ -1524,6 +1524,33 @@ class TestMappingPreview(unittest.TestCase):
         self.assertNotIn("grid_items", mp._SESSION)
         send("release", 5)
 
+    def test_22_scope_widths_match_the_release(self):
+        """The field already scales the outline: the scope must not scale it twice."""
+        for factor in (1.0, 0.5, 1.6):
+            _scenes, fake, _uid = fresh_rig_world("B")
+            main = am._assets_for("main")
+            pts = main[am.H_PROPERTY]["points"]
+            cx = sum(p[0] for p in pts) / len(pts)
+            cy = sum(p[1] for p in pts) / len(pts)
+            lines = [main[am.H_PROPERTY], main[am.V_PROPERTY],
+                     *main.get(am.ADDITIONAL_PROPERTY, {}).get("lines", [])]
+            for line in lines:
+                line["points"] = [[cx + (x - cx) * factor, cy + (y - cy) * factor]
+                                  for x, y in line["points"]]
+                line.pop("third", None)
+            ca = am._assets_for("child")
+            _cold, release_scale = am.build_mapper(
+                ca[am.H_PROPERTY], ca[am.V_PROPERTY], main[am.H_PROPERTY], main[am.V_PROPERTY],
+                additional_pairs=am._additional_pairs(), ground_pairs=am._ground_pairs())
+            grab = ca[am.H_PROPERTY]["points"][len(ca[am.H_PROPERTY]["points"]) // 2]
+            for phase, step in (("press", 0), ("move", 1)):
+                am._guide_drag_event({"view": "child", "handle": am.H_PROPERTY, "phase": phase,
+                                      "position": {"x": grab[0], "y": grab[1] - 2.0 * step}})
+            scope = fake.ui.set_field_view_calls[-1][1]["width_scale"]
+            print(f"[width] main x{factor}: release x{release_scale:.3f}, scope x{scope:.3f}")
+            self.assertAlmostEqual(scope, 1.0, delta=0.1, msg=f"x{factor}")
+            mp.cancel()
+
     def test_10_mid_drag_invalid_axes_clears_and_recovers(self):
         """When axes stop crossing mid-drag, preview clears; when crossing again, preview recovers."""
         _scenes, fake, _uid = fresh_rig_world("A")

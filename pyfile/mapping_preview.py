@@ -428,6 +428,21 @@ def _unit_hide_columns(am, main_scene, uid):
     return hide_cols
 
 
+def _typical_stretch(np, phi_x, phi_y, valid, du, dv):
+    """How much the mapping scales lengths across the strokes, as one number.
+
+    The scope widens strokes in texture space and the field then carries the
+    outline, so the field already applies the stretch. The release draws
+    `width * width_scale` in board space instead; dividing by the typical
+    stretch makes the two agree wherever the stretch is typical."""
+    det = gridsolve.det2(phi_x, phi_y, du, dv)
+    keep = valid & np.isfinite(det)
+    if not np.any(keep):
+        return 1.0
+    stretch = float(np.median(np.sqrt(np.abs(det[keep]))))
+    return stretch if stretch > 1e-6 else 1.0
+
+
 def begin(view, overlay_id):
     """Prepare a live preview session at drag press."""
     am = _am()
@@ -520,6 +535,8 @@ def begin(view, overlay_id):
         ))
         hide_columns = _unit_hide_columns(am, main_scene, uid)
         l_h, l_v, ok = mapper.third_of_batch(px, py)
+        phi_x, phi_y = mapper.main_of_third_batch(l_h, l_v)
+        stretch = _typical_stretch(np, phi_x, phi_y, ok if in_child_area is None else ok & in_child_area, du, dv)
         third_cache = {
             "key": _child_axes_key(child_h, child_v),
             "value": (l_h, l_v, ok),
@@ -542,7 +559,7 @@ def begin(view, overlay_id):
             "du": du,
             "dv": dv,
             "max_edge": max_edge,
-            "width_scale": float(width_scale),
+            "width_scale": float(width_scale) / stretch,
             "px": px,
             "py": py,
             "in_child_area": in_child_area,
