@@ -135,6 +135,7 @@ export function createStore(client) {
     get: (key) => values.get(key),
     cursorUrl: (key) => cursors.get(key),
     imageUrl: (key) => images.get(key),
+    forgetImage: (key) => images.delete(key),
     onImage: (fn) => { imageListeners.add(fn); return () => imageListeners.delete(fn); },
   };
 }
@@ -144,6 +145,9 @@ const assetView = (store) => store.get("window")?.assetView ?? store.assetView ?
 
 // Which scene dock shows which backend window.
 export const DOCK_FOR_WINDOW = {
+  tools: "toolsDock",
+  tool_options: "toolOptionsDock",
+  layers: "layersDock",
   assets: "assetsDock",
   history: "historyDock",
   repulsion_pad: "forcePadDock",
@@ -287,6 +291,17 @@ export function panelFactories(store, client) {
   });
   parkedHost.append(subframeRoot);
 
+  // The first placement happens while the scene is built, before there is a
+  // connection; main.ts says it again once there is one.
+  function announceTextureHome() {
+    if (client.connected === false) return;
+    Promise.resolve(call("texture.setHome", { home: currentHome, subControlVisible: isFrameLive() })).then((reply) => {
+      if (Array.isArray(reply?.viewButtons)) {
+        texturePanel.update({ buttons: reply.viewButtons });
+      }
+    });
+  }
+
   function updateTextureHome() {
     const centralWantsIt = Boolean(centralPanel && centralPanel.current() === "texture");
     const controlWantsIt = !centralWantsIt && isFrameLive();
@@ -309,11 +324,7 @@ export function panelFactories(store, client) {
         subframe.setContent(null);
         parkedHost.append(textureRoot);
       }
-      Promise.resolve(call("texture.setHome", { home: wanted, subControlVisible: isFrameLive() })).then((reply) => {
-        if (Array.isArray(reply?.viewButtons)) {
-          texturePanel.update({ buttons: reply.viewButtons });
-        }
-      });
+      announceTextureHome();
       if (wanted !== "parked") {
         boards?.resendChildSize?.();
       }
@@ -477,6 +488,7 @@ export function panelFactories(store, client) {
     toggleFloating,
     surface: surfaceSubControl,
     updateHome: updateTextureHome,
+    announceHome: announceTextureHome,
   };
 
   return {
@@ -631,10 +643,17 @@ export function panelFactories(store, client) {
         onMoveFrame: (fromIndex, toIndex) => call("frame.move", { fromIndex, toIndex }),
         onFrameTyped: (frameIndex) => call("frame.select", { frameIndex }),
         onLaneToggled: (frame, on) => call("onion.toggleFrame", { frame, on }),
+        onPreview: (frames, size) => {
+          shownThumbs = { frames, size };
+          refreshThumbnails();
+        },
       });
       const panel = createTimeline(el, handlers, { bottomChrome });
       store.timeline = panel;
       const thumbKeys = new Map();
+      const thumbsAsked = new Set();
+      let shownThumbs = { frames: [], size: null };
+      let thumbsFor = "";
       const applyTimeline = (value = store.get("timeline")) => {
         if (!value) return;
         if (value.dockArea === "left" || value.dockArea === "right") sideArea = value.dockArea;
@@ -663,35 +682,35 @@ export function panelFactories(store, client) {
           floating: Boolean(value.floating),
         });
       };
+      // TimelineStrip::thumbnail: a frame on screen is rendered once per drawing and size.
       const refreshThumbnails = async () => {
         const value = store.get("timeline");
-        if (!value) return;
-        const frames = (value.frames ?? [])
-          .map((f, i) => ({ index: f.index ?? i, hold: Boolean(f.hold) }))
-          .filter((f) => !f.hold)
-          .map((f) => f.index);
-        if (!frames.length) return;
-        const sz = panel.previewSize?.() ?? { width: 83, height: 62 };
-        const reply = await call("timeline.thumbnails", { frames, width: sz.width, height: sz.height });
-        if (reply?.thumbnails && typeof reply.thumbnails === "object") {
-          thumbKeys.clear();
-          for (const [k, key] of Object.entries(reply.thumbnails)) {
-            thumbKeys.set(Number(k), key);
-          }
-          applyTimeline();
+        if (!value || !shownThumbs.size) return;
+        const { width, height } = shownThumbs.size;
+        const owner = [value.view, store.get("thumbnails")?.revision, width, height].join();
+        if (owner !== thumbsFor) {
+          thumbsFor = owner;
+          thumbsAsked.clear();
         }
+        const frames = shownThumbs.frames.filter((frame) => !thumbsAsked.has(frame));
+        if (!frames.length) return;
+        for (const frame of frames) thumbsAsked.add(frame);
+        const reply = await call("timeline.thumbnails", { frames, width, height });
+        if (owner !== thumbsFor || !reply?.thumbnails) return;
+        for (const [frame, key] of Object.entries(reply.thumbnails)) {
+          const old = thumbKeys.get(Number(frame));
+          if (old && old !== key) store.forgetImage?.(old);
+          thumbKeys.set(Number(frame), key);
+        }
+        applyTimeline();
       };
       store.onImage?.((key) => {
         if (key.startsWith("thumb_")) applyTimeline();
       });
       on("timeline", (value) => {
-        if (!value) return;
-        applyTimeline(value);
-        refreshThumbnails();
+        if (value) applyTimeline(value);
       });
-      on("history", () => refreshThumbnails());
-      on("layers/main", () => refreshThumbnails());
-      on("layers/child", () => refreshThumbnails());
+      on("thumbnails", () => refreshThumbnails());
     },
 
     QtCentral(el) {

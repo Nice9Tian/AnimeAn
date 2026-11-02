@@ -371,3 +371,74 @@ test("竖向时播放条放到 bottomChrome，横向和浮动时放回，Orienta
     Object.assign(globalThis, had);
   }
 });
+
+test("时间轴只为屏幕上的关键帧要缩略图，保持帧和滚出去的帧不要，窗口变了要重新报尺寸", async () => {
+  const { createTimeline } = await loadTimeline();
+  const had = {
+    document: globalThis.document,
+    window: globalThis.window,
+    ResizeObserver: globalThis.ResizeObserver,
+    MutationObserver: globalThis.MutationObserver,
+    Path2D: globalThis.Path2D,
+    getComputedStyle: globalThis.getComputedStyle,
+  };
+  const observers: Array<() => void> = [];
+  const sized = () => {
+    const el = fakeElement("div");
+    const drawing = new Proxy({}, {
+      get: (target: any, name: string) => (name in target ? target[name] : () => {}),
+      set: (target: any, name: string, value) => { target[name] = value; return true; },
+    });
+    return Object.assign(el, { getContext: () => drawing });
+  };
+  Object.assign(globalThis, {
+    document: {
+      createElement: (tag: string) => {
+        const el = sized();
+        if (tag === "div") {
+          Object.defineProperty(el, "clientWidth", { get: () => view.width, configurable: true });
+          Object.defineProperty(el, "clientHeight", { get: () => view.height, configurable: true });
+        }
+        return el;
+      },
+      documentElement: fakeElement("html"),
+      activeElement: null,
+    },
+    window: { addEventListener() {}, removeEventListener() {}, devicePixelRatio: 1 },
+    ResizeObserver: class {
+      fn: () => void;
+      constructor(fn: () => void) { this.fn = fn; observers.push(fn); }
+      observe() {}
+    },
+    MutationObserver: class { observe() {} },
+    Path2D: class {},
+    getComputedStyle: () => ({ getPropertyValue: () => "#000" }),
+  });
+  const view = { width: 300, height: 114 };
+  try {
+    const asked: Array<[number[], { width: number; height: number } | null]> = [];
+    const panel = createTimeline(fakeElement("div"), {
+      onPreview: (frames: number[], size: { width: number; height: number } | null) => asked.push([frames, size]),
+    });
+    panel.update({
+      frames: [
+        { index: 0 }, { index: 1, held: true }, { index: 2 },
+        ...Array.from({ length: 40 }, (_, i) => ({ index: i + 3 })),
+      ],
+      current: 0,
+    });
+    const [frames, size] = asked.at(-1)!;
+    assert.equal(frames[0], 0);
+    assert.equal(frames.includes(1), false);
+    assert.equal(frames.includes(2), true);
+    assert.ok(frames.length < 10, `屏幕外的帧不该要：${frames.length}`);
+    assert.ok(size && size.width > 0 && size.height > 0);
+
+    view.height = 214;
+    for (const fn of observers) fn();
+    const grown = asked.at(-1)![1]!;
+    assert.ok(grown.height > size!.height, "格子变高后要按新尺寸重新要缩略图");
+  } finally {
+    Object.assign(globalThis, had);
+  }
+});
