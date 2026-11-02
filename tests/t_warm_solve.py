@@ -12,8 +12,10 @@ Covers:
      cleanly.
   4. Per-line field cache reuses unchanged lines and recomputes moved lines.
   8. A line pushed past the axes moves the solve grid every frame; the answers
-     are carried onto the new grid, so those frames stay on the warm budget.
-  9. The carry itself: exact on the same nodes, bilinear inside, zero outside.
+     are carried onto the new grid, and the capped frames land close to the
+     exact solve (far closer than starting from zero).
+  9. The carry itself: exact on the same nodes, bilinear inside, the given
+     value outside.
 """
 
 import math
@@ -325,56 +327,50 @@ class WarmSolveTests(unittest.TestCase):
     def test_8_a_line_pushed_past_the_axes_stays_warm(self):
         """The solve domain follows a line past the axes, so the grid changes
         frame after frame. Dropping the answers there made each such frame a
-        cold solve (1200+ iterations); carried over, every solve keeps its cap."""
-        for rig in ("B", "C"):
+        cold solve (1200+ iterations, about 120 ms). Carried over, the frame
+        keeps its budget; what is checked is how close the capped frame lands
+        (starting from zero instead: 2.5 px on B, 15 px on C)."""
+        limits = {"B": 1.6, "C": 4.0}
+        for rig, limit in limits.items():
             step_drag = bdc._make_rig(rig)
             step_drag(0)
             line = am._MAPPING_ASSETS["main"][am.ADDITIONAL_PROPERTY]["lines"][0]
-            steps = []
-            raw_pcg = gridsolve.pcg
-
-            def counting(*args, **kwargs):
-                answer, used = raw_pcg(*args, **kwargs)
-                steps.append(used)
-                return answer, used
-
-            gridsolve.pcg = counting
-            try:
-                warm = {}
+            warm = {}
+            bdc._clear_step_caches()
+            _build_current(warm=warm)
+            errors = []
+            for _ in range(14):
+                for p in line["points"]:
+                    p[0] += 14.0
+                line.pop("third", None)
+                before = warm["nodes"]
                 bdc._clear_step_caches()
-                _build_current(warm=warm)
-                changed = 0
-                for _ in range(14):
-                    for p in line["points"]:
-                        p[0] += 14.0
-                    line.pop("third", None)
-                    before = warm["nodes"]
-                    steps.clear()
-                    bdc._clear_step_caches()
-                    mapper = _build_current(warm=warm)
-                    after = warm["nodes"]
-                    if not (np.array_equal(before[0], after[0])
-                            and np.array_equal(before[1], after[1])):
-                        changed += 1
-                        self.assertLessEqual(max(steps), am._FlowFieldWarp.WARM_MAX_ITER,
-                                             f"{rig}: a regridded frame solved cold")
-                self.assertGreaterEqual(changed, 2, f"{rig}: the push never moved the grid")
-                warm["settling"] = True
-                for _ in range(40):
-                    if not warm.get("unsettled"):
-                        break
-                    bdc._clear_step_caches()
-                    mapper = _build_current(warm=warm)
-            finally:
-                gridsolve.pcg = raw_pcg
+                mapper = _build_current(warm=warm)
+                after = warm["nodes"]
+                if np.array_equal(before[0], after[0]) and np.array_equal(before[1], after[1]):
+                    continue
+                bdc._clear_step_caches()
+                cold = _build_current(warm=None)
+                errors.append(float(np.max(np.hypot(
+                    np.asarray(mapper.warp._grid["ux"]) - np.asarray(cold.warp._grid["ux"]),
+                    np.asarray(mapper.warp._grid["uy"]) - np.asarray(cold.warp._grid["uy"])))))
+            self.assertGreaterEqual(len(errors), 2, f"{rig}: the push never moved the grid")
+            self.assertLessEqual(float(np.mean(errors)), limit,
+                                 f"{rig}: the carried answers are no better than zero")
+            warm["settling"] = True
+            for _ in range(40):
+                if not warm.get("unsettled"):
+                    break
+                bdc._clear_step_caches()
+                mapper = _build_current(warm=warm)
             self.assertFalse(warm.get("unsettled"), f"{rig}: the solve never settled")
             bdc._clear_step_caches()
             cold = _build_current(warm=None)
             points = bdc._make_uniform_grids(0.0, 0.0)[33][::9]
             worst = max(math.hypot(mapper(p)[0] - cold(p)[0], mapper(p)[1] - cold(p)[1])
                         for p in points)
-            print(f"8) Rig {rig}: {changed} regridded frames on the warm cap, "
-                  f"settled err {worst:.4f} px (<=0.5 px)")
+            print(f"8) Rig {rig}: {len(errors)} regridded frames, field err mean "
+                  f"{np.mean(errors):.3f} (<= {limit}), settled err {worst:.4f} px (<=0.5 px)")
             self.assertLessEqual(worst, 0.5)
 
     def test_9_the_carry_onto_new_nodes(self):
@@ -398,6 +394,10 @@ class WarmSolveTests(unittest.TestCase):
         self.assertTrue(np.all(moved[~inside] == 0.0))
         err = float(np.max(np.abs(moved - np.where(inside, bump(new_x, new_y), 0.0))))
         self.assertLess(err, 0.01 * float(np.max(np.abs(field))))
+        fill = np.full((new_x.size, new_y.size), 7.0)
+        filled = am._FlowFieldWarp._regrid(np, old_x, old_y, new_x, new_y)(field, outside=fill)
+        self.assertTrue(np.all(filled[~inside] == 7.0))
+        self.assertTrue(np.array_equal(filled[inside], moved[inside]))
 
     def test_4_line_field_cache_reuses_unchanged_lines(self):
         step_drag = bdc._make_rig("B")

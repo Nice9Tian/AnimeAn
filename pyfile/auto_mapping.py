@@ -2458,8 +2458,7 @@ class _FlowFieldWarp:
     @staticmethod
     def _regrid(np, old_x, old_y, new_x, new_y):
         """Carries node fields onto other node coordinates: bilinear inside
-        the old grid, zero outside it. The fields carried this way are zero
-        on their own boundary, so the zero continues them."""
+        the old grid, `outside` (an array or a number) beyond it."""
         def axis(old, new):
             i = np.clip(np.searchsorted(old, new) - 1, 0, old.size - 2)
             return i, (new - old[i]) / (old[i + 1] - old[i]), (new >= old[0]) & (new <= old[-1])
@@ -2470,10 +2469,10 @@ class _FlowFieldWarp:
         tx = tx[:, None]
         ty = ty[None, :]
 
-        def carry(field):
+        def carry(field, outside=0.0):
             low = (1.0 - ty) * field[np.ix_(ix, iy)] + ty * field[np.ix_(ix, iy + 1)]
             high = (1.0 - ty) * field[np.ix_(ix + 1, iy)] + ty * field[np.ix_(ix + 1, iy + 1)]
-            return np.where(inside, (1.0 - tx) * low + tx * high, 0.0)
+            return np.where(inside, (1.0 - tx) * low + tx * high, outside)
 
         return carry
 
@@ -3094,6 +3093,10 @@ class _FlowFieldWarp:
         frame_moved = {}
         if warm is not None:
             nodes = warm.get("nodes")
+            # What a solve's answer E sits on: the component is base + E.
+            bases = (ub_x + pin_x, ub_y + pin_y)
+            overrun = (t_left, t_right, t_bottom, t_top)
+            warm["rebased"] = None
             if nodes is None:
                 warm["deltas"] = {}
                 warm["solves"] = {}
@@ -3101,8 +3104,13 @@ class _FlowFieldWarp:
             elif not (np.array_equal(nodes[0], gx) and np.array_equal(nodes[1], gy)):
                 # A line dragged past the axes drags the domain with it, so the
                 # grid can change every frame. Dropping the answers then made
-                # every frame a cold solve (about 120 ms); carried over, they
-                # stay a warm start.
+                # every frame a cold solve (about 120 ms). The answers move over
+                # by position. When the overrun changed, the tent under them
+                # changed too: carrying the whole component (base + E, less the
+                # new base) differs from carrying E by the old base carried less
+                # the new one, the same for every round. That goes in as one more
+                # guess direction, since neither carry won on every rig. A window
+                # that only moved (a texture axis drag) keeps the base.
                 carry = self._regrid(np, nodes[0], nodes[1], gx, gy)
                 shape = (nodes[0].size, nodes[1].size)
                 for name in ("solves", "deltas"):
@@ -3110,7 +3118,12 @@ class _FlowFieldWarp:
                         key: (carry(field) if field is not None and field.shape == shape
                               else None)
                         for key, field in warm.get(name, {}).items()}
+                if warm.get("overrun") != overrun:
+                    warm["rebased"] = tuple(carry(old, outside=new) - new
+                                            for old, new in zip(warm["bases"], bases))
             warm["nodes"] = (gx, gy)
+            warm["bases"] = bases
+            warm["overrun"] = overrun
             warm["frame"] = warm.get("frame", 0) + 1
             solves_cache = warm.setdefault("solves", {})
             scale_xy = warm.get("_scale", (1.0, 1.0))
@@ -3161,7 +3174,8 @@ class _FlowFieldWarp:
                     guesses = []
                     for move in (frame_moved.get(component),
                                  warm["deltas"].get((round_key, component)),
-                                 prev_e - base if base is not None else None):
+                                 prev_e - base if base is not None else None,
+                                 (warm["rebased"] or (None, None))[component]):
                         if move is None or move.shape != rhs.shape:
                             continue
                         move = move.copy()
