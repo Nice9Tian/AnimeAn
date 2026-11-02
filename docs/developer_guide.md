@@ -96,7 +96,11 @@
 |---|---|---|
 | Python 回归（无 GUI） | `py -m unittest discover -s tests`（`test_legacy_suites.py` 把 `t_*.py` 逐个当子测试跑）；单跑 `py tests\t_<名>.py` | 改到 `pyfile/` |
 | C++ 单测 | 配置时 `BUILD_TESTING` 开着，`ctest` 跑 `projectio_tests`、`animemodel_tests`、`strokefit_tests`，以及和真实 Qt 比较的 `core_*` | 改到 `algorithm/`、`projectio.*` |
-| 编译检查 | `cmake --build build\wt-check --target AnimeAn --parallel 10`（新 worktree 先 `git submodule update --init --depth 1`） | 改到 C++，合并前 |
+| 编译检查 | `cmake --build build\wt-check --target AnimeAnBackend --parallel 10`（新 worktree 先 `git submodule update --init --depth 1`） | 改到 C++，合并前 |
+| 后端会话冒烟 | `node backend/tests/session_smoke.mjs <AnimeAnBackend.exe>` | 改到 `backend/`、`openglwidget.*` |
+| 新旧对比 | `node backend/tests/golden/record.mjs --backend <AnimeAnBackend.exe> --out <输出.jsonl>`，再用 `compare.mjs` 比基线，见 `mechanism/build_deploy.md` | 改到后端行为 |
+| 网页 | 在 `webui/` 下跑 `npm test`、`npx tsc --noEmit` | 改到 `webui/` |
+| 外壳 | `cargo test --manifest-path src-tauri/Cargo.toml` | 改到 `src-tauri/` |
 | 部署构建 | `PowerShell -ExecutionPolicy Bypass -File .\build_scripts\agent_build.ps1`，结束行 `===== AGENT BUILD DONE EXIT_CODE=0 =====`；必须在沙箱外 | 改到 C++ 合并后；发布前 |
 | 脚本同步 | `powershell -ExecutionPolicy Bypass -File sync_pyfiles.ps1` | 每次改 `.py` 而不重建 |
 | 真机验证 | 在 `dist\AnimeAn\AnimeAn.exe` 里按 `tools_user_workflow/` 的步骤手测 | 改到用户看得见的行为 |
