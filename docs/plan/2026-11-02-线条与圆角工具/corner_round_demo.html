@@ -349,15 +349,35 @@ function beginDrag() {
   const c = S.target;
   if (!c) return;
   // The grabbed point keeps its offset from the pointer, so pressing never makes the line jump.
-  S.drag = { corner: c, grab: c.at, down: S.cursor, before: pack(), moved: false };
+  const r = c.stroke.rounds[c.joint];
+  S.drag = { corner: c, grab: c.at, down: S.cursor, before: pack(), moved: false, start: r ? { ...r } : null, snap: null };
+  // Two stops the held end snaps to (user 2026-11-02): the tip, where the line is 0 long and the corner
+  // is sharp again, and where this drag started, which gives the rounding back as it was. A stop the
+  // pointer starts inside only arms once the pointer has left it, so small adjustments stay free.
+  armStops(S.drag);
+}
+
+function armStops(d) {
+  d.stops = [{ kind: "tip", at: d.corner.V }];
+  if (d.start) d.stops.push({ kind: "start", at: d.grab });
+  for (const st of d.stops) st.armed = dist(st.at, d.grab) > S.radius;
 }
 
 function moveDrag() {
   const d = S.drag;
   if (!d.moved && dist(S.cursor, d.down) < DRAG_START) return;
   if (!d.moved) { d.moved = true; S.undo.push(d.before); S.redo.length = 0; S.touched = true; }
-  const legs = legsFor(d.corner, add(d.grab, sub(S.cursor, d.down)), d.corner.stroke.rounds[d.corner.joint]);
+  const m = add(d.grab, sub(S.cursor, d.down));
   const rounds = d.corner.stroke.rounds;
+  d.snap = null;
+  for (const st of d.stops) {
+    const near = dist(m, st.at) <= S.radius;
+    if (!near) { st.armed = true; continue; }
+    if (st.armed && (!d.snap || dist(m, st.at) < dist(m, d.snap.at))) d.snap = st;
+  }
+  if (d.snap && d.snap.kind === "tip") { delete rounds[d.corner.joint]; return; }
+  if (d.snap) { rounds[d.corner.joint] = { ...d.start }; return; }
+  const legs = legsFor(d.corner, m, rounds[d.corner.joint]);
   if (legs.L1 < GAP && legs.L2 < GAP) delete rounds[d.corner.joint];
   else rounds[d.corner.joint] = legs;
 }
@@ -367,6 +387,7 @@ function endDrag(cancel) {
   if (!d) return;
   S.drag = null;
   if (cancel && d.moved) { S.strokes = JSON.parse(d.before); S.undo.pop(); }
+  else if (d.moved && d.snap && (d.snap.kind === "start" || !d.start)) S.undo.pop();   // ended where it began
   refresh();
 }
 
@@ -488,7 +509,18 @@ function draw() {
     }
     const r = d.corner.stroke.rounds[d.corner.joint];
     const label = live && r ? controlLine(live, r.s, c, true) : { at: d.corner.V, side: 1 };
-    chip(label.at, r ? `${Math.round(r.L1)} / ${Math.round(r.L2)} px` : "尖角", c, label.side);
+    for (const st of d.stops) {
+      if (st === d.snap) continue;
+      if (st.kind === "tip") diamond(st.at, 5, c.surface, c.dim); else dotMark(st.at, 4, c.surface, c.dim);
+    }
+    if (d.snap) {
+      g.strokeStyle = c.accent; g.lineWidth = 2;
+      g.beginPath(); g.arc(d.snap.at.x, d.snap.at.y, 11, 0, Math.PI * 2); g.stroke();
+      if (d.snap.kind === "tip") diamond(d.snap.at, 6.5, c.end, c.accent); else dotMark(d.snap.at, 4.5, c.accent, c.surface);
+      chip(d.snap.at, d.snap.kind === "tip" ? "恢复尖角" : "回到原样", c);
+    } else {
+      chip(label.at, r ? `${Math.round(r.L1)} / ${Math.round(r.L2)} px` : "尖角", c, label.side);
+    }
   }
 
   const t = S.target;
@@ -545,7 +577,7 @@ function refresh() {
     tip = n ? "左键继续放点，右键结束这条折线。" : "左键放点画折线，折出来的尖角可以切到圆角工具去倒圆角。";
   } else if (S.drag) {
     label = "拖动中"; on = true;
-    tip = "控制线拉得越长，圆角越宽越平滑；上下转动它，圆角就偏向一边。拉回角尖恢复尖角。按住 Shift 两边等长，右键或 Esc 取消。";
+    tip = "控制线拉得越长，圆角越宽越平滑；上下转动它，圆角就偏向一边。拉回角尖会吸住、恢复尖角；拉回起点会吸住、回到原样。按住 Shift 两边等长，右键或 Esc 取消。";
   } else if (S.target) {
     label = "已吸附"; on = true;
     tip = S.target.s ? "按下拖动控制线的这一端，端点跟着鼠标走。" : "按下沿着想要的切线方向往外拉，拉出控制线。";
