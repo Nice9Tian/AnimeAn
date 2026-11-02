@@ -6,15 +6,15 @@
 
 | 谁 ↔ 谁 | 方式 |
 |---|---|
-| C++ → Python | **hook 事件**：C++ 组一个 message dict 调 `python_hooks.dispatch`。事件族：绘制交互事件（`update`、`linefinish`、`erasefinish`、`deletefinish`、`fillfinish`、`movefinish`）；前置请求（`fillrequest`、`visibility`，Python 置 `handled` 则 C++ 不做内建行为）；工具面（`handle`：arm / pick / press / move / release / cancel / hover / view，带修饰键、缩放、颜色，`pick` 可回 `grab` 认领拖拽）；界面（`option`、`menu`、`layermenu`、`viewbutton`、`overlayremove`、`overlayaction`、`pad`）；状态（`framechange`、`layerchange`、`onion`、`historyrestore`）；脚本工具（`extra`）。Python 用 `ui.set_hook_events` 推订阅掩码，C++ 对无人订阅的事件早退；`update`、`hover` 与覆盖层拖动的 `move` 按 33ms 节流（覆盖层拖动在窗口结束时补发被跳过的末尾 `move`），`linefinish` 是唯一保证到达的绘制事件 |
-| Python → C++ | `animean_python` 绑定：模型操作（`SceneModel` / `VectorImage`）、几何（`vectorlogic`）、`ui` 门面（刷新与冻结、覆盖层、绘制颜色、光标、工具锁定、填充绘制模式、历史提交 / 撤销、窗口列表 / 显示 / 选页、位移预览、斥力板回写、绘制参数、主题、订阅掩码、刷新选项面板、打开设置窗） |
+| C++ → Python | **hook 事件**：C++ 组一个 message dict 调 `python_hooks.dispatch`。事件族：绘制交互事件（`update`、`linefinish`、`erasefinish`、`deletefinish`、`fillfinish`、`movefinish`）；前置请求（`fillrequest`、`visibility`，Python 置 `handled` 则 C++ 不做内建行为）；工具面（`handle`：arm / pick / press / move / release / cancel / hover / view，带修饰键、缩放、颜色，`pick` 可回 `grab` 认领拖拽）；界面（`option`、`menu`、`layermenu`、`viewbutton`、`overlayremove`、`overlayaction`、`pad`；`menu` 也带 C++ 转来的 File 菜单项，`menu` 为 `file`）；对话框（`dialog`：网页对一个对话框的回答 `button` / `accept` / `cancel` / `closed` / `error`，或请求开一个 `request`，见 `windows_theme.md`「对话框窗口」）；状态（`framechange`、`layerchange`、`onion`、`historyrestore`）；脚本工具（`extra`）。Python 用 `ui.set_hook_events` 推订阅掩码，C++ 对无人订阅的事件早退；`update`、`hover` 与覆盖层拖动的 `move` 按 33ms 节流（覆盖层拖动在窗口结束时补发被跳过的末尾 `move`），`linefinish` 是唯一保证到达的绘制事件 |
+| Python → C++ | `animean_python` 绑定：模型操作（`SceneModel` / `VectorImage`）、几何（`vectorlogic`）、`ui` 门面（刷新与冻结、覆盖层、绘制颜色、光标、工具锁定、填充绘制模式、历史提交 / 撤销、窗口列表 / 显示 / 选页、位移预览、斥力板回写、绘制参数、主题、订阅掩码、刷新选项面板；对话框栈 `ui.set_dialogs`、Python 自己的状态 `ui.broadcast(key, json)`（键以 `py/` 开头）、读一份状态 `ui.state(key)`、像网页一样调一个后端方法 `ui.call(method, params)`，失败抛 `RuntimeError`） |
 | Python 全局 | `__main__` 里的 `model`、`main_model`、`child_model`、`active_view`、画布尺寸，随选择变化同步。`animean_python.get_scene()` 返回的是信息字典（`sceneName`、`scene`），不是模型对象 |
-| 声明式界面 | 选项面板 JSON（内建工具在 `childrenpanel/tool_controls/*.json` 与 `toolcontrol.options_for_tool`，脚本工具由 `toolcontrol.options_for_extra_tool_json` 生成；控件类型 slider / list / check / button / color / subwindow / settings，`visible_when` 联动）；菜单 `register_menu`（`items` 可为可调用，打开时求值；`host` 指定挂主窗口还是纹理板的菜单栏，同名不同宿主是两个菜单）；设置窗 `register_settings`；视图按钮 `register_view_button`（目前无人注册）；图层右键 `register_menu_provider`（上下文带 `layer_id`、`tag`、`owner_group`、`owner_tag`；条目支持 `settings` / `separator`） |
+| 声明式界面 | 选项面板 JSON（内建工具在 `childrenpanel/tool_controls/*.json` 与 `toolcontrol.options_for_tool`，脚本工具由 `toolcontrol.options_for_extra_tool_json` 生成；控件类型 slider / list / check / button / color / subwindow / settings，`visible_when` 联动）；菜单 `register_menu`（`items` 可为可调用，打开时求值；`host` 指定挂主窗口还是纹理板的菜单栏，同名不同宿主是两个菜单；`place: "end"` 排在 Windows 后面，如 Settings；初始化前后各收一次菜单名，`initalize.py` 导入的模块登记的菜单也在）；设置窗 `register_settings`；视图按钮 `register_view_button`（目前无人注册）；图层右键 `register_menu_provider`（上下文带 `layer_id`、`tag`、`owner_group`、`owner_tag`；条目支持 `settings` / `separator`） |
 | 网页 ↔ 后端 | WebSocket 调用与状态推送；`SelectionAttention` 约束帧 / 层 / 资产的选择；后端按脏键合并推送 `state` |
 
 ## 回传约定
 
-- `message["handled"] = True`：我接管了，C++ 不做内建行为。会改模型的处理器必须在**第一次改动之前**置它——C++ 把 Python 异常吞成调试文本，"处理器中途崩了"和"没人处理"分不开，兜底会在半改的模型上再跑一遍。
+- `message["handled"] = True`：我接管了，C++ 不做内建行为。会改模型的处理器必须在**第一次改动之前**置它——C++ 把 Python 异常吞成调试文本，"处理器中途崩了"和"没人处理"分不开，兜底会在半改的模型上再跑一遍。`dialog` 事件和转来的 File 菜单项也按它算：C++ 看的是有没有处理器置了它，不是有几个处理器收到（`dialogs.py`、`file_menu.py` 收到每一个），没人置就报错或丢掉那个对话框，见 `windows_theme.md`「对话框窗口」。
 - `message["cancel_history"] = True`：这一步不要提交历史（例如引导线捕获失败、笔画已被移除）。
 - `message["grab"] = "<id>"`：`pick` 阶段认领拖拽，C++ 把这次按下变成该 id 下的拖动。
 - 交互事件 hook 在 C++ 提交历史之前运行，脚本的改动并入同一条记录。

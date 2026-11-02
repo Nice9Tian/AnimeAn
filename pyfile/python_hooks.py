@@ -98,7 +98,8 @@ def register_menu(definition):
     """Add (or replace) a menu-bar menu.
 
     definition: {"name": str, "title": str, "items": [item, ...],
-                 "host": "main" (default) | "child"}
+                 "host": "main" (default) | "child",
+                 "place": "end" (after Windows; default: before Theme)}
     item:       {"name": str, "title": str,
                  "kind": "action" | "check" | "radio" | "separator" | "submenu",
                  "checked": bool, "items": [...] (submenu only)}
@@ -289,6 +290,7 @@ def set_hook(
     onion=False,
     handle=False,
     menu=False,
+    dialog=False,
     tool=None,
     property=None,
 ):
@@ -321,6 +323,9 @@ def set_hook(
         "onion": onion,
         "handle": handle,
         "menu": menu,
+        # What the page reports about a dialog: its answer, or a request for
+        # one (a colour swatch, a settings window). See dialogs.py.
+        "dialog": dialog,
     }
     events = {name for name, enabled in flags.items() if enabled}
     if not events:

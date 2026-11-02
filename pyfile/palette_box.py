@@ -243,6 +243,29 @@ def _refresh():
         pass
 
 
+def new_color(start=None):
+    """The box's + : pick a colour, then draw with it and keep it in the box.
+
+    The dialog is Python's to open (developer_guide.md, "分工"); the colour goes
+    out on the "color" hook like a pick from the box, so tool_colors records it
+    against the armed tool.
+    """
+    import dialogs
+
+    def chosen(text):
+        if not text:
+            return
+        try:
+            dialogs.call("tool.option", {"hook": VALUE_HOOK, "name": CONTROL_NAME, "type": "palette", "value": text})
+        except Exception as error:
+            print(f"[palette_box] new colour failed: {error}")
+            return
+        if add(text):
+            _refresh()
+
+    dialogs.color(_normalize(start) or current_color(), chosen, title="New Color", accept="Add")
+
+
 def _option_changed(message):
     if message.get("hook") != OPTION_HOOK:
         # Hook "color" is the drawing colour itself: C++ applies it and
@@ -255,6 +278,9 @@ def _option_changed(message):
             changed = add(value)
         elif verb == "remove":
             changed = remove(value)
+        elif verb == "new":
+            new_color(value)
+            return
         else:
             return
     except Exception as error:

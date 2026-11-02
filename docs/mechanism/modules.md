@@ -7,7 +7,7 @@
 | 角色 | 位置 | 管什么 | 不管什么 |
 |---|---|---|---|
 | **桌面外壳** | `src-tauri/src/lib.rs`、`src-tauri/src/main.rs` | 拉起并监管 `AnimeAnBackend.exe`（Windows Job Object 随父进程退出）、打开 WebView2 窗口、向网页提供后端连接地址（`backend_endpoint`）、窗口标题、独立面板窗口（`open_panel_window` / `close_panel_window`）、原生文件选择对话框（`pick_files`） | 界面布局、业务状态、工具语义 |
-| **网页界面** | `webui/src/main.ts`、`webui/src/player.ts`、`webui/src/net.ts`、`webui/src/ui/*.js`、`webui/src/board/*.ts`、`webui/vf/`、`webui/design/` | 停靠窗与页签（`webui/vf/` 运行层 + `webui/design/` 场景）、菜单栏、工具栏、声明式选项面板、图层树、资产表、历史表、时间轴、纹理面板与三处归属槽位、调色板控件、斥力板、新建对话框、画板渲染（WebGL2 `glrenderer.ts` / Canvas 2D `renderer.ts`）与输入采集（`input.ts`） | 工具语义、几何算法、模型存储 |
+| **网页界面** | `webui/src/main.ts`、`webui/src/dialog.ts`（对话框窗口的页，`dialog.html`）、`webui/src/player.ts`、`webui/src/net.ts`、`webui/src/ui/*.js`、`webui/src/board/*.ts`、`webui/vf/`、`webui/design/` | 停靠窗与页签（`webui/vf/` 运行层 + `webui/design/` 场景）、菜单栏、工具栏、声明式选项面板、图层树、资产表、历史表、时间轴、纹理面板与三处归属槽位、调色板控件、斥力板、按声明画对话框（`dialogwindow.js`）并按 `dialogs` 状态开关对话框窗口（`dialoghost.js`）、画板渲染（WebGL2 `glrenderer.ts` / Canvas 2D `renderer.ts`）与输入采集（`input.ts`） | 工具语义、几何算法、模型存储、弹什么对话框 |
 | **后端进程与会话** | `backend/main.cpp`、`backend/session/backendsession.*`、`backend/business/animeanbusiness.*`、`backend/platform/*`、`backend/net/wsserver.*`、`theme.*`、`selectionattention.*` | 嵌入 Python 解释器、WebSocket 协议与脏状态推送（`BackendSession`）、不依赖界面的业务编排（`AnimeanBusiness`：主 / 子画板模型与历史、工具与选项 JSON、图层树重排、帧与时间轴、播放驱动、缩略图渲染、导入导出、历史的全局排序）、颜色角色与主题（`AnimeTheme`）、帧 / 层 / 资产的选择约束（`SelectionAttention`）、事件循环与定时器（`EventLoop`、`Timer`） | 工具语义、界面排版 |
 | **画板** | `openglwidget.*`、`boardbase.h`、`backend/board/*` | 渲染场景与覆盖层（经 `BoardSurface` + `RecordingDevice` 录制成绘制指令表）、视图变换（缩放 / 平移）、交互事件路由（`Tool` 枚举）、控制手柄 / 覆盖层 / 视图按钮机制、hook 事件派发、历史提交、播放缓存、轴向吸附与拟合调用、文字转路径（`textpath.*`） | 任何工具"意味着什么" |
 | **核心模型库** `animean_core` | `algorithm/animemodel.*`、`algorithm/vectorlogic.*`、`algorithm/beziersplit.*`、`algorithm/scenehistory.*`、`algorithm/viewscale.h`、`projectio.*`、`clipreader.*`，建在不依赖 Qt 的 `algorithm/core/` 上 | 场景 / xsheet 数据模型（列、帧、资产、单元格、图层组与 tag、父层、锁定）、矢量几何与笔画拟合、精确贝塞尔劈分、快照式历史、`.anproj` / `.textureview` 的 JSON 读写 | 界面、Python |
@@ -35,7 +35,7 @@ AnimeAn.exe（src-tauri/src/lib.rs）
  3. 读后端 stdout 直到拿到 ANIMEAN_BACKEND_PORT=<端口>，拼出 ws://127.0.0.1:<端口>/?token=<token> 存下
  4. WebView2 加载 webui/index.html；webui/src/main.ts 装配 webui/design/ 场景与 webui/src/ui/app.js 面板工厂
  5. 网页调用 Tauri 命令 backend_endpoint 取回 { url }，连接这个地址
- 6. 后端推送全量初始 state；网页收到第一个 window 状态后弹出 New Project 对话框询问画布尺寸（后端已经开着工程时不弹）
+ 6. 后端推送全量初始 state，其中 dialogs 里是 Python 启动时开出的 New Project（file_menu.py；后端已经开着工程时不开），网页按它开对话框窗口询问画布尺寸
 ```
 
 ### 2. 后端启动与 Python 装载顺序
@@ -97,7 +97,10 @@ AnimeAnBackend.exe（backend/main.cpp）
 | `pyfile/toolcontrol.py` | 内建与脚本工具的选项布局：Mapping 组所有工具共用的运行策略块、Stabilizer 滑条只是稳定器 |
 | `pyfile/draw_settings.py` | Draw 菜单与 Draw Setting 窗：稳定器 / 简化 / 尖角三参数推给 C++ |
 | `pyfile/tool_colors.py` | 每个工具自己的颜色缓存与策略 |
-| `pyfile/palette_box.py` | 调色板的色块集合（存 scriptData） |
+| `pyfile/palette_box.py` | 调色板的色块集合（存 scriptData）；+ 开 New Color |
+| `pyfile/dialogs.py` | 对话框栈：开着哪些、哪个在最上、是否模态，回答交给回调；通用请求（颜色控件取色、脚本设置窗）。见 `windows_theme.md`「对话框窗口」 |
+| `pyfile/file_menu.py` | File 菜单的流程（选择框、覆盖确认、导入问缩放、失败提示）和启动时的 Canvas Size |
+| `pyfile/ui_settings.py` | Settings 菜单：画板渲染器和界面语言，选择广播成 `py/preferences` |
 | `pyfile/edit_tool.py` | Arrow 的三种编辑模式；Arrow 菜单（选中轮廓的显示设置） |
 | `pyfile/transfer_tool.py` | Transfer 的框、控制手柄、旋转与修饰键 |
 | `pyfile/connect_tool.py` | Connect 的吸附与三种连接 |

@@ -69,6 +69,11 @@ _STATE = {"language": "en"}
 _LISTENERS = []
 
 
+def current():
+    """The language the page last reported: "en", "zh-CN" or "ja"."""
+    return _STATE["language"]
+
+
 def to3d_text():
     """The placeholders of the To 3D page and their text in the current language."""
     return _TO3D_TEXT[_STATE["language"]]

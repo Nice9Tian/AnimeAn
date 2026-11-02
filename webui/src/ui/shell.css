@@ -49,6 +49,15 @@ body { -webkit-text-stroke: 0.1px currentColor; }
 canvas { -webkit-text-stroke: 0; }
 
 .qdialog-shade { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: rgba(0, 0, 0, 0.2); }
+/* A dialog in a window of its own (dialog.html): the frame is the window. */
+.dialog-page #dialog { position: absolute; left: 0; top: 0; }
+.qdialog.in-window { position: static; transform: none; box-shadow: none; }
+.qdialog.in-window.color-window, .qdialog.in-window.settings-window { width: auto; min-width: 300px; }
+.dialog-window-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; background: var(--window); color: var(--text); }
+.color-window .dialog-window-body { width: 296px; }
+.dialog-window-body .qdialog-buttons { display: flex; justify-content: flex-end; gap: 6px; }
+/* Under a modal dialog the page takes no input; a press brings the dialog forward. */
+.modal-blocker { position: fixed; inset: 0; z-index: 2147483647; background: transparent; }
 .settings-dialog, .newcolor-dialog { min-width: 300px; padding: 12px; background: var(--window); color: var(--text); border: 1px solid var(--divider); display: flex; flex-direction: column; gap: 8px; }
 .newcolor-dialog { width: 320px; box-sizing: border-box; }
 .qdialog-title { font-weight: 600; }

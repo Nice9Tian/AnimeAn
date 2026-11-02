@@ -4,85 +4,12 @@ import { BoardRenderer } from "../board/renderer.ts";
 import { GlBoardRenderer } from "../board/glrenderer.ts";
 import { attachBoardInput } from "../board/input.ts";
 import { cursorCss } from "../board/cursor.ts";
-import { label, language, LANGUAGES, onLanguage, setLanguage, t } from "../i18n/index.js";
+import { label, language, onLanguage, setLanguage, t } from "../i18n/index.js";
+import { createDialogHost } from "./dialoghost.js";
 import { askForMenu, createCentral, createLayers, createMenuBar, popupMenu, scrollArea, tabBar } from "./panels.js";
 import { createToolOptions } from "./options.js";
-import { createPalette, toHexArgb } from "./palette.js";
-import { createAssets, createForcePad, createHistory, createNewProjectDialog, createPythonDebug, createSubControlFrame, createTexturePanel, messageBox } from "./panels2.js";
+import { createAssets, createForcePad, createHistory, createPythonDebug, createSubControlFrame, createTexturePanel } from "./panels2.js";
 import { createTimeline } from "./timeline.js";
-import { asksForCanvasOnStartup } from "./startup.js";
-
-export function warningTitleForCall(method, params = {}) {
-  const view = params?.view ?? "main";
-  if (method === "project.open") return view === "child" ? "Open Texture View" : "Open Project";
-  if (method === "project.save" || method === "project.saveAs") {
-    return view === "child" ? "Save Texture View" : "Save Project";
-  }
-  if (method === "menu.trigger") {
-    if (params?.id === "file.save") return "Save Project";
-    if (params?.id === "file.texture.save") return "Save Texture View";
-    return null;
-  }
-  if (method === "file.import") {
-    const kind = String(params?.kind ?? params?.action ?? "").trim().toLowerCase().replace(/^(file\.)?import\./, "");
-    if (kind === "raster" || kind === "image") return "Import Raster";
-    if (kind === "opentoonz" || kind === "pli") return "Import OpenToonz Lines";
-    if (kind === "csp" || kind === "clip") return "Import Clip Studio Paint";
-    return null;
-  }
-  if (method === "file.texture") {
-    const kind = String(params?.kind ?? params?.action ?? "")
-      .trim()
-      .toLowerCase()
-      .replace(/^(file\.)?texture\./, "")
-      .replace(/^import\./, "");
-    if (kind === "open" || kind === "opentextureview") return "Open Texture View";
-    if (kind === "save" || kind === "savetextureview" || kind === "saveas" || kind === "save_as" || kind === "savetextureviewas") {
-      return "Save Texture View";
-    }
-    if (kind === "exportimage" || kind === "export_image" || kind === "export" || kind === "exporttextureimage" || kind === "png") {
-      return "Export Texture View Image";
-    }
-    if (kind === "raster" || kind === "image") return "Import Raster";
-    if (kind === "opentoonz" || kind === "pli") return "Import OpenToonz Lines";
-    if (kind === "csp" || kind === "clip") return "Import Clip Studio Paint";
-  }
-  return null;
-}
-
-function fileNameOf(path) {
-  const s = String(path ?? "").trim();
-  if (!s) return "";
-  const i = Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\"));
-  return i >= 0 ? s.slice(i + 1) : s;
-}
-
-function migrateExtension(name, ext) {
-  if (!name) return "";
-  const dot = name.lastIndexOf(".");
-  if (dot <= 0) return `${name}.${ext}`;
-  if (name.slice(dot + 1).toLowerCase() === "json") return `${name.slice(0, dot)}.${ext}`;
-  return name;
-}
-
-export function defaultSaveName(kind, windowState = {}) {
-  if (kind === "project" || kind === "saveProjectAs") {
-    const name = fileNameOf(windowState?.currentFilePath);
-    return name ? migrateExtension(name, "anproj") : "";
-  }
-  if (kind === "texture" || kind === "saveAs" || kind === "save") {
-    const name = fileNameOf(windowState?.childFilePath);
-    return name ? migrateExtension(name, "textureview") : "texture.textureview";
-  }
-  if (kind === "exportImage") {
-    const name = fileNameOf(windowState?.childFilePath);
-    if (!name) return "texture.png";
-    const dot = name.lastIndexOf(".");
-    const base = dot > 0 ? name.slice(0, dot) : name;
-    return `${base || "texture"}.png`;
-  }
-  return "";
-}
 
 export function isAllowedWhenFrozen(target, pythonDebugEl) {
   if (!target || typeof target !== "object") return false;
@@ -93,12 +20,10 @@ export function isAllowedWhenFrozen(target, pythonDebugEl) {
   return false;
 }
 
-function fail(error, title) {
+// A failed call is only logged: telling the user is Python's (file_menu.py
+// shows a file operation's failure itself).
+function fail(error) {
   console.error(error);
-  if (title) {
-    const text = error instanceof Error ? error.message : String(error ?? "");
-    messageBox({ title, text });
-  }
 }
 
 export function createStore(client) {
@@ -115,7 +40,7 @@ export function createStore(client) {
     listeners.get(key).push(fn);
     if (values.has(key)) fn(values.get(key));
   };
-  const call = (method, params = {}) => client.call(method, params).catch((error) => fail(error, warningTitleForCall(method, params)));
+  const call = (method, params = {}) => client.call(method, params).catch((error) => fail(error));
   const cursors = new Map();
   const images = new Map();
   const imageListeners = new Set();
@@ -135,6 +60,7 @@ export function createStore(client) {
     on,
     call,
     get: (key) => values.get(key),
+    onDisconnect: (fn) => client.onDisconnect?.(fn),
     cursorUrl: (key) => cursors.get(key),
     imageUrl: (key) => images.get(key),
     forgetImage: (key) => images.delete(key),
@@ -526,7 +452,7 @@ export function panelFactories(store, client, { satellite = false } = {}) {
       el.append(tabs.el, body.frame);
       const panel = createToolOptions(body.view, {
         onOption: (option) => call("tool.option", option),
-        onNewColor: (palette) => openNewColor(palette),
+        onDialog: (request) => call("dialog.request", request),
         onBeforeBuild: () => {
           if (placement === "embedded" && hostName === "options") stowFrame();
         },
@@ -764,41 +690,9 @@ function subWindowFloatingNote(text = "Texture is floating — drag it back") {
   return label(note, text);
 }
 
-export function openNewColor(palette) {
-  const shade = document.createElement("div");
-  shade.className = "qdialog-shade";
-  const dialog = document.createElement("div");
-  dialog.className = "qdialog newcolor-dialog";
-  const inner = createPalette(() => {}, { pickersOnly: true });
-  const row = document.createElement("div");
-  row.className = "qdialog-buttons";
-  Object.assign(row.style, { display: "flex", justifyContent: "flex-end", gap: "6px" });
-  const add = document.createElement("button");
-  add.type = "button";
-  add.className = "qbutton qdefault";
-  label(add, "Add");
-  const cancel = document.createElement("button");
-  cancel.type = "button";
-  cancel.className = "qbutton";
-  label(cancel, "Cancel");
-  const close = () => shade.remove();
-  const accept = () => { palette.addSwatch(toHexArgb(inner.color())); close(); };
-  add.addEventListener("click", accept);
-  cancel.addEventListener("click", close);
-  shade.addEventListener("pointerdown", (e) => { if (e.target === shade) close(); });
-  dialog.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); accept(); }
-    if (e.key === "Escape") { e.preventDefault(); close(); }
-  });
-  row.append(add, cancel);
-  dialog.append(inner.el, row);
-  shade.append(dialog);
-  document.body.append(shade);
-  inner.update({ value: toHexArgb(palette.color()), swatches: [] });
-}
-
 // The board renderer is a per-machine choice, so it lives in the page's own
-// storage rather than in the document or the backend.
+// storage rather than in the document or the backend. Which one to use is
+// chosen in Python's Settings menu (pyfile/ui_settings.py).
 const RENDERER_KEY = "animean.boardRenderer";
 
 function savedRendererKind() {
@@ -900,7 +794,7 @@ function createBoards(mainHost, childHost, client, store) {
   // window's page names. A dialog keeps the keys it has.
   let activeSeen = null;
   const dialogOpen = () =>
-    [...document.querySelectorAll(".qdialog-shade")].some((s) => typeof s.getClientRects !== "function" || s.getClientRects().length > 0);
+    [...document.querySelectorAll(".qdialog-shade, .modal-blocker")].some((s) => typeof s.getClientRects !== "function" || s.getClientRects().length > 0);
   store.on("window", (value) => {
     const view = value?.activeView;
     if (!slots[view] || view === activeSeen) return;
@@ -932,19 +826,10 @@ export function syncDocks(runtime, store, isExternal) {
 export function createChrome(menuEl, statusEl, store, options = {}) {
   const isSatellite = Boolean(options?.satellite);
   let frozen = false;
-  const RENDERER_ITEM = "settings.renderer.";
-  const LANGUAGE_ITEM = "settings.language.";
+  // Every menu, Settings included, is the backend's menus state: which items a
+  // menu has is Python's (pyfile/ui_settings.py).
   const trigger = (item) => {
     if (frozen) return undefined;
-    if (item.id?.startsWith(RENDERER_ITEM)) {
-      store.boards?.setRenderer(item.id.slice(RENDERER_ITEM.length));
-      paintMenus();
-      return undefined;
-    }
-    if (item.id?.startsWith(LANGUAGE_ITEM)) {
-      setLanguage(item.id.slice(LANGUAGE_ITEM.length));
-      return undefined;
-    }
     return store.call("menu.trigger", {
       id: item.id,
       title: item.text,
@@ -957,37 +842,29 @@ export function createChrome(menuEl, statusEl, store, options = {}) {
       if (frozen) return;
       const reply = await store.call("menu.refresh", {});
       if (Array.isArray(reply?.menus)) {
-        bar.update([...reply.menus, settingsMenu()]);
+        bar.update(reply.menus);
       }
     },
   });
-  // The renderer and the language belong to this page, not the document, so
-  // their menus are added here rather than coming from the backend's menu state.
-  const settingsMenu = () => {
-    const kind = store.boards?.rendererKind ?? savedRendererKind();
-    return {
-      id: "settings",
-      text: "Settings",
-      kind: "submenu",
-      children: [{
-        id: "settings.renderer",
-        text: "Board Renderer",
-        kind: "submenu",
-        children: [
-          { id: `${RENDERER_ITEM}webgl`, text: "WebGL", kind: "radio", checked: kind === "webgl", enabled: hasWebgl() },
-          { id: `${RENDERER_ITEM}canvas2d`, text: "Canvas 2D", kind: "radio", checked: kind === "canvas2d" },
-        ],
-      }, {
-        id: "settings.language",
-        text: "Language",
-        kind: "submenu",
-        children: LANGUAGES.map(({ id, name }) => ({ id: `${LANGUAGE_ITEM}${id}`, text: name, kind: "radio", checked: id === language() })),
-      }],
-    };
-  };
-  const paintMenus = () => bar?.update([...(store.get("menus") ?? []), settingsMenu()]);
+  const paintMenus = () => bar?.update(store.get("menus") ?? []);
   if (!isSatellite) store.on("menus", paintMenus);
   onLanguage(paintMenus);
+  // A Settings choice comes back from Python; this page draws it and keeps it
+  // in its own storage, as before.
+  if (!isSatellite) {
+    store.on("py/preferences", (value) => {
+      if (!value || typeof value !== "object") return;
+      if (value.renderer && store.boards && value.renderer !== store.boards.rendererKind) {
+        store.boards.setRenderer(value.renderer);
+        tellRenderer();
+      }
+      if (value.language && value.language !== language()) setLanguage(value.language);
+    });
+  }
+  createDialogHost(store, {
+    role: isSatellite ? "satellite" : "main",
+    shell: options.shell,
+  });
   const text = document.createElement("div");
   text.className = "status-text";
   const grip = document.createElement("div");
@@ -1018,6 +895,17 @@ export function createChrome(menuEl, statusEl, store, options = {}) {
     if (!isSatellite) store.call("tool.option", { hook: "ui_language", name: "ui_language", type: "language", value: language() });
   };
   onLanguage(tellPython);
+  // The Settings menu ticks what this page draws with, and offers WebGL only
+  // where it works.
+  function tellRenderer() {
+    if (isSatellite || !store.boards) return;
+    store.call("tool.option", { hook: "ui_renderer", name: "renderer", type: "renderer", value: store.boards.rendererKind });
+  }
+  const tellCapabilities = () => {
+    if (isSatellite) return;
+    store.call("tool.option", { hook: "ui_renderer", name: "webgl", type: "capability", value: hasWebgl() });
+    tellRenderer();
+  };
   store.on("freeze", (value) => {
     const next = Boolean(value?.frozen ?? value);
     if (next === frozen) return;
@@ -1085,157 +973,21 @@ export function createChrome(menuEl, statusEl, store, options = {}) {
     if (item) { e.preventDefault(); trigger(item); }
   });
 
-  const dialogRoot = document.createElement("div");
   if (isSatellite) return;
-  document.body.append(dialogRoot);
-  const canvasDialog = createNewProjectDialog(dialogRoot, {
-    onCreate: (size) => store.call("project.new", size),
-    onCancel: () => {},
-  });
-  canvasDialog.update({ open: false });
-  // The Qt build opens on this dialog too (MainWindow::promptForNewCanvasOnStartup);
-  // a backend already holding a project is not asked.
-  let asked = false;
+  // The first window state: tell Python what this page shows. Whether to ask
+  // the canvas size at startup is Python's (file_menu.py), as every dialog is.
+  let reported = false;
   store.on("window", (value) => {
-    if (asked || !value?.canvasWidth) return;
-    asked = true;
+    if (reported || !value?.canvasWidth) return;
+    reported = true;
     tellPython();
-    if (asksForCanvasOnStartup(value)) {
-      canvasDialog.update({ width: value.canvasWidth, height: value.canvasHeight, open: true });
-    }
+    tellCapabilities();
   });
 
-  // Native pickers live in the shell; the page only says what to pick.
-  const pick = (mode, title, filters, multiple = false, defaultName = "") =>
-    window.__TAURI__?.core.invoke("pick_files", {
-      mode,
-      title: t(title),
-      filters: filters.map((filter) => ({ ...filter, name: t(filter.name) })),
-      multiple,
-      defaultName,
-    }) ?? Promise.resolve([]);
-  const PROJECT = [{ name: "AnimeAn Projects", extensions: ["anproj"] }];
-  const TEXTURE = [{ name: "AnimeAn Texture Views", extensions: ["textureview"] }];
-  const IMPORTS = {
-    "file.import.raster": ["raster", "Import Raster", [{ name: "Images", extensions: ["png", "jpg", "jpeg", "bmp", "gif", "webp", "tif", "tiff"] }]],
-    "file.import.opentoonz": ["opentoonz", "Import OpenToonz Lines", [{ name: "OpenToonz Vector Levels", extensions: ["pli"] }]],
-    "file.import.csp": ["csp", "Import Clip Studio Paint", [{ name: "Clip Studio Paint", extensions: ["clip"] }]],
-    "file.texture.import.raster": ["raster", "Import Raster", [{ name: "Images", extensions: ["png", "jpg", "jpeg", "bmp", "gif", "webp", "tif", "tiff"] }], "child"],
-    "file.texture.import.opentoonz": ["opentoonz", "Import OpenToonz Lines", [{ name: "OpenToonz Vector Levels", extensions: ["pli"] }], "child"],
-    "file.texture.import.csp": ["csp", "Import Clip Studio Paint", [{ name: "Clip Studio Paint", extensions: ["clip"] }], "child"],
-  };
-  const TEXTURE_ACTIONS = {
-    "file.texture.open": ["open", "open", "Open Texture View", TEXTURE],
-    "file.texture.save": ["saveAs", "save", "Save Texture View As", TEXTURE],
-    "file.texture.saveAs": ["saveAs", "save", "Save Texture View As", TEXTURE],
-    "file.texture.exportImage": ["exportImage", "save", "Export Texture View Image", [{ name: "PNG Image", extensions: ["png"] }]],
-  };
-  store.on("event", async (event) => {
+  store.on("event", (event) => {
     const args = event?.args ?? {};
-    switch (event?.name) {
-      case "contextMenu":
-        popupMenu(args.items ?? [], args.x, args.y, trigger);
-        break;
-      case "settings.open":
-        openSettings(store, args);
-        break;
-      case "dialog.canvasSize":
-        canvasDialog.update({ width: args.width, height: args.height, open: true });
-        break;
-      case "dialog.openProject": {
-        const [path] = await pick("open", "Open Project", PROJECT);
-        if (path) store.call("project.open", { path });
-        break;
-      }
-      case "dialog.saveProjectAs": {
-        const [path] = await pick("save", "Save Project As", PROJECT, false, defaultSaveName("project", store.get("window")));
-        if (!path) break;
-        const probe = await store.call("project.saveAs", { path, probe: true });
-        if (probe?.needsConfirmOverwrite) {
-          const choice = await messageBox({
-            title: "Save Project As",
-            text: `${probe.fileName} already exists.\nDo you want to replace it?`,
-            buttons: ["Yes", "No"],
-          });
-          if (choice !== "Yes") break;
-        }
-        await store.call("project.saveAs", { path, overwrite: true });
-        break;
-      }
-      case "menu.action": {
-        if (IMPORTS[args.id]) {
-          const [kind, title, filters, view] = IMPORTS[args.id];
-          const paths = await pick("open", title, filters);
-          if (!paths.length) break;
-          const baseParams = view ? { kind, paths, view } : { kind, paths };
-          if (kind === "opentoonz" || kind === "csp") {
-            const probe = await store.call("file.import", { ...baseParams, probe: true });
-            if (!probe) break;
-            let fitToCanvas = false;
-            if (probe.needsScale) {
-              const b = probe.sourceBounds ?? { x: 0, y: 0, width: 0, height: 0 };
-              const choice = await messageBox({
-                title,
-                text: `The imported drawing bounds are (${b.x}, ${b.y}) ${b.width} x ${b.height}, but the current canvas is ${probe.canvasWidth} x ${probe.canvasHeight}.\nFit it to the current canvas?`,
-                buttons: ["Yes", "No"],
-              });
-              fitToCanvas = choice === "Yes";
-            }
-            await store.call("file.import", { ...baseParams, fitToCanvas });
-          } else {
-            await store.call("file.import", baseParams);
-          }
-        } else if (TEXTURE_ACTIONS[args.id]) {
-          const [kind, mode, title, filters] = TEXTURE_ACTIONS[args.id];
-          const defaultName = mode === "save" ? defaultSaveName(kind, store.get("window")) : "";
-          const [path] = await pick(mode, title, filters, false, defaultName);
-          if (!path) break;
-          if (kind === "saveAs" || kind === "save") {
-            const probe = await store.call("file.texture", { kind, path, probe: true });
-            if (probe?.needsConfirmOverwrite) {
-              const choice = await messageBox({
-                title: "Save Texture View As",
-                text: `${probe.fileName} already exists.\nDo you want to replace it?`,
-                buttons: ["Yes", "No"],
-              });
-              if (choice !== "Yes") break;
-            }
-            await store.call("file.texture", { kind, path, overwrite: true });
-          } else {
-            await store.call("file.texture", { kind, path });
-          }
-        } else if (args.id?.startsWith("file.texture.")) {
-          store.call("file.texture", { kind: args.id.slice("file.texture.".length) });
-        }
-        break;
-      }
-    }
+    if (event?.name === "contextMenu") popupMenu(args.items ?? [], args.x, args.y, trigger);
   });
-}
-
-// A script's settings window: the same declarative controls as the options panel.
-function openSettings(store, { name, title, layout }) {
-  const shade = document.createElement("div");
-  shade.className = "qdialog-shade";
-  const dialog = document.createElement("div");
-  dialog.className = "qdialog settings-dialog";
-  const head = document.createElement("div");
-  head.className = "qdialog-title";
-  label(head, title ?? name ?? "");
-  const body = document.createElement("div");
-  const close = document.createElement("button");
-  close.type = "button";
-  close.className = "qbutton settings-close";
-  label(close, "Close");
-  close.addEventListener("click", () => shade.remove());
-  dialog.append(head, body, close);
-  shade.append(dialog);
-  document.body.append(shade);
-  createToolOptions(body, {
-    onOption: (option) => store.call("settings.option", { ...option, menu: name }),
-    onNewColor: (palette) => openNewColor(palette),
-    onSubWindow: () => null,
-  }).build(layout);
 }
 
 function normalizeKey(text) {

@@ -102,6 +102,15 @@ private:
     void openScriptSettings(const String &name, const String &title);
     void emitUiEvent(const String &name, const JsonObject &args = JsonObject());
 
+    // Hands one hook event to python_hooks.dispatch. Returns 1 when a hook set
+    // message["handled"], 0 when none did, -1 when one of them raised (the text
+    // in *errorOut).
+    int dispatchPythonEvent(const JsonObject &event, String *errorOut = nullptr);
+    bool forwardMenuToPython(const String &menu, const String &item, String *errorOut);
+    // The open dialogs are Python's (dialogs.py); these keep the broadcast copy.
+    void setDialogsFromPython(const String &json);
+    void dropDialog(const String &id);
+
     void handleFrameSink(const String &viewName, const BoardFrame &frame);
     void handleImageSink(const String &view, const String &key, const AnimeCore::Image &rgba);
     void handleCursorSink(const String &viewName, const AnimeCore::Cursor &cursor);
@@ -171,6 +180,13 @@ private:
 
     JsonObject m_lastEvent;
     StringList m_pythonDebugLog;
+
+    // The "dialogs" state. A dialog dropped because its window closed or failed
+    // stays dropped: its id is remembered, so a stale stack cannot bring it back.
+    JsonArray m_dialogs;
+    Set<String> m_droppedDialogIds;
+    // States Python broadcasts for the page (ui.broadcast), keyed "py/<name>".
+    Hash<String, JsonValue> m_pythonStates;
 
     Hash<String, CursorState> m_cursors;
     Hash<String, Image> m_cachedImages;

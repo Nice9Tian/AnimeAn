@@ -110,7 +110,18 @@ supported = animean_python.ui.field_display_supported("main")
 
 # ms 毫秒后在主线程事件循环调用 callable；回调抛出的异常会打印并吞掉，不会冲出事件循环
 animean_python.ui.call_later(16, callback)
+
+# 对话框栈（pyfile/dialogs.py 用）：从下到上的 JSON 数组，后端广播成 dialogs 状态
+animean_python.ui.set_dialogs(json_text)
+# Python 自己的状态，键以 py/ 开头，例如 py/preferences
+animean_python.ui.broadcast("py/preferences", json_text)
+# 读一份网页收到的状态，例如 "window"（画布尺寸、文件路径）
+window = animean_python.ui.state("window")
+# 像网页一样调一个后端方法；失败抛 RuntimeError，消息是后端的错误
+result = animean_python.ui.call("project.saveAs", {"path": path, "probe": True})
 ```
+
+对话框的回答经 `dialog` 事件回来（`python_hooks.set_hook(fn, dialog=True)`），File 菜单的项经 `menu` 事件（`menu` 为 `file`）。接下的处理器置 `message["handled"] = True`；没人置时，后端丢掉这个回答对应的对话框，或者把这个请求、这个 File 菜单项报成没人处理。见 `windows_theme.md`「对话框窗口」。
 
 脚本修改模型后，如果需要界面立刻更新，调用对应的 `ui.*.refresh()`。长时间同步计算可以用：
 

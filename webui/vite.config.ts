@@ -13,6 +13,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: resolve(rootDir, "index.html"),
+        dialog: resolve(rootDir, "dialog.html"),
         pen_probe: resolve(rootDir, "pen_probe.html"),
       },
     },

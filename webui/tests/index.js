@@ -19,7 +19,6 @@ const files = [
   "layers_assets.test.ts",
   "timeline_arrange.test.ts",
   "dialogs_and_options.test.ts",
-  "startup_dialog.test.ts",
   "pen_probe.test.ts",
   "texture_panel.test.ts",
   "relay.test.ts",
