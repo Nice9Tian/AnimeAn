@@ -577,6 +577,30 @@ try {
             });
             assert.equal(structReply.ok, true, `layer.applyStructure failed: ${structReply.error}`);
         }
+
+        // 13. A drag must not strip a group's tag: Auto Mapping finds its units by it.
+        const firstLayer = (stateMap.get("layers/main")?.rows ?? []).find((row) => !row.group)?.layer ?? 0;
+        const madeReply = await callBackend("python.run", {
+            command: `(lambda g: (main_model.set_layer_group_tag(g, 'probe'), print(g)))(main_model.create_layer_group('Probe', [${firstLayer}], [], True))`,
+        });
+        assert.equal(madeReply.ok, true, `python.run failed: ${madeReply.error}`);
+        const groupId = Number.parseInt(madeReply.result?.output ?? "", 10);
+        assert(groupId > 0, `create_layer_group must print the new group id, got: ${madeReply.result?.output}`);
+        await callBackend("layer.add", { view: "main" });
+        const tagged = await waitForState(
+            (map) => (map.get("layers/main")?.rows ?? []).some((row) => row.group && row.group_id === groupId),
+            "the tagged group shows in the layer rows"
+        );
+        assert(tagged !== false);
+        const groupedRows = stateMap.get("layers/main").rows;
+        const dragReply = await callBackend("layer.applyStructure", {
+            view: "main",
+            rows: groupedRows,
+            movedLayer: groupedRows.find((row) => !row.group)?.layer ?? -1,
+        });
+        assert.equal(dragReply.ok, true, `layer.applyStructure failed: ${dragReply.error}`);
+        const tagReply = await callBackend("python.run", { command: `print(main_model.layer_group_tag(${groupId}))` });
+        assert.equal(tagReply.result?.output?.trim(), "probe", "the group's tag must survive layer.applyStructure");
     } finally {
         try {
             fs.rmSync(tmpDir, { recursive: true, force: true });

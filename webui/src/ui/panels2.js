@@ -1,7 +1,7 @@
 // The panels that start hidden, drawn to match the Qt build: History, Assets, the
 // Repulsion Pad, Python Debug, the New Project dialog and the texture board's
 // frame. Each takes plain data and reports what the user did.
-import { tabBar, scrollArea, scrollBar, createMenuBar, isUnboundedViewport } from "./panels.js";
+import { tabBar, scrollArea, scrollBar, createMenuBar, isUnboundedViewport, PRESS_ENDS, trackPress } from "./panels.js";
 import { onThemeChange, cosmeticStroke, flattenCubic, hintedTracking, trackedDiv } from "./timeline.js";
 
 function div(cls, text) {
@@ -225,6 +225,17 @@ export function createForcePad(root, { onPress, onMove, onRelease } = {}) {
     if (springBack) value = { x: 0, y: 0 };
     paint();
   });
+  // A drag cut short would strand the listener in an open session; a centred
+  // release is the explicit cancel.
+  const cancel = () => {
+    if (!dragging) return;
+    dragging = false;
+    value = { x: 0, y: 0 };
+    onRelease?.(0, 0);
+    paint();
+  };
+  canvas.addEventListener("pointercancel", cancel);
+  canvas.addEventListener("lostpointercapture", cancel);
 
   function measure() {
     const dpr = window.devicePixelRatio || 1;
@@ -232,9 +243,7 @@ export function createForcePad(root, { onPress, onMove, onRelease } = {}) {
     width = page.clientWidth; height = page.clientHeight;
     canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr);
     canvas.style.width = `${width}px`; canvas.style.height = `${height}px`;
-    // A panel hidden mid-drag would strand the listener in an open session; a
-    // centred release is the explicit cancel.
-    if (wasShown && !width && dragging) { dragging = false; value = { x: 0, y: 0 }; onRelease?.(0, 0); }
+    if (wasShown && !width) cancel();
   }
   new ResizeObserver(() => { measure(); paint(); }).observe(page);
   onThemeChange(paint);
@@ -469,10 +478,7 @@ export function createNewProjectDialog(root, { onCreate, onCancel } = {}) {
     title.setPointerCapture(e.pointerId);
     const r = dialog.getBoundingClientRect(), host = shade.getBoundingClientRect();
     const dx = e.clientX - r.left, dy = e.clientY - r.top;
-    const move = (m) => { dialog.style.left = `${m.clientX - dx - host.left}px`; dialog.style.top = `${m.clientY - dy - host.top}px`; dialog.style.transform = "none"; };
-    const up = () => { title.removeEventListener("pointermove", move); title.removeEventListener("pointerup", up); };
-    title.addEventListener("pointermove", move);
-    title.addEventListener("pointerup", up);
+    trackPress(title, (m) => { dialog.style.left = `${m.clientX - dx - host.left}px`; dialog.style.top = `${m.clientY - dy - host.top}px`; dialog.style.transform = "none"; });
   });
 
   shade.style.display = "none";
@@ -534,6 +540,8 @@ export function createSubControlFrame(root, { onAffordance, onDragStart, onDragM
       if (Math.abs(e.clientX - pressX) + Math.abs(e.clientY - pressY) < 4) return;
       dragging = true;
       onDragStart?.(pressX, pressY);
+      // Floating moves the frame to another parent, which costs the press its capture.
+      bar.setPointerCapture?.(e.pointerId);
     }
     onDragMove?.(e.clientX, e.clientY);
   });
@@ -541,6 +549,12 @@ export function createSubControlFrame(root, { onAffordance, onDragStart, onDragM
     if (dragging) onDragEnd?.(e.clientX, e.clientY);
     pressed = false; dragging = false;
   });
+  const cancelDrag = () => {
+    if (dragging) onDragEnd?.(null, null);
+    pressed = false; dragging = false;
+  };
+  bar.addEventListener("pointercancel", cancelDrag);
+  bar.addEventListener("lostpointercapture", cancelDrag);
 
   let resizing = false, resizeX = 0, resizeY = 0, startW = 0, startH = 0;
   grip.addEventListener("pointerdown", (e) => {
@@ -562,9 +576,7 @@ export function createSubControlFrame(root, { onAffordance, onDragStart, onDragM
     root.style.height = `${h}px`;
     onResize?.(w, h);
   });
-  grip.addEventListener("pointerup", () => {
-    resizing = false;
-  });
+  for (const type of PRESS_ENDS) grip.addEventListener(type, () => { resizing = false; });
 
   let wash = null;
   const refresh = () => {
@@ -672,7 +684,7 @@ export function createTexturePanel(root, { onTrigger, onScroll, onButton } = {})
         b.classList.toggle("checked", on);
         b.addEventListener("click", () => {
           if (button.checkable) { on = !on; b.classList.toggle("checked", on); }
-          onButton?.(button.name, button.checkable ? on : false);
+          onButton?.(button.name, button.checkable ? on : true);
         });
         return b;
       }));
@@ -739,14 +751,11 @@ export function messageBox({ title = "", text = "", buttons = ["OK"] } = {}) {
       head.setPointerCapture?.(e.pointerId);
       const r = dialog.getBoundingClientRect(), host = shade.getBoundingClientRect();
       const dx = e.clientX - r.left, dy = e.clientY - r.top;
-      const move = (m) => {
+      trackPress(head, (m) => {
         dialog.style.left = `${m.clientX - dx - host.left}px`;
         dialog.style.top = `${m.clientY - dy - host.top}px`;
         dialog.style.transform = "none";
-      };
-      const up = () => { head.removeEventListener("pointermove", move); head.removeEventListener("pointerup", up); };
-      head.addEventListener("pointermove", move);
-      head.addEventListener("pointerup", up);
+      });
     });
 
     body.append(msg, row);

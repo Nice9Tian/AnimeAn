@@ -62,6 +62,7 @@ private:
     void captureScriptMenuNames();
     void loadProtectedPropertiesForChild();
     void surfaceTextureView();
+    void surfaceMainView();
     struct TextureViewSlot {
         double zoom = 1.0;
         PointF pan;
@@ -92,9 +93,9 @@ private:
     void emitUiEvent(const String &name, const JsonObject &args = JsonObject());
 
     void handleFrameSink(const String &viewName, const BoardFrame &frame);
-    void handleImageSink(const String &key, const AnimeCore::Image &rgba);
+    void handleImageSink(const String &view, const String &key, const AnimeCore::Image &rgba);
     void handleCursorSink(const String &viewName, const AnimeCore::Cursor &cursor);
-    void sendImagePacket(const String &key, const Image &rgba);
+    void sendImagePacket(const String &key, const Image &rgba, const String &view = String());
 
     void setPythonUiFrozen(bool frozen);
     void appendPythonDebug(const String &message);
@@ -155,7 +156,6 @@ private:
     PointF m_forcePadValue{0.0, 0.0};
     Hash<String, PointF> m_padValues;
 
-    JsonObject m_lastToolOptions;
     JsonObject m_lastEvent;
     StringList m_pythonDebugLog;
 

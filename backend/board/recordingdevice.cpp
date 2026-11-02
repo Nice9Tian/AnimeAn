@@ -1,10 +1,14 @@
 #include "recordingdevice.h"
 
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <cstddef>
+#include <utility>
 
 namespace {
+
+constexpr std::ptrdiff_t kCacheKeyLimit = 4096;
 
 std::uint64_t fnv1a64(const void *data, std::size_t len, std::uint64_t seed = 14695981039346656037ULL)
 {
@@ -235,13 +239,46 @@ RecordingDevice::RecordingDevice() = default;
 
 RecordingDevice::~RecordingDevice() = default;
 
-void RecordingDevice::setImageSink(ImageSink sink)
+void RecordingDevice::setImageSink(ImageSink sink, ImageForget forget)
 {
     m_imageSink = std::move(sink);
+    m_imageForget = std::move(forget);
+}
+
+void RecordingDevice::evictImages()
+{
+    if (m_sentImageBytes <= m_imageBudgetBytes) {
+        return;
+    }
+    AnimeCore::Vector<std::pair<std::uint64_t, std::string>> idle;
+    for (auto it = m_sentImages.cbegin(); it != m_sentImages.cend(); ++it) {
+        if (it.value().lastFrame != m_frameNumber) {
+            idle.append({it.value().lastFrame, it.key()});
+        }
+    }
+    std::sort(idle.begin(), idle.end());
+    for (const auto &entry : idle) {
+        if (m_sentImageBytes <= m_imageBudgetBytes) {
+            break;
+        }
+        m_sentImageBytes -= m_sentImages.value(entry.second).bytes;
+        m_sentImages.remove(entry.second);
+        if (m_imageForget) {
+            m_imageForget(entry.second);
+        }
+    }
+    m_cacheKeyToHash.clear();
+}
+
+void RecordingDevice::forgetSentImages()
+{
+    m_sentImages.clear();
+    m_sentImageBytes = 0;
 }
 
 void RecordingDevice::resetFrame()
 {
+    ++m_frameNumber;
     m_ops.clear();
 
     m_hasEmittedTransform = false;
@@ -491,7 +528,8 @@ std::string RecordingDevice::ensureImageSent(const AnimeCore::Image &image)
 {
     const std::int64_t cacheKey = image.cacheKey();
     auto cached = m_cacheKeyToHash.constFind(cacheKey);
-    if (cached != m_cacheKeyToHash.constEnd() && m_sentImageKeys.contains(*cached)) {
+    if (cached != m_cacheKeyToHash.constEnd() && m_sentImages.contains(*cached)) {
+        m_sentImages[*cached].lastFrame = m_frameNumber;
         return *cached;
     }
 
@@ -517,13 +555,21 @@ std::string RecordingDevice::ensureImageSent(const AnimeCore::Image &image)
         tmp >>= 4;
     }
     const std::string key(hexBuf, 16);
+    // A new ghost is a new Image each time, whether or not its pixels are new.
+    if (m_cacheKeyToHash.size() >= kCacheKeyLimit) {
+        m_cacheKeyToHash.clear();
+    }
     m_cacheKeyToHash.insert(cacheKey, key);
 
-    if (!m_sentImageKeys.contains(key)) {
-        m_sentImageKeys.insert(key);
+    if (!m_sentImages.contains(key)) {
+        const std::int64_t bytes = std::int64_t(w) * h * 4;
+        m_sentImages.insert(key, SentImage{bytes, m_frameNumber});
+        m_sentImageBytes += bytes;
         if (m_imageSink) {
             m_imageSink(key, rgba);
         }
+    } else {
+        m_sentImages[key].lastFrame = m_frameNumber;
     }
     return key;
 }

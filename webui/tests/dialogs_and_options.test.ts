@@ -5,11 +5,12 @@ import {
   colorDarker,
   colorLighter,
   colorLightness,
+  createPalette,
   parseColor,
   toHexRgb,
 } from "../src/ui/palette.js";
 import { createToolOptions } from "../src/ui/options.js";
-import { createCentral, isUnboundedViewport } from "../src/ui/panels.js";
+import { askForMenu, createCentral, isUnboundedViewport, trackPress } from "../src/ui/panels.js";
 
 class FakeClassList {
   set = new Set<string>();
@@ -130,6 +131,12 @@ class FakeElement {
     if (!this.parentElement) return;
     const idx = this.parentElement.children.indexOf(this);
     if (idx >= 0) this.parentElement.children.splice(idx, 1);
+    this.parentElement = null;
+  }
+  replaceWith(node: FakeElement) {
+    const siblings = this.parentElement!.children;
+    siblings[siblings.indexOf(this)] = node;
+    node.parentElement = this.parentElement;
     this.parentElement = null;
   }
   contains(other: FakeElement | null): boolean {
@@ -642,7 +649,6 @@ test("Options 里的纹理板行吃掉面板剩下的高度，没有这一行时
     body.append(root);
     const panel = createToolOptions(root, {
       onOption() {},
-      onPalette() {},
       onNewColor() {},
       onSubWindow: () => new FakeElement("div"),
     });
@@ -670,7 +676,6 @@ test("Options 的 color 控件与带 state.color 的 button 控件", async () =>
     const events: any[] = [];
     const panel = createToolOptions(root, {
       onOption: (e: any) => events.push(e),
-      onPalette() {},
       onNewColor() {},
       onSubWindow: () => null,
     });
@@ -885,4 +890,76 @@ test("矢量导入询问缩放与保存后缀改写同名文件询问覆盖", as
     assert.equal(calls.length, 1);
     assert.equal(calls[0].params.probe, true);
   });
+});
+
+test("the board moving in or out of its cell leaves the controls the user has touched alone", async () => {
+  await withDom(async ({ body }) => {
+    const root = new FakeElement("div");
+    body.append(root);
+    const cells: FakeElement[] = [];
+    const panel = createToolOptions(root, {
+      onOption() {},
+      onNewColor() {},
+      onSubWindow: () => {
+        const cell = new FakeElement("div");
+        cells.push(cell);
+        return cell;
+      },
+    });
+    const grid = root.querySelector(".opt-grid")!;
+    panel.build({
+      controls: [
+        { type: "check", name: "fine", title: "Fine", value: true, row: 0, start_column: 0, end_column: 0 },
+        { type: "subwindow", name: "texture_view", row: 1, start_column: 0, end_column: 0 },
+      ],
+    });
+    const control = grid.children[0];
+    panel.refreshSubWindows();
+    assert.equal(cells.length, 2);
+    assert.equal(grid.children[0], control, "only the cell of the board is replaced");
+    assert.equal(grid.children[1], cells[1]);
+    assert.equal(cells[1].style.gridRow, "2");
+  });
+});
+
+test("New Color reaches the draw layer before the box hears of it", async () => {
+  await withDom(async () => {
+    const events: string[] = [];
+    const palette = createPalette((kind: string) => events.push(kind));
+    palette.addSwatch("#ff112233");
+    assert.deepEqual(events, ["color", "box"]);
+    palette.addSwatch("#ff112233");
+    assert.deepEqual(events, ["color", "box", "color"], "a swatch already in the box is not added twice");
+  });
+});
+
+test("a press ends when the browser takes the pointer back as well as on release", () => {
+  for (const ending of ["pointerup", "pointercancel", "lostpointercapture"]) {
+    const listeners = new Map<string, Set<(e?: unknown) => void>>();
+    const el = {
+      addEventListener(type: string, fn: (e?: unknown) => void) {
+        if (!listeners.has(type)) listeners.set(type, new Set());
+        listeners.get(type)!.add(fn);
+      },
+      removeEventListener(type: string, fn: (e?: unknown) => void) {
+        listeners.get(type)?.delete(fn);
+      },
+    };
+    let moves = 0;
+    const fire = (type: string) => { for (const fn of [...(listeners.get(type) ?? [])]) fn(); };
+    trackPress(el, () => { moves += 1; });
+    fire("pointermove");
+    fire(ending);
+    fire("pointermove");
+    assert.equal(moves, 1, ending);
+    assert.equal([...listeners.values()].reduce((sum, set) => sum + set.size, 0), 0, "nothing stays attached");
+  }
+});
+
+test("a reply that arrives after a press or a newer menu opens nothing", () => {
+  const first = askForMenu();
+  assert.equal(first(), true);
+  const second = askForMenu();
+  assert.equal(first(), false);
+  assert.equal(second(), true);
 });

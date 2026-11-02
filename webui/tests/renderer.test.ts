@@ -331,9 +331,37 @@ describe("BoardRenderer", () => {
     });
 
     deliver({ key: "cur_arrow", w: 1, h: 1 }, new Uint8Array(4));
-    deliver({ key: "layer", w: 1, h: 1 }, new Uint8Array(4));
+    deliver({ key: "thumb_main_0_83x62_1", w: 1, h: 1 }, new Uint8Array(4));
+    deliver({ key: "other", w: 1, h: 1, view: "child" } as never, new Uint8Array(4));
+    deliver({ key: "layer", w: 1, h: 1, view: "main" } as never, new Uint8Array(4));
 
     assert.equal(renderer.getImage("cur_arrow"), undefined);
+    assert.equal(renderer.getImage("thumb_main_0_83x62_1"), undefined, "a thumbnail is the page's");
+    assert.equal(renderer.getImage("other"), undefined, "another board's image stays with that board");
     assert.ok(renderer.getImage("layer"));
+  });
+
+  it("drops an image when the backend forgets it for this board", () => {
+    const main = createMockCanvas();
+    let forget: (view: string, key: string) => void = () => {};
+    const client = {
+      onImage: () => () => {},
+      onImageForget(handler: typeof forget) {
+        forget = handler;
+        return () => {};
+      },
+      onBoard: () => () => {},
+      sendAck() {},
+    };
+    const renderer = new BoardRenderer(main.canvas, {
+      client: client as never,
+      createCacheCanvas: () => createMockCanvas().canvas,
+    });
+    renderer.putImage({ t: "image", key: "ghost", w: 1, h: 1, bytes: 4 }, new Uint8Array(4));
+
+    forget("child", "ghost");
+    assert.ok(renderer.getImage("ghost"), "the other board's forget is not this board's");
+    forget("main", "ghost");
+    assert.equal(renderer.getImage("ghost"), undefined);
   });
 });

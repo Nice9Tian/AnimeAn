@@ -1405,11 +1405,15 @@ String Dir::currentPath()
 String Dir::tempPath()
 {
 #ifdef _WIN32
-    wchar_t buf[MAX_PATH + 2]{};
-    const DWORD len = GetTempPathW(MAX_PATH + 1, buf);
-    if (len == 0)
+    const DWORD needed = GetTempPathW(0, nullptr);
+    if (needed == 0)
         return String();
-    return cleanPath(wstringToString(buf, static_cast<int>(len)));
+    std::wstring buf(needed, L'\0');
+    const DWORD written = GetTempPathW(needed, buf.data());
+    if (written == 0 || written >= needed)
+        return String();
+    buf.resize(written);
+    return cleanPath(wstringToString(buf.data(), static_cast<int>(buf.size())));
 #else
     return ANIME_STR("/tmp");
 #endif

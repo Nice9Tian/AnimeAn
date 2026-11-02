@@ -512,11 +512,36 @@ void testSizeFillAndSaveLoad()
         check(cLoaded.load(cPath, "PNG") && compareRgbaImages(cLoaded, qFromSize, 0),
               "Image::load should read saved PNG and match QImage pixel-for-pixel");
 
+        // Past MAX_PATH: QImage reads and writes these, and a deep folder should not stop an import.
+        QString longDir = tmpDir.path();
+        while (longDir.size() < 280) {
+            longDir += QStringLiteral("/long_directory_name");
+        }
+        check(QDir().mkpath(longDir), "should create the long test directory");
+        const AnimeCore::String longPath = QString(longDir + QStringLiteral("/image.png"));
+        check(fromSize.save(longPath, "PNG"), "Image::save should succeed past MAX_PATH");
+        AnimeCore::Image longLoaded;
+        check(longLoaded.load(longPath, "PNG") && compareRgbaImages(longLoaded, qFromSize, 0),
+              "Image::load should read a file past MAX_PATH");
+
         AnimeCore::Image nullImg;
         check(!nullImg.save(cPath, "PNG"), "Image::save on null Image should return false");
         check(!cLoaded.load(AnimeCore::String(), "PNG") && cLoaded.isNull(),
               "Image::load on empty path should fail and reset image to null");
     }
+}
+
+void testDevicePixelRatioSurvives()
+{
+    AnimeCore::Image image(4, 4, AnimeCore::Image::Format_ARGB32_Premultiplied);
+    image.setDevicePixelRatio(2.0);
+    QImage qImage(4, 4, QImage::Format_ARGB32_Premultiplied);
+    qImage.setDevicePixelRatio(2.0);
+    check(image.convertToFormat(AnimeCore::Image::Format_RGBA8888).devicePixelRatio()
+              == qImage.convertToFormat(QImage::Format_RGBA8888).devicePixelRatio(),
+          "convertToFormat should keep the device pixel ratio");
+    check(image.mirrored(true, false).devicePixelRatio() == 2.0,
+          "mirrored should keep the device pixel ratio");
 }
 
 void testQtBridge()
@@ -890,6 +915,7 @@ int main(){
     testQtBridge();
     testScaledDifferential();
     testSizeFillAndSaveLoad();
+    testDevicePixelRatioSurvives();
     testPremultipliedConversions();
     return failures == 0 ? 0 : 1;
 }

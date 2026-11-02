@@ -37,15 +37,30 @@ void BoardSurface::setCanSendFrame(std::function<bool()> canSend)
     }
 }
 
-void BoardSurface::setImageSink(std::function<void(const String &key, const Image &)> sink)
+void BoardSurface::setImageSink(std::function<void(const String &key, const Image &)> sink,
+                                std::function<void(const String &key)> forget)
 {
     if (!sink) {
-        m_engine->setImageSink(nullptr);
+        m_engine->setImageSink(nullptr, nullptr);
         return;
     }
-    m_engine->setImageSink([s = std::move(sink)](const std::string &key, const Image &image) {
-        s(String::fromStdString(key), image);
-    });
+    m_engine->setImageSink(
+        [s = std::move(sink)](const std::string &key, const Image &image) {
+            s(String::fromStdString(key), image);
+        },
+        [f = std::move(forget)](const std::string &key) {
+            f(String::fromStdString(key));
+        });
+}
+
+void BoardSurface::forgetSentImages()
+{
+    m_engine->forgetSentImages();
+}
+
+void BoardSurface::setImageBudget(std::int64_t bytes)
+{
+    m_engine->setImageBudget(bytes);
 }
 
 void BoardSurface::setCursorSink(std::function<void(const Cursor &)> sink)
@@ -233,6 +248,7 @@ void BoardSurface::flushFrame()
     m_waitingForAck = true;
     m_lastSentFrame = outFrame.frame;
     m_frameSink(outFrame);
+    m_engine->evictImages();
 }
 
 void BoardSurface::drawRects(const PaintState &state, const RectF *rects, int count)

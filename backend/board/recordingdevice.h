@@ -18,6 +18,12 @@ class RecordingDevice : public AnimeCore::PaintDevice
 {
 public:
     using ImageSink = std::function<void(const std::string &key, const AnimeCore::Image &image)>;
+    using ImageForget = std::function<void(const std::string &key)>;
+
+    // What the client may hold for one board. The playback cache's own budget, so
+    // a loop that fits there is only sent once; onion ghosts and everything else
+    // that stopped being drawn make room for it.
+    static constexpr std::int64_t kImageBudgetBytes = 512LL * 1024 * 1024;
 
     RecordingDevice();
     ~RecordingDevice() override;
@@ -32,8 +38,14 @@ public:
     void drawImage(const AnimeCore::PaintState &state, const AnimeCore::RectF &target,
                    const AnimeCore::Image &image, const AnimeCore::RectF &source) override;
 
-    void setImageSink(ImageSink sink);
+    void setImageSink(ImageSink sink, ImageForget forget);
     void resetFrame();
+    // Past the budget, tells the client to drop what was drawn longest ago. Never
+    // what the frame just recorded draws: that is what the client is showing.
+    void evictImages();
+    // A new client holds nothing, so every image goes out again when next drawn.
+    void forgetSentImages();
+    void setImageBudget(std::int64_t bytes) { m_imageBudgetBytes = bytes; }
     const AnimeCore::Vector<RecordedOp> &ops() const { return m_ops; }
 
 private:
@@ -51,9 +63,18 @@ private:
     std::string ensureImageSent(const AnimeCore::Image &image);
     void appendOp(std::string json);
 
+    struct SentImage {
+        std::int64_t bytes = 0;
+        std::uint64_t lastFrame = 0;
+    };
+
     ImageSink m_imageSink;
-    AnimeCore::Set<std::string> m_sentImageKeys;
+    ImageForget m_imageForget;
+    AnimeCore::Hash<std::string, SentImage> m_sentImages;
     AnimeCore::Hash<std::int64_t, std::string> m_cacheKeyToHash;
+    std::int64_t m_sentImageBytes = 0;
+    std::int64_t m_imageBudgetBytes = kImageBudgetBytes;
+    std::uint64_t m_frameNumber = 0;
 
     AnimeCore::Vector<RecordedOp> m_ops;
 

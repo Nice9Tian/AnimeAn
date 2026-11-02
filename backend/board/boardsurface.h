@@ -39,7 +39,10 @@ public:
 
     void setFrameSink(FrameSink sink);
     void setCanSendFrame(std::function<bool()> canSend);
-    void setImageSink(std::function<void(const AnimeCore::String &key, const AnimeCore::Image &)> sink);
+    void setImageSink(std::function<void(const AnimeCore::String &key, const AnimeCore::Image &)> sink,
+                      std::function<void(const AnimeCore::String &key)> forget);
+    void forgetSentImages();
+    void setImageBudget(std::int64_t bytes);
     void setCursorSink(std::function<void(const AnimeCore::Cursor &)> sink);
 
     void injectMouse(AnimeCore::Event::Type type,
