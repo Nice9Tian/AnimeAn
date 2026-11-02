@@ -115,7 +115,7 @@ def canvas_size():
         if size:
             _run("project.new", size, "New Project")
 
-    dialogs.canvas_size(window.get("canvasWidth") or 1280, window.get("canvasHeight") or 720, chosen)
+    return dialogs.canvas_size(window.get("canvasWidth") or 1280, window.get("canvasHeight") or 720, chosen)
 
 
 def open_project():
@@ -236,13 +236,45 @@ def _on_menu(message):
         run(str(message.get("name") or ""))
 
 
+_STARTUP = {"id": None}
+
+
+def _holds_project():
+    return bool(str(_window().get("currentFilePath") or ""))
+
+
+def _startup_canvas_size():
+    # A backend that already holds a project (opened before the page came up)
+    # keeps it instead of being offered a blank canvas over it.
+    if not _holds_project():
+        _STARTUP["id"] = canvas_size()
+
+
+def _drop_startup_question():
+    dialog_id = _STARTUP["id"]
+    if not dialog_id or not dialogs.is_open(dialog_id):
+        _STARTUP["id"] = None
+    elif _holds_project():
+        dialogs.close(dialog_id)
+        _STARTUP["id"] = None
+
+
+def _on_history_restore(_message):
+    # A project opened while the startup question still waits makes it moot.
+    # The file path is set after the history is reset, so look once the call is done.
+    ui = dialogs._ui()
+    if _STARTUP["id"] and dialogs.is_open(_STARTUP["id"]) and ui is not None and hasattr(ui, "call_later"):
+        ui.call_later(0, _drop_startup_question)
+
+
 def _ask_canvas_size_at_startup():
     # Every start opens on the canvas size (user-workflow.md, step 2). It waits
     # for the event loop, so it comes after the rest of startup.
     ui = dialogs._ui()
     if ui is not None and hasattr(ui, "call_later"):
-        ui.call_later(0, canvas_size)
+        ui.call_later(0, _startup_canvas_size)
 
 
 python_hooks.set_hook(_on_menu, menu=True)
+python_hooks.set_hook(_on_history_restore, historyrestore=True)
 _ask_canvas_size_at_startup()

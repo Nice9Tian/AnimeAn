@@ -92,6 +92,35 @@ def startup():
     return results
 
 
+def startup_with_a_project():
+    """A backend that already holds a project (opened before the page came up)
+    is not asked for a blank canvas, and one opened while the question waits
+    withdraws it."""
+    results = []
+    reset()
+    UI.later.clear()
+    UI.window["currentFilePath"] = "C:/work/girl.anproj"
+    file_menu._startup_canvas_size()
+    results.append(report("a backend already holding a project is not asked", dialogs.stack() == []))
+    UI.window["currentFilePath"] = ""
+    file_menu._startup_canvas_size()
+    question = top()
+    results.append(report("a fresh one is", question["kind"] == "canvasSize"))
+    python_hooks.dispatch({"event": "historyrestore", "view": "main"})
+    results.append(report("a history reset looks again once the call is done", len(UI.later) == 1))
+    UI.later.pop()[1]()
+    results.append(report("with no project yet the question stays", dialogs.is_open(question["id"])))
+    python_hooks.dispatch({"event": "historyrestore", "view": "main"})
+    UI.window["currentFilePath"] = "C:/work/girl.anproj"
+    UI.later.pop()[1]()
+    results.append(report("a project opened meanwhile withdraws the startup question",
+                          not dialogs.is_open(question["id"]) and UI.calls == []))
+    python_hooks.dispatch({"event": "historyrestore", "view": "main"})
+    results.append(report("and later history resets look no more", UI.later == []))
+    UI.window["currentFilePath"] = ""
+    return results
+
+
 def open_and_save():
     results = []
     reset()
@@ -267,6 +296,7 @@ def names_and_other_menus():
 def main():
     results = []
     results.extend(startup())
+    results.extend(startup_with_a_project())
     results.extend(open_and_save())
     results.extend(imports())
     results.extend(texture())

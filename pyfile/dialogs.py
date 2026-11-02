@@ -57,6 +57,10 @@ def is_modal():
     return any(entry["spec"].get("modal", True) for entry in _STACK)
 
 
+def is_open(dialog_id):
+    return any(entry["spec"]["id"] == dialog_id for entry in _STACK)
+
+
 def _publish():
     ui = _ui()
     publish = getattr(ui, "set_dialogs", None) if ui is not None else None
