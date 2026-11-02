@@ -742,6 +742,22 @@ test("Options 的 color 控件与带 state.color 的 button 控件", async () =>
   });
 });
 
+test("菜单标题没变就不重建菜单栏：鼠标下换了元素会再次打开菜单，一直刷新", async () => {
+  await withDom(async ({ body }) => {
+    const { createMenuBar } = await import("../src/ui/panels.js");
+    const root = new FakeElement("div");
+    body.append(root);
+    const bar = createMenuBar(root, { onTrigger() {} });
+    bar.update([{ id: "file", text: "File", children: [] }, { id: "edit", text: "Edit", children: [] }]);
+    const items = root.querySelectorAll(".item");
+    assert.equal(items.length, 2);
+    bar.update([{ id: "file", text: "File", children: [{ id: "x", text: "X" }] }, { id: "edit", text: "Edit", children: [] }]);
+    assert.equal(root.querySelectorAll(".item")[0], items[0]);
+    bar.update([{ id: "file", text: "File", children: [] }]);
+    assert.equal(root.querySelectorAll(".item").length, 1);
+  });
+});
+
 test("点开菜单先调 menu.refresh 获取最新勾选状态再显示弹窗", async () => {
   await withDom(async ({ body, ui: { createStore, createChrome } }) => {
     const stateListeners = new Map<string, (v: any) => void>();
