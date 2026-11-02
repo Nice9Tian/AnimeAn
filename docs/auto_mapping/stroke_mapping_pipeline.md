@@ -1,6 +1,6 @@
 # 笔画映射管线：从 Child 纹理到 Main 画面的离散、切断与拟合
 
-适用版本：`pyfile/auto_mapping.py`（Auto Mapping 2），核查基准 HEAD `cdea7d0`（2026-08-15，当时 3026 行）。2026-09-28 补注：文件已增长到万余行，§0 按现行代码改写（用户授权），其余各节的规则未变，函数名仍是稳定检索键。
+适用版本：`pyfile/auto_mapping.py`（Auto Mapping 2），核查基准 HEAD `cdea7d0`（2026-08-15，当时 3026 行）。2026-09-28 补注：文件已增长到万余行，§0 按现行代码改写（用户授权），其余各节的规则未变，函数名仍是稳定检索键。2026-11-03 补注：C++ 一侧的文件名和行号按 Tauri 迁移后的代码（main `cb5e0af`）更新；`auto_mapping.py` 的行号仍是旧基准。
 配套文档：
 
 * `point_mapping_newton.md` —— **单个点**如何被预测（阻尼牛顿反解）。本文不重复。
@@ -91,7 +91,7 @@ flowchart TD
 
 | 级 | 位置 | 公式 | 要点 |
 |---|---|---|---|
-| C++ `pathToPolylines` | `python_bindings.cpp:439-450` | `max(1, ceil(控制网长 / max(0.1, poly_step)))`，`poly_step = 4.0` | 均匀取 t；**`lineTo` 完全不细分**；`moveTo` 开启新 polyline，一笔可产出多条 |
+| C++ `pathToPolylines` | `python_bindings.cpp:457-461、492-525` | `max(1, ceil(控制网长 / max(0.1, poly_step)))`，`poly_step = 4.0` | 均匀取 t；**`lineTo` 完全不细分**；`moveTo` 开启新 polyline，一笔可产出多条 |
 | Python `_densify` | `auto_mapping.py:1925` | `count = max(1, round(length/4.0)) if step > 0 else 1` | 用 `round()` 而非 `ceil()`：**只有 ≥ 6.0 px 的段才会被分开**，5.9 px 的段原样保留 |
 | `_path_commands_to_polygons`（仅裁剪多边形） | `:730` | `max(4, min(24, ceil(net / 6.0)))` | 步长是 **6.0**，不是 `POLY_STEP` |
 
@@ -402,10 +402,10 @@ obj = self.animean.vectorlogic.make_stroke_object_from_path(
     commands, flat, color, width, image.stroke_count() + 1)
 ```
 
-C++ 侧（`python_bindings.cpp:1906` → `vectorlogic.cpp:264`）：
+C++ 侧（`python_bindings.cpp:2463` → `vectorlogic.cpp:1694`）：
 
 ```cpp
-// 通用机制：让 QPainterPath 保留曲线段（来自 commands），
+// 通用机制：让笔画的 Path（AnimeCore::Path）保留曲线段（来自 commands），
 // 同时 points 携带密集展平，使 hit-testing / 擦除 / subStroke 仍然可用。
 // 所有曲线拟合逻辑都在 Python 侧。
 return AnimeVectorLogic::makeStrokeFromPath(objectToPath(commands),
@@ -465,21 +465,24 @@ return AnimeVectorLogic::makeStrokeFromPath(objectToPath(commands),
 | 出口 | `_cubics_to_commands` / `_MappedOutput` | 1371 / 2356 |
 | 三模式 | `_emit_polyline_mode` / `_emit_spline_mode` / `_emit_bezier_mode` | 2456 / 2477 / 2498 |
 | 编排 | `_perform_mapping` / `_EMITTERS` | 2678 / 2671 |
-| C++ | `make_stroke_object_from_path` | `python_bindings.cpp:1906` |
-| C++ | `makeStroke` / `makeSmoothedPath` / `makeStrokeFromPath` | `vectorlogic.cpp:237 / 177 / 264` |
-| C++ | `pathToPolylines` / `sampleCountForCurve` | `python_bindings.cpp:~500 / 439` |
+| C++ | `make_stroke_object_from_path` | `python_bindings.cpp:2463` |
+| C++ | `makeStroke` / `makeSmoothedPath` / `makeStrokeFromPath` | `vectorlogic.cpp:1663 / 312 / 1694` |
+| C++ | `pathToPolylines` / `sampleCountForCurve` | `python_bindings.cpp:518 / 457` |
 
 **全链路**：
 
 ```
 extra_tools.py 声明 "auto_mapping_2"
-  → mainwindow.cpp:1783 ToolsPanel::extraToolSelected
-    → python_hooks 派发 → _auto_mapping_button → run_auto_mapping → _run
-      → _perform_mapping
-        → _absorb_legacy_items ×2 → 校验导引线 → _polylines_cross 校验相交
-        → build_mapper → _collect_pattern_strokes
-        → 逐笔 _EMITTERS[mode] → _emit_seals → out.flush()
-          → make_stroke_object_from_path → makeStrokeFromPath → Main 画布
+  → 网页 Tools 按钮 toolSelectExtra（webui/src/ui/tools.js:8）→ backendsession.cpp:2061 tool.selectExtra
+    → animeanbusiness.cpp:1956 AnimeanBusiness::selectExtraTool
+      → openglwidget.cpp:1069 sendPythonExtraToolMessage 派发 "extra"
+        → python_hooks 派发 → _auto_mapping_button → _run
+          → _perform_mapping
+            → _absorb_legacy_items ×2 → 校验导引线 → _polylines_cross 校验相交
+            → build_mapper → _collect_pattern_strokes
+            → 逐笔 _EMITTERS[mode] → _emit_seals → out.flush()
+              → make_stroke_object_from_path → makeStrokeFromPath → Main 画布
+      → 随后 extra_tools.run_tool_handler → run_auto_mapping：这次点击已处理，直接返回
 ```
 
 ---
@@ -495,7 +498,7 @@ extra_tools.py 声明 "auto_mapping_2"
 7. **`_bernstein_cubic_roots` 的切向接触鲁棒性被高估**，且 `set()` 去重对跨路径重复根无效（§6.2）。
 8. **`_commands_to_subpaths` 的 quad 分支是死代码**——没有 quad 生产者。
 9. **`_emit_seals` 无视当前模式**调用 `_stroke_polylines`；bezier 模式下没有 `polylines` 键，于是退回 `raw_points` 量 V 跨度（代码里已有注释承认）。
-10. **`strokeNodeToDict` 重复计算几何**（`python_bindings.cpp:793-816` 调 `strokeToDict` 后又重跑同一 `if(toPoly)` 块），每次取 cell 都白跑一遍 `pathToPolylines`。
+10. **`strokeNodeToDict` 重复计算几何**（`python_bindings.cpp:740-764` 调 `strokeToDict` 后又重跑同一 `if(toPoly)` 块），每次取 cell 都白跑一遍 `pathToPolylines`。
 11. **仓库内没有这套管线的测试装置**。规格文档 §6.2 / §11 引用的测量数字（0.3026/0.0029、37.3168/0.4338、1.4–4.9× 成本）在 `pyfile/` 下找不到对应的复现脚本。
 
 ---
@@ -511,5 +514,5 @@ MAJOR 判定抓出的是真错误：追踪代理断言"C++ `pathToPolylines` 展
 以下三条结论由人工直接读源码复核：
 
 * **不存在最小二乘/Schneider 拟合**（grep 零命中，两代理独立确认）；
-* **曲线由 `makeSmoothedPath` 合成**（`vectorlogic.cpp:177-216`）；
+* **曲线由 `makeSmoothedPath` 合成**（`vectorlogic.cpp:312-351`）；
 * **`_split_by_fold` 的 30 次二分与边界共享**（`auto_mapping.py:2042-2056`）。
