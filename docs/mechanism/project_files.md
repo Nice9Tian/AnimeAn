@@ -8,12 +8,12 @@
 |---|---|---|
 | `*.anproj`（JSON） | 主画板与纹理板两个场景：列（类型 vector / fill / raster、父层、可见性、锁定）、帧与帧名（只在设置过时写出）、资产、单元格、笔画（点列 + 含三次段的路径 + 属性 + 线型）、填充区域（含属性）、栅格、图层组与 tag、scriptData | 用户自选位置；历史不入文件 |
 | `*.textureview`（JSON） | 单个场景（纹理板） | 跨工程复用图案 |
-| `Settings`（`%APPDATA%\AnimeAn\settings.json`，`ANIMEAN_SETTINGS_DIR` 可覆盖） | 主题模式（`theme/mode`）；时间轴的停靠区、浮动、折叠、可见与浮动窗几何（`timeline/*`） | 机器级 JSON 文件 |
+| `Settings`（`%APPDATA%\AnimeAn\settings.json`，`ANIMEAN_SETTINGS_DIR` 可覆盖） | 主题模式（`theme/mode`）；时间轴的停靠区、浮动、折叠与可见（`timeline/*`） | 机器级 JSON 文件 |
 | 系统临时目录 | To 3D 导出的 HTML 查看器 | 每次导出一个新文件 |
 | 会话内存 | 历史快照、播放缓存、单元焦点、斥力板基线 | 不落盘 |
 | `test_document/` | 样例：`A.pli`、`bigA.clip`、`texture.textureview` | 入库 |
 
-除 `%APPDATA%\AnimeAn\settings.json` 外程序不落盘（`Settings` 只出现在 `theme.cpp` 与 `backend/session/backendsession.cpp`；网页渲染器偏好 `animean.boardRenderer` 存 WebView2 的 `localStorage`）。
+除 `%APPDATA%\AnimeAn\settings.json` 外程序不落盘（`Settings` 只出现在 `theme.cpp` 与 `backend/session/backendsession.cpp`；网页的渲染器偏好 `animean.boardRenderer` 和 Tools 分组的折叠状态 `animean.toolGroups` 存 WebView2 的 `localStorage`）。
 
 ## 文件归属与身份
 

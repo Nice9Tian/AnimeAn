@@ -38,7 +38,7 @@
 
 ## 可见性与锁定
 
-- 图层面板勾选 → 前置事件 `visibility` → `visibility_tool` 经 `scene.set_layer_visible` 施加并置 `handled`；面板重建走队列，不在自己的信号栈里重建。"独奏""不许藏最后一层"这类规则将来也在这里。
+- 图层面板勾选 → 前置事件 `visibility` → `visibility_tool` 经 `scene.set_layer_visible` 施加并置 `handled`，再调 `ui.layer.refresh()`，后端按脏键合并推送 `layers/*` 状态，网页重建列表。"独奏""不许藏最后一层"这类规则将来也在这里。
 - 图层锁定：模型 `layerLocked` / `setLayerLocked` 与绑定 `layer_locked` / `set_layer_locked` 已有，只有 Transfer 读它；面板开关是规划（`../product_features.md`）。
 
 ## 图层的新建与单元

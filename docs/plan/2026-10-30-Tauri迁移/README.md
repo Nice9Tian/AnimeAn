@@ -1,6 +1,6 @@
 # Tauri 迁移计划
 
-2026-10-30（2026-11-02 回填）。状态：方向已定；用户确认的一级、二级修改已落到本分支，G6 改成窄版写入，R4 的词条保留（见「文档修改进度」）；真实软件已对接（见「对接真实软件」），WebGL 画板和计算层去 Qt 已完成（见「WebGL 画板」「计算层去 Qt」）；第 5、6、7 步代码已完成并进 `claude/tauri-migration`（Qt 桌面界面已删除，后端不链接任何 Qt 模块）；第 0 步探针（`webui/pen_probe.html`）已做好，真笔对比等用户跑；`main` 没有合并。2026-11-02 验收通过，见「验收结果」。
+2026-10-30（2026-11-02 回填）。状态：方向已定；用户确认的一级、二级修改已落到本分支，G6 改成窄版写入，R4 的词条保留（见「文档修改进度」）；真实软件已对接（见「对接真实软件」），WebGL 画板和计算层去 Qt 已完成（见「WebGL 画板」「计算层去 Qt」）；第 5、6、7 步代码已完成并进 `claude/tauri-migration`（Qt 桌面界面已删除，后端不链接任何 Qt 模块）；第 0 步探针（`webui/pen_probe.html`）已做好，真笔对比等用户跑。2026-11-02 验收通过，见「验收结果」；同日用户指示合入 `main`，合入前语义文档交 Argon 交叉审核。
 
 来源：用户要在浏览器里快速调试、亲手试手感，两边界面一致，随后决定「现在定 Tauri」，并在审阅页逐条拍板。
 
@@ -123,7 +123,7 @@ Python 仍然嵌在后端进程里，所以 `pydeps` 的 pip 自装、To 3D 的 
    实际结果：代码完成，进了 `claude/tauri-migration`。补齐了帧缩略图（`timeline.thumbnails`）、纹理板菜单与脚本按钮（`textureMenus`、`texture.viewButton`）、工具选项内嵌纹理视图与三处归属切换（`texture.setHome`）、图层树拖拽重排（`layer.applyStructure`）、时间轴横竖停靠与 `Settings` 持久化、导入与保存探测；Qt 面板 `.cpp` / `.h` 已全部删除，只留 `childrenpanel/tool_controls/*.json`。
 7. **打包和合并。** Tauri 与后端打成压缩包，在离线的新机器上验证，然后找时机合并进 `main`。
    预计 1 周。完成标志：迁移分支相对 merge-base 的 `pyfile/` 差异为空，`tests/t_*.py` 全过，文档里没有旧术语，R4 已处理。合并和删除 Qt 界面代码都由用户确认。
-   实际结果：第 7 步代码与打包完成，进了 `claude/tauri-migration`。`build_scripts/agent_build.ps1`、`build_scripts/package_tauri.ps1` 与 `build_scripts/toolchain_location.ps1` 编译 `AnimeAnBackend` 与 Tauri 外壳并输出无 Qt 的 `dist\AnimeAn\`；三级机制文档与 `algorithm/core/README.md` 已更新到现状。`main` 没有合并。
+   实际结果：第 7 步代码与打包完成，进了 `claude/tauri-migration`。`build_scripts/agent_build.ps1`、`build_scripts/package_tauri.ps1` 与 `build_scripts/toolchain_location.ps1` 编译 `AnimeAnBackend` 与 Tauri 外壳并输出无 Qt 的 `dist\AnimeAn\`；三级机制文档与 `algorithm/core/README.md` 已更新到现状。2026-11-02 用户指示合入 `main`。
 
 ## 对接真实软件
 
@@ -300,7 +300,7 @@ G6 等 Web 导出做出来再写进 `../../developer_guide.md`，现在写进去
 
 2026-11-02，集成分支 f7fe7a7，任务记录 `../../long_time_work/2026-11-02-Tauri迁移收尾.md`。
 
-- 后端不链接任何 Qt 模块：包内 0 个 Qt 文件，`AnimeAnBackend.exe` 的导入表没有 Qt。Qt 只留在两处：`algorithm/core/qtbridge*.h` 和 `tests/core/` 的差分测试（找到 Qt 才编），`bench/penprobe` 的对比探针。
+- 后端不链接任何 Qt 模块：包内 0 个 Qt 文件，`AnimeAnBackend.exe` 的导入表没有 Qt。Qt 只留在三处，都不在产品构建里：`algorithm/core/qtbridge*.h` 和 `tests/core/` 的差分测试（找到 Qt 才编），本目录 `bench/main.cpp` 的绘制基准，`bench/penprobe` 的对比探针。
 - 包拷到别处、PATH 只留 System32：全部模块来自包或系统，`session_smoke` 通过。339 MB。
 - `pyfile/`、`pythonbind/animemodel.py`、`opentoonz_tools/` 相对 merge-base 零差异，`tests/t_*.py` 全过。
 - 新旧对比 26 个场景、497 步，差异全部有去向。
