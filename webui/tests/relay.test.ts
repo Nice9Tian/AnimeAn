@@ -1130,15 +1130,8 @@ test("卫星页 createChrome：不开对话框窗口也不弹选择框，模态�
     assert.equal(defaultPrevented, true);
     assert.deepEqual(triggeredMenus.map((m: any) => m.id), ["edit.undo"]);
 
-    // 重做还有一个菜单上不显示的键：Ctrl+Shift+Z
-    backend.emitState("menus", [
-      {
-        id: "edit",
-        text: "Edit",
-        children: [{ id: "edit.redo", text: "Redo", shortcut: "Ctrl+Y", enabled: true }],
-      },
-    ]);
-    win.dispatchEvent({
+    // 重做还有一个菜单上不显示的键：Ctrl+Shift+Z，由 Python 在菜单项上声明（extraShortcuts），页面自己不加键
+    const shiftZ = {
       type: "keydown",
       key: "Z",
       ctrlKey: true,
@@ -1146,7 +1139,25 @@ test("卫星页 createChrome：不开对话框窗口也不弹选择框，模态�
       shiftKey: true,
       target: dockEl,
       preventDefault() {},
-    });
+    };
+    backend.emitState("menus", [
+      {
+        id: "edit",
+        text: "Edit",
+        children: [{ id: "edit.redo", text: "Redo", shortcut: "Ctrl+Y", enabled: true }],
+      },
+    ]);
+    win.dispatchEvent(shiftZ);
+    await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual(triggeredMenus.map((m: any) => m.id), ["edit.undo"], "a key nobody declared does nothing");
+    backend.emitState("menus", [
+      {
+        id: "edit",
+        text: "Edit",
+        children: [{ id: "edit.redo", text: "Redo", shortcut: "Ctrl+Y", extraShortcuts: ["Ctrl+Shift+Z"], enabled: true }],
+      },
+    ]);
+    win.dispatchEvent(shiftZ);
     await new Promise((r) => setTimeout(r, 10));
     assert.deepEqual(triggeredMenus.map((m: any) => m.id), ["edit.undo", "edit.redo"]);
 

@@ -711,6 +711,13 @@ try {
     await callBackend("windows.setVisible", { name: "python_debug" });
     await waitForState((map) => map.get("windows")?.python_debug?.visible === debugBefore, "windows.setVisible without visible toggles it back");
     assert.equal((await callBackend("windows.setVisible", { name: "nothing" })).ok, false, "an unknown window is reported");
+    const timelineBefore = Boolean(stateMap.get("windows")?.timeline?.visible);
+    await callBackend("windows.setVisible", { name: "timeline", visible: !timelineBefore });
+    await waitForState((map) => map.get("windows")?.timeline?.visible === !timelineBefore && map.get("timeline")?.visible === !timelineBefore
+        && findItem(map.get("menus"), "windows.timeline")?.checked === !timelineBefore, "windows.setVisible shows or hides the Timeline");
+    await callBackend("menu.trigger", { id: "windows.timeline" });
+    await waitForState((map) => map.get("windows")?.timeline?.visible === timelineBefore, "Windows > Timeline with no checked toggles it back");
+    assert.deepEqual(findItem(menusNow, "edit.redo")?.extraShortcuts, ["Ctrl+Shift+Z"], "Redo's second key comes with the menu");
     await callBackend("menu.trigger", { id: "child.setting.background.black", checked: true });
     await waitForState((map) => map.get("textureSettings")?.background === "black" && findItem(map.get("textureMenus"), "child.setting.background.black")?.checked === true, "Setting > Background on the texture board");
     await callBackend("menu.trigger", { id: "child.setting.background.white", checked: true });

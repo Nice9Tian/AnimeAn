@@ -120,7 +120,8 @@ def _edit_items():
     history = _state("history")
     return [
         _item("edit.undo", "Undo", shortcut="Ctrl+Z", enabled=bool(history.get("canUndo"))),
-        _item("edit.redo", "Redo", shortcut="Ctrl+Y", enabled=bool(history.get("canRedo"))),
+        _item("edit.redo", "Redo", shortcut="Ctrl+Y", extraShortcuts=["Ctrl+Shift+Z"],
+              enabled=bool(history.get("canRedo"))),
     ]
 
 

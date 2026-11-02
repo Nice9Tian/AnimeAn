@@ -104,8 +104,13 @@ def register_menu(definition):
     item:       {"name": str, "title": str,
                  "kind": "action" | "check" | "radio" | "separator" | "submenu",
                  "checked": bool, "enabled": bool, "shortcut": str,
+                 "extraShortcuts": [str] (more keys for it, not printed),
                  "id": str (optional: the item's id as the page sees it;
-                            without one C++ makes "script:<host>:<menu>:<name>"),
+                            without one C++ makes "script:<host>:<menu>:<name>".
+                            An id names one item: declared in two menus, as
+                            File > Texture and the texture board's File do,
+                            it is one item, and its event names the main
+                            bar's menu),
                  "items": [...] (submenu only),
                  "menu": str, "host": str (submenu only: show that registered
                           menu's items here, with that menu's ids)}
@@ -152,16 +157,17 @@ def menus_json(host=None):
             out.append(entry)
         return out
 
+    # Each menu is written on its own: one that fails, or holds a value JSON
+    # cannot carry, drops out alone instead of taking the whole bar with it.
     menus = []
     for menu in registered_menus(host):
         entry = dict(menu)
         try:
             entry["items"] = resolve(entry.get("items"))
+            menus.append(json.dumps(entry))
         except Exception as error:
             print(f"[python_hooks] menu '{entry.get('name')}' failed: {error}")
-            continue
-        menus.append(entry)
-    return json.dumps(menus)
+    return "[" + ",".join(menus) + "]"
 
 
 DEFAULT_MENU_ORDER = 50

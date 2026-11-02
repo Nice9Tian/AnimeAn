@@ -19,7 +19,9 @@
 - `items` 可为可调用，打开时求值。
 - `host` 指定挂主窗口还是纹理板的菜单栏，同名不同宿主是两个菜单。
 - `order` 定位置：数字小的在前，缺省 50，同值按登记先后。主窗口 File 10、Edit 20、Theme 80、Windows 90、Settings 100；纹理板 File 10、Setting 20。
-- 项可带 `id`，C++ 照用（`file.open`、`windows.timeline` 这些 id 网页和测试一直在用）。触发它时，作为声明它的菜单的 `menu` 事件回到 Python；没有处理器置 `handled` 就报错。没带 `id` 的项是 `script:<host>:<menu>:<name>`。
+- 项可带 `id`，C++ 照用（`file.open`、`windows.timeline` 这些 id 网页和测试一直在用）。触发它时，作为声明它的菜单的 `menu` 事件回到 Python；没有处理器置 `handled` 就报错。没带 `id` 的项是 `script:<host>:<menu>:<name>`。一个 id 是一个项：两条菜单栏都有同一个 id 时（File ▸ Texture 和纹理板的 File），事件里的 `menu` 是主窗口那个。哪条菜单栏重建，它的路由就换成新的，去掉的项不再路由。
+- 项可带 `extraShortcuts`：菜单上不显示、也能选这一项的键（Redo 的 Ctrl+Shift+Z）。网页按它和 `shortcut` 绑键，自己不加键。
+- 一个菜单求值出错或写不成 JSON，只有它从菜单栏上掉下来；`menus_json` 整个出错时，状态栏显示 `menus error: …`。`app_menus.py` 在 `python_hooks` 之后第一个导入，后面的模块导入失败也带不走 File、Edit、Theme、Windows（看错误要用 Windows ▸ Python Debug）。
 - 子菜单可带 `menu`、`host`：这里显示另一个登记的菜单，它的项用那个菜单的 id 和路由。File ▸ Texture ▸ Setting 显示纹理板的 Setting，Setting 里显示纹理板的 View。
 - 菜单项背后是通用方法：`history.undo`、`theme.set`、`windows.setVisible`、`windows.showTextureView`、`texture.setChangeable`、`texture.setBackground`，见 `backend_protocol.md`。
 

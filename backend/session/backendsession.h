@@ -143,16 +143,20 @@ private:
     JsonArray buildTextureMenusState() const;
     JsonObject buildTextureSettingsState() const;
     JsonArray buildTextureViewButtonsState() const;
-    // The menus Python declares for one bar (python_hooks.menus_json), keyed by
-    // host and then by name; a bar's own list keeps Python's order.
-    using PythonMenus = Hash<String, JsonArray>;
+    // One bar being built: the menus Python declares (python_hooks.menus_json,
+    // fetched once per host, in Python's order) and the routes the bar's items
+    // with their own ids leave behind.
+    struct MenuBuild {
+        Hash<String, JsonArray> menus;
+        Hash<String, MenuRoute> routes;
+    };
     JsonArray buildMenuBar(const String &host) const;
-    JsonArray pythonMenus(const String &host, PythonMenus *menus) const;
-    JsonObject pythonMenu(const String &host, const String &name, PythonMenus *menus) const;
+    JsonArray pythonMenus(const String &host, MenuBuild *build) const;
+    JsonObject pythonMenu(const String &host, const String &name, MenuBuild *build) const;
     JsonArray buildScriptMenuItems(const String &host,
                                     const String &menuName,
                                     const JsonArray &items,
-                                    PythonMenus *menus,
+                                    MenuBuild *build,
                                     int depth) const;
     JsonObject buildToolsState() const;
     JsonObject buildToolOptionsState() const;
@@ -189,9 +193,10 @@ private:
     TextureViewSlot m_textureViewCentral;
     TextureViewSlot m_textureViewControl;
 
-    // Learnt while the bars are built: a trigger of one of these ids goes back
-    // to the Python menu that declared it.
-    mutable Hash<String, MenuRoute> m_menuRoutes;
+    // Learnt while the bars are built, per bar and replaced when that bar is
+    // built again: a trigger of one of these ids goes back to the Python menu
+    // that declared it (the main bar's first when both bars have the id).
+    mutable Hash<String, Hash<String, MenuRoute>> m_menuRoutes;
 
     PointF m_forcePadValue{0.0, 0.0};
     Hash<String, PointF> m_padValues;

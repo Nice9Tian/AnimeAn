@@ -3424,16 +3424,24 @@ int BackendSession::dispatchPythonEvent(const JsonObject &event, String *errorOu
 
 bool BackendSession::findMenuRoute(const String &id, MenuRoute *out) const
 {
-    if (!m_menuRoutes.contains(id)) {
-        // The routes are learnt while the bars are built, and a trigger can come first.
-        buildMenusState();
-        buildTextureMenusState();
-    }
-    if (!m_menuRoutes.contains(id)) {
+    // The main bar first, so an id on both bars (File > Texture) always routes the same way.
+    const auto lookUp = [this, &id, out]() {
+        for (const String &bar : {String("main"), String("child")}) {
+            const Hash<String, MenuRoute> routes = m_menuRoutes.value(bar);
+            if (routes.contains(id)) {
+                *out = routes.value(id);
+                return true;
+            }
+        }
         return false;
+    };
+    if (lookUp()) {
+        return true;
     }
-    *out = m_menuRoutes.value(id);
-    return true;
+    // The routes are learnt while the bars are built, and a trigger can come first.
+    buildMenusState();
+    buildTextureMenusState();
+    return lookUp();
 }
 
 bool BackendSession::forwardMenuToPython(const MenuRoute &route, const JsonObject &params, String *errorOut)
@@ -3894,7 +3902,7 @@ constexpr int kMaxMenuDepth = 8;
 JsonArray BackendSession::buildScriptMenuItems(const String &host,
                                                 const String &menuName,
                                                 const JsonArray &items,
-                                                PythonMenus *menus,
+                                                MenuBuild *build,
                                                 int depth) const
 {
     JsonArray out;
@@ -3924,15 +3932,15 @@ JsonArray BackendSession::buildScriptMenuItems(const String &host,
             if (depth < kMaxMenuDepth) {
                 const String shown = obj.value(String("menu")).toString();
                 if (shown.isEmpty()) {
-                    children = buildScriptMenuItems(host, menuName, obj.value(String("items")).toArray(), menus, depth + 1);
+                    children = buildScriptMenuItems(host, menuName, obj.value(String("items")).toArray(), build, depth + 1);
                 } else {
                     // Another registered menu shown here: its items keep that menu's ids and routes.
                     const String shownHost = obj.value(String("host")).toString(host);
-                    const JsonObject shownMenu = pythonMenu(shownHost, shown, menus);
+                    const JsonObject shownMenu = pythonMenu(shownHost, shown, build);
                     children = buildScriptMenuItems(shownHost,
                                                     shown,
                                                     shownMenu.value(String("items")).toArray(),
-                                                    menus,
+                                                    build,
                                                     depth + 1);
                 }
             }
@@ -3953,18 +3961,27 @@ JsonArray BackendSession::buildScriptMenuItems(const String &host,
             continue;
         }
         String id = String("script:%1:%2:%3").arg(host, menuName, itemName);
+        // The same id twice on one bar is one item; the first declaration routes it.
         if (!explicitId.isEmpty()) {
             id = explicitId;
-            m_menuRoutes.insert(explicitId, MenuRoute{host, menuName, itemName.isEmpty() ? explicitId : itemName});
+            if (!build->routes.contains(explicitId)) {
+                build->routes.insert(explicitId, MenuRoute{host, menuName, itemName.isEmpty() ? explicitId : itemName});
+            }
         }
-        out.append(makeMenuItem(id, title.isEmpty() ? itemName : title, shortcut, kind, checked, enabled));
+        JsonObject item = makeMenuItem(id, title.isEmpty() ? itemName : title, shortcut, kind, checked, enabled);
+        // Keys that also choose the item, not printed in the menu (Redo's Ctrl+Shift+Z).
+        const JsonValue extraShortcuts = obj.value(String("extraShortcuts"));
+        if (extraShortcuts.isArray()) {
+            item.insert(String("extraShortcuts"), extraShortcuts);
+        }
+        out.append(item);
     }
     return out;
 }
 
-JsonArray BackendSession::pythonMenus(const String &host, PythonMenus *menus) const
+JsonArray BackendSession::pythonMenus(const String &host, MenuBuild *build) const
 {
-    if (!menus->contains(host)) {
+    if (!build->menus.contains(host)) {
         JsonArray list;
 #ifdef ANIMEAN_WITH_PYTHON
         if (Py_IsInitialized()) {
@@ -3978,18 +3995,20 @@ JsonArray BackendSession::pythonMenus(const String &host, PythonMenus *menus) co
                 if (parseError.error == JsonParseError::NoError && doc.isArray()) {
                     list = doc.array();
                 }
-            } catch (...) {
+            } catch (const py::error_already_set &error) {
+                // Without its menus the bar is empty, so say why where it is seen.
+                m_business->setStatusMessage(String("menus error: %1").arg(String::fromUtf8(error.what())));
             }
         }
 #endif
-        menus->insert(host, list);
+        build->menus.insert(host, list);
     }
-    return menus->value(host);
+    return build->menus.value(host);
 }
 
-JsonObject BackendSession::pythonMenu(const String &host, const String &name, PythonMenus *menus) const
+JsonObject BackendSession::pythonMenu(const String &host, const String &name, MenuBuild *build) const
 {
-    for (const JsonValue &val : pythonMenus(host, menus)) {
+    for (const JsonValue &val : pythonMenus(host, build)) {
         const JsonObject obj = val.toObject();
         if (obj.value(String("name")).toString() == name) {
             return obj;
@@ -4003,17 +4022,19 @@ JsonObject BackendSession::pythonMenu(const String &host, const String &name, Py
 // and script modules add their own. No menu is built in here.
 JsonArray BackendSession::buildMenuBar(const String &host) const
 {
-    PythonMenus menus;
+    MenuBuild build;
     JsonArray bar;
-    for (const JsonValue &val : pythonMenus(host, &menus)) {
+    for (const JsonValue &val : pythonMenus(host, &build)) {
         const JsonObject obj = val.toObject();
         const String name = obj.value(String("name")).toString();
         if (name.isEmpty()) {
             continue;
         }
-        const JsonArray items = buildScriptMenuItems(host, name, obj.value(String("items")).toArray(), &menus, 0);
+        const JsonArray items = buildScriptMenuItems(host, name, obj.value(String("items")).toArray(), &build, 0);
         bar.append(makeMenuItem(name, obj.value(String("title")).toString(name), String(), String("submenu"), false, true, items));
     }
+    // What this bar declares now; an item it no longer has stops routing.
+    m_menuRoutes.insert(host, build.routes);
     return bar;
 }
 

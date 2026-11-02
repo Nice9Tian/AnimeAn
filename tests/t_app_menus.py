@@ -123,6 +123,8 @@ def declarations():
     edit = menu("main", "edit")["items"]
     results.append(report("Edit: Undo and Redo, greyed by the history state",
                           [(i["id"], i["shortcut"], i["enabled"]) for i in edit] == [("edit.undo", "Ctrl+Z", True), ("edit.redo", "Ctrl+Y", False)]))
+    results.append(report("Redo's second key is declared here, not in the page",
+                          edit[1].get("extraShortcuts") == ["Ctrl+Shift+Z"] and "extraShortcuts" not in edit[0]))
     theme = menu("main", "theme")["items"]
     results.append(report("Theme: Dark and Light radios, the current mode ticked",
                           [(i["id"], i["kind"], i["checked"]) for i in theme] == [("theme.dark", "radio", False), ("theme.light", "radio", True)]))
@@ -165,6 +167,16 @@ def order():
         report("the texture bar: File, Setting, then its script menus",
                [m["name"] for m in bar("child")] == ["file.texture", "child.setting", "View"]),
     ]
+
+
+def failures():
+    python_hooks.register_menu({"name": "Broken", "title": "Broken", "items": [{"name": "x", "title": "X", "checked": {True}}]})
+    python_hooks.register_menu({"name": "Raises", "title": "Raises", "items": lambda: 1 / 0})
+    names = [m["name"] for m in bar("main")]
+    python_hooks._MENUS[:] = [m for m in python_hooks._MENUS if m.get("name") not in ("Broken", "Raises")]
+    return [report("a menu JSON cannot carry, or one whose items raise, drops out alone",
+                   "Broken" not in names and "Raises" not in names
+                   and [n for n in names if n in app_menus.MENUS] == ["file", "edit", "theme", "windows"])]
 
 
 def choices():
@@ -224,6 +236,7 @@ def main():
     results = [report("the menu hook is registered", python_hooks.has_hooks({"event": "menu"}))]
     results.extend(declarations())
     results.extend(order())
+    results.extend(failures())
     results.extend(choices())
     print(f"PASS {sum(results)}/{len(results)}")
     return 0 if all(results) else 1

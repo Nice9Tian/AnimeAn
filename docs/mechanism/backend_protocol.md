@@ -119,7 +119,7 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 |---|---|
 | `window` | 标题、状态栏文字、活动画板 `activeView`、素材面板目标画板 `assetView`、画布尺寸、工程与纹理路径、`pythonDebug` 日志（最多保留 2000 条） |
 | `theme` | `AnimeTheme` 的模式和全部颜色 |
-| `menus` | 主窗口菜单栏的完整结构，全部是 Python 声明的（File、Edit、Theme、Windows 在 `pyfile/app_menus.py`，其余由脚本登记），按 Python 给的顺序，见 `hook_events.md`「菜单栏」 |
+| `menus` | 主窗口菜单栏的完整结构，全部是 Python 声明的（File、Edit、Theme、Windows 在 `pyfile/app_menus.py`，其余由脚本登记），按 Python 给的顺序。项有 `id`、`text`、`shortcut`、`kind`、`checked`、`enabled`、`children`，可另带 `extraShortcuts`（不显示的快捷键）。见 `hook_events.md`「菜单栏」 |
 | `textureMenus` | 纹理板菜单栏的完整结构，也是 Python 声明的：`File`、`Setting`（`app_menus.py`），加脚本登记的 `child` 菜单（如 `View`）。脚本按钮行不在这里，在 `windows.textureViewButtons` |
 | `textureSettings` | 纹理板的设置：`changeableTimeline`、`changeableTexture`、`background`（`white`、`black`、`transparent`），纹理板的 Setting 菜单按它打勾 |
 | `tools` | 工具页、当前工具、被锁定的工具 |
