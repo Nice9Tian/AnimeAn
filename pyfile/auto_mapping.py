@@ -49,6 +49,7 @@ import tempfile
 import time
 
 import bezier
+import board_effects
 import mapping_preview
 import gridsolve
 import polyline_boxes
@@ -10319,7 +10320,7 @@ def run_proxy_contour_tool(view_name, points, width=3.0):
     _overlays_changed("main")
     print(f"[auto_mapping] contour set on the {view_name} board"
           + ("" if _contour_points(other) else f"; draw one on the {other} board too."))
-    _maybe_auto_run()
+    _maybe_auto_run(fade=True)
     return True
 
 
@@ -11257,11 +11258,15 @@ def _apply_member_visibility(uid, scene=None):
             pass
 
 
-def _maybe_auto_run():
+def _maybe_auto_run(fade=False):
     """Live re-render: re-run the active unit's mapping after a committed
     edit (guide drag, redraw, additional line, nearest move, option change,
     pattern stroke). A no-op outside unit focus, while a run is already in
-    flight, or when the unit's Live Re-render checkbox is off."""
+    flight, or when the unit's Live Re-render checkbox is off.
+
+    `fade`: the new output fades in on the main board (a finished axis or
+    contour; board_effects.py says how). Drags and option ticks re-render
+    without it, so a live re-render never lags behind the hand."""
     uid = _ACTIVE_UNIT["id"]
     if not _RUN_GUARD["depth"] and _refresh_proxy_axes():
         # A texture axis moved under contour-owned main axes.
@@ -11275,6 +11280,8 @@ def _maybe_auto_run():
         return
     if not _unit_settings(uid).get("auto_render", True):
         return
+    if fade:
+        board_effects.mapping_fade("main")
     _run()
 
 
@@ -12248,8 +12255,8 @@ def run_center_line_tool(view_name, property_value, points, width=3.0, commands=
     _save_assets(view_name)
     _overlays_changed(view_name)
     # A redrawn axis rebuilds the grid above; with unit focus the mapping
-    # re-renders live too.
-    _maybe_auto_run()
+    # re-renders live too, fading in.
+    _maybe_auto_run(fade=True)
     return True
 
 

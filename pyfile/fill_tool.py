@@ -29,6 +29,7 @@ bridge segments in Python - with zero C++ changes. Fill is a single click,
 not a per-frame interaction, so Python-side geometry is acceptable.
 """
 
+import board_effects
 import python_hooks
 
 TO_INDEPENDENT_ACTION = "fill_to_independent"
@@ -221,6 +222,10 @@ def _run_fill(scene, structure, frame, message):
     image = scene.image_at(frame, target_layer, True, "fill")
     if image is None:
         return
+
+    # The colour spreads from the click to the region's edge. Asked before
+    # the region is written, so the page still shows the board without it.
+    board_effects.fill_spread(view, seed, path)
 
     # Clicking inside an existing compatible region recolors/re-traces it
     # (and collapses duplicates) instead of stacking a new one on top.

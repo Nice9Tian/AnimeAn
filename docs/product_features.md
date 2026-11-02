@@ -33,6 +33,7 @@
 - **Arrow**：选中笔画或填充并拖动；Default / Artist / Debug 三种编辑模式；选中轮廓的颜色线宽可设；Auto Mapping 的引导线、手柄、视平线都在 Arrow 下直接拖。现有。机制（三级）：`mechanism/painting_tools.md`。
 - **Transfer**：当前层内容的缩放、拉伸、平移、旋转框，修饰键锁比例锁轴吸附角度；栅格不旋转。现有。机制（三级）：`mechanism/painting_tools.md`。
 - **Connect**：两点之间生成连接笔画，Auto Snap 吸端点拐角顶点，PolyMode / CurveMode / SmoothMode，接受 / 删除按钮或 Auto Accept。现有。机制（三级）：`mechanism/painting_tools.md`。
+- 结果落下时的短动画：Fill 的颜色从点下的位置铺开到区域边缘；Connect 的新线从第一点画向第二点；画完 H / V 轴线或 Free Out Line 后，Auto Mapping 的新结果淡入。拖动时的实时重算不播。动画期间一按下画板或滚轮就立刻结束；系统设了减少动态效果时不播。现有。机制（三级）：`mechanism/painting_tools.md`。
 - **Repulsion Pad**：手柄把当前帧重叠或贴近的线推开，实时预览，拓扑不变，锁定层不动。现有。机制（三级）：`mechanism/painting_tools.md`。
 - 图层决定工具：Auto-Mapping 单元里的层展开 Mapping 组；跟随线稿的填充层锁 Pen / Eraser / Connect / Transfer，只留 Arrow 和 Fill；独立填充层锁 Connect。现有。机制（三级）：`mechanism/fill_layers.md`。
 - 图层锁定：模型里有锁，现在只有 Transfer 尊重它、面板没有开关。规划：Layers 面板加锁定开关，锁定的层所有工具都不改。

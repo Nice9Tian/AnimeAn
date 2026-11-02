@@ -136,7 +136,7 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 | `viewport/main`、`viewport/child` | 滚动条：`h`、`v` 各含 `min`、`max`、`page`、`value`、`enabled`，由 `BackendSession::buildViewportState` 计算 |
 | `dialogs` | 开着的对话框，从下到上，是 `pyfile/dialogs.py` 经 `ui.set_dialogs` 交来的数组，C++ 不认识其中的种类。每项有 `id`、`kind`（`message`、`canvasSize`、`color`、`settings`、`file`）、`modal`、`title` 和该种类的字段，见 `windows_theme.md`「对话框窗口」 |
 | `py/<名字>` | Python 自己的状态（`ui.broadcast`），如 `py/preferences`。前缀把它和上面的键隔开 |
-| `event` | 一次性通知，`{ name, args }`，不合并、不重发：`contextMenu`、`window.show`、`window.select`、`textureView.surface`、`textureSubControl.surface` |
+| `event` | 一次性通知，`{ name, args }`，不合并、不重发：`contextMenu`、`window.show`、`window.select`、`textureView.surface`、`textureSubControl.surface`、`board.effect`（只发给当时连着的网页，后连上的不补发） |
 
 ## 调用
 
@@ -151,6 +151,7 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 | `project.save`、`project.saveAs`、`file.texture` | `{ path, probe?, overwrite? }`；`file.texture` 另带 `kind`（`open`、`save`、`saveAs`、`exportImage`） | 保存类调用支持 `probe: true` 检查后缀补全改写后的目标文件是否已存在，返回 `{ needsConfirmOverwrite, fileName, path }` |
 | `menu.trigger` | `{ id, title?, checked? }` | `file.` 开头的项转给 Python（`menu` 事件，`menu` 为 `file`），选择框、覆盖确认、出错提示都由 `pyfile/file_menu.py` 决定，它再调上面这些文件方法；`settings:<名字>` 请 Python 开设置窗 |
 | `dialog.result` | `{ id, action, value? }`，`action` 是 `button`、`accept`、`cancel`、`closed`、`error` | 一个对话框的回答，转成 Python 的 `dialog` 事件。兜底：`closed`（窗口被关）、`error`（页面出错）、Python 处理时抛错或没有接（没置 `message["handled"]`），C++ 都从 `dialogs` 里删掉这一条并记下 id，Python 之后再发旧栈也带不回来 |
+| `board.effect` | `{ view, kind, duration, center?, radius?, clip?, path?, width?, ... }`，几何是画布坐标，路径是 `S` 操作的扁平格式 | 后端按该画板的缩放平移把几何换成画板 CSS 像素，其余字段原样，发 `event`（`board.effect`）；`kind` 后端不认识，由 `pyfile/board_effects.py` 定、`webui/src/board/effects.ts` 画，见 `painting_tools.md`「画板动画」 |
 | `dialog.request` | `{ kind, ... }`，如颜色控件的 `{ kind: "color", hook, name, value, menu? }`（`menu` 是设置窗的名字，选好的颜色发回哪个方法由 Python 定） | 网页请 Python 开一个对话框，转成 `dialog` 事件（`action` 为 `request`）；Python 没有开（没置 `message["handled"]`）时返回错误 |
 
 Qt 版打开时先弹 New Project 对话框。现在由 `pyfile/file_menu.py` 在启动后的第一轮事件循环里开出 Canvas Size（`ui.call_later(0, …)`），它留在 `dialogs` 状态里，网页连上就显示，网页重载也不会再问一次。后端那时若已经有打开的工程（`currentFilePath` 不空），不问；问题还挂着时有工程打开了（网页连上之前先 `project.open`），Python 在历史重置后的下一轮事件循环里撤回这个问题，留着那个工程。

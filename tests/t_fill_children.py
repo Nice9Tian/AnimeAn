@@ -408,6 +408,35 @@ finally:
     else:
         sys.modules["layer_tool_policy"] = saved_policy
 
+# 7b) The spread animation (board_effects.py) is asked for BEFORE the region
+#     is written - the page keeps the picture it has when the effect arrives -
+#     from the click, with the traced region; and a refused click asks nothing.
+scene, ui = fresh_world()
+line = scene.add_layer()
+scene.set_current_layer(line)
+spread_log = []
+saved_spread = ft.board_effects.fill_spread
+saved_add = FakeImage.add_fill_region
+
+
+def _logged_add(self, *args, **kwargs):
+    spread_log.append("write")
+    return saved_add(self, *args, **kwargs)
+
+
+ft.board_effects.fill_spread = lambda view, seed, path: spread_log.append(("spread", view, seed, path))
+FakeImage.add_fill_region = _logged_add
+try:
+    ft._fill_request({}, {}, fill_message("current", seed=(12.0, 34.0)))
+    assert spread_log == [("spread", "main", (12.0, 34.0), ["default"]), "write"], spread_log
+    spread_log.clear()
+    scene.trace[line] = None   # an open area: no fill, no animation
+    ft._fill_request({}, {}, fill_message("current", seed=(1.0, 1.0)))
+    assert spread_log == [], spread_log
+finally:
+    ft.board_effects.fill_spread = saved_spread
+    FakeImage.add_fill_region = saved_add
+
 # 8) The hooks are actually registered for the events the policy needs.
 events = set()
 for hook in python_hooks._HOOKS:

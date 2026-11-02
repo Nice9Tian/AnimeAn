@@ -22,6 +22,7 @@ const files = [
   "pen_probe.test.ts",
   "texture_panel.test.ts",
   "relay.test.ts",
+  "board_effects.test.ts",
 ];
 
 for (const file of files) await import(`./${file}`);

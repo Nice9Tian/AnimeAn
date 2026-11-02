@@ -4,6 +4,7 @@ import { BoardRenderer } from "../board/renderer.ts";
 import { GlBoardRenderer } from "../board/glrenderer.ts";
 import { attachBoardInput } from "../board/input.ts";
 import { cursorCss } from "../board/cursor.ts";
+import { BoardEffects } from "../board/effects.ts";
 import { label, language, onLanguage, setLanguage, t } from "../i18n/index.js";
 import { createDialogHost } from "./dialoghost.js";
 import { askForMenu, createCentral, createLayers, createMenuBar, popupMenu, scrollArea, tabBar } from "./panels.js";
@@ -745,7 +746,11 @@ function createBoards(mainHost, childHost, client, store) {
     child: { view: "child", host: childHost ?? mainHost },
   };
   const mount = (slot, kind) => {
-    const { canvas, renderer, kind: started } = startRenderer(kind, { view: slot.view, client });
+    const { canvas, renderer, kind: started } = startRenderer(kind, {
+      view: slot.view,
+      client,
+      onAck: () => slot.effects.frame(),
+    });
     const hadFocus = slot.canvas && document.activeElement === slot.canvas;
     if (slot.canvas) slot.canvas.replaceWith(canvas);
     else slot.host.append(canvas);
@@ -754,7 +759,11 @@ function createBoards(mainHost, childHost, client, store) {
       slot.renderer.destroy();
       slot.input.destroy();
     }
+    slot.effects.stop();
     Object.assign(slot, { canvas, renderer, input: attachBoardInput(canvas, { view: slot.view, client }) });
+    // The hand coming back ends a tool's animation at once: what it does next
+    // must land on the board as it is, not under the picture from before.
+    for (const type of ["pointerdown", "wheel"]) canvas.addEventListener?.(type, () => slot.effects.stop(), { capture: true, passive: true });
     if (hadFocus) canvas.focus({ preventScroll: true });
     paintCursor(slot);
     client?.call?.("board.capabilities", { view: slot.view, fieldDisplay: started === "webgl" })?.catch(() => {});
@@ -786,6 +795,19 @@ function createBoards(mainHost, childHost, client, store) {
       boards.show(boards.current);
     },
   };
+  // A tool's short animation (pyfile/board_effects.py), drawn above each board.
+  const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  for (const slot of Object.values(slots)) slot.effects = new BoardEffects({ canvas: () => slot.canvas ?? null, reducedMotion });
+  store.on("event", (event) => {
+    if (event?.name !== "board.effect") return;
+    slots[event.args?.view]?.effects.play(event.args);
+  });
+  client?.onDisconnect?.(() => {
+    for (const slot of Object.values(slots)) {
+      slot.effects.stop();
+      slot.effects.framesSeen = 0;
+    }
+  });
   boards.rendererKind = mount(slots.main, boards.rendererKind);
   mount(slots.child, boards.rendererKind);
   for (const slot of Object.values(slots)) store.on(`cursor/${slot.view}`, () => paintCursor(slot));

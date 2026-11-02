@@ -100,7 +100,9 @@ private:
     JsonObject handleFileTextureCall(const JsonObject &params);
     bool triggerMenuById(const String &id, const JsonObject &params, String *errorOut);
     void openScriptSettings(const String &name, const String &title);
-    void emitUiEvent(const String &name, const JsonObject &args = JsonObject());
+    // replay: kept as the `event` state a page that connects later is sent
+    // first. A transient one (board.effect) passes false.
+    void emitUiEvent(const String &name, const JsonObject &args = JsonObject(), bool replay = true);
 
     // Hands one hook event to python_hooks.dispatch. Returns 1 when a hook set
     // message["handled"], 0 when none did, -1 when one of them raised (the text
