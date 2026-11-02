@@ -300,7 +300,7 @@ G6 等 Web 导出做出来再写进 `../../developer_guide.md`，现在写进去
 
 2026-11-02，集成分支 f7fe7a7，任务记录 `../../long_time_work/2026-11-02-Tauri迁移收尾.md`。
 
-- 后端不链接任何 Qt 模块：包内 0 个 Qt 文件，`AnimeAnBackend.exe` 的导入表没有 Qt。Qt 只留在两处：`algorithm/core/qtbridge*.h` 和 `tests/core/` 的差分测试（找到 Qt 才编），`bench/penprobe` 的对比探针。
+- 后端不链接任何 Qt 模块：包内 0 个 Qt 文件，`AnimeAnBackend.exe` 的导入表没有 Qt。Qt 只留在三处，都不在产品构建里：`algorithm/core/qtbridge*.h` 和 `tests/core/` 的差分测试（找到 Qt 才编），本目录 `bench/main.cpp` 的绘制基准，`bench/penprobe` 的对比探针。
 - 包拷到别处、PATH 只留 System32：全部模块来自包或系统，`session_smoke` 通过。339 MB。
 - `pyfile/`、`pythonbind/animemodel.py`、`opentoonz_tools/` 相对 merge-base 零差异，`tests/t_*.py` 全过。
 - 新旧对比 26 个场景、497 步，差异全部有去向。

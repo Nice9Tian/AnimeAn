@@ -116,7 +116,7 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 | `window` | 标题、状态栏文字、活动画板 `activeView`、素材面板目标画板 `assetView`、画布尺寸、工程与纹理路径、`pythonDebug` 日志（最多保留 2000 条） |
 | `theme` | `AnimeTheme` 的模式和全部颜色 |
 | `menus` | 菜单栏的完整结构，含 Python 返回的菜单 |
-| `textureMenus` | 纹理板菜单栏（`File`、`Setting`、`View` 等）的完整结构，含 Python 注册的 `child` 菜单和脚本按钮行（`window.textureViewButtons`） |
+| `textureMenus` | 纹理板菜单栏的完整结构：内建的 `File`、`Setting`，加 Python 注册的 `child` 菜单（如 `View`）。脚本按钮行不在这里，在 `windows.textureViewButtons` |
 | `tools` | 工具页、当前工具、被锁定的工具 |
 | `toolOptions` | Python 返回的选项 JSON |
 | `drawColor`、`drawSettings` | 当前颜色、绘制设置 |
@@ -125,7 +125,7 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 | `timeline` | 帧数、当前帧、播放状态、洋葱皮 |
 | `thumbnails` | `{ revision }`，帧缩略图缓存的版本，画面变了就加一 |
 | `history` | 历史记录 |
-| `windows` | 面板的显示状态 |
+| `windows` | 面板的显示状态和当前页（`paint` 的当前页按焦点算，见 `windows_theme.md`）、时间轴的停靠状态、纹理子控件框是否可见（`textureSubControlVisible`）、纹理板的脚本按钮行（`textureViewButtons`） |
 | `cursor/main`、`cursor/child` | 光标：形状名，或者图片 `key` 加热点和 `scale`。位图是屏幕像素，`w`、`h` 也是；热点是逻辑像素，`scale` 是位图每个逻辑像素的像素数，网页用 `image-set` 声明 |
 | `freeze` | Python 冻结界面的开关 |
 | `pad` | Repulsion Pad 的值 |
@@ -134,14 +134,14 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 
 ## 调用
 
-方法名在 `backend/session/backendsession.cpp` 的 `dispatchCall`。图层右键走 `layer.contextMenu`（返回菜单项，含 Python 注册的项）和 `layer.contextAction`。纹理板搬迁时调 `texture.setHome`（`home`：`central`、`control`、`parked`，后端保存离开处的缩放与平移、恢复到达处视口并在到达 `control` 时自动适配），脚本按钮行调 `texture.viewButton`（`view`、`id`、`text`）。网页发 `input` 时带 `time`（毫秒），后端写进事件时间戳，稳定器要用它。
+方法名在 `backend/session/backendsession.cpp` 的 `dispatchCall`。图层右键走 `layer.contextMenu`（返回菜单项，含 Python 注册的项）和 `layer.contextAction`。纹理板搬迁时调 `texture.setHome`（`home`：`central`、`control`、`parked`，后端保存离开处的缩放与平移、恢复到达处视口并在到达 `control` 时自动适配），脚本按钮行调 `texture.viewButton`（`view`、`name`、`on`；也认 `id`、`checked`）。网页发 `input` 时带 `time`（毫秒），后端写进事件时间戳，稳定器要用它。
 
 | 调用 | 参数 | 返回 / 说明 |
 |---|---|---|
 | `menu.refresh` | `{}` | 从 Python 重新生成菜单结构并返回 `{ menus }`，同时标记 `menus` 状态更新 |
 | `layer.applyStructure` | `{ view, rows, movedLayer }` | 按拖动后的树形行序列重排图层与图层组（含父层携带跟随子层），返回 `{ landedOn, selected }` |
 | `timeline.thumbnails` | `{ frames?, width, height, view? }` | 用 `renderFrameThumbnail` 渲染指定帧缩略图，新渲染的通过 `image` 帧下发，已缓存的不重发（连接时补发过），返回 `{ view, width, height, revision, thumbnails, frames }`。缓存作废时 `thumbnails` 状态的 `revision` 加一，网页据此重新请求屏幕上的帧 |
-| `file.import` | `{ kind, paths, view?, probe?, fitToCanvas? }` | 未传 `view` 时按 `framePanelTargetViewName` 选择目标板；矢量导入支持 `probe: true` 先返回 `{ needsScale, sourceBounds, canvasWidth, canvasHeight }` |
-| `project.save`、`project.saveAs`、`file.texture` | `{ path, probe?, overwrite? }` | 支持 `probe: true` 检查后缀补全改写后的目标文件是否已存在，返回 `{ needsConfirmOverwrite, fileName, path }` |
+| `file.import` | `{ kind, paths, view?, probe?, fitToCanvas? }` | 应用 File 菜单的导入（未传 `view`）进主画板，`view: "child"` 或 `kind` 带 `texture.` 前缀时进纹理板，不是探测时先把目标板显示出来；矢量导入支持 `probe: true` 先返回 `{ needsScale, sourceBounds, canvasWidth, canvasHeight }` |
+| `project.save`、`project.saveAs`、`file.texture` | `{ path, probe?, overwrite? }`；`file.texture` 另带 `kind`（`open`、`save`、`saveAs`、`exportImage`） | 保存类调用支持 `probe: true` 检查后缀补全改写后的目标文件是否已存在，返回 `{ needsConfirmOverwrite, fileName, path }` |
 
 Qt 版打开时先弹 New Project 对话框，网页版同样在收到第一个 `window` 状态后弹出。

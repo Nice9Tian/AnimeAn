@@ -35,7 +35,7 @@
 
 ## 构建和差分测试
 
-产品构建不需要 Qt：`CMakeLists.txt` 与 `algorithm/core/CMakeLists.txt` 用 `find_package(Qt6 QUIET COMPONENTS Core Gui)` 探测，不传 Qt 路径时只编 `animean_corelib`，不编 `core_*` 测试目标。
+产品构建不需要 Qt：只有 `algorithm/core/CMakeLists.txt` 在 `BUILD_TESTING` 下用 `find_package(Qt6 QUIET COMPONENTS Core Gui)` 探测，不传 Qt 路径时照常编 `animean_corelib` 和 `animean_core`，只是不编 `core_*` 测试目标。
 
 要编译并运行差分测试（`tests/core/*_tests.cpp`），配置时开启 `BUILD_TESTING=ON` 并通过 `-DCMAKE_PREFIX_PATH` 指定 Qt6 路径：
 

@@ -17,7 +17,7 @@ This document describes how Python code talks to the AnimeAn C++ data model and
 - `animean_python.model_pybind`
   - Fast value conversion facade for Python input.
   - Accepts Python primitives, tuple/list values, and dict values, then converts
-    them to Qt/C++ types internally.
+    them to C++ `AnimeCore` types internally.
 - `animean_python.vectorlogic`
   - Full Python-facing wrapper around `AnimeVectorLogic`.
   - Uses `model_pybind` conversion rules for function arguments.
@@ -49,19 +49,19 @@ This document describes how Python code talks to the AnimeAn C++ data model and
    color = (255, 80, 20, 255)
    ```
 
-3. `model_pybind` converts those values to C++ Qt types:
+3. `model_pybind` converts those values to C++ `AnimeCore` types:
 
-   - `float/int` -> `qreal`
-   - `(x, y)` or `{"x": x, "y": y}` -> `QPointF`
-   - `(x, y, width, height)` or `{"x","y","width","height"}` -> `QRectF`
-   - `(r, g, b[, a])` or `{"r","g","b","a"}` -> `QColor`
-   - `((x1, y1), (x2, y2))`, `(x1, y1, x2, y2)`, or `{"from": p0, "to": p1}` -> `QLineF`
+   - `float/int` -> `double`
+   - `(x, y)` or `{"x": x, "y": y}` -> `AnimeCore::PointF`
+   - `(x, y, width, height)` or `{"x","y","width","height"}` -> `AnimeCore::RectF`
+   - `(r, g, b[, a])` or `{"r","g","b","a"}` -> `AnimeCore::Color`
+   - `((x1, y1), (x2, y2))`, `(x1, y1, x2, y2)`, or `{"from": p0, "to": p1}` -> `AnimeCore::LineF`
 
 4. C++ functions operate on native AnimeAn model/vector types.
 
 5. Results are returned as Python objects:
 
-   - Simple Qt values return dicts.
+   - Simple values (points, rects, lines, colors) return dicts.
    - Paths return dicts with `bounds`, `commands`, and optional `polylines`.
    - Strokes return `VectorStroke` objects or serializable dicts.
 
