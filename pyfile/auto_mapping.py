@@ -286,6 +286,10 @@ _GRID = {"divisions": 5, "extend": 0}
 # cache per view, invalidated whenever the guides change.
 _GRID_CACHE = {"child": None, "main": None}
 
+# The main board's own frame for the nearest-end handle, kept until its guides
+# change (see _reused_frame).
+_GUIDE_FRAME = {}
+
 # Fold notes: a bubble on each board where the mapping turns over. Cells per
 # half-axis, so a short band at an axis end is not stepped over; a lone flipped
 # cell is numerical noise beside a line, not a fold.
@@ -2451,6 +2455,27 @@ class _FlowFieldWarp:
                 break
         return seg
 
+    @staticmethod
+    def _regrid(np, old_x, old_y, new_x, new_y):
+        """Carries node fields onto other node coordinates: bilinear inside
+        the old grid, `outside` (an array or a number) beyond it."""
+        def axis(old, new):
+            i = np.clip(np.searchsorted(old, new) - 1, 0, old.size - 2)
+            return i, (new - old[i]) / (old[i + 1] - old[i]), (new >= old[0]) & (new <= old[-1])
+
+        ix, tx, in_x = axis(old_x, new_x)
+        iy, ty, in_y = axis(old_y, new_y)
+        inside = np.outer(in_x, in_y)
+        tx = tx[:, None]
+        ty = ty[None, :]
+
+        def carry(field, outside=0.0):
+            low = (1.0 - ty) * field[np.ix_(ix, iy)] + ty * field[np.ix_(ix, iy + 1)]
+            high = (1.0 - ty) * field[np.ix_(ix + 1, iy)] + ty * field[np.ix_(ix + 1, iy + 1)]
+            return np.where(inside, (1.0 - tx) * low + tx * high, outside)
+
+        return carry
+
     def _build(self, frame_window, warm=None):
         import pydeps
         np = pydeps.ensure("numpy")
@@ -3067,11 +3092,38 @@ class _FlowFieldWarp:
         scale_xy = (1.0, 1.0)
         frame_moved = {}
         if warm is not None:
-            if warm.get("shape") != X.shape:
-                warm["shape"] = X.shape
+            nodes = warm.get("nodes")
+            # What a solve's answer E sits on: the component is base + E.
+            bases = (ub_x + pin_x, ub_y + pin_y)
+            overrun = (t_left, t_right, t_bottom, t_top)
+            warm["rebased"] = None
+            if nodes is None:
                 warm["deltas"] = {}
                 warm["solves"] = {}
                 warm["stamps"] = {}
+            elif not (np.array_equal(nodes[0], gx) and np.array_equal(nodes[1], gy)):
+                # A line dragged past the axes drags the domain with it, so the
+                # grid can change every frame. Dropping the answers then made
+                # every frame a cold solve (about 120 ms). The answers move over
+                # by position. When the overrun changed, the tent under them
+                # changed too: carrying the whole component (base + E, less the
+                # new base) differs from carrying E by the old base carried less
+                # the new one, the same for every round. That goes in as one more
+                # guess direction, since neither carry won on every rig. A window
+                # that only moved (a texture axis drag) keeps the base.
+                carry = self._regrid(np, nodes[0], nodes[1], gx, gy)
+                shape = (nodes[0].size, nodes[1].size)
+                for name in ("solves", "deltas"):
+                    warm[name] = {
+                        key: (carry(field) if field is not None and field.shape == shape
+                              else None)
+                        for key, field in warm.get(name, {}).items()}
+                if warm.get("overrun") != overrun:
+                    warm["rebased"] = tuple(carry(old, outside=new) - new
+                                            for old, new in zip(warm["bases"], bases))
+            warm["nodes"] = (gx, gy)
+            warm["bases"] = bases
+            warm["overrun"] = overrun
             warm["frame"] = warm.get("frame", 0) + 1
             solves_cache = warm.setdefault("solves", {})
             scale_xy = warm.get("_scale", (1.0, 1.0))
@@ -3122,7 +3174,8 @@ class _FlowFieldWarp:
                     guesses = []
                     for move in (frame_moved.get(component),
                                  warm["deltas"].get((round_key, component)),
-                                 prev_e - base if base is not None else None):
+                                 prev_e - base if base is not None else None,
+                                 (warm["rebased"] or (None, None))[component]):
                         if move is None or move.shape != rhs.shape:
                             continue
                         move = move.copy()
@@ -3875,6 +3928,35 @@ class _FlowFieldWarp:
         return [list(curve) for curve in self._loci]
 
 
+def _frame_spec_key(spec):
+    """What a frame is built from: the points, and the curve commands if any."""
+    if isinstance(spec, dict):
+        return (tuple(map(tuple, spec.get("points") or [])), repr(spec.get("commands")))
+    return (tuple(map(tuple, spec)), None)
+
+
+class _FrameCache(dict):
+    """board -> (guide key, frame) in the warm state. A built frame never
+    changes, so a copy of the warm state shares the frames; they also hold
+    numpy, which cannot be copied."""
+
+    def __deepcopy__(self, memo):
+        return _FrameCache(self)
+
+
+def _reused_frame(cache, board, h_spec, v_spec):
+    """The board's frame, rebuilt only when its guides changed. Curved guides
+    take milliseconds to flatten and cross, and a drag of anything but a
+    guide leaves them as they were."""
+    if cache is None:
+        return _Frame(h_spec, v_spec)
+    key = (_frame_spec_key(h_spec), _frame_spec_key(v_spec))
+    hit = cache.get(board)
+    if hit is None or hit[0] != key:
+        hit = cache[board] = (key, _Frame(h_spec, v_spec))
+    return hit[1]
+
+
 def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None,
                  additional_pairs=None, ground_pairs=None, warm=None):
     """Build point mapper from the child frame to the main frame.
@@ -3938,8 +4020,9 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
     if min(len(child_h_points), len(child_v_points), len(main_h_points), len(main_v_points)) < 2:
         return None, "a center line has fewer than 2 points"
 
-    child = _Frame(child_h_spec, child_v_spec)
-    main = _Frame(main_h_spec, main_v_spec)
+    frames = warm.setdefault("frames", _FrameCache()) if warm is not None else None
+    child = _reused_frame(frames, "child", child_h_spec, child_v_spec)
+    main = _reused_frame(frames, "main", main_h_spec, main_v_spec)
     if child.h_total <= 1e-9 or child.v_total <= 1e-9:
         return None, "child center lines are degenerate"
     if main.h_total <= 1e-9 or main.v_total <= 1e-9:
@@ -6172,7 +6255,8 @@ def _main_guide_frame():
             or len(assets[V_PROPERTY].get("points") or []) < 2):
         return None
     try:
-        frame = _Frame(assets[H_PROPERTY], assets[V_PROPERTY])
+        # Every overlay push asks, a drag pushes once a frame.
+        frame = _reused_frame(_GUIDE_FRAME, "main", assets[H_PROPERTY], assets[V_PROPERTY])
     except Exception:
         return None
     if frame.h_total <= 1e-6 or frame.v_total <= 1e-6:

@@ -23,7 +23,6 @@ GRID_MAX_POINTS = 2000   # refer grid samples per frame
 GRID_STRIDES = (1, 2, 3, 6)   # the lattice has 6 samples a cell, ends included
 SETTLE_DELAY_MS = 40     # no move for this long: the hand has stopped
 SETTLE_PASSES = 40       # a frame that never settles must not spin forever
-UPDATE_DUTY_FACTOR = 0.5
 
 _SESSION = {
     "active": False,
@@ -572,7 +571,6 @@ def begin(view, overlay_id):
             "coarse_depth": None,
             "last_passes": None,
             "last_finish_time": None,
-            "last_duration": 0.0,
             "pending": False,
             "timer_armed": False,
             "prev_labels": None,
@@ -1040,12 +1038,10 @@ def _context_valid(am):
     return main_frame == _SESSION.get("main_frame")
 
 
-def _suspend_invalid_frame(am, t_start):
+def _suspend_invalid_frame(am):
     _SESSION["last_passes"] = None
     _clear_field_display(am)
-    t_end = _clock()
-    _SESSION["last_finish_time"] = t_end
-    _SESSION["last_duration"] = t_end - t_start
+    _SESSION["last_finish_time"] = _clock()
     return False
 
 
@@ -1058,7 +1054,7 @@ def _compute_and_push():
 
     specs = _effective_specs_and_pairs(am, _SESSION)
     if specs is None:
-        return _suspend_invalid_frame(am, t_start)
+        return _suspend_invalid_frame(am)
     child_h, child_v, main_h, main_v, add_pairs, gnd_pairs = specs
 
     t_bm0 = _clock()
@@ -1069,7 +1065,7 @@ def _compute_and_push():
     )
     t_bm = _clock() - t_bm0
     if mapper is None:
-        return _suspend_invalid_frame(am, t_start)
+        return _suspend_invalid_frame(am)
 
     px = _SESSION["px"]
     py = _SESSION["py"]
@@ -1170,7 +1166,6 @@ def _compute_and_push():
     t_end = _clock()
     total = t_end - t_start
     _SESSION["last_finish_time"] = t_end
-    _SESSION["last_duration"] = total
     _LAST_TIMINGS.clear()
     _LAST_TIMINGS.update({
         "build_mapper": t_bm,
@@ -1271,9 +1266,11 @@ def update():
             return
         now = _clock()
         last_finish = _SESSION.get("last_finish_time")
-        last_cost = _SESSION.get("last_duration", 0.0)
         if last_finish is not None:
-            min_gap = max(MIN_UPDATE_INTERVAL, UPDATE_DUTY_FACTOR * last_cost)
+            # C++ already lets a drag move through once per 33 ms, so moves
+            # cannot pile up; waiting a share of the last frame on top of that
+            # only stretched every frame by half its cost.
+            min_gap = MIN_UPDATE_INTERVAL
             elapsed = now - last_finish
             if elapsed < min_gap:
                 _SESSION["pending"] = True
