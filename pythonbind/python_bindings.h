@@ -129,4 +129,47 @@ void setAnimeanUiTheme(const String &mode);
 // first push arrives, every event counts as subscribed.
 bool animeanHookEventSubscribed(const String &event);
 
+struct AnimeanFieldPass {
+    double tagLo = 0.0;
+    double tagHi = 0.0;
+    double opacity = 1.0;
+    int tintR = 0;
+    int tintG = 0;
+    int tintB = 0;
+    int tintA = 0;
+};
+
+// What ui.set_field_view asks of one board: which layers of which view to show
+// through the field named fieldKey, and how.
+struct AnimeanFieldViewSpec {
+    bool active = false;
+    String fieldKey;
+    RectF rect;
+    double maxEdge = 8.0;
+    String sourceView;
+    Vector<int> columns;
+    int frame = 0;
+    double widthScale = 1.0;
+    Vector<AnimeanFieldPass> passes;
+    Vector<int> hideColumns;
+    StringList skipProperties;
+};
+
+// A displacement field for the page (ui.set_field): width * height cells of
+// 16 bytes each, passed on as they are.
+void registerAnimeanUiFieldCallback(
+    std::function<void(const String &key, int width, int height, const std::string &data)> callback);
+void clearAnimeanUiFieldCallback();
+void registerAnimeanUiFieldViewCallback(
+    std::function<void(const String &view, const AnimeanFieldViewSpec &spec)> callback);
+void clearAnimeanUiFieldViewCallback();
+// Whether the page showing this view can draw a field scope (board.capabilities).
+void registerAnimeanUiFieldDisplaySupportedCallback(std::function<bool(const String &view)> callback);
+void clearAnimeanUiFieldDisplaySupportedCallback();
+// Runs a callable later on the host's event loop (ui.call_later). With none
+// registered, as in the bare Python module, the call is dropped.
+void registerAnimeanUiCallLaterCallback(std::function<void(int ms, std::function<void()> callback)> callback);
+void clearAnimeanUiCallLaterCallback();
+AnimeSceneModel *animeanUiSceneForViewName(const String &view);
+
 #endif // PYTHON_BINDINGS_H

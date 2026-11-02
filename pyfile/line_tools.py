@@ -9,6 +9,7 @@ moves through the handle events, and the geometry is rewritten here.
 import math
 
 import auto_mapping as am
+import mapping_preview
 import python_hooks
 
 DEFORM_RADIUS = {"value": 60.0}     # canvas px along the line
@@ -96,6 +97,7 @@ def _deform(message, overlay_id, view):
             points[i][0] - point[0], points[i][1] - point[1]))
         weights = _falloff(cum, total, closed, cum[nearest], DEFORM_RADIUS["value"])
         stations = (item.get(am.PAIRING_KEY) or {}).get("stations")
+        mapping_preview.begin(view, overlay_id)
         _DRAG[view] = {
             "id": overlay_id, "origin": point, "points": points, "moved": False,
             "saved": dict(item), "weights": weights, "stations": stations,
@@ -108,6 +110,7 @@ def _deform(message, overlay_id, view):
     if phase == "cancel":
         _DRAG.pop(view, None)
         am.restore_line_item(view, overlay_id, drag["saved"])
+        mapping_preview.cancel()
         return
     if phase not in ("move", "release"):
         return
@@ -117,6 +120,7 @@ def _deform(message, overlay_id, view):
     if not drag["moved"]:
         if phase == "release":
             _DRAG.pop(view, None)
+            mapping_preview.end()
         return
     moved = _pulled(drag["points"], drag["weights"], dx, dy)
     stations = drag["stations"] and _pulled(drag["stations"], drag["station_weights"], dx, dy)
@@ -125,6 +129,7 @@ def _deform(message, overlay_id, view):
         return
     _DRAG.pop(view, None)
     am.replace_line_points(view, overlay_id, moved, settled=True, stations=stations)
+    mapping_preview.end()
 
 
 def _on_handle(message):

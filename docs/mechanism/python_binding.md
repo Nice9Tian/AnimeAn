@@ -117,6 +117,52 @@ finally:
 This does not make Python execution asynchronous; it prevents user interaction
 while the main UI thread is busy.
 
+`animean_python.ui` also exposes low-level field display and timer helpers:
+
+```python
+animean_python.ui.set_field(key: str, width: int, height: int, data: bytes) -> None
+animean_python.ui.set_field_view(view: str, spec: dict | None) -> None
+animean_python.ui.field_display_supported(view: str) -> bool
+animean_python.ui.call_later(ms: int, fn: Callable[[], object]) -> None
+```
+
+- `set_field(key, width, height, data)` uploads a 2D deformation field
+  of `width * height * 4` little-endian `float32` values (`len(data) == width * height * 16`,
+  raising `ValueError` otherwise). Each pixel stores `(X, Y, valid, tag)`.
+- `set_field_view(view, spec)` configures (or clears when `spec` is `None`) a
+  field-deformed drawing scope on `"main"` or `"child"` (`"main_paint_view"` /
+  `"child_paint_view"` also accepted):
+  ```python
+  animean_python.ui.set_field_view("main", {
+      "field": "f1",
+      "rect": (x, y, w, h),          # tuple or {"x", "y", "width", "height"}
+      "max_edge": 8.0,
+      "source_view": "child",
+      "columns": [0, 1],
+      "frame": 0,
+      "width_scale": 1.0,
+      "skip_properties": ["prop_a"], # optional: skip strokes with these properties
+      "passes": [
+          {"tag": (-0.5, 0.5), "opacity": 1.0},
+          {"tag": (0.5, 1.5), "opacity": 0.4, "tint": (120, 140, 160, 200)},
+      ],
+      "hide_columns": [2],           # hidden only during normal board display
+  })
+  ```
+  Source columns listed in `columns` are drawn inside the field scope even if
+  their layer visibility is off (applying each column's opacity and scaling
+  stroke widths by `width_scale`). Columns in `hide_columns` are skipped only in
+  the live board `paintGL` pass; thumbnails, exports, playback cache, and onion
+  skin remain unaffected.
+- `field_display_supported(view)` returns `True` when the connected web view has
+  reported `fieldDisplay: true` via `board.capabilities` (`False` when no client
+  is connected).
+- `call_later(ms, fn)` schedules `fn()` on the backend's event loop after `ms`
+  milliseconds (`ms < 0` clamped to `0`); the backend session supplies the timer
+  through `registerAnimeanUiCallLaterCallback`, and without one (the bare Python
+  module) the call is dropped. Exceptions raised by `fn` are printed and
+  swallowed so they do not escape the event loop.
+
 ## ExtraTool and Hook Development
 
 ExtraTool support is currently implemented as a Python-assisted pen workflow.

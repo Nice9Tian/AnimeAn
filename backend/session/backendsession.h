@@ -52,6 +52,16 @@ private:
         double scale = 1.0;
     };
 
+    // A displacement field from ui.set_field, kept until it is sent and resent
+    // to a new client.
+    struct FieldEntry {
+        int w = 0;
+        int h = 0;
+        std::uint64_t version = 0;
+        std::string data;
+        bool pending = false;
+    };
+
     void bindPaintViewToBusiness(const String &viewName, PaintOpenGLWidget *paintView);
     void setupBoardSinks(const String &viewName, PaintOpenGLWidget *paintView);
     void setupBusinessConnections();
@@ -96,6 +106,8 @@ private:
     void handleImageSink(const String &view, const String &key, const AnimeCore::Image &rgba);
     void handleCursorSink(const String &viewName, const AnimeCore::Cursor &cursor);
     void sendImagePacket(const String &key, const Image &rgba, const String &view = String());
+    void sendFieldPacket(const String &key, const FieldEntry &entry);
+    void flushPendingFieldsForBoard(const PaintOpenGLWidget *board);
 
     void setPythonUiFrozen(bool frozen);
     void appendPythonDebug(const String &message);
@@ -164,6 +176,9 @@ private:
     Hash<String, Image> m_cachedImages;
     Hash<String, std::uint64_t> m_lastBoardFrameId;
     std::uint64_t m_thumbnailRevision = 1;
+    std::uint64_t m_nextFieldVersion = 1;
+    Hash<String, FieldEntry> m_fields;
+    Hash<String, bool> m_fieldDisplaySupported;
 };
 
 #endif // BACKENDSESSION_H

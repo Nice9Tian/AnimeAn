@@ -191,6 +191,9 @@ public:
     void drawPath(const Path &path);
     void drawImage(const PointF &topLeft, const Image &image);
 
+    // What the next shape would be drawn with, for a device call that is not a shape.
+    const PaintState &state() const { return m_state; }
+
 private:
     void updateTransform();
 

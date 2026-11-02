@@ -4,6 +4,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <utility>
 
 namespace {
@@ -45,6 +46,57 @@ void appendDouble(std::string &out, double val)
     } else {
         out.push_back('0');
     }
+}
+
+void appendUint64(std::string &out, std::uint64_t val)
+{
+    char buf[32];
+    auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), val);
+    if (ec == std::errc()) {
+        out.append(buf, static_cast<std::size_t>(ptr - buf));
+    } else {
+        out.push_back('0');
+    }
+}
+
+void appendJsonString(std::string &out, const std::string &utf8)
+{
+    out.push_back('"');
+    for (unsigned char c : utf8) {
+        switch (c) {
+        case '"':
+            out.append("\\\"");
+            break;
+        case '\\':
+            out.append("\\\\");
+            break;
+        case '\b':
+            out.append("\\b");
+            break;
+        case '\f':
+            out.append("\\f");
+            break;
+        case '\n':
+            out.append("\\n");
+            break;
+        case '\r':
+            out.append("\\r");
+            break;
+        case '\t':
+            out.append("\\t");
+            break;
+        default:
+            if (c < 0x20) {
+                char hex[7];
+                std::snprintf(hex, sizeof(hex), "\\u%04x", unsigned(c));
+                out.append(hex, 6);
+            } else {
+                out.push_back(char(c));
+            }
+            break;
+        }
+    }
+    out.push_back('"');
 }
 
 int mapCapStyle(AnimeCore::PenCapStyle cap)
@@ -301,6 +353,74 @@ void RecordingDevice::appendOp(std::string json)
     op.hash = fnv1a64(json.data(), json.size());
     op.json = std::move(json);
     m_ops.append(std::move(op));
+}
+
+// The page draws a field scope into its own target, so pen, brush and opacity
+// are said again inside it and again after it.
+void RecordingDevice::forgetEmittedStyle()
+{
+    m_hasEmittedPen = false;
+    m_emittedPenBytes.clear();
+    m_hasEmittedBrush = false;
+    m_emittedBrushBytes.clear();
+    m_emittedOpacity = -1.0;
+}
+
+void RecordingDevice::beginFieldScope(const AnimeCore::PaintState &state,
+                                      const std::string &key,
+                                      std::uint64_t version,
+                                      const AnimeCore::RectF &rect,
+                                      double maxEdge,
+                                      const AnimeCore::Vector<FieldScopePass> &passes)
+{
+    syncCommonState(state);
+
+    std::string out;
+    out.reserve(96 + static_cast<std::size_t>(passes.size()) * 24);
+    out.append("[\"F\",");
+    appendJsonString(out, key);
+    out.push_back(',');
+    appendUint64(out, version);
+    out.push_back(',');
+    appendDouble(out, rect.x());
+    out.push_back(',');
+    appendDouble(out, rect.y());
+    out.push_back(',');
+    appendDouble(out, rect.width());
+    out.push_back(',');
+    appendDouble(out, rect.height());
+    out.push_back(',');
+    appendDouble(out, maxEdge);
+    out.append(",[");
+    for (int i = 0; i < passes.size(); ++i) {
+        if (i > 0) {
+            out.push_back(',');
+        }
+        out.push_back('[');
+        appendDouble(out, passes[i].tagLo);
+        out.push_back(',');
+        appendDouble(out, passes[i].tagHi);
+        out.push_back(',');
+        appendDouble(out, passes[i].opacity);
+        out.push_back(',');
+        appendInt(out, passes[i].tintR);
+        out.push_back(',');
+        appendInt(out, passes[i].tintG);
+        out.push_back(',');
+        appendInt(out, passes[i].tintB);
+        out.push_back(',');
+        appendInt(out, passes[i].tintA);
+        out.push_back(']');
+    }
+    out.append("]]");
+    appendOp(std::move(out));
+    forgetEmittedStyle();
+}
+
+void RecordingDevice::endFieldScope()
+{
+    appendOp(std::string("[\"f\"]"));
+    forgetEmittedStyle();
 }
 
 void RecordingDevice::syncTransform(const AnimeCore::Transform &transform)

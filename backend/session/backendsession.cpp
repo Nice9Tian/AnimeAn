@@ -587,6 +587,10 @@ BackendSession::BackendSession(WsServer *ws)
 BackendSession::~BackendSession()
 {
 #ifdef ANIMEAN_WITH_PYTHON
+    clearAnimeanUiCallLaterCallback();
+    clearAnimeanUiFieldDisplaySupportedCallback();
+    clearAnimeanUiFieldViewCallback();
+    clearAnimeanUiFieldCallback();
     clearAnimeanUiPadValueCallback();
     clearAnimeanUiHistoryCallback();
     clearAnimeanUiLockedToolsCallback();
@@ -894,6 +898,15 @@ void BackendSession::setupBoardSinks(const String &viewName, PaintOpenGLWidget *
     paintView->setCursorSink([this, viewName](const AnimeCore::Cursor &cursor) {
         handleCursorSink(viewName, cursor);
     });
+    paintView->setFieldLookup(
+        [this](const String &key) -> std::uint64_t {
+            const auto it = m_fields.constFind(key);
+            return it != m_fields.constEnd() ? it->version : 0;
+        },
+        [this](const String &srcView) -> const AnimeSceneModel * {
+            PaintOpenGLWidget *b = boardForView(srcView);
+            return b ? &b->model() : nullptr;
+        });
     handleCursorSink(viewName, paintView->cursor());
 }
 
@@ -1387,6 +1400,68 @@ void BackendSession::registerPythonUiCallbacks()
         }
     });
 
+    registerAnimeanUiFieldCallback(
+        [this](const String &key, int width, int height, const std::string &data) {
+            if (key.isEmpty()) {
+                return;
+            }
+            FieldEntry &entry = m_fields[key];
+            entry.w = width;
+            entry.h = height;
+            entry.version = m_nextFieldVersion++;
+            entry.data = data;
+            entry.pending = true;
+            for (PaintOpenGLWidget *board : {m_mainBoard.get(), m_childBoard.get()}) {
+                if (board && board->fieldViewSpec().active && board->fieldViewSpec().fieldKey == key) {
+                    board->update();
+                }
+            }
+        });
+
+    registerAnimeanUiFieldViewCallback(
+        [this](const String &view, const AnimeanFieldViewSpec &spec) {
+            PaintOpenGLWidget *target = boardForView(view);
+            if (!target) {
+                return;
+            }
+            if (!spec.active) {
+                target->clearFieldViewSpec();
+                return;
+            }
+            PaintOpenGLWidget::FieldViewSpec converted;
+            converted.active = true;
+            converted.fieldKey = spec.fieldKey;
+            converted.rect = spec.rect;
+            converted.maxEdge = spec.maxEdge;
+            converted.sourceView = spec.sourceView;
+            converted.columns = spec.columns;
+            converted.frame = spec.frame;
+            converted.widthScale = spec.widthScale;
+            converted.passes.reserve(spec.passes.size());
+            for (const AnimeanFieldPass &p : spec.passes) {
+                PaintOpenGLWidget::FieldPass outPass;
+                outPass.tagLo = p.tagLo;
+                outPass.tagHi = p.tagHi;
+                outPass.opacity = p.opacity;
+                outPass.tintR = p.tintR;
+                outPass.tintG = p.tintG;
+                outPass.tintB = p.tintB;
+                outPass.tintA = p.tintA;
+                converted.passes.append(outPass);
+            }
+            converted.hideColumns = spec.hideColumns;
+            converted.skipProperties = spec.skipProperties;
+            target->setFieldViewSpec(converted);
+        });
+
+    registerAnimeanUiFieldDisplaySupportedCallback([this](const String &view) {
+        return m_fieldDisplaySupported.value(resolveViewName(view), false);
+    });
+
+    registerAnimeanUiCallLaterCallback([](int ms, std::function<void()> callback) {
+        Timer::singleShot(ms, std::move(callback));
+    });
+
     registerAnimeanUiPadValueCallback([this](const String &pad, double x, double y) {
         const PointF pt(x, y);
         m_padValues.insert(pad, pt);
@@ -1426,6 +1501,9 @@ String BackendSession::resolveViewName(const String &viewName) const
 
 void BackendSession::onClientConnected()
 {
+    for (auto it = m_fields.begin(); it != m_fields.end(); ++it) {
+        it->pending = true;
+    }
     for (auto it = m_cachedImages.cbegin(); it != m_cachedImages.cend(); ++it) {
         sendImagePacket(it.key(), it.value());
     }
@@ -1454,6 +1532,7 @@ void BackendSession::onClientConnected()
 void BackendSession::onClientDisconnected()
 {
     // Keep session alive and wait for next connection.
+    m_fieldDisplaySupported.clear();
 }
 
 void BackendSession::onMessageReceived(const JsonObject &msg)
@@ -2566,6 +2645,16 @@ JsonObject BackendSession::dispatchCall(const String &method, const JsonObject &
         };
     }
 
+    if (method == String("board.capabilities")) {
+        const String targetView = resolveViewName(view);
+        const bool fieldDisplay = params.value(String("fieldDisplay")).toBool(false);
+        m_fieldDisplaySupported.insert(targetView, fieldDisplay);
+        return JsonObject{
+            {String("view"), targetView},
+            {String("fieldDisplay"), fieldDisplay},
+        };
+    }
+
     return makeError(String("Unknown method: %1").arg(method));
 }
 
@@ -3265,6 +3354,7 @@ void BackendSession::handleFrameSink(const String &viewName, const BoardFrame &f
     if (!m_ws || !m_ws->hasClient()) {
         return;
     }
+    flushPendingFieldsForBoard(boardForView(viewName));
     std::string payload;
     payload.reserve(frame.ops.size() + 128);
     payload.append("{\"t\":\"board\",\"view\":\"");
@@ -3292,6 +3382,49 @@ void BackendSession::handleImageSink(const String &view, const String &key, cons
                                  ? rgba
                                  : rgba.convertToFormat(Image::Format_RGBA8888);
     sendImagePacket(key, formatted, view);
+}
+
+void BackendSession::sendFieldPacket(const String &key, const FieldEntry &entry)
+{
+    if (!m_ws || !m_ws->hasClient() || key.isEmpty() || entry.data.empty()) {
+        return;
+    }
+    const JsonObject header{
+        {String("t"), String("field")},
+        {String("key"), key},
+        {String("w"), entry.w},
+        {String("h"), entry.h},
+        {String("version"), static_cast<std::int64_t>(entry.version)},
+        {String("bytes"), static_cast<std::int64_t>(entry.data.size())},
+    };
+    sendJson(header);
+    m_ws->sendBinary(entry.data);
+}
+
+// A field goes out just ahead of the frame of the board that shows it, so the
+// page never draws a scope whose field it does not hold yet. One no board shows
+// goes with whichever frame comes next.
+void BackendSession::flushPendingFieldsForBoard(const PaintOpenGLWidget *board)
+{
+    if (!m_ws || !m_ws->hasClient()) {
+        return;
+    }
+    for (auto it = m_fields.begin(); it != m_fields.end(); ++it) {
+        if (!it->pending) {
+            continue;
+        }
+        const String &key = it.key();
+        const bool usedByMain = m_mainBoard && m_mainBoard->fieldViewSpec().active
+                                && m_mainBoard->fieldViewSpec().fieldKey == key;
+        const bool usedByChild = m_childBoard && m_childBoard->fieldViewSpec().active
+                                 && m_childBoard->fieldViewSpec().fieldKey == key;
+        const bool usedByThisBoard = board && board->fieldViewSpec().active
+                                     && board->fieldViewSpec().fieldKey == key;
+        if (usedByThisBoard || (!usedByMain && !usedByChild)) {
+            sendFieldPacket(key, it.value());
+            it->pending = false;
+        }
+    }
 }
 
 void BackendSession::sendImagePacket(const String &key, const Image &rgba, const String &view)

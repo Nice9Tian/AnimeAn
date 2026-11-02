@@ -83,6 +83,12 @@ try {
     let latestMainFrame = null;
 
     const ws = new WebSocket(`ws://127.0.0.1:${port}/?token=${encodeURIComponent(token)}`);
+    ws.binaryType = "arraybuffer";
+    const receivedFields = [];
+    const messageSequence = [];
+    let pendingFieldHeader = null;
+    let autoAckMain = true;
+    let unackedMainFrame = null;
 
     const notifyStateWaiters = () => {
         for (let i = stateWaiters.length - 1; i >= 0; --i) {
@@ -167,6 +173,21 @@ try {
 
     ws.addEventListener("message", (event) => {
         if (typeof event.data !== "string") {
+            if (pendingFieldHeader && event.data instanceof ArrayBuffer) {
+                const floats = Array.from(new Float32Array(event.data));
+                receivedFields.push({
+                    header: pendingFieldHeader,
+                    byteLength: event.data.byteLength,
+                    floats,
+                });
+                messageSequence.push({
+                    type: "field_bin",
+                    key: pendingFieldHeader.key,
+                    version: pendingFieldHeader.version,
+                    byteLength: event.data.byteLength,
+                });
+                pendingFieldHeader = null;
+            }
             return;
         }
         const msg = JSON.parse(event.data);
@@ -176,8 +197,23 @@ try {
             }
             stateMap.set(msg.key, msg.value);
             notifyStateWaiters();
+        } else if (msg.t === "field") {
+            pendingFieldHeader = msg;
+            messageSequence.push({
+                type: "field_hdr",
+                key: msg.key,
+                version: msg.version,
+                w: msg.w,
+                h: msg.h,
+                bytes: msg.bytes,
+            });
         } else if (msg.t === "board") {
-            ws.send(JSON.stringify({ t: "ack", view: msg.view, frame: msg.frame }));
+            messageSequence.push({ type: "board", view: msg.view, frame: msg.frame });
+            if (msg.view === "main" && !autoAckMain) {
+                unackedMainFrame = msg.frame;
+            } else {
+                ws.send(JSON.stringify({ t: "ack", view: msg.view, frame: msg.frame }));
+            }
             if (msg.view === "main") {
                 fullOpsMain.length = msg.keep;
                 if (Array.isArray(msg.ops)) {
@@ -708,6 +744,158 @@ try {
             fs.rmSync(tmpDir, { recursive: true, force: true });
         } catch {}
     }
+
+    // 11. Verify board.capabilities, field packets, F/f ops, call_later, and ack gating
+    const capCheckBefore = await callBackend("python.run", {
+        code: "import animean_python; print('CAP_BEFORE', animean_python.ui.field_display_supported('main'), animean_python.ui.field_display_supported('child'))",
+    });
+    assert.equal(capCheckBefore.ok, true, `python.run capCheckBefore failed: ${capCheckBefore.error}`);
+    assert(
+        String(capCheckBefore.result?.output ?? "").includes("CAP_BEFORE False False"),
+        `Expected CAP_BEFORE False False, got: ${capCheckBefore.result?.output}`
+    );
+
+    const capSetReply = await callBackend("board.capabilities", { view: "main", fieldDisplay: true });
+    assert.equal(capSetReply.ok, true, `board.capabilities failed: ${capSetReply.error}`);
+
+    const capCheckAfter = await callBackend("python.run", {
+        code: "import animean_python; print('CAP_AFTER', animean_python.ui.field_display_supported('main'), animean_python.ui.field_display_supported('child'))",
+    });
+    assert.equal(capCheckAfter.ok, true, `python.run capCheckAfter failed: ${capCheckAfter.error}`);
+    assert(
+        String(capCheckAfter.result?.output ?? "").includes("CAP_AFTER True False"),
+        `Expected CAP_AFTER True False, got: ${capCheckAfter.result?.output}`
+    );
+
+    const badFieldReply = await callBackend("python.run", {
+        code: [
+            "import animean_python",
+            "try:",
+            "    animean_python.ui.set_field('bad_f', 2, 2, b'short')",
+            "    print('BAD_FIELD_NO_ERR')",
+            "except ValueError:",
+            "    print('BAD_FIELD_VALUE_ERR')",
+        ].join("\n"),
+    });
+    assert.equal(badFieldReply.ok, true);
+    assert(
+        String(badFieldReply.result?.output ?? "").includes("BAD_FIELD_VALUE_ERR"),
+        `Expected ValueError on wrong field byte length, got: ${badFieldReply.result?.output}`
+    );
+
+    const prevBoardFrame = latestMainFrame ? latestMainFrame.frame : 0;
+    messageSequence.length = 0;
+    receivedFields.length = 0;
+
+    const fieldSetupReply = await callBackend("python.run", {
+        code: [
+            "import struct, animean_python",
+            "scenes = {s['sceneName']: s['scene'] for s in animean_python.get_scene()}",
+            "child_sc = scenes['child_paint_view']",
+            "s_keep = animean_python.vectorlogic.make_stroke_object([(5.0, 5.0), (45.0, 25.0)], (20, 120, 220, 255), 4.0, 1, False, False, 0)",
+            "s_keep.property = 'keep_prop'",
+            "child_sc.add_stroke_object(0, 0, s_keep)",
+            "s_skip = animean_python.vectorlogic.make_stroke_object([(10.0, 10.0), (50.0, 50.0)], (220, 20, 20, 255), 4.0, 2, False, False, 0)",
+            "s_skip.property = 'skip_prop'",
+            "child_sc.add_stroke_object(0, 0, s_skip)",
+            "data = struct.pack('<8f', 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0)",
+            "animean_python.ui.set_field('smoke_field', 2, 1, data)",
+            "animean_python.ui.set_field_view('main', {",
+            "    'field': 'smoke_field',",
+            "    'rect': (0.0, 0.0, 200.0, 100.0),",
+            "    'max_edge': 8.0,",
+            "    'source_view': 'child',",
+            "    'columns': [0],",
+            "    'frame': 0,",
+            "    'width_scale': 1.5,",
+            "    'skip_properties': ['skip_prop'],",
+            "    'passes': [",
+            "        {'tag': (-0.5, 0.5), 'opacity': 0.75},",
+            "        {'tag': (0.5, 1.5), 'opacity': 0.5, 'tint': (80, 120, 160, 200)},",
+            "    ],",
+            "    'hide_columns': [0],",
+            "})",
+        ].join("\n"),
+    });
+    assert.equal(fieldSetupReply.ok, true, `fieldSetupReply failed: ${fieldSetupReply.error}`);
+
+    const boardWithF = await waitForBoard(
+        (f) => f && f.frame > prevBoardFrame && fullOpsMain.some((op) => Array.isArray(op) && op[0] === "F"),
+        "board frame with F op"
+    );
+
+    assert.equal(receivedFields.length, 1, "Should have received 1 field packet");
+    assert.equal(receivedFields[0].header.key, "smoke_field");
+    assert.equal(receivedFields[0].header.w, 2);
+    assert.equal(receivedFields[0].header.h, 1);
+    assert.equal(receivedFields[0].header.bytes, 32);
+    assert.equal(receivedFields[0].byteLength, 32);
+    assert.deepEqual(receivedFields[0].floats, [1, 2, 3, 4, 5, 6, 7, 8]);
+    const ver1 = receivedFields[0].header.version;
+
+    const hdrIdx = messageSequence.findIndex((m) => m.type === "field_hdr" && m.key === "smoke_field");
+    const binIdx = messageSequence.findIndex((m) => m.type === "field_bin" && m.key === "smoke_field");
+    const brdIdx = messageSequence.findIndex((m) => m.type === "board" && m.view === "main" && m.frame === boardWithF.frame);
+    assert(hdrIdx >= 0 && binIdx === hdrIdx + 1 && brdIdx > binIdx, "field text+binary frames must arrive before board frame");
+
+    const fStartIdx = fullOpsMain.findIndex((op) => Array.isArray(op) && op[0] === "F");
+    const fEndIdx = fullOpsMain.findIndex((op) => Array.isArray(op) && op[0] === "f");
+    assert(fStartIdx >= 0 && fEndIdx > fStartIdx, "Full ops must contain F and f in order");
+    assert.equal(fullOpsMain[fStartIdx][1], "smoke_field");
+    assert.equal(fullOpsMain[fStartIdx][2], ver1);
+    assert.deepEqual(fullOpsMain[fStartIdx][8], [
+        [-0.5, 0.5, 0.75, 0, 0, 0, 0],
+        [0.5, 1.5, 0.5, 80, 120, 160, 200],
+    ]);
+    const sInsideFieldScope = fullOpsMain.slice(fStartIdx + 1, fEndIdx).filter((op) => Array.isArray(op) && op[0] === "S");
+    assert.equal(sInsideFieldScope.length, 1, "Only non-skipped stroke should be drawn inside F..f");
+
+    // Test ack gating and overwriting unsent field versions via call_later
+    autoAckMain = false;
+    unackedMainFrame = null;
+    const frameBeforeAckTest = latestMainFrame.frame;
+
+    const ackTestReply = await callBackend("python.run", {
+        code: [
+            "import struct, animean_python",
+            "d2 = struct.pack('<8f', 10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)",
+            "d3 = struct.pack('<8f', 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)",
+            "d4 = struct.pack('<8f', 30.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)",
+            "animean_python.ui.set_field('smoke_field', 2, 1, d2)",
+            "def _later_updates():",
+            "    animean_python.ui.set_field('smoke_field', 2, 1, d3)",
+            "    animean_python.ui.set_field('smoke_field', 2, 1, d4)",
+            "animean_python.ui.call_later(30, _later_updates)",
+        ].join("\n"),
+    });
+    assert.equal(ackTestReply.ok, true, `ackTestReply failed: ${ackTestReply.error}`);
+
+    await waitForBoard((f) => f && f.frame > frameBeforeAckTest, "unacked board frame with d2");
+    assert(unackedMainFrame !== null, "Main board frame should be held unacked");
+    assert.equal(receivedFields.length, 2, "Should have received d2 before the unacked board frame");
+    assert.equal(receivedFields[1].floats[0], 10);
+
+    // Wait 100ms for call_later(30, ...) to run while main is waiting for ack
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(receivedFields.length, 2, "Must not send field packets while waiting for ack");
+
+    const heldFrame = unackedMainFrame;
+    autoAckMain = true;
+    unackedMainFrame = null;
+    ws.send(JSON.stringify({ t: "ack", view: "main", frame: heldFrame }));
+
+    await waitForBoard((f) => f && f.frame > heldFrame, "board frame after acking held frame");
+    assert.equal(receivedFields.length, 3, "Only latest overwritten field (d4) should be sent after ack");
+    assert.equal(receivedFields[2].floats[0], 30, "Unsent d3 should have been overwritten by d4");
+    assert.equal(receivedFields[2].header.version, ver1 + 3);
+
+    // Clear field view
+    const clearFieldViewFrame = latestMainFrame.frame;
+    await callBackend("python.run", {
+        code: "import animean_python; animean_python.ui.set_field_view('main', None)",
+    });
+    await waitForBoard((f) => f && f.frame > clearFieldViewFrame, "board frame after clearing field view");
+    assert(!fullOpsMain.some((op) => Array.isArray(op) && (op[0] === "F" || op[0] === "f")), "F/f ops must be removed after set_field_view(None)");
 
     ws.close();
     clearTimeout(globalTimeout);
