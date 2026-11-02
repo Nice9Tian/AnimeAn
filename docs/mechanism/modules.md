@@ -35,7 +35,7 @@ AnimeAn.exe（src-tauri/src/lib.rs）
  3. 读后端 stdout 直到拿到 ANIMEAN_BACKEND_PORT=<端口>，拼出 ws://127.0.0.1:<端口>/?token=<token> 存下
  4. WebView2 加载 webui/index.html；webui/src/main.ts 装配 webui/design/ 场景与 webui/src/ui/app.js 面板工厂
  5. 网页调用 Tauri 命令 backend_endpoint 取回 { url }，连接这个地址
- 6. 后端推送全量初始 state；网页收到第一个 window 状态后弹出 New Project 对话框询问画布尺寸
+ 6. 后端推送全量初始 state；网页收到第一个 window 状态后弹出 New Project 对话框询问画布尺寸（后端已经开着工程时不弹）
 ```
 
 ### 2. 后端启动与 Python 装载顺序
