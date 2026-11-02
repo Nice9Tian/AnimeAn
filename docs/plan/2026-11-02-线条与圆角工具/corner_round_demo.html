@@ -99,7 +99,7 @@ kbd { font: inherit; padding: 0 4px; border: 1px solid var(--divider); border-ra
 <div class="status">
   <span id="pill" class="pill">圆角</span>
   <span id="hint"></span>
-  <span class="legend"><kbd>拖动</kbd> 倒圆角　<kbd>Shift</kbd> 两边等长　<kbd>右键</kbd> 取消拖动　<kbd>Ctrl+Z</kbd> 撤销</span>
+  <span class="legend"><kbd>拖动</kbd> 拉出控制线　<kbd>Shift</kbd> 两边等长　<kbd>右键</kbd> 取消拖动　<kbd>Ctrl+Z</kbd> 撤销</span>
 </div>
 
 <script>
@@ -183,8 +183,6 @@ const S = {
   undo: [], redo: [], nextId: 1, touched: false,
 };
 
-const reach = () => (4 - 3 * S.kappa) / 8;   // fillet midpoint = V + reach * (L1 u1 + L2 u2) on straight legs
-
 function view(s) {
   const n = s.segs.length, joints = s.closed ? n : n - 1;
   const acc = s.segs.map(lengths), total = acc.map(a => a[a.length - 1]);
@@ -227,43 +225,49 @@ function filletAt(c, L1, L2) {
   return [p1, add(p1, mul(dirAt(c.seg1, t1), S.kappa * L1)), sub(p2, mul(dirAt(c.seg2, t2), S.kappa * L2)), p2];
 }
 
-// The leg lengths that put the fillet's middle on m. Straight legs have a closed form,
-// m - V = reach * (a u1 + b u2); curved legs start from it and Newton steps on the real fillet.
-// Legs nearly parallel or opposite make the closed form ill-posed, then both take the pull along the bisector.
-function legsFor(c, m) {
-  const w = mul(sub(m, c.V), 1 / reach());
-  const det = cross(c.u1, c.u2);
-  let a, b;
-  if (Math.abs(det) > 0.25) {
-    a = cross(w, c.u2) / det;
-    b = cross(c.u1, w) / det;
+const cutIn = (c, L1) => point(c.seg1, tAt(c.acc1, c.acc1[SAMPLES] - L1));
+const cutOut = (c, L2) => point(c.seg2, tAt(c.acc2, L2));
+
+// The control line (user 2026-11-02): pulling from the corner draws out a line; its length sets how wide
+// the rounding is and its angle sets the tangent at the rounding's top, which decides how much each side
+// gives. The line is the chord between the two cut points, drawn through the fillet's top: its half
+// length is half the chord, its direction the chord's (on straight legs exactly the top's tangent).
+// D runs from the corner to the end of the line the user holds. The line has no direction, so D and -D
+// give the same fillet; s remembers which end was held. A line turned past what the two legs allow
+// leans fully onto the nearer leg.
+function legsFor(c, D) {
+  const l = len(D);
+  if (l < 1e-9) return { L1: 0, L2: 0, s: 1 };
+  const d = mul(D, 1 / l), e1 = mul(c.u1, -1), e2 = c.u2, det = cross(e1, e2);
+  let a, b, s = 1;
+  if (S.shift || Math.abs(det) < 0.05) {
+    const w = len(add(e1, e2));
+    a = b = w > 1e-9 ? 1 / w : 0.5;
+    s = dot(d, add(e1, e2)) < 0 ? -1 : 1;
   } else {
-    const bis = add(c.u1, c.u2);
-    a = b = dot(bis, bis) > 1e-9 ? dot(w, bis) / dot(bis, bis) : 0;
+    a = cross(d, e2) / det;
+    b = cross(e1, d) / det;
+    if (a <= 0 && b <= 0) { a = -a; b = -b; s = -1; }
+    else if (a < 0 || b < 0) {
+      const t1 = dot(d, e1), t2 = dot(d, e2);
+      if (Math.abs(t1) >= Math.abs(t2)) { a = 1; b = 0; s = t1 < 0 ? -1 : 1; }
+      else { a = 0; b = 1; s = t2 < 0 ? -1 : 1; }
+    }
   }
   const clamp1 = v => Math.min(Math.max(0, v), c.avail1), clamp2 = v => Math.min(Math.max(0, v), c.avail2);
-  const mid = (p, q) => point(filletAt(c, p, q), 0.5);
-  if (S.shift) {
-    let L = Math.min(clamp1((a + b) / 2), clamp2((a + b) / 2));
-    for (let k = 0; k < 8; k++) {
-      const f = mid(L, L), d = sub(mid(L + 0.5, L + 0.5), f), dd = dot(d, d);
-      if (dd < 1e-12) break;
-      const stepL = 0.5 * dot(sub(m, f), d) / dd;
-      L = Math.min(clamp1(L + stepL), clamp2(L + stepL));
-      if (Math.abs(stepL) < 0.05) break;
-    }
-    return { L1: L, L2: L };
-  }
-  a = clamp1(a); b = clamp2(b);
-  for (let k = 0; k < 8; k++) {
-    const f = mid(a, b), F = sub(f, m);
+  let L1 = clamp1(2 * l * a), L2 = clamp2(2 * l * b);
+  // Curved legs: Newton steps until the real chord is the line.
+  const want = mul(add(mul(e1, a), mul(e2, b)), 2 * l);
+  const chord = (p, q) => sub(cutOut(c, q), cutIn(c, p));
+  if (!S.shift) for (let k = 0; k < 8; k++) {
+    const f = chord(L1, L2), F = sub(f, want);
     if (len(F) < 0.1) break;
-    const ja = mul(sub(mid(a + 0.5, b), f), 2), jb = mul(sub(mid(a, b + 0.5), f), 2), dj = cross(ja, jb);
+    const j1 = mul(sub(chord(L1 + 0.5, L2), f), 2), j2 = mul(sub(chord(L1, L2 + 0.5), f), 2), dj = cross(j1, j2);
     if (Math.abs(dj) < 1e-9) break;
-    a = clamp1(a - cross(F, jb) / dj);
-    b = clamp2(b - cross(ja, F) / dj);
+    L1 = clamp1(L1 - cross(F, j2) / dj);
+    L2 = clamp2(L2 - cross(j1, F) / dj);
   }
-  return { L1: a, L2: b };
+  return { L1, L2, s };
 }
 
 // ---- history --------------------------------------------------------------------------------
@@ -295,15 +299,17 @@ function findTarget() {
 function beginDrag() {
   const c = S.target;
   if (!c) return;
-  // The press starts from the fillet's own middle, so grabbing a rounded corner never makes it jump.
-  S.drag = { corner: c, origin: c.at, down: S.cursor, before: pack(), moved: false };
+  // A rounded corner is grabbed by the end of its line the user held last time, so it never jumps.
+  const r = c.stroke.rounds[c.joint];
+  const held = r ? mul(sub(c.cuts[1], c.cuts[0]), (r.s || 1) / 2) : { x: 0, y: 0 };
+  S.drag = { corner: c, held, down: S.cursor, before: pack(), moved: false };
 }
 
 function moveDrag() {
   const d = S.drag;
   if (!d.moved && dist(S.cursor, d.down) < DRAG_START) return;
   if (!d.moved) { d.moved = true; S.undo.push(d.before); S.redo.length = 0; S.touched = true; }
-  const legs = legsFor(d.corner, add(d.origin, sub(S.cursor, d.down)));
+  const legs = legsFor(d.corner, add(d.held, sub(S.cursor, d.down)));
   const rounds = d.corner.stroke.rounds;
   if (legs.L1 < GAP && legs.L2 < GAP) delete rounds[d.corner.joint];
   else rounds[d.corner.joint] = legs;
@@ -375,16 +381,30 @@ function dotMark(p, r, fill, ink) {
   g.fill(); g.stroke();
 }
 
-function chip(p, text, c) {
+// side -1 puts the label left of p; it flips when it would leave the board.
+function chip(p, text, c, side = 1) {
   g.font = '12px "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif';
   const w = g.measureText(text).width + 12, h = 20;
-  let x = p.x + 16, y = p.y - 30;
+  let x = side > 0 ? p.x + 16 : p.x - 16 - w, y = p.y - 30;
   if (x + w > cv.clientWidth - 4) x = p.x - 16 - w;
+  if (x < 4) x = p.x + 16;
   if (y < 4) y = p.y + 12;
   g.fillStyle = c.accent;
   g.beginPath(); g.roundRect(x, y, w, h, 3); g.fill();
   g.fillStyle = "#ffffff"; g.textBaseline = "middle";
   g.fillText(text, x + 6, y + h / 2 + 0.5);
+}
+
+// The control line through the rounding's top, as wide as the rounding; the knob the user holds is filled.
+// Returns where its label goes: past the free end, so it never covers the held knob.
+function controlLine(k, s, c) {
+  const half = mul(sub(k.cuts[1], k.cuts[0]), 0.5 * (s || 1));
+  const near = add(k.at, half), far = sub(k.at, half);
+  g.strokeStyle = c.accent; g.lineWidth = 1.5;
+  g.beginPath(); g.moveTo(far.x, far.y); g.lineTo(near.x, near.y); g.stroke();
+  dotMark(far, 3.5, c.surface, c.accent);
+  dotMark(near, 4, c.accent, c.surface);
+  return { at: far, side: far.x < near.x ? -1 : 1 };
 }
 
 function draw() {
@@ -419,7 +439,8 @@ function draw() {
       for (const p of live.cuts) { g.fillStyle = c.accent; g.fillRect(p.x - 3, p.y - 3, 6, 6); }
     }
     const r = d.corner.stroke.rounds[d.corner.joint];
-    chip(live ? live.at : d.corner.V, r ? `${Math.round(r.L1)} / ${Math.round(r.L2)} px` : "尖角", c);
+    const label = live && r ? controlLine(live, r.s, c) : { at: d.corner.V, side: 1 };
+    chip(label.at, r ? `${Math.round(r.L1)} / ${Math.round(r.L2)} px` : "尖角", c, label.side);
   }
 
   if (S.tool === "round") {
@@ -438,12 +459,13 @@ function draw() {
 
   const t = S.target;
   if (t && S.cursor && !d) {
+    const label = t.rounded ? controlLine(t, t.stroke.rounds[t.joint].s, c) : { at: t.at, side: 1 };
     g.strokeStyle = c.accent; g.lineWidth = 1;
     g.beginPath(); g.moveTo(S.cursor.x, S.cursor.y); g.lineTo(t.at.x, t.at.y); g.stroke();
     g.lineWidth = 2;
     g.beginPath(); g.arc(t.at.x, t.at.y, 11, 0, Math.PI * 2); g.stroke();
     if (t.rounded) dotMark(t.at, 4.5, c.end, c.accent); else diamond(t.at, 6.5, c.end, c.accent);
-    chip(t.at, t.rounded ? "拖动调整圆角" : "拖动倒圆角", c);
+    chip(label.at, t.rounded ? "拖动调整圆角" : "拖动倒圆角", c, label.side);
   }
 
   if (S.tool === "poly") {
@@ -472,14 +494,14 @@ function refresh() {
     tip = n ? "左键继续放点，右键结束这条折线。" : "左键放点画折线，折出来的尖角可以切到圆角工具去倒圆角。";
   } else if (S.drag) {
     label = "拖动中"; on = true;
-    tip = "往角里拖得越远越圆，往一侧拖圆角就偏向那一侧；拖回角尖恢复尖角。按住 Shift 两边等长，右键或 Esc 取消。";
+    tip = "控制线拉得越长，圆角越宽越平滑；上下转动它，圆角就偏向一边。拉回角尖恢复尖角。按住 Shift 两边等长，右键或 Esc 取消。";
   } else if (S.target) {
     label = "已吸附"; on = true;
     tip = S.target.rounded ? "按下拖动，调整这个圆角。" : "按下拖动，给这个角倒圆角。";
   } else {
     label = "圆角";
     tip = S.touched ? "把光标移到菱形尖角附近，会吸附到角上。"
-      : "画板上有几条示例线。把光标移到琥珀色菱形（尖角）附近吸附，按下往角里拖。";
+      : "画板上有几条示例线。把光标移到琥珀色菱形（尖角）附近吸附，按下沿着想要的切线方向往外拉。";
   }
   pill.textContent = label;
   pill.classList.toggle("on", on);
