@@ -802,6 +802,13 @@ function createBoards(mainHost, childHost, client, store) {
     if (event?.name !== "board.effect") return;
     slots[event.args?.view]?.effects.play(event.args);
   });
+  // Another frame on show: the picture from before belongs to the old one.
+  let shownFrame;
+  store.on("timeline", (value) => {
+    if (value?.current === shownFrame) return;
+    shownFrame = value?.current;
+    for (const slot of Object.values(slots)) slot.effects.stop();
+  });
   client?.onDisconnect?.(() => {
     for (const slot of Object.values(slots)) {
       slot.effects.stop();

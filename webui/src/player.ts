@@ -1,4 +1,5 @@
 import { t } from "./i18n/index.js";
+import { dockShapeKey, glideBox, sameRect, shownRect, type GlideRect } from "./dock_glide.ts";
 import {
   computeDockWindowLayout,
   syncDockHeaderDom,
@@ -440,6 +441,17 @@ export function createPlayer(
   let clockTimer: number | null = null;
   let currentBoxes = new Map<string, ComputedBox>();
   let isApplying = false;
+
+  // Panels glide when the dock layout changes shape (dock_glide.ts). Not
+  // before the user has touched the page: the panels the backend opens at
+  // start-up just appear.
+  let lastDockShape: string | undefined;
+  let glideArmed = false;
+  const glides = new Map<string, Animation>();
+  const armGlide = () => { glideArmed = true; };
+  doc.addEventListener("pointerdown", armGlide, { capture: true, once: true });
+  doc.addEventListener("keydown", armGlide, { capture: true, once: true });
+  const reducedMotion = () => Boolean(win.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
 
   const stopClockTimer = () => {
     if (clockTimer !== null) {
@@ -1127,8 +1139,33 @@ export function createPlayer(
       }
 
       if (layoutChanged || updateAll) {
+        const shape = dockShapeKey(runtime.getDockLayout(rootId), (nid) => runtime.view(nid).visible);
+        const glide = glideArmed && lastDockShape !== undefined && shape !== lastDockShape && !reducedMotion();
+        lastDockShape = shape;
+        // Where every top-level panel shows now, before the new layout lands.
+        const before = new Map<string, GlideRect>();
+        if (glide) {
+          for (const [id, entry] of mounted) {
+            if (entry.wrapper.parentElement !== stageEl || entry.wrapper.style.display === "none") continue;
+            const rect = shownRect(entry.wrapper);
+            if (rect) before.set(id, rect);
+          }
+        }
         for (const [id, entry] of mounted) {
           updateNodeBoxAndPlacement(id, entry, rootSize);
+        }
+        for (const [id, from] of before) {
+          const entry = mounted.get(id);
+          const to = entry?.lastBox;
+          if (!entry || !to || entry.wrapper.style.display === "none") continue;
+          const target = { x: to.x, y: to.y, width: to.width, height: to.height };
+          if (sameRect(from, target)) continue;
+          glides.get(id)?.cancel();
+          const animation = glideBox(entry.wrapper, from, target);
+          if (animation) {
+            glides.set(id, animation);
+            animation.addEventListener("finish", () => { if (glides.get(id) === animation) glides.delete(id); });
+          }
         }
         for (const lineId of lineNodeIds) {
           const lineEntry = mounted.get(lineId);
