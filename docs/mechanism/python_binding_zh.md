@@ -8,7 +8,7 @@
 
 - `animean_python`：C++ 扩展或嵌入式模块，来自 `pythonbind/python_bindings.cpp`。
 - `pythonbind/animemodel.py`：Python 友好封装，提供 `AnimeModel`、`animemodel`、`annimemodel`、`ui`、`model_pybind`。
-- `animean_python.model_pybind`：把 Python 的 tuple/list/dict 转成 Qt/C++ 值，再返回标准 dict/list。
+- `animean_python.model_pybind`：把 Python 的 tuple/list/dict 转成 C++ `AnimeCore` 值，再返回标准 dict/list。
 - `animean_python.vectorlogic`：暴露矢量绘制、命中测试、擦除区间、路径分段和区域填充相关几何算法。
 - `animean_python.get_scene()` / `animean_python.get_current()`：在 AnimeAn 内嵌 Python 环境中读取当前 UI scene 和当前帧/层/asset。
 
@@ -84,7 +84,7 @@ overlay 始终绘制在所有图层之上，不属于场景模型，也不会被
 此外，`animean_python.ui` 还提供场数据下发、场作用域配置与主线程延迟回调接口：
 
 ```python
-# 上传一张 W*H*4 Float32（小端，每像素 X, Y, valid, tag）的场数据；字节数不等于 width*height*16 时抛 ValueError
+# 上传一张 W*H*4 Float32（小端，每像素 dx, dy, tag, 0）的场数据；字节数不等于 width*height*16 时抛 ValueError
 animean_python.ui.set_field(key, width, height, data)
 
 # 在目标画板上开启或更新场作用域；传 None 清除场作用域并恢复 hide_columns
@@ -105,7 +105,7 @@ animean_python.ui.set_field_view("main", {
 })
 animean_python.ui.set_field_view("main", None)
 
-# 查询指定画板（"main" 或 "child"）前端是否支持场显示（桌面 Qt 版或未连接时返回 False）
+# 查询指定画板（"main" 或 "child"）前端是否支持场显示（未连接时返回 False）
 supported = animean_python.ui.field_display_supported("main")
 
 # ms 毫秒后在主线程事件循环调用 callable；回调抛出的异常会打印并吞掉，不会冲出事件循环

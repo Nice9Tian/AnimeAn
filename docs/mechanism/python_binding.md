@@ -128,7 +128,8 @@ animean_python.ui.call_later(ms: int, fn: Callable[[], object]) -> None
 
 - `set_field(key, width, height, data)` uploads a 2D deformation field
   of `width * height * 4` little-endian `float32` values (`len(data) == width * height * 16`,
-  raising `ValueError` otherwise). Each pixel stores `(X, Y, valid, tag)`.
+  raising `ValueError` otherwise). Each pixel stores `(dx, dy, tag, 0)`: the displacement, the layer-order
+  tag (0 for an invalid node) and a reserved channel.
 - `set_field_view(view, spec)` configures (or clears when `spec` is `None`) a
   field-deformed drawing scope on `"main"` or `"child"` (`"main_paint_view"` /
   `"child_paint_view"` also accepted):
