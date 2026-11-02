@@ -747,7 +747,7 @@ test("菜单标题没变就不重建菜单栏：鼠标下换了元素会再次�
     const { createMenuBar } = await import("../src/ui/panels.js");
     const root = new FakeElement("div");
     body.append(root);
-    const bar = createMenuBar(root, { onTrigger() {} });
+    const bar = createMenuBar(root, { onTrigger() {}, onOpen() {} });
     bar.update([{ id: "file", text: "File", children: [] }, { id: "edit", text: "Edit", children: [] }]);
     const items = root.querySelectorAll(".item");
     assert.equal(items.length, 2);
