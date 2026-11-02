@@ -12,7 +12,7 @@ Tauri 外壳（Rust，只启动和回收）
 AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfile/）
 ```
 
-后端用 `QGuiApplication` 跑在 `offscreen` 平台上，暂时依赖 QtCore、QtGui、QtNetwork，不依赖 QtWidgets 和 QtOpenGL。计算层 `animean_core` 已经不依赖 Qt，还在用 Qt 的是画板（`QPainter`、`QMouseEvent`）、会话层和 WebSocket，要等迁移计划第 5 步抽出画板引擎。
+后端不链接任何 Qt 模块：用 `backend/platform/eventloop.*` 跑事件循环，`backend/net/wsserver.*` 提供本地 WebSocket 服务，计算层 `animean_core`、画板与会话层全部使用 `AnimeCore` 基础类型（`algorithm/core/`）。
 
 启动参数：`AnimeAnBackend.exe --port <端口，0 表示自动> --token <随机串>`。监听成功后向 stdout 打一行 `ANIMEAN_BACKEND_PORT=<端口>`，只监听 127.0.0.1。
 
@@ -20,15 +20,11 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 
 ## 画板不改逻辑
 
-`PaintOpenGLWidget` 的源码在桌面版和后端共用，只换基类：
+`PaintOpenGLWidget`（`openglwidget.*`）的画板业务代码保持原样，基类由 `boardbase.h` 定为 `BoardSurface`（`using PaintBoardBase = BoardSurface;`）：
 
-- 桌面版基类是 `QOpenGLWidget`。
-- 后端基类是 `BoardSurface`：继承 `QObject` 和 `QPaintDevice`，提供 `update()`、`width()`、`height()`、`size()`、`rect()`、`setCursor()`、`unsetCursor()`、`setMouseTracking()`、`setFocusPolicy()`、`devicePixelRatioF()` 和全部事件虚函数。
-- 基类的选择放在 `boardbase.h`，由编译定义 `ANIMEAN_HEADLESS` 决定。
-
-`QPainter painter(this)` 因此不用改：后端的 `paintEngine()` 返回 `RecordingPaintEngine`，它把绘制调用记成指令表。`update()` 合并成一次 0 毫秒定时，定时到了调用 `paintGL()`。
-
-鼠标、滚轮事件由后端构造真实的 `QMouseEvent`、`QWheelEvent`，直接调对应的虚函数，所以钩子消息和桌面版来自同一段代码。
+- `BoardSurface`（`backend/board/boardsurface.*`）继承 `AnimeCore::PaintDevice`，持有 `RecordingDevice`，提供 `update()`、`width()`、`height()`、`size()`、`rect()`、`setCursor()`、`unsetCursor()`、`setMouseTracking()`、`setFocusPolicy()`、`devicePixelRatioF()` 和全部事件虚函数。
+- `Painter painter(this)` 在 `BoardSurface` 上绘制：`BoardSurface` 是 `PaintDevice`，把绘制调用转给内部的 `RecordingDevice`，录制成带 64 位哈希的指令表。`update()` 合并成一次 0 毫秒定时（`Timer`），定时到了调用 `paintGL()`。
+- 鼠标、滚轮、焦点事件由 `BoardSurface::injectMouse`、`injectWheel`、`injectFocus`、`injectBlur` 等构造 `MouseEvent`、`WheelEvent`（`backend/board/inputevent.h`），直接调对应的虚函数；尺寸走 `resizeSurface`。派发给 Python 的钩子消息格式不变。
 
 ## 消息
 
@@ -45,9 +41,9 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 `kind`：`press`、`move`、`release`、`wheel`、`enter`、`leave`、`resize`、`focus`。
 
 - 坐标是画板左上角起的 CSS 像素。
-- `button`、`buttons` 的值用 `Qt::MouseButton`：左 1，右 2，中 4。
-- `modifiers` 的值用 `Qt::KeyboardModifier`：Shift `0x02000000`，Ctrl `0x04000000`，Alt `0x08000000`。
-- `wheel` 带 `dx`、`dy`，单位和 `QWheelEvent::angleDelta` 相同。
+- `button`、`buttons` 的值用 `AnimeCore::MouseButton`（`backend/board/inputevent.h`）：左 1，右 2，中 4。
+- `modifiers` 的值用 `AnimeCore::KeyboardModifier`：Shift `0x02000000`，Ctrl `0x04000000`，Alt `0x08000000`。
+- `wheel` 带 `dx`、`dy`，单位和 `AnimeCore::WheelEvent::angleDelta`（1/8 度，一格 120）相同。
 - `resize` 带 `w`、`h`、`dpr`。
 
 ### 后端 → 网页
@@ -69,7 +65,7 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 
 | 操作 | 参数 | 含义 |
 |---|---|---|
-| `T` | m11, m12, m21, m22, dx, dy | 设置变换，同 `QTransform` |
+| `T` | m11, m12, m21, m22, dx, dy | 设置变换，同 `AnimeCore::Transform` |
 | `P` | r, g, b, a, width, cap, join, miter, cosmetic, dash | 设置画笔。`a` 是 0–255。`cap`：0 平头、1 方头、2 圆头。`join`：0 尖角、1 斜角、2 圆角。`dash` 是数组或 `null`，长度以线宽为单位。`a` 为 0 表示不描边 |
 | `B` | r, g, b, a | 设置纯色画刷。`a` 为 0 表示不填充 |
 | `G` | kind, coords, stops | 设置渐变画刷。`kind`：`linear`、`radial`。`stops` 是 `[pos, r, g, b, a]` 数组 |
@@ -106,7 +102,7 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 - 几何放在一个大顶点缓冲里，GPU 缓冲按整个容量预留，新几何只传新增部分。擦除时一帧要新增几十条切片，缓冲只按数据量分配时每条都会全量上传，单帧要几十毫秒。
 - 选择存在页面的 `localStorage`，键是 `animean.boardRenderer`，属于机器级偏好，不进工程文件，也不经过后端。菜单项由 `webui/src/ui/app.js` 加在后端的菜单后面。
 - 切换时新建 canvas，因为同一个 canvas 只能拿到一种上下文。新渲染器用 `adopt` 接手指令表和图片，不需要后端重发。
-- 显卡不支持 WebGL2 或上下文创建失败时退回 Canvas 2D。要读背景的合成模式（`multiply`、`screen` 等）WebGL 没有实现，退回 `source-over`；画板现在不发这些模式，唯一的 `setCompositionMode` 作用在离屏 `QImage` 上。
+- 显卡不支持 WebGL2 或上下文创建失败时退回 Canvas 2D。要读背景的合成模式（`multiply`、`screen` 等）WebGL 没有实现，退回 `source-over`；画板现在不发这些模式，唯一的 `setCompositionMode` 作用在离屏 `AnimeCore::Image`（`RasterDevice`）上。
 
 ## 状态键
 
@@ -128,7 +124,7 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 | `cursor/main`、`cursor/child` | 光标：形状名，或者图片 `key` 加热点和 `scale`。位图是屏幕像素，`w`、`h` 也是；热点是逻辑像素，`scale` 是位图每个逻辑像素的像素数，网页用 `image-set` 声明 |
 | `freeze` | Python 冻结界面的开关 |
 | `pad` | Repulsion Pad 的值 |
-| `viewport/main`、`viewport/child` | 滚动条：`h`、`v` 各含 `min`、`max`、`page`、`value`、`enabled`，算法同 `PaintViewContainer::syncScrollBars` |
+| `viewport/main`、`viewport/child` | 滚动条：`h`、`v` 各含 `min`、`max`、`page`、`value`、`enabled`，由 `BackendSession::buildViewportState` 计算 |
 | `event` | 一次性通知，`{ name, args }`，不合并、不重发：`dialog.*`、`menu.action`、`settings.open`、`window.show`、`window.select`、`textureView.surface`、`textureSubControl.surface` |
 
 ## 调用

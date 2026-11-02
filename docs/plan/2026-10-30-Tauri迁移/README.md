@@ -1,6 +1,6 @@
 # Tauri 迁移计划
 
-2026-10-30。状态：方向已定；用户确认的一级、二级修改已落到本分支，G6、R4 到对应步骤写入（见「文档修改进度」）；真实软件已对接（见「对接真实软件」），WebGL 画板和计算层去 Qt 已完成（见「WebGL 画板」「计算层去 Qt」）。
+2026-10-30（2026-11-02 回填）。状态：方向已定；用户确认的一级、二级修改已落到本分支，G6、R4 到对应步骤写入（见「文档修改进度」）；真实软件已对接（见「对接真实软件」），WebGL 画板和计算层去 Qt 已完成（见「WebGL 画板」「计算层去 Qt」）；第 5、6、7 步代码已完成并进 `claude/tauri-migration`（Qt 桌面界面已删除，后端不链接任何 Qt 模块）；第 0 步探针（`webui/pen_probe.html`）已做好，真笔对比等用户跑；`main` 没有合并。
 
 来源：用户要在浏览器里快速调试、亲手试手感，两边界面一致，随后决定「现在定 Tauri」，并在审阅页逐条拍板。
 
@@ -105,6 +105,7 @@ Python 仍然嵌在后端进程里，所以 `pydeps` 的 pip 自装、To 3D 的 
 
 0. **真笔门槛。** 用真数位板在 WebView2 里测采样率、压感和系统手势，和 Qt 版画同样的线对比。
    预计半天。通过标准：样本数不低于 Qt 版的 80%（这个门槛是提议，可改），没有系统手势抢笔。不通过就回到 Qt 路线。
+   实际结果：探针做好了（`webui/pen_probe.html`、`webui/src/pen_probe.ts`、`webui/tests/pen_probe.test.ts`，支持 `ANIMEAN_START_PAGE=pen_probe.html` 在 Tauri 外壳内直开），真笔对比等用户跑。
 1. **计算层去 Qt。** 已完成，见「计算层去 Qt」。把 `algorithm/`、`projectio.*`、`clipreader.*` 改成不依赖 Qt 的纯 C++。Qt 主程序在边界上转换类型，继续能跑。
    顺序：先换 `QPointF`、`QVector`、`QString`、`QJson` 这些基础类型（量大但简单）；再换 `QPainterPath` 的布尔运算和描边（`vectorlogic.cpp` 的填充区域，第 2605、2666、2679、2746 行）；最后处理撤销快照依赖的隐式共享（`scenehistory.h`）。
    预计 3–5 周。完成标志：`animean_core` 不链接 Qt；`ctest` 和 `tests/t_*.py` 全过；Qt 版行为不变，填充结果和替换前逐例比较。
@@ -116,10 +117,13 @@ Python 仍然嵌在后端进程里，所以 `pydeps` 的 pip 自装、To 3D 的 
    预计 1–1.5 周。完成标志：网页里的图层面板操作的是真模型；浮动面板能拖到第二块屏幕。
 5. **画板引擎和 WebGL 渲染端。** 从 `PaintOpenGLWidget` 抽出采样、交互事件和覆盖层，变成不依赖 Qt 的引擎，输出绘制列表。这是最大的一步。
    预计 3–5 周。完成标志：两块板能画线、擦除、拖轴线、跑 Auto Mapping；录制的钩子消息回放后逐字段一致；同一工程和 Qt 版对比，除抗锯齿外一致。
+   实际结果：代码完成，进了 `claude/tauri-migration`。`openglwidget.*` 与 `backend/board/`（`BoardSurface`、`RecordingDevice`、`inputevent.h`、`cursor.h`、基于 Win32 GDI `GetGlyphOutlineW` 的 `textpath.*`）、`backend/platform/`（`Signal`、`EventLoop`、`Timer`、`ElapsedTimer`）、`backend/net/wsserver.*` 全部改用 `AnimeCore` 与原生实现，后端不再链接任何 Qt 模块；`backend/tests/golden/` 新旧录制对比通过。
 6. **补齐面板。** 按现有长相做菜单、工具、选项、时间轴、调色板、对话框、导入。
    预计 3.5–5 周。完成标志：按 `../../tools_user_workflow/README.md` 列出的工具页逐页手测通过。
+   实际结果：代码完成，进了 `claude/tauri-migration`。补齐了帧缩略图（`timeline.thumbnails`）、纹理板菜单与脚本按钮（`textureMenus`、`texture.viewButton`）、工具选项内嵌纹理视图与三处归属切换（`texture.setHome`）、图层树拖拽重排（`layer.applyStructure`）、时间轴横竖停靠与 `Settings` 持久化、导入与保存探测；Qt 面板 `.cpp` / `.h` 已全部删除，只留 `childrenpanel/tool_controls/*.json`。
 7. **打包和合并。** Tauri 与后端打成压缩包，在离线的新机器上验证，然后找时机合并进 `main`。
    预计 1 周。完成标志：迁移分支相对 merge-base 的 `pyfile/` 差异为空，`tests/t_*.py` 全过，文档里没有旧术语，R4 已处理。合并和删除 Qt 界面代码都由用户确认。
+   实际结果：第 7 步代码与打包完成，进了 `claude/tauri-migration`。`build_scripts/agent_build.ps1`、`build_scripts/package_tauri.ps1` 与 `build_scripts/toolchain_location.ps1` 编译 `AnimeAnBackend` 与 Tauri 外壳并输出无 Qt 的 `dist\AnimeAn\`；三级机制文档与 `algorithm/core/README.md` 已更新到现状。`main` 没有合并。
 
 ## 对接真实软件
 
@@ -155,6 +159,7 @@ Python 仍然嵌在后端进程里，所以 `pydeps` 的 pip 自装、To 3D 的 
 **真实功能已手测：** 加图层、画线、稳定器、撤销、Mapping 页工具、H Center Line 触发 Python 建 Auto-Mapping 图层、Python 菜单、主题切换。端到端测试 `backend/tests/session_smoke.mjs`、`npm test`、`cargo test`、`tests/t_*.py` 全过，`pyfile/` 相对 `origin/main` 无差异。
 
 **还没做的：** 帧缩略图（后端没有接口）；纹理页的菜单和脚本按钮；工具选项里的内嵌纹理视图（现在是一行提示）；浮动面板还在同一窗口里，没有变成独立窗口（D3）；时间轴的竖向停靠只发了命令，没有实际改布局；真笔、压感和高分屏没测；第 0 步没做。
+（2026-11-02 回填：帧缩略图、纹理页菜单和脚本按钮、工具选项内嵌纹理视图、时间轴竖向停靠、独立面板窗口命令、后端去 Qt 与无 Qt 打包已在第 5、6、7 步完成并进 `claude/tauri-migration`；第 0 步探针 `webui/pen_probe.html` 已做好，真笔对比等用户跑；`main` 没有合并。）
 
 G6 仍未写入 `../../developer_guide.md`：面板现在是手写代码，「界面只在设计文件里改」不成立。
 

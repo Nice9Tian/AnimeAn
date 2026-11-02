@@ -833,7 +833,7 @@ Structure dict:
 - The Python API is strongest for vector image and scene-structure work. Raster
   image authoring and more fill-layer editing operations still live mostly in
   C++ and are not fully exposed as Python editing APIs.
-- `VectorStroke` internals such as point arrays, color, and `QPainterPath` data
+- `VectorStroke` internals such as point arrays, color, and `AnimeCore::Path` data
   are mainly intended to be created through `vectorlogic.make_stroke_object()`
   or `add_polyline()`. Direct mutation of complex stroke internals from Python
   is not the primary supported path.
