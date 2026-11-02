@@ -13,7 +13,7 @@
 | 会话内存 | 历史快照、播放缓存、单元焦点、斥力板基线 | 不落盘 |
 | `test_document/` | 样例：`A.pli`、`bigA.clip`、`texture.textureview` | 入库 |
 
-除 `%APPDATA%\AnimeAn\settings.json` 外程序不落盘（`Settings` 只出现在 `theme.cpp` 与 `backend/session/backendsession.cpp`；网页的渲染器偏好 `animean.boardRenderer` 和 Tools 分组的折叠状态 `animean.toolGroups` 存 WebView2 的 `localStorage`）。
+除 `%APPDATA%\AnimeAn\settings.json` 外程序不落盘（`Settings` 只出现在 `theme.cpp` 与 `backend/session/backendsession.cpp`；网页的渲染器偏好 `animean.boardRenderer`、Tools 分组的折叠状态 `animean.toolGroups` 和界面语言 `animean.language` 存 WebView2 的 `localStorage`）。
 
 另外几处写盘都不是用户数据，`../developer_guide.md` 的「不落盘」不管它们：
 
