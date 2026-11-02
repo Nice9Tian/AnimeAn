@@ -519,6 +519,63 @@ try {
             path: texProjPath,
         });
         assert.equal(texOpenReply.ok, true, `file.texture open failed: ${texOpenReply.error}`);
+
+        // 11. Verify probe on divergent extension overwrite (confirmDivergentOverwrite)
+        const divergentProbe = await callBackend("project.saveAs", {
+            path: path.join(tmpDir, "test_proj"),
+            probe: true,
+        });
+        assert.equal(divergentProbe.ok, true);
+        assert.equal(divergentProbe.result?.needsConfirmOverwrite, true);
+        assert.equal(divergentProbe.result?.fileName, "test_proj.anproj");
+
+        // 12. Verify menu.refresh, view.setActive -> paint window current, window.assetView, timeline.thumbnails, layer.applyStructure
+        const refreshReply = await callBackend("menu.refresh", {});
+        assert.equal(refreshReply.ok, true);
+        assert(Array.isArray(refreshReply.result?.menus), "menu.refresh must return menus array");
+
+        const setChildReply = await callBackend("view.setActive", { view: "child" });
+        assert.equal(setChildReply.ok, true);
+        await waitForState(
+            (map) => {
+                const wins = map.get("windows")?.list;
+                const paint = Array.isArray(wins) ? wins.find((w) => w.name === "paint") : null;
+                return paint?.current === "texture";
+            },
+            "windows.paint.current synced to texture on view.setActive(child)"
+        );
+        assert.equal(stateMap.get("window")?.assetView, "main");
+
+        await callBackend("menu.trigger", { id: "child.setting.changeableTexture", checked: true });
+        await waitForState(
+            (map) => map.get("window")?.assetView === "child",
+            "window.assetView updated to child when changeableTexture is enabled"
+        );
+        await callBackend("menu.trigger", { id: "child.setting.changeableTexture", checked: false });
+        await callBackend("view.setActive", { view: "main" });
+        await waitForState(
+            (map) => {
+                const wins = map.get("windows")?.list;
+                const paint = Array.isArray(wins) ? wins.find((w) => w.name === "paint") : null;
+                return paint?.current === "drawing" && map.get("window")?.assetView === "main";
+            },
+            "windows.paint.current synced back to drawing on view.setActive(main)"
+        );
+
+        const thumbReply = await callBackend("timeline.thumbnails", { frames: [0], width: 83, height: 62 });
+        assert.equal(thumbReply.ok, true, `timeline.thumbnails failed: ${thumbReply.error}`);
+        assert(typeof thumbReply.result?.thumbnails?.["0"] === "string", "timeline.thumbnails must return key for frame 0");
+
+        const curRows = stateMap.get("layers/main")?.rows ?? [];
+        if (curRows.length >= 2) {
+            const reordered = [curRows[1], curRows[0], ...curRows.slice(2)];
+            const structReply = await callBackend("layer.applyStructure", {
+                view: "main",
+                rows: reordered,
+                movedLayer: curRows[0].layer ?? -1,
+            });
+            assert.equal(structReply.ok, true, `layer.applyStructure failed: ${structReply.error}`);
+        }
     } finally {
         try {
             fs.rmSync(tmpDir, { recursive: true, force: true });

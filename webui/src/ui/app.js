@@ -115,19 +115,32 @@ export function createStore(client) {
   };
   const call = (method, params = {}) => client.call(method, params).catch((error) => fail(error, warningTitleForCall(method, params)));
   const cursors = new Map();
+  const images = new Map();
+  const imageListeners = new Set();
   client.onImage((meta, data) => {
-    if (!meta.key.startsWith("cur_")) return;
+    if (!meta.key.startsWith("cur_") && !meta.key.startsWith("thumb_")) return;
     const canvas = document.createElement("canvas");
     canvas.width = meta.w;
     canvas.height = meta.h;
     const pixels = new ImageData(new Uint8ClampedArray(data), meta.w, meta.h);
     canvas.getContext("2d").putImageData(pixels, 0, 0);
-    cursors.set(meta.key, canvas.toDataURL());
+    const url = canvas.toDataURL();
+    if (meta.key.startsWith("cur_")) cursors.set(meta.key, url);
+    images.set(meta.key, url);
+    for (const fn of imageListeners) fn(meta.key, url);
   });
-  return { on, call, get: (key) => values.get(key), cursorUrl: (key) => cursors.get(key) };
+  return {
+    on,
+    call,
+    get: (key) => values.get(key),
+    cursorUrl: (key) => cursors.get(key),
+    imageUrl: (key) => images.get(key),
+    onImage: (fn) => { imageListeners.add(fn); return () => imageListeners.delete(fn); },
+  };
 }
 
 const activeView = (store) => store.get("window")?.activeView ?? "main";
+const assetView = (store) => store.get("window")?.assetView ?? store.assetView ?? activeView(store);
 
 // Which scene dock shows which backend window.
 export const DOCK_FOR_WINDOW = {
@@ -179,12 +192,13 @@ export function panelFactories(store, client) {
         onSelect: (view, layerIndex) => call("layer.select", { view, layerIndex }),
         onVisible: (view, layerIndex, visible) => call("layer.setVisible", { view, layerIndex, visible }),
         onCollapse: (view, groupId, collapsed) => call("layer.setCollapsed", { view, groupId, collapsed }),
+        onApplyStructure: (view, rows, movedLayer) => call("layer.applyStructure", { view, rows, movedLayer }),
         onMove: (view, from, to) => {
           if (from.layer !== undefined && to.layer !== undefined) call("layer.move", { view, fromIndex: from.layer, toIndex: to.layer });
         },
-        assetTarget: () => store.assetView ?? activeView(store),
+        assetTarget: () => assetView(store),
         onDropAsset: (view, assetIndex) => {
-          if (view === (store.assetView ?? activeView(store)) && assetIndex >= 0) {
+          if (view === assetView(store) && assetIndex >= 0) {
             call("asset.addLayer", { view, assetIndex });
           }
         },
@@ -206,24 +220,13 @@ export function panelFactories(store, client) {
     },
 
     QtAssets(el) {
-      const target = () => {
-        if (activeView(store) !== "child") return "main";
-        const find = (items) => {
-          for (const item of items ?? []) {
-            if (item.id === "child.setting.changeableTexture") return item.checked !== false;
-            if (item.children && !find(item.children)) return false;
-          }
-          return true;
-        };
-        return find(store.get("menus")) ? "child" : "main";
-      };
       const panel = createAssets(el, {
-        onSelect: (assetIndex) => call("asset.select", { assetIndex, view: target() }),
-        onAdd: () => call("asset.add", { view: target() }),
-        onClear: () => call("asset.unselect", { view: target() }),
+        onSelect: (assetIndex) => call("asset.select", { assetIndex, view: assetView(store) }),
+        onAdd: () => call("asset.add", { view: assetView(store) }),
+        onClear: () => call("asset.unselect", { view: assetView(store) }),
       });
       const show = () => {
-        const view = target();
+        const view = assetView(store);
         store.assetView = view;
         const state = store.get(`assets/${view}`);
         panel.update({ names: state?.names ?? [], selected: state?.selected ?? -1 });
@@ -231,7 +234,6 @@ export function panelFactories(store, client) {
       on("assets/main", show);
       on("assets/child", show);
       on("window", show);
-      on("menus", show);
     },
 
     QtHistory(el) {
@@ -286,12 +288,18 @@ export function panelFactories(store, client) {
       });
       const panel = createTimeline(el, handlers, { bottomChrome });
       store.timeline = panel;
-      on("timeline", (value) => {
+      const thumbKeys = new Map();
+      const applyTimeline = (value = store.get("timeline")) => {
         if (!value) return;
         if (value.dockArea === "left" || value.dockArea === "right") sideArea = value.dockArea;
         else if (value.vertical) sideArea = value.leftAligned ? "left" : "right";
         panel.update({
-          frames: (value.frames ?? []).map((f) => ({ index: f.index, name: f.name, held: f.hold })),
+          frames: (value.frames ?? []).map((f, i) => {
+            const idx = f.index ?? i;
+            const key = thumbKeys.get(idx);
+            const thumbnail = f.thumbnail ?? (key ? store.imageUrl?.(key) : undefined);
+            return { index: idx, name: f.name, held: f.hold, ...(thumbnail ? { thumbnail } : {}) };
+          }),
           current: value.currentFrame,
           fps: value.fps,
           playing: value.playing,
@@ -308,7 +316,36 @@ export function panelFactories(store, client) {
           collapsed: Boolean(value.collapsed),
           floating: Boolean(value.floating),
         });
+      };
+      const refreshThumbnails = async () => {
+        const value = store.get("timeline");
+        if (!value) return;
+        const frames = (value.frames ?? [])
+          .map((f, i) => ({ index: f.index ?? i, hold: Boolean(f.hold) }))
+          .filter((f) => !f.hold)
+          .map((f) => f.index);
+        if (!frames.length) return;
+        const sz = panel.previewSize?.() ?? { width: 83, height: 62 };
+        const reply = await call("timeline.thumbnails", { frames, width: sz.width, height: sz.height });
+        if (reply?.thumbnails && typeof reply.thumbnails === "object") {
+          thumbKeys.clear();
+          for (const [k, key] of Object.entries(reply.thumbnails)) {
+            thumbKeys.set(Number(k), key);
+          }
+          applyTimeline();
+        }
+      };
+      store.onImage?.((key) => {
+        if (key.startsWith("thumb_")) applyTimeline();
       });
+      on("timeline", (value) => {
+        if (!value) return;
+        applyTimeline(value);
+        refreshThumbnails();
+      });
+      on("history", () => refreshThumbnails());
+      on("layers/main", () => refreshThumbnails());
+      on("layers/child", () => refreshThumbnails());
     },
 
     QtCentral(el) {
@@ -508,7 +545,16 @@ export function createChrome(menuEl, statusEl, store) {
       checked: item.kind === "check" ? !item.checked : item.kind === "radio" ? true : undefined,
     });
   };
-  const bar = createMenuBar(menuEl, { onTrigger: trigger });
+  const bar = createMenuBar(menuEl, {
+    onTrigger: trigger,
+    onOpen: async () => {
+      if (frozen) return;
+      const reply = await store.call("menu.refresh", {});
+      if (Array.isArray(reply?.menus)) {
+        bar.update([...reply.menus, settingsMenu()]);
+      }
+    },
+  });
   // The renderer belongs to this page, not the document, so its menu is added
   // here rather than coming from the backend's menu state.
   const settingsMenu = () => {
@@ -602,6 +648,9 @@ export function createChrome(menuEl, statusEl, store) {
     "file.import.raster": ["raster", "Import Raster", [{ name: "Images", extensions: ["png", "jpg", "jpeg", "bmp", "gif", "webp", "tif", "tiff"] }]],
     "file.import.opentoonz": ["opentoonz", "Import OpenToonz Lines", [{ name: "OpenToonz Vector Levels", extensions: ["pli"] }]],
     "file.import.csp": ["csp", "Import Clip Studio Paint", [{ name: "Clip Studio Paint", extensions: ["clip"] }]],
+    "file.texture.import.raster": ["raster", "Import Raster", [{ name: "Images", extensions: ["png", "jpg", "jpeg", "bmp", "gif", "webp", "tif", "tiff"] }], "child"],
+    "file.texture.import.opentoonz": ["opentoonz", "Import OpenToonz Lines", [{ name: "OpenToonz Vector Levels", extensions: ["pli"] }], "child"],
+    "file.texture.import.csp": ["csp", "Import Clip Studio Paint", [{ name: "Clip Studio Paint", extensions: ["clip"] }], "child"],
   };
   const TEXTURE_ACTIONS = {
     "file.texture.open": ["open", "open", "Open Texture View", TEXTURE],
@@ -628,19 +677,61 @@ export function createChrome(menuEl, statusEl, store) {
       }
       case "dialog.saveProjectAs": {
         const [path] = await pick("save", "Save Project As", PROJECT, false, defaultSaveName("project", store.get("window")));
-        if (path) store.call("project.saveAs", { path });
+        if (!path) break;
+        const probe = await store.call("project.saveAs", { path, probe: true });
+        if (probe?.needsConfirmOverwrite) {
+          const choice = await messageBox({
+            title: "Save Project As",
+            text: `${probe.fileName} already exists.\nDo you want to replace it?`,
+            buttons: ["Yes", "No"],
+          });
+          if (choice !== "Yes") break;
+        }
+        await store.call("project.saveAs", { path, overwrite: true });
         break;
       }
       case "menu.action": {
         if (IMPORTS[args.id]) {
-          const [kind, title, filters] = IMPORTS[args.id];
+          const [kind, title, filters, view] = IMPORTS[args.id];
           const paths = await pick("open", title, filters);
-          if (paths.length) store.call("file.import", { kind, paths });
+          if (!paths.length) break;
+          const baseParams = view ? { kind, paths, view } : { kind, paths };
+          if (kind === "opentoonz" || kind === "csp") {
+            const probe = await store.call("file.import", { ...baseParams, probe: true });
+            if (!probe) break;
+            let fitToCanvas = false;
+            if (probe.needsScale) {
+              const b = probe.sourceBounds ?? { x: 0, y: 0, width: 0, height: 0 };
+              const choice = await messageBox({
+                title,
+                text: `The imported drawing bounds are (${b.x}, ${b.y}) ${b.width} x ${b.height}, but the current canvas is ${probe.canvasWidth} x ${probe.canvasHeight}.\nFit it to the current canvas?`,
+                buttons: ["Yes", "No"],
+              });
+              fitToCanvas = choice === "Yes";
+            }
+            await store.call("file.import", { ...baseParams, fitToCanvas });
+          } else {
+            await store.call("file.import", baseParams);
+          }
         } else if (TEXTURE_ACTIONS[args.id]) {
           const [kind, mode, title, filters] = TEXTURE_ACTIONS[args.id];
           const defaultName = mode === "save" ? defaultSaveName(kind, store.get("window")) : "";
           const [path] = await pick(mode, title, filters, false, defaultName);
-          if (path) store.call("file.texture", { kind, path });
+          if (!path) break;
+          if (kind === "saveAs" || kind === "save") {
+            const probe = await store.call("file.texture", { kind, path, probe: true });
+            if (probe?.needsConfirmOverwrite) {
+              const choice = await messageBox({
+                title: "Save Texture View As",
+                text: `${probe.fileName} already exists.\nDo you want to replace it?`,
+                buttons: ["Yes", "No"],
+              });
+              if (choice !== "Yes") break;
+            }
+            await store.call("file.texture", { kind, path, overwrite: true });
+          } else {
+            await store.call("file.texture", { kind, path });
+          }
         } else if (args.id?.startsWith("file.texture.")) {
           store.call("file.texture", { kind: args.id.slice("file.texture.".length) });
         }
