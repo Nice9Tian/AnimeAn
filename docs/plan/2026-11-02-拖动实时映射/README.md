@@ -211,4 +211,13 @@ det2(dx, dy, du, dv) -> 每个节点的雅可比行列式，四个单侧模板�
 C 装置拖纹理板轴线是最慢的一种，慢手时中位 37ms，略超 33ms 的目标。
 
 Refer Rect 网格后来也跟随预览，实测见 `../../mechanism/field_display.md` 的同名一节：停手收敛后和精确网格最多差 0.07px，真实后端上每帧多约 3ms。
+
+示例工程 `tests/fixtures/additional_line_axis_notch.anproj` 上，真实后端，每次移动 2 像素：
+
+| 拖动 | 每帧中位 ms | 帧间隔中位 / p90 ms |
+|---|---|---|
+| 主画板附加线 | 33 | 48 / 202 |
+| 纹理板 H 轴 | 49 | 76 / 169 |
+
+两种都没到 30Hz，原因还没查。
 - 单击线不再丢曲线：`mouseReleaseEvent` 松手前总会补发一次零位移的 `move`，修法是 main 的 `e64e519`（没移动过就不碰线），预览钩子接在它后面，`tests/t_mapping_preview.py` 的第 11 项在预览开着时守住这条路径。
