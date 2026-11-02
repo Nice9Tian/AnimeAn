@@ -11,7 +11,7 @@
 - 一个主画板（中央区 Drawing 页）和一块纹理板；纹理板是无限画布，可在中央 Texture 页、子控件框、停车位三处之间搬迁，任一时刻只在一处。现有。机制（三级）：`mechanism/windows_theme.md`。
 - 视口滚轮缩放、中键平移、滚动条联动，两块板都有。现有。机制（三级）：`mechanism/modules.md`。
 - 面板都是带页签的父窗，Windows 菜单开关；浮动的无边框窗口可拉四边改大小。现有。〔裁 2026-11-02〕Tauri 版里浮动面板是独立窗口，有三处不跨窗口：纹理子控件框留在主窗口内浮动，拖回主窗口不自动停靠（用标题栏按钮或双击恢复），Assets 拖到 Layers 不跨窗口。原因和解法见 `long_time_work/2026-11-02-Tauri迁移收尾.md`。机制（三级）：`mechanism/windows_theme.md`。
-- 对话框是独立窗口，弹出时在 AnimeAn 所有窗口之上（不盖住别的软件）；对话框开着时，其它 AnimeAn 窗口不能操作，点它们会把对话框提到最前。规划（2026-11-03 拍板，计划见 `plan/2026-11-03-对话框窗口.md`）。机制（三级）：`mechanism/windows_theme.md`。
+- 对话框是独立窗口，弹出时在 AnimeAn 所有窗口之上（不盖住别的软件）；对话框开着时，其它 AnimeAn 窗口不能操作，点它们会把对话框提到最前。现有（2026-11-03 拍板，计划见 `plan/2026-11-03-对话框窗口.md`）。机制（三级）：`mechanism/windows_theme.md`。
 - Tools 面板把 Painting、Mapping 两组工具放在一起，每组可以单独折叠，折叠状态下次启动沿用；工具换到折叠的组时自动展开，收起的组里有选中的工具时标题亮蓝点。现有。机制（三级）：`mechanism/windows_theme.md`。
 - Tools 面板放不下全部工具时可以滚动：底部出现向下箭头，滚动后顶部出现向上箭头，滚轮也能滚；放得下时不显示箭头。现有。机制（三级）：`mechanism/windows_theme.md`。
 - 鼠标停在工具按钮上显示工具名和一句说明。现有。机制（三级）：`mechanism/windows_theme.md`。

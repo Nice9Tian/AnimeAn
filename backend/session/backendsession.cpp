@@ -3377,9 +3377,31 @@ bool BackendSession::triggerMenuById(const String &id, const JsonObject &params,
 }
 
 // A script's settings window is a dialog, and opening one is Python's
-// (dialogs.py); the menu item or the layer row only names it.
+// (dialogs.py); the menu item or the layer row only names it. A name nothing
+// registered says so in the status bar, as before.
 void BackendSession::openScriptSettings(const String &name, const String &title)
 {
+#ifdef ANIMEAN_WITH_PYTHON
+    if (Py_IsInitialized()) {
+        bool registered = false;
+        try {
+            py::gil_scoped_acquire acquire;
+            const std::string json = py::module_::import("python_hooks")
+                                         .attr("settings_layout_json")(name.toStdString())
+                                         .cast<std::string>();
+            registered = !JsonDocument::fromJson(json).object().isEmpty();
+        } catch (const py::error_already_set &raised) {
+            m_business->setStatusMessage(String("settings error: %1").arg(String::fromUtf8(raised.what())));
+            markDirty(String("window"));
+            return;
+        }
+        if (!registered) {
+            m_business->setStatusMessage(String("No settings registered for '%1'.").arg(name));
+            markDirty(String("window"));
+            return;
+        }
+    }
+#endif
     String error;
     const int handled = dispatchPythonEvent(JsonObject{
                                                 {String("event"), String("dialog")},
