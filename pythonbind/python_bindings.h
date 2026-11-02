@@ -170,6 +170,21 @@ void clearAnimeanUiFieldDisplaySupportedCallback();
 // registered, as in the bare Python module, the call is dropped.
 void registerAnimeanUiCallLaterCallback(std::function<void(int ms, std::function<void()> callback)> callback);
 void clearAnimeanUiCallLaterCallback();
+// The open dialogs, as the JSON array Python keeps (ui.set_dialogs). The host
+// stores and broadcasts it; it knows none of the kinds.
+void registerAnimeanUiDialogsCallback(std::function<void(const String &json)> callback);
+void clearAnimeanUiDialogsCallback();
+// A state of Python's own for the page (ui.broadcast): the key starts with "py/".
+void registerAnimeanUiBroadcastCallback(std::function<void(const String &key, const String &json)> callback);
+void clearAnimeanUiBroadcastCallback();
+// One state as the page receives it, as JSON (ui.state). Empty when unknown.
+void registerAnimeanUiStateCallback(std::function<String(const String &key)> callback);
+void clearAnimeanUiStateCallback();
+// One backend method, as the page calls it (ui.call). Returns the result as
+// JSON, or the error text with *ok false.
+void registerAnimeanUiCallCallback(
+    std::function<String(const String &method, const String &paramsJson, bool *ok)> callback);
+void clearAnimeanUiCallCallback();
 AnimeSceneModel *animeanUiSceneForViewName(const String &view);
 
 #endif // PYTHON_BINDINGS_H

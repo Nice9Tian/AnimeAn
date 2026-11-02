@@ -1,6 +1,7 @@
 // Asks the real backend for everything it would put on screen: the menus, the
-// options of every tool, every settings window and the layer context menus.
-// Fails if a string has no translation. --list prints the strings instead.
+// options of every tool, every settings window, the dialogs the File menu puts
+// up and the layer context menus. Fails if a string has no translation. --list
+// prints the strings instead.
 //
 // Usage: node backend/tests/i18n_coverage.mjs <path-to-AnimeAnBackend.exe> [--list]
 import { spawn } from "node:child_process";
@@ -42,7 +43,8 @@ const port = await new Promise((resolve, reject) => {
 });
 
 const states = new Map();
-const events = [];
+// Every dialog Python put up, as the "dialogs" state showed it.
+const dialogsShown = [];
 const pending = new Map();
 let nextId = 1;
 const socket = new WebSocket(`ws://127.0.0.1:${port}/?token=${encodeURIComponent(token)}`);
@@ -52,7 +54,7 @@ socket.addEventListener("message", (event) => {
   const message = JSON.parse(event.data);
   if (message.t === "state") {
     states.set(message.key, message.value);
-    if (message.key === "event") events.push(message.value);
+    if (message.key === "dialogs") dialogsShown.push(...(message.value ?? []));
   } else if (message.t === "reply") {
     const waiter = pending.get(message.id);
     pending.delete(message.id);
@@ -136,12 +138,25 @@ try {
   collect(states.get("toolOptions"));
   collectChrome();
 
+  // Each settings window, and each dialog the File menu puts up, answered with
+  // Cancel so the next one opens on top of nothing.
+  const cancelOpen = async () => {
+    await settle();
+    for (const dialog of [...(states.get("dialogs") ?? [])].reverse()) {
+      await call("dialog.result", { id: dialog.id, action: "cancel" });
+    }
+  };
+  await cancelOpen();
   for (const id of menuIds(states.get("menus"))) {
-    if (id.startsWith("settings:")) await call("menu.trigger", { id });
+    if (id.startsWith("settings:") || id.startsWith("file.")) {
+      await call("menu.trigger", { id });
+      await cancelOpen();
+    }
   }
-  await settle();
-  for (const event of events) {
-    if (event?.name === "settings.open") collect(event.args);
+  for (const dialog of dialogsShown) {
+    collect(dialog);
+    for (const button of [...(dialog.buttons ?? []), dialog.accept]) if (button) seen.add(button);
+    for (const filter of dialog.filters ?? []) seen.add(filter.name);
   }
 } catch (error) {
   finish(1, error);

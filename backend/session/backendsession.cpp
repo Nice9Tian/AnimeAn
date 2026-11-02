@@ -282,9 +282,14 @@ const StringList &allStateKeys()
         String("viewport/child"),
         String("freeze"),
         String("pad"),
+        String("dialogs"),
     };
     return keys;
 }
+
+// Python's own states (ui.broadcast) live under this prefix, so they can never
+// overwrite one of the states above.
+const String kPythonStatePrefix = String("py/");
 
 int frameNameToRow(const String &frameName)
 {
@@ -587,6 +592,10 @@ BackendSession::BackendSession(WsServer *ws)
 BackendSession::~BackendSession()
 {
 #ifdef ANIMEAN_WITH_PYTHON
+    clearAnimeanUiCallCallback();
+    clearAnimeanUiStateCallback();
+    clearAnimeanUiBroadcastCallback();
+    clearAnimeanUiDialogsCallback();
     clearAnimeanUiCallLaterCallback();
     clearAnimeanUiFieldDisplaySupportedCallback();
     clearAnimeanUiFieldViewCallback();
@@ -635,6 +644,8 @@ void BackendSession::initializePythonStartup()
     loadProtectedPropertiesForChild();
 
     m_business->runPythonInitializationScript();
+    // Modules imported by initalize.py register menus too (Settings).
+    captureScriptMenuNames();
     loadProtectedPropertiesForChild();
     m_mainBoard->resetHistory(String("Initial"));
     m_childBoard->resetHistory(String("Initial"));
@@ -1462,6 +1473,55 @@ void BackendSession::registerPythonUiCallbacks()
         Timer::singleShot(ms, std::move(callback));
     });
 
+    registerAnimeanUiDialogsCallback([this](const String &json) { setDialogsFromPython(json); });
+
+    registerAnimeanUiBroadcastCallback([this](const String &key, const String &json) {
+        if (!key.startsWith(kPythonStatePrefix) || key.size() <= kPythonStatePrefix.size()) {
+            appendPythonDebug(String("[ui.broadcast] the key must start with %1: %2").arg(kPythonStatePrefix, key));
+            return;
+        }
+        JsonParseError error;
+        const JsonDocument document = JsonDocument::fromJson(json.toStdString(), &error);
+        if (error.error != JsonParseError::NoError) {
+            appendPythonDebug(String("[ui.broadcast] %1 is not JSON").arg(key));
+            return;
+        }
+        m_pythonStates.insert(key, document.isArray() ? JsonValue(document.array()) : JsonValue(document.object()));
+        markDirty(key);
+    });
+
+    registerAnimeanUiStateCallback([this](const String &key) {
+        const JsonValue value = buildStateValue(key);
+        if (value.isObject()) {
+            return String::fromStdString(JsonDocument(value.toObject()).toJson(JsonDocument::Compact));
+        }
+        if (value.isArray()) {
+            return String::fromStdString(JsonDocument(value.toArray()).toJson(JsonDocument::Compact));
+        }
+        return String();
+    });
+
+    registerAnimeanUiCallCallback([this](const String &method, const String &paramsJson, bool *ok) {
+        JsonParseError error;
+        const JsonDocument document = JsonDocument::fromJson(paramsJson.toStdString(), &error);
+        if (error.error != JsonParseError::NoError || !document.isObject()) {
+            *ok = false;
+            return String("ui.call: the parameters must be a JSON object");
+        }
+        try {
+            const JsonObject result = dispatchCall(method, document.object());
+            if (result.value(String("__error__")).toBool(false)) {
+                *ok = false;
+                return result.value(String("error")).toString(String("Call failed"));
+            }
+            *ok = true;
+            return String::fromStdString(JsonDocument(result).toJson(JsonDocument::Compact));
+        } catch (const std::exception &exception) {
+            *ok = false;
+            return String::fromUtf8(exception.what());
+        }
+    });
+
     registerAnimeanUiPadValueCallback([this](const String &pad, double x, double y) {
         const PointF pt(x, y);
         m_padValues.insert(pad, pt);
@@ -1511,6 +1571,9 @@ void BackendSession::onClientConnected()
     m_dirtyKeys.clear();
     for (const String &key : allStateKeys()) {
         sendStateKey(key);
+    }
+    for (auto it = m_pythonStates.cbegin(); it != m_pythonStates.cend(); ++it) {
+        sendStateKey(it.key());
     }
 
     if (m_mainBoard) {
@@ -2379,6 +2442,47 @@ JsonObject BackendSession::dispatchCall(const String &method, const JsonObject &
         return JsonObject{{String("pad"), pad}, {String("x"), x}, {String("y"), y}};
     }
 
+    // The page's answer to one dialog. Python decides what follows; C++ only
+    // makes sure a dialog whose window is gone, whose page failed, or whose
+    // answer Python could not take does not stay open (and keep the windows
+    // locked).
+    if (method == String("dialog.result")) {
+        const String id = params.value(String("id")).toString();
+        const String action = params.value(String("action")).toString();
+        if (id.isEmpty() || action.isEmpty()) {
+            return makeError(String("dialog.result needs an id and an action"));
+        }
+        if (action == String("closed") || action == String("error")) {
+            dropDialog(id);
+        }
+        JsonObject event = params;
+        event.insert(String("event"), String("dialog"));
+        String error;
+        if (dispatchPythonEvent(event, &error) <= 0) {
+            dropDialog(id);
+            if (!error.isEmpty()) {
+                return makeError(error);
+            }
+        }
+        return JsonObject{{String("id"), id}};
+    }
+
+    // The page asks Python for a dialog (a colour control was clicked).
+    if (method == String("dialog.request")) {
+        JsonObject event = params;
+        event.insert(String("event"), String("dialog"));
+        event.insert(String("action"), String("request"));
+        String error;
+        const int handled = dispatchPythonEvent(event, &error);
+        if (handled < 0) {
+            return makeError(error);
+        }
+        if (handled == 0) {
+            return makeError(String("Nothing opens a dialog for '%1'").arg(params.value(String("kind")).toString()));
+        }
+        return JsonObject{{String("requested"), true}};
+    }
+
     if (method == String("theme.set")) {
         const JsonValue modeVal = params.contains(String("mode"))
                                        ? params.value(String("mode"))
@@ -3139,42 +3243,10 @@ bool BackendSession::triggerMenuById(const String &id, const JsonObject &params,
         }
     }
 
-    if (id == String("file.new")) {
-        emitUiEvent(String("dialog.canvasSize"),
-                    JsonObject{
-                        {String("width"), m_business->canvasSize().width()},
-                        {String("height"), m_business->canvasSize().height()},
-                    });
-        return true;
-    }
-    if (id == String("file.open")) {
-        emitUiEvent(String("dialog.openProject"));
-        return true;
-    }
-    if (id == String("file.save")) {
-        if (m_business->currentFilePath().isEmpty()
-            || FileInfo(m_business->currentFilePath()).suffix().compare(String("anproj"), CaseInsensitive) != 0) {
-            emitUiEvent(String("dialog.saveProjectAs"));
-            return true;
-        }
-        return [&]{ AnimeCore::String e; const bool r = m_business->saveProjectTo(m_business->currentFilePath(), errorOut ? &e : nullptr); if (errorOut) *errorOut = e; return r; }();
-    }
-    if (id == String("file.saveAs")) {
-        emitUiEvent(String("dialog.saveProjectAs"));
-        return true;
-    }
-    if (id == String("file.texture.save")) {
-        if (!m_business->childFilePath().isEmpty()
-            && FileInfo(m_business->childFilePath()).suffix().compare(String("textureview"), CaseInsensitive) == 0) {
-            return [&]{ AnimeCore::String e; const bool r = m_business->saveTextureViewTo(m_business->childFilePath(), errorOut ? &e : nullptr); if (errorOut) *errorOut = e; return r; }();
-        }
-        emitUiEvent(String("menu.action"), JsonObject{{String("id"), id}});
-        return true;
-    }
-    if (id.startsWith(String("file.import."))
-        || id.startsWith(String("file.texture."))) {
-        emitUiEvent(String("menu.action"), JsonObject{{String("id"), id}});
-        return true;
+    // The File menu's items: which picker, which question, which message is
+    // Python's (file_menu.py); it calls the file methods back.
+    if (id.startsWith(String("file."))) {
+        return forwardMenuToPython(String("file"), id, errorOut);
     }
     if (id == String("edit.undo")) {
         m_business->undo();
@@ -3304,34 +3376,142 @@ bool BackendSession::triggerMenuById(const String &id, const JsonObject &params,
     return false;
 }
 
+// A script's settings window is a dialog, and opening one is Python's
+// (dialogs.py); the menu item or the layer row only names it.
 void BackendSession::openScriptSettings(const String &name, const String &title)
 {
-    JsonObject layout;
-#ifdef ANIMEAN_WITH_PYTHON
-    if (Py_IsInitialized()) {
-        try {
-            py::gil_scoped_acquire acquire;
-            const std::string json = py::module_::import("python_hooks")
-                                         .attr("settings_layout_json")(name.toStdString())
-                                         .cast<std::string>();
-            const JsonDocument doc = JsonDocument::fromJson(json);
-            layout = doc.object();
-        } catch (const py::error_already_set &error) {
-            m_business->setStatusMessage(String("settings error: %1").arg(String::fromUtf8(error.what())));
-            return;
-        }
-    }
-#endif
-    if (layout.isEmpty()) {
+    String error;
+    const int handled = dispatchPythonEvent(JsonObject{
+                                                {String("event"), String("dialog")},
+                                                {String("action"), String("request")},
+                                                {String("kind"), String("settings")},
+                                                {String("name"), name},
+                                                {String("title"), title.isEmpty() ? name : title},
+                                            },
+                                            &error);
+    if (handled < 0) {
+        m_business->setStatusMessage(String("settings error: %1").arg(error));
+        markDirty(String("window"));
+    } else if (handled == 0) {
         m_business->setStatusMessage(String("No settings registered for '%1'.").arg(name));
+        markDirty(String("window"));
+    }
+}
+
+int BackendSession::dispatchPythonEvent(const JsonObject &event, String *errorOut)
+{
+#ifdef ANIMEAN_WITH_PYTHON
+    if (!Py_IsInitialized()) {
+        return 0;
+    }
+    py::gil_scoped_acquire acquire;
+    try {
+        py::object message = py::module_::import("json").attr("loads")(
+            JsonDocument(event).toJson(JsonDocument::Compact));
+        py::object hooks = py::module_::import("python_hooks");
+        if (!hooks.attr("has_hooks")(message).cast<bool>()) {
+            return 0;
+        }
+        // What the hooks print goes to the Python Debug pane, never to stdout:
+        // the shell reads the port from there.
+        py::object io = py::module_::import("io");
+        py::object contextlib = py::module_::import("contextlib");
+        py::object buffer = io.attr("StringIO")();
+        py::object outRedirect = contextlib.attr("redirect_stdout")(buffer);
+        py::object errRedirect = contextlib.attr("redirect_stderr")(buffer);
+        outRedirect.attr("__enter__")();
+        errRedirect.attr("__enter__")();
+        int count = 0;
+        String error;
+        try {
+            count = hooks.attr("dispatch")(message).cast<int>();
+        } catch (const py::error_already_set &raised) {
+            error = String::fromUtf8(raised.what());
+            count = -1;
+        }
+        errRedirect.attr("__exit__")(py::none(), py::none(), py::none());
+        outRedirect.attr("__exit__")(py::none(), py::none(), py::none());
+        const String output = String::fromStdString(buffer.attr("getvalue")().cast<std::string>()).trimmed();
+        if (!output.isEmpty()) {
+            appendPythonDebug(output);
+        }
+        if (!error.isEmpty()) {
+            appendPythonDebug(error);
+            if (errorOut) {
+                *errorOut = error;
+            }
+        }
+        return count;
+    } catch (const py::error_already_set &raised) {
+        if (errorOut) {
+            *errorOut = String::fromUtf8(raised.what());
+        }
+        return -1;
+    }
+#else
+    (void)event;
+    (void)errorOut;
+    return 0;
+#endif
+}
+
+bool BackendSession::forwardMenuToPython(const String &menu, const String &item, String *errorOut)
+{
+    String error;
+    const int handled = dispatchPythonEvent(JsonObject{
+                                                {String("event"), String("menu")},
+                                                {String("menu"), menu},
+                                                {String("name"), item},
+                                                {String("view"), String("main")},
+                                                {String("checked"), false},
+                                            },
+                                            &error);
+    if (handled > 0) {
+        return true;
+    }
+    // Diagnostics for the log: the page shows no call's error (Python does, for its own).
+    if (errorOut && handled < 0) {
+        *errorOut = error;
+    } else if (errorOut) {
+        *errorOut = String("Nothing handles the menu item %1").arg(item);
+    }
+    return false;
+}
+
+void BackendSession::setDialogsFromPython(const String &json)
+{
+    JsonParseError error;
+    const JsonDocument document = JsonDocument::fromJson(json.toStdString(), &error);
+    if (error.error != JsonParseError::NoError || !document.isArray()) {
+        appendPythonDebug(String("[ui.set_dialogs] the dialogs must be a JSON array"));
         return;
     }
-    emitUiEvent(String("settings.open"),
-                JsonObject{
-                    {String("name"), name},
-                    {String("title"), title.isEmpty() ? name : title},
-                    {String("layout"), layout},
-                });
+    JsonArray kept;
+    for (const JsonValue &value : document.array()) {
+        const JsonObject dialog = value.toObject();
+        const String id = dialog.value(String("id")).toString();
+        if (id.isEmpty() || m_droppedDialogIds.contains(id)) {
+            continue;
+        }
+        kept.append(dialog);
+    }
+    m_dialogs = kept;
+    markDirty(String("dialogs"));
+}
+
+void BackendSession::dropDialog(const String &id)
+{
+    m_droppedDialogIds.insert(id);
+    JsonArray kept;
+    for (const JsonValue &value : m_dialogs) {
+        if (value.toObject().value(String("id")).toString() != id) {
+            kept.append(value);
+        }
+    }
+    if (kept.size() != m_dialogs.size()) {
+        m_dialogs = kept;
+        markDirty(String("dialogs"));
+    }
 }
 
 void BackendSession::emitUiEvent(const String &name, const JsonObject &args)
@@ -3560,6 +3740,11 @@ void BackendSession::flushDirtyState()
             sendStateKey(key);
         }
     }
+    for (const String &key : toSend) {
+        if (key.startsWith(kPythonStatePrefix)) {
+            sendStateKey(key);
+        }
+    }
 }
 
 void BackendSession::sendStateKey(const String &key)
@@ -3587,6 +3772,12 @@ JsonValue BackendSession::buildStateValue(const String &key) const
 {
     if (key == String("window")) {
         return buildWindowState();
+    }
+    if (key == String("dialogs")) {
+        return m_dialogs;
+    }
+    if (key.startsWith(kPythonStatePrefix)) {
+        return m_pythonStates.value(key);
     }
     if (key == String("theme")) {
         return buildThemeState();
@@ -3917,7 +4108,9 @@ JsonArray BackendSession::buildMenusState() const
     };
     menus.append(makeMenuItem(String("edit"), String("Edit"), String(), String("submenu"), false, true, editChildren));
 
-    // 3..5. Python script menus for "main" (captured at createScriptMenus time: View, Auto Mapping, Draw)
+    // 3..5. Python script menus for "main" (captured at createScriptMenus time: View, Auto Mapping, Draw).
+    // A menu registered with "place": "end" goes after Windows instead.
+    JsonArray menusAtEnd;
 #ifdef ANIMEAN_WITH_PYTHON
     if (Py_IsInitialized()) {
         try {
@@ -3940,7 +4133,12 @@ JsonArray BackendSession::buildMenusState() const
                 const String mTitle = obj.value(String("title")).toString(entry.second);
                 const JsonArray items =
                     buildScriptMenuItems(String("main"), mName, obj.value(String("items")).toArray());
-                menus.append(makeMenuItem(mName, mTitle, String(), String("submenu"), false, true, items));
+                const JsonObject menu = makeMenuItem(mName, mTitle, String(), String("submenu"), false, true, items);
+                if (obj.value(String("place")).toString() == String("end")) {
+                    menusAtEnd.append(menu);
+                } else {
+                    menus.append(menu);
+                }
             }
         } catch (...) {
         }
@@ -3986,6 +4184,9 @@ JsonArray BackendSession::buildMenusState() const
                                         String("check"),
                                         m_timelineVisible));
     menus.append(makeMenuItem(String("windows"), String("Windows"), String(), String("submenu"), false, true, windowsChildren));
+    for (const JsonValue &menu : menusAtEnd) {
+        menus.append(menu);
+    }
 
     return menus;
 }

@@ -55,6 +55,10 @@ std::function<void(const String &key, int width, int height, const std::string &
 std::function<void(const String &view, const AnimeanFieldViewSpec &spec)> g_uiFieldViewCallback;
 std::function<bool(const String &view)> g_uiFieldDisplaySupportedCallback;
 std::function<void(int ms, std::function<void()> callback)> g_uiCallLaterCallback;
+std::function<void(const String &json)> g_uiDialogsCallback;
+std::function<void(const String &key, const String &json)> g_uiBroadcastCallback;
+std::function<String(const String &key)> g_uiStateCallback;
+std::function<String(const String &method, const String &paramsJson, bool *ok)> g_uiCallCallback;
 
 // Event subscription mask pushed by python_hooks (ui.set_hook_events).
 bool g_hookEventMaskValid = false;
@@ -1191,6 +1195,47 @@ void clearAnimeanUiCallLaterCallback()
     g_uiCallLaterCallback = nullptr;
 }
 
+void registerAnimeanUiDialogsCallback(std::function<void(const String &json)> callback)
+{
+    g_uiDialogsCallback = std::move(callback);
+}
+
+void clearAnimeanUiDialogsCallback()
+{
+    g_uiDialogsCallback = nullptr;
+}
+
+void registerAnimeanUiBroadcastCallback(std::function<void(const String &key, const String &json)> callback)
+{
+    g_uiBroadcastCallback = std::move(callback);
+}
+
+void clearAnimeanUiBroadcastCallback()
+{
+    g_uiBroadcastCallback = nullptr;
+}
+
+void registerAnimeanUiStateCallback(std::function<String(const String &key)> callback)
+{
+    g_uiStateCallback = std::move(callback);
+}
+
+void clearAnimeanUiStateCallback()
+{
+    g_uiStateCallback = nullptr;
+}
+
+void registerAnimeanUiCallCallback(
+    std::function<String(const String &method, const String &paramsJson, bool *ok)> callback)
+{
+    g_uiCallCallback = std::move(callback);
+}
+
+void clearAnimeanUiCallCallback()
+{
+    g_uiCallCallback = nullptr;
+}
+
 AnimeSceneModel *animeanUiSceneForViewName(const String &view)
 {
     return sceneForViewName(view);
@@ -1586,6 +1631,53 @@ void bindAnimeanPythonModule(py::module_ &m)
            },
            py::arg("ms"),
            py::arg("callable"));
+    // dialogs.py keeps the open dialogs; the host stores and broadcasts them.
+    ui.def("set_dialogs",
+           [](const std::string &json) {
+               if (g_uiDialogsCallback) {
+                   g_uiDialogsCallback(String::fromStdString(json));
+               }
+           },
+           py::arg("dialogs_json"));
+    ui.def("broadcast",
+           [](const std::string &key, const std::string &json) {
+               if (g_uiBroadcastCallback) {
+                   g_uiBroadcastCallback(String::fromStdString(key), String::fromStdString(json));
+               }
+           },
+           py::arg("key"),
+           py::arg("value_json"));
+    ui.def("state",
+           [](const std::string &key) -> py::object {
+               if (!g_uiStateCallback) {
+                   return py::none();
+               }
+               const String json = g_uiStateCallback(String::fromStdString(key));
+               if (json.isEmpty()) {
+                   return py::none();
+               }
+               return py::module_::import("json").attr("loads")(json.toStdString());
+           },
+           py::arg("key"));
+    // A backend method from Python, the way the page calls it. A failed call
+    // raises RuntimeError with the backend's message.
+    ui.def("call",
+           [](const std::string &method, py::object params) -> py::object {
+               if (!g_uiCallCallback) {
+                   throw std::runtime_error("ui.call needs the running backend.");
+               }
+               py::object json = py::module_::import("json");
+               const std::string paramsJson =
+                   json.attr("dumps")(params.is_none() ? py::object(py::dict()) : params).cast<std::string>();
+               bool ok = false;
+               const String reply = g_uiCallCallback(String::fromStdString(method), String::fromStdString(paramsJson), &ok);
+               if (!ok) {
+                   throw std::runtime_error(reply.toStdString());
+               }
+               return json.attr("loads")(reply.isEmpty() ? std::string("{}") : reply.toStdString());
+           },
+           py::arg("method"),
+           py::arg("params") = py::none());
     ui.def("displace_begin",
            [](const std::string &view, int row, int layerIndex, py::sequence entries,
               double scaleX, double scaleY) {
