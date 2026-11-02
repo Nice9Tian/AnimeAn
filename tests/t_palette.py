@@ -193,4 +193,20 @@ finally:
 
 print("12) palette_box hook adds/removes and refreshes only on a change")
 
+
+# 13) New Color sets the pen before Add arrives, so on a document with no saved
+# palette the colour is already in the seed. Add must still keep it: the seed
+# follows the pen, and without a write the next pick pushed it out of the box.
+scene = fresh()
+tool_colors._COLORS["pen"] = (200, 30, 40, 255)      # New Color picked A
+assert pb.swatches(scene) == ["#ff000000", "#ffffffff", "#ffc81e28"]
+assert pb.add("#ffc81e28", scene) is True
+assert json.loads(scene.script_data())["palette"]["swatches"] == ["#ff000000", "#ffffffff", "#ffc81e28"]
+tool_colors._COLORS["pen"] = (40, 60, 200, 255)      # New Color picked B
+assert pb.swatches(scene) == ["#ff000000", "#ffffffff", "#ffc81e28"]
+assert pb.add("#ff283cc8", scene) is True
+assert pb.swatches(scene) == ["#ff000000", "#ffffffff", "#ffc81e28", "#ff283cc8"]
+assert pb.add("#ff283cc8", scene) is False           # once saved, a repeat is a no-op again
+print("13) Add keeps a colour that was only in the seed")
+
 print("t_palette: ALL OK")

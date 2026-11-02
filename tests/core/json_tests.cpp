@@ -483,9 +483,12 @@ bool testContainerApiAndImplicitSharing()
             AnimeCore::JsonVariant cv = cVals[idx].toVariant();
             QVariant qv = qVals[idx].toVariant();
             QVariant bridgedQv = cv;
+            // Outside int, QVariant::toInt wraps and JsonVariant::toInt fails on purpose (checked below).
+            const bool fitsInt = qv.toLongLong() >= std::numeric_limits<int>::min()
+                && qv.toLongLong() <= std::numeric_limits<int>::max();
             if (cv.isNull() != qv.isNull()
                 || cv.toBool() != qv.toBool()
-                || cv.toInt() != qv.toInt()
+                || (fitsInt && cv.toInt() != qv.toInt())
                 || cv.toLongLong() != qv.toLongLong()
                 || cv.toDouble() != qv.toDouble()
                 || cv.toString().toStdString() != qv.toString().toStdString()
@@ -497,6 +500,29 @@ bool testContainerApiAndImplicitSharing()
                           << " ll=(" << cv.toLongLong() << "," << qv.toLongLong() << ")"
                           << " dbl=(" << cv.toDouble() << "," << qv.toDouble() << ")"
                           << " str=(" << cv.toString().toStdString() << "," << qv.toString().toStdString() << ")\n";
+                return false;
+            }
+        }
+
+        // A 64-bit integer outside int: QVariant::toInt gives the low 32 bits and
+        // ok=true; JsonVariant::toInt gives 0 and ok=false. The edges still convert.
+        {
+            bool okBig = true;
+            bool okNegative = true;
+            bool okMin = false;
+            bool okMax = false;
+            const AnimeCore::JsonVariant big = JsonValue(4294967297LL).toVariant();
+            const AnimeCore::JsonVariant negative = JsonValue(-1234567890123LL).toVariant();
+            const AnimeCore::JsonVariant intMin =
+                JsonValue(static_cast<long long>(std::numeric_limits<int>::min())).toVariant();
+            const AnimeCore::JsonVariant intMax =
+                JsonValue(static_cast<long long>(std::numeric_limits<int>::max())).toVariant();
+            if (big.toInt(&okBig) != 0 || okBig
+                || negative.toInt(&okNegative) != 0 || okNegative
+                || big.toLongLong() != 4294967297LL
+                || intMin.toInt(&okMin) != std::numeric_limits<int>::min() || !okMin
+                || intMax.toInt(&okMax) != std::numeric_limits<int>::max() || !okMax) {
+                std::cerr << "FAIL: JsonVariant::toInt outside int range\n";
                 return false;
             }
         }
