@@ -385,7 +385,8 @@ try {
         `Expected totalOps after undo (${frameAfterUndo.totalOps}) === before stroke (${opsBeforeStroke})`
     );
 
-    // 6a. Undo and redo bring up the board they land on, whichever page is showing
+    // 6a. Undo and redo bring up the board they land on, whichever page is showing.
+    // The page says where the texture board lives whenever its tab changes, as app.js does.
     const paintPage = (map) => map.get("windows")?.list?.find((w) => w.name === "paint")?.current;
     const sendStroke = (view, y) => {
         for (const [kind, x, button, buttons] of [
@@ -397,15 +398,36 @@ try {
             ws.send(JSON.stringify({ t: "input", view, kind, x, y, button, buttons, modifiers: 0 }));
         }
     };
-    const showing = (page, view, index, desc) =>
+    const showPage = async (page) => {
+        await callBackend("texture.setHome", { home: page === "texture" ? "central" : "parked", subControlVisible: false });
+        await callBackend("view.setActive", { view: page === "texture" ? "child" : "main" });
+    };
+    const showing = (view, index, desc) =>
         waitForState(
             (map) =>
-                paintPage(map) === page &&
                 map.get("window")?.activeView === view &&
                 map.get("history")?.view === view &&
                 map.get("history")?.currentIndex === index,
             desc
         );
+    const eventsSince = (start, name, page) =>
+        receivedEvents
+            .slice(start)
+            .filter((e) => e.name === name && (page === undefined || (e.args?.name === "paint" && e.args?.page === page))).length;
+    const pageAfter = async (action, wanted, desc) => {
+        const start = receivedEvents.length;
+        await callBackend(action, {});
+        await showing(wanted.view, wanted.index, desc);
+        const toDrawing = eventsSince(start, "window.select", "drawing");
+        assert.equal(toDrawing, wanted.page === "drawing" ? 1 : 0, `${desc}: window.select drawing`);
+        // Every restore on the texture board surfaces it; the page leaves a board that is up alone.
+        if (wanted.page === "texture") {
+            assert.equal(eventsSince(start, "textureView.surface"), 1, `${desc}: textureView.surface`);
+        }
+        if (wanted.page) {
+            await callBackend("texture.setHome", { home: wanted.page === "texture" ? "central" : "parked", subControlVisible: false });
+        }
+    };
 
     await callBackend("tool.select", { tool: "Pen" });
     await callBackend("view.setActive", { view: "child" });
@@ -415,40 +437,45 @@ try {
     await waitForState((map) => map.get("history")?.view === "main", "the main board's history");
     const mainBase = stateMap.get("history").currentIndex;
 
-    await showing("drawing", "main", mainBase, "starting on the Drawing page");
+    await showing("main", mainBase, "starting on the Drawing page");
     sendStroke("main", 120);
-    await showing("drawing", "main", mainBase + 1, "the main stroke is in the history");
-    await callBackend("view.setActive", { view: "child" });
-    await showing("texture", "child", childBase, "the Texture page is up");
+    await showing("main", mainBase + 1, "the main stroke is in the history");
+    await showPage("texture");
+    await showing("child", childBase, "the Texture page is up");
     sendStroke("child", 120);
-    await showing("texture", "child", childBase + 1, "the texture stroke is in the history");
+    await showing("child", childBase + 1, "the texture stroke is in the history");
 
-    await callBackend("history.undo", {});
-    await showing("texture", "child", childBase, "undo on the same board leaves the page alone");
-    const eventsBeforeUndo = receivedEvents.length;
-    await callBackend("history.undo", {});
-    await showing("drawing", "main", mainBase, "undo landing on the main board brings up the Drawing page");
-    assert(
-        receivedEvents
-            .slice(eventsBeforeUndo)
-            .some((e) => e.name === "window.select" && e.args?.name === "paint" && e.args?.page === "drawing"),
-        "the page must be told to show the Drawing page"
-    );
+    await pageAfter("history.undo", { view: "child", index: childBase }, "undo on the same board leaves the page alone");
+    await pageAfter("history.undo", { view: "main", index: mainBase, page: "drawing" },
+                    "undo landing on the main board brings up the Drawing page");
+    await pageAfter("history.redo", { view: "main", index: mainBase + 1 }, "redo on the same board leaves the page alone");
+    await pageAfter("history.redo", { view: "child", index: childBase + 1, page: "texture" },
+                    "redo landing on the texture board brings up the Texture page");
+    await pageAfter("history.undo", { view: "child", index: childBase }, "undo on the texture board again");
+    await pageAfter("history.undo", { view: "main", index: mainBase, page: "drawing" }, "and on to the main board");
+    await showPage("texture");
+    await showing("child", childBase, "back on the Texture page");
+    await pageAfter("history.redo", { view: "main", index: mainBase + 1, page: "drawing" },
+                    "redo landing on the main board brings up the Drawing page");
+    await pageAfter("history.undo", { view: "main", index: mainBase }, "back to where step 6 left the board");
 
-    await callBackend("history.redo", {});
-    await showing("drawing", "main", mainBase + 1, "redo on the same board leaves the page alone");
-    await callBackend("history.redo", {});
-    await showing("texture", "child", childBase + 1, "redo landing on the texture board brings up the Texture page");
-
-    await callBackend("history.undo", {});
-    await callBackend("history.undo", {});
-    await showing("drawing", "main", mainBase, "both strokes undone, on the Drawing page");
-    await callBackend("view.setActive", { view: "child" });
-    await showing("texture", "child", childBase, "back on the Texture page");
-    await callBackend("history.redo", {});
-    await showing("drawing", "main", mainBase + 1, "redo landing on the main board brings up the Drawing page");
-    await callBackend("history.undo", {});
-    await showing("drawing", "main", mainBase, "back to where step 6 left the board");
+    // 6b. The paint window's page is the board with the focus, or the one that had it last
+    const focusBoard = (view, focused) => ws.send(JSON.stringify({ t: "input", view, kind: "focus", focused }));
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 300));
+    await callBackend("texture.setHome", { home: "control", subControlVisible: true });
+    focusBoard("child", true);
+    await waitForState((map) => paintPage(map) === "texture" && map.get("window")?.activeView === "child",
+                       "focus on the texture board in its own control names the texture page");
+    focusBoard("child", false);
+    await settle();
+    assert.equal(paintPage(stateMap), "texture", "with the focus gone the texture board, which had it last, still counts");
+    focusBoard("main", true);
+    await waitForState((map) => paintPage(map) === "drawing" && map.get("window")?.activeView === "main",
+                       "focus on the main board names the drawing page");
+    focusBoard("main", false);
+    await settle();
+    assert.equal(paintPage(stateMap), "drawing", "with the focus gone the main board, which had it last, still counts");
+    await callBackend("texture.setHome", { home: "parked", subControlVisible: false });
 
     // 7. Call tool.select to switch to Arrow -> tools changes, toolOptions receives Python JSON
     stateMap.delete("toolOptions");
@@ -554,14 +581,18 @@ try {
         assert.equal(projSaveReply.ok, true, `project.saveAs failed: ${projSaveReply.error}`);
         assert(fs.existsSync(projPath), "project.saveAs did not write project file");
 
-        await callBackend("view.setActive", { view: "child" });
-        await waitForState((map) => paintPage(map) === "texture", "on the Texture page before project.open");
+        // Opening from the Texture page brings up the Drawing page, as Qt did.
+        await showPage("texture");
+        await waitForState((map) => map.get("window")?.activeView === "child", "on the Texture page before project.open");
+        const eventsBeforeOpen = receivedEvents.length;
         const projOpenReply = await callBackend("project.open", { path: projPath });
         assert.equal(projOpenReply.ok, true, `project.open failed: ${projOpenReply.error}`);
         await waitForState(
             (map) => paintPage(map) === "drawing" && map.get("window")?.activeView === "main",
-            "project.open brings up the Drawing page with the main board active"
+            "project.open makes the main board active"
         );
+        assert.equal(eventsSince(eventsBeforeOpen, "window.select", "drawing"), 1, "project.open brings up the Drawing page");
+        await callBackend("texture.setHome", { home: "parked", subControlVisible: false });
 
         const texImgPath = path.join(tmpDir, "texture_export.png");
         const texExportReply = await callBackend("file.texture", {

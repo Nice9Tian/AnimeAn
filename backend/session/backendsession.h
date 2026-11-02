@@ -125,6 +125,7 @@ private:
     JsonObject buildTimelineState() const;
     JsonObject buildHistoryState() const;
     JsonObject buildWindowsState() const;
+    Vector<AnimeanWindowInfo> windowInfos() const;
     JsonObject buildCursorState(const String &viewName) const;
     JsonObject buildViewportState(const String &viewName) const;
     JsonObject buildPadState() const;

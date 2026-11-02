@@ -707,29 +707,17 @@ void BackendSession::captureScriptMenuNames()
 
 void BackendSession::surfaceTextureView()
 {
-    if (!m_textureSubControlVisible) {
-        for (AnimeanWindowInfo &info : m_windowInfos) {
-            if (info.name == String("paint")) {
-                info.current = String("texture");
-                break;
-            }
-        }
-        markDirty(String("windows"));
-    }
     emitUiEvent(String("textureView.surface"));
     m_business->setActiveViewName(String("child"));
 }
 
 void BackendSession::surfaceMainView()
 {
-    for (AnimeanWindowInfo &info : m_windowInfos) {
-        if (info.name == String("paint") && info.current != String("drawing")) {
-            info.current = String("drawing");
-            markDirty(String("windows"));
-            emitUiEvent(String("window.select"),
-                        JsonObject{{String("name"), info.name}, {String("page"), info.current}});
-            break;
-        }
+    // Only the Texture page hides the main board, and the texture board's home
+    // says whether that page is up.
+    if (m_textureHome == String("central")) {
+        emitUiEvent(String("window.select"),
+                    JsonObject{{String("name"), String("paint")}, {String("page"), String("drawing")}});
     }
     m_business->setActiveViewName(String("main"));
 }
@@ -1106,6 +1094,7 @@ void BackendSession::setupBusinessConnections()
             m_childBoard->setActiveIndicator(activeView == String("child"));
         }
         markDirty(String("window"));
+        markDirty(String("windows"));
         markDirty(String("tools"));
         markDirty(String("history"));
         markDirty(String("timeline"));
@@ -1255,7 +1244,7 @@ void BackendSession::registerPythonUiCallbacks()
 
     AnimeanWindowsApi windows;
     windows.list = [this]() {
-        return m_windowInfos;
+        return windowInfos();
     };
     windows.show = [this](const String &name, bool on) {
         if (name == String("paint")) {
@@ -1285,7 +1274,7 @@ void BackendSession::registerPythonUiCallbacks()
     windows.select = [this](const String &name, const String &page) {
         for (AnimeanWindowInfo &info : m_windowInfos) {
             if (info.name == name) {
-                if (info.pages.contains(page)) {
+                if (info.pages.contains(page) && name != String("paint")) {
                     info.current = page;
                 }
                 if (name == String("paint")) {
@@ -2280,16 +2269,6 @@ JsonObject BackendSession::dispatchCall(const String &method, const JsonObject &
 
     if (method == String("view.setActive")) {
         m_business->setActiveViewName(view);
-        const String paintPage = (m_business->activeViewName() == String("child"))
-                                     ? String("texture")
-                                     : String("drawing");
-        for (AnimeanWindowInfo &info : m_windowInfos) {
-            if (info.name == String("paint")) {
-                info.current = paintPage;
-                markDirty(String("windows"));
-                break;
-            }
-        }
         return JsonObject{{String("activeView"), m_business->activeViewName()}};
     }
 
@@ -4254,11 +4233,27 @@ JsonObject BackendSession::buildHistoryState() const
     };
 }
 
+// The paint window's page is the board that has the focus, or had it last when
+// the focus is elsewhere: the active board, which the page hands the keyboard to
+// whenever it becomes active. With the texture board in its own control the
+// Drawing page can be up while the page says texture.
+Vector<AnimeanWindowInfo> BackendSession::windowInfos() const
+{
+    Vector<AnimeanWindowInfo> infos = m_windowInfos;
+    for (AnimeanWindowInfo &info : infos) {
+        if (info.name == String("paint")) {
+            info.current = m_business->activeViewName() == String("child") ? String("texture")
+                                                                           : String("drawing");
+        }
+    }
+    return infos;
+}
+
 JsonObject BackendSession::buildWindowsState() const
 {
     JsonObject out;
     JsonArray listArr;
-    for (const AnimeanWindowInfo &info : m_windowInfos) {
+    for (const AnimeanWindowInfo &info : windowInfos()) {
         JsonArray pagesArr;
         for (const String &p : info.pages) {
             pagesArr.append(p);

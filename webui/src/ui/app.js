@@ -890,6 +890,23 @@ function createBoards(mainHost, childHost, client, store) {
   boards.rendererKind = mount(slots.main, boards.rendererKind);
   mount(slots.child, boards.rendererKind);
   for (const slot of Object.values(slots)) store.on(`cursor/${slot.view}`, () => paintCursor(slot));
+  // As in Qt (MainWindow::setActivePaintView), the board that becomes active takes
+  // the keyboard, so its frame lights up and the focus is on the board the paint
+  // window's page names. A dialog keeps the keys it has.
+  let activeSeen = null;
+  const dialogOpen = () =>
+    [...document.querySelectorAll(".qdialog-shade")].some((s) => typeof s.getClientRects !== "function" || s.getClientRects().length > 0);
+  store.on("window", (value) => {
+    const view = value?.activeView;
+    if (!slots[view] || view === activeSeen) return;
+    const first = activeSeen === null;
+    activeSeen = view;
+    const canvas = slots[view].canvas;
+    if (first || typeof document === "undefined" || document.activeElement === canvas) return;
+    if (typeof canvas.getClientRects === "function" && canvas.getClientRects().length === 0) return;
+    if (dialogOpen()) return;
+    canvas.focus?.({ preventScroll: true });
+  });
   boards.show("main");
   return boards;
 }
