@@ -242,7 +242,7 @@ scene = fresh_world()
 line = scene.add_layer()
 child = scene.add_fill_layer(parent=scene.layer_id_at(line))
 ltp._layer_changed(layer_message(child))
-assert UI.locked == [("main", ("pen", "eraser", "connect", "transfer"))], UI.locked
+assert UI.locked == [("main", ("pen", "eraser", "connect", "transfer", "curve", "round_corner"))], UI.locked
 assert "arrow" not in UI.locked[-1][1], "Arrow must stay available"
 assert "fill" not in UI.locked[-1][1], "the fill tool must stay armable on a child"
 assert UI.fill_paint == [("main", False)]
@@ -251,7 +251,7 @@ assert UI.fill_paint == [("main", False)]
 scene = fresh_world()
 independent = scene.add_fill_layer()
 ltp._layer_changed(layer_message(independent))
-assert UI.locked == [("main", ("connect",))], UI.locked
+assert UI.locked == [("main", ("connect", "curve", "round_corner"))], UI.locked
 assert UI.fill_paint == [("main", True)]
 assert ltp._STATE["fill_paint"] is True
 
@@ -447,7 +447,7 @@ line = scene.add_layer()
 child = scene.add_fill_layer(parent=scene.layer_id_at(line))
 scene.set_current_layer(child)
 ltp._layer_changed(layer_message(child))
-assert UI.locked[-1] == ("main", ("pen", "eraser", "connect", "transfer"))
+assert UI.locked[-1] == ("main", ("pen", "eraser", "connect", "transfer", "curve", "round_corner"))
 # The undo puts the board back on the line layer and dispatches only this.
 scene.columns.pop(child)
 scene.set_current_layer(line)
@@ -470,12 +470,12 @@ line = scene.add_layer()
 child = scene.add_fill_layer(parent=scene.layer_id_at(line))
 scene.set_current_layer(child)
 ltp._layer_changed(layer_message(child))
-assert UI.locked[-1] == ("main", ("pen", "eraser", "connect", "transfer"))
+assert UI.locked[-1] == ("main", ("pen", "eraser", "connect", "transfer", "curve", "round_corner"))
 scene.columns[child]["parent"] = 0
 ltp.reevaluate("main")
-assert UI.locked[-1] == ("main", ("connect",)), UI.locked[-1]
+assert UI.locked[-1] == ("main", ("connect", "curve", "round_corner")), UI.locked[-1]
 assert UI.fill_paint[-1] == ("main", True), "the region brush did not arm on release"
 ltp.reevaluate("child")
-assert UI.locked[-1] == ("main", ("connect",)), "another board's re-evaluation pushed"
+assert UI.locked[-1] == ("main", ("connect", "curve", "round_corner")), "another board's re-evaluation pushed"
 
 print("t_layer_policy: ok")

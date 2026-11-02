@@ -1,6 +1,6 @@
 # 线条与圆角工具
 
-2026-11-02 起。状态：浏览器 demo 阶段，没有接进软件。issue #100。
+2026-11-02 起。状态：已接进软件（2026-11-03），一级、二级文字待用户拍板。issue #100。
 
 ## 目标
 
@@ -11,7 +11,7 @@
 - 曲线工具：左键点击放锚点，工具把锚点之间平滑；右键中断在最后一个锚点；能从中断的线末端吸附续画。
 - 平滑用 Catmull-Rom。Hobby 样条留作归档：`../../../old_history/hobby_spline.js`。
 - 圆角工具：光标自动吸附在尖角上，点击后拖动鼠标调节平滑程度和方向。
-- 现在只做浏览器 demo，不接进软件。
+- 先做浏览器 demo（2026-11-02）；2026-11-03 用户要求接进软件、加进 Tools 面板。
 
 ## 曲线工具 demo
 
@@ -79,17 +79,33 @@
 
 文件：`curve_icon.svg`、`round_corner_icon.svg`。接入时把里面的图形加进 QtToolChip 的 `GLYPHS`，键名用工具的名字。
 
-## 接进软件前要定的
+## 接进软件（2026-11-03）
 
-- `product_features.md`（二级）的承诺和 `tools_user_workflow/` 的工具页（一级），用户拍板后再接。
-- 按 `../../architecture.md` 是 Python 工具：交互走 handle 事件，算法在 `pyfile/`。吸附半径、双击距离这些手和眼的量经 `viewscale` 换算。
-- 线端吸附和 Connect 的 Auto Snap 是同一类提示，接入时看能不能共用候选点和提示形状。
-- 圆角工具在软件里是改笔画本身（烘进 Bezier）还是像 demo 一样记成可再调的参数；记参数要动工程文件格式。
-- 圆角切腿用 de Casteljau，接入时走共享的贝塞尔劈分（`algorithm/beziersplit.h` ↔ `pyfile/bezier.py`），不另写一份。
+用户 2026-11-03 要求把两个工具接进软件、加进 Tools 面板。一级工具页和二级承诺按规则由 Agent 起草，标「草稿待拍板」：`../../tools_user_workflow/curve.md`、`../../tools_user_workflow/round_corner.md`、`../../product_features.md`「绘画工具」两条和图层锁定一条。机制（三级）写进 `../../mechanism/painting_tools.md` 和 `../../mechanism/hook_events.md`。
+
+**C++ 补的基础函数**（`openglwidget.cpp`，不含工具名）：脚本工具武装时也收 `hover`（带修饰键）；右键按下发 `context`（拖动中带拖动的 id）；光标离开画板发 `leave`。原来只有 Connect 和 Transfer 收 hover，右键在 C++ 里直接丢掉。
+
+**Python**：`pyfile/curve_tool.py`、`pyfile/round_corner_tool.py`，在 `pyfile/extra_tools.py` 注册到 Painting 页，宿主是 Arrow；`pyfile/toolcontrol.py` 给两个工具的 Options；`pyfile/layer_tool_policy.py` 在填充层上锁它们。
+
+**网页**：`webui/design/ui/scene.json` 和 `webui/design/logic/app.logic.yaml` 加两个按钮，`QtToolChip` 加用户选的两个图标，中日文翻译。
+
+**接入时 Agent 定的，待用户确认**：
+
+| 行为 | 做法 |
+|---|---|
+| 曲线的颜色和粗细 | 用 Pen 的颜色和 Width；Options 不放颜色行，因为选颜色会切到 Pen |
+| 曲线的历史 | 每个锚点一条记录；Ctrl+Z 收回最后一个锚点，接着画 |
+| 只放一个锚点就右键 | 这个点不留下（demo 里会留下一个点；一个点在软件里不是笔画） |
+| 曲线能吸哪些端点 | 只吸曲线工具画的线；被擦、切、改过的线不再当曲线 |
+| 圆角能倒哪些线 | 单子路径、不带属性的笔画；轴线、附加线、轮廓这类不碰 |
+| 圆角的形状滑条 | 只影响之后的拖动，每个圆角记住自己的形状 |
+| 倒过圆角的线 | 写回成笔画本身（换了路径），另在 scriptData 记下原形和圆角，能再调；线被别的工具改过就按它现在的尖角处理 |
+
+**实测（2026-11-03）**：`tests/t_curve_round_tools.py` 十组全部通过；全量 Python 回归、`webui` 的 `npm test`（126 项）和 `tsc` 通过；`AnimeAnBackend` 编译通过，`session_smoke` 通过，`i18n_coverage` 150 条无缺。在本分支的后端（端口 18792）和网页（端口 1432）上用真实点击走通：曲线放点、预览、右键结束、吸线尾续画、Ctrl+Z 收回锚点接着画；圆角吸尖角、拉控制线、悬停看到控制线、Ctrl+Z / Ctrl+Y。用 Pen 画折线时合成指针事件被拉成直线，测试用的折线是经 `python.run` 放进模型的。
 
 ## 文件
 
 - `curve_tool_demo.html`：曲线工具 demo。
 - `corner_round_demo.html`：圆角工具 demo。
-- `curve_icon.svg`、`round_corner_icon.svg`：选定的两个工具图标。
+- `curve_icon.svg`、`round_corner_icon.svg`：选定的两个工具图标，已加进 QtToolChip。
 - `../../../old_history/hobby_spline.js`：归档的 Hobby 样条。

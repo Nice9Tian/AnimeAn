@@ -981,6 +981,11 @@ void PaintOpenGLWidget::leaveEvent(Event *event)
         m_hasHoverPos = false;
         update();
     }
+    // A script tool that draws something after the pointer (a preview, a
+    // snap hint) hears that the pointer is gone, so it can take that down.
+    if (!m_activePythonTool.isEmpty()) {
+        sendPythonHandleMessage(String("leave"), String(), PointF());
+    }
     PaintBoardBase::leaveEvent(event);
 }
 
@@ -3489,6 +3494,19 @@ void PaintOpenGLWidget::mousePressEvent(MouseEvent *event)
         return;
     }
 
+    // The secondary button belongs to a script tool when one is armed: C++
+    // only reports it (phase "context", with the drag in progress as the
+    // handle, if any) and what it means - ending a gesture, cancelling a drag
+    // - is the tool's business. Built-in tools keep ignoring it.
+    if (event->button() == RightButton && !m_activePythonTool.isEmpty()) {
+        if (editingAllowed()) {
+            sendPythonHandleMessage(String("context"), m_activeHandleDrag,
+                                    mapToDocument(event->position()), event->modifiers());
+        }
+        event->accept();
+        return;
+    }
+
     if (event->button() != LeftButton) {
         PaintBoardBase::mousePressEvent(event);
         return;
@@ -3669,14 +3687,18 @@ void PaintOpenGLWidget::mouseMoveEvent(MouseEvent *event)
         // Connect snaps on HOVER: Python needs the cursor to show which
         // vertex a click would take. Transfer reads the same phase to name
         // the pointer for the region under it (a grip, the body, the rotate
-        // ring outside a corner). Both are throttled so a fast mouse does not
-        // run the interpreter at tablet rate. A content-locked board gets no
-        // hints - presses are refused there, so advertising targets lies.
-        if ((m_tool == Tool::Connect || m_tool == Tool::Transfer) && editingAllowed()
+        // ring outside a corner). Any armed script tool hears it too: what
+        // follows the pointer between clicks is its own business. All of them
+        // are throttled so a fast mouse does not run the interpreter at
+        // tablet rate, and carry the modifier keys so a held key can change
+        // what the hover offers. A content-locked board gets no hints -
+        // presses are refused there, so advertising targets lies.
+        if ((m_tool == Tool::Connect || m_tool == Tool::Transfer || !m_activePythonTool.isEmpty())
+            && editingAllowed()
             && (!m_hoverHookThrottle.isValid()
                 || m_hoverHookThrottle.elapsed() >= kUpdateHookIntervalMs)) {
             m_hoverHookThrottle.restart();
-            sendPythonHandleMessage(String("hover"), String(), m_hoverPos);
+            sendPythonHandleMessage(String("hover"), String(), m_hoverPos, event->modifiers());
         }
         update();
         PaintBoardBase::mouseMoveEvent(event);

@@ -1,6 +1,6 @@
-# 编辑类工具：Arrow、Transfer、Connect、Repulsion Pad 与颜色（painting_tools）
+# 编辑类工具：Arrow、Transfer、Connect、Curve、Round Corner、Repulsion Pad 与颜色（painting_tools）
 
-三级机制。从属于 `../architecture.md`，与它冲突时以它为准；用户看到什么在 `../tools_user_workflow/` 的同名页。代码：`pyfile/edit_tool.py`、`pyfile/transfer_tool.py`、`pyfile/connect_tool.py`、`pyfile/repulsion_tool.py`、`pyfile/tool_colors.py`、`pyfile/palette_box.py`、`pyfile/overlay_stack.py`、`pyfile/viewscale.py`、`pyfile/bezier.py`；C++ 侧 `openglwidget.cpp`（控制手柄渲染与命中、handle 事件、拖拽认领）、`algorithm/animemodel.cpp`（`AnimeVectorImageModel::transform`、`replace_stroke_with_pieces`）；网页侧 `webui/src/ui/panels2.js`（`createForcePad`）、`webui/src/ui/palette.js`（`createPalette`）。这些工具全是 Python：C++ 只画控制手柄、报交互事件、施加变换。
+三级机制。从属于 `../architecture.md`，与它冲突时以它为准；用户看到什么在 `../tools_user_workflow/` 的同名页。代码：`pyfile/edit_tool.py`、`pyfile/transfer_tool.py`、`pyfile/connect_tool.py`、`pyfile/curve_tool.py`、`pyfile/round_corner_tool.py`、`pyfile/repulsion_tool.py`、`pyfile/tool_colors.py`、`pyfile/palette_box.py`、`pyfile/overlay_stack.py`、`pyfile/viewscale.py`、`pyfile/bezier.py`；C++ 侧 `openglwidget.cpp`（控制手柄渲染与命中、handle 事件、拖拽认领）、`algorithm/animemodel.cpp`（`AnimeVectorImageModel::transform`、`replace_stroke_with_pieces`）；网页侧 `webui/src/ui/panels2.js`（`createForcePad`）、`webui/src/ui/palette.js`（`createPalette`）。这些工具全是 Python：C++ 只画控制手柄、报交互事件、施加变换。
 
 ## 共用的机制
 
@@ -30,6 +30,26 @@
 - 连接：三种模式都是 `quad(A, P, B)` 经 `bezier.py` 升阶。PolyMode 直线；CurveMode 的 P 是两端切向射线的未来交点（切向向回追溯几个顶点求得）；SmoothMode 用 Smooth 把 P 向弦拉，0 就是 CurveMode，100 就是直线。射线背离或平行退回弦；近平行交点钳到 `REACH_LIMIT` = 2 倍弦长。
 - 生命周期：新笔画落在当前层并保持聚焦，改选项就地重算；画布上的接受 / 删除徽章经 `overlayaction`；换工具静默接受；Auto Accept 开着无徽章，画下一条即移焦点；撤销 / 重做丢弃焦点。
 
+## Curve（`curve_tool.py`）
+
+- 注册：`extra_tools.py` 里 `curve`，属性 `curve_tool`，宿主是 Arrow（Painting 页）。左键是 `pick`，右键是 `context`，光标是 `hover` / `leave`（见 `hook_events.md`）。
+- 平滑：向心 Catmull-Rom（α = 0.5），每段一个三次 Bezier；开放端取进入相邻切向的抛物线。新锚点只改它前面一段。Hobby 样条归档在 `../../old_history/hobby_spline.js`。
+- 笔画：两个锚点起就是当前层里的一条真实笔画，之后原地重写（保留绘制顺序），每个锚点 `history_commit("Curve")` 一次；颜色取 `tool_colors` 里 Pen 的颜色，粗细是 Pen 的 Width（`pen_width` 选项事件和建选项面板时传入的 state）。选项面板不放颜色行：选颜色会让 C++ 武装 Pen。
+- 锚点记在场景 scriptData 键 `curve_tool`：每条线一条记录（uid、所在格的 `(asset_index, frame_id)`、锚点、是否闭合）；记录按几何认笔画——路径正好穿过这些锚点的那一条，不认下标。笔画被擦、切、改过就对不上，悬停时跳过，下次在同一格写线时删掉。悬停不写文档。
+- 撤销：`historyrestore` 后正在画的线按恢复后的记录接着画（Ctrl+Z 收回最后一个锚点）；记录或笔画没了就结束。换帧结束这条线。
+- 吸附：`SNAP_PX` = 16 屏幕像素，吸住后放宽到 `STICK` = 1.35 倍；离上一个锚点 `MIN_GAP_PX` = 3 屏幕像素以内的点击不放点；Alt 或 Options 的 Snap 关掉不吸。接线只在同一格里。
+- 显示：全部经 `overlay_stack`（owner `curve_tool`），项都 `removable = False`；预览只画下一次点击会改的一段和新的一段。
+
+## Round Corner（`round_corner_tool.py`）
+
+- 注册：`extra_tools.py` 里 `round_corner`，属性 `round_corner_tool`，宿主是 Arrow。`pick` 吸到抓点时回 `grab = "round:drag"` 认领拖动，`move` / `release` 带这个 id；拖动中 `context` 取消。
+- 尖角：单子路径的笔画（直线、二次段升成三次）里相邻两段在接点的切向差超过 `CORNER_DEG` = 15°；带属性的笔画（别的工具的线）不碰。
+- 圆角：接点 j 记两段弧长 `L1`、`L2`、控制线抓的是哪一端 `s`、拖动时的形状 `k`；两条腿用 `bezier.cubic_segment` 精确切片（共享轮子，不重拟合），切点之间补一段三次，手柄长 k × 切掉长度。两个圆角切同一段时之间留 `GAP` = 0.5 画布像素。
+- 控制线：两个切点的弦，钉在角尖，两端是 角尖 ± 弦 / 2；抓着的一端等于鼠标。直腿闭式解 `端点 − 角尖 = s (L1 e1 + L2 e2) / 2`（e1 = −u1，e2 = u2），弯腿用 Levenberg-Marquardt 在真实的弦上解，拖动时从上一刻接着解；够不到的位置停在最近处。Shift 两边等长。
+- 吸附点：拖动中角尖和起点各是一个停靠点，半径 `SNAP_PX` = 16 屏幕像素；按下时就在范围里的停靠点要先离开一次才生效。吸到起点或新角吸回角尖，松手时笔画按原命令放回、不提交历史。
+- 写回：每次移动 `replace_stroke_with_pieces` 原地换（保留 id、颜色、线宽、线型），松手 `history_commit("Round Corner")` 一次；scriptData 键 `round_corner` 记每条倒过圆角的笔画：所在格、未倒圆角的段、各接点的圆角、结果路径的端点序列（用来认笔画）。认不出的笔画就按它现在的尖角处理。
+- 显示：经 `overlay_stack`（owner `round_corner_tool`），只标光标 `NEAR_PX` = 120 屏幕像素以内的角。
+
 ## Repulsion Pad（`repulsion_tool.py`）
 
 - 机制：网页斥力板控件 `createForcePad`（`webui/src/ui/panels2.js`，十字坐标加单位圆手柄，松手锁住不回弹，经 `pad.event` 发 press / move / release，移动发射节流）；预览走临时**内部层**（`AnimeColumn.internal`，不进面板、不进存档、渲染在最上层）：按下把可编辑笔画复制过去、隐藏源层、`ui.displace_begin` 一次上传基线点与每顶点位移，之后每次移动只发 `ui.displace_scale(x, y)` 一个数值调用。
@@ -39,4 +59,4 @@
 
 ## 测试
 
-- `tests/t_transfer.py`、`tests/t_edit_modes.py`、`tests/t_toolcontrol.py`、`tests/t_palette.py`。Connect 与 Repulsion 的离线套件当时留在会话临时目录，仓库里没有。
+- `tests/t_transfer.py`、`tests/t_edit_modes.py`、`tests/t_toolcontrol.py`、`tests/t_palette.py`、`tests/t_curve_round_tools.py`（Curve 与 Round Corner，在一个照绑定格式回报笔画的假场景上走同样的 handle 消息）。Connect 与 Repulsion 的离线套件当时留在会话临时目录，仓库里没有。

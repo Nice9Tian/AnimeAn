@@ -155,19 +155,23 @@ test("滚轮一格走一行，方向跟滚轮", () => {
 
 test("Python 注册的工具都有节点、状态和图标", () => {
   const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
-  const names = [...read("../../pyfile/extra_tools.py").matchAll(/"name": "(\w+)"/g)].map((m) => m[1]);
+  // Each entry's page: "painting" or, when omitted, "mapping" (extra_tools.py).
+  const tools = [...read("../../pyfile/extra_tools.py").matchAll(/\{[^{}]*"name": "(\w+)"[^{}]*\}/g)]
+    .map((m) => ({ name: m[1], page: /"page": "(\w+)"/.exec(m[0])?.[1] ?? "mapping" }));
   const logic = parse(read("../design/logic/app.logic.yaml"));
   const nodes = JSON.parse(read("../design/ui/scene.json")).nodes;
   const glyphs = read("../design/components/QtToolChip/index.js");
-  assert.ok(names.includes("deform_line"));
-  for (const name of names) {
+  assert.ok(tools.some((t) => t.name === "deform_line" && t.page === "mapping"));
+  assert.ok(tools.some((t) => t.name === "curve" && t.page === "painting"));
+  for (const { name, page } of tools) {
+    const group = page === "painting" ? { armed: "paintingArmed", body: "paintingBody" } : { armed: "mappingArmed", body: "mappingBody" };
     assert.ok(name in logic.state.tools.locked, `tools.locked.${name}`);
-    assert.match(logic.conditions.mappingArmed.expr, new RegExp(`'${name}'`));
+    assert.match(logic.conditions[group.armed].expr, new RegExp(`'${name}'`));
     const [id] = Object.entries(logic.objects).find(
       ([, object]: [string, any]) => object.events?.click?.[0]?.emit?.args?.name === `'${name}'`,
     ) ?? [];
     assert.ok(id, `${name} 没有点击逻辑`);
-    assert.ok(nodes.mappingBody.children.includes(id), `${id} 不在 Mapping 组`);
+    assert.ok(nodes[group.body].children.includes(id), `${id} 不在 ${page} 组`);
     assert.ok(glyphs.includes(`  ${nodes[id].props.glyph}: `), `${id} 没有图标`);
   }
 });

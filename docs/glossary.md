@@ -73,6 +73,9 @@
 | 图层锁定 | layer lock / `set_layer_locked`、`layer_locked` | 现有（模型与绑定）/ 规划（面板开关） | 锁定的层不被工具改动；现在只有 Transfer 尊重它，Layers 面板加开关是规划（用户 2026-09-28）。 |
 | 变形 | Transfer / `Tool::Transfer`、`transfer_tool.py` | 现有 | 当前层内容的缩放、拉伸、平移、旋转框；Python 工具。用户口中的"放大缩小"若指内容变形即此；视口缩放是 C++ 基础能力。 |
 | 连接 | Connect / `Tool::Connect`、`connect_tool.py`；PolyMode / CurveMode / SmoothMode | 现有 | 两个点之间生成一条新笔画。 |
+| 曲线工具 | Curve / `curve`、`pyfile/curve_tool.py` | 现有（草稿待拍板） | 点击放锚点，锚点之间用向心 Catmull-Rom 连成平滑曲线；右键结束，吸端点续画、接线、闭合。 |
+| 圆角工具 | Round Corner / `round_corner`、`pyfile/round_corner_tool.py` | 现有（草稿待拍板） | 吸附尖角，拉出控制线把尖角变成圆角。 |
+| 控制线 | control line（圆角工具） | 现有 | 圆角两个切点之间的弦，钉在角尖；线长决定圆角宽度，角度决定偏向。 |
 | 斥力板 | Repulsion Pad / `ForcePadPanel`、`repulsion_tool.py` | 现有 | 手柄把重叠的线推开；拓扑不变。 |
 | 调色板 | palette / `PaletteControl`、`palette_box.py`、`tool_colors.py` | 现有 | 已存色块 + 色轮 + HSV + RGB；色块随文档保存，每个工具记自己的颜色。 |
 
@@ -174,6 +177,8 @@
 | Fill | 填充 | 塗りつぶし |
 | Transfer | 变形 | 変形 |
 | Connect | 连接 | 接続 |
+| Curve | 曲线 | カーブ |
+| Round Corner | 圆角 | 角丸 |
 | Stabilizer | 稳定器 | 手ぶれ補正 |
 | Repulsion Pad | 斥力板 | 反発パッド |
 | Center line | 轴线 | 軸線 |
