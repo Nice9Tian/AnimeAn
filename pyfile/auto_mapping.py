@@ -1745,6 +1745,12 @@ class _Frame:
                     value = (hx * vy - hy * vx) * hand
                     if lowest is None or value < lowest:
                         lowest = value
+            # The lookup can miss the true minimum only among directions tied
+            # to rounding, by far less than 1e-12; so only that close to the
+            # margin can its verdict differ, and there every pair decides.
+            if lowest is not None and abs(lowest - _SEVER_GATE_SIN) <= 1e-12:
+                lowest = min((hx * vy - hy * vx) * hand
+                             for _angle, hx, hy in h_dirs for vx, vy in v_dirs)
             self._fold_gate = lowest is None or lowest <= _SEVER_GATE_SIN
         return self._fold_gate
 

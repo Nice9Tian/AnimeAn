@@ -3,7 +3,8 @@
 The crossing walks the segment box trees of pyfile/polyline_boxes.py and must give the old double loop's answer to
 the last bit; can_fold is each frame's own, cached on the frame, and equals the minimum over every pair of directions.
 Taken from PR #18 (its t_frame_solver sections 4-7, same seeds, so the same 300 frames and 1400 rigs); the solver
-that PR also brings is not part of this."""
+that PR also brings is not part of this. Sections 2b and 3b are this split's own: the gate right at its margin,
+and nearly parallel segment pairs, where the trees need more than boxes to give the double loop's answer."""
 import math
 import os
 import random
@@ -27,7 +28,35 @@ assert not mp.can_fold() and mp.main_frame.can_fold() and not mp.child_frame.can
 assert mp.child_frame._fold_gate is False and mp.main_frame._fold_gate is True
 print("1) can_fold is each frame's own, cached on the frame")
 
-# 2) the gate's sorted lookup is the minimum over every pair of directions
+# 2) the gate's sorted lookup gives the old closure's verdict: the minimum over every pair of directions
+def _brute_gate(frame):
+    """build_mapper's can_fold before it moved onto _Frame, verbatim but for the frame argument."""
+    _hand_h, _hand_v = frame.directions(0.0, 0.0)
+    child_hand = 1.0 if (_hand_h[0] * _hand_v[1] - _hand_h[1] * _hand_v[0]) >= 0.0 else -1.0
+
+    def gate_dirs(curve):
+        dirs = []
+        for a, b in zip(curve.points, curve.points[1:]):
+            length = math.hypot(b[0] - a[0], b[1] - a[1])
+            if length > 1e-9:
+                dirs.append(((b[0] - a[0]) / length, (b[1] - a[1]) / length))
+        eps = 1e-6
+        extremes = [0.0, curve.total]
+        extremes.extend(getattr(curve, "sharp_arcs", None) or ())
+        for arc in extremes:
+            for side in (arc - eps, arc + eps):
+                dirs.append(curve.dir_at(side))
+        return dirs
+
+    lowest = None
+    for hx, hy in gate_dirs(frame.gh):
+        for vx, vy in gate_dirs(frame.gv):
+            value = (hx * vy - hy * vx) * child_hand
+            if lowest is None or value < lowest:
+                lowest = value
+    return lowest is None or lowest <= am._SEVER_GATE_SIN
+
+
 rng = random.Random(8)
 seen = {True: 0, False: 0}
 for _ in range(300):
@@ -41,17 +70,34 @@ for _ in range(300):
         return p
 
     frame = am._Frame(guide(0.0), guide(rng.choice((1.5708, -1.5708))))
-    hand = frame.hand()
-
-    def unit(g):
-        return [((b[0] - a[0]) / 9.0, (b[1] - a[1]) / 9.0) for a, b in zip(g.points, g.points[1:])]
-
-    lowest = min((a[0] * b[1] - a[1] * b[0]) * hand for a in unit(frame.gh) for b in unit(frame.gv))
-    if abs(lowest - am._SEVER_GATE_SIN) > 1e-9:
-        assert frame.can_fold() == (lowest <= am._SEVER_GATE_SIN), lowest
-        seen[frame.can_fold()] += 1
+    want = _brute_gate(frame)
+    assert frame.can_fold() == want
+    seen[want] += 1
 assert seen[True] and seen[False], seen
-print("2) can_fold == the brute minimum over all direction pairs (%d folding, %d not)" % (seen[True], seen[False]))
+print("2) can_fold == the old closure on 300 frames (%d folding, %d not)" % (seen[True], seen[False]))
+
+# 2b) right at the margin the lookup and the brute minimum can differ by rounding among tied directions, so
+#     there the verdict must be the old closure's own: straight guides whose sine is 0.02 to within a few ulps,
+#     one of them cut into many near-duplicate segments, and a guide whose chords share one angle and differ
+#     by an ulp across the margin (the lookup alone, without the check at the margin, gets that one wrong)
+tied = am._Frame([(-10.0, -10.0), (0.0, 0.0), (0.20002739999999997, 9.999369525932584), (0.4000548, 19.99873905186517)],
+                 [(0.0, -50.0), (0.0, 50.0)])
+assert tied.can_fold() == _brute_gate(tied) is True
+margin_seen = {True: 0, False: 0}
+for k in range(-40, 41):
+    s = am._SEVER_GATE_SIN + k * 2.0 ** -57
+    c = math.sqrt(1.0 - s * s)
+    for base in (0.0, 0.37):
+        h_dir = (math.cos(base), math.sin(base))
+        v_dir = (h_dir[0] * c - h_dir[1] * s, h_dir[0] * s + h_dir[1] * c)
+        h_line = [(-300.0 * h_dir[0] + 0.5 * i * h_dir[0], -300.0 * h_dir[1] + 0.5 * i * h_dir[1]) for i in range(1201)]
+        v_line = [(-200.0 * v_dir[0], -200.0 * v_dir[1]), (200.0 * v_dir[0], 200.0 * v_dir[1])]
+        frame = am._Frame(h_line, v_line)
+        want = _brute_gate(frame)
+        assert frame.can_fold() == want, (k, base)
+        margin_seen[want] += 1
+assert margin_seen[True] and margin_seen[False], margin_seen
+print("2b) at the margin the verdict is the brute minimum's (%d folding, %d not)" % (margin_seen[True], margin_seen[False]))
 
 
 # 3) the crossing: the box trees give the double loop's answer to the last bit, the first crossing pair in
@@ -118,6 +164,92 @@ for k in range(1400):
     fallback += not hits
 assert crossing and fallback
 print("3) crossing == the double loop on 1400 rigs (%d crossing, %d through the closest vertices)" % (crossing, fallback))
+
+# 3b) nearly parallel pairs: rounding alone can put the double loop's parameters inside the tolerance while the
+#     boxes lie apart, so these must not be pruned. The literal cases are inputs a box test without the
+#     direction guard got wrong (the first: two collinear 300 px segments 300 px apart, which the double loop
+#     reports as crossing); then a seeded batch of near-collinear pairs like them.
+NEAR_PARALLEL = [
+    ([(-97.04842870086989, -81.34744476323282), (74.06577326562098, 156.82064537657033)],
+     [(245.17997523211184, 394.9887355163734), (416.2941771986026, 633.1568256561764)]),
+    ([(0.7109772381731951, 0.8974067919575055), (-14.794872728354592, 9.42341149903724)],
+     [(8.202060884550242, -3.2216201925674675), (0.7112740433622283, 0.8972435914593557), (-2.054478436949292, 0.7339561132727819)]),
+    ([(-0.5792216389789748, 0.29131342309384856), (-5.613146107535671, -21.108049482166116)],
+     [(2.3443286209553253, 12.71941268737756), (-0.5789120449384801, 0.29262951658457126), (1.2954823247767442, 2.0469705675488683)]),
+    ([(22528.58394539554, -70166.00287914566), (-1891933.668328654, 2189634.3341676737), (-1598740.068270247, 2183208.925844843)],
+     [(-1892169.1581279067, 2189912.302525154), (-4303286.776207619, 5035956.615762824), (-4572360.474528049, 5276951.806905031)]),
+    ([(-252720.20374301408, 632512.9207853873), (-265340.5888772723, 612750.7354079654), (-267510.24449461396, 615192.3192381753), (-264843.67687061033, 615066.3956120289), (-264417.0845943021, 613153.6199814897)],
+     [(-233917.97196918452, 661955.2227335148), (-252719.5728462613, 632513.908702828)]),
+    ([(283769.50820314925, 736.6088043932906), (242234.1196178972, 22271.966927215177), (243639.28972968555, 24369.0823611096), (240974.12005285433, 25157.66795101656)],
+     [(242224.43027046605, 22276.990681031228), (229034.7117552513, 29115.62446872981), (229175.90957745217, 27329.536321800875), (227675.11723683664, 29589.27969727934)]),
+    ([(-0.8916902150065946, 0.2344975787679635), (2.042319989131192, -10.057617861118416), (-0.7716431804432746, -7.34114981949889), (2.043263850270617, -5.583058580411912), (3.1823413489565624, -5.551258350389172), (3.230049405998087, -8.013707756268172)],
+     [(-10.461701873391707, 33.80481870792216), (-0.8934988855195906, 0.24084215305956422), (0.1990598498749817, -2.5296477588162283), (-1.8557558458521393, -4.285939489701967)]),
+]
+
+
+def _crosses(a, b):
+    return any(-1e-6 <= h[0] <= 1.0 + 1e-6 and -1e-6 <= h[1] <= 1.0 + 1e-6
+               for h in (am._segment_intersection(a[i], a[i + 1], b[j], b[j + 1])
+                         for i in range(len(a) - 1) for j in range(len(b) - 1)) if h)
+
+
+for a, b in NEAR_PARALLEL:
+    assert am._polyline_intersection(a, b) == _double_loop(a, b), (a, b)
+    assert am._polylines_cross(a, b) == _crosses(a, b), (a, b)
+near = random.Random(13)
+for _ in range(4000):
+    ang, tilt = near.uniform(-math.pi, math.pi), near.choice((1e-13, 1e-12, 1e-11, 1e-10, 1e-8))
+    scale = near.choice((1.0, 1e3, 1e5))
+    la, lb = near.uniform(0.5, 50.0) * scale, near.uniform(0.5, 50.0) * scale
+    d, e = (math.cos(ang), math.sin(ang)), (math.cos(ang + tilt), math.sin(ang + tilt))
+    a0 = (near.uniform(-1.0, 1.0) * scale, near.uniform(-1.0, 1.0) * scale)
+    a = [a0, (a0[0] + la * d[0], a0[1] + la * d[1])]
+    end = near.choice((0.0, 1.0)) + near.uniform(-3e-4, 3e-4)
+    cx, cy = a0[0] + end * la * d[0], a0[1] + end * la * d[1]
+    s0 = near.uniform(-1.2, 0.2) * lb
+    b = [(cx + s0 * e[0], cy + s0 * e[1]), (cx + (s0 + lb) * e[0], cy + (s0 + lb) * e[1])]
+    assert am._polyline_intersection(a, b) == _double_loop(a, b), (a, b)
+    assert am._polylines_cross(a, b) == _crosses(a, b), (a, b)
+print("3b) nearly parallel pairs == the double loop (%d literal, 4000 seeded)" % len(NEAR_PARALLEL))
+
+# 3c) eps is a fraction of each segment's own length, so beside a 2,000,000 px segment it reaches 2 px past
+#     the ends: short segments crossing the long one's line within a few px of its end, inside and outside
+#     that window, where only the boxes' slack keeps the pair
+edge = random.Random(17)
+inside = outside = 0
+for _ in range(3000):
+    long_seg = [(-1e6, -3.0), (1e6, 3.0)]
+    end_x = 1e6 + edge.uniform(-4.0, 4.0)
+    cut_y = 3.0 + (end_x - 1e6) * 3e-6
+    tilt = edge.uniform(0.2, 2.9)
+    half = edge.uniform(0.5, 20.0)
+    lift = edge.uniform(-1.5, 1.5) * half
+    short = [(end_x - half * math.cos(tilt), cut_y + lift - half * math.sin(tilt)),
+             (end_x + half * math.cos(tilt), cut_y + lift + half * math.sin(tilt))]
+    for a, b in ((long_seg, short), (short, long_seg)):
+        assert am._polyline_intersection(a, b) == _double_loop(a, b), (a, b)
+        assert am._polylines_cross(a, b) == _crosses(a, b), (a, b)
+    if _crosses(long_seg, short):
+        if end_x > 1e6:
+            inside += 1
+    else:
+        outside += 1
+assert inside and outside, (inside, outside)
+print("3c) crossings past a very long segment's end == the double loop (%d inside its eps, %d not crossing)" % (
+    inside, outside))
+
+# an empty polyline fails exactly as the double loop did; a single point is the closest-vertex case
+for a, b in (([], [(0.0, 0.0), (1.0, 1.0)]), ([(0.0, 0.0), (1.0, 1.0)], [])):
+    try:
+        am._polyline_intersection(a, b)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("an empty polyline must raise TypeError, as before")
+    assert am._polylines_cross(a, b) is False
+lone = [(3.0, 4.0)]
+assert am._polyline_intersection(lone, [(0.0, 0.0), (1.0, 1.0), (5.0, 5.0)]) == _double_loop(lone, [(0.0, 0.0), (1.0, 1.0), (5.0, 5.0)])
+print("3d) empty and single-point polylines behave as the double loop did")
 
 
 # 4) curve guides: _curve_crossing seeds on the flattenings with the same box trees, so its seed - and the Newton
@@ -213,8 +345,10 @@ for k in range(120):
 assert crossed and apart
 print("4) curve crossing == the double loop on 120 curve pairs (%d crossing, %d apart)" % (crossed, apart))
 
-# 5) the budget: at 3000 x 3000 the crossing, the gate and a first solve stay well under half a second; also
-#    where the guides never cross, and for the loosest boxes. The double loop took over a second here.
+# 5) the budget: at 3000 x 3000 the crossing, the gate and a first solve stay well under half a second, also
+#    where the guides never cross; the double loop took over a second here. The wound spirals are the worst
+#    case for the trees - boxes overlap everywhere and every direction comes back each turn, so the direction
+#    guard keeps many apart boxes - and get a second; the double loop took several there.
 n = 3000
 big_h = [(-6000.0 + 4.0 * k, 25.0 * math.sin(k / n * 6.0)) for k in range(n + 1)]
 big_v = [(20.0 * math.sin(k / n * 5.0), -6000.0 + 4.0 * k) for k in range(n + 1)]
@@ -237,10 +371,13 @@ for _ in range(3):
 assert far < 0.5, far
 # the loosest boxes: two spirals winding between each other, near everywhere and never crossing
 spiral = [(k * 0.5 * math.cos(k * 0.02), k * 0.5 * math.sin(k * 0.02)) for k in range(1, n + 2)]
-start = time.perf_counter()
-am._polyline_intersection(spiral, [(-x, -y) for x, y in spiral])
-wound = time.perf_counter() - start
-assert wound < 0.5, wound
+wound = None
+for _ in range(3):
+    start = time.perf_counter()
+    am._polyline_intersection(spiral, [(-x, -y) for x, y in spiral])
+    spent = time.perf_counter() - start
+    wound = spent if wound is None else min(wound, spent)
+assert wound < 1.0, wound
 assert not am._polylines_cross(spiral, [(-x, -y) for x, y in spiral])
 print("5) 3000 x 3000: crossing, gate and a first solve %.1f ms, guides apart %.1f ms, wound spirals %.1f ms" % (
     best * 1e3, far * 1e3, wound * 1e3))
