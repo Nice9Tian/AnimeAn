@@ -2641,9 +2641,11 @@ class _FlowFieldWarp:
                 ee = np.maximum(ex * ex + ey * ey, 1e-12)
                 last_seg = seg_cache.get(line["index"]) if seg_cache is not None else None
                 if (last_seg is not None and last_seg[0] == (nx, ny)
-                        and last_seg[1] == ax.size):
+                        and last_seg[1] == ax.size and not warm.get("settling")):
                     # Only the nearest station's identity comes from last
-                    # frame; everything below is computed fresh from it.
+                    # frame; everything below is computed fresh from it. The
+                    # walk can stop short across a curve's medial axis, so the
+                    # settling pass searches in full.
                     seg = self._walk_nearest(np, px, py, ax, ay, ex, ey, ee, last_seg[2])
                 else:
                     dxs = px[:, None] - ax[None, :]
@@ -3065,13 +3067,16 @@ class _FlowFieldWarp:
         scale_xy = (1.0, 1.0)
         frame_moved = {}
         if warm is not None:
-            warm["unsettled"] = False
             if warm.get("shape") != X.shape:
                 warm["shape"] = X.shape
                 warm["deltas"] = {}
                 warm["solves"] = {}
+                warm["stamps"] = {}
+            warm["frame"] = warm.get("frame", 0) + 1
             solves_cache = warm.setdefault("solves", {})
             scale_xy = warm.get("_scale", (1.0, 1.0))
+
+        frame_solved = {}
 
         def solve(rhs, pin_val, mask, component=0, round_key=0):
             # apply_A is MINUS div(omega grad) (SPD), so the equation
@@ -3090,13 +3095,22 @@ class _FlowFieldWarp:
             R[1:-1, 1:-1] = interior[1:-1, 1:-1]
             R[mask] = 0.0
             x0_solve = None
+            prev_e = None
+            stale = False
             cur_tol = self.CG_TOL
             cur_step_tol = None
             cur_max_iter = self.CG_MAX_ITER
             if solves_cache is not None:
                 prev_e = solves_cache.get((round_key, component))
-                if prev_e is not None and prev_e.shape == rhs.shape:
-                    x0_solve = prev_e.copy()
+                if prev_e is not None and prev_e.shape != rhs.shape:
+                    prev_e = None
+                # A round last frame broke out before holds an older answer. It
+                # may still be the nearest (boost rounds can jump) or far off, so
+                # it goes in as one more direction from this frame's latest.
+                stale = warm["stamps"].get((round_key, component)) != warm["frame"] - 1
+                base = frame_solved.get(component) if stale else None
+                if prev_e is not None:
+                    x0_solve = (base if base is not None else prev_e).copy()
                     x0_solve[0, :] = x0_solve[-1, :] = 0.0
                     x0_solve[:, 0] = x0_solve[:, -1] = 0.0
                     x0_solve[mask] = 0.0
@@ -3107,7 +3121,8 @@ class _FlowFieldWarp:
                     # can only beat either alone.
                     guesses = []
                     for move in (frame_moved.get(component),
-                                 warm.setdefault("deltas", {}).get((round_key, component))):
+                                 warm["deltas"].get((round_key, component)),
+                                 prev_e - base if base is not None else None):
                         if move is None or move.shape != rhs.shape:
                             continue
                         move = move.copy()
@@ -3134,11 +3149,12 @@ class _FlowFieldWarp:
             if solves_cache is not None:
                 if steps_used >= cur_max_iter:
                     warm["unsettled"] = True
-                prev_e = solves_cache.get((round_key, component))
-                moved = (E - prev_e) if (prev_e is not None and prev_e.shape == E.shape) else None
-                warm.setdefault("deltas", {})[(round_key, component)] = moved
+                moved = (E - prev_e) if prev_e is not None else None
+                warm["deltas"][(round_key, component)] = moved
                 frame_moved[component] = moved
+                frame_solved[component] = E
                 solves_cache[(round_key, component)] = E
+                warm["stamps"][(round_key, component)] = warm["frame"]
             return E + pin_val
 
         def numerators(boosted):
@@ -3909,6 +3925,9 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
     given, receives h/v_scale_mismatch). Stroke width uses one global
     geometric-mean scale - an approximation once the sides differ.
     """
+    if warm is not None:
+        warm["unsettled"] = False   # no flow field this frame, nothing to settle
+
     def spec_points(spec):
         return spec["points"] if isinstance(spec, dict) else spec
 

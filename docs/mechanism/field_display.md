@@ -30,7 +30,27 @@
 
 issue #46 第 1 步实测：一次 CG 迭代 numpy 约 60µs。放 GPU 要读回内积，解出来还要和 `hv` 组合，这是 Auto Mapping 的含义；放 C++ 只快 2 到 3 倍。所以求解和取值都在 Python，批量化；GPU 只负责显示。
 
-`pyfile/gridsolve.py` 是通用的共轭梯度和雅可比行列式，不认识 Auto Mapping。
+`pyfile/gridsolve.py` 是通用的共轭梯度、雅可比行列式和连通区域标记，不认识 Auto Mapping。
+
+## 帧预算
+
+手快的时候每帧线走好几像素，热启动追不上，CG 用满上限，帧时间能到 190ms。所以一帧的求解有预算：
+
+- 一次求解最多 `WARM_MAX_ITER` 步。超了就标 `warm["unsettled"]`，这帧照样显示。
+- 手停下来 `SETTLE_DELAY_MS` 之后，`mapping_preview` 用 `call_later` 接着解，步数上限换成 `WARM_SETTLE_ITER`，到收敛或 `SETTLE_PASSES` 次为止。新的移动会让这次作废，所以不和手抢时间。小上限不能用来收敛：重启的 CG 丢了共轭性，永远到不了停止判据。
+- 每次停手的第一遍把拖动中的近似都还回来：最近线段全量搜索（拖动中从上一帧走邻居，弯曲的线上可能停在局部极小），层序表精确重算（继承看不出折痕扫过锚点）。
+- 初值在两个方向上做能量投影：本帧上一轮的变化量，和上一帧这一轮的变化量。boost 平稳时前者好，boost 跳变时后者好，能量最小解不比任一个差。
+- 停止阈值 `WARM_STEP_PX` 不能再放宽：0.006px 会让折叠的帧走到退让判定的另一边，映射偏 25px，这是悬崖不是斜坡。0.003px 时各种拖动都在 0.25px 以内。
+
+## 层序
+
+`_prepare_fold_context` 要追踪折痕，一次 100ms 以上。所以只在按下时和每次停手时算精确的粗网格深度表。拖动中按正反面做连通区域，区域的深度从上一帧重叠最多的区域继承，新出现的区域取相邻区域加一，再按奇偶和正反面对齐。一帧约 1ms。松手时精确管线重算。
+
+## 进程优先级
+
+后端启动时关闭 Windows 的执行速度限制（`backend/main.cpp` 的 `optOutOfPowerThrottling`）。没有窗口的进程满载几秒后会被当成后台工作挪到效率核，一切都慢一倍，而且不会自己回来。i7-14700KF 上实测：纯 Python 循环 46ms，满载后 88ms，关闭限制后 45ms。
+
+测量也要注意这一点：同一进程跑几秒之后，绝对毫秒数可能翻倍，和代码无关。`tests/t_warm_solve.py` 的计时断言因此用比值。
 
 ## 节流
 
@@ -47,3 +67,5 @@ issue #46 第 1 步实测：一次 CG 迭代 numpy 约 60µs。放 GPU 要读回
 | 真实 WebGL | vite 下打开 `/tests/field_compare.html`，标题以 PASS 开头。mock GL 查不出着色器链接失败，改着色器必跑 |
 | 后端 | `backend/tests/session_smoke.mjs`、`board_headless_test` |
 | 基准 | `py tests/bench_drag_cost.py --rig A|B|C|D [--warm]` |
+
+基准里拖动每步不到 1 像素，比真手慢得多，帧预算是否够用要看每帧 3 到 10 像素的情况。

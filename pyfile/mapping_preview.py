@@ -857,6 +857,9 @@ def _inherit_region_depths(am, np, session, mapper, l_h, l_v, valid, is_front):
                         min(max(anc[1], -main_f.v_arc), main_f.v_total - main_f.v_arc),
                     )
                     anc_lh, anc_lv = mapper.unscale_arcs(*anc)
+                    warp = getattr(mapper, "warp", None)
+                    if warp is not None:
+                        anc_lh, anc_lv = warp.unapply((anc_lh, anc_lv))
                     anchor_dist2 = (l_h - anc_lh) ** 2 + (l_v - anc_lv) ** 2
 
                 def _split_rank(r_cand):
@@ -1034,7 +1037,12 @@ def _compute_and_push():
     t_det = _clock() - t_det0
 
     t_dep = 0.0
-    if am._FOLD["split"]:
+    if am._FOLD["split"] and _SESSION.pop("exact_depth", None):
+        # Inheriting cannot see a crease sweep over the anchor: re-judge once
+        # the hand has stopped.
+        t_dep = _update_coarse_depth_table(am, np, _SESSION, mapper, l_h, l_v, valid, is_front)
+        depth = _init_region_depths_from_coarse(np, _SESSION, valid, is_front)
+    elif am._FOLD["split"]:
         depth, t_dep = _inherit_region_depths(
             am, np, _SESSION, mapper, l_h, l_v, valid, is_front
         )
@@ -1105,6 +1113,7 @@ def _on_timer(gen):
     if not _SESSION.get("pending"):
         return
     _SESSION["pending"] = False
+    _SESSION["warm"]["settling"] = False
     try:
         if _compute_and_push():
             try:
@@ -1117,11 +1126,14 @@ def _on_timer(gen):
 
 
 def _arm_settle(am):
-    """A frame that ran out of solver budget is shown as it stands; once the
-    hand stops, keep solving on the same geometry until it converges. A move
-    takes the token, so this never competes with a moving hand."""
+    """Frames during a drag take shortcuts: the solver budget, inherited layer
+    order, walked nearest stations. Once the hand stops, one pass does it all
+    properly, and solving goes on until it converges. A move takes the token, so
+    this never competes with a moving hand."""
     warm = _SESSION.get("warm") or {}
-    if not warm.get("unsettled") or _SESSION.get("settle_passes", 0) >= SETTLE_PASSES:
+    if not (warm.get("unsettled") or _SESSION.get("needs_final")):
+        return
+    if _SESSION.get("settle_passes", 0) >= SETTLE_PASSES:
         return
     token = _SESSION["settle_token"] = _SESSION.get("settle_token", 0) + 1
     gen = _SESSION["generation"]
@@ -1135,8 +1147,13 @@ def _on_settle(gen, token):
             or _SESSION.get("generation") != gen
             or _SESSION.get("settle_token") != token):
         return
+    if not _context_valid(am):
+        _SESSION["active"] = False
+        _clear_field_display(am)
+        return
     _SESSION["settle_passes"] = _SESSION.get("settle_passes", 0) + 1
     _SESSION["warm"]["settling"] = True
+    _SESSION["exact_depth"], _SESSION["needs_final"] = _SESSION.get("needs_final"), False
     try:
         if _compute_and_push():
             try:
@@ -1154,7 +1171,9 @@ def update():
         return
     am = _am()
     _SESSION["settle_passes"] = 0
+    _SESSION["settle_token"] = _SESSION.get("settle_token", 0) + 1
     _SESSION["warm"]["settling"] = False
+    _SESSION["needs_final"] = True
     try:
         if not _context_valid(am):
             _SESSION["active"] = False

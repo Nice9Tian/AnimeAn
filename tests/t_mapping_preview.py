@@ -685,6 +685,11 @@ def _build_cold_mapper_from_current_assets():
 # Test Suite
 # ---------------------------------------------------------------------------
 
+def moves_later(fake):
+    """The gate's deferred moves, without the settle passes."""
+    return [call for call in fake.ui.call_later_calls if call[0] != mp.SETTLE_DELAY_MS]
+
+
 class TestMappingPreview(unittest.TestCase):
 
     def tearDown(self):
@@ -1084,7 +1089,7 @@ class TestMappingPreview(unittest.TestCase):
             "position": {"x": 2.0, "y": 1.0},
         })
         self.assertEqual(len(fake.ui.set_field_calls), 1)
-        self.assertEqual(len(fake.ui.call_later_calls), 0)
+        self.assertEqual(moves_later(fake), [])
 
         # Move 2 and Move 3 arrive 1ms and 2ms later (inside the >=8ms gate)
         clock_val[0] += 0.001
@@ -1099,10 +1104,10 @@ class TestMappingPreview(unittest.TestCase):
         })
         # Both moves were throttled, and only one timer was armed
         self.assertEqual(len(fake.ui.set_field_calls), 1)
-        self.assertEqual(len(fake.ui.call_later_calls), 1)
+        self.assertEqual(len(moves_later(fake)), 1)
 
         # Fire the scheduled callback after advancing clock past gate
-        delay_ms, callback = fake.ui.call_later_calls[0]
+        delay_ms, callback = moves_later(fake)[0]
         self.assertGreaterEqual(delay_ms, 1)
         clock_val[0] += 0.050
         callback()
@@ -1368,6 +1373,82 @@ class TestMappingPreview(unittest.TestCase):
         print(f"[settle] field against the cold mapper after settling: {worst:.3f} px")
         self.assertLessEqual(worst, 0.5)
         mp.end()
+
+    def test_17_stopped_hand_gets_one_exact_pass_and_only_one(self):
+        """Layer order is re-judged and the stations searched in full once per stop."""
+        _scenes, fake, _uid = fresh_rig_world("D")
+        pts = am._assets_for("main")[am.H_PROPERTY]["points"]
+        mid = pts[len(pts) // 2]
+        offset = [0.0]
+        mp._clock = lambda: time.perf_counter() + offset[0]
+        calls = [0]
+        orig = am._prepare_fold_context
+
+        def spy(*args, **kwargs):
+            calls[0] += 1
+            return orig(*args, **kwargs)
+
+        def drag(phase, step=0):
+            offset[0] += 0.06
+            am._guide_drag_event({
+                "view": "main", "handle": am.H_PROPERTY, "phase": phase,
+                "position": {"x": mid[0], "y": mid[1] - 0.6 * step},
+            })
+
+        am._prepare_fold_context = spy
+        try:
+            drag("press")
+            for step in range(1, 4):
+                drag("move", step)
+            calls[0] = 0
+            warm = mp._SESSION["warm"]
+            fired = 0
+            while fired < mp.SETTLE_PASSES and len(fake.ui.call_later_calls):
+                before = len(fake.ui.call_later_calls)
+                fake.ui.call_later_calls[-1][1]()
+                fired += 1
+                if len(fake.ui.call_later_calls) == before:
+                    break
+            self.assertEqual(calls[0], 1, "one exact layer order per stop")
+            self.assertTrue(warm.get("settling"))
+            frames = len(fake.ui.set_field_calls)
+            self.assertFalse(warm.get("unsettled"))
+            offset[0] += 1.0     # the exact pass was long: past its update gap
+            drag("move", 4)
+            self.assertFalse(warm.get("settling"), "a new move goes back to the budget")
+            self.assertEqual(len(fake.ui.set_field_calls), frames + 1)
+            mp.end()
+        finally:
+            am._prepare_fold_context = orig
+
+    def test_18_settle_keeps_away_from_a_moving_hand_and_a_changed_context(self):
+        _scenes, fake, _uid = fresh_rig_world("B")
+        offset = [0.0]
+        mp._clock = lambda: offset[0]
+
+        def drag(phase, y=0.0):
+            am._guide_drag_event({"view": "main", "handle": am.H_PROPERTY, "phase": phase,
+                                  "position": {"x": 0.0, "y": y}})
+
+        drag("press")
+        offset[0] += 1.0
+        drag("move", 1.0)
+        armed = fake.ui.call_later_calls[-1]
+        self.assertEqual(armed[0], mp.SETTLE_DELAY_MS)
+        # A move the gate skips still takes the token.
+        offset[0] += 0.001
+        drag("move", 2.0)
+        frames = len(fake.ui.set_field_calls)
+        armed[1]()
+        self.assertEqual(len(fake.ui.set_field_calls), frames)
+
+        offset[0] += 1.0
+        drag("move", 3.0)
+        armed = fake.ui.call_later_calls[-1]
+        am._ACTIVE_UNIT["id"] = None
+        armed[1]()
+        self.assertEqual(fake.ui.set_field_view_calls[-1], ("main", None))
+        self.assertFalse(mp._SESSION.get("active"))
 
     def test_10_mid_drag_invalid_axes_clears_and_recovers(self):
         """When axes stop crossing mid-drag, preview clears; when crossing again, preview recovers."""

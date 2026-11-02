@@ -243,6 +243,56 @@ class WarmSolveTests(unittest.TestCase):
         print(f"5) Rig C settled after a jump: mapper err {worst:.4f} px (<=0.5 px)")
         self.assertLessEqual(worst, 0.5)
 
+    def test_6_settling_finds_the_nearest_station_the_walk_cannot(self):
+        """A walked station can stop short across a curve's medial axis; settling
+        searches in full, and a frame without a flow field clears the mark."""
+        np_x = np.array([0.0, 0.0])
+        np_y = np.array([0.5, 9.0])
+        # A hairpin: the second node sits nearest the far leg, unreachable by walking
+        # from segment 0 over a ridge of farther segments.
+        ax = np.array([-10.0, 10.0, 10.0, 10.0, -10.0])
+        ay = np.array([0.0, 0.0, 20.0, 40.0, 10.0])
+        bx = np.array([10.0, 10.0, 10.0, -10.0, -10.0])
+        by = np.array([0.0, 20.0, 40.0, 10.0, 10.0])
+        ex, ey = bx - ax, by - ay
+        ee = ex * ex + ey * ey
+        seg = np.array([0, 0])
+        walked = am._FlowFieldWarp._walk_nearest(np, np_x, np_y, ax, ay, ex, ey, ee, seg)
+        self.assertEqual(int(walked[0]), 0)
+
+        step_drag = bdc._make_rig("C")
+        warm = {}
+        _build_current(warm=warm)
+        step_drag(0)
+        warm["unsettled"] = True
+        am.build_mapper([(0.0, 0.0)], [(0.0, 0.0)], [(0.0, 0.0)], [(0.0, 0.0)], warm=warm)
+        self.assertFalse(warm["unsettled"], "a frame with no flow field has nothing to settle")
+
+    def test_7_a_round_last_frame_skipped_does_not_seed_from_an_old_frame(self):
+        step_drag = bdc._make_rig("C")
+        warm = {}
+        step_drag(0)
+        _build_current(warm=warm)
+        last = max(warm["stamps"].values())
+        warm["stamps"] = {key: (stamp - 5) if key[0] == 3 else stamp
+                          for key, stamp in warm["stamps"].items()}
+        warm["solves"] = {key: (value * 50.0) if key[0] == 3 else value
+                          for key, value in warm["solves"].items()}
+        step_drag(1)
+        mapper = _build_current(warm=warm)
+        self.assertEqual(max(warm["stamps"].values()), last + 1)
+        warm["settling"] = True
+        for _ in range(10):
+            if not warm.get("unsettled"):
+                break
+            mapper = _build_current(warm=warm)
+        bdc._clear_step_caches()
+        cold = _build_current(warm=None)
+        points = bdc._make_uniform_grids(0.0, 0.0)[33][::9]
+        worst = max(math.hypot(mapper(p)[0] - cold(p)[0], mapper(p)[1] - cold(p)[1])
+                    for p in points)
+        self.assertLessEqual(worst, 0.5, "a stale round's answer leaked into the frame")
+
     def test_3_grid_shape_change_invalidates_warm_cleanly(self):
         step_drag = bdc._make_rig("B")
         step_drag(0)
