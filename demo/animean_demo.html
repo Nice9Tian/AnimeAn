@@ -383,6 +383,9 @@ section[id] { scroll-margin-top: var(--nav-h); }
 .fl::after { content: ""; position: absolute; inset: 0; border-radius: 12px; background: #fff; box-shadow: var(--shadow-sheet); opacity: 0; transition: opacity .45s var(--ease); }
 .fl.on::after { opacity: 1; }
 .fl > svg { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; overflow: hidden; border-radius: 12px; }
+/* the sheets that are not picked are see-through, drawing and all */
+.fl > svg { opacity: .32; transition: opacity .45s var(--ease); }
+.fl.on > svg { opacity: 1; }
 .fl .anchor { position: absolute; right: 0; bottom: 0; width: 1px; height: 1px; }
 .frame-labels { list-style: none; margin: 0; padding: 0; display: grid; gap: 44px; position: relative; z-index: 1; }
 .frame-labels li { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 4px 14px; opacity: 1; transition: opacity .7s var(--ease), transform .7s var(--ease); cursor: default; border-radius: 6px; }
