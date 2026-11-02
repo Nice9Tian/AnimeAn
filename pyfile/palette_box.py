@@ -160,15 +160,25 @@ def swatches(scene=None):
 
 
 def add(color, scene=None):
-    """Save one colour. A duplicate is a no-op, not an error."""
+    """Save one colour. A duplicate is a no-op, not an error.
+
+    A document with no saved palette shows the seed, and the seed follows the
+    pen and fill colours. New Color sets the pen before Add arrives, so the
+    colour is usually in the seed already; writing the seed is what keeps it,
+    otherwise the next pick would push it out of the box.
+    """
     text = _normalize(color)
     if not text:
         return False
     if scene is None:
         scene = _scene()
-    values = swatches(scene)
+    stored = _stored(scene)
+    values = _default_swatches() if stored is None else stored
     if text in values:
-        return False
+        if stored is not None:
+            return False
+        _write(scene, values)
+        return True
     _write(scene, values + [text])
     return True
 
