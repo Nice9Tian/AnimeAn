@@ -591,10 +591,10 @@ $$c_1' = p_0' + D_{\mathbf h_1}\Phi_2(p_0),\qquad c_2' = p_3' + D_{\mathbf h_2}\
 
 | 步骤 | 复杂度 | 备注 |
 |---|---|---|
-| 轴线求交 | $O(n^2)$ | 逐段暴力；refer-rect 网格因此**按视图缓存** |
+| 轴线求交 | 建树 $O(n)$，只测包围盒相交的段对 | 两棵包围盒树按 $(i,j)$ 序给出候选段对，取第一个相交的，不相交时取最近的顶点对，结果与逐段暴力逐值相同；包围盒大量重叠时退回逐段的量级。refer-rect 网格仍**按视图缓存** |
 | 单次 $\Phi_2$ 求值 | $O(k\log n)$ | 弧长二分 $\times$ Newton 迭代数 $k$；**直线**子系轴线 $k=0$（弦估计即精确解，首次残差检查即退出），弯曲时典型 $k=2\!-\!3$，近非单射处可打满上限 24。抛弃残差后少一次 $\mathrm{HV}[C]$ 求值：实测直线子系 $5.9\to4.2$ µs（$-29\%$）、正弦子系 $13.3\to12.0$ µs（$-10\%$） |
 | `main_of_third`（Third→Main 正向投射） | $O(\log n)$ | 纯正向，无 Newton——存好的 UV 岛重投射不再付反解 |
-| 折叠闸门 `can_fold` | $O(n_c m_c)$，一次 | 两条子系展平轴线的全部方向对；不可折的架（含一切直线架）就此短路，裁断零开销 |
+| 折叠闸门 `can_fold` | $O((n_c+m_c)\log n_c)$，每个架一次 | 每个 v 方向在排序后的 h 方向里取离目标角最近的两个，结果等于全部方向对的最小值；结果缓存在架上，复用的架不重算。不可折的架（含一切直线架）就此短路，裁断零开销 |
 | 逐点有效性 `third_of` | $=\Phi_2$ 的反解半程 | 复用同一 Newton；折叠架上每源片 $1$ 次中点判定 $+$ 转变处 $30$ 次二分 |
 | 子系折缝扫描 `_sever_loci` | 同 `_crease_curves` 量级 | 仅折叠架付费，按映射器缓存一次 |
 | 结构折点枚举 | $O(n)$ 每源段 | 两端各一次坐标解 + 扫两张累积弧长表；`_MAX_KNOTS_PER_SPAN` 封顶 |
@@ -706,7 +706,7 @@ $$c_1' = p_0' + D_{\mathbf h_1}\Phi_2(p_0),\qquad c_2' = p_3' + D_{\mathbf h_2}\
 | 坐标反解 $\mathrm{HV}[C]^{-1}$ §4.1 | `_Frame.solve` / `solve_full`（阻尼 Newton，后者带达成残差）/ `map_point.coords` |
 | Third 提升 + 有效性判定 §4.6.1 | `map_point.third_of` |
 | Third→Main 正向投射 §4.4 Step 4 | `map_point.main_of_third` |
-| 折叠闸门 §4.6.4 | `map_point.can_fold` |
+| 折叠闸门 §4.6.4 | `_Frame.can_fold`（`map_point.can_fold` 即子系架的这一个） |
 | 贝塞尔桥（趋势 / 三次式 / 投射 / 发射）§4.6.3 | `_third_end_tangent` / `_bridge_third_cubic` / `_project_third_cubic` / `_emit_bridges` |
 | 笔画裁断（折线） §4.6.1 | `_sever_source` |
 | 笔画裁断（bezier） §4.6.2 | `_sever_cubics_by_child_fold` |
