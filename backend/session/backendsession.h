@@ -62,6 +62,16 @@ private:
     void captureScriptMenuNames();
     void loadProtectedPropertiesForChild();
     void surfaceTextureView();
+    struct TextureViewSlot {
+        double zoom = 1.0;
+        PointF pan;
+        bool valid = false;
+        bool autoFitSuspended = false;
+    };
+    TextureViewSlot *textureViewSlotFor(const String &home);
+    void saveTextureViewSlot(const String &home);
+    void restoreTextureViewSlot();
+    void autoFitTextureControlView();
 
     PaintOpenGLWidget *boardForView(const String &viewName) const;
     String resolveViewName(const String &viewName) const;
@@ -100,6 +110,8 @@ private:
     JsonObject buildWindowState() const;
     JsonObject buildThemeState() const;
     JsonArray buildMenusState() const;
+    JsonArray buildTextureMenusState() const;
+    JsonArray buildTextureViewButtonsState() const;
     JsonArray buildScriptMenuItems(const String &host,
                                     const String &menuName,
                                     const JsonArray &items) const;
@@ -133,6 +145,9 @@ private:
     bool m_timelineFloating = false;
     String m_timelineDockArea = String("bottom");
     bool m_textureSubControlVisible = false;
+    String m_textureHome;
+    TextureViewSlot m_textureViewCentral;
+    TextureViewSlot m_textureViewControl;
 
     Vector<std::pair<String, String>> m_mainScriptMenus;
     Vector<std::pair<String, String>> m_childScriptMenus;

@@ -67,9 +67,17 @@ const TOOLS_SCROLL_STEP = 50;
 // Scrolls the Tools groups when the panel is too short for them, and shows each
 // arrow only while there is something that way. Layout moves the content by
 // writing style, so watching that catches folding and column changes too.
+export function attachToolsSubControlHost(dockEl, store) {
+  if (store && dockEl) store.toolsHostEl = dockEl.querySelector?.('[data-vf-id="toolsScroll"]') ?? dockEl;
+}
+
 export function watchToolsScroll(root, runtime, store) {
   const area = root.querySelector('[data-vf-id="toolsScroll"]');
   if (!area) return;
+  const dock = area;
+  if (typeof dock?.append === "function") {
+    store.toolsHostEl = dock;
+  }
   const write = stateWriter(runtime);
   const update = () => {
     const room = area.scrollHeight - area.clientHeight;

@@ -186,10 +186,11 @@ function color(control, send) {
   return wrap;
 }
 
-export function createToolOptions(root, { onOption, onPalette, onNewColor, onSubWindow }) {
+export function createToolOptions(root, { onOption, onPalette, onNewColor, onSubWindow, onBeforeBuild = undefined, onAfterBuild = undefined }) {
   const grid = div("opt-grid");
   root.append(grid);
   let visibility = [];
+  let lastLayout = null;
   const values = new Map();
 
   function applyVisibility() {
@@ -199,6 +200,8 @@ export function createToolOptions(root, { onOption, onPalette, onNewColor, onSub
   }
 
   function build(layout) {
+    lastLayout = layout;
+    onBeforeBuild?.(layout);
     grid.replaceChildren();
     visibility = [];
     values.clear();
@@ -253,7 +256,18 @@ export function createToolOptions(root, { onOption, onPalette, onNewColor, onSub
     }
     grid.style.gridTemplateColumns = `repeat(${columns}, minmax(0, 1fr))`;
     applyVisibility();
+    onAfterBuild?.(layout);
   }
 
-  return { build };
+  return {
+    build,
+    rebuild() {
+      if (lastLayout) build(lastLayout);
+    },
+    hasSubWindow(name) {
+      return (lastLayout?.controls ?? []).some(
+        (c) => c.type === "subwindow" && (!name || !c.name || c.name === name),
+      );
+    },
+  };
 }

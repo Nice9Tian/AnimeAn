@@ -115,6 +115,7 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 | `window` | 标题、状态栏文字、活动画板 `activeView`、素材面板目标画板 `assetView`、画布尺寸、工程与纹理路径、`pythonDebug` 日志（最多保留 2000 条） |
 | `theme` | `AnimeTheme` 的模式和全部颜色 |
 | `menus` | 菜单栏的完整结构，含 Python 返回的菜单 |
+| `textureMenus` | 纹理板菜单栏（`File`、`Setting`、`View` 等）的完整结构，含 Python 注册的 `child` 菜单和脚本按钮行（`window.textureViewButtons`） |
 | `tools` | 工具页、当前工具、被锁定的工具 |
 | `toolOptions` | Python 返回的选项 JSON |
 | `drawColor`、`drawSettings` | 当前颜色、绘制设置 |
@@ -127,11 +128,11 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 | `freeze` | Python 冻结界面的开关 |
 | `pad` | Repulsion Pad 的值 |
 | `viewport/main`、`viewport/child` | 滚动条：`h`、`v` 各含 `min`、`max`、`page`、`value`、`enabled`，算法同 `PaintViewContainer::syncScrollBars` |
-| `event` | 一次性通知，`{ name, args }`，不合并、不重发：`dialog.*`、`menu.action`、`settings.open`、`window.show`、`window.select`、`textureView.surface` |
+| `event` | 一次性通知，`{ name, args }`，不合并、不重发：`dialog.*`、`menu.action`、`settings.open`、`window.show`、`window.select`、`textureView.surface`、`textureSubControl.surface` |
 
 ## 调用
 
-方法名在 `backend/session/backendsession.cpp` 的 `dispatchCall`。图层右键走 `layer.contextMenu`（返回菜单项，含 Python 注册的项）和 `layer.contextAction`。网页发 `input` 时带 `time`（毫秒），后端写进事件时间戳，稳定器要用它。
+方法名在 `backend/session/backendsession.cpp` 的 `dispatchCall`。图层右键走 `layer.contextMenu`（返回菜单项，含 Python 注册的项）和 `layer.contextAction`。纹理板搬迁时调 `texture.setHome`（`home`：`central`、`control`、`parked`，后端保存离开处的缩放与平移、恢复到达处视口并在到达 `control` 时自动适配），脚本按钮行调 `texture.viewButton`（`view`、`id`、`text`）。网页发 `input` 时带 `time`（毫秒），后端写进事件时间戳，稳定器要用它。
 
 | 调用 | 参数 | 返回 / 说明 |
 |---|---|---|
