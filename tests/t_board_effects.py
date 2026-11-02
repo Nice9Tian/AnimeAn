@@ -139,19 +139,26 @@ assert order[0] == ("effect", "main", line_commands, 6.0), order
 assert order[1] == ("add", "stroke"), order
 assert session["pending"]["stroke_index"] == 0
 
-# 6) Auto Mapping fades in only when it actually re-renders, and only when the
-#    caller asks (a finished axis or contour); drags re-render without it.
+# 6) Auto Mapping fades in only when a run actually mapped something (after
+#    the run, still inside the hook), and only when the caller asks (a
+#    finished axis or contour); drags re-render without it.
 runs = []
 fades = []
+mapped = {"ok": True}
 saved = (am._run, am._refresh_proxy_axes, am._unit_settings, dict(am._ACTIVE_UNIT), fx.mapping_fade)
-am._run = lambda: runs.append(len(fades))
+am._run = lambda: runs.append(len(fades)) or mapped["ok"]
 am._refresh_proxy_axes = lambda: False
 fx.mapping_fade = lambda view="main": fades.append(view)
 try:
     am._ACTIVE_UNIT["id"] = "u1"
     am._unit_settings = lambda uid=None: {"auto_render": True}
     am._maybe_auto_run(fade=True)
-    assert fades == ["main"] and runs == [1], (fades, runs)   # faded, then ran
+    assert fades == ["main"] and runs == [0], (fades, runs)   # ran, then faded
+    mapped["ok"] = False
+    am._maybe_auto_run(fade=True)
+    assert fades == ["main"] and len(runs) == 2               # nothing mapped: no fade
+    mapped["ok"] = True
+    runs.pop()
     am._maybe_auto_run()
     assert fades == ["main"] and len(runs) == 2               # a drag: no fade
     am._unit_settings = lambda uid=None: {"auto_render": False}

@@ -761,9 +761,6 @@ function createBoards(mainHost, childHost, client, store) {
     }
     slot.effects.stop();
     Object.assign(slot, { canvas, renderer, input: attachBoardInput(canvas, { view: slot.view, client }) });
-    // The hand coming back ends a tool's animation at once: what it does next
-    // must land on the board as it is, not under the picture from before.
-    for (const type of ["pointerdown", "wheel"]) canvas.addEventListener?.(type, () => slot.effects.stop(), { capture: true, passive: true });
     if (hadFocus) canvas.focus({ preventScroll: true });
     paintCursor(slot);
     client?.call?.("board.capabilities", { view: slot.view, fieldDisplay: started === "webgl" })?.catch(() => {});
@@ -802,12 +799,32 @@ function createBoards(mainHost, childHost, client, store) {
     if (event?.name !== "board.effect") return;
     slots[event.args?.view]?.effects.play(event.args);
   });
+  const stopEffects = () => {
+    for (const slot of Object.values(slots)) slot.effects.stop();
+  };
+  // The hand coming back - anywhere: the board, a panel, the menu, a key such
+  // as Ctrl+Z - ends a tool's animation at once. What it does next must land
+  // on the board as it is, not under the picture from before.
+  const page = mainHost?.ownerDocument;
+  if (typeof page?.addEventListener === "function") {
+    for (const type of ["pointerdown", "keydown", "wheel"]) page.addEventListener(type, stopEffects, { capture: true, passive: true });
+  }
+  // The view scrolled or zoomed (scroll bar, Fit View, the texture board
+  // fitting itself): the picture from before no longer lines up.
+  for (const slot of Object.values(slots)) {
+    let seen;
+    store.on(`viewport/${slot.view}`, (value) => {
+      const key = JSON.stringify(value ?? null);
+      if (seen !== undefined && key !== seen) slot.effects.stop();
+      seen = key;
+    });
+  }
   // Another frame on show: the picture from before belongs to the old one.
   let shownFrame;
   store.on("timeline", (value) => {
     if (value?.current === shownFrame) return;
     shownFrame = value?.current;
-    for (const slot of Object.values(slots)) slot.effects.stop();
+    stopEffects();
   });
   client?.onDisconnect?.(() => {
     for (const slot of Object.values(slots)) {

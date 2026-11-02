@@ -10195,11 +10195,13 @@ def _perform_mapping():
 
 
 def _run():
+    """True when the run mapped something onto the main board."""
     _RUN_GUARD["depth"] += 1
     try:
-        _perform_mapping()
+        return bool(_perform_mapping())
     except Exception as error:  # keep the UI alive; feedback goes to the debug dock
         print(f"[auto_mapping] error: {error!r}")
+        return False
     finally:
         _RUN_GUARD["depth"] -= 1
 
@@ -11280,9 +11282,11 @@ def _maybe_auto_run(fade=False):
         return
     if not _unit_settings(uid).get("auto_render", True):
         return
-    if fade:
+    # Asked only once something was mapped, and still inside the hook: the
+    # main board's next frame (the new output) leaves after the hook returns,
+    # so the page still shows the board from before.
+    if _run() and fade:
         board_effects.mapping_fade("main")
-    _run()
 
 
 def _pattern_changed(cell, stroke, message):

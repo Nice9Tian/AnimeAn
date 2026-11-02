@@ -34,9 +34,9 @@
 
 - 分工：放什么、什么时候、多长在 `pyfile/board_effects.py`；C++ 的 `board.effect`（`backend/session/backendsession.cpp`）只把画布坐标的几何（`center`、`radius`、`width`、扁平路径 `clip` / `path`）按视图的缩放平移（`algorithm/viewscale.h`）换成画板 CSS 像素，其余字段原样转发，以一次性 `event` 发出且不留作重连重放；网页 `webui/src/board/effects.ts` 画。
 - 画法：效果到达时画板上还是改之前的画面，网页把它拷一份，在画板 canvas 上面叠一层 `.board-effects`（不接指针），先整份盖上；带着改动的下一帧落到下面后开始计时，把盖着的旧画面一点点拿掉。`radial`：限在 `clip` 区域里（含 2 像素描边，盖住抗锯齿的边），以 `center` 为圆心、半径从 0 到 `radius` 挖开；`stroke`：沿 `path` 宽 `width + 2 × margin` 的带子，用虚线从起点挖开；`fade`：整块（或 `clip` 内）旧画面的不透明度从 1 降到 0。渲染器不动，WebGL 与 Canvas 2D 都适用（WebGL 开了 `preserveDrawingBuffer`，可以随时拷）。
-- 调用时机：工具在**改模型之前**要效果。后端的帧在钩子返回后的 0 毫秒定时里才画，所以效果总排在带改动的那一帧前面。Fill 在写区域之前（`fill_tool._run_fill`），Connect 在加笔画之前（`connect_tool._create_connection`），Auto Mapping 在 `_maybe_auto_run(fade=True)` 真要重算时、`_run()` 之前；只有 `run_center_line_tool` 和 `run_proxy_contour_tool` 传 `fade=True`，拖动、改选项、附加线的重算不淡入。
+- 调用时机：工具在**钩子返回之前**要效果，并且只在画板真会变的时候要。后端的帧在钩子返回后的 0 毫秒定时里才画（脚本里没有让事件循环转起来的调用），所以效果总排在带改动的那一帧前面；画板不变就没有帧，网页会白等。Fill 在写完区域、提交历史之前（`fill_tool._run_fill`），同一区域同色重复点、目标层隐藏时不要；Connect 在加笔画之前（`connect_tool._create_connection`）；Auto Mapping 在 `_maybe_auto_run(fade=True)` 里 `_run()` 真映射出东西（返回 True）之后，只有 `run_center_line_tool` 和 `run_proxy_contour_tool` 传 `fade=True`，拖动、改选项、附加线的重算不淡入，没凑齐条件、什么也没映射时也不淡入。
 - 时长与缓动（`board_effects.py`、`effects.ts`，对照演示动画）：Fill 750 ms，缓入缓出；Connect 450 ms，匀速；映射淡入 800 ms，缓入缓出。`radius` 取点击点到区域路径最远点的距离；`margin` 是 3 屏幕像素，网页加在换算后的线宽上。
-- 何时不播或提前结束：几何不全、画板还没画过一帧（刚连上，没有「之前」）、画板不可见、系统要求减少动态效果；画板上按下或滚轮、画板尺寸变了、同一画板来了新效果（先结束旧的）；4 秒内没等到新帧（没改出东西）就丢掉。Python 侧算几何出错只打印一行，不影响工具本身。
+- 何时不播或提前结束：几何不全、画板还没画过一帧（刚连上，没有「之前」）、画板不可见、系统要求减少动态效果；页面上任何地方按下、按键（含 Ctrl+Z）或滚轮，该画板的视口变了（滚动条、Fit View、纹理板自动适配，看 `viewport/<view>` 状态），换了当前帧，画板尺寸变了，同一画板来了新效果（先结束旧的）；1 秒内没等到新帧就丢掉，之后不相干的帧不会再启动它。Python 侧算几何出错只打印一行，不影响工具本身。
 
 ## Repulsion Pad（`repulsion_tool.py`）
 
@@ -48,4 +48,4 @@
 ## 测试
 
 - `tests/t_transfer.py`、`tests/t_edit_modes.py`、`tests/t_toolcontrol.py`、`tests/t_palette.py`。
-- 画板动画：`tests/t_board_effects.py`（各工具要什么效果、要在改模型之前）、`tests/t_fill_children.py` 第 7b 段（Fill 的顺序）、`webui/tests/board_effects.test.ts`（盖、等帧、挖开、结束）。Connect 与 Repulsion 的离线套件当时留在会话临时目录，仓库里没有。
+- 画板动画：`tests/t_board_effects.py`（各工具要什么效果；映射只在真映射出东西后淡入）、`tests/t_fill_children.py` 第 7b 段（Fill 在提交历史前要效果，同色重复点不要）、`webui/tests/board_effects.test.ts`（盖、等帧、挖开、结束）。Connect 与 Repulsion 的离线套件当时留在会话临时目录，仓库里没有。

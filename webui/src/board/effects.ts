@@ -31,11 +31,11 @@ export interface EffectCanvasLike {
   clientHeight?: number;
 }
 
-// The board waits this long for the frame that carries the change. Python is
-// blocked while it works (a mapping run), and no frame leaves before it is
-// done, so the wait covers the work; past it the effect is dropped - nothing
-// changed, or the frame went elsewhere.
-export const FRAME_WAIT_MS = 4000;
+// The board waits this long for the frame that carries the change. Python asks
+// for an effect only when the board will change, at the end of its work, so
+// the frame follows at once; past the wait the effect is dropped (the frame
+// never came), and a later, unrelated frame cannot start it.
+export const FRAME_WAIT_MS = 1000;
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
