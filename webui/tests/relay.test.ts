@@ -683,6 +683,7 @@ test("panelwindows 与 syncDocks：WINDOW_FOR_DOCK 反推、缺省窗口视为�
     assert.equal(winForDock.timelineDock, "timeline");
 
     const tauriCalls: Array<{ cmd: string; args: Record<string, any> }> = [];
+    const tauriListeners = new Map<string, (event: { payload: unknown }) => void>();
     let dragStarted = 0;
     win.__TAURI__ = {
       core: {
@@ -690,6 +691,12 @@ test("panelwindows 与 syncDocks：WINDOW_FOR_DOCK 反推、缺省窗口视为�
           tauriCalls.push({ cmd, args });
           // 外壳关窗时回报窗口最后的位置，再打开时回到那里
           return Promise.resolve(cmd === "close_panel_window" ? { x: 900, y: 40, width: 300, height: 420 } : undefined);
+        },
+      },
+      event: {
+        listen(name: string, fn: (event: { payload: unknown }) => void) {
+          tauriListeners.set(name, fn);
+          return Promise.resolve(() => tauriListeners.delete(name));
         },
       },
       window: {
@@ -818,8 +825,8 @@ test("panelwindows 与 syncDocks：WINDOW_FOR_DOCK 反推、缺省窗口视为�
     store.set("windows", { assets: { visible: false }, layers: { visible: true }, timeline: { visible: false } });
     assert.equal(tauriCalls.at(-1)?.cmd, "close_panel_window");
     assert.equal(tauriCalls.at(-1)?.args.label, "panel-assetsDock");
-    // 主窗口主动关闭后卫星页 pagehide 发来的 closed 不应再触发 menu.trigger
-    satClient.sendPanelAction("closed", "assetsDock");
+    // 主窗口主动关闭时外壳也会报 panel-closed，不应再触发 menu.trigger
+    tauriListeners.get("panel-closed")?.({ payload: "panel-assetsDock" });
     assert.equal(storeCalls.length, 0);
     await new Promise((r) => setTimeout(r, 0));
 
@@ -879,12 +886,17 @@ test("panelwindows 与 syncDocks：WINDOW_FOR_DOCK 反推、缺省窗口视为�
     assert.equal(tauriCalls.at(-1)?.cmd, "close_panel_window");
     assert.deepEqual(externalChangedLog, ["assetsDock", "assetsDock"]);
 
-    // 6. 再次浮出并由用户按 Alt+F4（pagehide 发 closed）：主窗口走 onDockClosed 触发 windows.assets
+    // 6. 再次浮出并由用户按 Alt+F4（外壳报 panel-closed）：主窗口走 onDockClosed 触发 windows.assets
     floatingList.push({ dockId: "assetsDock", x: 50, y: 60, width: 240, height: 280 });
     panelWins.onDockChanged("assetsDock", true);
     assert.equal(tauriCalls.at(-1)?.cmd, "open_panel_window");
 
+    // 主窗口关闭时 Windows 先带走独立窗口，页面会 pagehide，这不算用户关的
+    const callsBefore = storeCalls.length;
     win.dispatchEvent({ type: "pagehide" });
+    assert.equal(storeCalls.length, callsBefore);
+
+    tauriListeners.get("panel-closed")?.({ payload: "panel-assetsDock" });
     assert.deepEqual(storeCalls.at(-1), {
       method: "menu.trigger",
       params: { id: "windows.assets" },

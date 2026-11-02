@@ -777,18 +777,22 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(move |window, event| {
+            // Only a close request tells the user closing a panel from Windows taking
+            // it down with the main window, which must not count as hiding it.
+            if window.label().starts_with("panel-") {
+                if let WindowEvent::CloseRequested { .. } = event {
+                    let _ = window
+                        .app_handle()
+                        .emit_to("main", "panel-closed", window.label());
+                }
+            }
             if window.label() == "main" {
-                if matches!(
-                    event,
-                    WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed
-                ) {
+                if let WindowEvent::Destroyed = event {
                     for (lbl, win) in window.app_handle().webview_windows() {
                         if lbl.starts_with("panel-") {
                             let _ = win.close();
                         }
                     }
-                }
-                if let WindowEvent::Destroyed = event {
                     manager_for_window.shutdown();
                     window.app_handle().exit(0);
                 }

@@ -17,7 +17,7 @@ export interface BackendClientLike {
   call<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>;
 }
 
-export type PanelControlAction = "restore" | "close" | "closed";
+export type PanelControlAction = "restore" | "close";
 
 export function openRelayChannel(
   channelOrName?: string | RelayChannelLike | { channel?: string | RelayChannelLike; channelName?: string },
@@ -237,7 +237,7 @@ export class RelayHost {
       return;
     }
 
-    if (t === "restore" || t === "close" || t === "closed") {
+    if (t === "restore" || t === "close") {
       const dockId = String(msg.dockId ?? "");
       if (dockId) {
         for (const fn of this.panelListeners) fn(t, dockId);
@@ -248,7 +248,7 @@ export class RelayHost {
     if (t === "panel") {
       const action = msg.action;
       const dockId = String(msg.dockId ?? "");
-      if ((action === "restore" || action === "close" || action === "closed") && dockId) {
+      if ((action === "restore" || action === "close") && dockId) {
         for (const fn of this.panelListeners) fn(action, dockId);
       }
     }

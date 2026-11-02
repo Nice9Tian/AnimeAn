@@ -8,7 +8,7 @@
 - Python 按名字寻址：`paint`（中央区，页 `drawing` / `texture`）、`tools`（`painting` / `mapping`）、`tool_options`、`layers`（`main` / `child`）、`assets`、`history`、`repulsion_pad`、`python_debug`。`ui.windows.list / show / select / current` 是机制，`window_manager.py` 是策略；不认识的名字静默忽略。
 - 中央区不是停靠窗：`show()` 对它是空操作；选它的 `texture` 页会把纹理板从子控件里拿走，选 `drawing` 还回去。
 - 时间轴是停靠窗但不是父窗（没有页），`ui.windows` 不列它；它的播放条就是标题栏，停在底边是横条，停在左右是竖条加细标题。
-- Tauri 外壳中停靠面板（含 `timelineDock`）浮动时由 `webui/src/ui/panelwindows.js` 打开无边框独立窗口 `panel-<dockId>`（加载 `index.html?only=<dockId>&satellite=1`），经 `BroadcastChannel("animean.relay")`（`webui/src/relay.ts` 的 `RelayHost` / `RelayClient`）与主窗口共享单 WebSocket 连接。四边拉伸靠 Tauri 对无边框窗口的处理。关掉再打开回到关闭时的位置和大小，`close_panel_window` 把它报回来；拖回主窗口再浮出时用新的落点。纹理板子控件框 `texture_view` 因画布上下文不能跨窗口搬迁，继续在主窗口内浮动；它所在的面板变成独立窗口时，框自己在主窗口里浮出来。普通浏览器里浮动都在页面内。
+- Tauri 外壳中停靠面板（含 `timelineDock`）浮动时由 `webui/src/ui/panelwindows.js` 打开无边框独立窗口 `panel-<dockId>`（加载 `index.html?only=<dockId>&satellite=1`），经 `BroadcastChannel("animean.relay")`（`webui/src/relay.ts` 的 `RelayHost` / `RelayClient`）与主窗口共享单 WebSocket 连接。四边拉伸靠 Tauri 对无边框窗口的处理。关掉再打开回到关闭时的位置和大小，`close_panel_window` 把它报回来；拖回主窗口再浮出时用新的落点。用户关窗（Alt+F4）由外壳发 `panel-closed` 告诉主窗口，窗口表跟着变；主窗口关闭时 Windows 先带走它拥有的独立窗口，这些窗口收不到关闭请求，不算用户关的，所以不能用页面的 `pagehide` 判断。纹理板子控件框 `texture_view` 因画布上下文不能跨窗口搬迁，继续在主窗口内浮动；它所在的面板变成独立窗口时，框自己在主窗口里浮出来。普通浏览器里浮动都在页面内。
 - 打包的窗口是应用窗口：Ctrl、Alt 组合键和功能键的浏览器默认动作、右键浏览器菜单都关掉（输入框除外），否则 F5 重载页面后主窗口就不再认得已打开的独立窗口。浏览器里开发时不关。
 
 ## Tools 面板（网页界面）
