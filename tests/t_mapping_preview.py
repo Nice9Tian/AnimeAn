@@ -1312,6 +1312,63 @@ class TestMappingPreview(unittest.TestCase):
             self.assertEqual(fake.ui.set_field_calls, [], handle)
             self.assertFalse(mp._SESSION.get("active"), handle)
 
+    def test_16_stopped_hand_settles_and_a_new_move_cancels_the_settle(self):
+        """A frame out of solver budget is shown; polishing waits for the hand to stop."""
+        _scenes, fake, _uid = fresh_rig_world("C")
+        pts = am._assets_for("child")[am.H_PROPERTY]["points"]
+        mid = pts[len(pts) // 2]
+        offset = [0.0]
+        mp._clock = lambda: time.perf_counter() + offset[0]
+
+        def drag(phase, step=0):
+            offset[0] += 0.06
+            am._guide_drag_event({
+                "view": "child", "handle": am.H_PROPERTY, "phase": phase,
+                "position": {"x": mid[0] + 2.4 * step, "y": mid[1] - 6.4 * step},
+            })
+
+        drag("press")
+        warm = mp._SESSION["warm"]
+        for step in range(1, 8):
+            drag("move", step)
+        self.assertTrue(warm.get("unsettled"), "6.8 px per frame should outrun the budget")
+        stale = fake.ui.call_later_calls[-1]
+        self.assertEqual(stale[0], mp.SETTLE_DELAY_MS)
+
+        drag("move", 8)
+        frames = len(fake.ui.set_field_calls)
+        stale[1]()
+        self.assertEqual(len(fake.ui.set_field_calls), frames, "a move must cancel the old settle")
+
+        for _ in range(mp.SETTLE_PASSES):
+            if not warm.get("unsettled"):
+                break
+            fake.ui.call_later_calls[-1][1]()
+        self.assertFalse(warm.get("unsettled"))
+        self.assertGreater(len(fake.ui.set_field_calls), frames)
+
+        ca, ma = am._assets_for("child"), am._assets_for("main")
+        cold, _ = am.build_mapper(ca[am.H_PROPERTY], ca[am.V_PROPERTY], ma[am.H_PROPERTY],
+                                  ma[am.V_PROPERTY], additional_pairs=am._additional_pairs(),
+                                  ground_pairs=am._ground_pairs())
+        last = np.frombuffer(fake.ui.set_field_calls[-1][3], dtype="<f4")
+        W, H = fake.ui.set_field_calls[-1][1], fake.ui.set_field_calls[-1][2]
+        field = last.reshape(H, W, 4)
+        x0, y0, w, h = mp._SESSION["rect"]
+        worst = 0.0
+        for j in range(4, H, 12):
+            for i in range(4, W, 16):
+                if field[j, i, 2] <= 0.0:
+                    continue
+                p = (x0 + w * i / (W - 1), y0 + h * j / (H - 1))
+                q = cold(p)
+                if q is not None:
+                    worst = max(worst, math.hypot(p[0] + field[j, i, 0] - q[0],
+                                                  p[1] + field[j, i, 1] - q[1]))
+        print(f"[settle] field against the cold mapper after settling: {worst:.3f} px")
+        self.assertLessEqual(worst, 0.5)
+        mp.end()
+
     def test_10_mid_drag_invalid_axes_clears_and_recovers(self):
         """When axes stop crossing mid-drag, preview clears; when crossing again, preview recovers."""
         _scenes, fake, _uid = fresh_rig_world("A")

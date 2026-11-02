@@ -21,6 +21,8 @@ DEPTH_STRIDE = 8
 DEPTH_BASE_INTERVAL = 0.200
 DEPTH_BUDGET = 0.030
 MIN_UPDATE_INTERVAL = 0.008
+SETTLE_DELAY_MS = 40     # no move for this long: the hand has stopped
+SETTLE_PASSES = 40       # a frame that never settles must not spin forever
 UPDATE_DUTY_FACTOR = 0.5
 
 _SESSION = {
@@ -1109,6 +1111,39 @@ def _on_timer(gen):
                 am._animean().ui.refresh()
             except Exception:
                 pass
+            _arm_settle(am)
+    except Exception as error:
+        _handle_preview_error(am, error)
+
+
+def _arm_settle(am):
+    """A frame that ran out of solver budget is shown as it stands; once the
+    hand stops, keep solving on the same geometry until it converges. A move
+    takes the token, so this never competes with a moving hand."""
+    warm = _SESSION.get("warm") or {}
+    if not warm.get("unsettled") or _SESSION.get("settle_passes", 0) >= SETTLE_PASSES:
+        return
+    token = _SESSION["settle_token"] = _SESSION.get("settle_token", 0) + 1
+    gen = _SESSION["generation"]
+    am._animean().ui.call_later(SETTLE_DELAY_MS, lambda: _on_settle(gen, token))
+
+
+def _on_settle(gen, token):
+    am = _am()
+    if (not _SESSION.get("active")
+            or _SESSION.get("failed")
+            or _SESSION.get("generation") != gen
+            or _SESSION.get("settle_token") != token):
+        return
+    _SESSION["settle_passes"] = _SESSION.get("settle_passes", 0) + 1
+    _SESSION["warm"]["settling"] = True
+    try:
+        if _compute_and_push():
+            try:
+                am._animean().ui.refresh()
+            except Exception:
+                pass
+            _arm_settle(am)
     except Exception as error:
         _handle_preview_error(am, error)
 
@@ -1118,6 +1153,8 @@ def update():
     if not _SESSION.get("active") or _SESSION.get("failed"):
         return
     am = _am()
+    _SESSION["settle_passes"] = 0
+    _SESSION["warm"]["settling"] = False
     try:
         if not _context_valid(am):
             _SESSION["active"] = False
@@ -1141,6 +1178,7 @@ def update():
                 return
         _SESSION["pending"] = False
         _compute_and_push()
+        _arm_settle(am)
     except Exception as error:
         _handle_preview_error(am, error)
 

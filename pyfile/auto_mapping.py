@@ -2197,6 +2197,16 @@ class _FlowFieldWarp:
     GROUND_ANCHOR = 400.0      # per station on the line itself, / cell area
     GROUND_EASE = 4.0          # cells over which a tail's stiffness eases in
     GROUND_STILL = 0.1         # a move below this (Third px) is no move
+    # warm= only (a preview frame; the exact path never reads these): stop a CG
+    # solve when one step moves the answer less than this on the canvas, and
+    # after this many steps. 0.006 px flips a folding frame's retreat (25 px off);
+    # at 0.003 every drag kind stays under 0.25 px. The step cap is the frame
+    # budget: a fast hand outruns it, warm["unsettled"] says so, and once the
+    # hand stops the caller sets warm["settling"] and solves on with the larger
+    # cap (a restarted CG loses its conjugacy, so small caps would never end).
+    WARM_STEP_PX = 0.003
+    WARM_MAX_ITER = 15
+    WARM_SETTLE_ITER = 120
 
     def __init__(self, pairs, falloff="linear", radius_factor=0.5,
                  frame_window=None, grounds=(), warm=None):
@@ -2412,6 +2422,35 @@ class _FlowFieldWarp:
 
     # --------------------------------------------------------------- build
 
+    @staticmethod
+    def _walk_nearest(np, px, py, ax, ay, ex, ey, ee, seg):
+        """Each node's nearest segment, walked from `seg` over its neighbours
+        until none is closer."""
+        last = ax.size - 1
+
+        def dist2(k):
+            dx = px - ax[k]
+            dy = py - ay[k]
+            t = np.clip((dx * ex[k] + dy * ey[k]) / ee[k], 0.0, 1.0)
+            qx = dx - t * ex[k]
+            qy = dy - t * ey[k]
+            return qx * qx + qy * qy
+
+        best = dist2(seg)
+        for _ in range(last + 1):
+            moved = False
+            for step in (-1, 1):
+                other = np.clip(seg + step, 0, last)
+                d = dist2(other)
+                closer = d < best
+                if np.any(closer):
+                    seg = np.where(closer, other, seg)
+                    best = np.where(closer, d, best)
+                    moved = True
+            if not moved:
+                break
+        return seg
+
     def _build(self, frame_window, warm=None):
         import pydeps
         np = pydeps.ensure("numpy")
@@ -2585,6 +2624,7 @@ class _FlowFieldWarp:
         grid_key = (x0, x1, y0, y1, nx, ny, self.falloff)
         line_cache = warm.get("line_fields") if warm is not None else None
         new_line_cache = {} if warm is not None else None
+        seg_cache = warm.setdefault("nearest_seg", {}) if warm is not None else None
         for line in active:
             pts = line["child"]
             lkey = (grid_key, tuple(pts), line["radius"]) if warm is not None else None
@@ -2599,14 +2639,23 @@ class _FlowFieldWarp:
                 ex = bx - ax
                 ey = by - ay
                 ee = np.maximum(ex * ex + ey * ey, 1e-12)
-                dxs = px[:, None] - ax[None, :]
-                dys = py[:, None] - ay[None, :]
-                t = np.clip((dxs * ex[None, :] + dys * ey[None, :]) / ee[None, :],
-                            0.0, 1.0)
-                qx = dxs - t * ex[None, :]
-                qy = dys - t * ey[None, :]
-                dist2 = qx * qx + qy * qy
-                seg = np.argmin(dist2, axis=1)
+                last_seg = seg_cache.get(line["index"]) if seg_cache is not None else None
+                if (last_seg is not None and last_seg[0] == (nx, ny)
+                        and last_seg[1] == ax.size):
+                    # Only the nearest station's identity comes from last
+                    # frame; everything below is computed fresh from it.
+                    seg = self._walk_nearest(np, px, py, ax, ay, ex, ey, ee, last_seg[2])
+                else:
+                    dxs = px[:, None] - ax[None, :]
+                    dys = py[:, None] - ay[None, :]
+                    t = np.clip((dxs * ex[None, :] + dys * ey[None, :]) / ee[None, :],
+                                0.0, 1.0)
+                    qx = dxs - t * ex[None, :]
+                    qy = dys - t * ey[None, :]
+                    dist2 = qx * qx + qy * qy
+                    seg = np.argmin(dist2, axis=1)
+                if seg_cache is not None:
+                    seg_cache[line["index"]] = ((nx, ny), ax.size, seg)
                 fam = family_of(pts)
                 if fam == "h":
                     qmid = 0.5 * (ay + by)
@@ -3014,7 +3063,9 @@ class _FlowFieldWarp:
 
         solves_cache = None
         scale_xy = (1.0, 1.0)
+        frame_moved = {}
         if warm is not None:
+            warm["unsettled"] = False
             if warm.get("shape") != X.shape:
                 warm["shape"] = X.shape
                 warm["deltas"] = {}
@@ -3049,29 +3100,44 @@ class _FlowFieldWarp:
                     x0_solve[0, :] = x0_solve[-1, :] = 0.0
                     x0_solve[:, 0] = x0_solve[:, -1] = 0.0
                     x0_solve[mask] = 0.0
-                    delta_e = warm.setdefault("deltas", {}).get((round_key, component))
-                    if delta_e is not None and delta_e.shape == rhs.shape:
-                        d_e = delta_e.copy()
-                        d_e[0, :] = d_e[-1, :] = 0.0
-                        d_e[:, 0] = d_e[:, -1] = 0.0
-                        d_e[mask] = 0.0
-                        ad = apply_A(d_e, mask)
-                        dad = float(np.sum(d_e * ad))
-                        if dad > 1e-24:
-                            r0_tmp = R - apply_A(x0_solve, mask)
-                            beta = float(np.sum(d_e * r0_tmp)) / dad
-                            if -4.0 <= beta <= 4.0:
-                                x0_solve = x0_solve + beta * d_e
-                    cur_step_tol = 0.0012 / max(scale_xy[component], 1e-6)
-                    cur_max_iter = 80
-            E, _ = gridsolve.pcg(
+                    # Two guesses at what changed since the last frame: what
+                    # this frame already moved in the round before (the rounds
+                    # differ by a small boost, unless the boost jumps), and what
+                    # this round moved last frame. The energy minimum over both
+                    # can only beat either alone.
+                    guesses = []
+                    for move in (frame_moved.get(component),
+                                 warm.setdefault("deltas", {}).get((round_key, component))):
+                        if move is None or move.shape != rhs.shape:
+                            continue
+                        move = move.copy()
+                        move[0, :] = move[-1, :] = 0.0
+                        move[:, 0] = move[:, -1] = 0.0
+                        move[mask] = 0.0
+                        guesses.append(move)
+                    if guesses:
+                        moved_A = [apply_A(move, mask) for move in guesses]
+                        residual = R - apply_A(x0_solve, mask)
+                        gram = np.array([[float(np.sum(m * am_)) for am_ in moved_A]
+                                         for m in guesses])
+                        pull = np.array([float(np.sum(m * residual)) for m in guesses])
+                        steps = np.linalg.lstsq(gram, pull, rcond=1e-9)[0]
+                        if np.all(np.isfinite(steps)):
+                            for step, move in zip(steps, guesses):
+                                x0_solve = x0_solve + step * move
+                    cur_step_tol = self.WARM_STEP_PX / max(scale_xy[component], 1e-6)
+                    cur_max_iter = (self.WARM_SETTLE_ITER if warm.get("settling")
+                                    else self.WARM_MAX_ITER)
+            E, steps_used = gridsolve.pcg(
                 lambda P: apply_A(P, mask), R, x0=x0_solve, precond=jacobi,
                 tol=cur_tol, max_iter=cur_max_iter, step_tol=cur_step_tol)
             if solves_cache is not None:
+                if steps_used >= cur_max_iter:
+                    warm["unsettled"] = True
                 prev_e = solves_cache.get((round_key, component))
-                warm.setdefault("deltas", {})[(round_key, component)] = (
-                    (E - prev_e) if (prev_e is not None and prev_e.shape == E.shape) else None
-                )
+                moved = (E - prev_e) if (prev_e is not None and prev_e.shape == E.shape) else None
+                warm.setdefault("deltas", {})[(round_key, component)] = moved
+                frame_moved[component] = moved
                 solves_cache[(round_key, component)] = E
             return E + pin_val
 
