@@ -426,6 +426,7 @@ bool testNumbersAndArg()
         "0x10", "010", "2147483647", "-2147483648", "2147483648", "-2147483649",
         "1.5", ".5", "5.", "+.5", "-.5", ".", "+.", "-.", "1e5", "1e-5",
         "1e309", "-1e309", "inf", "-inf", "+inf", "infinity", "-infinity", "nan", "NaN",
+        "4294967295", "4294967296", "18446744073709551615", "18446744073709551616",
         "图层123", "123图层"
     };
     for (const char *in : parseInputs) {
@@ -434,6 +435,22 @@ bool testNumbersAndArg()
         for (int base : {0, 2, 8, 10, 16}) {
             bool okS = false, okQ = false;
             int viS = s.toInt(&okS, base);
+            bool okUS = false, okUQ = false;
+            unsigned int vuS = s.toUInt(&okUS, base);
+            unsigned int vuQ = q.toUInt(&okUQ, base);
+            if (okUS != okUQ || vuS != vuQ) {
+                std::cerr << "FAIL: toUInt(" << in << ", base=" << base << ") got=("
+                          << okUS << "," << vuS << ") expected=(" << okUQ << "," << vuQ << ")\n";
+                return false;
+            }
+            bool okULLS = false, okULLQ = false;
+            unsigned long long vullS = s.toULongLong(&okULLS, base);
+            unsigned long long vullQ = q.toULongLong(&okULLQ, base);
+            if (okULLS != okULLQ || vullS != vullQ) {
+                std::cerr << "FAIL: toULongLong(" << in << ", base=" << base << ") got=("
+                          << okULLS << "," << vullS << ") expected=(" << okULLQ << "," << vullQ << ")\n";
+                return false;
+            }
             int viQ = q.toInt(&okQ, base);
             if (okS != okQ || viS != viQ) {
                 std::cerr << "FAIL: toInt(" << in << ", base=" << base << ") got=("
@@ -480,6 +497,128 @@ bool testNumbersAndArg()
     if (hashSet.count(ANIME_STR("图层1")) != 1 || hashSet.count(ANIME_STR("😀")) != 1) {
         std::cerr << "FAIL: unordered_set lookup failed\n";
         return false;
+    }
+
+    // leftJustified / rightJustified / fromLocal8Bit / toLocal8Bit
+    const char *justInputs[] = {"", "a", "abc", "图层12", "😀🎉"};
+    for (const char *in : justInputs) {
+        String s = String::fromUtf8(in);
+        QString q = QString::fromUtf8(in);
+        for (int width : {-2, 0, 1, 3, 5, 10}) {
+            for (bool trunc : {false, true}) {
+                String ljS = s.leftJustified(width, Char(u'_'), trunc);
+                QString ljQ = q.leftJustified(width, QChar(u'_'), trunc);
+                if (!sameContent(ljS, ljQ)) {
+                    std::cerr << "FAIL: leftJustified(" << in << ", " << width << ", " << trunc << ")\n";
+                    return false;
+                }
+                String rjS = s.rightJustified(width, Char(u'0'), trunc);
+                QString rjQ = q.rightJustified(width, QChar(u'0'), trunc);
+                if (!sameContent(rjS, rjQ)) {
+                    std::cerr << "FAIL: rightJustified(" << in << ", " << width << ", " << trunc << ")\n";
+                    return false;
+                }
+            }
+        }
+        String locS = String::fromLocal8Bit(in);
+        if (locS.toLocal8Bit() != std::string(in)) {
+            std::cerr << "FAIL: fromLocal8Bit/toLocal8Bit roundtrip\n";
+            return false;
+        }
+    }
+
+    // StringList differential tests against QStringList
+    {
+        using AnimeCore::StringList;
+        StringList sl;
+        QStringList qsl;
+        if (sl.isEmpty() != qsl.isEmpty() || sl.size() != qsl.size()) {
+            std::cerr << "FAIL: empty StringList\n";
+            return false;
+        }
+        if (!sameContent(sl.join(ANIME_STR(",")), qsl.join(QStringLiteral(",")))) {
+            std::cerr << "FAIL: empty StringList::join\n";
+            return false;
+        }
+
+        sl << ANIME_STR("Beta") << ANIME_STR("alpha") << ANIME_STR("Gamma")
+           << ANIME_STR("beta") << ANIME_STR("alpha") << ANIME_STR("图层");
+        qsl << QStringLiteral("Beta") << QStringLiteral("alpha") << QStringLiteral("Gamma")
+            << QStringLiteral("beta") << QStringLiteral("alpha") << QStringLiteral("图层");
+
+        if (!sameContent(sl.join(ANIME_STR(" | ")), qsl.join(QStringLiteral(" | ")))
+            || !sameContent(sl.join(Char(u'/')), qsl.join(QChar(u'/')))) {
+            std::cerr << "FAIL: StringList::join mismatch\n";
+            return false;
+        }
+
+        for (auto cs : {CaseSensitive, CaseInsensitive}) {
+            Qt::CaseSensitivity qcs = (cs == CaseSensitive) ? Qt::CaseSensitive : Qt::CaseInsensitive;
+            if (sl.contains(ANIME_STR("BETA"), cs) != qsl.contains(QStringLiteral("BETA"), qcs)
+                || sl.contains(ANIME_STR("missing"), cs) != qsl.contains(QStringLiteral("missing"), qcs)) {
+                std::cerr << "FAIL: StringList::contains mismatch\n";
+                return false;
+            }
+            if (sl.indexOf(ANIME_STR("beta"), 0, cs) != qsl.indexOf(QStringLiteral("beta"), 0, qcs)
+                || sl.lastIndexOf(ANIME_STR("alpha"), -1, cs) != qsl.lastIndexOf(QStringLiteral("alpha"), -1, qcs)) {
+                std::cerr << "FAIL: StringList::indexOf/lastIndexOf mismatch\n";
+                return false;
+            }
+            StringList fS = sl.filter(ANIME_STR("a"), cs);
+            QStringList fQ = qsl.filter(QStringLiteral("a"), qcs);
+            if (!sameContent(fS.join(ANIME_STR(",")), fQ.join(QStringLiteral(",")))) {
+                std::cerr << "FAIL: StringList::filter mismatch\n";
+                return false;
+            }
+        }
+
+        for (int pos : {-2, 0, 1, 3, 10}) {
+            for (int len : {-1, 0, 2, 10}) {
+                StringList mS = sl.mid(pos, len);
+                QStringList mQ = qsl.mid(pos, len);
+                if (!sameContent(mS.join(ANIME_STR(",")), mQ.join(QStringLiteral(",")))) {
+                    std::cerr << "FAIL: StringList::mid(" << pos << ", " << len << ") mismatch\n";
+                    return false;
+                }
+            }
+        }
+
+        StringList dupS = sl;
+        QStringList dupQ = qsl;
+        if (dupS.removeDuplicates() != dupQ.removeDuplicates()
+            || !sameContent(dupS.join(ANIME_STR(",")), dupQ.join(QStringLiteral(",")))) {
+            std::cerr << "FAIL: StringList::removeDuplicates mismatch\n";
+            return false;
+        }
+
+        StringList remS = sl;
+        QStringList remQ = qsl;
+        if (remS.removeAll(ANIME_STR("alpha")) != remQ.removeAll(QStringLiteral("alpha"))
+            || remS.removeOne(ANIME_STR("beta")) != remQ.removeOne(QStringLiteral("beta"))
+            || !sameContent(remS.join(ANIME_STR(",")), remQ.join(QStringLiteral(",")))) {
+            std::cerr << "FAIL: StringList::removeAll/removeOne mismatch\n";
+            return false;
+        }
+
+        for (auto cs : {CaseSensitive, CaseInsensitive}) {
+            Qt::CaseSensitivity qcs = (cs == CaseSensitive) ? Qt::CaseSensitive : Qt::CaseInsensitive;
+            StringList sortS = sl;
+            QStringList sortQ = qsl;
+            sortS.sort(cs);
+            sortQ.sort(qcs);
+            if (!sameContent(sortS.join(ANIME_STR(",")), sortQ.join(QStringLiteral(",")))) {
+                std::cerr << "FAIL: StringList::sort mismatch\n";
+                return false;
+            }
+        }
+
+        // Bridge<QStringList> roundtrip and mixed String == QString
+        QStringList bridgedQ = sl;
+        StringList bridgedS = bridgedQ;
+        if (bridgedS != sl || !(sl.first() == bridgedQ.first()) || (sl.first() != bridgedQ.first())) {
+            std::cerr << "FAIL: Bridge<QStringList> or mixed String==QString mismatch\n";
+            return false;
+        }
     }
 
     std::map<String, int> orderedMap;

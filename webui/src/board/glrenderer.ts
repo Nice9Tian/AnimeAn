@@ -1,4 +1,4 @@
-import type { BackendClient, BoardMessage, ImageMeta } from "../net.ts";
+import type { BackendClient, BoardMessage, FieldMeta, ImageMeta } from "../net.ts";
 import {
   type BoardRendererOptions,
   type CanvasLike,
@@ -13,6 +13,8 @@ import {
   mapLineJoin,
   parseGradientStops,
   type PenState,
+  findScopeStartContaining,
+  type RawFieldData,
 } from "./renderer.ts";
 import {
   computeBounds,
@@ -43,11 +45,13 @@ export interface WebGL2ContextLike {
   readonly COLOR_ATTACHMENT0: number;
   readonly DEPTH_STENCIL_ATTACHMENT: number;
   readonly RGBA8: number;
+  readonly RGBA32F: number;
   readonly DEPTH24_STENCIL8: number;
   readonly MAX_SAMPLES: number;
   readonly FRAMEBUFFER_COMPLETE: number;
   readonly TEXTURE_2D: number;
   readonly TEXTURE0: number;
+  readonly TEXTURE1: number;
   readonly TEXTURE_MIN_FILTER: number;
   readonly TEXTURE_MAG_FILTER: number;
   readonly TEXTURE_WRAP_S: number;
@@ -110,6 +114,7 @@ export interface WebGL2ContextLike {
   getUniformLocation(program: WebGLProgram, name: string): WebGLUniformLocation | null;
 
   uniform1i(location: WebGLUniformLocation | null, x: number): void;
+  uniform2i(location: WebGLUniformLocation | null, x: number, y: number): void;
   uniform1f(location: WebGLUniformLocation | null, x: number): void;
   uniform2f(location: WebGLUniformLocation | null, x: number, y: number): void;
   uniform3f(location: WebGLUniformLocation | null, x: number, y: number, z: number): void;
@@ -208,6 +213,7 @@ export interface GlCanvasLike {
 export interface AdoptableRenderer {
   getOps(): ReadonlyArray<unknown[]>;
   getImage(key: string): unknown;
+  getField?(key: string): RawFieldData | undefined;
 }
 
 interface RawImageEntry {
@@ -245,6 +251,7 @@ interface FastStrokeRef {
   m12: number;
   m21: number;
   m22: number;
+  maxEdge: number;
   entry: CachedGeometry;
 }
 
@@ -319,6 +326,72 @@ void main() {
   vec4 c = texture(u_gradTex, vec2(clamp(t, 0.0, 1.0), 0.5));
   float a = c.a * u_opacity;
   outColor = vec4(c.rgb * a, a);
+}
+`;
+
+export const FIELD_VS = `#version 300 es
+precision highp float;
+layout(location = 0) in vec2 a_pos;
+uniform vec2 u_resolution;
+uniform float u_dpr;
+uniform vec3 u_transform0;
+uniform vec3 u_transform1;
+uniform sampler2D u_fieldTex;
+uniform vec4 u_fieldRect;
+uniform highp ivec2 u_fieldGrid;
+out vec2 v_localPos;
+vec2 sampleFieldDisp(vec2 p) {
+  float u = (u_fieldGrid.x > 1 && u_fieldRect.z > 0.0) ? (p.x - u_fieldRect.x) / u_fieldRect.z * float(u_fieldGrid.x - 1) : 0.0;
+  float v = (u_fieldGrid.y > 1 && u_fieldRect.w > 0.0) ? (p.y - u_fieldRect.y) / u_fieldRect.w * float(u_fieldGrid.y - 1) : 0.0;
+  float uc = clamp(u, 0.0, float(u_fieldGrid.x - 1));
+  float vc = clamp(v, 0.0, float(u_fieldGrid.y - 1));
+  int i0 = clamp(int(floor(uc)), 0, max(0, u_fieldGrid.x - 2));
+  int j0 = clamp(int(floor(vc)), 0, max(0, u_fieldGrid.y - 2));
+  int i1 = min(i0 + 1, u_fieldGrid.x - 1);
+  int j1 = min(j0 + 1, u_fieldGrid.y - 1);
+  float fu = clamp(uc - float(i0), 0.0, 1.0);
+  float fv = clamp(vc - float(j0), 0.0, 1.0);
+  vec2 d00 = texelFetch(u_fieldTex, ivec2(i0, j0), 0).xy;
+  vec2 d10 = texelFetch(u_fieldTex, ivec2(i1, j0), 0).xy;
+  vec2 d01 = texelFetch(u_fieldTex, ivec2(i0, j1), 0).xy;
+  vec2 d11 = texelFetch(u_fieldTex, ivec2(i1, j1), 0).xy;
+  return mix(mix(d00, d10, fu), mix(d01, d11, fu), fv);
+}
+void main() {
+  v_localPos = a_pos;
+  vec2 pos = a_pos + sampleFieldDisp(a_pos);
+  float px = (u_transform0.x * pos.x + u_transform0.y * pos.y + u_transform0.z) * u_dpr;
+  float py = (u_transform1.x * pos.x + u_transform1.y * pos.y + u_transform1.z) * u_dpr;
+  gl_Position = vec4((px / u_resolution.x) * 2.0 - 1.0, 1.0 - (py / u_resolution.y) * 2.0, 0.0, 1.0);
+}
+`;
+
+export const FIELD_FS = `${SHAPE_FS.replace(
+  "void main() {",
+  `uniform sampler2D u_fieldTex;
+uniform vec4 u_fieldRect;
+uniform highp ivec2 u_fieldGrid;
+uniform vec2 u_tagRange;
+uniform vec4 u_tint;
+void computeShapeColor() {`,
+)}
+void main() {
+  if (v_localPos.x < u_fieldRect.x || v_localPos.x > u_fieldRect.x + u_fieldRect.z ||
+      v_localPos.y < u_fieldRect.y || v_localPos.y > u_fieldRect.y + u_fieldRect.w) {
+    discard;
+  }
+  float u = (u_fieldGrid.x > 1 && u_fieldRect.z > 0.0) ? (v_localPos.x - u_fieldRect.x) / u_fieldRect.z * float(u_fieldGrid.x - 1) : 0.0;
+  float v = (u_fieldGrid.y > 1 && u_fieldRect.w > 0.0) ? (v_localPos.y - u_fieldRect.y) / u_fieldRect.w * float(u_fieldGrid.y - 1) : 0.0;
+  int ni = clamp(int(round(u)), 0, u_fieldGrid.x - 1);
+  int nj = clamp(int(round(v)), 0, u_fieldGrid.y - 1);
+  float tag = texelFetch(u_fieldTex, ivec2(ni, nj), 0).z;
+  if (tag < u_tagRange.x || tag > u_tagRange.y) {
+    discard;
+  }
+  computeShapeColor();
+  if (u_tint.a > 0.0) {
+    outColor = vec4(mix(outColor.rgb, u_tint.rgb * outColor.a, u_tint.a), outColor.a);
+  }
 }
 `;
 
@@ -462,6 +535,8 @@ export class GlBoardRenderer {
   private rawImages = new Map<string, RawImageEntry>();
   private imageTextures = new Map<string, WebGLTexture>();
   private gradTextures = new Map<string, WebGLTexture>();
+  private rawFields = new Map<string, RawFieldData>();
+  private fieldTextures = new Map<string, WebGLTexture>();
 
   // All tessellated triangles live in one large vertex buffer so adjacent same-state
   // strokes occupy contiguous vertex ranges and draw in a single gl.drawArrays call.
@@ -522,6 +597,40 @@ export class GlBoardRenderer {
 
   private unsubBoard?: () => void;
   private unsubImage?: () => void;
+  private unsubForget?: () => void;
+  private unsubField?: () => void;
+
+  private fieldProg: WebGLProgram | null = null;
+  private fieldLocs: {
+    resolution: WebGLUniformLocation | null;
+    dpr: WebGLUniformLocation | null;
+    transform0: WebGLUniformLocation | null;
+    transform1: WebGLUniformLocation | null;
+    paintKind: WebGLUniformLocation | null;
+    color: WebGLUniformLocation | null;
+    opacity: WebGLUniformLocation | null;
+    gradCoords0: WebGLUniformLocation | null;
+    gradCoords1: WebGLUniformLocation | null;
+    gradTex: WebGLUniformLocation | null;
+    fieldTex: WebGLUniformLocation | null;
+    fieldRect: WebGLUniformLocation | null;
+    fieldGrid: WebGLUniformLocation | null;
+    tagRange: WebGLUniformLocation | null;
+    tint: WebGLUniformLocation | null;
+  } | null = null;
+
+  private activeField: {
+    tex: WebGLTexture;
+    w: number;
+    h: number;
+    rect: [number, number, number, number];
+    maxEdge: number;
+    tagMin: number;
+    tagMax: number;
+    passOpacity: number;
+    entryOpacity: number;
+    tint: [number, number, number, number];
+  } | null = null;
 
   static isSupported(): boolean {
     try {
@@ -595,9 +704,17 @@ export class GlBoardRenderer {
 
     if (this.client) {
       this.unsubImage = this.client.onImage?.((meta, data) => {
-        if (!meta.key.startsWith("cur_")) {
+        if (meta.view === this.view) {
           this.putImage(meta, data);
         }
+      });
+      this.unsubForget = this.client.onImageForget?.((view, key) => {
+        if (view === this.view) {
+          this.forgetImage(key);
+        }
+      });
+      this.unsubField = this.client.onField?.((meta, data) => {
+        this.putField(meta, data);
       });
       this.unsubBoard = this.client.onBoard?.(this.view, (msg) => {
         this.renderFrame(msg);
@@ -613,8 +730,75 @@ export class GlBoardRenderer {
     return this.images.get(key);
   }
 
+  getField(key: string): RawFieldData | undefined {
+    return this.rawFields.get(key);
+  }
+
+  putField(meta: FieldMeta, data: Float32Array): void {
+    const w = Math.max(1, Math.round(meta.w));
+    const h = Math.max(1, Math.round(meta.h));
+    const version = Math.round(meta.version ?? 0);
+    const copy = new Float32Array(w * h * 4);
+    copy.set(data.subarray(0, Math.min(data.length, copy.length)));
+
+    const prevTex = this.fieldTextures.get(meta.key);
+    if (prevTex && !this.contextLost) {
+      this.gl.deleteTexture(prevTex);
+    }
+    this.fieldTextures.delete(meta.key);
+
+    const entry: RawFieldData = {
+      key: meta.key,
+      w,
+      h,
+      version,
+      data: copy,
+    };
+    this.rawFields.set(meta.key, entry);
+
+    if (!this.contextLost) {
+      this.createFieldTexture(entry);
+    }
+  }
+
+  private createFieldTexture(raw: RawFieldData): WebGLTexture | null {
+    const gl = this.gl;
+    const tex = gl.createTexture();
+    if (!tex) return null;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, raw.w, raw.h, 0, gl.RGBA, gl.FLOAT, raw.data);
+    this.fieldTextures.set(raw.key, tex);
+    return tex;
+  }
+
+  private getFieldTexture(key: string, version: number): { tex: WebGLTexture; w: number; h: number } | null {
+    const raw = this.rawFields.get(key);
+    if (!raw || raw.version !== version) return null;
+    let tex: WebGLTexture | null = this.fieldTextures.get(key) ?? null;
+    if (!tex) {
+      tex = this.createFieldTexture(raw);
+    }
+    if (!tex) return null;
+    return { tex, w: raw.w, h: raw.h };
+  }
+
   getLastDrawCalls(): number {
     return this.lastDrawCalls;
+  }
+
+  forgetImage(key: string): void {
+    const texture = this.imageTextures.get(key);
+    if (texture && !this.contextLost) {
+      this.gl.deleteTexture(texture);
+    }
+    this.imageTextures.delete(key);
+    this.images.delete(key);
+    this.rawImages.delete(key);
   }
 
   putImage(meta: ImageMeta, data: Uint8Array): void {
@@ -683,6 +867,46 @@ export class GlBoardRenderer {
           const img = prev.getImage(key);
           if (img !== undefined) {
             this.importImageValue(key, img);
+          }
+        }
+      }
+    }
+
+    if (prevAny.rawFields instanceof Map) {
+      for (const [k, v] of prevAny.rawFields.entries()) {
+        const fObj = v as RawFieldData;
+        if (fObj && fObj.data instanceof Float32Array && typeof fObj.w === "number" && typeof fObj.h === "number") {
+          this.putField(
+            {
+              t: "field",
+              key: String(k),
+              w: fObj.w,
+              h: fObj.h,
+              version: Number(fObj.version ?? 0),
+              bytes: fObj.data.byteLength,
+            },
+            fObj.data,
+          );
+        }
+      }
+    }
+    for (const op of this.fullOps) {
+      if (Array.isArray(op) && op[0] === "F") {
+        const key = String(op[1] ?? "");
+        if (key && !this.rawFields.has(key) && typeof prev.getField === "function") {
+          const fObj = prev.getField(key);
+          if (fObj && fObj.data instanceof Float32Array) {
+            this.putField(
+              {
+                t: "field",
+                key,
+                w: fObj.w,
+                h: fObj.h,
+                version: Number(fObj.version ?? 0),
+                bytes: fObj.data.byteLength,
+              },
+              fObj.data,
+            );
           }
         }
       }
@@ -759,8 +983,12 @@ export class GlBoardRenderer {
   destroy(): void {
     this.unsubBoard?.();
     this.unsubImage?.();
+    this.unsubForget?.();
     this.unsubBoard = undefined;
+    this.unsubField?.();
     this.unsubImage = undefined;
+    this.unsubForget = undefined;
+    this.unsubField = undefined;
     this.canvas.removeEventListener?.("webglcontextlost", this.onContextLostBound);
     this.canvas.removeEventListener?.("webglcontextrestored", this.onContextRestoredBound);
 
@@ -777,7 +1005,11 @@ export class GlBoardRenderer {
       if (this.shapeVao) gl.deleteVertexArray(this.shapeVao);
       if (this.imageVao) gl.deleteVertexArray(this.imageVao);
       if (this.shapeProg) gl.deleteProgram(this.shapeProg);
+      for (const tex of this.fieldTextures.values()) {
+        gl.deleteTexture(tex);
+      }
       if (this.imageProg) gl.deleteProgram(this.imageProg);
+      if (this.fieldProg) gl.deleteProgram(this.fieldProg);
       this.deleteFramebuffers();
     }
 
@@ -791,6 +1023,8 @@ export class GlBoardRenderer {
     this.gradTextures.clear();
     this.images.clear();
     this.rawImages.clear();
+    this.fieldTextures.clear();
+    this.rawFields.clear();
     this.fullOps = [];
   }
 
@@ -801,7 +1035,10 @@ export class GlBoardRenderer {
     this.imageTextures.clear();
     this.gradTextures.clear();
     this.shapeProg = null;
+    this.fieldTextures.clear();
     this.imageProg = null;
+    this.fieldProg = null;
+    this.fieldLocs = null;
     this.shapeVao = null;
     this.imageVao = null;
     this.imageQuadVbo = null;
@@ -869,6 +1106,31 @@ export class GlBoardRenderer {
       gradCoords1: gl.getUniformLocation(this.shapeProg, "u_gradCoords1"),
       gradTex: gl.getUniformLocation(this.shapeProg, "u_gradTex"),
     };
+
+    this.fieldProg = this.compileProgram(FIELD_VS, FIELD_FS);
+    this.fieldLocs = {
+      resolution: gl.getUniformLocation(this.fieldProg, "u_resolution"),
+      dpr: gl.getUniformLocation(this.fieldProg, "u_dpr"),
+      transform0: gl.getUniformLocation(this.fieldProg, "u_transform0"),
+      transform1: gl.getUniformLocation(this.fieldProg, "u_transform1"),
+      paintKind: gl.getUniformLocation(this.fieldProg, "u_paintKind"),
+      color: gl.getUniformLocation(this.fieldProg, "u_color"),
+      opacity: gl.getUniformLocation(this.fieldProg, "u_opacity"),
+      gradCoords0: gl.getUniformLocation(this.fieldProg, "u_gradCoords0"),
+      gradCoords1: gl.getUniformLocation(this.fieldProg, "u_gradCoords1"),
+      gradTex: gl.getUniformLocation(this.fieldProg, "u_gradTex"),
+      fieldTex: gl.getUniformLocation(this.fieldProg, "u_fieldTex"),
+      fieldRect: gl.getUniformLocation(this.fieldProg, "u_fieldRect"),
+      fieldGrid: gl.getUniformLocation(this.fieldProg, "u_fieldGrid"),
+      tagRange: gl.getUniformLocation(this.fieldProg, "u_tagRange"),
+      tint: gl.getUniformLocation(this.fieldProg, "u_tint"),
+    };
+
+    for (const raw of this.rawFields.values()) {
+      if (!this.fieldTextures.has(raw.key)) {
+        this.createFieldTexture(raw);
+      }
+    }
 
     this.imageProg = this.compileProgram(IMAGE_VS, IMAGE_FS);
     this.imageLocs = {
@@ -1074,6 +1336,7 @@ export class GlBoardRenderer {
     this.lastDrawCalls = 0;
     const gl = this.gl;
     const dpr = Math.max(0.1, Number(this.getDpr()) || 1);
+
     const w = Math.max(1, Math.round(msg.w));
     const h = Math.max(1, Math.round(msg.h));
     const pw = Math.max(1, Math.round(w * dpr));
@@ -1093,7 +1356,8 @@ export class GlBoardRenderer {
       this.cachedState = defaultDrawState();
     }
 
-    const keep = Math.max(0, Math.min(Math.round(msg.keep ?? 0), this.fullOps.length));
+    const rawKeep = Math.max(0, Math.min(Math.round(msg.keep ?? 0), this.fullOps.length));
+    let keep = rawKeep;
     const incomingOps = Array.isArray(msg.ops) ? msg.ops : [];
     if (keep === 0) {
       this.fullOps = incomingOps.slice();
@@ -1101,12 +1365,28 @@ export class GlBoardRenderer {
       this.fullOps = this.fullOps.slice(0, keep).concat(incomingOps);
     }
 
+    keep = findScopeStartContaining(this.fullOps, rawKeep);
     gl.viewport(0, 0, pw, ph);
 
     if (keep === 0) {
       const cState = defaultDrawState();
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.prefixFbo);
       this.clearCurrentTarget();
+      const firstF = this.fullOps.findIndex((op) => Array.isArray(op) && op[0] === "F");
+      if (firstF > 0) {
+        this.executeOps(this.fullOps, 0, firstF, cState, dpr, pw, ph);
+        this.cachedCount = firstF;
+        this.cachedState = cloneDrawState(cState);
+        this.resolvePrefixToTexture(pw, ph);
+        this.prefixResolved = true;
+        const suffixState = cloneDrawState(this.cachedState);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.workFbo);
+        this.clearCurrentTarget();
+        this.copyPrefixTextureToWork(pw, ph);
+        this.executeOps(this.fullOps, firstF, this.fullOps.length, suffixState, dpr, pw, ph);
+        this.resolveToScreen(this.workFbo, pw, ph);
+        return;
+      }
       this.executeOps(this.fullOps, 0, this.fullOps.length, cState, dpr, pw, ph);
       this.cachedCount = this.fullOps.length;
       this.cachedState = cloneDrawState(cState);
@@ -1258,6 +1538,7 @@ export class GlBoardRenderer {
     dpr: number,
   ): CachedGeometry {
     const currentScale = computeScaleFactor(transform, dpr, pen.cosmetic);
+    const maxEdge = this.activeField ? this.activeField.maxEdge : 0;
 
     // Reference fast-path: skip hashing and Map lookup when the path array reference,
     // pen parameters, and scale tolerance match the cached entry.
@@ -1275,6 +1556,7 @@ export class GlBoardRenderer {
           fast.m12 === transform[1] &&
           fast.m21 === transform[2] &&
           fast.m22 === transform[3])) &&
+      fast.maxEdge === maxEdge &&
       currentScale <= fast.entry.builtScale * 1.75
     ) {
       return fast.entry;
@@ -1285,7 +1567,7 @@ export class GlBoardRenderer {
     const cosmKey = pen.cosmetic
       ? `${transform[0]},${transform[1]},${transform[2]},${transform[3]}`
       : "0";
-    const key = `S_${pathHash}_${pen.width}_${pen.cap}_${pen.join}_${pen.miter}_${cosmKey}_${dashKey}`;
+    const key = `S_${pathHash}_${pen.width}_${pen.cap}_${pen.join}_${pen.miter}_${cosmKey}_${dashKey}${maxEdge > 0 ? `_E${maxEdge}` : ""}`;
 
     const cached = this.geoCache.get(key);
     // Zooming out or zooming in within 1.75x reuses existing tessellation; only
@@ -1302,6 +1584,7 @@ export class GlBoardRenderer {
         m12: transform[1],
         m21: transform[2],
         m22: transform[3],
+        maxEdge,
         entry: cached,
       });
       return cached;
@@ -1311,7 +1594,12 @@ export class GlBoardRenderer {
     const linearTransform: [number, number, number, number, number, number] | undefined = pen.cosmetic
       ? [transform[0], transform[1], transform[2], transform[3], 0, 0]
       : undefined;
-    const view = tessellateStrokeView(path, pen, builtScale, 0.1, linearTransform);
+    const effPen =
+      maxEdge > 0 && pen.cosmetic
+        ? { ...pen, width: pen.width / Math.max(1e-6, computeScaleFactor(transform, 1, false)) }
+        : pen;
+    const effLinearTransform = maxEdge > 0 && pen.cosmetic ? undefined : linearTransform;
+    const view = tessellateStrokeView(path, effPen, builtScale, 0.1, effLinearTransform, maxEdge);
     const firstVertex = this.appendArenaFloats(view);
     const entry: CachedGeometry = {
       key,
@@ -1332,6 +1620,7 @@ export class GlBoardRenderer {
       m12: transform[1],
       m21: transform[2],
       m22: transform[3],
+      maxEdge,
       entry,
     });
     return entry;
@@ -1345,7 +1634,8 @@ export class GlBoardRenderer {
   ): CachedGeometry {
     const currentScale = computeScaleFactor(transform, dpr, false);
     const pathHash = hashNumbers(path);
-    const key = `F_${pathHash}`;
+    const maxEdge = this.activeField ? this.activeField.maxEdge : 0;
+    const key = maxEdge > 0 ? `F_${pathHash}_E${maxEdge}_${rule}` : `F_${pathHash}`;
 
     const cached = this.geoCache.get(key);
     if (cached && currentScale <= cached.builtScale * 1.75) {
@@ -1353,7 +1643,7 @@ export class GlBoardRenderer {
     }
 
     const builtScale = Math.pow(2, Math.ceil(Math.log2(Math.max(1, currentScale))));
-    const view = tessellateFillView(path, rule, builtScale, 0.1);
+    const view = tessellateFillView(path, rule, builtScale, 0.1, undefined, maxEdge);
     const firstVertex = this.appendArenaFloats(view);
     const entry: CachedGeometry = {
       key,
@@ -1444,9 +1734,20 @@ export class GlBoardRenderer {
     transform: [number, number, number, number, number, number],
   ): void {
     const gl = this.gl;
-    const locs = this.shapeLocs!;
+    const locs = (this.activeField ? this.fieldLocs : this.shapeLocs)!;
     this.syncArenaVbo();
-    gl.useProgram(this.shapeProg);
+    gl.useProgram(this.activeField ? this.fieldProg : this.shapeProg);
+    if (this.activeField) {
+      const fLocs = this.fieldLocs!;
+      const af = this.activeField;
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, af.tex);
+      gl.uniform1i(fLocs.fieldTex, 1);
+      gl.uniform4f(fLocs.fieldRect, af.rect[0], af.rect[1], af.rect[2], af.rect[3]);
+      gl.uniform2i(fLocs.fieldGrid, af.w, af.h);
+      gl.uniform2f(fLocs.tagRange, af.tagMin, af.tagMax);
+      gl.uniform4f(fLocs.tint, af.tint[0], af.tint[1], af.tint[2], af.tint[3]);
+    }
     gl.bindVertexArray(this.shapeVao);
     gl.uniform2f(locs.resolution, pw, ph);
     gl.uniform1f(locs.dpr, dpr);
@@ -1456,7 +1757,7 @@ export class GlBoardRenderer {
 
   private setBrushUniforms(state: DrawState): void {
     const gl = this.gl;
-    const locs = this.shapeLocs!;
+    const locs = (this.activeField ? this.fieldLocs : this.shapeLocs)!;
     const brush = state.brush;
     const opacity = state.opacity;
 
@@ -1490,7 +1791,7 @@ export class GlBoardRenderer {
 
   private setPenUniforms(state: DrawState): void {
     const gl = this.gl;
-    const locs = this.shapeLocs!;
+    const locs = (this.activeField ? this.fieldLocs : this.shapeLocs)!;
     const pen = state.pen;
     const effA = (pen.a / 255) * state.opacity;
     gl.uniform1i(locs.paintKind, 0);
@@ -1593,7 +1894,7 @@ export class GlBoardRenderer {
     if (entry.vertexCount === 0) return;
     const gl = this.gl;
     const coverFirst = this.ensureEntryCoverQuad(entry);
-    const shaderTransform: [number, number, number, number, number, number] = state.pen.cosmetic
+    const shaderTransform: [number, number, number, number, number, number] = state.pen.cosmetic && !this.activeField
       ? [1, 0, 0, 1, state.transform[4], state.transform[5]]
       : state.transform;
 
@@ -1657,7 +1958,7 @@ export class GlBoardRenderer {
   ): void {
     if (vertexCount <= 0) return;
     const gl = this.gl;
-    const shaderTransform: [number, number, number, number, number, number] = state.pen.cosmetic
+    const shaderTransform: [number, number, number, number, number, number] = state.pen.cosmetic && !this.activeField
       ? [1, 0, 0, 1, state.transform[4], state.transform[5]]
       : state.transform;
 
@@ -1756,6 +2057,8 @@ export class GlBoardRenderer {
     pw: number,
     ph: number,
   ): void {
+    start = Math.max(0, Math.min(start, ops.length));
+    end = Math.max(start, Math.min(end, ops.length));
     if (start > 0 && state.clip) {
       this.updateClipStencil(state, pw, ph, dpr);
     }
@@ -1859,7 +2162,9 @@ export class GlBoardRenderer {
         }
 
         case "O": {
-          state.opacity = Math.max(0, Math.min(1, Number(op[1] ?? 1)));
+          state.opacity =
+            Math.max(0, Math.min(1, Number(op[1] ?? 1))) *
+            (this.activeField ? this.activeField.passOpacity * this.activeField.entryOpacity : 1);
           break;
         }
 
@@ -1890,15 +2195,21 @@ export class GlBoardRenderer {
           const w = Number(op[3] ?? 0);
           const h = Number(op[4] ?? 0);
           if (state.brush.a > 0 || state.brush.gradient !== null) {
-            const fillEntry = this.getRectFillGeometry(x, y, w, h);
-            this.drawDirectBrushRange(fillEntry.firstVertex, fillEntry.vertexCount, state, pw, ph, dpr);
+            if (this.activeField) {
+              const rectPath = [0, x, y, 1, x + w, y, 1, x + w, y + h, 1, x, y + h, 3];
+              const fillEntry = this.getFillGeometry(rectPath, "nonzero", state.transform, dpr);
+              this.drawDirectBrushRange(fillEntry.firstVertex, fillEntry.vertexCount, state, pw, ph, dpr);
+            } else {
+              const fillEntry = this.getRectFillGeometry(x, y, w, h);
+              this.drawDirectBrushRange(fillEntry.firstVertex, fillEntry.vertexCount, state, pw, ph, dpr);
+            }
           }
           if (state.pen.a > 0) {
             const rectPath = [0, x, y, 1, x + w, y, 1, x + w, y + h, 1, x, y + h, 3];
             const strokeEntry = this.getStrokeGeometry(rectPath, state.pen, state.transform, dpr);
             const isOpaquePen =
               state.pen.a === 255 && state.opacity >= 1 && state.composite === "source-over";
-            if (isOpaquePen) {
+            if (isOpaquePen || this.activeField !== null) {
               this.drawDirectPenRange(strokeEntry.firstVertex, strokeEntry.vertexCount, state, pw, ph, dpr);
             } else {
               this.drawStrokeWithStencil(strokeEntry, state, pw, ph, dpr);
@@ -1950,11 +2261,15 @@ export class GlBoardRenderer {
           const rule: CanvasFillRule = normalizeFillRule(Number(op[2] ?? 0) === 0 ? "evenodd" : "nonzero");
           if (hasBrush) {
             const fillEntry = this.getFillGeometry(path, rule, state.transform, dpr);
-            this.drawFillWithStencil(fillEntry, rule, state, pw, ph, dpr);
+            if (this.activeField) {
+              this.drawDirectBrushRange(fillEntry.firstVertex, fillEntry.vertexCount, state, pw, ph, dpr);
+            } else {
+              this.drawFillWithStencil(fillEntry, rule, state, pw, ph, dpr);
+            }
           }
           if (hasPen) {
             const strokeEntry = this.getStrokeGeometry(path, state.pen, state.transform, dpr);
-            if (isOpaquePen) {
+            if (isOpaquePen || this.activeField !== null) {
               this.drawDirectPenRange(strokeEntry.firstVertex, strokeEntry.vertexCount, state, pw, ph, dpr);
             } else {
               this.drawStrokeWithStencil(strokeEntry, state, pw, ph, dpr);
@@ -1979,6 +2294,101 @@ export class GlBoardRenderer {
 
         case "H": {
           state.smooth = Boolean(op[1]);
+          break;
+        }
+
+        case "F": {
+          let closeIdx = -1;
+          for (let j = i + 1; j < end; j++) {
+            const cur = ops[j];
+            if (Array.isArray(cur) && cur[0] === "f") {
+              closeIdx = j;
+              break;
+            }
+          }
+          const scopeEnd = closeIdx >= 0 ? closeIdx : end;
+          const key = String(op[1] ?? "");
+          const version = Math.round(Number(op[2] ?? 0));
+          const rx = Number(op[3] ?? 0);
+          const ry = Number(op[4] ?? 0);
+          const rw = Number(op[5] ?? 0);
+          const rh = Number(op[6] ?? 0);
+          const maxEdge = Math.max(0.5, Number(op[7] ?? 4));
+          const passes = Array.isArray(op[8]) ? op[8] : [];
+          const fieldTexInfo = key && rw > 0 && rh > 0 ? this.getFieldTexture(key, version) : null;
+
+          if (fieldTexInfo && passes.length > 0 && i + 1 < scopeEnd) {
+            const entryState = cloneDrawState(state);
+            const prevField = this.activeField;
+            let hasClipInScope = false;
+            for (let j = i + 1; j < scopeEnd; j++) {
+              const subOp = ops[j];
+              if (Array.isArray(subOp) && subOp[0] === "K") {
+                hasClipInScope = true;
+                break;
+              }
+            }
+            for (let pIdx = passes.length - 1; pIdx >= 0; pIdx--) {
+              const rawPass = passes[pIdx];
+              if (!Array.isArray(rawPass) || (rawPass.length !== 3 && rawPass.length !== 7)) continue;
+              const tagMin = Number(rawPass[0] ?? 0);
+              const tagMax = Number(rawPass[1] ?? tagMin);
+              const passOpacity = Math.max(0, Math.min(1, Number(rawPass[2] ?? 1)));
+              let tintR = 0;
+              let tintG = 0;
+              let tintB = 0;
+              let tintA = 0;
+              if (rawPass.length === 7) {
+                tintR = clampByte(rawPass[3]) / 255;
+                tintG = clampByte(rawPass[4]) / 255;
+                tintB = clampByte(rawPass[5]) / 255;
+                tintA = clampByte(rawPass[6]) / 255;
+                if (tintA <= 0) {
+                  tintR = 0;
+                  tintG = 0;
+                  tintB = 0;
+                  tintA = 0;
+                }
+              }
+
+              const passState = cloneDrawState(entryState);
+              passState.opacity = entryState.opacity * passOpacity;
+              if (hasClipInScope) {
+                this.updateClipStencil(passState, pw, ph, dpr);
+              }
+              this.activeField = {
+                tex: fieldTexInfo.tex,
+                w: fieldTexInfo.w,
+                h: fieldTexInfo.h,
+                rect: [rx, ry, rw, rh],
+                maxEdge,
+                tagMin,
+                tagMax,
+                passOpacity,
+                entryOpacity: entryState.opacity,
+                tint: [tintR, tintG, tintB, tintA],
+              };
+              this.executeOps(ops, i + 1, scopeEnd, passState, dpr, pw, ph);
+            }
+            this.activeField = prevField;
+            const restored = cloneDrawState(entryState);
+            state.transform = restored.transform;
+            state.pen = restored.pen;
+            state.brush = restored.brush;
+            state.opacity = restored.opacity;
+            state.composite = restored.composite;
+            state.clip = restored.clip;
+            state.smooth = restored.smooth;
+            if (hasClipInScope) {
+              this.updateClipStencil(state, pw, ph, dpr);
+            }
+          }
+
+          i = closeIdx >= 0 ? closeIdx : end - 1;
+          break;
+        }
+
+        case "f": {
           break;
         }
       }

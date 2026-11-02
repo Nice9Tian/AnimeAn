@@ -128,10 +128,9 @@
         "gap": 0
       },
       "children": [
-        "paintingHeader",
-        "paintingBody",
-        "mappingHeader",
-        "mappingBody"
+        "toolsScrollUp",
+        "toolsScroll",
+        "toolsScrollDown"
       ]
     },
     "toolOptionsDock": {
@@ -327,7 +326,9 @@
         "vertical": "fixed"
       },
       "props": {
-        "glyph": "arrow"
+        "glyph": "arrow",
+        "tipTitle": "Arrow",
+        "tip": "Select strokes and points"
       }
     },
     "toolPen": {
@@ -339,7 +340,9 @@
         "vertical": "fixed"
       },
       "props": {
-        "glyph": "pen"
+        "glyph": "pen",
+        "tipTitle": "Pen",
+        "tip": "Draw a stroke — width, smooth, colour"
       }
     },
     "toolEraser": {
@@ -351,7 +354,9 @@
         "vertical": "fixed"
       },
       "props": {
-        "glyph": "eraser"
+        "glyph": "eraser",
+        "tipTitle": "Eraser",
+        "tip": "Erase, delete line, cut line"
       }
     },
     "toolFill": {
@@ -363,7 +368,9 @@
         "vertical": "fixed"
       },
       "props": {
-        "glyph": "fill"
+        "glyph": "fill",
+        "tipTitle": "Fill",
+        "tip": "Flood a region — scope All or Current"
       }
     },
     "toolTransfer": {
@@ -375,7 +382,9 @@
         "vertical": "fixed"
       },
       "props": {
-        "glyph": "transfer"
+        "glyph": "transfer",
+        "tipTitle": "Transfer",
+        "tip": "Move and free transform: drag inside the box, scale from eight grips, rotate outside the corners"
       }
     },
     "toolConnect": {
@@ -387,7 +396,9 @@
         "vertical": "fixed"
       },
       "props": {
-        "glyph": "connect"
+        "glyph": "connect",
+        "tipTitle": "Connect",
+        "tip": "Close the gap between two open endpoints — poly, curve, smooth"
       }
     },
     "toolHCenterLine": {
@@ -399,7 +410,9 @@
         "vertical": "fixed"
       },
       "props": {
-        "text": "H Line"
+        "glyph": "h_center_line",
+        "tipTitle": "H Center Line",
+        "tip": "Draw the horizontal axis. Each board needs one H and one V line, and they must cross."
       }
     },
     "toolVCenterLine": {
@@ -411,7 +424,9 @@
         "vertical": "fixed"
       },
       "props": {
-        "text": "V Line"
+        "glyph": "v_center_line",
+        "tipTitle": "V Center Line",
+        "tip": "Draw the vertical axis. Each board needs one H and one V line, and they must cross."
       }
     },
     "toolMappingArea": {
@@ -423,7 +438,9 @@
         "vertical": "fixed"
       },
       "props": {
-        "text": "Area"
+        "glyph": "mapping_area",
+        "tipTitle": "Mapping Area",
+        "tip": "Click like a paint bucket to outline the range Auto Mapping covers."
       }
     },
     "toolAdditionalLine": {
@@ -435,7 +452,51 @@
         "vertical": "fixed"
       },
       "props": {
-        "text": "Add Line"
+        "glyph": "additional_line",
+        "tipTitle": "Additional Line",
+        "tip": "Draw extra lines that tell Auto Mapping which way the texture flows."
+      }
+    },
+    "toolFreeOutLine": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "free_out_line",
+        "tipTitle": "Free Out Line",
+        "tip": "Draw one closed outline on each board. The pattern is held to it; matching hues are the same point."
+      }
+    },
+    "toolChoiceLine": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "choice_line",
+        "tipTitle": "Choice Line",
+        "tip": "Click an axis, additional line or outline, then tick 地线 in Tool Options to pin the pattern to it."
+      }
+    },
+    "toolDeformLine": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "deform_line",
+        "tipTitle": "Deform",
+        "tip": "Drag any line to bend it. Radius sets how far along the line the pull spreads."
       }
     },
     "toolAutoMapping": {
@@ -447,7 +508,9 @@
         "vertical": "fixed"
       },
       "props": {
-        "text": "Auto Map"
+        "glyph": "auto_mapping",
+        "tipTitle": "Auto Mapping",
+        "tip": "Map the texture pattern onto the main board along the H and V axes."
       }
     },
     "paintingHeader": {
@@ -512,8 +575,55 @@
         "toolVCenterLine",
         "toolMappingArea",
         "toolAdditionalLine",
+        "toolFreeOutLine",
+        "toolChoiceLine",
+        "toolDeformLine",
         "toolAutoMapping"
       ]
+    },
+    "toolsScrollUp": {
+      "type": "QtScrollArrow",
+      "width": 110,
+      "height": 14,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "fixed"
+      },
+      "props": {
+        "direction": "up"
+      }
+    },
+    "toolsScroll": {
+      "type": "VBox",
+      "width": 110,
+      "height": 714,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "expanding"
+      },
+      "layout": {
+        "kind": "vbox",
+        "padding": 0,
+        "gap": 0
+      },
+      "children": [
+        "paintingHeader",
+        "paintingBody",
+        "mappingHeader",
+        "mappingBody"
+      ]
+    },
+    "toolsScrollDown": {
+      "type": "QtScrollArrow",
+      "width": 110,
+      "height": 14,
+      "size": {
+        "horizontal": "expanding",
+        "vertical": "fixed"
+      },
+      "props": {
+        "direction": "down"
+      }
     }
   }
 }

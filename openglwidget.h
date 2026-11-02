@@ -1,32 +1,32 @@
 #ifndef OPENGLWIDGET_H
 #define OPENGLWIDGET_H
 
-#include "algorithm/core/qtbridge.h"
+#include "algorithm/core/json.h"
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <string>
+#include <utility>
+
 #include "algorithm/animemodel.h"
 #include "algorithm/scenehistory.h"
 #include "algorithm/vectorlogic.h"
 #include "algorithm/viewscale.h"
 
-#include <QColor>
-#include <QElapsedTimer>
-#include <QHash>
-#include <QImage>
-#include <QLineF>
-#include <QMouseEvent>
+#include "algorithm/core/color.h"
+#include "algorithm/core/containers.h"
+#include "algorithm/core/geometry.h"
+#include "algorithm/core/image.h"
+#include "algorithm/core/painter.h"
+#include "algorithm/core/path.h"
+#include "algorithm/core/string.h"
+#include "backend/platform/elapsedtimer.h"
+#include "backend/platform/signalslot.h"
+#include "backend/platform/timer.h"
 #include "boardbase.h"
-#include <QPainterPath>
-#include <QSet>
-#include <QString>
-#include <QVariant>
-#include <QVector>
-
-class QPainter;
-class QTimer;
 
 class PaintOpenGLWidget : public PaintBoardBase
 {
-    Q_OBJECT
-
 public:
     enum class Tool {
         Pen,
@@ -56,69 +56,103 @@ public:
     };
 
     struct ImportedVectorStroke {
-        QVector<QPointF> points;
-        QPainterPath path;
-        QColor color = Qt::black;
-        qreal width = 3.0;
+        AnimeCore::Vector<AnimeCore::PointF> points;
+        AnimeCore::Path path;
+        AnimeCore::Color color = AnimeCore::Color(0, 0, 0);
+        double width = 3.0;
     };
 
     struct ImportedVectorFrame {
         int row = 0;
-        QVector<ImportedVectorStroke> strokes;
+        AnimeCore::Vector<ImportedVectorStroke> strokes;
     };
 
     struct OverlayItem {
-        QString id;
-        QVector<QPointF> points;
+        AnimeCore::String id;
+        AnimeCore::Vector<AnimeCore::PointF> points;
         bool closed = false;
-        QColor strokeColor = QColor(0, 0, 0, 255);
-        QColor fillColor = QColor(0, 0, 0, 0);
-        qreal width = 3.0;
-        // Qt::PenStyle as an int, same convention as AnimeVectorStroke.
+        AnimeCore::Color strokeColor = AnimeCore::Color(0, 0, 0, 255);
+        AnimeCore::Color fillColor = AnimeCore::Color(0, 0, 0, 0);
+        double width = 3.0;
+        // PenStyle as an int, same convention as AnimeVectorStroke.
         int penStyle = 1;
         bool removable = true;
         bool confirmable = false;
         // A draggable item reports press/move/release through the "handle"
         // hook events with its id, like an edit handle; Python owns meaning.
         bool draggable = false;
+        // Non-empty: a bubble with this text at the first point, at constant
+        // screen size, in the item's colours. Lines split on newlines.
+        AnimeCore::String label;
     };
 
     // Draggable edit handle, drawn at constant SCREEN size above everything.
     // What a handle means lives in Python; this widget only renders it,
     // hit-tests it and reports presses and drags ("handle" hook events).
     struct EditHandle {
-        QString id;
-        QPointF pos;      // document coordinates
-        int shape = 0;    // 0 square, 1 circle, 2 diamond, 3 accept, 4 delete
-        QColor color = QColor(255, 255, 255, 255);
+        AnimeCore::String id;
+        AnimeCore::PointF pos;      // document coordinates
+        int shape = 0;              // 0 square, 1 circle, 2 diamond, 3 accept, 4 delete
+        AnimeCore::Color color = AnimeCore::Color(255, 255, 255, 255);
         // Display-only markers (snap hints) render but never hit-test: a
         // hint that swallowed the very click it advertised armed nothing.
         bool interactive = true;
     };
 
-    explicit PaintOpenGLWidget(QWidget *parent = nullptr);
+    struct FieldPass {
+        double tagLo = 0.0;
+        double tagHi = 0.0;
+        double opacity = 1.0;
+        int tintR = 0;
+        int tintG = 0;
+        int tintB = 0;
+        int tintA = 0;
+    };
 
-    void setOverlayItems(const QVector<OverlayItem> &items);
-    void setEditHandles(const QVector<EditHandle> &handles);
+    // Layers a script wants shown through a displacement field the page holds:
+    // drawn once more inside a field scope, the originals optionally hidden.
+    struct FieldViewSpec {
+        bool active = false;
+        AnimeCore::String fieldKey;
+        AnimeCore::RectF rect;
+        double maxEdge = 8.0;
+        AnimeCore::String sourceView;
+        AnimeCore::Vector<int> columns;
+        int frame = 0;
+        double widthScale = 1.0;
+        AnimeCore::Vector<FieldPass> passes;
+        AnimeCore::Vector<int> hideColumns;
+        AnimeCore::StringList skipProperties;
+    };
+
+    explicit PaintOpenGLWidget(void *parent = nullptr);
+
+    void setOverlayItems(const AnimeCore::Vector<OverlayItem> &items);
+    void setEditHandles(const AnimeCore::Vector<EditHandle> &handles);
+    void setFieldViewSpec(const FieldViewSpec &spec);
+    void clearFieldViewSpec();
+    const FieldViewSpec &fieldViewSpec() const { return m_fieldViewSpec; }
+    void setFieldLookup(std::function<std::uint64_t(const AnimeCore::String &key)> versionLookup,
+                        std::function<const AnimeSceneModel *(const AnimeCore::String &viewName)> sceneLookup = {});
     // The pointer a script asks for by NAME ("size_all", "rotate", ""); which
     // affordance sits under the cursor is the tool's decision, drawing the
     // name is this widget's. Empty restores the default. The pen ignores it:
     // its ring IS its cursor. Cleared by setTool, so a tool switch can never
     // leave another tool's pointer behind.
-    void setScriptCursor(const QString &name);
+    void setScriptCursor(const AnimeCore::String &name);
 
-    void setViewName(const QString &name);
-    QString viewName() const;
+    void setViewName(const AnimeCore::String &name);
+    AnimeCore::String viewName() const;
     void setActiveIndicator(bool active);
-    qreal zoom() const;
-    QPointF panOffset() const;
+    double zoom() const;
+    AnimeCore::PointF panOffset() const;
     void setScrollPosition(int horizontal, int vertical);
     // Moves the view PROGRAMMATICALLY: the zoom is clamped to the same limits
     // the wheel enforces and the pan to the same reachable area, so a restored
     // viewpoint can never land somewhere a gesture could not. Deliberately
     // silent on userTransformed() - only a hand on the wheel, the middle button
     // or a scroll bar counts as manual.
-    void setViewTransform(qreal zoom, const QPointF &pan);
+    void setViewTransform(double zoom, const AnimeCore::PointF &pan);
     // Frames the current frame's visible artwork. `cover` fills the viewport -
     // the content spans it edge to edge and the shorter axis crops (bleed);
     // false fits the whole of it inside instead. False when there is nothing to
@@ -130,7 +164,7 @@ public:
     // reachableRect(): that one answers reachability (page + everything drawn,
     // hidden layers included, plus half a viewport of slack) and would frame
     // empty paper.
-    QRectF visibleContentBounds() const;
+    AnimeCore::RectF visibleContentBounds() const;
     // What sits behind the drawing. A VIEW preference, not a document one: it
     // is not saved with the project, and the texture export suppresses it so
     // the choice never reaches a file.
@@ -143,7 +177,7 @@ public:
     // "these properties only", Python says WHICH (setEditablePropertyFilter).
     void setContentEditable(bool editable);
     bool contentEditable() const;
-    void setEditablePropertyFilter(const QStringList &properties);
+    void setEditablePropertyFilter(const AnimeCore::StringList &properties);
     // True when the tool currently armed is allowed to modify this view.
     bool editingAllowed() const;
 
@@ -160,23 +194,23 @@ public:
     bool unboundedCanvas() const;
     // The page, in document coordinates. Comes from the scene's canvas size,
     // NOT from the widget geometry.
-    QRectF documentRect() const;
+    AnimeCore::RectF documentRect() const;
     // The document area the view is allowed to travel over: the page UNIONED
     // with whatever is drawn on this frame, plus a margin. The pan clamp and
     // the scroll bars both take their range from this one definition - they
     // used to derive it separately from the page alone, which pinned the view
     // inside the paper and made anything drawn past its edge unreachable, and
     // therefore uneditable, as soon as the canvas was zoomed in.
-    QRectF reachableRect() const;
-    void setCanvasSize(const QSize &size);
+    AnimeCore::RectF reachableRect() const;
+    void setCanvasSize(const AnimeCore::Size &size);
     // Call after copy-assigning model(): the page may have changed with it.
     void modelReplaced();
     // Outer wall for a bucket fill, in document space.
-    QRectF fillBoundsRect() const;
+    AnimeCore::RectF fillBoundsRect() const;
     // Timeline playback: every frame is rendered to pixels up front, then the
     // cached images are blitted per tick so playback never pays the vector
     // drawing cost. Vector rendering resumes when playback ends.
-    bool buildPlaybackCache(int frameCount, QString *error);
+    bool buildPlaybackCache(int frameCount, AnimeCore::String *error);
     void showPlaybackFrame(int index);
     void endPlayback();
     bool playbackActive() const;
@@ -185,8 +219,8 @@ public:
     // rather than artwork is Python's (setOnionExcludeProperties).
     void setOnionEnabled(bool enabled);
     bool onionEnabled() const;
-    void setOnionFrames(const QSet<int> &frames);
-    QSet<int> onionFrames() const;
+    void setOnionFrames(const AnimeCore::Set<int> &frames);
+    AnimeCore::Set<int> onionFrames() const;
     void setOnionGuideLines(bool include);
     bool onionGuideLines() const;
     // The other two ghost content classes, independent of the guide flag:
@@ -204,37 +238,37 @@ public:
     // properties, so C++ never learns the word "automapping".
     void setOnionAmLayers(bool include);
     bool onionAmLayers() const;
-    void setOnionExcludeProperties(const QStringList &properties);
-    QStringList onionExcludeProperties() const;
-    void setOnionLayerTag(const QString &tag);
-    QString onionLayerTag() const;
+    void setOnionExcludeProperties(const AnimeCore::StringList &properties);
+    AnimeCore::StringList onionExcludeProperties() const;
+    void setOnionLayerTag(const AnimeCore::String &tag);
+    AnimeCore::String onionLayerTag() const;
     // One frame rendered offscreen at thumbnail size: the page scaled to fit
-    // on white, the artwork on top, nothing else. Plain QPainter, so it needs
+    // on white, the artwork on top, nothing else. Plain Painter, so it needs
     // no GL context and works for a view that has never been shown.
-    QImage renderFrameThumbnail(int frameIndex, const QSize &size);
-    void setPenColor(const QColor &color);
-    void setDrawingColor(const QColor &color);
-    void setPenWidth(qreal width);
-    void setStrokeProperty(const QString &property);
-    void sendPythonExtraToolMessage(const QString &name, const QString &property);
-    void sendPythonToolOptionMessage(const QString &hook, const QString &name, const QString &type, const QVariant &value, int row, int startColumn, int endColumn);
-    void sendPythonPadMessage(const QString &pad, const QString &phase, double x, double y);
+    AnimeCore::Image renderFrameThumbnail(int frameIndex, const AnimeCore::Size &size);
+    void setPenColor(const AnimeCore::Color &color);
+    void setDrawingColor(const AnimeCore::Color &color);
+    void setPenWidth(double width);
+    void setStrokeProperty(const AnimeCore::String &property);
+    void sendPythonExtraToolMessage(const AnimeCore::String &name, const AnimeCore::String &property);
+    void sendPythonToolOptionMessage(const AnimeCore::String &hook, const AnimeCore::String &name, const AnimeCore::String &type, const AnimeCore::JsonVariant &value, int row, int startColumn, int endColumn);
+    void sendPythonPadMessage(const AnimeCore::String &pad, const AnimeCore::String &phase, double x, double y);
     // "visibility" hook event: Python decides what a layer-visibility toggle
     // means (and applies it through the bindings). Returns true when a hook
     // set message["handled"]; the caller then skips its own default action.
     bool sendPythonLayerVisibilityMessage(int layerIndex, bool visible);
     // Generic dispatch for script-defined view buttons ("viewbutton" event);
     // the button semantics live entirely in Python.
-    void sendPythonViewButtonMessage(const QString &name, bool on);
+    void sendPythonViewButtonMessage(const AnimeCore::String &name, bool on);
     // Generic dispatch for a script-defined menu-bar entry ("menu" event).
-    void sendPythonMenuMessage(const QString &menu, const QString &item, bool checked);
+    void sendPythonMenuMessage(const AnimeCore::String &menu, const AnimeCore::String &item, bool checked);
     // Generic dispatch for a script-defined layer-panel context menu entry.
-    void sendPythonLayerMenuMessage(const QString &action,
+    void sendPythonLayerMenuMessage(const AnimeCore::String &action,
                                     int groupId,
-                                    const QString &groupName,
+                                    const AnimeCore::String &groupName,
                                     int layerIndex,
-                                    const QString &layerName,
-                                    const QVector<int> &memberLayers);
+                                    const AnimeCore::String &layerName,
+                                    const AnimeCore::Vector<int> &memberLayers);
     void setTool(Tool tool);
     Tool tool() const;
     void setFillScope(FillScope scope);
@@ -244,12 +278,12 @@ public:
     void setSmoothValue(int value);
     void setStrokeFitSettings(const AnimeStrokeFitSettings &settings);
     AnimeStrokeFitSettings strokeFitSettings() const;
-    void setAxisSnapThreshold(qreal threshold);
-    qreal axisSnapThreshold() const;
+    void setAxisSnapThreshold(double threshold);
+    double axisSnapThreshold() const;
     SceneHistory &history();
     const SceneHistory &history() const;
-    void commitHistory(const QString &label);
-    void resetHistory(const QString &label);
+    void commitHistory(const AnimeCore::String &label);
+    void resetHistory(const AnimeCore::String &label);
     void dropRedoTail();
     bool undoHistory();
     bool redoHistory();
@@ -259,11 +293,11 @@ public:
     int layerCount() const;
     int frameCount() const;
     int assetCount() const;
-    QString layerName(int layerIndex) const;
-    QString frameName(int frameIndex) const;
-    QString assetName(int assetIndex) const;
-    int importRasterLayer(const QImage &image, const QString &layerName);
-    int importVectorLineLayer(const QVector<ImportedVectorFrame> &frames, const QString &layerName);
+    AnimeCore::String layerName(int layerIndex) const;
+    AnimeCore::String frameName(int frameIndex) const;
+    AnimeCore::String assetName(int assetIndex) const;
+    int importRasterLayer(const AnimeCore::Image &image, const AnimeCore::String &layerName);
+    int importVectorLineLayer(const AnimeCore::Vector<ImportedVectorFrame> &frames, const AnimeCore::String &layerName);
     int addLayer();
     bool deleteLayer(int layerIndex);
     // Deletes a layer group and everything inside it, as one history entry.
@@ -279,38 +313,38 @@ public:
     int duplicateFrame(int row);
     bool deleteFrame(int frameIndex);
     bool moveFrame(int fromIndex, int toIndex);
-    int addAsset(AnimeColumnType type = AnimeColumnType::Vector, const QString &name = QString());
+    int addAsset(AnimeColumnType type = AnimeColumnType::Vector, const AnimeCore::String &name = AnimeCore::String());
     void setCurrentAsset(int assetIndex);
     bool assignAssetToLayer(int layerIndex, int assetIndex);
     int addLayerForAsset(int assetIndex);
     AnimeSceneModel &model();
     const AnimeSceneModel &model() const;
 
-signals:
-    void layerListChanged(int selectedLayer);
-    void assetListChanged(int selectedAsset);
-    void pythonDebugMessage(const QString &message);
-    void focusGained();
-    void historyChanged();
-    void historyCommitted();
-    void viewTransformChanged();
+    AnimeCore::Signal<int> layerListChanged;
+    AnimeCore::Signal<int> assetListChanged;
+    AnimeCore::Signal<AnimeCore::String> pythonDebugMessage;
+    AnimeCore::Signal<> focusGained;
+    AnimeCore::Signal<> historyChanged;
+    AnimeCore::Signal<> historyCommitted;
+    AnimeCore::Signal<> viewTransformChanged;
     // The subset of viewTransformChanged the USER caused: wheel zoom,
     // middle-button pan, a scroll bar dragged. A shell that re-frames the view
     // by itself needs to know when to stop doing that, and it cannot tell from
     // viewTransformChanged - its own fit emits that one too.
-    void userTransformed();
-    void playbackInterrupted();
+    AnimeCore::Signal<> userTransformed;
+    AnimeCore::Signal<> playbackInterrupted;
 
 protected:
     void paintGL() override;
-    void mousePressEvent(QMouseEvent *event) override;
-    void mouseMoveEvent(QMouseEvent *event) override;
-    void mouseReleaseEvent(QMouseEvent *event) override;
-    void wheelEvent(QWheelEvent *event) override;
-    void resizeEvent(QResizeEvent *event) override;
-    void focusInEvent(QFocusEvent *event) override;
+    void mousePressEvent(AnimeCore::MouseEvent *event) override;
+    void mouseMoveEvent(AnimeCore::MouseEvent *event) override;
+    void mouseReleaseEvent(AnimeCore::MouseEvent *event) override;
+    void wheelEvent(AnimeCore::WheelEvent *event) override;
+    void resizeEvent(AnimeCore::ResizeEvent *event) override;
+    void focusInEvent(AnimeCore::FocusEvent *event) override;
+    void focusOutEvent(AnimeCore::FocusEvent *event) override;
     // The brush ring belongs to the cursor, so it has to leave with it.
-    void leaveEvent(QEvent *event) override;
+    void leaveEvent(AnimeCore::Event *event) override;
     // Rebuilds the pointer for the current tool: the pen wears a ring the
     // size of the mark it makes, drawn INTO the cursor rather than onto the
     // canvas so it cannot lag the pointer, and with no arrow beside it.
@@ -324,12 +358,12 @@ public:
 
 private:
     struct OverlayHandle {
-        QString id;
-        QColor badgeColor;
-        QRectF rect;
+        AnimeCore::String id;
+        AnimeCore::Color badgeColor;
+        AnimeCore::RectF rect;
         // Union of every part drawn under this id, and whether the badge
         // follows it (closed items) or an end point (open ones).
-        QRectF extent;
+        AnimeCore::RectF extent;
         bool anchorIsExtent = false;
         bool accept = false;
     };
@@ -354,20 +388,20 @@ private:
         bool strokes = true;
         bool fills = true;
         bool raster = true;
-        const QStringList *guideProperties = nullptr;
+        const AnimeCore::StringList *guideProperties = nullptr;
         bool guideStrokes = true;
-        const QString *excludeLayerTag = nullptr;
+        const AnimeCore::String *excludeLayerTag = nullptr;
     };
 
-    void paintSceneContent(QPainter &painter, int frameIndex, bool includeCurrentStroke,
+    void paintSceneContent(AnimeCore::Painter &painter, int frameIndex, bool includeCurrentStroke,
                            const SceneContentFilter *filter = nullptr);
     // Re-render the playback cache for the current view, once the gesture that
     // changed it has settled.
     void schedulePlaybackCacheRefresh();
     // The ghost frames, under the current frame and above the page.
-    void paintOnionGhosts(QPainter &painter);
+    void paintOnionGhosts(AnimeCore::Painter &painter);
     // The tinted ghost for one frame, rendered on demand and cached.
-    QImage onionGhost(int frameIndex, bool past);
+    AnimeCore::Image onionGhost(int frameIndex, bool past);
     // How many ghosts this viewport can afford. kMaxOnionGhosts is a count,
     // not a size, so the answer is a byte budget divided by one full-viewport
     // image - the same reasoning buildPlaybackCache applies to its frames.
@@ -376,24 +410,28 @@ private:
     // Same shape as the playback cache: a ghost bakes the transform in, so a
     // pan or zoom re-renders it once the gesture settles rather than per tick.
     void scheduleOnionCacheRefresh();
-    void paintOverlayItems(QPainter &painter);
+    void paintOverlayItems(AnimeCore::Painter &painter);
+    void paintOverlayLabels(AnimeCore::Painter &painter) const;
+    void paintFieldScope(AnimeCore::Painter &painter);
     // Badge just above-right of `anchor`, clamped into view. `slot` counts
     // leftwards from the x badge (1 = the check badge); `slotCount` is how
     // many badges the id carries, so an edge clamp keeps the pair side by
     // side instead of stacking or pushing one off-screen.
-    QRectF overlayHandleRect(const QPointF &anchor, int slot = 0, int slotCount = 1) const;
-    bool overlayActionItemAt(const QPointF &pos);
+    AnimeCore::RectF overlayHandleRect(const AnimeCore::PointF &anchor, int slot = 0, int slotCount = 1) const;
+    bool overlayActionItemAt(const AnimeCore::PointF &pos);
     // Topmost action badge containing the document position, or -1.
-    int overlayActionHandleAt(const QPointF &pos) const;
+    int overlayActionHandleAt(const AnimeCore::PointF &pos) const;
     // Fires the action badge or starts the overlay drag under the press,
     // arbitrating an overlapping badge/grab in screen space; returns whether
     // the press was consumed.
-    bool pressOverlayOrBadge(const QPointF &screenPos,
-                             const QPointF &docPos,
-                             Qt::KeyboardModifiers modifiers);
+    bool pressOverlayOrBadge(const AnimeCore::PointF &screenPos,
+                             const AnimeCore::PointF &docPos,
+                             AnimeCore::KeyboardModifiers modifiers);
     // Clears m_activeOverlayDrag and sends the owning tool a "cancel" so it
     // restores its persisted baseline. Safe to call with no drag in flight.
     void cancelActiveOverlayDrag();
+    void stopOverlayDragMoveTimer();
+    void flushPendingOverlayDragMove();
     // Emits "framechange" when the model's frame moved past the last frame
     // Python was told about - regardless of who moved it.
     void notifyFrameChangedIfNeeded();
@@ -413,12 +451,12 @@ private:
     // Topmost draggable overlay item within grab range of the screen position.
     // When it returns an id and screenDistance is given, screenDistance is
     // the pointer's screen-space distance to that item's nearest segment.
-    QString draggableOverlayItemAt(const QPointF &screenPos,
-                                   qreal *screenDistance = nullptr) const;
-    void sendOverlayActionMessage(const QString &overlayId, const QString &action);
-    void paintEditHandles(QPainter &painter);
+    AnimeCore::String draggableOverlayItemAt(const AnimeCore::PointF &screenPos,
+                                             double *screenDistance = nullptr) const;
+    void sendOverlayActionMessage(const AnimeCore::String &overlayId, const AnimeCore::String &action);
+    void paintEditHandles(AnimeCore::Painter &painter);
     // Topmost handle whose SCREEN-space box contains the screen position.
-    QString editHandleAt(const QPointF &screenPos) const;
+    AnimeCore::String editHandleAt(const AnimeCore::PointF &screenPos) const;
     // "handle" hook event. Phases: "pick" (arrow click on no handle),
     // "press"/"move"/"release" (a handle drag), "view" (zoom changed while
     // handles are shown). Carries the document position and the current zoom.
@@ -427,56 +465,57 @@ private:
     // id, and the gesture then runs as a drag under that id - the generic
     // half of "drag the thing you just clicked" (Transfer's box body,
     // Arrow's default-mode outline). Empty means the press was not claimed.
-    QString sendPythonHandleMessage(const QString &phase,
-                                    const QString &handleId,
-                                    const QPointF &pos,
-                                    Qt::KeyboardModifiers modifiers = Qt::NoModifier);
-    void resetAxisSnap(Qt::KeyboardModifiers modifiers, const QPointF &anchor);
-    QPointF applyAxisSnap(Qt::KeyboardModifiers modifiers, const QPointF &point, bool *retroChanged);
+    AnimeCore::String sendPythonHandleMessage(const AnimeCore::String &phase,
+                                              const AnimeCore::String &handleId,
+                                              const AnimeCore::PointF &pos,
+                                              AnimeCore::KeyboardModifiers modifiers = AnimeCore::NoModifier);
+    void resetAxisSnap(AnimeCore::KeyboardModifiers modifiers, const AnimeCore::PointF &anchor);
+    AnimeCore::PointF applyAxisSnap(AnimeCore::KeyboardModifiers modifiers, const AnimeCore::PointF &point, bool *retroChanged);
     // "Hold still to draw straight": the still window is (re)armed at a
     // document anchor, fires once, and collapses the stroke to a segment.
-    void armHoldStill(const QPointF &anchor);
+    void armHoldStill(const AnimeCore::PointF &anchor);
     void engageStraightLine();
     // Straight mode owns the geometry outright - taken BY VALUE because it
     // rewrites the point buffer the caller may have pointed into.
-    void updateStraightLine(QPointF tip);
+    void updateStraightLine(AnimeCore::PointF tip);
     // Latches the axis like applyAxisSnap does, so it mutates the snap state.
-    QPointF straightLineTip(Qt::KeyboardModifiers modifiers, const QPointF &cursor);
-    void paintBackground(QPainter &painter, const QRectF &target) const;
-    QPointF mapToDocument(const QPointF &screenPos) const;
+    AnimeCore::PointF straightLineTip(AnimeCore::KeyboardModifiers modifiers, const AnimeCore::PointF &cursor);
+    void paintBackground(AnimeCore::Painter &painter, const AnimeCore::RectF &target) const;
+    void paintActiveIndicator(AnimeCore::Painter &painter) const;
+    AnimeCore::PointF mapToDocument(const AnimeCore::PointF &screenPos) const;
     void clampPan();
     void notifyViewTransformChanged();
     void updateCurrentStroke();
     void finishCurrentStroke();
     // Dispatches the hook event; returns true when a hook set
     // "cancel_history" in the message, vetoing the follow-up history commit.
-    bool pythonHookSendMessage(const QString &event, const QPointF &pos = QPointF(), const QPointF &delta = QPointF(), bool changed = true, int strokeIndex = -1);
+    bool pythonHookSendMessage(const AnimeCore::String &event, const AnimeCore::PointF &pos = AnimeCore::PointF(), const AnimeCore::PointF &delta = AnimeCore::PointF(), bool changed = true, int strokeIndex = -1);
     // "fillrequest" hook event: offers the click to Python BEFORE the built-in
     // fill runs. Returns true when a hook set message["handled"], i.e. the
     // fill policy ran in Python and the default C++ behavior must not.
-    bool sendPythonFillRequestMessage(const QPointF &pos);
-    bool eraseAt(const QPointF &pos);
-    bool eraseBetween(const QPointF &from, const QPointF &to);
-    bool deleteLineAt(const QPointF &pos);
-    bool deleteLineBetween(const QPointF &from, const QPointF &to);
+    bool sendPythonFillRequestMessage(const AnimeCore::PointF &pos);
+    bool eraseAt(const AnimeCore::PointF &pos);
+    bool eraseBetween(const AnimeCore::PointF &from, const AnimeCore::PointF &to);
+    bool deleteLineAt(const AnimeCore::PointF &pos);
+    bool deleteLineBetween(const AnimeCore::PointF &from, const AnimeCore::PointF &to);
     // CutMode: trims the stroke under `pos` back to its crossings with the
     // OTHER strokes of the same layer.
-    bool cutLineAt(const QPointF &pos);
+    bool cutLineAt(const AnimeCore::PointF &pos);
     // The single stroke a brush stroke from `from` to `to` is aimed at:
     // within reach of the radius, and nearest the brush's own centre line.
     // `from == to` for a click. -1 when nothing is in reach.
     int nearestStrokeToBrush(const VectorImageModel *image,
-                             const QPointF &from,
-                             const QPointF &to) const;
-    bool fillAt(const QPointF &pos);
+                             const AnimeCore::PointF &from,
+                             const AnimeCore::PointF &to) const;
+    bool fillAt(const AnimeCore::PointF &pos);
     bool currentLayerAcceptsFill() const;
-    QVector<QLineF> fillGraphSegments(FillScope scope, int layerIndex) const;
-    QPainterPath vectorRegionPathAt(const QPointF &seed, FillScope scope, int layerIndex) const;
+    AnimeCore::Vector<AnimeCore::LineF> fillGraphSegments(FillScope scope, int layerIndex) const;
+    AnimeCore::Path vectorRegionPathAt(const AnimeCore::PointF &seed, FillScope scope, int layerIndex) const;
     void removeInvalidFillRegions();
-    bool eraseStrokeAt(int strokeIndex, const QPointF &pos);
-    bool eraseStrokeBetween(int strokeIndex, const QPointF &from, const QPointF &to);
-    VectorStroke makeStroke(const QVector<QPointF> &points, const QColor &color, qreal width, int id = 0, bool filterInput = true, bool smoothPath = true) const;
-    bool appendPoint(const QPointF &point);
+    bool eraseStrokeAt(int strokeIndex, const AnimeCore::PointF &pos);
+    bool eraseStrokeBetween(int strokeIndex, const AnimeCore::PointF &from, const AnimeCore::PointF &to);
+    VectorStroke makeStroke(const AnimeCore::Vector<AnimeCore::PointF> &points, const AnimeCore::Color &color, double width, int id = 0, bool filterInput = true, bool smoothPath = true) const;
+    bool appendPoint(const AnimeCore::PointF &point);
     VectorImageModel *currentImage(bool create, AnimeColumnType assetType = AnimeColumnType::Vector);
     AnimeColumn *currentColumn();
     const AnimeColumn *currentColumn() const;
@@ -489,75 +528,77 @@ private:
     // Fill regions of the current Fill column swept by the eraser brush,
     // removed. Refuses outside fill-paint mode, so an ordinary erase can never
     // reach a fill layer's artwork.
-    bool eraseFillRegionsBetween(const QPointF &from, const QPointF &to);
+    bool eraseFillRegionsBetween(const AnimeCore::PointF &from, const AnimeCore::PointF &to);
 
     Tool m_tool = Tool::Pen;
     FillScope m_fillScope = FillScope::CurrentLayer;
-    QString m_viewName = QStringLiteral("main");
+    AnimeCore::String m_viewName = AnimeCore::String("main");
     bool m_activeIndicator = false;
-    QColor m_penColor = Qt::black;
+    bool m_hasInputFocus = false;
+    AnimeCore::Color m_penColor = AnimeCore::Color(0, 0, 0);
     AnimeCore::Vector<AnimeCore::PointF> m_points;
     // Realtime input conditioning: 1 Euro filter with lag compensation over
     // the raw samples of the CURRENT stroke, plus the raw pen tip so paintGL
     // can draw the unfiltered predictive preview at the very front.
     AnimeOneEuroFilter m_inputFilter;
-    QPointF m_rawPenPos;
+    AnimeCore::PointF m_rawPenPos;
     bool m_hasRawPenPos = false;
     AnimeSceneModel m_model;
     VectorStroke m_currentStroke;
     bool m_hasCurrentStroke = false;
-    QPointF m_hoverPos;
+    AnimeCore::PointF m_hoverPos;
     bool m_hasHoverPos = false;
-    QPointF m_lastEraserPos;
+    AnimeCore::PointF m_lastEraserPos;
     bool m_hasLastEraserPos = false;
-    qreal m_penWidth = 5.0;
-    QString m_strokeProperty;
-    QString m_activePythonTool;
+    double m_penWidth = 5.0;
+    AnimeCore::String m_strokeProperty;
+    AnimeCore::String m_activePythonTool;
     bool m_eraseGestureChanged = false;
-    qreal m_eraserRadius = 12.0;
+    double m_eraserRadius = 12.0;
     // The pointer a Python tool asked for (ui.set_cursor). Names only - C++
     // owns what each name looks like, the tool owns when it applies. Empty =
     // no request; the pen's ring always wins over it.
-    QString m_scriptCursor;
-    qreal m_minPointDistance = 2.0;
+    AnimeCore::String m_scriptCursor;
+    double m_minPointDistance = 2.0;
     int m_smoothValue = 50;              // stabilizer strength
     AnimeStrokeFitSettings m_fitSettings; // how a committed stroke is fitted
     // "update" fires on every accepted point while drawing; hooks get at most
     // one dispatch per this interval so subscribers never run at tablet rate.
-    QElapsedTimer m_updateHookThrottle;
-    static constexpr qint64 kUpdateHookIntervalMs = 33;
+    AnimeCore::ElapsedTimer m_updateHookThrottle;
+    static constexpr std::int64_t kUpdateHookIntervalMs = 33;
     // Connect-tool hover forwarding shares the same cadence: Python resolves
     // the snap hint per event, so the interpreter must not run at mouse rate.
-    QElapsedTimer m_hoverHookThrottle;
+    AnimeCore::ElapsedTimer m_hoverHookThrottle;
     // The live-preview hybrid fit runs at display cadence, not event cadence
     // (a per-event whole-stroke refit is quadratic in stroke length).
-    QElapsedTimer m_liveFitThrottle;
-    static constexpr qint64 kLiveFitIntervalMs = 16;
+    AnimeCore::ElapsedTimer m_liveFitThrottle;
+    static constexpr std::int64_t kLiveFitIntervalMs = 16;
     // Incremental-fit state of the active stroke: the frozen prefix that is
     // never recomputed, so the already-drawn path cannot tremble.
     AnimeLiveFitState m_liveFit;
     // Document px per screen px, captured at pen-down: the fit's budgets are
     // screen-sized (tremor, report rate, the eye), converted once per stroke.
-    qreal m_liveFitPixelScale = 1.0;
+    double m_liveFitPixelScale = 1.0;
     AxisSnapState m_axisSnapState = AxisSnapState::Inactive;
-    QPointF m_axisSnapAnchor;
+    AnimeCore::PointF m_axisSnapAnchor;
     int m_axisSnapAnchorIndex = 0;
-    qreal m_axisSnapThreshold = 5.0;
+    double m_axisSnapThreshold = 5.0;
     // "Hold still to draw straight": while the pen is down, staying inside a
     // small circle for kHoldStillMs reads as "I want a straight line, not this
     // wobble" - the stroke collapses to one segment from its start to the
     // cursor and tracks the cursor, unfitted, until release. A still pen sends
     // no move events, so the wait needs a timer, not a poll.
-    QTimer *m_holdStillTimer = nullptr;
+    std::unique_ptr<AnimeCore::Timer> m_holdStillTimer;
     // Kept in DOCUMENT space: zooming mid-stroke would drift a screen anchor.
-    QPointF m_holdStillAnchor;
+    AnimeCore::PointF m_holdStillAnchor;
     bool m_straightLineMode = false;
-    QPointF m_straightLineStart;
+    AnimeCore::PointF m_straightLineStart;
+    AnimeCore::KeyboardModifiers m_lastMouseModifiers = AnimeCore::NoModifier;
     static constexpr int kHoldStillMs = 1500;
     // SCREEN px: the hand holds still to within a few pixels of the display,
     // whatever the canvas is magnified to. Converted per test through
     // algorithm/viewscale.h, the shared home of screen<->canvas conversion.
-    static constexpr qreal kHoldStillRadiusScreenPx = 10.0;
+    static constexpr double kHoldStillRadiusScreenPx = 10.0;
     // Past this the ring stops being a cursor and goes back on the canvas:
     // window systems cap cursor bitmaps, and a clipped ring would lie about
     // the width. Screen px, and the diameter, not the radius.
@@ -565,18 +606,23 @@ private:
     // True while the ring is too big to be a cursor: the pointer is blank
     // and paintGL draws the ring instead.
     bool m_penRingOnCanvas = false;
-    qreal m_zoom = 1.0;
-    QPointF m_panOffset;
+    double m_zoom = 1.0;
+    AnimeCore::PointF m_panOffset;
     bool m_panning = false;
-    QVector<EditHandle> m_editHandles;
+    AnimeCore::Vector<EditHandle> m_editHandles;
     // Id of the handle being dragged; empty when no drag is in flight.
-    QString m_activeHandleDrag;
+    AnimeCore::String m_activeHandleDrag;
     // Id of the draggable OVERLAY item being dragged (any tool), empty when
     // none. Routed through the same "handle" hook events as edit handles.
-    QString m_activeOverlayDrag;
+    AnimeCore::String m_activeOverlayDrag;
     // Overlay-drag "move" messages share the pointer-rate throttle cadence:
-    // the owning tool re-renders overlays per message.
-    QElapsedTimer m_overlayDragHookThrottle;
+    // the owning tool re-renders overlays per message. When a move is skipped
+    // inside the throttle window, a single-shot timer flushes the latest
+    // position and modifiers at the end of the window.
+    AnimeCore::ElapsedTimer m_overlayDragHookThrottle;
+    std::unique_ptr<AnimeCore::Timer> m_overlayDragMoveTimer;
+    AnimeCore::PointF m_pendingOverlayDragPos;
+    AnimeCore::KeyboardModifiers m_pendingOverlayDragModifiers = AnimeCore::NoModifier;
     // The frame Python was last told about via "framechange". The frame lives
     // on the model and can be mutated behind the widget's back (ui.set_current,
     // addFrame, project load), so the notification baseline must be the
@@ -602,54 +648,57 @@ private:
     bool m_pythonNotifiedOnionFills = false;
     bool m_pythonNotifiedOnionAmLayers = false;
     int m_pythonNotifiedOnionCurrent = -1;
-    QList<int> m_pythonNotifiedOnionFrames;
+    AnimeCore::Vector<int> m_pythonNotifiedOnionFrames;
     bool m_unboundedCanvas = false;
     BackgroundMode m_backgroundMode = BackgroundMode::White;
     bool m_contentEditable = true;
     bool m_fillPaintMode = false;
-    QStringList m_editableProperties;
-    QPointF m_lastPanPos;
+    AnimeCore::StringList m_editableProperties;
+    AnimeCore::PointF m_lastPanPos;
     SceneHistory m_history;
-    QVector<QImage> m_playbackFrames;
+    AnimeCore::Vector<AnimeCore::Image> m_playbackFrames;
     int m_playbackIndex = -1;
     bool m_playbackActive = false;
     // The view the cached frames were rendered for. paintGL maps them from
     // this onto the current view, so zoom/scroll/resize during playback are
     // re-mapped rather than fatal; the timer re-renders once the gesture ends.
-    QPointF m_playbackCachePan;
-    qreal m_playbackCacheZoom = 1.0;
+    AnimeCore::PointF m_playbackCachePan;
+    double m_playbackCacheZoom = 1.0;
     int m_playbackCacheFrameCount = 0;
-    QTimer *m_playbackCacheTimer = nullptr;
+    std::unique_ptr<AnimeCore::Timer> m_playbackCacheTimer;
     bool m_onionEnabled = false;
-    QSet<int> m_onionFrames;
+    AnimeCore::Set<int> m_onionFrames;
     bool m_onionGuideLines = false;
     bool m_onionLines = true;
     bool m_onionFills = true;
     bool m_onionAmLayers = true;
-    QStringList m_onionExcludeProperties;
+    AnimeCore::StringList m_onionExcludeProperties;
     // Empty until Python registers one, and an empty tag gates nothing: a
     // session with no auto-mapping module loaded ghosts exactly as before.
-    QString m_onionLayerTag;
+    AnimeCore::String m_onionLayerTag;
     struct OnionGhostImage {
-        QImage image;
+        AnimeCore::Image image;
         // Which tint it carries. The playhead moving past a frame flips it,
         // and only the frames that crossed have to be redrawn.
         bool past = true;
     };
-    QHash<int, OnionGhostImage> m_onionCache;
+    AnimeCore::Hash<int, OnionGhostImage> m_onionCache;
     // The view every cached ghost was rendered for; captured when the cache
     // refills, so a half-stale set can never mix two transforms.
-    QPointF m_onionCachePan;
-    qreal m_onionCacheZoom = 1.0;
-    QSize m_onionCacheSize;
-    QTimer *m_onionCacheTimer = nullptr;
+    AnimeCore::PointF m_onionCachePan;
+    double m_onionCacheZoom = 1.0;
+    AnimeCore::Size m_onionCacheSize;
+    std::unique_ptr<AnimeCore::Timer> m_onionCacheTimer;
     // Ghosts are full-viewport images; past this many the memory is worse
     // than the redraw, so the cache is dropped rather than grown.
     static constexpr int kMaxOnionGhosts = 16;
     bool m_swallowNextPress = false;
-    QHash<qint64, QImage> m_rasterCache;
-    QVector<OverlayItem> m_overlayItems;
-    QVector<OverlayHandle> m_overlayHandles;
+    AnimeCore::Hash<std::int64_t, AnimeCore::Image> m_rasterCache;
+    AnimeCore::Vector<OverlayItem> m_overlayItems;
+    AnimeCore::Vector<OverlayHandle> m_overlayHandles;
+    FieldViewSpec m_fieldViewSpec;
+    std::function<std::uint64_t(const AnimeCore::String &key)> m_fieldVersionLookup;
+    std::function<const AnimeSceneModel *(const AnimeCore::String &viewName)> m_fieldSceneLookup;
 };
 
 #endif // OPENGLWIDGET_H

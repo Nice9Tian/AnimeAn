@@ -1,6 +1,6 @@
 # 填充与图层策略（fill_layers）
 
-三级机制。从属于 `../architecture.md`，与它冲突时以它为准；用户看到什么在 `../tools_user_workflow/fill.md` 和 `../user-workflow.md` 第 4 步。代码：`pyfile/fill_tool.py`（填充策略）、`pyfile/layer_tool_policy.py`（图层决定工具）、`pyfile/visibility_tool.py`（可见性）、`algorithm/animemodel.*`（`fillBoundarySegments`、`AnimeColumn::parentLayerId`、`layerLocked`、图层组与 tag）、`openglwidget.cpp`（`fillrequest` 前置事件、内建兜底填充、`ui.set_fill_paint_mode` 的交互事件放行）、`mainwindow.cpp`（图层面板的嵌套显示、`ui.set_locked_tools` 的应用、右键菜单）。
+三级机制。从属于 `../architecture.md`，与它冲突时以它为准；用户看到什么在 `../tools_user_workflow/fill.md` 和 `../user-workflow.md` 第 4 步。代码：`pyfile/fill_tool.py`（填充策略）、`pyfile/layer_tool_policy.py`（图层决定工具）、`pyfile/visibility_tool.py`（可见性）、`algorithm/animemodel.*`（`fillBoundarySegments`、`AnimeColumn::parentLayerId`、`layerLocked`、图层组与 tag）、`openglwidget.cpp`（`fillrequest` 前置事件、内建兜底填充、`ui.set_fill_paint_mode` 的交互事件放行）、`backend/business/animeanbusiness.cpp` 与 `backend/session/backendsession.cpp`（图层树的嵌套数据、`ui.set_locked_tools` 的应用、右键菜单）、`webui/src/ui/panels.js`（图层面板渲染）。
 
 ## 一次填充
 
@@ -38,7 +38,7 @@
 
 ## 可见性与锁定
 
-- 图层面板勾选 → 前置事件 `visibility` → `visibility_tool` 经 `scene.set_layer_visible` 施加并置 `handled`；面板重建走队列，不在自己的信号栈里重建。"独奏""不许藏最后一层"这类规则将来也在这里。
+- 图层面板勾选 → 前置事件 `visibility` → `visibility_tool` 经 `scene.set_layer_visible` 施加并置 `handled`，再调 `ui.layer.refresh()`，后端按脏键合并推送 `layers/*` 状态，网页重建列表。"独奏""不许藏最后一层"这类规则将来也在这里。
 - 图层锁定：模型 `layerLocked` / `setLayerLocked` 与绑定 `layer_locked` / `set_layer_locked` 已有，只有 Transfer 读它；面板开关是规划（`../product_features.md`）。
 
 ## 图层的新建与单元

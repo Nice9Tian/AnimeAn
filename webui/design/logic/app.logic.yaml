@@ -4,6 +4,8 @@ state:
     paintingOpen: { type: boolean, initial: true, owner: business }
     mappingOpen: { type: boolean, initial: true, owner: business }
     armed: { type: string, initial: pen, owner: business }
+    canScrollUp: { type: boolean, initial: false, owner: business }
+    canScrollDown: { type: boolean, initial: false, owner: business }
     locked:
       arrow: { type: boolean, initial: false, owner: business }
       pen: { type: boolean, initial: false, owner: business }
@@ -15,6 +17,9 @@ state:
       v_center_line: { type: boolean, initial: false, owner: business }
       mapping_area: { type: boolean, initial: false, owner: business }
       additional_line: { type: boolean, initial: false, owner: business }
+      free_out_line: { type: boolean, initial: false, owner: business }
+      choice_line: { type: boolean, initial: false, owner: business }
+      deform_line: { type: boolean, initial: false, owner: business }
       auto_mapping_2: { type: boolean, initial: false, owner: business }
 conditions:
   paintingArmed:
@@ -24,7 +29,7 @@ conditions:
   mappingArmed:
     type: symbol
     text: 选中的工具在 Mapping 组
-    expr: tools.armed == 'h_center_line' or tools.armed == 'v_center_line' or tools.armed == 'mapping_area' or tools.armed == 'additional_line' or tools.armed == 'auto_mapping_2'
+    expr: tools.armed == 'h_center_line' or tools.armed == 'v_center_line' or tools.armed == 'mapping_area' or tools.armed == 'additional_line' or tools.armed == 'free_out_line' or tools.armed == 'choice_line' or tools.armed == 'deform_line' or tools.armed == 'auto_mapping_2'
 events:
   toolSelect:
     owner: business
@@ -45,7 +50,29 @@ events:
           - set: tools.paintingOpen = not tools.paintingOpen
         else:
           - set: tools.mappingOpen = not tools.mappingOpen
+  toolsScrollBy:
+    owner: business
+    text: 用户点了 Tools 面板的滚动箭头
+    simulate: []
 objects:
+  toolsScrollUp:
+    props:
+      visible: tools.canScrollUp
+    events:
+      click:
+        - emit:
+            name: toolsScrollBy
+            args:
+              step: -1
+  toolsScrollDown:
+    props:
+      visible: tools.canScrollDown
+    events:
+      click:
+        - emit:
+            name: toolsScrollBy
+            args:
+              step: 1
   paintingHeader:
     props:
       open: tools.paintingOpen
@@ -172,6 +199,36 @@ objects:
             name: toolSelectExtra
             args:
               name: "'additional_line'"
+  toolFreeOutLine:
+    props:
+      armed: tools.armed == 'free_out_line' and not tools.locked.free_out_line
+      enabled: not tools.locked.free_out_line
+    events:
+      click:
+        - emit:
+            name: toolSelectExtra
+            args:
+              name: "'free_out_line'"
+  toolChoiceLine:
+    props:
+      armed: tools.armed == 'choice_line' and not tools.locked.choice_line
+      enabled: not tools.locked.choice_line
+    events:
+      click:
+        - emit:
+            name: toolSelectExtra
+            args:
+              name: "'choice_line'"
+  toolDeformLine:
+    props:
+      armed: tools.armed == 'deform_line' and not tools.locked.deform_line
+      enabled: not tools.locked.deform_line
+    events:
+      click:
+        - emit:
+            name: toolSelectExtra
+            args:
+              name: "'deform_line'"
   toolAutoMapping:
     props:
       armed: tools.armed == 'auto_mapping_2' and not tools.locked.auto_mapping_2

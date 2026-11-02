@@ -1,6 +1,6 @@
 # 编辑类工具：Arrow、Transfer、Connect、Repulsion Pad 与颜色（painting_tools）
 
-三级机制。从属于 `../architecture.md`，与它冲突时以它为准；用户看到什么在 `../tools_user_workflow/` 的同名页。代码：`pyfile/edit_tool.py`、`pyfile/transfer_tool.py`、`pyfile/connect_tool.py`、`pyfile/repulsion_tool.py`、`pyfile/tool_colors.py`、`pyfile/palette_box.py`、`pyfile/overlay_stack.py`、`pyfile/viewscale.py`、`pyfile/bezier.py`；C++ 侧 `openglwidget.cpp`（控制手柄渲染与命中、handle 事件、拖拽认领）、`childrenpanel/forcepad.*`、`childrenpanel/palettecontrol.*`、`algorithm/animemodel.cpp`（`AnimeVectorImageModel::transform`、`replace_stroke_with_pieces`）。这些工具全是 Python：C++ 只画控制手柄、报交互事件、施加变换。
+三级机制。从属于 `../architecture.md`，与它冲突时以它为准；用户看到什么在 `../tools_user_workflow/` 的同名页。代码：`pyfile/edit_tool.py`、`pyfile/transfer_tool.py`、`pyfile/connect_tool.py`、`pyfile/repulsion_tool.py`、`pyfile/tool_colors.py`、`pyfile/palette_box.py`、`pyfile/overlay_stack.py`、`pyfile/viewscale.py`、`pyfile/bezier.py`；C++ 侧 `openglwidget.cpp`（控制手柄渲染与命中、handle 事件、拖拽认领）、`algorithm/animemodel.cpp`（`AnimeVectorImageModel::transform`、`replace_stroke_with_pieces`）；网页侧 `webui/src/ui/panels2.js`（`createForcePad`）、`webui/src/ui/palette.js`（`createPalette`）。这些工具全是 Python：C++ 只画控制手柄、报交互事件、施加变换。
 
 ## 共用的机制
 
@@ -32,7 +32,7 @@
 
 ## Repulsion Pad（`repulsion_tool.py`）
 
-- 机制：`ForcePadPanel`（十字坐标加单位圆手柄，松手锁住不回弹，`pad` 事件带 press / move / release，移动发射节流）；预览走临时**内部层**（`AnimeColumn.internal`，不进面板、不进存档、渲染在最上层）：按下把可编辑笔画复制过去、隐藏源层、`ui.displace_begin` 一次上传基线点与每顶点位移，之后每次移动只发 `ui.displace_scale(x, y)` 一个数值调用。
+- 机制：网页斥力板控件 `createForcePad`（`webui/src/ui/panels2.js`，十字坐标加单位圆手柄，松手锁住不回弹，经 `pad.event` 发 press / move / release，移动发射节流）；预览走临时**内部层**（`AnimeColumn.internal`，不进面板、不进存档、渲染在最上层）：按下把可编辑笔画复制过去、隐藏源层、`ui.displace_begin` 一次上传基线点与每顶点位移，之后每次移动只发 `ui.displace_scale(x, y)` 一个数值调用。
 - 策略：基线在首次需要时按活动板当前帧缓存——每条可见笔画的原始几何（真实路径命令加原始点）加一份展平，每个顶点的斥力向量由所有空间上相近的顶点求和（其他笔画和自身折返都算，只排除同一折线上弧距小于 `ARC_EXCLUDE` = 1.5 × `RADIUS` 的邻点），`RADIUS` = 30 画布像素、(1 − d/R)² 衰减、沿笔画平滑、全局归一到最大为 1。精确重合的顶点用与画线方向无关的规范法线加半平面连续的符号，让两侧反向。
 - 施加：位移 = 手柄 × `MAX_PUSH`（60 画布像素）× 力，永远相对基线；拓扑保持——命令点与原始点 1:1 位移，不重采样不拆分，`replace_stroke_with_pieces` 就地换入（保留 z、id、属性、颜色、线宽），每次松手一条 "Repulsion" 记录；只在真的插入了才提交。
 - 安全：缓存按图像身份（资产、帧号）而非图层键；施加时按资产图像寻址并核对按下时的指纹；只点不拖不施加；`historyrestore` 与内容变化事件（画线、擦除、删除、填充、移动）作废基线并让手柄回中心；锁定层只产生斥力不被改。

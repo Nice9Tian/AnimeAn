@@ -6,15 +6,17 @@
 // port of TimelineStrip::paintEvent, because Qt paints it without antialiasing and
 // a sheet can run to thousands of cells.
 import { isSourceLanguage, label, t } from "../i18n/index.js";
+import { scrollBar } from "./panels.js";
 
 // ---- design metrics, same names as the anonymous namespace in the .cpp ---------
 const kBarHeight = 34, kButtonWidth = 33, kPlayWidth = 38, kGlyphPx = 17, kSmallGlyphPx = 15;
 const kDividerGap = 6, kFrameFieldWidth = 42, kFrameFieldHeight = 22, kFrameFieldGap = 8, kFamilyGap = 8;
 const kKeyCellWidth = 126, kKeyCellHeight = 74, kHoldFraction = 0.2, kPreviewAspect = 4 / 3;
 const kLaneThickness = 18, kLaneDot = 16, kLaneLine = 3, kMinLaneThickness = 11, kMinLaneDotRadius = 4, kMinLaneLine = 2;
-const kScrollThickness = 6, kScrollIntoViewMargin = 10, kStripColumnWidth = 126, kStripCommandHeight = 28, kStripCommandWidth = 30;
+const kScrollThickness = 14, kScrollIntoViewMargin = 10, kStripColumnWidth = 126, kStripCommandHeight = 28, kStripCommandWidth = 30;
 const kStripCommandCount = 4, kMinStripThickness = 44, kMinStripColumn = kStripCommandCount * kStripCommandWidth + kScrollThickness;
 const kSideTitleHeight = 22, kCollapsedColumnWidth = 132;
+const kDockTitleHeight = 18;  // .vf-dock-header in shell.css; the Qt dock has none above the bar
 
 const kCadences = [
   { title: "1s with 4", shortTitle: "1s×4", fps: 6 },
@@ -383,6 +385,8 @@ function showRateMenu(anchor, fps, onPick) {
 const FRAME_COMMANDS = ["AddFrame", "AddHold", "Duplicate", "DeleteFrame"];
 const SMALL_GLYPHS = new Set(["Orientation", "Collapse", "Close", "Float"]);
 const TWO_LINE = { OnionAmLayers: ["AM", "LAYER"], GuideLines: ["GUIDE", "LINE (guide)"] };
+// What is happening right now rather than a setting: these take the focus colour.
+const LIVE_COMMANDS = new Set(["Play", "Onion"]);
 const ONE_LINE = { OnionLines: "LINE", OnionFills: "FILL" };
 
 function createBar(trigger) {
@@ -515,6 +519,7 @@ function createBar(trigger) {
       c.style.left = `${item.x}px`; c.style.top = `${item.y}px`; c.style.width = `${item.w}px`;
       c.classList.toggle("off", !item.enabled);
       c.classList.toggle("on", item.active);
+      c.classList.toggle("live", LIVE_COMMANDS.has(item.command) && item.active);
       if (item.command === "Rate") {
         c._text.textContent = shortTextForFps(state.fps);
       } else if (!ONE_LINE[item.command] && !TWO_LINE[item.command]) {
@@ -589,7 +594,10 @@ function createStrip(trigger) {
   const el = div("tl-strip");
   const canvas = document.createElement("canvas");
   canvas.className = "tl-canvas";
-  el.append(canvas);
+  const onScrollBar = (value) => { scroll = Math.trunc(value); relayout(); paint(); };
+  const hBar = scrollBar(false, onScrollBar), vBar = scrollBar(true, onScrollBar);
+  vBar.el.style.top = `${kStripCommandHeight}px`;
+  el.append(canvas, hBar.el, vBar.el);
   // Opaque, so the browser keeps LCD text like the rest of the page.
   const ctx = canvas.getContext("2d", { alpha: false });
 
@@ -722,8 +730,8 @@ function createStrip(trigger) {
   function paint() {
     if (!state || !width || !height) return;
     const c = {
-      ground: cssVar("--window"), surface: cssVar("--surface"), divider: cssVar("--divider"), accent: cssVar("--accent"),
-      dim: cssVar("--text-dim"), text: cssVar("--text"), hold: cssVar("--strip-hold"), track: cssVar("--strip-track"),
+      ground: cssVar("--window"), surface: cssVar("--surface"), divider: cssVar("--divider"), accent: cssVar("--accent"), onAccent: cssVar("--on-accent"),
+      dim: cssVar("--text-dim"), text: cssVar("--text"), hold: cssVar("--strip-hold"),
       wash: cssVar("--accent-wash"), past: cssVar("--onion-past"), ahead: cssVar("--onion-ahead"),
       pastLine: cssVar("--onion-past-line"), aheadLine: cssVar("--onion-ahead-line"),
     };
@@ -761,6 +769,8 @@ function createStrip(trigger) {
     ctx.textBaseline = "alphabetic";
     ctx.textAlign = "left";
 
+    const onScreen = [];
+    let previewSize = null;
     for (const cell of cells) {
       const r = cell.rect;
       if (r.x >= width || r.y >= height || r.x + r.w <= 0 || r.y + r.h <= 0) continue;
@@ -773,6 +783,8 @@ function createStrip(trigger) {
       if (!cell.hold) {
         const preview = previewOf(cell);
         if (preview) {
+          onScreen.push(cell.frame);
+          previewSize ??= { width: preview.w, height: preview.h };
           ctx.fillStyle = "#fff";
           ctx.fillRect(preview.x, preview.y, preview.w, preview.h);
           const image = thumbnailFor(cell.frame);
@@ -790,7 +802,7 @@ function createStrip(trigger) {
           let shown = name;
           const fit = Math.floor((chip.w - 4) / MONO10_ADVANCE);
           if (name.length > fit) shown = fit > 1 ? name.slice(0, fit - 1) + "…" : "…";
-          ctx.fillStyle = currentCell ? "#fff" : c.dim;
+          ctx.fillStyle = currentCell ? c.onAccent : c.dim;
           ctx.fillText(shown, chip.x + Math.trunc((chip.w - shown.length * MONO10_ADVANCE) / 2), chip.y + 10);
         }
       } else {
@@ -824,21 +836,12 @@ function createStrip(trigger) {
     }
     if (vertical) ctx.restore();
 
-    // A read-out of how much of the run is off screen, never a grab handle.
-    const view = viewport();
-    if (extent > view && view > 0) {
-      const fraction = view / extent, position = scroll / extent;
-      ctx.fillStyle = c.track;
-      if (vertical) {
-        ctx.fillRect(width - kScrollThickness, cellOrigin(), kScrollThickness, view);
-        ctx.fillStyle = c.dim;
-        ctx.fillRect(width - kScrollThickness, cellOrigin() + Math.trunc(position * view), kScrollThickness, Math.max(12, Math.trunc(fraction * view)));
-      } else {
-        ctx.fillRect(0, height - kScrollThickness, width, kScrollThickness);
-        ctx.fillStyle = c.dim;
-        ctx.fillRect(Math.trunc(position * view), height - kScrollThickness, Math.max(12, Math.trunc(fraction * view)), kScrollThickness);
-      }
-    }
+    const view = viewport(), overflowing = extent > view && view > 0;
+    hBar.el.hidden = vertical || !overflowing;
+    vBar.el.hidden = !vertical || !overflowing;
+    if (overflowing) (vertical ? vBar : hBar).set({ min: 0, max: extent - view, page: view, value: scroll });
+    // A collapsed strip is out of the page: it shows no frames, so it asks for none.
+    if (el.isConnected !== false) trigger("Preview", onScreen, previewSize);
   }
 
   function cellAt(x, y) {
@@ -877,11 +880,14 @@ function createStrip(trigger) {
     if (vertical) for (let i = 0; i < kStripCommandCount; i++) if (contains(commandRect(i), x, y)) hover = i;
     if (hover !== hoverCommand) { hoverCommand = hover; paint(); }
   });
+  const cancelPress = () => { pressedCommand = -1; pressedCell = -1; dragging = false; };
+  canvas.addEventListener("pointercancel", cancelPress);
+  canvas.addEventListener("lostpointercapture", cancelPress);
   canvas.addEventListener("pointerup", (e) => {
     if (e.button !== 0) return;
     const [x, y] = local(e);
     const command = pressedCommand, cellIndex = pressedCell, dragged = dragging;
-    pressedCommand = -1; pressedCell = -1; dragging = false;
+    cancelPress();
     if (command >= 0) { trigger(FRAME_COMMANDS[command]); return; }
     if (cellIndex < 0 || cellIndex >= cells.length) return;
     const cell = cells[cellIndex];
@@ -943,25 +949,114 @@ function createStrip(trigger) {
       scroll = 0;
     },
     setState(next) {
+      // Followed only when it moves, or any report would drag a scrolled sheet back.
+      const moved = next.current !== state?.current;
       state = next;
       measure();
       // A URL no frame uses any more is not worth keeping decoded.
       const used = new Set(state.frames.map((f) => f.thumbnail));
       for (const key of thumbs.keys()) if (!used.has(key)) thumbs.delete(key);
       relayout();
-      ensureCurrentVisible();
+      if (moved && !hBar.held() && !vBar.held()) ensureCurrentVisible();
       paint();
-    },
-    // What thumbnails should be rendered at: the preview a key cell has now.
-    previewSize() {
-      const key = cells.find((cell) => !cell.hold);
-      const preview = key && previewOf(key);
-      return preview ? { width: preview.w, height: preview.h } : null;
     },
   };
 }
 
 // ---- the timeline ---------------------------------------------------------------
+// Playback reports every frame, and a button lifted out of the page under a held
+// mouse loses its click: children move only when the arrangement really changed.
+export function arrange(root, wanted) {
+  const placed = [...root.children];
+  if (wanted.length !== placed.length || wanted.some((node, i) => node !== placed[i])) root.replaceChildren(...wanted);
+}
+
+// TimelineWindow::applyDockExtent: collapsing hands the strip's height to the board.
+// Only on the mode change: at any other moment the size is what the user dragged it
+// to. A dock beside the timeline shares its height, so it is left alone then.
+function targetDockArea(value) {
+  if (value?.dockArea === "left" || value?.dockArea === "right" || value?.dockArea === "bottom") return value.dockArea;
+  if (value?.vertical !== undefined) return value.vertical ? (value.leftAligned ? "left" : "right") : "bottom";
+  return null;
+}
+
+export function watchTimelineDock(runtime, store) {
+  const panel = store.timeline;
+  if (!panel) return;
+  let shrunkTo = 0, expanded = 0, shrunkArea = "";
+  const findArea = (areas) => ["bottom", "top", "left", "right"].find((name) => areas[name]?.groups.some((g) => g.tabs.includes("timelineDock")));
+  const fit = () => {
+    const layout = runtime.getDockLayout();
+    const isFloating = Boolean(layout.floating?.some((f) => f.dockId === "timelineDock")) || Boolean(runtime.externalDocks?.has?.("timelineDock"));
+    let area = findArea(layout.areas);
+    const value = store.get("timeline");
+    const targetArea = targetDockArea(value);
+    if (shrunkTo && (value?.floating || (targetArea && targetArea !== shrunkArea) || (area && area !== shrunkArea))) {
+      runtime.dockResizeArea(shrunkArea, expanded);
+      shrunkTo = 0;
+      shrunkArea = "";
+    }
+    if (value?.floating) {
+      if (!isFloating) {
+        if (targetArea && area && area !== targetArea) runtime.dockMoveToArea?.("timelineDock", targetArea);
+        runtime.dockFloat?.("timelineDock");
+      }
+      return;
+    }
+    if (isFloating && value) {
+      if (runtime.dockRestore) runtime.dockRestore("timelineDock", targetArea ?? undefined);
+      else if (targetArea) runtime.dockMoveToArea?.("timelineDock", targetArea);
+    } else if (targetArea && area && area !== targetArea) {
+      runtime.dockMoveToArea?.("timelineDock", targetArea);
+    }
+    const { areas } = runtime.getDockLayout();
+    area = findArea(areas);
+    if (!area) return;
+    const vertical = area === "left" || area === "right";
+    const extent = panel.extent();
+    const size = vertical ? (extent.width ?? kCollapsedColumnWidth) : kDockTitleHeight + extent.height;
+
+    if (!value?.collapsed || value.floating) {
+      if (shrunkTo) runtime.dockResizeArea(area, Math.max(size, expanded));
+      shrunkTo = 0;
+      shrunkArea = "";
+      return;
+    }
+    if (size === shrunkTo && area === shrunkArea) return;
+    const beside = areas[area].groups.some((g) => g.tabs.some((id) => id !== "timelineDock" && runtime.view(id).visible));
+    if (beside && !shrunkTo) return;
+    if (!shrunkTo) expanded = areas[area].size ?? 0;
+    shrunkTo = size;
+    shrunkArea = area;
+    runtime.dockResizeArea(area, size);
+
+  };
+  store.on("timeline", fit);
+  // A narrow window wraps the bar onto a second row.
+  new ResizeObserver(fit).observe(panel.bar);
+  return (dockId) => {
+    if (dockId !== "timelineDock") return;
+    const layout = runtime.getDockLayout();
+    const floating = Boolean(layout.floating?.some((f) => f.dockId === "timelineDock")) || Boolean(runtime.externalDocks?.has?.("timelineDock"));
+    const value = store.get("timeline");
+    if (floating) {
+      if (!value?.floating) store.call?.("timeline.setFloating", { floating: true });
+      return;
+    }
+    let area = findArea(layout.areas);
+    if (area === "top") {
+      runtime.dockMoveToArea?.("timelineDock", "bottom");
+      area = "bottom";
+    }
+    const prevArea = targetDockArea(value) ?? "bottom";
+    if (area && area !== prevArea) {
+      store.call?.("timeline.setDockArea", { dockArea: area, floating: false });
+    } else if (value?.floating) {
+      store.call?.("timeline.setFloating", { floating: false });
+    }
+  };
+}
+
 function normalise(s) {
   return {
     frames: s.frames ?? [],
@@ -991,7 +1086,8 @@ function normalise(s) {
 // handlers: on<TimelineCommand>, onRate(fps), onSelectFrame(frame),
 //   onMoveFrame(from, to), onFrameTyped(frame), onLaneToggled(frame, on). The toggle
 //   commands receive the value they ask for. All are optional.
-export function createTimeline(root, handlers = {}, { bottomChrome = null } = {}) {
+export function createTimeline(root, handlers = {}, options = {}) {
+  const { bottomChrome = null } = options;
   root.classList.add("tl-root");
   let state = normalise({});
 
@@ -1002,6 +1098,9 @@ export function createTimeline(root, handlers = {}, { bottomChrome = null } = {}
       case "OnionFills": args = [!state.onionFills]; break;
       case "OnionAmLayers": args = [!state.onionAmLayers]; break;
       case "GuideLines": args = [!state.guideLines]; break;
+      case "Collapse": args = [!state.collapsed]; break;
+      case "Float": args = [!state.floating]; break;
+      case "Orientation": args = [!state.vertical]; break;
       case "Loop":
         // The one flag the window flips itself before reporting it.
         state.loop = !state.loop;
@@ -1031,7 +1130,7 @@ export function createTimeline(root, handlers = {}, { bottomChrome = null } = {}
     }
     if (stripVisible) wanted.push(strip.el);
     if (state.vertical && !bottomChrome) wanted.push(bar.el);
-    root.replaceChildren(...wanted);
+    arrange(root, wanted);
   }
 
   return {
@@ -1051,7 +1150,6 @@ export function createTimeline(root, handlers = {}, { bottomChrome = null } = {}
       const strip = state.collapsed && !state.floating ? 0 : kKeyCellHeight + kScrollThickness;
       return { height: bar.height() + strip };
     },
-    previewSize: () => strip.previewSize(),
     minimum: { thickness: kMinStripThickness, column: kMinStripColumn },
   };
 }

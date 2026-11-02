@@ -340,4 +340,149 @@ describe("tess", () => {
     assert.ok(totalFloats > 0);
     assert.ok(elapsedMs < 400, `Expected 3000x40 tessellation < 400ms, got ${elapsedMs.toFixed(2)}ms`);
   });
+
+  it("subdivides flattened edges so no segment exceeds maxEdge for strokes, closed paths, dashes, and fills", () => {
+    const maxEdge = 4;
+    // 1. Long straight line of length 100 -> 25 segments (26 points = 52 coords)
+    const linePath = [0, 0, 0, 1, 100, 0];
+    const subpaths = parsePath(linePath, 1, 0.1, undefined, maxEdge);
+    assert.equal(subpaths.length, 1);
+    assert.equal(subpaths[0].points.length, 52);
+    for (let i = 0; i < subpaths[0].points.length - 2; i += 2) {
+      const dx = subpaths[0].points[i + 2] - subpaths[0].points[i];
+      const dy = subpaths[0].points[i + 3] - subpaths[0].points[i + 1];
+      assert.ok(Math.hypot(dx, dy) <= maxEdge + 1e-6);
+    }
+
+    // 2. Closed path with a long implicit closing edge (from (40,0) back to (0,0))
+    const closedTri = [0, 0, 0, 1, 40, 0, 1, 40, 30, 3];
+    const closedSub = parsePath(closedTri, 1, 0.1, undefined, maxEdge);
+    assert.equal(closedSub.length, 1);
+    const pts = closedSub[0].points;
+    for (let i = 0; i < pts.length; i += 2) {
+      const next = (i + 2) % pts.length;
+      const dx = pts[next] - pts[i];
+      const dy = pts[next + 1] - pts[i + 1];
+      assert.ok(Math.hypot(dx, dy) <= maxEdge + 1e-6);
+    }
+
+    // 3. Stroke tessellation with maxEdge produces subdivided quads
+    const normalStroke = tessellateStroke(linePath, { width: 2, cap: "butt", join: "miter", miter: 2 }, 1, 0.1);
+    const fineStroke = tessellateStroke(
+      linePath,
+      { width: 2, cap: "butt", join: "miter", miter: 2 },
+      1,
+      0.1,
+      undefined,
+      maxEdge,
+    );
+    assert.equal(normalStroke.length / 6, 2);
+    assert.ok(fineStroke.length / 6 >= 50);
+    assert.ok(Math.abs(computeTrianglesArea(fineStroke) - 200) < 1e-2);
+
+    // 4. Dashed stroke with dash longer than maxEdge is also subdivided
+    const dashedFine = tessellateStroke(
+      linePath,
+      { width: 2, cap: "butt", join: "miter", miter: 2, dash: [10, 5] },
+      1,
+      0.1,
+      undefined,
+      maxEdge,
+    );
+    assert.ok(dashedFine.length > 60);
+
+    // 5. Fill tessellation with maxEdge subdivides into horizontal bands of small quads
+    const rectPath = [0, 0, 0, 1, 40, 0, 1, 40, 20, 1, 0, 20, 3];
+    const fineFill = tessellateFill(rectPath, "nonzero", 1, 0.1, undefined, maxEdge);
+    assert.ok(fineFill.length / 6 >= 50);
+    assert.ok(Math.abs(computeTrianglesArea(fineFill) - 800) < 1e-2);
+  });
+
+  it("slices fills into horizontal bands with accurate area (<1% error) for polygons with holes under evenodd and nonzero, bounds all triangle edges by maxEdge*sqrt(2), and handles self-intersecting paths", () => {
+    const maxEdge = 4;
+    const maxAllowedEdge = maxEdge * Math.SQRT2 + 1e-4;
+
+    const assertAllEdgesBounded = (tris: Float32Array, label: string): void => {
+      assert.ok(tris.length > 0 && tris.length % 6 === 0, `${label}: expected non-empty triangle list`);
+      for (let i = 0; i < tris.length; i += 6) {
+        const x0 = tris[i];
+        const y0 = tris[i + 1];
+        const x1 = tris[i + 2];
+        const y1 = tris[i + 3];
+        const x2 = tris[i + 4];
+        const y2 = tris[i + 5];
+        const e0 = Math.hypot(x1 - x0, y1 - y0);
+        const e1 = Math.hypot(x2 - x1, y2 - y1);
+        const e2 = Math.hypot(x0 - x2, y0 - y2);
+        assert.ok(
+          e0 <= maxAllowedEdge && e1 <= maxAllowedEdge && e2 <= maxAllowedEdge,
+          `${label}: triangle edge (${Math.max(e0, e1, e2).toFixed(4)}) exceeded maxEdge*sqrt(2) (${maxAllowedEdge.toFixed(4)})`,
+        );
+      }
+    };
+
+    // 1. Outer square [0..100]x[0..100] (area 10000) with inner diamond hole (vertices (50,20),(80,50),(50,80),(20,50), area = 0.5*60*60 = 1800)
+    // Opposite winding: both evenodd and nonzero have analytical area 10000 - 1800 = 8200.
+    const polyWithOppositeHole = [
+      0, 0, 0, 1, 100, 0, 1, 100, 100, 1, 0, 100, 3,
+      0, 50, 20, 1, 20, 50, 1, 50, 80, 1, 80, 50, 3,
+    ];
+    const analyticalHoleArea = 10000 - 1800;
+    const eoOpp = tessellateFill(polyWithOppositeHole, "evenodd", 1, 0.1, undefined, maxEdge);
+    const nzOpp = tessellateFill(polyWithOppositeHole, "nonzero", 1, 0.1, undefined, maxEdge);
+    assert.ok(
+      Math.abs(computeTrianglesArea(eoOpp) - analyticalHoleArea) / analyticalHoleArea < 0.01,
+      `evenodd opposite-winding hole area error >= 1%: got ${computeTrianglesArea(eoOpp)}, expected ${analyticalHoleArea}`,
+    );
+    assert.ok(
+      Math.abs(computeTrianglesArea(nzOpp) - analyticalHoleArea) / analyticalHoleArea < 0.01,
+      `nonzero opposite-winding hole area error >= 1%: got ${computeTrianglesArea(nzOpp)}, expected ${analyticalHoleArea}`,
+    );
+    assertAllEdgesBounded(eoOpp, "evenodd opposite-winding hole");
+    assertAllEdgesBounded(nzOpp, "nonzero opposite-winding hole");
+
+    // Same winding on inner diamond: evenodd has hole (8200), nonzero fills interior once (10000).
+    const polyWithSameWindingHole = [
+      0, 0, 0, 1, 100, 0, 1, 100, 100, 1, 0, 100, 3,
+      0, 50, 20, 1, 80, 50, 1, 50, 80, 1, 20, 50, 3,
+    ];
+    const eoSame = tessellateFill(polyWithSameWindingHole, "evenodd", 1, 0.1, undefined, maxEdge);
+    const nzSame = tessellateFill(polyWithSameWindingHole, "nonzero", 1, 0.1, undefined, maxEdge);
+    assert.ok(
+      Math.abs(computeTrianglesArea(eoSame) - analyticalHoleArea) / analyticalHoleArea < 0.01,
+      `evenodd same-winding hole area error >= 1%: got ${computeTrianglesArea(eoSame)}, expected ${analyticalHoleArea}`,
+    );
+    assert.ok(
+      Math.abs(computeTrianglesArea(nzSame) - 10000) / 10000 < 0.01,
+      `nonzero same-winding hole area error >= 1%: got ${computeTrianglesArea(nzSame)}, expected 10000`,
+    );
+    assertAllEdgesBounded(eoSame, "evenodd same-winding hole");
+    assertAllEdgesBounded(nzSame, "nonzero same-winding hole");
+
+    // 2. Self-intersecting paths (figure-8 bowtie and 5-pointed star) do not crash and obey maxEdge*sqrt(2)
+    const bowtie = [0, 0, 0, 1, 60, 60, 1, 60, 0, 1, 0, 60, 3];
+    // Bowtie consists of two triangles of base 60 and height 30 -> total area = 2 * (0.5 * 60 * 30) = 1800
+    const bowtieEo = tessellateFill(bowtie, "evenodd", 1, 0.1, undefined, maxEdge);
+    const bowtieNz = tessellateFill(bowtie, "nonzero", 1, 0.1, undefined, maxEdge);
+    assert.ok(Math.abs(computeTrianglesArea(bowtieEo) - 1800) / 1800 < 0.01);
+    assert.ok(Math.abs(computeTrianglesArea(bowtieNz) - 1800) / 1800 < 0.01);
+    assertAllEdgesBounded(bowtieEo, "bowtie evenodd");
+    assertAllEdgesBounded(bowtieNz, "bowtie nonzero");
+
+    const starPath: number[] = [];
+    for (let k = 0; k < 5; k++) {
+      const angle = ((k * 2) % 5) * ((2 * Math.PI) / 5) - Math.PI / 2;
+      const px = 50 + 40 * Math.cos(angle);
+      const py = 50 + 40 * Math.sin(angle);
+      starPath.push(k === 0 ? 0 : 1, px, py);
+    }
+    starPath.push(3);
+    assert.doesNotThrow(() => {
+      const starEo = tessellateFill(starPath, "evenodd", 1, 0.1, undefined, maxEdge);
+      const starNz = tessellateFill(starPath, "nonzero", 1, 0.1, undefined, maxEdge);
+      assertAllEdgesBounded(starEo, "star evenodd");
+      assertAllEdgesBounded(starNz, "star nonzero");
+      assert.ok(computeTrianglesArea(starNz) > computeTrianglesArea(starEo));
+    });
+  });
 });

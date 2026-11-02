@@ -2,7 +2,8 @@
 // set as childrenpanel/tooloptpanel.cpp. onOption receives
 // { hook, name, type, value, row, startColumn, endColumn }.
 import { label as labelled } from "../i18n/index.js";
-import { createPalette, parseColor, toHexRgb } from "./palette.js";
+import { colorButtonColors, colorDarker, colorLighter, colorLightness, createPalette, parseColor, toHexArgb, toHexRgb } from "./palette.js";
+export { colorButtonColors, colorButtonColors as colorButtonStyle, colorDarker, colorDarker as darker, colorLighter, colorLighter as lighter, colorLightness, colorLightness as lightness };
 
 function div(cls, text) {
   const d = document.createElement("div");
@@ -37,15 +38,19 @@ function slider(control, send) {
     return Math.round(min + t * (max - min));
   };
   const set = (next) => { if (next !== value) { value = next; draw(); send("slider", value); } };
+  const trackX = (e) => e.clientX - track.getBoundingClientRect().left;
+  // How far off its centre the handle was pressed: pressing it must not move it.
+  let grab = 0;
   track.addEventListener("pointerdown", (e) => {
     track.setPointerCapture(e.pointerId);
     track.classList.add("pressed");
-    set(fromX(e.offsetX));
+    grab = e.target === handle ? trackX(e) - (handle.offsetLeft + HANDLE / 2) : 0;
+    set(fromX(trackX(e) - grab));
   });
   track.addEventListener("pointermove", (e) => {
-    if (track.hasPointerCapture(e.pointerId)) set(fromX(e.clientX - track.getBoundingClientRect().left));
+    if (track.hasPointerCapture(e.pointerId)) set(fromX(trackX(e) - grab));
   });
-  track.addEventListener("pointerup", () => track.classList.remove("pressed"));
+  track.addEventListener("lostpointercapture", () => track.classList.remove("pressed"));
   new ResizeObserver(draw).observe(track);
   queueMicrotask(draw);
   return wrap;
@@ -88,37 +93,108 @@ function check(control, send) {
   return label;
 }
 
+function buttonTint(state) {
+  if (!state || typeof state !== "object") return null;
+  if (state.color) return parseColor(state.color);
+  if (state.r !== undefined || state.g !== undefined || state.b !== undefined) {
+    return { r: Number(state.r ?? 0), g: Number(state.g ?? 0), b: Number(state.b ?? 0), a: Number(state.a ?? 255) };
+  }
+  return null;
+}
+
 function button(control, send) {
   const b = document.createElement("button");
   b.type = "button";
   b.className = "qbutton opt-button";
   labelled(b, control.title ?? "");
-  const tint = control.state?.color;
-  if (tint) b.style.background = String(tint);
+  const tint = buttonTint(control.state);
+  if (tint) {
+    const styles = colorButtonColors(tint);
+    let hovered = false, pressed = false;
+    const syncBg = () => {
+      const bg = pressed ? styles.pressedBackground : hovered ? styles.hoverBackground : styles.background;
+      b.style.background = bg;
+      b.style.backgroundColor = bg;
+    };
+    b.style.color = styles.color;
+    b.dataset.hoverBg = styles.hoverBackground;
+    b.dataset.pressedBg = styles.pressedBackground;
+    syncBg();
+    b.addEventListener("pointerenter", () => { hovered = true; syncBg(); });
+    b.addEventListener("pointerleave", () => { hovered = false; pressed = false; syncBg(); });
+    b.addEventListener("pointerdown", (e) => { if (!e.button) { pressed = true; syncBg(); } });
+    b.addEventListener("pointerup", () => { pressed = false; syncBg(); });
+    b.addEventListener("pointercancel", () => { pressed = false; syncBg(); });
+  }
   b.addEventListener("click", () => send("button", control.value ?? ""));
   return b;
+}
+
+function openColorDialog(initial, onAccept) {
+  const shade = div("qdialog-shade");
+  const dialog = div("qdialog newcolor-dialog");
+  const inner = createPalette(() => {}, { pickersOnly: true });
+  const row = div("qdialog-buttons");
+  Object.assign(row.style, { display: "flex", justifyContent: "flex-end", gap: "6px" });
+  const ok = document.createElement("button");
+  ok.type = "button";
+  ok.className = "qbutton qdefault";
+  labelled(ok, "OK");
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "qbutton";
+  labelled(cancel, "Cancel");
+  const close = () => shade.remove();
+  const accept = () => {
+    const chosen = { ...inner.color() };
+    close();
+    onAccept(chosen);
+  };
+  ok.addEventListener("click", accept);
+  cancel.addEventListener("click", close);
+  shade.addEventListener("pointerdown", (e) => { if (e.target === shade) close(); });
+  dialog.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); accept(); }
+    if (e.key === "Escape") { e.preventDefault(); close(); }
+  });
+  row.append(ok, cancel);
+  dialog.append(inner.el, row);
+  shade.append(dialog);
+  document.body.append(shade);
+  inner.update({ value: toHexArgb(initial), swatches: [] });
 }
 
 function color(control, send) {
   const wrap = div("opt-color");
   if (control.title) wrap.append(labelled(div("opt-title-inline"), control.title));
-  const c = parseColor(control.value);
-  const input = document.createElement("input");
-  input.type = "color";
-  input.className = "opt-swatch";
-  input.value = toHexRgb(c);
-  input.addEventListener("change", () => {
-    const alpha = c.a.toString(16).padStart(2, "0");
-    send("color", `#${alpha}${input.value.slice(1)}`);
+  let current = parseColor(control.value);
+  const swatch = document.createElement("button");
+  swatch.type = "button";
+  swatch.className = "opt-swatch";
+  const paintSwatch = (c) => {
+    const rgb = toHexRgb(c);
+    swatch.style.background = rgb;
+    swatch.style.backgroundColor = rgb;
+    swatch.title = toHexArgb(c);
+  };
+  paintSwatch(current);
+  swatch.addEventListener("click", () => {
+    openColorDialog(current, (chosen) => {
+      current = chosen;
+      paintSwatch(current);
+      send("color", toHexArgb(current));
+    });
   });
-  wrap.append(input);
+  wrap.append(swatch);
   return wrap;
 }
 
-export function createToolOptions(root, { onOption, onPalette, onNewColor, onSubWindow }) {
+export function createToolOptions(root, { onOption, onNewColor, onSubWindow, onBeforeBuild = undefined, onAfterBuild = undefined }) {
   const grid = div("opt-grid");
   root.append(grid);
   let visibility = [];
+  let subWindows = [];
+  let lastLayout = null;
   const values = new Map();
 
   function applyVisibility() {
@@ -128,8 +204,11 @@ export function createToolOptions(root, { onOption, onPalette, onNewColor, onSub
   }
 
   function build(layout) {
+    lastLayout = layout;
+    onBeforeBuild?.(layout);
     grid.replaceChildren();
     visibility = [];
+    subWindows = [];
     values.clear();
     const controls = layout?.controls ?? [];
     grid.style.rowGap = `${layout?.row_spacing ?? 8}px`;
@@ -155,8 +234,8 @@ export function createToolOptions(root, { onOption, onPalette, onNewColor, onSub
         case "color": el = color(control, send); break;
         case "palette": {
           const palette = createPalette((kind, value) => {
-            if (kind === "color") send("color", value);
-            else if (kind === "box") onPalette(value, control);
+            if (kind === "color") send("palette", value);
+            else if (kind === "box") onOption({ hook: "palette_box", name: control.name, type: "palette", value, row, startColumn: start, endColumn: end });
             else if (kind === "newColor") onNewColor(palette);
           });
           el = palette.el;
@@ -166,6 +245,7 @@ export function createToolOptions(root, { onOption, onPalette, onNewColor, onSub
         case "subwindow": el = onSubWindow(control); break;
       }
       if (!el) continue;
+      if (control.type === "subwindow") subWindows.push({ control, el });
       if (control.name) values.set(control.name, String(control.value ?? ""));
       el.style.gridRow = String(row + 1);
       el.style.gridColumn = `${start + 1} / ${end + 2}`;
@@ -181,8 +261,34 @@ export function createToolOptions(root, { onOption, onPalette, onNewColor, onSub
       }
     }
     grid.style.gridTemplateColumns = `repeat(${columns}, minmax(0, 1fr))`;
+    // The embedded board takes what height the panel has left (ToolOptPanel's greedy row).
+    const boardRow = controls.some((c) => c.type === "subwindow" && (c.row ?? 0) === rows - 1);
+    grid.classList.toggle("has-subwindow", boardRow);
+    grid.style.gridTemplateRows = boardRow ? `repeat(${rows - 1}, auto) minmax(min-content, 1fr)` : "";
     applyVisibility();
+    onAfterBuild?.(layout);
   }
 
-  return { build };
+  return {
+    build,
+    // The board came or went: only its cell changes, the other controls keep what
+    // the user set on them since the layout was built.
+    refreshSubWindows() {
+      for (const entry of subWindows) {
+        const next = onSubWindow(entry.control);
+        if (!next) continue;
+        next.style.gridRow = entry.el.style.gridRow;
+        next.style.gridColumn = entry.el.style.gridColumn;
+        for (const rule of visibility) if (rule.el === entry.el) rule.el = next;
+        entry.el.replaceWith(next);
+        entry.el = next;
+      }
+      applyVisibility();
+    },
+    hasSubWindow(name) {
+      return (lastLayout?.controls ?? []).some(
+        (c) => c.type === "subwindow" && (!name || !c.name || c.name === name),
+      );
+    },
+  };
 }

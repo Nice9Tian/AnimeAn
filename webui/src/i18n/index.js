@@ -95,33 +95,42 @@ export function t(source, ...values) {
   return fill(translated ?? text, values);
 }
 
-function paint(el) {
-  el.textContent = t(el.dataset.i18n);
-  fitters.get(el)?.(el);
+function paint(el, source = el.dataset.i18n) {
+  el.textContent = t(source);
+  fitters.get(el)?.(el, source);
 }
 
 // Text that stays on screen: it follows the language without its panel being
-// rebuilt. fit(el) runs after every change, for text sized to the Qt layout.
+// rebuilt. fit(el, source) runs after every change, for text sized to the Qt
+// layout. The source is kept on the element, where a change of language finds it.
 export function label(el, source, fit) {
-  el.dataset.i18n = source;
+  if (el.dataset) el.dataset.i18n = source;
   if (fit) fitters.set(el, fit);
-  paint(el);
+  paint(el, source);
   return el;
 }
 
 export function tip(el, source) {
-  el.dataset.i18nTip = source;
+  if (el.dataset) el.dataset.i18nTip = source;
   el.title = t(source);
   return el;
+}
+
+// Repaints the text under root. The document is repainted on every change; a
+// body parked off the page while nothing shows it (the texture panel, the
+// sub-control frame) is out of its reach, so its owner calls this.
+export function relabel(root) {
+  if (typeof root?.querySelectorAll !== "function") return;
+  for (const el of root.querySelectorAll("[data-i18n]")) paint(el);
+  for (const el of root.querySelectorAll("[data-i18n-tip]")) el.title = t(el.dataset.i18nTip);
 }
 
 // Han characters are shared between Chinese and Japanese and drawn differently,
 // so the browser needs the language to pick the right font.
 function markDocument() {
   if (typeof document === "undefined") return;
-  document.documentElement.lang = current;
-  for (const el of document.querySelectorAll("[data-i18n]")) paint(el);
-  for (const el of document.querySelectorAll("[data-i18n-tip]")) el.title = t(el.dataset.i18nTip);
+  if (document.documentElement) document.documentElement.lang = current;
+  relabel(document);
 }
 
 export function onLanguage(fn) {
@@ -140,7 +149,22 @@ export function setLanguage(next) {
     console.error(error);
   }
   markDocument();
-  for (const fn of listeners) fn(next);
+  // One panel failing to repaint must not leave the others in the old language.
+  for (const fn of listeners) {
+    try {
+      fn(next);
+    } catch (error) {
+      console.error(error);
+    }
+  }
+}
+
+// A panel in a window of its own is a page of its own: it hears the choice made
+// in the main window through the storage the two share.
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  window.addEventListener("storage", (e) => {
+    if (e.key === LANGUAGE_KEY && e.newValue) setLanguage(e.newValue);
+  });
 }
 
 markDocument();

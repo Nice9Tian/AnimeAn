@@ -528,6 +528,36 @@ String String::toUpper() const
     return String(std::move(res));
 }
 
+String String::leftJustified(int width, Char fill, bool truncate) const
+{
+    int padlen = width - size();
+    if (padlen <= 0) {
+        if (truncate && width >= 0)
+            return left(width);
+        return *this;
+    }
+    std::u16string res;
+    res.reserve(static_cast<std::size_t>(width));
+    res.append(view());
+    res.append(static_cast<std::size_t>(padlen), fill.unicode());
+    return String(std::move(res));
+}
+
+String String::rightJustified(int width, Char fill, bool truncate) const
+{
+    int padlen = width - size();
+    if (padlen <= 0) {
+        if (truncate && width >= 0)
+            return left(width);
+        return *this;
+    }
+    std::u16string res;
+    res.reserve(static_cast<std::size_t>(width));
+    res.append(static_cast<std::size_t>(padlen), fill.unicode());
+    res.append(view());
+    return String(std::move(res));
+}
+
 int String::indexOf(const String &str, int from, CaseSensitivity cs) const noexcept
 {
     int len = size();
@@ -712,12 +742,12 @@ int String::compare(Latin1String other, CaseSensitivity cs) const noexcept
     return alen < blen ? -1 : (alen > blen ? 1 : 0);
 }
 
-std::vector<String> String::split(Char sep, SplitBehavior behavior, CaseSensitivity cs) const
+StringList String::split(Char sep, SplitBehavior behavior, CaseSensitivity cs) const
 {
     return split(String(sep), behavior, cs);
 }
 
-std::vector<String> String::split(const String &sep, SplitBehavior behavior, CaseSensitivity cs) const
+StringList String::split(const String &sep, SplitBehavior behavior, CaseSensitivity cs) const
 {
     std::vector<String> out;
     if (sep.isEmpty()) {
@@ -1124,6 +1154,89 @@ long long String::toLongLong(bool *ok, int base) const noexcept
     }
 }
 
+unsigned long long String::toULongLong(bool *ok, int base) const noexcept
+{
+    if (ok)
+        *ok = false;
+    if (base != 0 && (base < 2 || base > 36))
+        return 0;
+    if (isEmpty())
+        return 0;
+
+    const char16_t *buf = utf16();
+    int b = 0;
+    int e = size();
+    while (b < e && Char(buf[b]).isSpace())
+        ++b;
+    while (e > b && Char(buf[e - 1]).isSpace())
+        --e;
+    if (b >= e)
+        return 0;
+
+    std::string ascii;
+    ascii.reserve(static_cast<std::size_t>(e - b));
+    for (int i = b; i < e; ++i) {
+        if (buf[i] >= 0x80)
+            return 0;
+        ascii.push_back(static_cast<char>(buf[i]));
+    }
+
+    std::size_t idx = 0;
+    if (ascii[idx] == '-')
+        return 0;
+    if (ascii[idx] == '+')
+        ++idx;
+    if (idx >= ascii.size())
+        return 0;
+
+    int actualBase = base;
+    if (actualBase == 0) {
+        if (ascii[idx] == '0') {
+            if (idx + 1 < ascii.size() && (ascii[idx + 1] == 'x' || ascii[idx + 1] == 'X')) {
+                actualBase = 16;
+                idx += 2;
+            } else {
+                actualBase = 8;
+            }
+        } else {
+            actualBase = 10;
+        }
+    } else if (actualBase == 16) {
+        if (ascii[idx] == '0' && idx + 1 < ascii.size() && (ascii[idx + 1] == 'x' || ascii[idx + 1] == 'X'))
+            idx += 2;
+    }
+
+    if (idx >= ascii.size())
+        return 0;
+    if (ascii[idx] == '-' || ascii[idx] == '+')
+        return 0;
+
+    unsigned long long uval = 0;
+    const char *first = ascii.data() + idx;
+    const char *last = ascii.data() + ascii.size();
+    auto [ptr, ec] = std::from_chars(first, last, uval, actualBase);
+    if (ec != std::errc() || ptr != last)
+        return 0;
+
+    if (ok)
+        *ok = true;
+    return uval;
+}
+
+unsigned int String::toUInt(bool *ok, int base) const noexcept
+{
+    bool ullOk = false;
+    unsigned long long val = toULongLong(&ullOk, base);
+    if (!ullOk || val > std::numeric_limits<unsigned int>::max()) {
+        if (ok)
+            *ok = false;
+        return 0;
+    }
+    if (ok)
+        *ok = true;
+    return static_cast<unsigned int>(val);
+}
+
 int String::toInt(bool *ok, int base) const noexcept
 {
     bool llOk = false;
@@ -1306,6 +1419,133 @@ String operator+(const char *a, const String &b)
     String res = String::fromUtf8(a);
     res.append(b);
     return res;
+}
+
+bool StringList::removeOne(const String &s)
+{
+    int idx = indexOf(s);
+    if (idx < 0)
+        return false;
+    Base::erase(Base::begin() + idx);
+    return true;
+}
+
+int StringList::removeAll(const String &s)
+{
+    int oldSize = size();
+    Base::erase(std::remove(Base::begin(), Base::end(), s), Base::end());
+    return oldSize - size();
+}
+
+int StringList::removeDuplicates()
+{
+    int n = size();
+    int j = 0;
+    for (int i = 0; i < n; ++i) {
+        bool seen = false;
+        for (int k = 0; k < j; ++k) {
+            if ((*this)[static_cast<std::size_t>(k)] == (*this)[static_cast<std::size_t>(i)]) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) {
+            if (j != i)
+                (*this)[static_cast<std::size_t>(j)] = std::move((*this)[static_cast<std::size_t>(i)]);
+            ++j;
+        }
+    }
+    if (j != n)
+        Base::resize(static_cast<std::size_t>(j));
+    return n - j;
+}
+
+int StringList::indexOf(const String &s, int from, CaseSensitivity cs) const noexcept
+{
+    int n = size();
+    if (from < 0)
+        from = std::max(from + n, 0);
+    for (int i = from; i < n; ++i) {
+        if ((*this)[static_cast<std::size_t>(i)].compare(s, cs) == 0)
+            return i;
+    }
+    return -1;
+}
+
+int StringList::lastIndexOf(const String &s, int from, CaseSensitivity cs) const noexcept
+{
+    int n = size();
+    if (from < 0)
+        from += n;
+    else if (from >= n)
+        from = n - 1;
+    for (int i = from; i >= 0; --i) {
+        if ((*this)[static_cast<std::size_t>(i)].compare(s, cs) == 0)
+            return i;
+    }
+    return -1;
+}
+
+String StringList::join(const String &sep) const
+{
+    if (Base::empty())
+        return String();
+    std::size_t total = 0;
+    for (std::size_t i = 0; i < Base::size(); ++i) {
+        if (i > 0)
+            total += static_cast<std::size_t>(sep.size());
+        total += static_cast<std::size_t>((*this)[i].size());
+    }
+    if (total == 0)
+        return String(u"", 0);
+    std::u16string res;
+    res.reserve(total);
+    for (std::size_t i = 0; i < Base::size(); ++i) {
+        if (i > 0)
+            res.append(sep.view());
+        res.append((*this)[i].view());
+    }
+    return String(std::move(res));
+}
+
+StringList StringList::mid(int pos, int len) const
+{
+    int n = size();
+    if (pos < 0) {
+        if (len < 0 || pos + len >= n) {
+            pos = 0;
+            len = n;
+        } else if (pos + len <= 0) {
+            return StringList();
+        } else {
+            len += pos;
+            pos = 0;
+        }
+    }
+    if (pos >= n)
+        return StringList();
+    if (len < 0 || pos + len > n)
+        len = n - pos;
+    if (len <= 0)
+        return StringList();
+    return StringList(Base::begin() + pos, Base::begin() + pos + len);
+}
+
+void StringList::sort(CaseSensitivity cs)
+{
+    std::sort(Base::begin(), Base::end(), [cs](const String &a, const String &b) {
+        return a.compare(b, cs) < 0;
+    });
+}
+
+StringList StringList::filter(const String &str, CaseSensitivity cs) const
+{
+    StringList out;
+    for (const String &item : *this) {
+        if (item.contains(str, cs))
+            out.append(item);
+    }
+    return out;
 }
 
 } // namespace AnimeCore

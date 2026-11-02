@@ -1,6 +1,8 @@
 """The To 3D page follows the page's language: the option reaches Python, every
 placeholder of the template has text in every language, and an exported page
-carries the text of the language in force and no leftover placeholder."""
+carries the text of the language in force and no leftover placeholder. The fold
+notes, drawn on the boards by the backend, follow it too, and the notes on show
+are drawn again when it changes."""
 import os
 import re
 import sys
@@ -41,6 +43,39 @@ def exported():
             return handle.read()
 
 
+def fold_notes():
+    slots = lambda text: sorted(re.findall(r"\{\d\}", text))
+    say = ui_language.text
+    results = []
+    tables = ui_language._BOARD_TEXT
+    results.append(report("every language has every fold-note key", len({frozenset(t) for t in tables.values()}) == 1))
+    results.append(report("and the same {0} slots as the English", all(
+        slots(text) == slots(source) for table in tables.values() for source, text in table.items())))
+
+    note = lambda: say("The {0} axis on the {1} board", "V", say("texture"))
+    results.append(report("English notes read as before", note() == "The V axis on the texture board"
+                          and say("doubles back {0} px from its end", "18") == "doubles back 18 px from its end"))
+
+    pushed = []
+    original = am._push_overlay
+    am._push_overlay = pushed.append
+    try:
+        am._FOLD_NOTES["regions"] = [{"view": "main", "point": (0.0, 0.0), "text": say("Fold here")}]
+        send("ja")
+        results.append(report("Japanese notes", note() == "テクスチャボードの V 軸線が" and say("Fold here") == "ここで折り返し"))
+        results.append(report("the notes on show are drawn again", am._FOLD_NOTES["regions"] is None
+                              and sorted(pushed) == ["child", "main"]))
+        send("ja")
+        results.append(report("the same language draws nothing again", len(pushed) == 2))
+        send("zh-CN")
+        results.append(report("Chinese notes, nothing on show to draw", note() == "纹理板上的 V 轴线" and len(pushed) == 2))
+    finally:
+        am._push_overlay = original
+        send("en")
+        am._FOLD_NOTES["regions"] = None
+    return results
+
+
 def main():
     used = set(PLACEHOLDER.findall(am._TO3D_TEMPLATE))
     results = [report("the template has placeholders", bool(used))]
@@ -67,6 +102,7 @@ def main():
     results.append(report("Chinese works too", "浮雕比例" in exported()))
     send("en")
 
+    results.extend(fold_notes())
     print(f"PASS {sum(results)}/{len(results)}")
     return 0 if all(results) else 1
 

@@ -14,7 +14,8 @@ html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background:
 .vf-player-stage .vf-body { background: transparent; }
 .qt-panel { position: absolute; inset: 0; color: var(--text); font: 12px/16px "Segoe UI", sans-serif; }
 
-.vf-player-stage .vf-dock-header { height: 18px !important; padding: 0 !important; background: var(--window) !important; border: 0 !important;
+/* Positioned, or the dock's empty absolute body sits on top and takes every click. */
+.vf-player-stage .vf-dock-header { position: relative; z-index: 1; height: 18px !important; padding: 0 !important; background: var(--dock-title) !important; border: 0 !important;
   color: var(--text) !important; font: 12px/19px "Segoe UI", sans-serif !important; cursor: default !important; }
 .vf-player-stage .vf-dock-header:active { cursor: default !important; }
 .vf-player-stage .vf-dock-header .dock-title { padding-left: 4.5px; white-space: nowrap; }
@@ -23,17 +24,21 @@ html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background:
 .vf-player-stage .vf-dock-header .dock-action-btn:hover { background-color: var(--surface-alt); }
 .vf-player-stage .vf-dock-header .dock-btn-float { background-image: var(--dock-float-svg); }
 .vf-player-stage .vf-dock-header .dock-btn-close { background-image: var(--dock-close-svg); }
+/* The Tools groups scroll here instead of spilling over whatever docks below. */
+.vf-player-stage .vf-node[data-vf-id="toolsScroll"] { overflow: hidden; }
 /* Too narrow for the title and both buttons: the title bar still drags the dock out. */
 .vf-player-stage .vf-dock-header { container-type: inline-size; }
 @container (max-width: 79px) { .vf-player-stage .vf-dock-header .dock-btn-float { display: none; } }
 
 .dock-page { display: flex; flex-direction: column; }
-.opt-body { flex: 1; min-height: 0; overflow: auto; }
-.board-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.qframe.opt-body { flex: 1; min-height: 0; border: 0; background: transparent; }
+.board-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; outline: 0; }
 
 /* Fusion's main window keeps an 8px separator between the central widget and
    the docks; here the central panel carries it. */
 .central { left: 8px !important; right: 8px !important; }
+/* The selected tab lights up with the board's frame, so the two read as one. */
+.central:focus-within .tab.sel { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 .toolopt-gap { bottom: 8px; }
 
 /* QSizeGrip as Fusion dots it. */

@@ -331,9 +331,97 @@ describe("BoardRenderer", () => {
     });
 
     deliver({ key: "cur_arrow", w: 1, h: 1 }, new Uint8Array(4));
-    deliver({ key: "layer", w: 1, h: 1 }, new Uint8Array(4));
+    deliver({ key: "thumb_main_0_83x62_1", w: 1, h: 1 }, new Uint8Array(4));
+    deliver({ key: "other", w: 1, h: 1, view: "child" } as never, new Uint8Array(4));
+    deliver({ key: "layer", w: 1, h: 1, view: "main" } as never, new Uint8Array(4));
 
     assert.equal(renderer.getImage("cur_arrow"), undefined);
+    assert.equal(renderer.getImage("thumb_main_0_83x62_1"), undefined, "a thumbnail is the page's");
+    assert.equal(renderer.getImage("other"), undefined, "another board's image stays with that board");
     assert.ok(renderer.getImage("layer"));
+  });
+
+  it("drops an image when the backend forgets it for this board", () => {
+    const main = createMockCanvas();
+    let forget: (view: string, key: string) => void = () => {};
+    const client = {
+      onImage: () => () => {},
+      onImageForget(handler: typeof forget) {
+        forget = handler;
+        return () => {};
+      },
+      onBoard: () => () => {},
+      sendAck() {},
+    };
+    const renderer = new BoardRenderer(main.canvas, {
+      client: client as never,
+      createCacheCanvas: () => createMockCanvas().canvas,
+    });
+    renderer.putImage({ t: "image", key: "ghost", w: 1, h: 1, bytes: 4 }, new Uint8Array(4));
+
+    forget("child", "ghost");
+    assert.ok(renderer.getImage("ghost"), "the other board's forget is not this board's");
+    forget("main", "ghost");
+    assert.equal(renderer.getImage("ghost"), undefined);
+  });
+
+  it("skips F..f scope in Canvas 2D without drawing, preserves scope ops and field data on adopt, and handles partial ranges", () => {
+    const main = createMockCanvas();
+    const renderer = new BoardRenderer(main.canvas, {
+      getDpr: () => 1,
+      createCacheCanvas: () => createMockCanvas().canvas,
+    });
+    const fieldData = new Float32Array([10, 0, 1, 0, 10, 0, 1, 0, 10, 0, 1, 0, 10, 0, 1, 0]);
+    renderer.putField({ key: "fld_main", w: 2, h: 2, version: 1 }, fieldData);
+
+    const ops: unknown[][] = [
+      ["B", 10, 20, 30, 255],
+      ["R", 0, 0, 50, 50],
+      ["F", "fld_main", 1, 0, 0, 100, 100, 4, [[1, 1, 1, 0, 0, 0, 0]]],
+      ["B", 255, 0, 0, 255],
+      ["R", 10, 10, 20, 20],
+      ["S", [0, 0, 0, 1, 30, 30], 0],
+      ["f"],
+      ["R", 60, 60, 10, 10],
+    ];
+    renderer.renderFrame({
+      t: "board",
+      view: "main",
+      frame: 1,
+      w: 100,
+      h: 100,
+      keep: 0,
+      ops,
+    });
+
+    const fillRects = main.calls.filter((c) => c.op === "fillRect");
+    assert.equal(fillRects.length, 2);
+    assert.deepEqual(fillRects[0].args.slice(0, 4), [0, 0, 50, 50]);
+    assert.deepEqual(fillRects[1].args.slice(0, 4), [60, 60, 10, 10]);
+    assert.equal(main.calls.filter((c) => c.op === "stroke").length, 0);
+
+    // Adopt into a second BoardRenderer preserves F..f ops and rawFields
+    const nextMain = createMockCanvas();
+    const nextRenderer = new BoardRenderer(nextMain.canvas, {
+      getDpr: () => 1,
+      createCacheCanvas: () => createMockCanvas().canvas,
+    });
+    nextRenderer.adopt(renderer as never);
+    assert.equal(nextRenderer.getOps().length, ops.length);
+    assert.equal(nextRenderer.getOps()[2][0], "F");
+    assert.equal(nextRenderer.getOps()[6][0], "f");
+    assert.deepEqual(Array.from(nextRenderer.getField("fld_main")!.data), Array.from(fieldData));
+
+    // Incomplete range or keep inside F..f does not crash
+    nextRenderer.renderFrame({
+      t: "board",
+      view: "main",
+      frame: 2,
+      w: 100,
+      h: 100,
+      keep: 4,
+      ops: [["R", 20, 20, 10, 10], ["f"]],
+    });
+    assert.equal(nextRenderer.getOps().length, 6);
   });
 });

@@ -12,27 +12,25 @@ Tauri 外壳（Rust，只启动和回收）
 AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfile/）
 ```
 
-后端用 `QGuiApplication` 跑在 `offscreen` 平台上，暂时依赖 QtCore、QtGui、QtNetwork，不依赖 QtWidgets 和 QtOpenGL。计算层 `animean_core` 已经不依赖 Qt，还在用 Qt 的是画板（`QPainter`、`QMouseEvent`）、会话层和 WebSocket，要等迁移计划第 5 步抽出画板引擎。
+后端不链接任何 Qt 模块：用 `backend/platform/eventloop.*` 跑事件循环，`backend/net/wsserver.*` 提供本地 WebSocket 服务，计算层 `animean_core`、画板与会话层全部使用 `AnimeCore` 基础类型（`algorithm/core/`）。
 
 启动参数：`AnimeAnBackend.exe --port <端口，0 表示自动> --token <随机串>`。监听成功后向 stdout 打一行 `ANIMEAN_BACKEND_PORT=<端口>`，只监听 127.0.0.1。
+
+后端起不来时窗口照样打开，网页取 `backend_endpoint` 失败后弹框说明原因。运行中后端异常退出时外壳向主窗口发 `backend-exited`，网页弹框提示重启。
 
 连接地址：`ws://127.0.0.1:<端口>/?token=<随机串>`。token 不对就拒绝。`Origin` 只放行 `tauri://localhost`、`http://tauri.localhost`、`https://tauri.localhost` 和 `http://localhost:<任意端口>`；没有 `Origin` 头的连接放行（测试用）。同一时间只服务一个连接，第二个连接到来时断开旧的。
 
 ## 画板不改逻辑
 
-`PaintOpenGLWidget` 的源码在桌面版和后端共用，只换基类：
+`PaintOpenGLWidget`（`openglwidget.*`）的画板业务代码保持原样，基类由 `boardbase.h` 定为 `BoardSurface`（`using PaintBoardBase = BoardSurface;`）：
 
-- 桌面版基类是 `QOpenGLWidget`。
-- 后端基类是 `BoardSurface`：继承 `QObject` 和 `QPaintDevice`，提供 `update()`、`width()`、`height()`、`size()`、`rect()`、`setCursor()`、`unsetCursor()`、`setMouseTracking()`、`setFocusPolicy()`、`devicePixelRatioF()` 和全部事件虚函数。
-- 基类的选择放在 `boardbase.h`，由编译定义 `ANIMEAN_HEADLESS` 决定。
-
-`QPainter painter(this)` 因此不用改：后端的 `paintEngine()` 返回 `RecordingPaintEngine`，它把绘制调用记成指令表。`update()` 合并成一次 0 毫秒定时，定时到了调用 `paintGL()`。
-
-鼠标、滚轮事件由后端构造真实的 `QMouseEvent`、`QWheelEvent`，直接调对应的虚函数，所以钩子消息和桌面版来自同一段代码。
+- `BoardSurface`（`backend/board/boardsurface.*`）继承 `AnimeCore::PaintDevice`，持有 `RecordingDevice`，提供 `update()`、`width()`、`height()`、`size()`、`rect()`、`setCursor()`、`unsetCursor()`、`setMouseTracking()`、`setFocusPolicy()`、`devicePixelRatioF()` 和全部事件虚函数。
+- `Painter painter(this)` 在 `BoardSurface` 上绘制：`BoardSurface` 是 `PaintDevice`，把绘制调用转给内部的 `RecordingDevice`，录制成带 64 位哈希的指令表。`update()` 合并成一次 0 毫秒定时（`Timer`），定时到了调用 `paintGL()`。
+- 鼠标、滚轮、焦点事件由 `BoardSurface::injectMouse`、`injectWheel`、`injectFocus`、`injectBlur` 等构造 `MouseEvent`、`WheelEvent`（`backend/board/inputevent.h`），直接调对应的虚函数；尺寸走 `resizeSurface`。派发给 Python 的钩子消息格式不变。
 
 ## 消息
 
-文本帧都是一个 JSON 对象，`t` 字段是类型。二进制帧只用于图片。
+文本帧都是一个 JSON 对象，`t` 字段是类型。二进制帧用于图片和场数据。
 
 ### 网页 → 后端
 
@@ -45,9 +43,9 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 `kind`：`press`、`move`、`release`、`wheel`、`enter`、`leave`、`resize`、`focus`。
 
 - 坐标是画板左上角起的 CSS 像素。
-- `button`、`buttons` 的值用 `Qt::MouseButton`：左 1，右 2，中 4。
-- `modifiers` 的值用 `Qt::KeyboardModifier`：Shift `0x02000000`，Ctrl `0x04000000`，Alt `0x08000000`。
-- `wheel` 带 `dx`、`dy`，单位和 `QWheelEvent::angleDelta` 相同。
+- `button`、`buttons` 的值用 `AnimeCore::MouseButton`（`backend/board/inputevent.h`）：左 1，右 2，中 4。
+- `modifiers` 的值用 `AnimeCore::KeyboardModifier`：Shift `0x02000000`，Ctrl `0x04000000`，Alt `0x08000000`。
+- `wheel` 带 `dx`、`dy`，单位和 `AnimeCore::WheelEvent::angleDelta`（1/8 度，一格 120）相同。
 - `resize` 带 `w`、`h`、`dpr`。
 
 ### 后端 → 网页
@@ -57,11 +55,16 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 {"t":"reply","id":1,"ok":false,"error":"..."}
 {"t":"state","key":"layers/main","value":{}}
 {"t":"board","view":"main","frame":42,"w":567,"h":690,"keep":120,"ops":[]}
-{"t":"image","key":"a1b2","w":100,"h":80,"bytes":320000}
+{"t":"image","key":"a1b2","view":"main","w":100,"h":80,"bytes":320000}
+{"t":"image.forget","key":"a1b2","view":"main"}
+{"t":"field","key":"f1","w":64,"h":64,"version":3,"bytes":65536}
 ```
 
 - 连接建立后，后端先把全部 `state` 键发一遍。之后只发变了的键，值是该键的完整新值。
 - `image` 文本帧之后紧跟一个二进制帧，内容是 RGBA8 非预乘像素，逐行从上到下。
+- `image` 的 `view` 说明图是哪块画板画的，只有那块画板收下。光标和缩略图不带 `view`，归页面。
+- 画板发过的图由后端记账，每块画板上限 512 MB。超了就从最久没画过的开始发 `image.forget`，网页收到就释放，当前帧画到的图不淘汰。之后再画到时重新发 `image` 帧。后端不留副本，新客户端连上时清零记账，下一帧重新发。
+- `field` 文本帧之后紧跟一个二进制帧，内容是 `w * h * 4` 个小端 `Float32`（`RGBA32F`），逐行从上到下，每像素为 `(dx, dy, tag, 0)`：位移、层序标记（0 是无效节点）和保留通道。`version` 为全局单调递增序号。场帧只在发送用到该场的 `board` 帧之前发出；同一 `key` 尚未发出的旧值会被新值直接覆盖，等待 `ack` 期间不发送。
 
 ## 绘制指令
 
@@ -69,7 +72,7 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 
 | 操作 | 参数 | 含义 |
 |---|---|---|
-| `T` | m11, m12, m21, m22, dx, dy | 设置变换，同 `QTransform` |
+| `T` | m11, m12, m21, m22, dx, dy | 设置变换，同 `AnimeCore::Transform` |
 | `P` | r, g, b, a, width, cap, join, miter, cosmetic, dash | 设置画笔。`a` 是 0–255。`cap`：0 平头、1 方头、2 圆头。`join`：0 尖角、1 斜角、2 圆角。`dash` 是数组或 `null`，长度以线宽为单位。`a` 为 0 表示不描边 |
 | `B` | r, g, b, a | 设置纯色画刷。`a` 为 0 表示不填充 |
 | `G` | kind, coords, stops | 设置渐变画刷。`kind`：`linear`、`radial`。`stops` 是 `[pos, r, g, b, a]` 数组 |
@@ -80,6 +83,8 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 | `S` | path, rule | 按当前画笔、画刷画路径 |
 | `I` | key, sx, sy, sw, sh, dx, dy, dw, dh | 画图片，`key` 对应先发的 `image` 帧 |
 | `H` | smooth | 图片平滑开关，0 或 1 |
+| `F` | key, version, x, y, w, h, maxEdge, passes | 开启场作用域。`key`、`version` 对应先发的 `field` 帧，`x, y, w, h` 是场覆盖的画布矩形，`maxEdge` 是细分最大边长，`passes` 是 `[[tagLo, tagHi, opacity, r, g, b, a], ...]`（未指定 `tint` 时 `r, g, b, a` 均为 0）。作用域内的 `S` 指令按该场变形绘制 |
+| `f` | 无 | 结束场作用域 |
 
 `path` 是扁平数组，`[命令, 坐标...]` 连续排列。命令：0 移到（x, y），1 直线到（x, y），2 三次曲线到（c1x, c1y, c2x, c2y, x, y），3 闭合。
 
@@ -106,31 +111,41 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 - 几何放在一个大顶点缓冲里，GPU 缓冲按整个容量预留，新几何只传新增部分。擦除时一帧要新增几十条切片，缓冲只按数据量分配时每条都会全量上传，单帧要几十毫秒。
 - 选择存在页面的 `localStorage`，键是 `animean.boardRenderer`，属于机器级偏好，不进工程文件，也不经过后端。菜单项由 `webui/src/ui/app.js` 加在后端的菜单后面。
 - 切换时新建 canvas，因为同一个 canvas 只能拿到一种上下文。新渲染器用 `adopt` 接手指令表和图片，不需要后端重发。
-- 显卡不支持 WebGL2 或上下文创建失败时退回 Canvas 2D。要读背景的合成模式（`multiply`、`screen` 等）WebGL 没有实现，退回 `source-over`；画板现在不发这些模式，唯一的 `setCompositionMode` 作用在离屏 `QImage` 上。
+- 显卡不支持 WebGL2 或上下文创建失败时退回 Canvas 2D。要读背景的合成模式（`multiply`、`screen` 等）WebGL 没有实现，退回 `source-over`；画板现在不发这些模式，唯一的 `setCompositionMode` 作用在离屏 `AnimeCore::Image`（`RasterDevice`）上。
 
 ## 状态键
 
 | 键 | 内容 |
 |---|---|
-| `window` | 标题、状态栏文字 |
+| `window` | 标题、状态栏文字、活动画板 `activeView`、素材面板目标画板 `assetView`、画布尺寸、工程与纹理路径、`pythonDebug` 日志（最多保留 2000 条） |
 | `theme` | `AnimeTheme` 的模式和全部颜色 |
 | `menus` | 菜单栏的完整结构，含 Python 返回的菜单 |
+| `textureMenus` | 纹理板菜单栏的完整结构：内建的 `File`、`Setting`，加 Python 注册的 `child` 菜单（如 `View`）。脚本按钮行不在这里，在 `windows.textureViewButtons` |
 | `tools` | 工具页、当前工具、被锁定的工具 |
 | `toolOptions` | Python 返回的选项 JSON |
 | `drawColor`、`drawSettings` | 当前颜色、绘制设置 |
 | `layers/main`、`layers/child` | 图层树 |
 | `assets/main`、`assets/child` | 素材列表 |
 | `timeline` | 帧数、当前帧、播放状态、洋葱皮 |
+| `thumbnails` | `{ revision }`，帧缩略图缓存的版本，画面变了就加一 |
 | `history` | 历史记录 |
-| `windows` | 面板的显示状态 |
-| `cursor/main`、`cursor/child` | 光标：形状名，或者图片 `key` 加热点 |
+| `windows` | 面板的显示状态和当前页（`paint` 的当前页按焦点算，见 `windows_theme.md`）、时间轴的停靠状态、纹理子控件框是否可见（`textureSubControlVisible`）、纹理板的脚本按钮行（`textureViewButtons`） |
+| `cursor/main`、`cursor/child` | 光标：形状名，或者图片 `key` 加热点和 `scale`。位图是屏幕像素，`w`、`h` 也是；热点是逻辑像素，`scale` 是位图每个逻辑像素的像素数，网页用 `image-set` 声明 |
 | `freeze` | Python 冻结界面的开关 |
 | `pad` | Repulsion Pad 的值 |
-| `viewport/main`、`viewport/child` | 滚动条：`h`、`v` 各含 `min`、`max`、`page`、`value`、`enabled`，算法同 `PaintViewContainer::syncScrollBars` |
-| `event` | 一次性通知，`{ name, args }`，不合并、不重发：`dialog.*`、`menu.action`、`settings.open`、`window.show`、`window.select`、`textureView.surface` |
+| `viewport/main`、`viewport/child` | 滚动条：`h`、`v` 各含 `min`、`max`、`page`、`value`、`enabled`，由 `BackendSession::buildViewportState` 计算 |
+| `event` | 一次性通知，`{ name, args }`，不合并、不重发：`dialog.*`、`menu.action`、`settings.open`、`window.show`、`window.select`、`textureView.surface`、`textureSubControl.surface` |
 
 ## 调用
 
-方法名在 `backend/session/backendsession.cpp` 的 `dispatchCall`。图层右键走 `layer.contextMenu`（返回菜单项，含 Python 注册的项）和 `layer.contextAction`。网页发 `input` 时带 `time`（毫秒），后端写进事件时间戳，稳定器要用它。
+方法名在 `backend/session/backendsession.cpp` 的 `dispatchCall`。图层右键走 `layer.contextMenu`（返回菜单项，含 Python 注册的项）和 `layer.contextAction`。纹理板搬迁时调 `texture.setHome`（`home`：`central`、`control`、`parked`，后端保存离开处的缩放与平移、恢复到达处视口并在到达 `control` 时自动适配），脚本按钮行调 `texture.viewButton`（`view`、`name`、`on`；也认 `id`、`checked`）。网页发 `input` 时带 `time`（毫秒），后端写进事件时间戳，稳定器要用它。`board.capabilities`（参数 `{"view":"main"|"child","fieldDisplay":true|false}`）由网页在画板渲染器就绪后上报该视图是否支持场显示，供 `animean_python.ui.field_display_supported(view)` 查询（缺省 `False`，连接断开时清零）。
+
+| 调用 | 参数 | 返回 / 说明 |
+|---|---|---|
+| `menu.refresh` | `{}` | 从 Python 重新生成菜单结构并返回 `{ menus }`，同时标记 `menus` 状态更新 |
+| `layer.applyStructure` | `{ view, rows, movedLayer }` | 按拖动后的树形行序列重排图层与图层组（含父层携带跟随子层），返回 `{ landedOn, selected }` |
+| `timeline.thumbnails` | `{ frames?, width, height, view? }` | 用 `renderFrameThumbnail` 渲染指定帧缩略图，新渲染的通过 `image` 帧下发，已缓存的不重发（连接时补发过），返回 `{ view, width, height, revision, thumbnails, frames }`。缓存作废时 `thumbnails` 状态的 `revision` 加一，网页据此重新请求屏幕上的帧 |
+| `file.import` | `{ kind, paths, view?, probe?, fitToCanvas? }` | 应用 File 菜单的导入（未传 `view`）进主画板，`view: "child"` 或 `kind` 带 `texture.` 前缀时进纹理板，不是探测时先把目标板显示出来；矢量导入支持 `probe: true` 先返回 `{ needsScale, sourceBounds, canvasWidth, canvasHeight }` |
+| `project.save`、`project.saveAs`、`file.texture` | `{ path, probe?, overwrite? }`；`file.texture` 另带 `kind`（`open`、`save`、`saveAs`、`exportImage`） | 保存类调用支持 `probe: true` 检查后缀补全改写后的目标文件是否已存在，返回 `{ needsConfirmOverwrite, fileName, path }` |
 
 Qt 版打开时先弹 New Project 对话框，网页版同样在收到第一个 `window` 状态后弹出。

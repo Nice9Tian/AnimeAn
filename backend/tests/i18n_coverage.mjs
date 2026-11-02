@@ -70,15 +70,24 @@ const call = (method, params = {}) => new Promise((resolve, reject) => {
 const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
 
 const seen = new Set();
+const SHOWN_KEYS = new Set(["title", "text", "tooltip", "status"]);
 function collect(value) {
   if (Array.isArray(value)) {
     value.forEach(collect);
   } else if (value && typeof value === "object") {
     for (const [key, item] of Object.entries(value)) {
-      if ((key === "title" || key === "text") && typeof item === "string") seen.add(item);
+      if (SHOWN_KEYS.has(key) && typeof item === "string") seen.add(item);
       else collect(item);
     }
   }
+}
+// What the chrome shows besides the menus: the texture panel's own menu bar and
+// buttons, the window title and status line, and the history.
+function collectChrome() {
+  collect(states.get("textureMenus"));
+  collect(states.get("windows"));
+  collect(states.get("window"));
+  for (const label of states.get("history")?.labels ?? []) seen.add(label);
 }
 const menuIds = (items, out = []) => {
   for (const item of items ?? []) {
@@ -93,6 +102,7 @@ try {
   await call("project.new", { width: 1280, height: 720 });
   await settle();
   collect(states.get("menus"));
+  collectChrome();
   for (const tool of TOOLS) {
     await call("tool.select", { tool });
     await settle();
@@ -124,6 +134,7 @@ try {
   await settle();
   collect(states.get("menus"));
   collect(states.get("toolOptions"));
+  collectChrome();
 
   for (const id of menuIds(states.get("menus"))) {
     if (id.startsWith("settings:")) await call("menu.trigger", { id });

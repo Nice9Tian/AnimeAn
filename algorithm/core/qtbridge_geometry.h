@@ -15,6 +15,8 @@
 #include <QRectF>
 #include <QSet>
 #include <QSize>
+#include <QSizeF>
+#include <QPolygonF>
 #include <QTransform>
 
 QT_BEGIN_NAMESPACE
@@ -23,6 +25,7 @@ class QImage;
 class QJsonValue;
 class QJsonArray;
 class QJsonObject;
+class QVariant;
 QT_END_NAMESPACE
 
 namespace AnimeCore {
@@ -33,6 +36,7 @@ class LineF;
 class RectF;
 class Rect;
 class Size;
+class SizeF;
 class Transform;
 class Color;
 class Path;
@@ -40,6 +44,9 @@ class Image;
 class JsonValue;
 class JsonArray;
 class JsonObject;
+class JsonVariant;
+template <class T>
+class Vector;
 
 template <>
 struct Bridge<QPointF>
@@ -96,6 +103,32 @@ struct Bridge<QSize>
 };
 
 template <>
+struct Bridge<QSizeF>
+{
+    using Core = SizeF;
+
+    static SizeF toCore(const QSizeF &s) noexcept;
+    static QSizeF fromCore(const SizeF &s) noexcept;
+};
+
+template <>
+struct Bridge<Qt::GlobalColor>
+{
+    using Core = Color;
+
+    static Color toCore(Qt::GlobalColor c) noexcept;
+};
+
+template <>
+struct Bridge<QPolygonF>
+{
+    using Core = Vector<PointF>;
+
+    static Core toCore(const QPolygonF &poly);
+    static QPolygonF fromCore(const Core &vec);
+};
+
+template <>
 struct Bridge<QTransform>
 {
     using Core = Transform;
@@ -147,6 +180,15 @@ struct Bridge<QJsonArray>
 
     static JsonArray toCore(const QJsonArray &q);
     static QJsonArray fromCore(const JsonArray &c);
+};
+
+template <>
+struct Bridge<QVariant>
+{
+    using Core = JsonVariant;
+
+    static JsonVariant toCore(const QVariant &q);
+    static QVariant fromCore(const JsonVariant &c);
 };
 
 template <>
@@ -210,6 +252,24 @@ template <>
 struct CoreOf<QSize>
 {
     using type = Size;
+};
+
+template <>
+struct CoreOf<QSizeF>
+{
+    using type = SizeF;
+};
+
+template <>
+struct CoreOf<Qt::GlobalColor>
+{
+    using type = Color;
+};
+
+template <>
+struct CoreOf<QPolygonF>
+{
+    using type = Vector<PointF>;
 };
 
 template <>
@@ -340,6 +400,77 @@ inline QSize Bridge<QSize>::fromCore(const Size &s) noexcept
 {
     return QSize(s.width(), s.height());
 }
+
+inline SizeF Bridge<QSizeF>::toCore(const QSizeF &s) noexcept
+{
+    return SizeF(s.width(), s.height());
+}
+
+inline QSizeF Bridge<QSizeF>::fromCore(const SizeF &s) noexcept
+{
+    return QSizeF(s.width(), s.height());
+}
+
+inline Color Bridge<Qt::GlobalColor>::toCore(Qt::GlobalColor c) noexcept
+{
+    return Bridge<QColor>::toCore(QColor(c));
+}
+
+inline Vector<PointF> Bridge<QPolygonF>::toCore(const QPolygonF &poly)
+{
+    Vector<PointF> out;
+    out.reserve(static_cast<std::ptrdiff_t>(poly.size()));
+    for (const QPointF &pt : poly)
+        out.append(Bridge<QPointF>::toCore(pt));
+    return out;
+}
+
+inline QPolygonF Bridge<QPolygonF>::fromCore(const Vector<PointF> &vec)
+{
+    QPolygonF out;
+    out.reserve(vec.size());
+    for (const PointF &pt : vec)
+        out.append(Bridge<QPointF>::fromCore(pt));
+    return out;
+}
+
+inline bool operator==(const Size &a, const QSize &b) noexcept { return a == Bridge<QSize>::toCore(b); }
+inline bool operator==(const QSize &a, const Size &b) noexcept { return Bridge<QSize>::toCore(a) == b; }
+inline bool operator!=(const Size &a, const QSize &b) noexcept { return !(a == b); }
+inline bool operator!=(const QSize &a, const Size &b) noexcept { return !(a == b); }
+
+inline bool operator==(const SizeF &a, const QSizeF &b) noexcept { return a == Bridge<QSizeF>::toCore(b); }
+inline bool operator==(const QSizeF &a, const SizeF &b) noexcept { return Bridge<QSizeF>::toCore(a) == b; }
+inline bool operator!=(const SizeF &a, const QSizeF &b) noexcept { return !(a == b); }
+inline bool operator!=(const QSizeF &a, const SizeF &b) noexcept { return !(a == b); }
+
+inline bool operator==(const Point &a, const QPoint &b) noexcept { return a == Bridge<QPoint>::toCore(b); }
+inline bool operator==(const QPoint &a, const Point &b) noexcept { return Bridge<QPoint>::toCore(a) == b; }
+inline bool operator!=(const Point &a, const QPoint &b) noexcept { return !(a == b); }
+inline bool operator!=(const QPoint &a, const Point &b) noexcept { return !(a == b); }
+inline Point operator+(const Point &a, const QPoint &b) noexcept { return a + Bridge<QPoint>::toCore(b); }
+inline Point operator+(const QPoint &a, const Point &b) noexcept { return Bridge<QPoint>::toCore(a) + b; }
+inline Point operator-(const Point &a, const QPoint &b) noexcept { return a - Bridge<QPoint>::toCore(b); }
+inline Point operator-(const QPoint &a, const Point &b) noexcept { return Bridge<QPoint>::toCore(a) - b; }
+
+inline bool operator==(const PointF &a, const QPointF &b) noexcept { return a == Bridge<QPointF>::toCore(b); }
+inline bool operator==(const QPointF &a, const PointF &b) noexcept { return Bridge<QPointF>::toCore(a) == b; }
+inline bool operator!=(const PointF &a, const QPointF &b) noexcept { return !(a == b); }
+inline bool operator!=(const QPointF &a, const PointF &b) noexcept { return !(a == b); }
+inline PointF operator+(const PointF &a, const QPointF &b) noexcept { return a + Bridge<QPointF>::toCore(b); }
+inline PointF operator+(const QPointF &a, const PointF &b) noexcept { return Bridge<QPointF>::toCore(a) + b; }
+inline PointF operator-(const PointF &a, const QPointF &b) noexcept { return a - Bridge<QPointF>::toCore(b); }
+inline PointF operator-(const QPointF &a, const PointF &b) noexcept { return Bridge<QPointF>::toCore(a) - b; }
+
+inline bool operator==(const Rect &a, const QRect &b) noexcept { return a == Bridge<QRect>::toCore(b); }
+inline bool operator==(const QRect &a, const Rect &b) noexcept { return Bridge<QRect>::toCore(a) == b; }
+inline bool operator!=(const Rect &a, const QRect &b) noexcept { return !(a == b); }
+inline bool operator!=(const QRect &a, const Rect &b) noexcept { return !(a == b); }
+
+inline bool operator==(const RectF &a, const QRectF &b) noexcept { return a == Bridge<QRectF>::toCore(b); }
+inline bool operator==(const QRectF &a, const RectF &b) noexcept { return Bridge<QRectF>::toCore(a) == b; }
+inline bool operator!=(const RectF &a, const QRectF &b) noexcept { return !(a == b); }
+inline bool operator!=(const QRectF &a, const RectF &b) noexcept { return !(a == b); }
 
 inline Transform Bridge<QTransform>::toCore(const QTransform &t) noexcept
 {

@@ -54,6 +54,7 @@
 - **机制 / 策略成对。** 加一个 C++ 机制就要有一个 Python 策略模块用它；handle 事件是工具面。**新工具**：[缺省]代码完成后填入。
 - **Python 层装会变的东西。** 实验性算法、随功能扩展变化的逻辑都在 Python。现成的库能省事就用，wheel 入 `pywheels/`、经 `pydeps.ensure()` 加载并保留降级路径；这是不重复造轮子，不是原则。
 - **Rust 只做外壳，不写算法。**
+- **界面在哪里改。** 停靠布局和 Tools 的控件在 `webui/design/` 里改；其余面板、菜单栏和对话框在 `webui/src/ui/` 里改。`webui/vf/` 是 VibeFrontend 运行层的副本，改动要记进 `webui/vf/README.md`。
 
 ### 共享与空间
 
@@ -96,13 +97,16 @@
 | 项 | 命令 | 什么时候必跑 |
 |---|---|---|
 | Python 回归（无 GUI） | `py -m unittest discover -s tests`（`test_legacy_suites.py` 把 `t_*.py` 逐个当子测试跑）；单跑 `py tests\t_<名>.py` | 改到 `pyfile/` |
-| C++ 单测 | 配置时 `BUILD_TESTING` 开着，`ctest` 跑 `projectio_tests`、`animemodel_tests`、`strokefit_tests`，以及和真实 Qt 比较的 `core_*` | 改到 `algorithm/`、`projectio.*` |
-| 编译检查 | `cmake --build build\wt-check --target AnimeAn --parallel 10`（新 worktree 先 `git submodule update --init --depth 1`） | 改到 C++，合并前 |
+| C++ 单测 | 配置时 `BUILD_TESTING` 开着，`ctest` 跑 `projectio_roundtrip`、`animemodel_asset_gc`、`strokefit_zoom_invariance`、`board_headless_test`、`textpath_tests`、`platform_tests`；配置时传入 Qt6 路径才会加上和真实 Qt 比较的 `core_*`，见 `mechanism/build_deploy.md` | 改到 `algorithm/`、`projectio.*`、`backend/board/`、`backend/platform/` |
+| 编译检查 | `cmake --build build\wt-check --target AnimeAnBackend --parallel 10`（新 worktree 先 `git submodule update --init --depth 1`） | 改到 C++，合并前 |
+| 后端会话冒烟 | `node backend/tests/session_smoke.mjs <AnimeAnBackend.exe>` | 改到 `backend/`、`openglwidget.*` |
+| 新旧对比 | `node backend/tests/golden/record.mjs --backend <AnimeAnBackend.exe> --out <输出.jsonl>`，再用 `compare.mjs` 比基线，见 `mechanism/build_deploy.md` | 改到后端行为 |
+| 网页 | 在 `webui/` 下跑 `npm test`（含词条检查）、`npx tsc --noEmit` | 改到 `webui/` |
+| 外壳 | `cargo test --manifest-path src-tauri/Cargo.toml` | 改到 `src-tauri/` |
 | 部署构建 | `PowerShell -ExecutionPolicy Bypass -File .\build_scripts\agent_build.ps1`，结束行 `===== AGENT BUILD DONE EXIT_CODE=0 =====`；必须在沙箱外 | 改到 C++ 合并后；发布前 |
 | 脚本同步 | `powershell -ExecutionPolicy Bypass -File sync_pyfiles.ps1` | 每次改 `.py` 而不重建 |
 | 真机验证 | 在 `dist\AnimeAn\AnimeAn.exe` 里按 `tools_user_workflow/` 的步骤手测 | 改到用户看得见的行为 |
-| 网页回归 | 在 `webui/` 里 `npm test`，含词条检查 | 改到 `webui/` |
-| 界面语言覆盖 | `node backend/tests/i18n_coverage.mjs <AnimeAnBackend.exe>` | 改到 Python 的菜单、选项或设置窗文字 |
+| 界面语言覆盖 | `node backend/tests/i18n_coverage.mjs <AnimeAnBackend.exe>` | 改到 C++ 或 Python 发给界面的文字（菜单、选项、设置窗、状态栏） |
 | 文档链接 | `py build_scripts\check_doc_links.py`（反引号里的 `.md` 路径都要存在） | 改到 `docs/` 或根目录的 README / AGENTS / CLAUDE |
 
 ## 提交与发布

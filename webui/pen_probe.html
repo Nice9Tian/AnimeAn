@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AnimeAn Pen Probe</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #ffffff;
+        color: #111111;
+        font-family: monospace;
+        font-size: 12px;
+        user-select: none;
+      }
+      #probe-canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+        background: #ffffff;
+        touch-action: none;
+        cursor: crosshair;
+      }
+      #probe-panel {
+        position: fixed;
+        top: 8px;
+        left: 8px;
+        right: 8px;
+        background: rgba(255, 255, 255, 0.92);
+        border: 1px solid #cccccc;
+        padding: 6px 8px;
+        pointer-events: auto;
+        max-height: calc(100vh - 16px);
+        overflow: auto;
+      }
+      #probe-bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      #probe-readout {
+        flex: 1 1 auto;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      #probe-details {
+        margin-top: 4px;
+        white-space: pre;
+        overflow-x: auto;
+        line-height: 1.35;
+      }
+      #probe-json-output {
+        display: none;
+        width: 100%;
+        height: 140px;
+        margin-top: 6px;
+        box-sizing: border-box;
+        font-family: monospace;
+        font-size: 11px;
+        user-select: text;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="probe-canvas"></canvas>
+    <div id="probe-panel">
+      <div id="probe-bar">
+        <div id="probe-readout">等待落笔（pen / mouse 分开统计）…</div>
+        <button id="probe-copy-btn" type="button">复制 JSON</button>
+        <button id="probe-clear-btn" type="button">清空</button>
+        <span id="probe-copy-status"></span>
+      </div>
+      <div id="probe-details"></div>
+      <textarea id="probe-json-output" readonly></textarea>
+    </div>
+    <script type="module" src="/src/pen_probe.ts"></script>
+  </body>
+</html>

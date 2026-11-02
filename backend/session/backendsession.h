@@ -1,57 +1,69 @@
 #ifndef BACKENDSESSION_H
 #define BACKENDSESSION_H
 
-#include <QCursor>
-#include <QHash>
-#include <QImage>
-#include <QJsonArray>
-#include <QJsonObject>
-#include <QJsonValue>
-#include <QObject>
-#include <QPair>
-#include <QPointF>
-#include <QSet>
-#include <QString>
-#include <QStringList>
-#include <QVector>
+
+#include "algorithm/core/color.h"
+#include "algorithm/core/path.h"
+#include <cstdint>
+#include <string>
+#include "algorithm/core/image.h"
+#include "board/cursor.h"
+#include "algorithm/core/containers.h"
+#include "algorithm/core/json.h"
+
+#include <utility>
+#include "algorithm/core/geometry.h"
+#include "algorithm/core/string.h"
 
 #include <memory>
 
 #include "pythonbind/python_bindings.h"
+using namespace AnimeCore;
 
 class WsServer;
 class AnimeanBusiness;
 class PaintOpenGLWidget;
 struct BoardFrame;
 
-class BackendSession : public QObject
+class BackendSession
 {
-    Q_OBJECT
+
 public:
-    explicit BackendSession(WsServer *ws, QObject *parent = nullptr);
-    ~BackendSession() override;
+    explicit BackendSession(WsServer *ws);
+    ~BackendSession();
 
     void initializePythonStartup();
-    void setStatusText(const QString &text);
+    void setStatusText(const String &text);
 
     WsServer *wsServer() const { return m_ws; }
-    AnimeanBusiness *business() const { return m_business; }
+    AnimeanBusiness *business() const { return m_business.get(); }
     PaintOpenGLWidget *mainBoard() const { return m_mainBoard.get(); }
     PaintOpenGLWidget *childBoard() const { return m_childBoard.get(); }
 
 private:
     struct CursorState {
-        QString shape = QStringLiteral("arrow");
-        QString css = QStringLiteral("default");
-        QString key;
+        String shape = String("arrow");
+        String css = String("default");
+        String key;
         int hx = 0;
         int hy = 0;
         int w = 0;
         int h = 0;
+        double scale = 1.0;
     };
 
-    void bindPaintViewToBusiness(const QString &viewName, PaintOpenGLWidget *paintView);
-    void setupBoardSinks(const QString &viewName, PaintOpenGLWidget *paintView);
+    // A displacement field from ui.set_field, kept until it is sent and resent
+    // to a new client.
+    struct FieldEntry {
+        int w = 0;
+        int h = 0;
+        std::uint64_t version = 0;
+        std::string data;
+        bool pending = false;
+    };
+
+    void bindPaintViewToBusiness(const String &viewName, PaintOpenGLWidget *paintView);
+    void setupBoardSinks(const String &viewName, PaintOpenGLWidget *paintView);
     void setupBusinessConnections();
     void registerPythonUiCallbacks();
     void initWindowInfos();
@@ -60,91 +72,113 @@ private:
     void captureScriptMenuNames();
     void loadProtectedPropertiesForChild();
     void surfaceTextureView();
+    void surfaceMainView();
+    struct TextureViewSlot {
+        double zoom = 1.0;
+        PointF pan;
+        bool valid = false;
+        bool autoFitSuspended = false;
+    };
+    TextureViewSlot *textureViewSlotFor(const String &home);
+    void saveTextureViewSlot(const String &home);
+    void restoreTextureViewSlot();
+    void autoFitTextureControlView();
 
-    PaintOpenGLWidget *boardForView(const QString &viewName) const;
-    QString resolveViewName(const QString &viewName) const;
+    PaintOpenGLWidget *boardForView(const String &viewName) const;
+    String resolveViewName(const String &viewName) const;
 
     void onClientConnected();
     void onClientDisconnected();
-    void onMessageReceived(const QJsonObject &msg);
+    void onMessageReceived(const JsonObject &msg);
 
-    void handleCallMessage(const QJsonObject &msg);
-    void handleInputMessage(const QJsonObject &msg);
-    void handleAckMessage(const QJsonObject &msg);
+    void handleCallMessage(const JsonObject &msg);
+    void handleInputMessage(const JsonObject &msg);
+    void handleAckMessage(const JsonObject &msg);
 
-    QJsonObject dispatchCall(const QString &method, const QJsonObject &params);
-    QJsonObject handleFileImportCall(const QJsonObject &params);
-    QJsonObject handleFileTextureCall(const QJsonObject &params);
-    bool triggerMenuById(const QString &id, const QJsonObject &params, QString *errorOut);
-    void openScriptSettings(const QString &name, const QString &title);
-    void emitUiEvent(const QString &name, const QJsonObject &args = QJsonObject());
+    JsonObject dispatchCall(const String &method, const JsonObject &params);
+    JsonObject handleFileImportCall(const JsonObject &params);
+    JsonObject handleFileTextureCall(const JsonObject &params);
+    bool triggerMenuById(const String &id, const JsonObject &params, String *errorOut);
+    void openScriptSettings(const String &name, const String &title);
+    void emitUiEvent(const String &name, const JsonObject &args = JsonObject());
 
-    void handleFrameSink(const QString &viewName, const BoardFrame &frame);
-    void handleImageSink(const QString &key, const QImage &rgba);
-    void handleCursorSink(const QString &viewName, const QCursor &cursor);
-    void sendImagePacket(const QString &key, const QImage &rgba);
+    void handleFrameSink(const String &viewName, const BoardFrame &frame);
+    void handleImageSink(const String &view, const String &key, const AnimeCore::Image &rgba);
+    void handleCursorSink(const String &viewName, const AnimeCore::Cursor &cursor);
+    void sendImagePacket(const String &key, const Image &rgba, const String &view = String());
+    void sendFieldPacket(const String &key, const FieldEntry &entry);
+    void flushPendingFieldsForBoard(const PaintOpenGLWidget *board);
 
     void setPythonUiFrozen(bool frozen);
-    void appendPythonDebug(const QString &message);
+    void appendPythonDebug(const String &message);
 
-    void markDirty(const QString &key);
+    void markDirty(const String &key);
     void markAllDirty();
     void scheduleStateFlush();
     void flushDirtyState();
-    void sendStateKey(const QString &key);
-    void sendJson(const QJsonObject &obj);
-    QJsonValue buildStateValue(const QString &key) const;
+    void sendStateKey(const String &key);
+    void sendJson(const JsonObject &obj);
+    JsonValue buildStateValue(const String &key) const;
 
-    QJsonObject buildWindowState() const;
-    QJsonObject buildThemeState() const;
-    QJsonArray buildMenusState() const;
-    QJsonArray buildScriptMenuItems(const QString &host,
-                                    const QString &menuName,
-                                    const QJsonArray &items) const;
-    QJsonObject buildToolsState() const;
-    QJsonObject buildToolOptionsState() const;
-    QJsonObject buildDrawColorState() const;
-    QJsonObject buildDrawSettingsState() const;
-    QJsonObject buildLayersState(const QString &viewName) const;
-    QJsonObject buildAssetsState(const QString &viewName) const;
-    QJsonObject buildTimelineState() const;
-    QJsonObject buildHistoryState() const;
-    QJsonObject buildWindowsState() const;
-    QJsonObject buildCursorState(const QString &viewName) const;
-    QJsonObject buildViewportState(const QString &viewName) const;
-    QJsonObject buildPadState() const;
+    JsonObject buildWindowState() const;
+    JsonObject buildThemeState() const;
+    JsonArray buildMenusState() const;
+    JsonArray buildTextureMenusState() const;
+    JsonArray buildTextureViewButtonsState() const;
+    JsonArray buildScriptMenuItems(const String &host,
+                                    const String &menuName,
+                                    const JsonArray &items) const;
+    JsonObject buildToolsState() const;
+    JsonObject buildToolOptionsState() const;
+    JsonObject buildDrawColorState() const;
+    JsonObject buildDrawSettingsState() const;
+    JsonObject buildLayersState(const String &viewName) const;
+    JsonObject buildAssetsState(const String &viewName) const;
+    JsonObject buildTimelineState() const;
+    JsonObject buildHistoryState() const;
+    JsonObject buildWindowsState() const;
+    Vector<AnimeanWindowInfo> windowInfos() const;
+    JsonObject buildCursorState(const String &viewName) const;
+    JsonObject buildViewportState(const String &viewName) const;
+    JsonObject buildPadState() const;
 
     WsServer *m_ws = nullptr;
-    AnimeanBusiness *m_business = nullptr;
+    std::unique_ptr<AnimeanBusiness> m_business;
     std::unique_ptr<PaintOpenGLWidget> m_mainBoard;
     std::unique_ptr<PaintOpenGLWidget> m_childBoard;
 
-    QSet<QString> m_dirtyKeys;
+    Set<String> m_dirtyKeys;
     bool m_stateFlushScheduled = false;
 
     int m_pythonFreezeDepth = 0;
     int m_textureAutoFitFrame = -1;
 
-    QVector<AnimeanWindowInfo> m_windowInfos;
+    Vector<AnimeanWindowInfo> m_windowInfos;
     bool m_timelineVisible = true;
     bool m_timelineCollapsed = false;
     bool m_timelineFloating = false;
-    QString m_timelineDockArea = QStringLiteral("bottom");
+    String m_timelineDockArea = String("bottom");
     bool m_textureSubControlVisible = false;
+    String m_textureHome;
+    TextureViewSlot m_textureViewCentral;
+    TextureViewSlot m_textureViewControl;
 
-    QVector<QPair<QString, QString>> m_mainScriptMenus;
-    QVector<QPair<QString, QString>> m_childScriptMenus;
+    Vector<std::pair<String, String>> m_mainScriptMenus;
+    Vector<std::pair<String, String>> m_childScriptMenus;
 
-    QPointF m_forcePadValue{0.0, 0.0};
-    QHash<QString, QPointF> m_padValues;
+    PointF m_forcePadValue{0.0, 0.0};
+    Hash<String, PointF> m_padValues;
 
-    QJsonObject m_lastToolOptions;
-    QJsonObject m_lastEvent;
-    QStringList m_pythonDebugLog;
+    JsonObject m_lastEvent;
+    StringList m_pythonDebugLog;
 
-    QHash<QString, CursorState> m_cursors;
-    QHash<QString, QImage> m_cachedImages;
-    QHash<QString, quint64> m_lastBoardFrameId;
+    Hash<String, CursorState> m_cursors;
+    Hash<String, Image> m_cachedImages;
+    Hash<String, std::uint64_t> m_lastBoardFrameId;
+    std::uint64_t m_thumbnailRevision = 1;
+    std::uint64_t m_nextFieldVersion = 1;
+    Hash<String, FieldEntry> m_fields;
+    Hash<String, bool> m_fieldDisplaySupported;
 };
 
 #endif // BACKENDSESSION_H

@@ -19,7 +19,7 @@ Tools ▸ Mapping 的 **Additional Line**（粉）。在 H/V 轴线之外再画�
 
 ## 会看到什么
 
-- 单元有焦点时画完 / 拖完立即重跑；主画板的参考网格（View ▸ Mapping Refer Rect）显示含附加线的最终 Auto Mapping 结果，粉线弯到哪网格就弯到哪。
+- 单元有焦点时画完 / 拖完立即重跑；主画板的参考网格（Options 的 Refer Rect）显示含附加线的最终 Auto Mapping 结果，粉线弯到哪网格就弯到哪。
 - 线越出参考架范围时求解域自动撑大，不报错。
 
 ## 边界
