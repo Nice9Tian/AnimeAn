@@ -120,7 +120,7 @@
   --focus: #c98a00;
   --nav-bg: rgba(251, 251, 252, .86);
   --card: #ffffff;
-  --pool: rgba(252, 252, 253, .9);
+  --pool: rgba(178, 186, 199, .62);
   --plane-edge: rgba(43, 120, 181, .45);
   --plane-tint: rgba(43, 120, 181, .04);
   --hair: rgba(20, 24, 30, .05);
@@ -144,7 +144,7 @@
     color-scheme: light;
     --bg: #eceef1; --bg-2: #e6e8ec; --panel: #ffffff; --panel-2: #f1f3f6; --rule: #d9dce2; --rule-2: #c3c8d0;
     --fg: #16181b; --muted: #555a63; --faint: #868b94; --accent: #2b78b5; --accent-hi: #22679f; --accent-fg: #ffffff;
-    --btn-bg: #2b78b5; --btn-bg-hi: #1f68a3; --accent-soft: rgba(43, 120, 181, .1); --focus: #c98a00; --nav-bg: rgba(251, 251, 252, .86); --card: #ffffff; --pool: rgba(252, 252, 253, .9);
+    --btn-bg: #2b78b5; --btn-bg-hi: #1f68a3; --accent-soft: rgba(43, 120, 181, .1); --focus: #c98a00; --nav-bg: rgba(251, 251, 252, .86); --card: #ffffff; --pool: rgba(178, 186, 199, .62);
     --plane-edge: rgba(43, 120, 181, .45); --plane-tint: rgba(43, 120, 181, .04); --hair: rgba(20, 24, 30, .05); --grain: .42;
     --haze-1: rgba(255, 255, 255, .85); --haze-2: rgba(200, 210, 225, .35); --page-top: #f4f5f7; --page-mid: #eaecef; --glow: rgba(43, 120, 181, .12);
     --glass: rgba(255, 255, 255, .34); --glass-hi: rgba(255, 255, 255, .58); --glass-lo: rgba(255, 255, 255, .42);
@@ -429,9 +429,11 @@ section[id] { scroll-margin-top: var(--nav-h); }
 .how-link path { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 3 4; }
 
 /* ---------------------------------------------------------------- methods */
-/* card rows sit in a pool of dark (pale in the light theme) that fades out above and below them */
-.method-grid, .feat-grid { position: relative; }
-.method-grid::before, .feat-wrap::before {
+/* Whatever is white in the foreground (the sheets, the boards, the demo window, card rows) sits on a band
+   of deeper tone that fades out above and below it: near-black in the dark theme, a deeper grey in the
+   light theme, so the paper reads as paper. */
+.method-grid, .feat-grid, .how-grid, #home-demo, #demo-root { position: relative; }
+.method-grid::before, .feat-wrap::before, .frame-grid::before, .how-grid::before, #home-demo::before, #demo-root::before {
   content: ""; position: absolute; z-index: -2; pointer-events: none; left: 50%; width: 100vw; margin-left: -50vw; top: -38%; bottom: -38%;
   background: linear-gradient(180deg, transparent, var(--pool) 32%, var(--pool) 68%, transparent);
 }
