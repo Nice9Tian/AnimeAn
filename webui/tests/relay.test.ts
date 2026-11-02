@@ -583,6 +583,15 @@ test("RelayHost 与 RelayClient：状态快照、增量同步、一次性 event 
   cacheRelayImage(map, { t: "image", key: "thumb_child_2_100x80_6", w: 1, h: 1, bytes: 4 }, new Uint8Array([6]));
   assert.deepEqual([...map.keys()], ["thumb_child_2_100x80_6"]);
 
+  // 缩略图换了版本：之前的全部作废，删掉的帧的图也不留，新开的窗口不再收到
+  backend.emitState("thumbnails", { revision: 9 });
+  const client3 = new RelayClient(bus.createEndpoint());
+  const welcomed: string[] = [];
+  client3.onImage((meta) => welcomed.push(meta.key));
+  await client3.connect();
+  assert.deepEqual(welcomed, ["cur_pen"]);
+
+  client3.close();
   client2.close();
   client.close();
   host.close();
@@ -679,7 +688,8 @@ test("panelwindows 与 syncDocks：WINDOW_FOR_DOCK 反推、缺省窗口视为�
       core: {
         invoke(cmd: string, args: Record<string, any>) {
           tauriCalls.push({ cmd, args });
-          return Promise.resolve();
+          // 外壳关窗时回报窗口最后的位置，再打开时回到那里
+          return Promise.resolve(cmd === "close_panel_window" ? { x: 900, y: 40, width: 300, height: 420 } : undefined);
         },
       },
       window: {
@@ -811,10 +821,15 @@ test("panelwindows 与 syncDocks：WINDOW_FOR_DOCK 反推、缺省窗口视为�
     // 主窗口主动关闭后卫星页 pagehide 发来的 closed 不应再触发 menu.trigger
     satClient.sendPanelAction("closed", "assetsDock");
     assert.equal(storeCalls.length, 0);
+    await new Promise((r) => setTimeout(r, 0));
 
     store.set("windows", { assets: { visible: true }, layers: { visible: true }, timeline: { visible: false } });
     assert.equal(tauriCalls.at(-1)?.cmd, "open_panel_window");
     assert.equal(tauriCalls.at(-1)?.args.label, "panel-assetsDock");
+    assert.deepEqual(
+      [tauriCalls.at(-1)?.args.x, tauriCalls.at(-1)?.args.y, tauriCalls.at(-1)?.args.width, tauriCalls.at(-1)?.args.height],
+      [900, 40, 300, 420],
+    );
     assert.equal(visibleMap.get("assetsDock"), false);
 
     // 5. 卫星页标题栏拖动与双击还原：
@@ -832,6 +847,9 @@ test("panelwindows 与 syncDocks：WINDOW_FOR_DOCK 反推、缺省窗口视为�
     satRoot.append(satHeader);
 
     const satHooks = setupSatelliteDock(satRoot, "assetsDock", satClient);
+    // 独立窗口里的面板总是浮动的，按钮要显示恢复停靠
+    assert.equal(satBtn.textContent, "↙");
+    assert.equal(satBtn.dataset.dockAction, "restore");
     let innerPointerDownReached = 0;
     satHeader.addEventListener("pointerdown", () => {
       innerPointerDownReached++;
@@ -977,18 +995,25 @@ test("卫星页与主窗口纹理板归属：卫星页不碰纹理板并显示�
       { home: "control", subControlVisible: true },
     );
 
-    // Options 面板外出：onExternalChanged 触发 updateHome，向后端发 parked
+    // Options 面板外出：纹理板跟不过去，框留在主窗口，自己浮出来，不会两边都看不到
     backendCalls.length = 0;
     floatingList.push({ dockId: "toolOptionsDock", x: 100, y: 100, width: 260, height: 320 });
     panelWins.onDockChanged("toolOptionsDock", true);
     assert.equal(mainStore.externalDocks.has("toolOptionsDock"), true);
-    assert.equal(mainStore.texture.home, "parked");
-    assert.deepEqual(
-      backendCalls.filter((c) => c.method === "texture.setHome").at(-1)?.params,
-      { home: "parked", subControlVisible: false },
-    );
+    assert.equal(mainStore.texture.isFloating(), true);
+    assert.equal(mainStore.texture.home, "control");
 
-    // 触发 Windows ▸ Texture View（textureSubControl.surface）：在主窗口浮出纹理框，不调 menu.trigger
+    // 主窗口里那份 Options 重建（换工具）：框继续浮着，不回到隐藏的面板里
+    backend.emitState("toolOptions", mappingOptionsLayout);
+    assert.equal(mainStore.texture.isFloating(), true);
+    assert.equal(mainStore.texture.home, "control");
+
+    // 角按钮：面板在别的窗口，放回去放不了，只能收起
+    mainStore.texture.toggleFloating();
+    assert.equal(mainStore.texture.placement, "parked");
+    assert.equal(mainStore.texture.home, "parked");
+
+    // Windows ▸ Texture View（textureSubControl.surface）：在主窗口浮出纹理框，不调 menu.trigger
     backendCalls.length = 0;
     backend.emitState("event", { name: "textureSubControl.surface" });
     assert.equal(mainStore.texture.isFloating(), true);
@@ -1214,6 +1239,59 @@ test("timelineDock 浮动与恢复：watchTimelineDock 与 panelwindows 协同�
     store.set("timeline", { floating: false, collapsed: false, dockArea: "bottom" });
     assert.equal(calls.length, 1);
     assert.equal(tauriCalls.length, 2);
+
+    // 3. 用户关掉浮动的 Timeline：timeline 状态先到，这时窗口表还是旧的，不能把刚关的窗口又打开
+    store.set("timeline", { floating: true, collapsed: false, dockArea: "bottom" });
+    assert.equal(tauriCalls.at(-1)?.cmd, "open_panel_window");
+    panelWins.handleAction("closed", "timelineDock");
+    const afterClose = tauriCalls.length;
+    store.set("timeline", { floating: true, collapsed: false, dockArea: "bottom" });
+    assert.equal(tauriCalls.length, afterClose);
+    store.set("windows", { timeline: { visible: false } });
+    assert.equal(tauriCalls.length, afterClose);
+
+    panelWins.destroy();
+  });
+});
+
+test("启动时 Timeline 是浮动的：窗口表到了才决定开不开", async () => {
+  await withFakeDom(async ({ win }) => {
+    const { createPanelWindows } = await import("../src/ui/panelwindows.js");
+    const tauriCalls: string[] = [];
+    win.__TAURI__ = {
+      core: {
+        invoke(cmd: string) {
+          tauriCalls.push(cmd);
+          return Promise.resolve();
+        },
+      },
+    };
+    const runtime: any = {
+      project: { scene: { nodes: { timelineDock: { type: "Dock" } } } },
+      getDockLayout: () => ({ floating: [{ dockId: "timelineDock", x: 1, y: 2, width: 300, height: 120 }] }),
+      dockSetVisible() {},
+    };
+    const listeners = new Map<string, Array<(v: any) => void>>();
+    const stateValues = new Map<string, any>();
+    const store: any = {
+      get: (k: string) => stateValues.get(k),
+      on(k: string, fn: (v: any) => void) {
+        listeners.set(k, [...(listeners.get(k) ?? []), fn]);
+      },
+      set(k: string, val: any) {
+        stateValues.set(k, val);
+        for (const fn of listeners.get(k) ?? []) fn(val);
+      },
+      call: () => Promise.resolve({}),
+    };
+    const panelWins = createPanelWindows(runtime, store, {});
+
+    store.set("timeline", { floating: true });
+    assert.deepEqual(tauriCalls, [], "还不知道它该不该显示");
+    store.set("windows", { timeline: { visible: false } });
+    assert.deepEqual(tauriCalls, []);
+    store.set("windows", { timeline: { visible: true } });
+    assert.deepEqual(tauriCalls, ["open_panel_window"]);
 
     panelWins.destroy();
   });

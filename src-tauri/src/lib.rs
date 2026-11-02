@@ -627,13 +627,40 @@ async fn open_panel_window(
         .map_err(|e| e.to_string())
 }
 
+/// Where a panel window was when it closed, in the units `open_panel_window` takes.
+#[derive(Debug, Clone, Copy, serde::Serialize, PartialEq)]
+struct PanelRect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
 #[tauri::command]
-async fn close_panel_window(app: tauri::AppHandle, label: String) -> Result<(), String> {
+async fn close_panel_window(
+    app: tauri::AppHandle,
+    label: String,
+) -> Result<Option<PanelRect>, String> {
     let valid_label = validate_panel_label(&label)?;
-    if let Some(win) = app.get_webview_window(valid_label) {
-        win.close().map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    let Some(win) = app.get_webview_window(valid_label) else {
+        return Ok(None);
+    };
+    let scale = win.scale_factor().map_err(|e| e.to_string())?;
+    let position = win
+        .outer_position()
+        .map_err(|e| e.to_string())?
+        .to_logical::<f64>(scale);
+    let size = win
+        .inner_size()
+        .map_err(|e| e.to_string())?
+        .to_logical::<f64>(scale);
+    win.close().map_err(|e| e.to_string())?;
+    Ok(Some(PanelRect {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+    }))
 }
 
 fn file_path_to_string(fp: tauri_plugin_dialog::FilePath) -> String {

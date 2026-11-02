@@ -71,6 +71,21 @@ export function setupSatelliteDock(rootEl, dockId, relayOrChannel, options = {})
     sendControlMessage(relayOrChannel, "closed", dockId);
   };
 
+  // This dock is always floating, but the page does not know of any other: the
+  // header builds its button for a docked panel.
+  const showRestoreButton = () => {
+    const button = rootEl?.querySelector?.(".dock-btn-float");
+    if (!button) return false;
+    button.textContent = "↙";
+    button.title = "恢复停靠";
+    button.dataset.dockAction = "restore";
+    return true;
+  };
+  if (rootEl && !showRestoreButton() && typeof MutationObserver !== "undefined") {
+    const watcher = new MutationObserver(() => { if (showRestoreButton()) watcher.disconnect(); });
+    watcher.observe(rootEl, { childList: true, subtree: true });
+  }
+
   if (rootEl && typeof rootEl.addEventListener === "function") {
     rootEl.addEventListener("pointerdown", onPointerDownCapture, true);
     rootEl.addEventListener("mousedown", onMouseDownCapture, true);
@@ -108,6 +123,8 @@ export function createPanelWindows(runtime, store, options = {}) {
   const openWindows = new Set();
   const closingByHost = new Set();
   const floatingRects = new Map();
+  // Where each window was on screen when it was closed from here.
+  const closedRects = new Map();
 
   const getTauri = () => options.tauri ?? (typeof window !== "undefined" ? window.__TAURI__ : undefined);
   const getScreenOffset = () => {
@@ -154,9 +171,10 @@ export function createPanelWindows(runtime, store, options = {}) {
 
   const openWindow = (dockId, rectInput) => {
     if (!getTauri()) return;
-    const rect = rectInput ?? getFloatingRect(dockId);
-    floatingRects.set(dockId, rect);
-    const { screenX, screenY } = getScreenOffset();
+    const closed = closedRects.get(dockId);
+    const rect = closed ?? rectInput ?? getFloatingRect(dockId);
+    if (!closed) floatingRects.set(dockId, rect);
+    const { screenX, screenY } = closed ? { screenX: 0, screenY: 0 } : getScreenOffset();
     const { minWidth, minHeight } = minSizeForDock(dockId, runtime);
     const label = `panel-${dockId}`;
     const url = `index.html?only=${encodeURIComponent(dockId)}&satellite=1`;
@@ -181,10 +199,12 @@ export function createPanelWindows(runtime, store, options = {}) {
       closingByHost.add(dockId);
     }
     if (!getTauri()) return;
-    void invokeTauri("close_panel_window", { label: `panel-${dockId}` });
+    void invokeTauri("close_panel_window", { label: `panel-${dockId}` }).then((rect) => {
+      if (rect) closedRects.set(dockId, rect);
+    });
   };
 
-  const externalizeDock = (dockId, entry) => {
+  const externalizeDock = (dockId, entry, mayOpen = true) => {
     if (!getTauri()) return;
     const rect = {
       x: Math.round(Number(entry?.x ?? 80)),
@@ -194,9 +214,10 @@ export function createPanelWindows(runtime, store, options = {}) {
     };
     floatingRects.set(dockId, rect);
     const wasExternal = externalDocks.has(dockId);
+    if (!wasExternal) closedRects.delete(dockId);
     externalDocks.add(dockId);
     runtime.dockSetVisible?.(dockId, false);
-    if (isBackendWindowVisible(dockId) && !openWindows.has(dockId)) {
+    if (mayOpen && isBackendWindowVisible(dockId) && !openWindows.has(dockId)) {
       openWindow(dockId, rect);
     }
     if (!wasExternal) {
@@ -316,7 +337,10 @@ export function createPanelWindows(runtime, store, options = {}) {
         layout = runtime.getDockLayout?.();
         entry = layout?.floating?.find((f) => f.dockId === "timelineDock");
       }
-      externalizeDock("timelineDock", entry);
+      // This state reaches here ahead of the window list. Once the timeline is out
+      // that list opens and closes it; going by its last value would reopen what
+      // was just closed. At start-up there is none yet, and it will say.
+      externalizeDock("timelineDock", entry, !externalDocks.has("timelineDock") && Boolean(store.get?.("windows")));
     } else if (externalDocks.has("timelineDock")) {
       externalDocks.delete("timelineDock");
       closeWindow("timelineDock", true);

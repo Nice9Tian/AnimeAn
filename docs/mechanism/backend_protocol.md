@@ -16,6 +16,8 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 
 启动参数：`AnimeAnBackend.exe --port <端口，0 表示自动> --token <随机串>`。监听成功后向 stdout 打一行 `ANIMEAN_BACKEND_PORT=<端口>`，只监听 127.0.0.1。
 
+后端起不来时窗口照样打开，网页取 `backend_endpoint` 失败后弹框说明原因。运行中后端异常退出时外壳向主窗口发 `backend-exited`，网页弹框提示重启。
+
 连接地址：`ws://127.0.0.1:<端口>/?token=<随机串>`。token 不对就拒绝。`Origin` 只放行 `tauri://localhost`、`http://tauri.localhost`、`https://tauri.localhost` 和 `http://localhost:<任意端口>`；没有 `Origin` 头的连接放行（测试用）。同一时间只服务一个连接，第二个连接到来时断开旧的。
 
 ## 画板不改逻辑

@@ -313,6 +313,11 @@ export function panelFactories(store, client, { satellite = false } = {}) {
   }
 
   function updateTextureHome() {
+    // Its panel left for a window of its own: the board stays here, in the open.
+    if (placement === "embedded" && isHostExternal(hostName)) {
+      floatFrame();
+      return;
+    }
     const centralWantsIt = Boolean(centralPanel && centralPanel.current() === "texture");
     const controlWantsIt = !centralWantsIt && isFrameLive();
     const wanted = centralWantsIt ? "central" : controlWantsIt ? "control" : "parked";
@@ -526,6 +531,7 @@ export function panelFactories(store, client, { satellite = false } = {}) {
         },
         onSubWindow: () => {
           if (satellite) return subWindowFloatingNote("Texture is in the main window");
+          if (placement !== "floating" && isHostExternal("options")) floatFrame();
           if (placement === "floating") return subWindowFloatingNote();
           const slot = document.createElement("div");
           slot.className = "opt-subwindow-cell";

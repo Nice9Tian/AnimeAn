@@ -8,7 +8,8 @@
 - Python 按名字寻址：`paint`（中央区，页 `drawing` / `texture`）、`tools`（`painting` / `mapping`）、`tool_options`、`layers`（`main` / `child`）、`assets`、`history`、`repulsion_pad`、`python_debug`。`ui.windows.list / show / select / current` 是机制，`window_manager.py` 是策略；不认识的名字静默忽略。
 - 中央区不是停靠窗：`show()` 对它是空操作；选它的 `texture` 页会把纹理板从子控件里拿走，选 `drawing` 还回去。
 - 时间轴是停靠窗但不是父窗（没有页），`ui.windows` 不列它；它的播放条就是标题栏，停在底边是横条，停在左右是竖条加细标题。
-- Tauri 外壳中停靠面板（含 `timelineDock`）浮动时由 `webui/src/ui/panelwindows.js` 打开无边框独立窗口 `panel-<dockId>`（加载 `index.html?only=<dockId>&satellite=1`），经 `BroadcastChannel("animean.relay")`（`webui/src/relay.ts` 的 `RelayHost` / `RelayClient`）与主窗口共享单 WebSocket 连接。四边拉伸靠 Tauri 对无边框窗口的处理。纹理板子控件框 `texture_view` 因画布上下文不能跨窗口搬迁，继续在页面内浮动。普通浏览器里浮动都在页面内。
+- Tauri 外壳中停靠面板（含 `timelineDock`）浮动时由 `webui/src/ui/panelwindows.js` 打开无边框独立窗口 `panel-<dockId>`（加载 `index.html?only=<dockId>&satellite=1`），经 `BroadcastChannel("animean.relay")`（`webui/src/relay.ts` 的 `RelayHost` / `RelayClient`）与主窗口共享单 WebSocket 连接。四边拉伸靠 Tauri 对无边框窗口的处理。关掉再打开回到关闭时的位置和大小，`close_panel_window` 把它报回来；拖回主窗口再浮出时用新的落点。纹理板子控件框 `texture_view` 因画布上下文不能跨窗口搬迁，继续在主窗口内浮动；它所在的面板变成独立窗口时，框自己在主窗口里浮出来。普通浏览器里浮动都在页面内。
+- 打包的窗口是应用窗口：Ctrl、Alt 组合键和功能键的浏览器默认动作、右键浏览器菜单都关掉（输入框除外），否则 F5 重载页面后主窗口就不再认得已打开的独立窗口。浏览器里开发时不关。
 
 ## Tools 面板（网页界面）
 
@@ -33,7 +34,7 @@
 
 - 纹理面板（菜单栏 + 选项行 + 画板容器，`webui/src/ui/panels2.js` 的 `createTexturePanel`）是一个可搬迁的部件，有三个家：中央 Texture 页、名为 `texture_view` 的子控件框（`createSubControlFrame`，可嵌进 Options 或 Tools 面板，也可在页面内浮动）、停车位。任一时刻只在一处，`webui/src/ui/app.js` 的 `updateTextureHome` 是唯一路由，搬迁时直接移动同一个 DOM 节点而不重建 WebGL 上下文，并通过 `texture.setHome` 通知后端。
 - 每个家记自己的视口（缩放、平移）；子控件里自动按长边适配，用户手动缩放后到下次进入前不再自动适配。
-- Mapping 组工具的 Options 面板最后一行嵌的就是 `texture_view` 子控件；框浮动或缺失时面板显示一行说明。卫星页不显示纹理板，Options 外出时那一行是说明文字。
+- Mapping 组工具的 Options 面板最后一行嵌的就是 `texture_view` 子控件；框浮动或缺失时面板显示一行说明。卫星页不显示纹理板，Options 外出时那一行是说明文字，框在主窗口里浮着。
 - 两个图层面板目标固定（Main Layers → 主画板，Child Layers → 纹理板）；`Changable Texture` 只管内容可否编辑和资产面板，`Changable Timeline` 决定时间轴是否跟随纹理板。
 
 ## 主题

@@ -129,6 +129,12 @@ export class RelayHost {
       if (key !== "event") {
         this.states.set(key, value);
       }
+      // A new revision outdates every thumbnail, frames that no longer exist included.
+      if (key === "thumbnails") {
+        for (const imageKey of [...this.images.keys()]) {
+          if (imageKey.startsWith("thumb_")) this.images.delete(imageKey);
+        }
+      }
       this.post({ t: "state", key, value });
     });
 

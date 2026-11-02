@@ -92,6 +92,9 @@ function Resolve-ExistingDirectory {
 
 # 1. 解析 -BackendDir
 $resolvedBackendDir = Resolve-ExistingDirectory -InputPath $BackendDir -BaseDir $repoRoot
+if ($BackendDir -and -not $resolvedBackendDir) {
+    throw "-BackendDir 指定的目录不存在: '$BackendDir'。"
+}
 if (-not $resolvedBackendDir) {
     $candidates = @(
         (Join-Path $repoRoot "build\Release\backend"),
@@ -128,6 +131,9 @@ if (-not (Test-Path -LiteralPath $backendExeSrc -PathType Leaf)) {
 
 # 2. 解析 -PythonHome
 $resolvedPythonHome = Resolve-ExistingDirectory -InputPath $PythonHome -BaseDir $repoRoot
+if ($PythonHome -and -not $resolvedPythonHome) {
+    throw "-PythonHome 指定的目录不存在: '$PythonHome'。"
+}
 if (-not $resolvedPythonHome) {
     $defaultPyHome = Join-Path $repoRoot "tools\python312"
     if (Test-Path -LiteralPath $defaultPyHome -PathType Container) {
