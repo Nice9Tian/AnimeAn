@@ -1,10 +1,10 @@
 # 历史与 scriptData（history_scriptdata）
 
-三级机制。从属于 `../architecture.md`，与它冲突时以它为准。代码：`algorithm/scenehistory.*`、`openglwidget.cpp`（`commitHistory` / `goToHistory` / `resetHistory`）、`mainwindow.cpp`（全局排序、跨板撤销的界面切换）、`pyfile/script_store.py`。2026-09-28 从架构文档下沉。
+三级机制。从属于 `../architecture.md`，与它冲突时以它为准。代码：`algorithm/scenehistory.*`、`openglwidget.cpp`（`commitHistory` / `goToHistory` / `resetHistory`）、`backend/business/animeanbusiness.cpp` 与 `backend/session/backendsession.cpp`（全局排序、跨板撤销的界面切换）、`pyfile/script_store.py`。2026-09-28 从架构文档下沉。
 
 ## 快照式历史
 
-- 每步操作完成后整份 `AnimeSceneModel` 入历史（Qt 隐式共享，只有改动的部分占内存）；条目 0 是基线；每块板一份，有条数上限。
+- 每步操作完成后整份 `AnimeSceneModel` 入历史（`AnimeCore` 容器与位图隐式共享，只有改动的部分占内存）；条目 0 是基线；每块板一份，有条数上限。
 - 每条带全局单调序号：Ctrl+Z 撤的是两块板合起来最近的一步，Ctrl+Y 严格按反序恢复；任一块板上的新操作清掉两块板的重做尾巴。
 - 撤到另一块板上的操作时，主窗口显示并激活那块板，状态栏说明。
 - 恢复是整份拷回模型，Python 侧的场景指针保持有效；恢复后强制重新施加两块板固定的场景身份（main / child），并派发 `historyrestore` 事件让脚本重建自己的缓存（引导线覆盖层、工具锁定、单元焦点）。
