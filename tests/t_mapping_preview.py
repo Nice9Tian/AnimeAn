@@ -10,7 +10,7 @@ Tests:
 4. Release ordering: set_field_view(None) happens strictly after _maybe_auto_run (and
    also clears on unmoved release).
 5. Zero history_commit and zero scene model writes during drag moves.
-6. Throttling gate: rapid moves skipped by max(8ms, 0.5*t) schedule call_later, and
+6. Throttling gate: moves closer than 8 ms to the last frame schedule call_later, and
    firing the callback flushes the latest position.
 7. Single-step update latency: dragging an additional line on Rigs B and C has median
    cost <= 33 ms.
@@ -1081,7 +1081,7 @@ class TestMappingPreview(unittest.TestCase):
             am._maybe_auto_run = orig_maybe_auto_run
 
     def test_6_throttling_gate_flushes_last_skipped_move_via_call_later(self):
-        """Rapid moves skipped by max(8ms, 0.5*t) schedule call_later once and flush the latest state."""
+        """Moves inside the 8 ms gate schedule call_later once and flush the latest state."""
         _scenes, fake, _uid = fresh_rig_world("A")
         clock_val = [1000.0]
         mp._clock = lambda: clock_val[0]
@@ -1549,6 +1549,76 @@ class TestMappingPreview(unittest.TestCase):
             scope = fake.ui.set_field_view_calls[-1][1]["width_scale"]
             print(f"[width] main x{factor}: release x{release_scale:.3f}, scope x{scope:.3f}")
             self.assertAlmostEqual(scope, 1.0, delta=0.1, msg=f"x{factor}")
+            mp.cancel()
+
+    def test_23_a_move_after_a_slow_frame_is_not_held_back(self):
+        """C++ lets a drag move through once per 33 ms already; only the 8 ms
+        floor may hold one back, not a share of the last frame's cost."""
+        _scenes, fake, _uid = fresh_rig_world("A")
+        clock_val = [1000.0]
+        mp._clock = lambda: clock_val[0]
+        raw_build = am.build_mapper
+
+        def slow_build(*args, **kwargs):
+            clock_val[0] += 0.040   # every frame takes 40 ms
+            return raw_build(*args, **kwargs)
+
+        am.build_mapper = slow_build
+        self.addCleanup(setattr, am, "build_mapper", raw_build)
+
+        def send(phase, x, y):
+            am._guide_drag_event({"view": "main", "handle": am.H_PROPERTY, "phase": phase,
+                                  "position": {"x": x, "y": y}})
+
+        send("press", 0.0, 0.0)
+        send("move", 2.0, 1.0)
+        self.assertEqual(len(fake.ui.set_field_calls), 1)
+        clock_val[0] += 0.010
+        send("move", 4.0, 2.0)
+        self.assertEqual(len(fake.ui.set_field_calls), 2, "the move waited for half a frame")
+        self.assertEqual(moves_later(fake), [])
+        mp.end()
+
+    def test_24_guides_that_did_not_move_keep_their_frames(self):
+        """Building a frame of curved guides takes milliseconds: a drag of
+        anything but a guide builds none, a texture-axis drag only its own."""
+        built = []
+        raw_frame = am._Frame
+
+        class Counting(raw_frame):
+            def __init__(self, h_spec, v_spec):
+                built.append(1)
+                super().__init__(h_spec, v_spec)
+
+        am._Frame = Counting
+        self.addCleanup(setattr, am, "_Frame", raw_frame)
+        cases = (
+            ("B", "main", f"{am.ADDITIONAL_PROPERTY}:1", 0),
+            ("C", "child", am.H_PROPERTY, 1),
+        )
+        for rig, view, handle, per_frame in cases:
+            _scenes, fake, _uid = fresh_rig_world(rig)
+            points = am.line_item(view, handle)["points"]
+            grab = points[len(points) // 2]
+            offset = [0.0]
+            mp._clock = lambda: time.perf_counter() + offset[0]
+
+            def send(phase, step=0):
+                offset[0] += 0.06
+                am._guide_drag_event({
+                    "view": view, "handle": handle, "phase": phase,
+                    "position": {"x": grab[0] + 1.5 * step, "y": grab[1] - 2.0 * step},
+                })
+
+            send("press")
+            am._main_guide_frame()   # the overlay builds its own once per guide set
+            built.clear()
+            frames = len(fake.ui.set_field_calls)
+            for step in range(1, 5):
+                send("move", step)
+            frames = len(fake.ui.set_field_calls) - frames
+            self.assertEqual(frames, 4, rig)
+            self.assertEqual(len(built), per_frame * frames, f"{rig} {view}: frames rebuilt")
             mp.cancel()
 
     def test_10_mid_drag_invalid_axes_clears_and_recovers(self):
