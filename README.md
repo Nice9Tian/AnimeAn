@@ -4,54 +4,60 @@ Documentation lives in `docs/` and is organised in semantic tiers; start with
 `docs/developer_guide.md` (rules) and `docs/README.md` (index by tier). The
 product itself is described in `docs/product_purpose.md`.
 
-AnimeAn (**Anime** + **An**notation — structural guide-line annotations on 2D line art) is a Qt desktop application for animation and vector drawing
-experiments. It includes optional Python support through `pybind11`, so scripts
-can inspect and edit the C++ scene model and use vector geometry helpers.
+AnimeAn (**Anime** + **An**notation — structural guide-line annotations on 2D line art) is a Windows desktop application for animation and vector drawing
+experiments. Its interface is a web UI in a Tauri shell; a separate C++ backend
+(no Qt) embeds Python through `pybind11`, so scripts can inspect and edit the
+C++ scene model and use vector geometry helpers.
 
 ## Main Features
 
-- Qt Widgets + OpenGLWidgets drawing interface.
+- Web UI in a Tauri 2 / WebView2 shell; the boards are drawn with WebGL2 (Canvas 2D as fallback) from draw lists the backend records.
 - `AnimeModel` scene/xsheet data model.
 - `AnimeVectorLogic` vector geometry algorithms.
 - Embedded Python and optional standalone Python extension module.
 - Python ExtraTool hooks for vector algorithm prototyping.
-- Windows deployment target: `deploy_AnimeAn`.
+- Windows package: `dist\AnimeAn\`, built by `build_scripts\agent_build.ps1`.
 
 ## File Formats
 
 - `.anproj` is a complete AnimeAn project. It stores both the Main View and
   the Texture View, so **File > Save** always preserves the whole workspace.
-- `.textureview` stores only the Texture View and is managed through the
-  **Texture View File** menu (Open / Save / Save As) for reuse across
-  projects.
+- `.textureview` stores only the Texture View and is managed through
+  **File ▸ Texture** or the texture board's own **File** menu (Open / Save /
+  Save As) for reuse across projects.
 
 ## Project Layout
 
-- `main.cpp`: application entry point.
-- `mainwindow.*`: main window and dock/panel orchestration.
-- `openglwidget.*`: drawing widget and tool event handling.
+- `backend/`: the C++ backend process `AnimeAnBackend` (entry `backend/main.cpp`; session, business logic, boards, event loop, WebSocket).
+- `webui/`: the web UI (`webui/design/` for the dock layout and Tools, `webui/src/ui/` for the other panels, menus and dialogs).
+- `src-tauri/`: the Tauri shell `AnimeAn.exe`, which starts the backend and opens the windows.
+- `openglwidget.*`: the headless board on top of `BoardSurface` (tool events, draw-list recording).
 - `algorithm/animemodel.*`: core scene, layer, frame, asset, cell, vector image model.
 - `algorithm/vectorlogic.*`: vector path and geometry algorithms.
 - `pythonbind/python_bindings.cpp`: low-level Python bindings.
 - `pythonbind/animemodel.py`: high-level Python wrapper.
 - `pyfile/`: embedded Python scripts, hooks, and ExtraTool definitions (all tool behaviour lives here).
-- `childrenpanel/`: panels and docks (tools, options, layers, assets, history, timeline, texture, palette, force pad).
+- `childrenpanel/tool_controls/`: fallback tool-option layouts used when Python is unavailable.
 - `tests/`: Python regression suites (`t_*.py`, run via `py -m unittest discover -s tests`) and C++ unit tests.
 - `pywheels/`: version-pinned wheels for the embedded runtime's third-party libraries (`pyfile/pydeps.py`).
 - `docs/`: design and rules documentation (see `docs/README.md`).
 - `build_scripts/agent_build.ps1`: release build and deploy verification script.
-- `sync_pyfiles.ps1`: copies edited Python scripts next to every built `AnimeAn.exe` without rebuilding.
+- `sync_pyfiles.ps1`: copies edited Python scripts next to every built `AnimeAnBackend.exe` (the copies a release folder runs) without rebuilding.
 
 ## Build
 
 The project uses CMake.
 
-### Windows / Qt
+### Windows
+
+Needs CMake + MinGW, Node.js and Rust; no Qt libraries.
 
 ```powershell
-cmake -S . -B build
-cmake --build build --config Release
+PowerShell -ExecutionPolicy Bypass -File .\build_scripts\agent_build.ps1
 ```
+
+This builds `AnimeAnBackend`, the web UI and the Tauri shell, and packages
+`dist\AnimeAn\`. Backend-only builds: `docs/mechanism/build_deploy.md`.
 
 ### Python Support
 
@@ -102,7 +108,7 @@ model.add_polyline([(0, 0), (100, 80)])
 ExtraTool algorithm development currently works best as a post-processing vector
 workflow: select an ExtraTool, draw with the native Pen tool, receive hook events
 in Python, process the current stroke or cell, write vector results back, then
-refresh the widget.
+refresh the board.
 
 ## License
 

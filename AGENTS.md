@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Verify whether the deploy target builds and exits successfully.
+Verify whether the backend builds and `dist\AnimeAn\` is packaged successfully.
 
 ## Build Policy
 
@@ -20,7 +20,7 @@ PowerShell -ExecutionPolicy Bypass -File ".\build_scripts\agent_build.ps1"
 ```
 
 - Requires outside sandbox: yes
-- Sandbox note: Build verification must run outside the sandbox because CMake/Qt autogen launches compiler and deployment subprocesses.
+- Sandbox note: Build verification must run outside the sandbox because CMake/MinGW, Vite (`npm run build`) and Cargo launch compiler and packaging subprocesses.
 
 ## Verification
 
@@ -31,4 +31,4 @@ PowerShell -ExecutionPolicy Bypass -File ".\build_scripts\agent_build.ps1"
 ```
 
 - Required exit code: `0`
-- Success criteria: An exit code of `0` indicates that the release target was successfully compiled and deployed.
+- Success criteria: An exit code of `0` indicates that the backend, web UI and shell were built and `dist\AnimeAn\` was packaged.

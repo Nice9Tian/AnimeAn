@@ -3134,26 +3134,35 @@ void AnimeanBusiness::syncEmbeddedPythonState()
 
 String AnimeanBusiness::resolvePythonScriptPath(const String &scriptName)
 {
+    // A name with a folder in it is taken as given. A bare name tries the source
+    // folders first, so on the development machine a script edited in the repo
+    // wins over the copy beside the exe; then the exe folder, so a release
+    // folder (no source tree) runs its own copies; the working directory last.
     const FileInfo directInfo(scriptName);
-    if (directInfo.exists()) {
+    const bool bareName = directInfo.fileName() == scriptName;
+    if (!bareName && directInfo.exists()) {
         return directInfo.absoluteFilePath();
     }
 
     const String appPath = CoreApplication::applicationDirPath();
     const StringList candidates = {
-        Dir(appPath).filePath(scriptName),
-        Dir(appPath).filePath(String("pyfile/%1").arg(scriptName)),
-        Dir(appPath).filePath(String("../pyfile/%1").arg(scriptName)),
-        Dir(appPath).filePath(String("../../pyfile/%1").arg(scriptName)),
 #ifdef ANIMEAN_PYFILE_DIR
         Dir(String(ANIMEAN_PYFILE_DIR)).filePath(scriptName),
 #endif
 #ifdef ANIMEAN_PYTHONBIND_DIR
         Dir(String(ANIMEAN_PYTHONBIND_DIR)).filePath(scriptName),
 #endif
+#ifdef ANIMEAN_OPENTOONZ_TOOLS_DIR
+        Dir(String(ANIMEAN_OPENTOONZ_TOOLS_DIR)).filePath(scriptName),
+#endif
 #ifdef ANIMEAN_SOURCE_DIR
         Dir(String(ANIMEAN_SOURCE_DIR)).filePath(scriptName),
 #endif
+        Dir(appPath).filePath(scriptName),
+        Dir(appPath).filePath(String("pyfile/%1").arg(scriptName)),
+        Dir(appPath).filePath(String("../pyfile/%1").arg(scriptName)),
+        Dir(appPath).filePath(String("../../pyfile/%1").arg(scriptName)),
+        directInfo.absoluteFilePath(),
     };
 
     for (const String &candidate : candidates) {

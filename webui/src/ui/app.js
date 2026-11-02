@@ -10,6 +10,7 @@ import { createToolOptions } from "./options.js";
 import { createPalette, toHexArgb } from "./palette.js";
 import { createAssets, createForcePad, createHistory, createNewProjectDialog, createPythonDebug, createSubControlFrame, createTexturePanel, messageBox } from "./panels2.js";
 import { createTimeline } from "./timeline.js";
+import { asksForCanvasOnStartup } from "./startup.js";
 
 export function warningTitleForCall(method, params = {}) {
   const view = params?.view ?? "main";
@@ -1092,13 +1093,16 @@ export function createChrome(menuEl, statusEl, store, options = {}) {
     onCancel: () => {},
   });
   canvasDialog.update({ open: false });
-  // The Qt build opens on this dialog too (MainWindow::promptForNewCanvasOnStartup).
+  // The Qt build opens on this dialog too (MainWindow::promptForNewCanvasOnStartup);
+  // a backend already holding a project is not asked.
   let asked = false;
   store.on("window", (value) => {
     if (asked || !value?.canvasWidth) return;
     asked = true;
     tellPython();
-    canvasDialog.update({ width: value.canvasWidth, height: value.canvasHeight, open: true });
+    if (asksForCanvasOnStartup(value)) {
+      canvasDialog.update({ width: value.canvasWidth, height: value.canvasHeight, open: true });
+    }
   });
 
   // Native pickers live in the shell; the page only says what to pick.

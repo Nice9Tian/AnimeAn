@@ -64,9 +64,9 @@ role=front/back/seal 与 depth，由 `_MappedOutput.layer_roles` 提供）。
 
 ## 4. Advanced Settings（右键 → 设置窗）
 
-图层右键菜单现在支持 `kind:"settings"` 条目（与菜单栏同一 `ToolOptPanel`
-+ `openScriptSettings` 声明式机制；provider 在右键时把目标单元 stash 进
-`_SETTINGS_TARGET`，因为 C++ 设置窗按设计不携带行上下文）。每单元勾选项：
+图层右键菜单现在支持 `kind:"settings"` 条目（与菜单栏同一套 `openScriptSettings`
+声明式设置窗；provider 在右键时把目标单元 stash 进
+`_SETTINGS_TARGET`，因为设置窗按设计不携带行上下文）。每单元勾选项：
 
 | 勾选 | 作用 |
 |---|---|
@@ -82,7 +82,7 @@ role=front/back/seal 与 depth，由 `_MappedOutput.layer_roles` 提供）。
 决定（`refer_rect_enabled` / `_occlusion_enabled` / `_grid_divisions` / `_grid_extend`
 统一解析）。
 
-## 5. C++ 通用机制（本次新增，全部工具无关）
+## 5. 通用机制（本次新增，全部工具无关；C++ 与网页界面）
 
 | 机制 | 位置 |
 |---|---|
@@ -91,8 +91,8 @@ role=front/back/seal 与 depth，由 `_MappedOutput.layer_roles` 提供）。
 | `setLayerGroupTag` / `layerGroupTag` / `groupIdForLayer(index, tag)`（沿路径取最内层命中） | `algorithm/animemodel.cpp` |
 | `addLayersToGroup(gid, indices)`（createLayerGroup 缺失的另一半） | `algorithm/animemodel.cpp` |
 | 绑定：`set_layer_group_tag` / `layer_group_tag` / `group_id_for_layer` / `add_layers_to_group`；`layer_tree()` 透出 `tag` | `pythonbind/python_bindings.cpp` |
-| 图层右键菜单：空白处右键（kind `panel`）、条目支持 `kind:"settings"`/`separator`、上下文携带 `layer_id`/`tag`/`owner_group`/`owner_tag` | `mainwindow.cpp`、`pyfile/python_hooks.py` |
-| 组行点击聚焦首个成员层 | `mainwindow.cpp` |
+| 图层右键菜单：空白处右键（kind `panel`）、条目支持 `kind:"settings"`/`separator`、上下文携带 `layer_id`/`tag`/`owner_group`/`owner_tag` | `webui/src/ui/panels.js`（右键）、`backend/session/backendsession.cpp`（`layer.contextMenu` 组上下文、`layer.contextAction` 执行）、`pyfile/python_hooks.py` |
+| 组行点击聚焦首个成员层 | `webui/src/ui/panels.js`（`firstGroupLayer`） |
 | `python_hooks.set_hook(..., layerchange=True)` | `pyfile/python_hooks.py` |
 
 策略（哪个单元、显示什么、何时重跑）全部在 `pyfile/auto_mapping.py` ——
@@ -107,7 +107,7 @@ role=front/back/seal 与 depth，由 `_MappedOutput.layer_roles` 提供）。
    `_assets_for` 是唯一分流点。
 4. 单元 meta 只存于 main 场景；child 场景只存它自己板的资产——各自的
    撤销恢复各自的部分（与旧 per-view 存储同构）。
-5. Advanced Settings 窗按"右键时 stash 的目标单元"工作（C++ 设置窗不携带
+5. Advanced Settings 窗按"右键时 stash 的目标单元"工作（设置窗不携带
    行上下文）：窗口开着期间再右键另一个单元会把已开窗口静默重定向到新
    目标。一次只开一个设置窗即可避免。
 6. 单元组被整组删除后，配置在下一次运行时自动"重新安家"到新组（或在
