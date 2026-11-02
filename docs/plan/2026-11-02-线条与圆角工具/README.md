@@ -73,6 +73,12 @@
 
 **实测（2026-11-02，吸附角尖和起点）**：新角拉出去再拉回角尖，吸住后圆角消失，松手撤销栈不变；新角只拉 9 像素（没离开角尖范围）留下小圆角；再抓挪 5 像素照常微调；再抓拉远再拉回起点，圆角和按下前逐位相同，撤销栈不变；再抓拉到角尖，尖角恢复，多一步撤销，撤销后圆角回来。
 
+## 图标
+
+用户 2026-11-02 选定：曲线用 B 版（一条画完的曲线，中间锚点实心方块、两端空心方块），圆角用 B 版（直角上倒圆角，控制线钉在角尖，实心那头是抓着的一端；用户要求不画原角的虚线）。规格照 `../../../webui/design/components/QtToolChip/index.js` 里的图标：24×24、currentColor、主线 1.5、辅助线 1.2、虚线 1.3 / 2.7。
+
+文件：`curve_icon.svg`、`round_corner_icon.svg`。接入时把里面的图形加进 QtToolChip 的 `GLYPHS`，键名用工具的名字。
+
 ## 接进软件前要定的
 
 - `product_features.md`（二级）的承诺和 `tools_user_workflow/` 的工具页（一级），用户拍板后再接。
@@ -85,4 +91,5 @@
 
 - `curve_tool_demo.html`：曲线工具 demo。
 - `corner_round_demo.html`：圆角工具 demo。
+- `curve_icon.svg`、`round_corner_icon.svg`：选定的两个工具图标。
 - `../../../old_history/hobby_spline.js`：归档的 Hobby 样条。
