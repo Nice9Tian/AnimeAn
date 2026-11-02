@@ -166,9 +166,11 @@ animean_python.ui.call_later(ms: int, fn: Callable[[], object]) -> None
 
 ## ExtraTool and Hook Development
 
-ExtraTool support is currently implemented as a Python-assisted pen workflow.
-Selecting an extra tool keeps the drawing widget in the native Pen tool, sets a
-stroke `property`, and lets Python register hooks that receive drawing events.
+ExtraTool support is currently implemented as a Python-assisted workflow on top
+of a built-in tool. Selecting an extra tool switches the board to the base tool
+its entry names (`base_tool`: `fill`, `arrow` or `transfer`; Pen when it names
+none), sets a stroke `property`, and lets Python register hooks that receive
+drawing events.
 This is enough for post-processing vector algorithms, such as centerline
 extraction, stroke replacement, cleanup, auto-connection, or region analysis
 after the user finishes a stroke.
@@ -269,16 +271,18 @@ fields at the top level:
 
 Important current boundaries:
 
-- `extra_tools.tools_json()` is loaded when the main window creates the tool
-  panel. Add new extra tools there.
-- On tool selection, the widget sends an `extra` event before the handler in
+- `extra_tools.tools_json()` is read once at startup
+  (`AnimeanBusiness::loadExtraTools`). Add new extra tools there; each one also
+  needs its button in `webui/design/`.
+- On tool selection, the board sends an `extra` event before the handler in
   `run_tool_handler()` registers new hooks. Hooks registered by that handler
   should therefore target later events such as `linefinish` or `update`.
 - ExtraTool does not currently replace the native mouse event loop. Python does
   not receive a full custom `press` / `drag` / `release` stream with cancelable
   native behavior.
 - The `update` event fires while a pen stroke is being edited and can be useful
-  for debug feedback, but there is no Python drawing overlay API yet.
+  for debug feedback. Drawing feedback that stays on the board goes through
+  `overlay_stack.set_items(view, owner, items)`.
 - The strongest supported algorithm path today is: read current scene/cell,
   process vector strokes through `vectorlogic` or Python code, write strokes or
   remove strokes, then call `ui.widget.refresh()`.
