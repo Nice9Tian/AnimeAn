@@ -53,6 +53,7 @@
 - **机制 / 策略成对。** 加一个 C++ 机制就要有一个 Python 策略模块用它；handle 事件是工具面。**新工具**：[缺省]代码完成后填入。
 - **Python 层装会变的东西。** 实验性算法、随功能扩展变化的逻辑都在 Python。现成的库能省事就用，wheel 入 `pywheels/`、经 `pydeps.ensure()` 加载并保留降级路径；这是不重复造轮子，不是原则。
 - **Rust 只做外壳，不写算法。**
+- **界面在哪里改。** 停靠布局和 Tools 的控件在 `webui/design/` 里改；其余面板、菜单栏和对话框在 `webui/src/ui/` 里改。`webui/vf/` 是 VibeFrontend 运行层的副本，改动要记进 `webui/vf/README.md`。
 
 ### 共享与空间
 
