@@ -3,7 +3,7 @@
 three.js r160 (three.module.min.js) and its OrbitControls addon, base64 so the
 exported HTML works without network access - the unpkg importmap left the
 viewer a blank page offline. Stored as a .py because the deployment channels
-(CMake post-build copy list, sync_pyfiles.ps1) ship pyfile/*.py only; a plain
+(build_scripts/package_tauri.ps1, sync_pyfiles.ps1) ship pyfile/*.py only; a plain
 asset subdirectory would never reach a dist and dist must be self-contained.
 
 Upstream: https://github.com/mrdoob/three.js, MIT license (mrdoob and three.js

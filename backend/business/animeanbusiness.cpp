@@ -3134,17 +3134,19 @@ void AnimeanBusiness::syncEmbeddedPythonState()
 
 String AnimeanBusiness::resolvePythonScriptPath(const String &scriptName)
 {
+    // A name with a folder in it is taken as given. A bare name tries the source
+    // folders first, so on the development machine a script edited in the repo
+    // wins over the copy beside the exe and over the working directory (the exe
+    // folder when the shell starts from Explorer). A release folder has no
+    // source tree and uses its own copies.
     const FileInfo directInfo(scriptName);
-    if (directInfo.exists()) {
+    const bool bareName = directInfo.fileName() == scriptName;
+    if (!bareName && directInfo.exists()) {
         return directInfo.absoluteFilePath();
     }
 
     const String appPath = CoreApplication::applicationDirPath();
     const StringList candidates = {
-        Dir(appPath).filePath(scriptName),
-        Dir(appPath).filePath(String("pyfile/%1").arg(scriptName)),
-        Dir(appPath).filePath(String("../pyfile/%1").arg(scriptName)),
-        Dir(appPath).filePath(String("../../pyfile/%1").arg(scriptName)),
 #ifdef ANIMEAN_PYFILE_DIR
         Dir(String(ANIMEAN_PYFILE_DIR)).filePath(scriptName),
 #endif
@@ -3154,6 +3156,11 @@ String AnimeanBusiness::resolvePythonScriptPath(const String &scriptName)
 #ifdef ANIMEAN_SOURCE_DIR
         Dir(String(ANIMEAN_SOURCE_DIR)).filePath(scriptName),
 #endif
+        directInfo.absoluteFilePath(),
+        Dir(appPath).filePath(scriptName),
+        Dir(appPath).filePath(String("pyfile/%1").arg(scriptName)),
+        Dir(appPath).filePath(String("../pyfile/%1").arg(scriptName)),
+        Dir(appPath).filePath(String("../../pyfile/%1").arg(scriptName)),
     };
 
     for (const String &candidate : candidates) {
