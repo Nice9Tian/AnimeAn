@@ -164,6 +164,30 @@ animean_python.ui.call_later(ms: int, fn: Callable[[], object]) -> None
   module) the call is dropped. Exceptions raised by `fn` are printed and
   swallowed so they do not escape the event loop.
 
+Dialogs, states of Python's own and backend calls (used by `pyfile/dialogs.py`,
+`file_menu.py` and `ui_settings.py`; see `windows_theme.md`, "对话框窗口"):
+
+```python
+animean_python.ui.set_dialogs(dialogs_json: str) -> None
+animean_python.ui.broadcast(key: str, value_json: str) -> None
+animean_python.ui.state(key: str) -> dict | list | None
+animean_python.ui.call(method: str, params: dict | None = None) -> dict
+```
+
+- `set_dialogs` hands the backend the open dialogs, bottom to top, as a JSON
+  array; it broadcasts them as the `dialogs` state and knows none of the kinds.
+  A dialog the backend dropped (its window closed, its page failed, or its
+  answer raised) stays dropped even if a later array still lists it.
+- `broadcast` publishes a state of Python's own for the page; the key must
+  start with `py/` (for example `py/preferences`).
+- `state` returns one state as the page receives it (`"window"` for the
+  canvas size and file paths), or `None`.
+- `call` runs one backend method exactly as the page would (`project.saveAs`,
+  `file.import`, `tool.option`...) and returns its result; a failed call raises
+  `RuntimeError` with the backend's message.
+- Answers come back as the `dialog` hook event (`python_hooks.set_hook(fn,
+  dialog=True)`), and the File menu's items as `menu` events with menu `file`.
+
 ## ExtraTool and Hook Development
 
 ExtraTool support is currently implemented as a Python-assisted workflow on top

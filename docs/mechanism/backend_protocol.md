@@ -109,7 +109,7 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 - WebGL2 不许把多重采样缓冲 blit 到另一个多重采样缓冲，所以前缀不能直接复制，要先解析成纹理。模板缓冲也带不过去，后缀开始时裁剪要重新写一次。
 - 笔画几何按路径内容缓存，缩小时复用，放大超过 1.75 倍才重建。展平误差不超过 0.1 屏幕像素。
 - 几何放在一个大顶点缓冲里，GPU 缓冲按整个容量预留，新几何只传新增部分。擦除时一帧要新增几十条切片，缓冲只按数据量分配时每条都会全量上传，单帧要几十毫秒。
-- 选择存在页面的 `localStorage`，键是 `animean.boardRenderer`，属于机器级偏好，不进工程文件，也不经过后端。菜单项由 `webui/src/ui/app.js` 加在后端的菜单后面。
+- 选择存在页面的 `localStorage`，键是 `animean.boardRenderer`，属于机器级偏好，不进工程文件。Settings 菜单是 Python 的（`pyfile/ui_settings.py`，排在 Windows 后面）：网页启动时经 `tool.option`（`hook` 为 `ui_renderer`）报上正在用的渲染器和 WebGL 能不能用，用户选了以后 Python 广播 `py/preferences`，网页按它切换并存进 `localStorage`。
 - 切换时新建 canvas，因为同一个 canvas 只能拿到一种上下文。新渲染器用 `adopt` 接手指令表和图片，不需要后端重发。
 - 显卡不支持 WebGL2 或上下文创建失败时退回 Canvas 2D。要读背景的合成模式（`multiply`、`screen` 等）WebGL 没有实现，退回 `source-over`；画板现在不发这些模式，唯一的 `setCompositionMode` 作用在离屏 `AnimeCore::Image`（`RasterDevice`）上。
 
@@ -134,7 +134,9 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 | `freeze` | Python 冻结界面的开关 |
 | `pad` | Repulsion Pad 的值 |
 | `viewport/main`、`viewport/child` | 滚动条：`h`、`v` 各含 `min`、`max`、`page`、`value`、`enabled`，由 `BackendSession::buildViewportState` 计算 |
-| `event` | 一次性通知，`{ name, args }`，不合并、不重发：`dialog.*`、`menu.action`、`settings.open`、`window.show`、`window.select`、`textureView.surface`、`textureSubControl.surface` |
+| `dialogs` | 开着的对话框，从下到上，是 `pyfile/dialogs.py` 经 `ui.set_dialogs` 交来的数组，C++ 不认识其中的种类。每项有 `id`、`kind`（`message`、`canvasSize`、`color`、`settings`、`file`）、`modal`、`title` 和该种类的字段，见 `windows_theme.md`「对话框窗口」 |
+| `py/<名字>` | Python 自己的状态（`ui.broadcast`），如 `py/preferences`。前缀把它和上面的键隔开 |
+| `event` | 一次性通知，`{ name, args }`，不合并、不重发：`contextMenu`、`window.show`、`window.select`、`textureView.surface`、`textureSubControl.surface` |
 
 ## 调用
 
@@ -147,5 +149,8 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 | `timeline.thumbnails` | `{ frames?, width, height, view? }` | 用 `renderFrameThumbnail` 渲染指定帧缩略图，新渲染的通过 `image` 帧下发，已缓存的不重发（连接时补发过），返回 `{ view, width, height, revision, thumbnails, frames }`。缓存作废时 `thumbnails` 状态的 `revision` 加一，网页据此重新请求屏幕上的帧 |
 | `file.import` | `{ kind, paths, view?, probe?, fitToCanvas? }` | 应用 File 菜单的导入（未传 `view`）进主画板，`view: "child"` 或 `kind` 带 `texture.` 前缀时进纹理板，不是探测时先把目标板显示出来；矢量导入支持 `probe: true` 先返回 `{ needsScale, sourceBounds, canvasWidth, canvasHeight }` |
 | `project.save`、`project.saveAs`、`file.texture` | `{ path, probe?, overwrite? }`；`file.texture` 另带 `kind`（`open`、`save`、`saveAs`、`exportImage`） | 保存类调用支持 `probe: true` 检查后缀补全改写后的目标文件是否已存在，返回 `{ needsConfirmOverwrite, fileName, path }` |
+| `menu.trigger` | `{ id, title?, checked? }` | `file.` 开头的项转给 Python（`menu` 事件，`menu` 为 `file`），选择框、覆盖确认、出错提示都由 `pyfile/file_menu.py` 决定，它再调上面这些文件方法；`settings:<名字>` 请 Python 开设置窗 |
+| `dialog.result` | `{ id, action, value? }`，`action` 是 `button`、`accept`、`cancel`、`closed`、`error` | 一个对话框的回答，转成 Python 的 `dialog` 事件。兜底：`closed`（窗口被关）、`error`（页面出错）或 Python 处理时抛错，C++ 都从 `dialogs` 里删掉这一条并记下 id，Python 之后再发旧栈也带不回来 |
+| `dialog.request` | `{ kind, ... }`，如颜色控件的 `{ kind: "color", hook, name, value, method, menu? }` | 网页请 Python 开一个对话框，转成 `dialog` 事件（`action` 为 `request`）；没有 Python 接时返回错误 |
 
-Qt 版打开时先弹 New Project 对话框，网页版同样在收到第一个 `window` 状态后弹出。
+Qt 版打开时先弹 New Project 对话框。现在由 `pyfile/file_menu.py` 在启动后的第一轮事件循环里开出 Canvas Size（`ui.call_later(0, …)`），它留在 `dialogs` 状态里，网页连上就显示。

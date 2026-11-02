@@ -274,9 +274,9 @@ let cachedUi: {
   messageBox: typeof import("../src/ui/panels2.js").messageBox;
   createChrome: typeof import("../src/ui/app.js").createChrome;
   createStore: typeof import("../src/ui/app.js").createStore;
-  defaultSaveName: typeof import("../src/ui/app.js").defaultSaveName;
   isAllowedWhenFrozen: typeof import("../src/ui/app.js").isAllowedWhenFrozen;
-  warningTitleForCall: typeof import("../src/ui/app.js").warningTitleForCall;
+  renderDialog: typeof import("../src/ui/dialogwindow.js").renderDialog;
+  createDialogHost: typeof import("../src/ui/dialoghost.js").createDialogHost;
 } | null = null;
 
 function withDom<T>(
@@ -377,13 +377,15 @@ function withDom<T>(
     if (!cachedUi) {
       const panels2 = await import("../src/ui/panels2.js");
       const app = await import("../src/ui/app.js");
+      const dialogWindow = await import("../src/ui/dialogwindow.js");
+      const dialogHost = await import("../src/ui/dialoghost.js");
       cachedUi = {
         messageBox: panels2.messageBox,
         createChrome: app.createChrome,
         createStore: app.createStore,
-        defaultSaveName: app.defaultSaveName,
         isAllowedWhenFrozen: app.isAllowedWhenFrozen,
-        warningTitleForCall: app.warningTitleForCall,
+        renderDialog: dialogWindow.renderDialog,
+        createDialogHost: dialogHost.createDialogHost,
       };
     }
     return await run({ body, win, ui: cachedUi });
@@ -449,24 +451,19 @@ test("messageBox：点击按钮、Enter 选缺省按钮、Esc 取消", async () 
   });
 });
 
-test("文件操作失败标题映射与 createStore 弹窗警告", async () => {
-  await withDom(async ({ body, ui: { warningTitleForCall, createStore } }) => {
-    assert.equal(warningTitleForCall("project.open", { path: "a.anproj" }), "Open Project");
-    assert.equal(warningTitleForCall("project.open", { path: "a.textureview", view: "child" }), "Open Texture View");
-    assert.equal(warningTitleForCall("project.save", {}), "Save Project");
-    assert.equal(warningTitleForCall("project.saveAs", { path: "a.anproj" }), "Save Project");
-    assert.equal(warningTitleForCall("menu.trigger", { id: "file.save" }), "Save Project");
-    assert.equal(warningTitleForCall("menu.trigger", { id: "file.texture.save" }), "Save Texture View");
-    assert.equal(warningTitleForCall("file.texture", { kind: "open" }), "Open Texture View");
-    assert.equal(warningTitleForCall("file.texture", { kind: "save" }), "Save Texture View");
-    assert.equal(warningTitleForCall("file.texture", { kind: "saveAs" }), "Save Texture View");
-    assert.equal(warningTitleForCall("file.texture", { kind: "exportImage" }), "Export Texture View Image");
-    assert.equal(warningTitleForCall("file.import", { kind: "raster" }), "Import Raster");
-    assert.equal(warningTitleForCall("file.import", { kind: "opentoonz" }), "Import OpenToonz Lines");
-    assert.equal(warningTitleForCall("file.import", { kind: "csp" }), "Import Clip Studio Paint");
-    assert.equal(warningTitleForCall("layer.add", { view: "main" }), null);
-    assert.equal(warningTitleForCall("menu.trigger", { id: "edit.undo" }), null);
+const tick = () => new Promise((r) => setTimeout(r, 0));
 
+function recordingCall() {
+  const calls: Array<{ method: string; params: any }> = [];
+  const call = (method: string, params: any) => {
+    calls.push({ method, params });
+    return Promise.resolve({});
+  };
+  return { calls, call };
+}
+
+test("a failed call is only logged: telling the user is Python's", async () => {
+  await withDom(async ({ body, ui: { createStore } }) => {
     const errors: unknown[] = [];
     const origError = console.error;
     console.error = (...args: unknown[]) => errors.push(args[0]);
@@ -476,68 +473,94 @@ test("文件操作失败标题映射与 createStore 弹窗警告", async () => {
         onImage() {},
         call: () => Promise.reject(new Error("Cannot write file")),
       });
-      await store.call("layer.add", { view: "main" });
-      assert.equal(body.querySelector(".qdialog"), null);
-      assert.equal(errors.length, 1);
-
       await store.call("file.import", { kind: "opentoonz", paths: ["test.pli"] });
-      const dlg = body.querySelector(".qdialog")!;
-      assert.ok(dlg);
-      assert.equal(dlg.querySelector(".qdialog-caption")?.textContent, "Import OpenToonz Lines");
-      assert.equal(dlg.querySelector(".qdialog-caption-text")?.textContent, "Cannot write file");
-      dlg.querySelector(".qbutton")!.click();
+      await store.call("menu.trigger", { id: "file.save" });
+      assert.equal(body.querySelector(".qdialog"), null, "the page opens no dialog of its own");
+      assert.equal(errors.length, 2);
     } finally {
       console.error = origError;
     }
   });
 });
 
-test("保存框预填文件名规则与 pick_files 参数传递", async () => {
-  await withDom(async ({ body, win, ui: { defaultSaveName, createStore, createChrome } }) => {
-    assert.equal(defaultSaveName("project", {}), "");
-    assert.equal(defaultSaveName("project", { currentFilePath: "C:/work/cut01.anproj" }), "cut01.anproj");
-    assert.equal(defaultSaveName("project", { currentFilePath: "C:\\work\\legacy.json" }), "legacy.anproj");
+test("a declared message fills its window and answers with the button the user pressed", async () => {
+  await withDom(async ({ body, ui: { renderDialog } }) => {
+    const { calls, call } = recordingCall();
+    const drags: unknown[] = [];
+    const root = new FakeElement("div");
+    body.append(root);
+    const view = renderDialog(root as any, {
+      id: "d1", kind: "message", title: "Save Project As",
+      text: "a.anproj already exists.\nDo you want to replace it?", buttons: ["Yes", "No"],
+    }, { call, onTitleDrag: (e: unknown) => drags.push(e) });
+    assert.equal(body.querySelector(".qdialog-shade"), null, "no shade: the frame is the window");
+    assert.ok((view.el as any)?.classList.contains("in-window"));
+    assert.equal(root.querySelector(".qdialog-caption")?.textContent, "Save Project As");
+    const head = root.querySelector(".qdialog-title")!;
+    head.dispatchEvent({ type: "pointerdown" });
+    assert.equal(drags.length, 1, "the title bar moves the window");
+    root.querySelectorAll(".qbutton")[1].click();
+    await tick();
+    assert.deepEqual(calls, [{ method: "dialog.result", params: { id: "d1", action: "button", value: "No" } }]);
+    assert.ok(root.querySelector(".qdialog"), "it stays until its window closes");
 
-    assert.equal(defaultSaveName("saveAs", {}), "texture.textureview");
-    assert.equal(defaultSaveName("saveAs", { childFilePath: "D:/tex/cape.textureview" }), "cape.textureview");
-    assert.equal(defaultSaveName("saveAs", { childFilePath: "D:/tex/cape.json" }), "cape.textureview");
-
-    assert.equal(defaultSaveName("exportImage", {}), "texture.png");
-    assert.equal(defaultSaveName("exportImage", { childFilePath: "D:/tex/cape.textureview" }), "cape.png");
-
-    const invokes: Array<{ cmd: string; args: Record<string, any> }> = [];
-    win.__TAURI__ = {
-      core: {
-        invoke: async (cmd: string, args: Record<string, any>) => {
-          invokes.push({ cmd, args });
-          return [];
-        },
-      },
-    };
-    const stateListeners = new Map<string, (v: any) => void>();
-    const store = createStore({
-      onState: (k: string, fn: (v: any) => void) => stateListeners.set(k, fn),
-      onImage() {},
-      call: async () => ({}),
-    });
-    const menuEl = new FakeElement("div");
-    const statusEl = new FakeElement("div");
-    body.append(menuEl, statusEl);
-    createChrome(menuEl, statusEl, store);
-
-    stateListeners.get("window")?.({ currentFilePath: "C:/shots/s01.anproj", childFilePath: "" });
-    await stateListeners.get("event")?.({ name: "dialog.saveProjectAs" });
-    assert.equal(invokes.at(-1)?.args.defaultName, "s01.anproj");
-
-    await stateListeners.get("event")?.({ name: "menu.action", args: { id: "file.texture.saveAs" } });
-    assert.equal(invokes.at(-1)?.args.defaultName, "texture.textureview");
-
-    stateListeners.get("window")?.({ currentFilePath: "", childFilePath: "C:/shots/cloth.textureview" });
-    await stateListeners.get("event")?.({ name: "menu.action", args: { id: "file.texture.exportImage" } });
-    assert.equal(invokes.at(-1)?.args.defaultName, "cloth.png");
+    calls.length = 0;
+    const second = new FakeElement("div");
+    body.append(second);
+    renderDialog(second as any, { id: "d2", kind: "message", title: "Open Project", text: "Bad file", buttons: ["OK"] }, { call });
+    second.querySelector(".qdialog")!.dispatchEvent({ type: "keydown", key: "Escape" });
+    await tick();
+    assert.deepEqual(calls, [{ method: "dialog.result", params: { id: "d2", action: "cancel" } }]);
   });
 });
 
+test("the canvas size, colour and settings dialogs answer through dialog.result", async () => {
+  await withDom(async ({ body, ui: { renderDialog } }) => {
+    const { calls, call } = recordingCall();
+    const sizeRoot = new FakeElement("div");
+    body.append(sizeRoot);
+    renderDialog(sizeRoot as any, { id: "d3", kind: "canvasSize", title: "New Project", width: 1920, height: 1080 }, { call });
+    const create = sizeRoot.querySelectorAll(".qbutton").find((b) => b.textContent === "Create")!;
+    create.click();
+    create.click();
+    assert.deepEqual(calls, [{ method: "dialog.result", params: { id: "d3", action: "accept", value: { width: 1920, height: 1080 } } }],
+      "Create answers once, with the size");
+
+    calls.length = 0;
+    const colorRoot = new FakeElement("div");
+    body.append(colorRoot);
+    renderDialog(colorRoot as any, { id: "d4", kind: "color", title: "New Color", value: "#ff336699", accept: "Add" }, { call });
+    assert.equal(colorRoot.querySelector(".qdialog-caption")?.textContent, "New Color");
+    assert.equal(colorRoot.querySelectorAll(".pal-tab").length, 3, "the pickers, without the box");
+    const buttons = colorRoot.querySelectorAll(".qbutton");
+    assert.deepEqual(buttons.map((b) => b.textContent), ["Add", "Cancel"], "the confirm button says what Python asked");
+    buttons[0].click();
+    buttons[1].click();
+    assert.deepEqual(calls, [{ method: "dialog.result", params: { id: "d4", action: "accept", value: "#ff336699" } }]);
+
+    calls.length = 0;
+    const settingsRoot = new FakeElement("div");
+    body.append(settingsRoot);
+    const layout = { controls: [{ type: "color", name: "axis", hook: "axis_color", title: "Axis", value: "#ff102030", row: 1, start_column: 0, end_column: 0 }] };
+    const view = renderDialog(settingsRoot as any, { id: "d5", kind: "settings", title: "Line Display Settings", name: "line_settings", layout }, { call });
+    settingsRoot.querySelector(".opt-swatch")!.click();
+    assert.deepEqual(calls, [{ method: "dialog.request", params: {
+      kind: "color", hook: "axis_color", name: "axis", title: "Axis", value: "#ff102030", row: 1, startColumn: 0, endColumn: 0,
+      method: "settings.option", menu: "line_settings" } }], "a swatch asks Python for the colour dialog");
+    const swatch = settingsRoot.querySelector(".opt-swatch");
+    view.update({ layout });
+    assert.equal(settingsRoot.querySelector(".opt-swatch"), swatch, "the same layout is not rebuilt");
+    view.update({ layout: { controls: [{ ...layout.controls[0], value: "#ff445566" }] } });
+    assert.equal(settingsRoot.querySelector(".opt-swatch")?.title, "#ff445566", "a new layout shows the colour Python chose");
+    calls.length = 0;
+    settingsRoot.querySelectorAll(".qbutton").find((b) => b.textContent === "Close")!.click();
+    assert.deepEqual(calls, [{ method: "dialog.result", params: { id: "d5", action: "cancel" } }]);
+
+    calls.length = 0;
+    renderDialog(new FakeElement("div") as any, { id: "d6", kind: "nothing" }, { call });
+    assert.equal(calls[0]?.params.action, "error", "a kind the page cannot draw is an error, so C++ drops it");
+  });
+});
 test("Python 冻结界面：状态栏文字切换、拦截非 Python Debug 事件与恢复", async () => {
   await withDom(async ({ body, ui: { createStore, createChrome, isAllowedWhenFrozen } }) => {
     const stateListeners = new Map<string, (v: any) => void>();
@@ -649,7 +672,6 @@ test("Options 里的纹理板行吃掉面板剩下的高度，没有这一行时
     body.append(root);
     const panel = createToolOptions(root, {
       onOption() {},
-      onNewColor() {},
       onSubWindow: () => new FakeElement("div"),
     });
     const grid = root.querySelector(".opt-grid")!;
@@ -674,9 +696,10 @@ test("Options 的 color 控件与带 state.color 的 button 控件", async () =>
     const root = new FakeElement("div");
     body.append(root);
     const events: any[] = [];
+    const asked: any[] = [];
     const panel = createToolOptions(root, {
       onOption: (e: any) => events.push(e),
-      onNewColor() {},
+      onDialog: (request: any) => asked.push(request),
       onSubWindow: () => null,
     });
     panel.build({
@@ -701,35 +724,11 @@ test("Options 的 color 控件与带 state.color 的 button 控件", async () =>
     assert.equal(swatch.style.background, "#112233");
     assert.equal(swatch.title, "#80112233");
 
-    // 点色块弹取色窗（pickersOnly 只有 Circle / HSV / RGB 三个 tab），点 Cancel 不改不发
+    // 点色块不在页面里弹取色窗：请 Python 开（dialogs.py），选好的颜色作为这个控件的选项回来
     swatch.click();
-    let dlg = body.querySelector(".newcolor-dialog")!;
-    assert.ok(dlg);
-    assert.equal(dlg.querySelectorAll(".pal-tab").length, 3);
-    const cancelBtn = dlg.querySelectorAll(".qbutton").find((b) => b.textContent === "Cancel")!;
-    cancelBtn.click();
-    assert.equal(body.querySelector(".newcolor-dialog"), null);
+    assert.equal(body.querySelector(".qdialog"), null);
+    assert.deepEqual(asked, [{ kind: "color", hook: "ink", name: "ink", title: "Ink", value: "#80112233", row: 0, startColumn: 0, endColumn: 0 }]);
     assert.equal(events.length, 0);
-    assert.equal(swatch.title, "#80112233");
-
-    // 再次打开并在 RGB 页拖动改变颜色和透明度，点 OK 才发
-    swatch.click();
-    dlg = body.querySelector(".newcolor-dialog")!;
-    const tabs = dlg.querySelectorAll(".pal-tab");
-    tabs[2].click(); // RGB picker (含 R, G, B, A 四条滑轨)
-    const rgbCanvas = dlg.querySelectorAll(".pal-picker")[2];
-    // 第 4 行（y = 3 * 33 + 12 = 111）为 Alpha 滑轨，设到约一半
-    rgbCanvas.dispatchEvent({ type: "pointerdown", button: 0, offsetX: 100, offsetY: 111, pointerId: 1 });
-    rgbCanvas.dispatchEvent({ type: "pointerup", button: 0, offsetX: 100, offsetY: 111, pointerId: 1 });
-    assert.equal(events.length, 0); // 确定前不发送
-    const okBtn = dlg.querySelectorAll(".qbutton").find((b) => b.textContent === "OK")!;
-    okBtn.click();
-    assert.equal(events.length, 1);
-    assert.equal(events[0].type, "color");
-    assert.match(events[0].value, /^#[0-9a-f]{2}112233$/);
-    assert.notEqual(events[0].value, "#80112233");
-    assert.equal(swatch.style.background, "#112233");
-    assert.equal(swatch.title, events[0].value);
 
     // 2. 带 state.color 的按钮：文字颜色、悬停底色、按下底色
     const btn = root.querySelector(".opt-button")!;
@@ -813,85 +812,207 @@ test("点开菜单先调 menu.refresh 获取最新勾选状态再显示弹窗", 
   });
 });
 
-test("矢量导入询问缩放与保存后缀改写同名文件询问覆盖", async () => {
-  await withDom(async ({ body, win, ui: { createStore, createChrome } }) => {
-    let nextPicked: string[] = [];
-    win.__TAURI__ = {
-      core: {
-        invoke: async (cmd: string) => (cmd === "pick_files" ? nextPicked : undefined),
-      },
+function fakeShell(picked: string[] = []) {
+  const log: string[] = [];
+  const picks: any[] = [];
+  let closeRequested: ((label: string) => void) | null = null;
+  return {
+    log,
+    picks,
+    openDialogWindow: async (args: any) => { log.push(`open ${args.label} owner=${args.owner} title=${args.title} url=${args.url}`); },
+    closeDialogWindow: async (label: string) => { log.push(`close ${label}`); },
+    setWindowEnabled: async (label: string, enabled: boolean) => { log.push(`${enabled ? "enable" : "disable"} ${label}`); },
+    setPanelsFocusable: async (focusable: boolean) => { log.push(focusable ? "focusable panels" : "unfocusable panels"); },
+    focusModal: async () => { log.push("focus"); },
+    pickFiles: async (args: any) => { picks.push(args); return picked; },
+    onDialogCloseRequested: (fn: (label: string) => void) => { closeRequested = fn; },
+    requestClose: (label: string) => closeRequested?.(label),
+  };
+}
+
+function fakeStore() {
+  const listeners = new Map<string, Array<(v: any) => void>>();
+  const calls: Array<{ method: string; params: any }> = [];
+  let disconnected: (() => void) | null = null;
+  return {
+    calls,
+    on: (key: string, fn: (v: any) => void) => {
+      if (!listeners.has(key)) listeners.set(key, []);
+      listeners.get(key)!.push(fn);
+    },
+    call: (method: string, params: any) => { calls.push({ method, params }); return Promise.resolve({}); },
+    emit: (key: string, value: any) => listeners.get(key)?.forEach((fn) => fn(value)),
+    onDisconnect: (fn: () => void) => { disconnected = fn; },
+    disconnect: () => disconnected?.(),
+  };
+}
+
+const sizeDialog = { id: "d1", kind: "canvasSize", modal: true, title: "New Project", width: 1280, height: 720 };
+const colorOver = { id: "d2", kind: "color", modal: true, title: "Select Color", value: "#ff000000" };
+
+test("the main page opens a window per dialog and locks the others, owner first", async () => {
+  await withDom(async ({ ui: { createDialogHost } }) => {
+    const shell = fakeShell();
+    const store = fakeStore();
+    const host = createDialogHost(store, { role: "main", shell, channel: null });
+    store.emit("dialogs", [sizeDialog]);
+    await host.settled();
+    assert.deepEqual(shell.log, [
+      "open dialog-d1 owner=main title=New Project url=dialog.html?id=d1&owner=main",
+      "unfocusable panels",
+      "disable main",
+    ]);
+    assert.equal(host.isBlocked(), true, "the main page swallows input under a modal dialog");
+
+    shell.log.length = 0;
+    store.emit("dialogs", [sizeDialog, colorOver]);
+    await host.settled();
+    assert.deepEqual(shell.log, [
+      "open dialog-d2 owner=dialog-d1 title=Select Color url=dialog.html?id=d2&owner=dialog-d1",
+      "disable dialog-d1",
+    ], "a dialog over a dialog is owned by it, and the one below is locked");
+
+    shell.log.length = 0;
+    store.emit("dialogs", [sizeDialog]);
+    await host.settled();
+    assert.deepEqual(shell.log, [
+      "enable main", "enable dialog-d1", "focusable panels",
+      "close dialog-d2",
+      "unfocusable panels", "disable main",
+    ], "nothing stays locked while a window closes, or Windows hands the focus to another program");
+
+    shell.log.length = 0;
+    store.emit("dialogs", []);
+    await host.settled();
+    assert.deepEqual(shell.log, ["enable main", "focusable panels", "close dialog-d1"]);
+    assert.equal(host.isBlocked(), false);
+  });
+});
+
+test("a native picker is the shell's, a close from Windows is an answer, and a lost backend unlocks", async () => {
+  await withDom(async ({ ui: { createDialogHost } }) => {
+    const shell = fakeShell(["C:/shots/s01.anproj"]);
+    const store = fakeStore();
+    const host = createDialogHost(store, { role: "main", shell, channel: null });
+    const picker = {
+      id: "d7", kind: "file", modal: true, title: "Save Project As", mode: "save",
+      filters: [{ name: "AnimeAn Projects", extensions: ["anproj"] }], multiple: false, defaultName: "s01.anproj",
     };
+    store.emit("dialogs", [picker]);
+    await host.settled();
+    await tick();
+    assert.deepEqual(shell.picks, [{ mode: "save", title: "Save Project As", filters: [{ name: "AnimeAn Projects", extensions: ["anproj"] }], multiple: false, defaultName: "s01.anproj" }]);
+    assert.deepEqual(store.calls, [{ method: "dialog.result", params: { id: "d7", action: "accept", value: ["C:/shots/s01.anproj"] } }]);
+    assert.deepEqual(shell.log, ["unfocusable panels"], "the picker disables the main window itself");
+
+    store.calls.length = 0;
+    shell.log.length = 0;
+    store.emit("dialogs", [sizeDialog]);
+    await host.settled();
+    shell.requestClose("dialog-d1");
+    assert.deepEqual(store.calls, [{ method: "dialog.result", params: { id: "d1", action: "closed" } }]);
+    assert.equal(shell.log.includes("close dialog-d1"), false, "the window waits for the state");
+
+    shell.log.length = 0;
+    store.disconnect();
+    await host.settled();
+    assert.deepEqual(shell.log, ["enable main", "focusable panels", "close dialog-d1"], "no backend: nothing stays open or locked");
+    assert.equal(host.isBlocked(), false);
+  });
+});
+
+test("a dialog window that never shows itself is reported, so C++ drops it", async () => {
+  await withDom(async ({ ui: { createDialogHost } }) => {
+    const shell = fakeShell();
+    const store = fakeStore();
+    let onMessage: ((e: any) => void) | null = null;
+    const channel = { addEventListener: (_type: string, fn: (e: any) => void) => { onMessage = fn; } };
+    const host = createDialogHost(store, { role: "main", shell, channel, showTimeoutMs: 5 });
+    store.emit("dialogs", [sizeDialog, { ...colorOver, id: "d9" }]);
+    await host.settled();
+    onMessage!({ data: { type: "shown", id: "d1" } });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.deepEqual(store.calls, [{ method: "dialog.result", params: { id: "d9", action: "error", value: "The dialog window did not show." } }]);
+  });
+});
+
+test("panel and dialog pages swallow input under a modal dialog and bring it forward when pressed", async () => {
+  await withDom(async ({ body, win, ui: { createDialogHost } }) => {
+    const shell = fakeShell();
+    const store = fakeStore();
+    const host = createDialogHost(store, { role: "satellite", shell });
+    const below = createDialogHost(store, { role: "dialog", ownId: "d1", shell });
+    let keys = 0;
+    win.addEventListener("keydown", () => keys++);
+    store.emit("dialogs", [sizeDialog]);
+    assert.equal(host.isBlocked(), true);
+    assert.equal(below.isBlocked(), false, "the dialog itself takes input");
+    win.dispatchEvent({ type: "keydown", key: "a" });
+    assert.equal(keys, 0);
+    win.dispatchEvent({ type: "pointerdown" });
+    await tick();
+    assert.deepEqual(shell.log, ["focus"]);
+
+    store.emit("dialogs", [sizeDialog, colorOver]);
+    assert.equal(below.isBlocked(), true, "a modal dialog above it blocks it");
+    store.emit("dialogs", [sizeDialog, { ...colorOver, modal: false }]);
+    assert.equal(below.isBlocked(), false, "a modeless one does not");
+    store.emit("dialogs", []);
+    assert.equal(host.isBlocked(), false);
+    win.dispatchEvent({ type: "keydown", key: "a" });
+    assert.equal(keys, 1);
+    assert.equal(body.querySelector(".modal-blocker"), null);
+  });
+});
+
+test("without the shell the dialogs are drawn over the main page and pickers answer Cancel", async () => {
+  await withDom(async ({ body, ui: { createDialogHost } }) => {
+    const store = fakeStore();
+    const host = createDialogHost(store, { role: "main", shell: null, channel: null });
+    store.emit("dialogs", [{ id: "d1", kind: "message", modal: true, title: "Open Project", text: "Bad file", buttons: ["OK"] }]);
+    await host.settled();
+    assert.equal(body.querySelectorAll(".qdialog-shade").length, 1);
+    assert.equal(body.querySelector(".qdialog-caption")?.textContent, "Open Project");
+    store.emit("dialogs", [{ id: "d8", kind: "file", modal: true, title: "Open Project", mode: "open", filters: [] }]);
+    await host.settled();
+    await tick();
+    assert.equal(body.querySelector(".qdialog-shade"), null);
+    assert.deepEqual(store.calls.at(-1), { method: "dialog.result", params: { id: "d8", action: "cancel", value: [] } });
+  });
+});
+
+test("Settings comes from the backend's menus, and a choice Python broadcasts is drawn here", async () => {
+  await withDom(async ({ body, ui: { createStore, createChrome } }) => {
+    const i18n = await import("../src/i18n/index.js");
     const stateListeners = new Map<string, (v: any) => void>();
     const calls: Array<{ method: string; params: any }> = [];
-    let nextProbeNeedsScale = true;
-    let nextNeedsOverwrite = true;
-    const store = createStore({
+    const store: any = createStore({
       onState: (k: string, fn: (v: any) => void) => stateListeners.set(k, fn),
       onImage() {},
-      call: async (method: string, params: any) => {
-        calls.push({ method, params });
-        if (method === "file.import" && params.probe) {
-          return {
-            probe: true,
-            needsScale: nextProbeNeedsScale,
-            sourceBounds: { x: 10, y: 20, width: 1920, height: 1080 },
-            canvasWidth: 800,
-            canvasHeight: 600,
-          };
-        }
-        if ((method === "project.saveAs" || method === "file.texture") && params.probe) {
-          return {
-            probe: true,
-            needsConfirmOverwrite: nextNeedsOverwrite,
-            fileName: method === "project.saveAs" ? "demo.anproj" : "tex.textureview",
-            path: method === "project.saveAs" ? "C:/tmp/demo.anproj" : "C:/tmp/tex.textureview",
-          };
-        }
-        return {};
-      },
+      call: async (method: string, params: any) => { calls.push({ method, params }); return {}; },
     });
     const menuEl = new FakeElement("div");
     const statusEl = new FakeElement("div");
     body.append(menuEl, statusEl);
-    createChrome(menuEl, statusEl, store);
-
-    // 1. 导入矢量线需要缩放，点 Yes -> fitToCanvas: true
-    nextPicked = ["C:/tmp/line.pli"];
-    const importPromise1 = stateListeners.get("event")?.({ name: "menu.action", args: { id: "file.import.opentoonz" } });
-    await new Promise((r) => setTimeout(r, 0));
-    let dlg = body.querySelectorAll(".qdialog").at(-1)!;
-    assert.ok(dlg);
-    assert.equal(dlg.querySelector(".qdialog-caption")?.textContent, "Import OpenToonz Lines");
-    assert.equal(
-      dlg.querySelector(".qdialog-caption-text")?.textContent,
-      "The imported drawing bounds are (10, 20) 1920 x 1080, but the current canvas is 800 x 600.\nFit it to the current canvas?",
-    );
-    dlg.querySelectorAll(".qbutton")[0].click(); // Yes
-    await importPromise1;
-    assert.deepEqual(calls.at(-1), {
-      method: "file.import",
-      params: { kind: "opentoonz", paths: ["C:/tmp/line.pli"], fitToCanvas: true },
-    });
-
-    // 2. 保存工程时后缀补全改写且目标文件已存在，点 No -> 取消不覆盖
-    calls.length = 0;
-    nextPicked = ["C:/tmp/demo"];
-    const savePromise1 = stateListeners.get("event")?.({ name: "dialog.saveProjectAs" });
-    await new Promise((r) => setTimeout(r, 0));
-    dlg = body.querySelectorAll(".qdialog").at(-1)!;
-    assert.ok(dlg);
-    assert.equal(dlg.querySelector(".qdialog-caption")?.textContent, "Save Project As");
-    assert.equal(
-      dlg.querySelector(".qdialog-caption-text")?.textContent,
-      "demo.anproj already exists.\nDo you want to replace it?",
-    );
-    dlg.querySelectorAll(".qbutton")[1].click(); // No
-    await savePromise1;
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].params.probe, true);
+    createChrome(menuEl, statusEl, store, { shell: null });
+    stateListeners.get("menus")?.([
+      { id: "file", text: "File", kind: "submenu", children: [] },
+      { id: "Settings", text: "Settings", kind: "submenu", children: [] },
+    ]);
+    assert.deepEqual(menuEl.querySelectorAll(".item").map((item) => item.textContent), ["File", "Settings"],
+      "the page adds no menu of its own");
+    try {
+      stateListeners.get("py/preferences")?.({ renderer: "canvas2d", language: "ja", choice: 1 });
+      assert.equal(i18n.language(), "ja", "the language Python broadcast is applied");
+    } finally {
+      i18n.setLanguage("en");
+    }
+    stateListeners.get("window")?.({ canvasWidth: 1280, canvasHeight: 720 });
+    assert.ok(calls.some((c) => c.method === "tool.option" && c.params.hook === "ui_renderer" && c.params.name === "webgl"),
+      "Python hears whether WebGL works");
+    assert.equal(body.querySelector(".qdialog"), null, "and no canvas size dialog of the page's own");
   });
 });
-
 test("the board moving in or out of its cell leaves the controls the user has touched alone", async () => {
   await withDom(async ({ body }) => {
     const root = new FakeElement("div");
@@ -899,7 +1020,6 @@ test("the board moving in or out of its cell leaves the controls the user has to
     const cells: FakeElement[] = [];
     const panel = createToolOptions(root, {
       onOption() {},
-      onNewColor() {},
       onSubWindow: () => {
         const cell = new FakeElement("div");
         cells.push(cell);
@@ -930,6 +1050,40 @@ test("New Color reaches the draw layer before the box hears of it", async () => 
     assert.deepEqual(events, ["color", "box"]);
     palette.addSwatch("#ff112233");
     assert.deepEqual(events, ["color", "box", "color"], "a swatch already in the box is not added twice");
+  });
+});
+
+test("the palette's + asks palette_box for New Color on the colour shown, and opens nothing itself", async () => {
+  await withDom(async ({ body }) => {
+    const root = new FakeElement("div");
+    body.append(root);
+    const events: any[] = [];
+    createToolOptions(root, { onOption: (e: any) => events.push(e), onSubWindow: () => null }).build({
+      controls: [{ type: "palette", name: "palette", hook: "color", value: "#ff336699", swatches: ["#ff000000"], row: 0, start_column: 0, end_column: 2 }],
+    });
+    await tick();
+    root.querySelector(".pal-plus")!.click();
+    assert.equal(body.querySelector(".qdialog"), null);
+    assert.deepEqual(events, [{ hook: "palette_box", name: "palette", type: "palette", value: "new:#ff336699", row: 0, startColumn: 0, endColumn: 2 }]);
+  });
+});
+
+test("a colour picked in the dialog window's RGB page is what Add sends", async () => {
+  await withDom(async ({ body, ui: { renderDialog } }) => {
+    const { calls, call } = recordingCall();
+    const root = new FakeElement("div");
+    body.append(root);
+    renderDialog(root as any, { id: "d4", kind: "color", title: "Select Color", value: "#80112233", accept: "OK" }, { call });
+    root.querySelectorAll(".pal-tab")[2].click(); // RGB: R, G, B and A rails
+    const rgb = root.querySelectorAll(".pal-picker")[2];
+    // The fourth rail (y = 3 * 33 + 12 = 111) is alpha: drag it to about half.
+    rgb.dispatchEvent({ type: "pointerdown", button: 0, offsetX: 100, offsetY: 111, pointerId: 1 });
+    rgb.dispatchEvent({ type: "pointerup", button: 0, offsetX: 100, offsetY: 111, pointerId: 1 });
+    assert.equal(calls.length, 0, "nothing goes out before OK");
+    root.querySelectorAll(".qbutton").find((b) => b.textContent === "OK")!.click();
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].params.value, /^#[0-9a-f]{2}112233$/);
+    assert.notEqual(calls[0].params.value, "#80112233");
   });
 });
 

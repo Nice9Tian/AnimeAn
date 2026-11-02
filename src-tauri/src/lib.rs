@@ -512,6 +512,43 @@ fn validate_panel_label(label: &str) -> Result<&str, String> {
     Ok(trimmed)
 }
 
+/// Dialog windows are "dialog-<id>", the id pyfile/dialogs.py hands out.
+pub fn validate_dialog_label(label: &str) -> Result<&str, String> {
+    let trimmed = label.trim();
+    let id = trimmed
+        .strip_prefix("dialog-")
+        .ok_or_else(|| format!("Invalid dialog window label '{trimmed}': must start with 'dialog-'"))?;
+    if id.is_empty() || id.len() > 32 || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(format!("Invalid dialog window label '{trimmed}'"));
+    }
+    Ok(trimmed)
+}
+
+/// A window a dialog may be owned by, or a lock may name: the main window or
+/// another dialog.
+pub fn validate_owner_label(label: &str) -> Result<&str, String> {
+    if label.trim() == "main" {
+        Ok("main")
+    } else {
+        validate_dialog_label(label)
+    }
+}
+
+/// Where a dialog of `size` sits over the middle of its owner, in logical
+/// pixels, never above the owner's top edge.
+pub fn center_over(owner_pos: (f64, f64), owner_size: (f64, f64), size: (f64, f64)) -> (f64, f64) {
+    let x = owner_pos.0 + (owner_size.0 - size.0) / 2.0;
+    let y = owner_pos.1 + ((owner_size.1 - size.1) / 2.0).max(0.0);
+    (x.round(), y.round())
+}
+
+fn logical_frame(win: &tauri::WebviewWindow) -> Result<((f64, f64), (f64, f64)), String> {
+    let scale = win.scale_factor().map_err(|e| e.to_string())?;
+    let pos = win.outer_position().map_err(|e| e.to_string())?.to_logical::<f64>(scale);
+    let size = win.outer_size().map_err(|e| e.to_string())?.to_logical::<f64>(scale);
+    Ok(((pos.x, pos.y), (size.width, size.height)))
+}
+
 fn min_size_for_panel(
     label: &str,
     min_width: Option<f64>,
@@ -663,6 +700,131 @@ async fn close_panel_window(
     }))
 }
 
+// ---- dialog windows -----------------------------------------------------------
+// Which dialog opens and whether it is modal is Python's (pyfile/dialogs.py);
+// these only make windows. A dialog window has no frame of its own, stays out of
+// the taskbar and is owned by the window under it, so it stays above that window
+// and goes behind other programs with it.
+
+#[tauri::command]
+async fn open_dialog_window(
+    app: tauri::AppHandle,
+    label: String,
+    url: String,
+    owner: String,
+    title: String,
+) -> Result<(), String> {
+    let label = validate_dialog_label(&label)?.to_string();
+    let owner_label = validate_owner_label(&owner)?;
+    let owner_win = app
+        .get_webview_window(owner_label)
+        .ok_or_else(|| format!("Owner window '{owner_label}' not found"))?;
+    if app.get_webview_window(&label).is_some() {
+        return Ok(());
+    }
+    let (owner_pos, owner_size) = logical_frame(&owner_win)?;
+    let size = (320.0, 200.0);
+    let (x, y) = center_over(owner_pos, owner_size, size);
+    tauri::WebviewWindowBuilder::new(&app, &label, parse_webview_url(&url)?)
+        .title(title)
+        .parent(&owner_win)
+        .map_err(|e| e.to_string())?
+        .skip_taskbar(true)
+        .decorations(false)
+        .resizable(false)
+        .visible(false)
+        .position(x, y)
+        .inner_size(size.0, size.1)
+        .build()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// The page has drawn its dialog: size the window to it, centre it over its
+/// owner, show it and give it the input.
+#[tauri::command]
+async fn show_dialog_window(
+    app: tauri::AppHandle,
+    label: String,
+    owner: String,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    let label = validate_dialog_label(&label)?;
+    let win = app
+        .get_webview_window(label)
+        .ok_or_else(|| format!("Dialog window '{label}' not found"))?;
+    let size = (width.clamp(80.0, 4000.0), height.clamp(40.0, 4000.0));
+    win.set_size(tauri::Size::Logical(tauri::LogicalSize::new(size.0, size.1)))
+        .map_err(|e| e.to_string())?;
+    if let Some(owner_win) = app.get_webview_window(validate_owner_label(&owner)?) {
+        let (owner_pos, owner_size) = logical_frame(&owner_win)?;
+        let (x, y) = center_over(owner_pos, owner_size, size);
+        let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
+    }
+    win.show().map_err(|e| e.to_string())?;
+    win.set_focus().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn close_dialog_window(app: tauri::AppHandle, label: String) -> Result<(), String> {
+    let label = validate_dialog_label(&label)?;
+    match app.get_webview_window(label) {
+        // destroy, not close: a close request is the user's answer (see run()).
+        Some(win) => win.destroy().map_err(|e| e.to_string()),
+        None => Ok(()),
+    }
+}
+
+/// Disabling a dialog's owner is Windows' own modality: the owner takes no
+/// input, and a press on it brings the dialog forward.
+#[tauri::command]
+fn set_window_enabled(app: tauri::AppHandle, label: String, enabled: bool) -> Result<(), String> {
+    let label = validate_owner_label(&label)?;
+    let win = app
+        .get_webview_window(label)
+        .ok_or_else(|| format!("Window '{label}' not found"))?;
+    win.set_enabled(enabled).map_err(|e| e.to_string())
+}
+
+/// A panel window that cannot be activated does not rise above the dialog when
+/// it is clicked; its page still hears the press and asks for focus_modal.
+/// Every panel window, whichever page opened it.
+#[tauri::command]
+fn set_panels_focusable(app: tauri::AppHandle, focusable: bool) -> Result<(), String> {
+    for (label, win) in app.webview_windows() {
+        if label.starts_with("panel-") {
+            win.set_focusable(focusable).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Gives the input to whatever holds it for the main window: the dialog on top,
+/// or a native picker. Windows keeps that as the main window's last active popup.
+#[tauri::command]
+fn focus_modal(app: tauri::AppHandle) -> Result<(), String> {
+    let main_win = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window 'main' not found".to_string())?;
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetLastActivePopup, SetForegroundWindow};
+        let hwnd = main_win.hwnd().map_err(|e| e.to_string())?;
+        unsafe {
+            let popup = GetLastActivePopup(hwnd.0 as _);
+            if !popup.is_null() {
+                SetForegroundWindow(popup);
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        main_win.set_focus().map_err(|e| e.to_string())
+    }
+}
+
 fn file_path_to_string(fp: tauri_plugin_dialog::FilePath) -> String {
     match fp {
         tauri_plugin_dialog::FilePath::Path(p) => p.to_string_lossy().into_owned(),
@@ -786,11 +948,23 @@ pub fn run() {
                         .emit_to("main", "panel-closed", window.label());
                 }
             }
+            // Closing a dialog from Windows (Alt+F4) is the user's answer. The window
+            // stays until the state says it goes, so its owner is enabled again first.
+            if window.label().starts_with("dialog-") {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window
+                        .app_handle()
+                        .emit_to("main", "dialog-close-requested", window.label());
+                }
+            }
             if window.label() == "main" {
                 if let WindowEvent::Destroyed = event {
                     for (lbl, win) in window.app_handle().webview_windows() {
                         if lbl.starts_with("panel-") {
                             let _ = win.close();
+                        } else if lbl.starts_with("dialog-") {
+                            let _ = win.destroy();
                         }
                     }
                     manager_for_window.shutdown();
@@ -804,6 +978,12 @@ pub fn run() {
             open_panel_window,
             close_panel_window,
             pick_files,
+            open_dialog_window,
+            show_dialog_window,
+            close_dialog_window,
+            set_window_enabled,
+            set_panels_focusable,
+            focus_modal,
         ])
         .build(context)
         .expect("error while building AnimeAn Tauri shell");
@@ -876,6 +1056,28 @@ mod tests {
         assert_eq!(parse_start_page("C:/pen_probe.html"), None);
         assert_eq!(parse_start_page("/pen_probe.html"), None);
         assert_eq!(parse_start_page("\\pen_probe.html"), None);
+    }
+
+    #[test]
+    fn test_dialog_and_owner_labels() {
+        assert_eq!(validate_dialog_label("dialog-d12"), Ok("dialog-d12"));
+        assert_eq!(validate_dialog_label(" dialog-d_3 "), Ok("dialog-d_3"));
+        assert!(validate_dialog_label("dialog-").is_err());
+        assert!(validate_dialog_label("main").is_err());
+        assert!(validate_dialog_label("panel-toolsDock").is_err());
+        assert!(validate_dialog_label("dialog-../x").is_err());
+        assert!(validate_dialog_label(&format!("dialog-{}", "a".repeat(33))).is_err());
+        assert_eq!(validate_owner_label("main"), Ok("main"));
+        assert_eq!(validate_owner_label("dialog-d1"), Ok("dialog-d1"));
+        assert!(validate_owner_label("panel-toolsDock").is_err());
+    }
+
+    #[test]
+    fn test_center_over_owner() {
+        assert_eq!(center_over((100.0, 50.0), (1000.0, 800.0), (300.0, 200.0)), (450.0, 350.0));
+        // Taller than its owner: the dialog keeps the owner's top edge, not above it.
+        assert_eq!(center_over((100.0, 50.0), (400.0, 300.0), (300.0, 500.0)), (150.0, 50.0));
+        assert_eq!(center_over((0.0, 0.0), (101.0, 101.0), (50.0, 50.0)), (26.0, 26.0));
     }
 
     #[test]

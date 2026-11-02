@@ -424,7 +424,10 @@ function comboBox(items, onPick) {
 
 // update({ width, height, open }). The frame is drawn here, not by the OS. onCreate
 // receives { width, height }; onCancel(). Enter and Escape work as in a QDialog.
-export function createNewProjectDialog(root, { onCreate, onCancel } = {}) {
+// inWindow: the dialog fills a window of its own (dialog.html), so there is no
+// shade, the title drags the window (onTitleDrag), and an answer leaves it on
+// screen until the window closes.
+export function createNewProjectDialog(root, { onCreate, onCancel, inWindow = false, onTitleDrag } = {}) {
   const shade = div("qdialog-shade");
   const dialog = div("qdialog");
   const title = div("qdialog-title");
@@ -434,8 +437,13 @@ export function createNewProjectDialog(root, { onCreate, onCancel } = {}) {
   title.append(close);
   const body = div("qdialog-body");
   dialog.append(title, body);
-  shade.append(dialog);
-  root.append(shade);
+  if (inWindow) {
+    dialog.classList.add("in-window");
+    root.append(dialog);
+  } else {
+    shade.append(dialog);
+    root.append(shade);
+  }
 
   let syncing = false;
   const applyPreset = (index) => {
@@ -485,9 +493,10 @@ export function createNewProjectDialog(root, { onCreate, onCancel } = {}) {
   place(create, 57, 145, 80);
   place(cancel, 143, 145, 80);
 
-  const hide = () => { preset.close(); shade.style.display = "none"; };
-  const accept = () => { hide(); onCreate?.({ width: width.value(), height: height.value() }); };
-  const reject = () => { hide(); onCancel?.(); };
+  let answered = false;
+  const hide = () => { preset.close(); if (!inWindow) shade.style.display = "none"; };
+  const accept = () => { if (inWindow && answered) return; answered = true; hide(); onCreate?.({ width: width.value(), height: height.value() }); };
+  const reject = () => { if (inWindow && answered) return; answered = true; hide(); onCancel?.(); };
   close.addEventListener("click", reject);
   dialog.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); accept(); }
@@ -496,6 +505,7 @@ export function createNewProjectDialog(root, { onCreate, onCancel } = {}) {
   // The frame is ours, so moving it is too.
   title.addEventListener("pointerdown", (e) => {
     if (e.target.closest(".qdialog-close")) return;
+    if (inWindow) { onTitleDrag?.(e); return; }
     title.setPointerCapture(e.pointerId);
     const r = dialog.getBoundingClientRect(), host = shade.getBoundingClientRect();
     const dx = e.clientX - r.left, dy = e.clientY - r.top;
@@ -504,6 +514,7 @@ export function createNewProjectDialog(root, { onCreate, onCancel } = {}) {
 
   shade.style.display = "none";
   return {
+    el: dialog,
     update({ width: w = 1280, height: h = 720, open = true } = {}) {
       width.setValue(w > 0 ? w : 1280);
       height.setValue(h > 0 ? h : 720);
@@ -734,8 +745,10 @@ export function createTexturePanel(root, { onTrigger, onScroll, onButton } = {})
 
 // ---- QMessageBox -----------------------------------------------------------------
 // title, text and buttons are the English text; they are translated as shown, and
-// the button the user picked comes back in English.
-export function messageBox({ title = "", text = "", buttons = ["OK"] } = {}) {
+// the button the user picked comes back in English. Escape and the close box
+// answer null. inWindow: drawn in a dialog window of its own, as in
+// createNewProjectDialog.
+export function messageBox({ title = "", text = "", buttons = ["OK"] } = {}, { root, inWindow = false, onTitleDrag } = {}) {
   const list = Array.isArray(buttons) && buttons.length ? buttons.map(String) : ["OK"];
   if (typeof document === "undefined" || !document.body) return Promise.resolve(null);
   return new Promise((resolve) => {
@@ -767,7 +780,7 @@ export function messageBox({ title = "", text = "", buttons = ["OK"] } = {}) {
       if (done) return;
       done = true;
       if (typeof window !== "undefined") window.removeEventListener("keydown", onKey, true);
-      shade.remove();
+      if (!inWindow) shade.remove();
       resolve(result);
     };
     const onKey = (e) => {
@@ -789,6 +802,7 @@ export function messageBox({ title = "", text = "", buttons = ["OK"] } = {}) {
     if (typeof window !== "undefined") window.addEventListener("keydown", onKey, true);
     head.addEventListener("pointerdown", (e) => {
       if (e.target?.closest?.(".qdialog-close")) return;
+      if (inWindow) { onTitleDrag?.(e); return; }
       head.setPointerCapture?.(e.pointerId);
       const r = dialog.getBoundingClientRect(), host = shade.getBoundingClientRect();
       const dx = e.clientX - r.left, dy = e.clientY - r.top;
@@ -801,8 +815,13 @@ export function messageBox({ title = "", text = "", buttons = ["OK"] } = {}) {
 
     body.append(msg, row);
     dialog.append(head, body);
-    shade.append(dialog);
-    document.body.append(shade);
+    if (inWindow) {
+      dialog.classList.add("in-window");
+      (root ?? document.body).append(dialog);
+    } else {
+      shade.append(dialog);
+      (root ?? document.body).append(shade);
+    }
     (btnEls[0] ?? dialog).focus?.({ preventScroll: true });
   });
 }

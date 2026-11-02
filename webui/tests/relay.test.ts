@@ -1045,7 +1045,7 @@ test("卫星页与主窗口纹理板归属：卫星页不碰纹理板并显示�
   });
 });
 
-test("卫星页 createChrome：不弹启动画布对话框，不处理一次性 dialog/menu.action/settings.open 事件，保留主题、freeze 与菜单快捷键", async () => {
+test("卫星页 createChrome：不开对话框窗口也不弹选择框，模态时挡住输入，保留主题、freeze 与菜单快捷键", async () => {
   await withFakeDom(async ({ body, win }) => {
     const app = await import("../src/ui/app.js");
     const [hostCh, satCh] = createFakeChannelPair();
@@ -1098,6 +1098,13 @@ test("卫星页 createChrome：不弹启动画布对话框，不处理一次性 
     backend.emitState("freeze", { frozen: false });
     assert.equal(dockEl.inert, false);
     assert.equal(dockEl.style.pointerEvents, "");
+
+    // 对话框归 Python，由主窗口页打开：卫星页只在模态时挡住自己的输入
+    backend.emitState("dialogs", [{ id: "d1", kind: "file", modal: true, title: "Open Project", mode: "open", filters: [] }]);
+    assert.equal(pickCalled, 0);
+    assert.ok(body.querySelector(".modal-blocker"));
+    backend.emitState("dialogs", []);
+    assert.equal(body.querySelector(".modal-blocker"), null);
 
     // 卫星页快捷键（如 Ctrl+Z）经 relay 触发 menu.trigger
     backend.emitState("menus", [
