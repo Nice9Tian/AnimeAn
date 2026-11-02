@@ -6,7 +6,7 @@
 
 - **中文名**用于文档正文和界面文案；**英文名**用于英文界面词与架构说明；**项目标识**保持代码里的大小写、下划线和缩写，不为统一外观改名破坏接口。
 - 状态：**现有** 仓库里已有对应代码或界面；**规划** 只在文档里承诺，代码未实现；**通用** 行业或平台基础术语；**归档** 已从软件移除，只在归档文档里出现。
-- 界面以英文为主（菜单、按钮），文档照抄界面写法，不另译。
+- 界面以英文为主（菜单、按钮），文档照抄界面写法，不另译。界面本身可以切换到简体中文和日本語，译名见「8. 界面语言」；文档仍写英文界面词。
 - 功能名一律写 **Auto Mapping**（界面写法），不写"映射"（用户 2026-09-28）。"映射"只作动词（把图案映射到主画板）或数学名词（映射的雅可比、映射器 mapper）。单元写 **Auto-Mapping 单元**（界面 Auto-Mapping Layer），区域写 **Mapping Area**，Mapping 组上的工具统称 **Mapping 组的工具**；纹理选择的下拉按用户命名写「映射纹理」。代码里的工具 id 和属性沿用历史写法 **`auto_mapping_2`**（Coons 版曾叫 Auto Mapping 2），不改。
 - "纹理板"是一块板、一个容器；"纹理"或"纹理页"是它里面的一页。现有版本只有一页。
 
@@ -151,3 +151,46 @@
 | 解法表 | solution table | 现有 | 卡住时的候选、评分与扫描记录。见 `long_time_work/solution_table.md`。 |
 | 同步脚本 | `sync_pyfiles.ps1` | 现有 | 改 Python 后把脚本同步到每个 exe 旁。 |
 | 构建脚本 | `build_scripts\agent_build.ps1`、`build_scripts\package_tauri.ps1` | 现有 | 改 C++ 后的完整构建与打包。 |
+
+## 8. 界面语言
+
+中文界面用上面各表的中文名。日文译名以这张表为准，写词条前先查这里。机制见 `mechanism/i18n.md`。
+
+不翻译的名字：**Auto Mapping**、**Mapping Area**、**To 3D**、**Transfer Grid**、**Python Debug**，以及 Mapping 组标题 **Mapping**。Auto-Mapping Layer 中文写「Auto-Mapping 单元」，日文写「Auto-Mapping レイヤー」。
+
+| 英文 | 中文 | 日文 |
+|---|---|---|
+| Main board | 主画板 | メインボード |
+| Texture board | 纹理板 | テクスチャボード |
+| Layer | 图层 | レイヤー |
+| Asset | 资产 | アセット |
+| Timeline | 时间轴 | タイムライン |
+| Onion skin | 洋葱皮 | オニオンスキン |
+| Hold | 保持帧 | ホールド |
+| Arrow | 箭头 | 矢印 |
+| Pen | 画笔 | ペン |
+| Eraser | 橡皮 | 消しゴム |
+| Fill | 填充 | 塗りつぶし |
+| Transfer | 变形 | 変形 |
+| Connect | 连接 | 接続 |
+| Stabilizer | 稳定器 | 手ぶれ補正 |
+| Repulsion Pad | 斥力板 | 反発パッド |
+| Center line | 轴线 | 軸線 |
+| Additional Line | 附加线 | 追加線 |
+| Crease | 折痕 | 折り目 |
+| Front / Back | 正面 / 背面 | 表面 / 裏面 |
+| Lining colour | 衬里色 | 裏地の色 |
+| Horizon Line | 视平线 | アイレベル |
+| Refer Rect | 参考网格 | 参照グリッド |
+| Occluded Areas | 遮挡区域 | 遮蔽領域 |
+| Constrain Outline | 约束外轮廓 | 外輪郭を拘束 |
+| Live Re-render | 实时重跑 | リアルタイム再計算 |
+| Bezier Bridge | 补全拓扑 | ベジェブリッジ |
+| Ground Line | 地线 | グラウンドライン |
+| Free Out Line | 闭合轮廓 | 閉じた輪郭 |
+| Choice Line | 选线 | 線選択 |
+| Deform | 拖线变形 | ドラッグ変形 |
+| Fold | 折叠 | 折り返し |
+| Texture view | 纹理视图 | テクスチャビュー |
+| SubControlFrame | 子控件框 | サブコントロール枠 |
+| Central area | 中央区 | 中央エリア |

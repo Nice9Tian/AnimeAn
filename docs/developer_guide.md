@@ -42,6 +42,7 @@
 | 构建、同步脚本、测试、依赖、部署 | `mechanism/build_deploy.md` |
 | 模块在哪、启动链、装载顺序 | `mechanism/modules.md` |
 | 术语和界面文案 | `glossary.md` |
+| 新增或修改界面文字、界面语言 | `mechanism/i18n.md`（新文字要进 `zh-CN.json`、`ja.json`） |
 | 无人值守的长时间工作 | `long_time_work/README.md`（阶段权限、〔裁〕、任务记录） |
 
 ## 规则
@@ -100,11 +101,12 @@
 | 编译检查 | `cmake --build build\wt-check --target AnimeAnBackend --parallel 10`（新 worktree 先 `git submodule update --init --depth 1`） | 改到 C++，合并前 |
 | 后端会话冒烟 | `node backend/tests/session_smoke.mjs <AnimeAnBackend.exe>` | 改到 `backend/`、`openglwidget.*` |
 | 新旧对比 | `node backend/tests/golden/record.mjs --backend <AnimeAnBackend.exe> --out <输出.jsonl>`，再用 `compare.mjs` 比基线，见 `mechanism/build_deploy.md` | 改到后端行为 |
-| 网页 | 在 `webui/` 下跑 `npm test`、`npx tsc --noEmit` | 改到 `webui/` |
+| 网页 | 在 `webui/` 下跑 `npm test`（含词条检查）、`npx tsc --noEmit` | 改到 `webui/` |
 | 外壳 | `cargo test --manifest-path src-tauri/Cargo.toml` | 改到 `src-tauri/` |
 | 部署构建 | `PowerShell -ExecutionPolicy Bypass -File .\build_scripts\agent_build.ps1`，结束行 `===== AGENT BUILD DONE EXIT_CODE=0 =====`；必须在沙箱外 | 改到 C++ 合并后；发布前 |
 | 脚本同步 | `powershell -ExecutionPolicy Bypass -File sync_pyfiles.ps1` | 每次改 `.py` 而不重建 |
 | 真机验证 | 在 `dist\AnimeAn\AnimeAn.exe` 里按 `tools_user_workflow/` 的步骤手测 | 改到用户看得见的行为 |
+| 界面语言覆盖 | `node backend/tests/i18n_coverage.mjs <AnimeAnBackend.exe>` | 改到 C++ 或 Python 发给界面的文字（菜单、选项、设置窗、状态栏） |
 | 文档链接 | `py build_scripts\check_doc_links.py`（反引号里的 `.md` 路径都要存在） | 改到 `docs/` 或根目录的 README / AGENTS / CLAUDE |
 
 ## 提交与发布

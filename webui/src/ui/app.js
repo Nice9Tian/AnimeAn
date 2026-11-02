@@ -4,7 +4,8 @@ import { BoardRenderer } from "../board/renderer.ts";
 import { GlBoardRenderer } from "../board/glrenderer.ts";
 import { attachBoardInput } from "../board/input.ts";
 import { cursorCss } from "../board/cursor.ts";
-import { askForMenu, createCentral, createLayers, createMenuBar, popupMenu, scrollArea } from "./panels.js";
+import { label, language, LANGUAGES, onLanguage, setLanguage, t } from "../i18n/index.js";
+import { askForMenu, createCentral, createLayers, createMenuBar, popupMenu, scrollArea, tabBar } from "./panels.js";
 import { createToolOptions } from "./options.js";
 import { createPalette, toHexArgb } from "./palette.js";
 import { createAssets, createForcePad, createHistory, createNewProjectDialog, createPythonDebug, createSubControlFrame, createTexturePanel, messageBox } from "./panels2.js";
@@ -516,13 +517,12 @@ export function panelFactories(store, client, { satellite = false } = {}) {
     QtToolOptions(el) {
       el.classList.add("dock-page", "toolopt-gap");
       optionsEl = el;
-      const tabs = document.createElement("div");
-      tabs.className = "tabbar-row";
-      tabs.innerHTML = `<div class="tab sel" style="width:64px">Options</div>`;
+      const tabs = tabBar(["Options"], () => {});
+      tabs.select(0);
       const body = scrollArea("opt-body");
       optionsExtraSlot = document.createElement("div");
       optionsExtraSlot.className = "opt-subcontrol-slot";
-      el.append(tabs, body.frame);
+      el.append(tabs.el, body.frame);
       const panel = createToolOptions(body.view, {
         onOption: (option) => call("tool.option", option),
         onNewColor: (palette) => openNewColor(palette),
@@ -760,8 +760,7 @@ export function panelFactories(store, client, { satellite = false } = {}) {
 function subWindowFloatingNote(text = "Texture is floating — drag it back") {
   const note = document.createElement("div");
   note.className = "opt-title";
-  note.textContent = text;
-  return note;
+  return label(note, text);
 }
 
 export function openNewColor(palette) {
@@ -776,11 +775,11 @@ export function openNewColor(palette) {
   const add = document.createElement("button");
   add.type = "button";
   add.className = "qbutton qdefault";
-  add.textContent = "Add";
+  label(add, "Add");
   const cancel = document.createElement("button");
   cancel.type = "button";
   cancel.className = "qbutton";
-  cancel.textContent = "Cancel";
+  label(cancel, "Cancel");
   const close = () => shade.remove();
   const accept = () => { palette.addSwatch(toHexArgb(inner.color())); close(); };
   add.addEventListener("click", accept);
@@ -933,11 +932,16 @@ export function createChrome(menuEl, statusEl, store, options = {}) {
   const isSatellite = Boolean(options?.satellite);
   let frozen = false;
   const RENDERER_ITEM = "settings.renderer.";
+  const LANGUAGE_ITEM = "settings.language.";
   const trigger = (item) => {
     if (frozen) return undefined;
     if (item.id?.startsWith(RENDERER_ITEM)) {
       store.boards?.setRenderer(item.id.slice(RENDERER_ITEM.length));
       paintMenus();
+      return undefined;
+    }
+    if (item.id?.startsWith(LANGUAGE_ITEM)) {
+      setLanguage(item.id.slice(LANGUAGE_ITEM.length));
       return undefined;
     }
     return store.call("menu.trigger", {
@@ -956,8 +960,8 @@ export function createChrome(menuEl, statusEl, store, options = {}) {
       }
     },
   });
-  // The renderer belongs to this page, not the document, so its menu is added
-  // here rather than coming from the backend's menu state.
+  // The renderer and the language belong to this page, not the document, so
+  // their menus are added here rather than coming from the backend's menu state.
   const settingsMenu = () => {
     const kind = store.boards?.rendererKind ?? savedRendererKind();
     return {
@@ -972,26 +976,52 @@ export function createChrome(menuEl, statusEl, store, options = {}) {
           { id: `${RENDERER_ITEM}webgl`, text: "WebGL", kind: "radio", checked: kind === "webgl", enabled: hasWebgl() },
           { id: `${RENDERER_ITEM}canvas2d`, text: "Canvas 2D", kind: "radio", checked: kind === "canvas2d" },
         ],
+      }, {
+        id: "settings.language",
+        text: "Language",
+        kind: "submenu",
+        children: LANGUAGES.map(({ id, name }) => ({ id: `${LANGUAGE_ITEM}${id}`, text: name, kind: "radio", checked: id === language() })),
       }],
     };
   };
   const paintMenus = () => bar?.update([...(store.get("menus") ?? []), settingsMenu()]);
   if (!isSatellite) store.on("menus", paintMenus);
+  onLanguage(paintMenus);
   const text = document.createElement("div");
   text.className = "status-text";
   const grip = document.createElement("div");
   grip.className = "size-grip";
   if (!isSatellite && statusEl) statusEl.append(text, grip);
+  // The line on show is kept in English, so a change of language can repaint it.
+  let status = "";
+  const showStatus = (source) => {
+    status = source ?? "";
+    text.textContent = t(status);
+  };
+  const showTitle = (title) => {
+    if (title) window.__TAURI__?.core.invoke("set_window_title", { title: t(title) });
+  };
   store.on("window", (value) => {
     if (isSatellite) return;
-    if (!frozen) text.textContent = value?.status ?? "";
-    if (value?.title) window.__TAURI__?.core.invoke("set_window_title", { title: value.title });
+    if (!frozen) showStatus(value?.status);
+    showTitle(value?.title);
   });
+  onLanguage(() => {
+    if (isSatellite) return;
+    showStatus(status);
+    showTitle(store.get("window")?.title);
+  });
+  // To 3D writes its page from Python, so Python has to hear the language too.
+  // A panel in a window of its own shares the main window's backend and language.
+  const tellPython = () => {
+    if (!isSatellite) store.call("tool.option", { hook: "ui_language", name: "ui_language", type: "language", value: language() });
+  };
+  onLanguage(tellPython);
   store.on("freeze", (value) => {
     const next = Boolean(value?.frozen ?? value);
     if (next === frozen) return;
     frozen = next;
-    text.textContent = frozen ? "Python busy..." : "Python ready";
+    showStatus(frozen ? "Python busy..." : "Python ready");
     if (menuEl) {
       menuEl.inert = frozen;
       if (menuEl.style) menuEl.style.pointerEvents = frozen ? "none" : "";
@@ -1067,12 +1097,19 @@ export function createChrome(menuEl, statusEl, store, options = {}) {
   store.on("window", (value) => {
     if (asked || !value?.canvasWidth) return;
     asked = true;
+    tellPython();
     canvasDialog.update({ width: value.canvasWidth, height: value.canvasHeight, open: true });
   });
 
   // Native pickers live in the shell; the page only says what to pick.
   const pick = (mode, title, filters, multiple = false, defaultName = "") =>
-    window.__TAURI__?.core.invoke("pick_files", { mode, title, filters, multiple, defaultName }) ?? Promise.resolve([]);
+    window.__TAURI__?.core.invoke("pick_files", {
+      mode,
+      title: t(title),
+      filters: filters.map((filter) => ({ ...filter, name: t(filter.name) })),
+      multiple,
+      defaultName,
+    }) ?? Promise.resolve([]);
   const PROJECT = [{ name: "AnimeAn Projects", extensions: ["anproj"] }];
   const TEXTURE = [{ name: "AnimeAn Texture Views", extensions: ["textureview"] }];
   const IMPORTS = {
@@ -1180,12 +1217,12 @@ function openSettings(store, { name, title, layout }) {
   dialog.className = "qdialog settings-dialog";
   const head = document.createElement("div");
   head.className = "qdialog-title";
-  head.textContent = title ?? name ?? "";
+  label(head, title ?? name ?? "");
   const body = document.createElement("div");
   const close = document.createElement("button");
   close.type = "button";
   close.className = "qbutton settings-close";
-  close.textContent = "Close";
+  label(close, "Close");
   close.addEventListener("click", () => shade.remove());
   dialog.append(head, body, close);
   shade.append(dialog);

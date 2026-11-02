@@ -5,6 +5,8 @@ import { readdirSync } from "node:fs";
 import { test } from "node:test";
 
 const files = [
+  // First: it switches the language, which repaints every panel the later tests leave behind.
+  "i18n.test.ts",
   "net_and_bridge.test.ts",
   "renderer.test.ts",
   "tess.test.ts",

@@ -1,8 +1,9 @@
 // The panels that start hidden, drawn to match the Qt build: History, Assets, the
 // Repulsion Pad, Python Debug, the New Project dialog and the texture board's
 // frame. Each takes plain data and reports what the user did.
+import { label as labelled, onLanguage, relabel, t, tip } from "../i18n/index.js";
 import { tabBar, scrollArea, scrollBar, createMenuBar, isUnboundedViewport, PRESS_ENDS, trackPress } from "./panels.js";
-import { onThemeChange, cosmeticStroke, flattenCubic, hintedTracking, trackedDiv } from "./timeline.js";
+import { onThemeChange, cosmeticStroke, flattenCubic, hintedTracking, trackedDiv, trackedLabel } from "./timeline.js";
 
 function div(cls, text) {
   const d = document.createElement("div");
@@ -14,7 +15,7 @@ function pushButton(text, onClick) {
   const b = document.createElement("button");
   b.type = "button";
   b.className = "qbutton";
-  b.textContent = text;
+  if (text !== undefined) labelled(b, text);
   if (onClick) b.addEventListener("click", onClick);
   return b;
 }
@@ -23,9 +24,8 @@ const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyV
 // Hinted tab widths from the Qt build, same idea as TAB_WIDTH in panels.js.
 const TAB_WIDTH = { History: 60, Assets: 55, "Repulsion Pad": 97, "Python Debug": 98 };
 function singleTab(root, title) {
-  const tabs = tabBar([title], () => {});
+  const tabs = tabBar([title], () => {}, TAB_WIDTH);
   tabs.select(0);
-  tabs.el.firstChild.style.width = `${TAB_WIDTH[title]}px`;
   root.append(tabs.el);
 }
 
@@ -71,9 +71,13 @@ export function createHistory(root, { onSelect } = {}) {
   const list = listWidget((row) => onSelect?.(row));
   page.append(list.el);
   root.append(page);
+  let shown = { labels: [], current: -1 };
+  const paint = () => list.paint(shown.labels.map((label, i) => ({ text: `${i + 1}. ${t(label)}`, dim: i > shown.current })), shown.current);
+  onLanguage(paint);
   return {
     update({ labels = [], current = -1 } = {}) {
-      list.paint(labels.map((label, i) => ({ text: `${i + 1}. ${label}`, dim: i > current })), current);
+      shown = { labels, current };
+      paint();
     },
   };
 }
@@ -272,7 +276,7 @@ export function createPythonDebug(root, { onRun } = {}) {
   const area = scrollArea("qplaintext");
   const text = div("qplaintext-doc");
   let lines = [];
-  const placeholder = div("qplaintext-hint", "Python debug output");
+  const placeholder = labelled(div("qplaintext-hint"), "Python debug output");
   area.view.append(text, placeholder);
   const row = div("debug-row");
   const field = document.createElement("input");
@@ -283,7 +287,7 @@ export function createPythonDebug(root, { onRun } = {}) {
   field.addEventListener("input", () => { field.style.letterSpacing = hintedTracking(field.value); });
   const run = () => onRun?.(field.value);
   field.addEventListener("keydown", (e) => { if (e.key === "Enter") run(); });
-  row.append(trackedDiv("debug-label", "Command"), field, pushButton("Run", run));
+  row.append(trackedLabel("debug-label", "Command"), field, pushButton("Run", run));
   page.append(area.frame, row);
   root.append(page);
   // One element per block, as a QPlainTextEdit has, so each carries its own tracking.
@@ -394,7 +398,7 @@ function comboBox(items, onPick) {
     const r = box.getBoundingClientRect();
     popup = div("qcombo-popup");
     items.forEach((label, i) => {
-      const row = trackedDiv("qcombo-item", label);
+      const row = trackedDiv("qcombo-item", t(label));
       row.classList.toggle("sel", i === current);
       row.addEventListener("pointerenter", () => {
         for (const other of popup.children) other.classList.toggle("sel", other === row);
@@ -408,7 +412,13 @@ function comboBox(items, onPick) {
     popup.style.top = `${r.top - 24 * current}px`;
     window.addEventListener("pointerdown", outside, true);
   });
-  function setIndex(i) { current = i; text.textContent = items[i]; text.style.letterSpacing = hintedTracking(items[i]); }
+  function setIndex(i) {
+    current = i;
+    const shown = t(items[i]);
+    text.textContent = shown;
+    text.style.letterSpacing = hintedTracking(shown);
+  }
+  onLanguage(() => setIndex(current));
   return { el: box, close, setIndex };
 }
 
@@ -418,7 +428,7 @@ export function createNewProjectDialog(root, { onCreate, onCancel } = {}) {
   const shade = div("qdialog-shade");
   const dialog = div("qdialog");
   const title = div("qdialog-title");
-  title.append(div("qdialog-caption", "New Project"));
+  title.append(labelled(div("qdialog-caption"), "New Project"));
   const close = div("qdialog-close");
   close.innerHTML = `<svg width="10" height="10"><path d="M0.5 0.5 L9.5 9.5 M9.5 0.5 L0.5 9.5" stroke="currentColor" fill="none"/></svg>`;
   title.append(close);
@@ -447,17 +457,28 @@ export function createNewProjectDialog(root, { onCreate, onCancel } = {}) {
   const width = spinBox(16, 16384, " px", syncPreset);
   const height = spinBox(16, 16384, " px", syncPreset);
   const place = (el, x, y, w) => { el.style.left = `${x}px`; el.style.top = `${y}px`; if (w) el.style.width = `${w}px`; body.append(el); };
+  const labels = [];
   const label = (text, y, h) => {
-    const l = trackedDiv("qdialog-label", text);
+    const l = trackedLabel("qdialog-label", text);
     // A QFormLayout label sits a pixel lower beside the taller spin box.
     l.style.height = `${h}px`; l.style.lineHeight = `${h === 27 ? 29 : h}px`;
     place(l, 11, y);
+    labels.push(l);
   };
 
-  place(trackedDiv("qdialog-caption-text", "Canvas size for the new document, in pixels."), 11, 11, 212);
+  place(trackedLabel("qdialog-caption-text", "Canvas size for the new document, in pixels."), 11, 11, 212);
   label("Preset", 49, 24); place(preset.el, 53, 49, 170);
   label("Width", 79, 27); place(width.el, 53, 79, 170);
   label("Height", 112, 27); place(height.el, 53, 112, 170);
+  // A QFormLayout column: the fields start past the widest label.
+  const alignFields = () => {
+    const left = Math.max(53, 15 + Math.max(...labels.map((l) => l.offsetWidth)));
+    for (const field of [preset.el, width.el, height.el]) {
+      field.style.left = `${left}px`;
+      field.style.width = `${223 - left}px`;
+    }
+  };
+  onLanguage(alignFields);
   const create = pushButton("Create", () => accept());
   create.classList.add("qdefault");
   const cancel = pushButton("Cancel", () => reject());
@@ -488,7 +509,7 @@ export function createNewProjectDialog(root, { onCreate, onCancel } = {}) {
       height.setValue(h > 0 ? h : 720);
       syncPreset();
       shade.style.display = open ? "" : "none";
-      if (open) width.selectDigits();
+      if (open) { alignFields(); width.selectDigits(); }
     },
   };
 }
@@ -586,6 +607,19 @@ export function createSubControlFrame(root, { onAffordance, onDragStart, onDragM
   };
   new MutationObserver(refresh).observe(body, { childList: true });
   refresh();
+  // The frame is parked off the page while nothing shows it, so it repaints its
+  // own words when the language changes.
+  let shownTitle = "", shownNote = "";
+  const paintWords = () => {
+    text.textContent = t(shownTitle);
+    const note = t(shownNote);
+    placeholder.textContent = note;
+    placeholder.style.letterSpacing = hintedTracking(note);
+  };
+  onLanguage(() => {
+    paintWords();
+    relabel(root);
+  });
 
   return {
     el: root,
@@ -602,11 +636,11 @@ export function createSubControlFrame(root, { onAffordance, onDragStart, onDragM
     syncPlaceholder: refresh,
     update({ title = "", floating: nextFloating = false, placeholder: note = "" } = {}) {
       floating = nextFloating;
-      text.textContent = title;
-      placeholder.textContent = note;
-      placeholder.style.letterSpacing = hintedTracking(note);
+      shownTitle = title;
+      shownNote = note;
+      paintWords();
       glyph.innerHTML = affordanceSvg(floating);
-      bar.title = floating ? "Drag onto a panel to dock this control" : "Drag out to float this control";
+      tip(bar, floating ? "Drag onto a panel to dock this control" : "Drag out to float this control");
       grip.style.display = floating ? "" : "none";
       root.classList.toggle("floating", floating);
       refresh();
@@ -664,6 +698,11 @@ export function createTexturePanel(root, { onTrigger, onScroll, onButton } = {})
   root.append(menuHost, options, stage);
   let currentMenus = [SETTING_MENU];
   let currentButtons = [];
+  // The panel can be parked off the page, out of the document's reach.
+  onLanguage(() => {
+    menu.update(currentMenus);
+    relabel(root);
+  });
   return {
     el: root,
     menuHost,
@@ -679,7 +718,7 @@ export function createTexturePanel(root, { onTrigger, onScroll, onButton } = {})
       options.replaceChildren(...currentButtons.map((button) => {
         const b = pushButton(button.title ?? button.text ?? button.name);
         b.dataset.name = button.name ?? "";
-        if (button.tooltip) b.title = button.tooltip;
+        if (button.tooltip) tip(b, button.tooltip);
         let on = !!button.checked;
         b.classList.toggle("checked", on);
         b.addEventListener("click", () => {
@@ -694,6 +733,8 @@ export function createTexturePanel(root, { onTrigger, onScroll, onButton } = {})
 }
 
 // ---- QMessageBox -----------------------------------------------------------------
+// title, text and buttons are the English text; they are translated as shown, and
+// the button the user picked comes back in English.
 export function messageBox({ title = "", text = "", buttons = ["OK"] } = {}) {
   const list = Array.isArray(buttons) && buttons.length ? buttons.map(String) : ["OK"];
   if (typeof document === "undefined" || !document.body) return Promise.resolve(null);
@@ -702,7 +743,7 @@ export function messageBox({ title = "", text = "", buttons = ["OK"] } = {}) {
     const dialog = div("qdialog");
     Object.assign(dialog.style, { width: "auto", minWidth: "260px", maxWidth: "420px" });
     const head = div("qdialog-title");
-    head.append(div("qdialog-caption", String(title ?? "")));
+    head.append(div("qdialog-caption", t(String(title ?? ""))));
     const close = div("qdialog-close");
     close.innerHTML = `<svg width="10" height="10"><path d="M0.5 0.5 L9.5 9.5 M9.5 0.5 L0.5 9.5" stroke="currentColor" fill="none"/></svg>`;
     head.append(close);
@@ -716,7 +757,7 @@ export function messageBox({ title = "", text = "", buttons = ["OK"] } = {}) {
       gap: "12px",
       boxSizing: "border-box",
     });
-    const msg = div("qdialog-caption-text", String(text ?? ""));
+    const msg = div("qdialog-caption-text", t(String(text ?? "")));
     Object.assign(msg.style, { position: "static", whiteSpace: "pre-wrap", overflowWrap: "anywhere" });
     const row = div("qdialog-buttons");
     Object.assign(row.style, { position: "static", display: "flex", justifyContent: "flex-end", gap: "6px" });

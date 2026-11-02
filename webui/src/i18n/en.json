@@ -1,0 +1,19 @@
+{
+  "Click an axis, additional line or outline, then tick 地线 in Tool Options to pin the pattern to it.": "Click an axis, additional line or outline, then tick Ground Line in Tool Options to pin the pattern to it.",
+  "LINE (guide)": "LINE",
+  "additional_line": "Additional Line",
+  "arrow_outline": "Outline Display Settings",
+  "auto_mapping_lines": "Line Display Settings",
+  "automapping_unit": "Advanced Settings",
+  "draw_settings": "Draw Setting",
+  "h_center_line": "H Center Line",
+  "mapping_area": "Mapping Area",
+  "v_center_line": "V Center Line",
+  "地线（{0}）": "Ground Line ({0})",
+  "地线（先点一条线）": "Ground Line (click a line first)",
+  "约束外轮廓 / Constrain Outline": "Constrain Outline",
+  "补全拓扑": "Bezier Bridge",
+  "视平线 / Horizon Line": "Horizon Line",
+  "轮廓线": "Free Out Line",
+  "辅助线": "Additional Line"
+}

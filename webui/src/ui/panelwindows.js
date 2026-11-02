@@ -1,3 +1,4 @@
+import { tip } from "../i18n/index.js";
 import { DOCK_FOR_WINDOW } from "./app.js";
 
 export const WINDOW_FOR_DOCK = {
@@ -72,7 +73,7 @@ export function setupSatelliteDock(rootEl, dockId, relayOrChannel, options = {})
     const button = rootEl?.querySelector?.(".dock-btn-float");
     if (!button) return false;
     button.textContent = "↙";
-    button.title = "恢复停靠";
+    tip(button, "Dock panel");
     button.dataset.dockAction = "restore";
     return true;
   };

@@ -1,6 +1,7 @@
 // The tool options panel: builds the grid Python describes, the same control
 // set as childrenpanel/tooloptpanel.cpp. onOption receives
 // { hook, name, type, value, row, startColumn, endColumn }.
+import { label as labelled } from "../i18n/index.js";
 import { colorButtonColors, colorDarker, colorLighter, colorLightness, createPalette, parseColor, toHexArgb, toHexRgb } from "./palette.js";
 export { colorButtonColors, colorButtonColors as colorButtonStyle, colorDarker, colorDarker as darker, colorLighter, colorLighter as lighter, colorLightness, colorLightness as lightness };
 
@@ -17,13 +18,15 @@ function slider(control, send) {
   const min = control.min ?? 0, max = control.max ?? 100;
   let value = Number(control.value ?? 0);
   const label = div("opt-slider-label");
+  const reading = document.createTextNode("");
+  label.append(labelled(document.createElement("span"), title), reading);
   const track = div("qslider");
   track.innerHTML = `<div class="groove"></div><div class="sub"></div><div class="handle"></div>`;
   const [, sub, handle] = track.children;
   wrap.append(label, track);
   const HANDLE = 16;
   const draw = () => {
-    label.textContent = `${title}: ${value}`;
+    reading.nodeValue = `: ${value}`;
     const span = Math.max(1, track.clientWidth - HANDLE);
     const pos = Math.round(((value - min) / Math.max(1, max - min)) * span);
     handle.style.left = `${pos}px`;
@@ -55,14 +58,14 @@ function slider(control, send) {
 
 function list(control, send) {
   const wrap = div("opt-list");
-  wrap.append(div("opt-title", control.title ?? ""));
+  wrap.append(labelled(div("opt-title"), control.title ?? ""));
   const box = div("qlist");
   const options = control.options ?? [];
   box.style.maxHeight = `${Math.max(62, options.length * 28 + 8)}px`;
   let current = String(control.value ?? "");
   if (!options.some((o) => String(o.value) === current) && options.length) current = String(options[0].value);
   const items = options.map((o) => {
-    const row = div("qlist-item", o.title);
+    const row = labelled(div("qlist-item"), o.title);
     row.addEventListener("click", () => {
       if (String(o.value) === current) return;
       current = String(o.value);
@@ -86,7 +89,7 @@ function check(control, send) {
   const v = String(control.value ?? "").toLowerCase();
   input.checked = v === "on" || v === "true" || control.value === true;
   input.addEventListener("change", () => send("check", input.checked ? "on" : "off"));
-  label.append(input, document.createTextNode(" " + (control.title ?? "")));
+  label.append(input, document.createTextNode(" "), labelled(document.createElement("span"), control.title ?? ""));
   return label;
 }
 
@@ -103,7 +106,7 @@ function button(control, send) {
   const b = document.createElement("button");
   b.type = "button";
   b.className = "qbutton opt-button";
-  b.textContent = control.title ?? "";
+  labelled(b, control.title ?? "");
   const tint = buttonTint(control.state);
   if (tint) {
     const styles = colorButtonColors(tint);
@@ -136,11 +139,11 @@ function openColorDialog(initial, onAccept) {
   const ok = document.createElement("button");
   ok.type = "button";
   ok.className = "qbutton qdefault";
-  ok.textContent = "OK";
+  labelled(ok, "OK");
   const cancel = document.createElement("button");
   cancel.type = "button";
   cancel.className = "qbutton";
-  cancel.textContent = "Cancel";
+  labelled(cancel, "Cancel");
   const close = () => shade.remove();
   const accept = () => {
     const chosen = { ...inner.color() };
@@ -163,7 +166,7 @@ function openColorDialog(initial, onAccept) {
 
 function color(control, send) {
   const wrap = div("opt-color");
-  if (control.title) wrap.append(div("opt-title-inline", control.title));
+  if (control.title) wrap.append(labelled(div("opt-title-inline"), control.title));
   let current = parseColor(control.value);
   const swatch = document.createElement("button");
   swatch.type = "button";
