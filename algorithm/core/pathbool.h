@@ -5,7 +5,7 @@
 
 namespace AnimeCore {
 
-// Boolean operations on whole paths, the counterparts of QPainterPath's members.
+// Boolean operations on whole paths, the counterparts of Path's members.
 // Curves are flattened on the way in, so every result is made of straight
 // closed subpaths, which is also what Qt returns.
 Path simplified(const Path &path);

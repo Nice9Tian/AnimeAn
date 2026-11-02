@@ -1,34 +1,34 @@
+#include "algorithm/core/color.h"
+#include "algorithm/core/json.h"
+#include "algorithm/core/string.h"
+#include <cstdint>
 #include <pybind11/embed.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
 #include "python_bindings.h"
 
-#include "algorithm/core/qtbridge.h"
+
 #include "algorithm/animemodel.h"
 
-#include <QTransform>
+#include "algorithm/core/geometry.h"
 #include "algorithm/beziersplit.h"
 #include "algorithm/vectorlogic.h"
 
-#include <QImage>
-#include <QLineF>
-#include <QPainterPath>
-#include <QPoint>
-#include <QRect>
-#include <QCoreApplication>
-#include <QDebug>
-#include <QSet>
-#include <QTimer>
-#include <memory>
+#include "algorithm/core/image.h"
+#include "algorithm/core/path.h"
+#include "algorithm/core/containers.h"
 
 #include <cmath>
 #include <algorithm>
+#include <cstdio>
 #include <functional>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
+using namespace AnimeCore;
 
 namespace py = pybind11;
 
@@ -42,25 +42,26 @@ std::function<void(bool frame, bool layer, bool asset, bool widget)> g_uiRefresh
 std::function<void()> g_uiToolOptionsCallback;
 std::function<void(bool frozen)> g_uiFreezeCallback;
 AnimeanWindowsApi g_uiWindows;
-std::function<void(const QString &view, const QVector<AnimeanOverlayItem> &items)> g_uiOverlayCallback;
-std::function<void(const QString &view, const QVector<AnimeanEditHandle> &handles)> g_uiEditHandleCallback;
-std::function<void(const QColor &color)> g_uiDrawColorCallback;
+std::function<void(const String &view, const Vector<AnimeanOverlayItem> &items)> g_uiOverlayCallback;
+std::function<void(const String &view, const Vector<AnimeanEditHandle> &handles)> g_uiEditHandleCallback;
+std::function<void(const Color &color)> g_uiDrawColorCallback;
 std::function<void(int stabilizer, int simplify, int corner)> g_uiDrawSettingsCallback;
-std::function<void(const QString &pad, double x, double y)> g_uiPadValueCallback;
-std::function<void(const QString &view, const QString &name)> g_uiCursorCallback;
-std::function<void(const QString &view, bool on)> g_uiFillPaintModeCallback;
-std::function<void(const QString &view, const QStringList &tools)> g_uiLockedToolsCallback;
-std::function<void(const QString &op, const QString &view, const QString &label)> g_uiHistoryCallback;
-std::function<void(const QString &key, int width, int height, const QByteArray &data)> g_uiFieldCallback;
-std::function<void(const QString &view, const AnimeanFieldViewSpec &spec)> g_uiFieldViewCallback;
-std::function<bool(const QString &view)> g_uiFieldDisplaySupportedCallback;
+std::function<void(const String &pad, double x, double y)> g_uiPadValueCallback;
+std::function<void(const String &view, const String &name)> g_uiCursorCallback;
+std::function<void(const String &view, bool on)> g_uiFillPaintModeCallback;
+std::function<void(const String &view, const StringList &tools)> g_uiLockedToolsCallback;
+std::function<void(const String &op, const String &view, const String &label)> g_uiHistoryCallback;
+std::function<void(const String &key, int width, int height, const std::string &data)> g_uiFieldCallback;
+std::function<void(const String &view, const AnimeanFieldViewSpec &spec)> g_uiFieldViewCallback;
+std::function<bool(const String &view)> g_uiFieldDisplaySupportedCallback;
+std::function<void(int ms, std::function<void()> callback)> g_uiCallLaterCallback;
 
 // Event subscription mask pushed by python_hooks (ui.set_hook_events).
 bool g_hookEventMaskValid = false;
-QSet<QString> g_hookEventMask;
+Set<String> g_hookEventMask;
 
 // Mirror of the C++ theme mode; the app pushes it on every AnimeTheme::apply.
-QString g_uiTheme = QStringLiteral("dark");
+String g_uiTheme = String("dark");
 
 // Preview displacement session (ui.displace_*): base geometry plus per-vertex
 // offsets for the strokes of one internal layer. Scaling rewrites that
@@ -71,7 +72,7 @@ struct DisplacementEntry {
     AnimeCore::Vector<AnimeCore::PointF> base;
     AnimeCore::Vector<AnimeCore::PointF> offsets;
     AnimeCore::Color color = AnimeCore::Color(0, 0, 0, 255);
-    qreal width = 3.0;
+    double width = 3.0;
 };
 
 struct DisplacementSession {
@@ -104,7 +105,7 @@ void requestUiFreeze(bool frozen)
     }
 }
 
-AnimeSceneModel *sceneForViewName(const QString &view)
+AnimeSceneModel *sceneForViewName(const String &view)
 {
     const AnimeCore::String wanted = AnimeCore::String(view) + "_paint_view";
     for (AnimeSceneModel *model : g_uiScenes) {
@@ -198,10 +199,10 @@ py::tuple rectToTuple(const AnimeCore::RectF &rect)
     return py::make_tuple(rect.x(), rect.y(), rect.width(), rect.height());
 }
 
-qreal objectToQreal(const py::handle &value, const char *name)
+double objectToQreal(const py::handle &value, const char *name)
 {
     try {
-        return value.cast<qreal>();
+        return value.cast<double>();
     } catch (const py::cast_error &) {
         throw py::type_error(std::string(name) + " must be a number.");
     }
@@ -248,10 +249,10 @@ AnimeCore::RectF objectToRectF(const py::handle &value, const char *name = "rect
                                     objectToQreal(dict["height"], "rect.height"));
         }
         if (hasKey(dict, "left") && hasKey(dict, "top") && hasKey(dict, "right") && hasKey(dict, "bottom")) {
-            const qreal left = objectToQreal(dict["left"], "rect.left");
-            const qreal top = objectToQreal(dict["top"], "rect.top");
-            const qreal right = objectToQreal(dict["right"], "rect.right");
-            const qreal bottom = objectToQreal(dict["bottom"], "rect.bottom");
+            const double left = objectToQreal(dict["left"], "rect.left");
+            const double top = objectToQreal(dict["top"], "rect.top");
+            const double right = objectToQreal(dict["right"], "rect.right");
+            const double bottom = objectToQreal(dict["bottom"], "rect.bottom");
             return AnimeCore::RectF(AnimeCore::PointF(left, top), AnimeCore::PointF(right, bottom)).normalized();
         }
     }
@@ -506,7 +507,7 @@ AnimeCore::Vector<AnimeCore::Vector<AnimeCore::PointF>> pathPolylines(const Anim
             const int count = sampleCountForCurve(curve, polyStep);
             for (int sample = 1; sample <= count; ++sample) {
                 polyline.append(AnimeBezierSplit::evaluateCubic(curve.p,
-                                                                static_cast<qreal>(sample) / count));
+                                                                static_cast<double>(sample) / count));
             }
         }
         polylines.append(polyline);
@@ -523,13 +524,13 @@ py::list pathToPolylines(const AnimeCore::Path &path, double polyStep)
     return polylines;
 }
 
-qreal perpendicularDistance(const AnimeCore::PointF &point, const AnimeCore::PointF &lineStart, const AnimeCore::PointF &lineEnd)
+double perpendicularDistance(const AnimeCore::PointF &point, const AnimeCore::PointF &lineStart, const AnimeCore::PointF &lineEnd)
 {
-    const qreal length = AnimeCore::LineF(lineStart, lineEnd).length();
+    const double length = AnimeCore::LineF(lineStart, lineEnd).length();
     if (length <= 0.0) {
         return AnimeCore::LineF(point, lineStart).length();
     }
-    const qreal numerator = std::abs((lineEnd.y() - lineStart.y()) * point.x() -
+    const double numerator = std::abs((lineEnd.y() - lineStart.y()) * point.x() -
                                      (lineEnd.x() - lineStart.x()) * point.y() +
                                      lineEnd.x() * lineStart.y() -
                                      lineEnd.y() * lineStart.x());
@@ -539,17 +540,17 @@ qreal perpendicularDistance(const AnimeCore::PointF &point, const AnimeCore::Poi
 void simplifyRdpRange(const AnimeCore::Vector<AnimeCore::PointF> &points,
                       int first,
                       int last,
-                      qreal epsilon,
+                      double epsilon,
                       AnimeCore::Vector<bool> &keep)
 {
     if (last <= first + 1) {
         return;
     }
 
-    qreal maxDistance = 0.0;
+    double maxDistance = 0.0;
     int splitIndex = -1;
     for (int i = first + 1; i < last; ++i) {
-        const qreal distance = perpendicularDistance(points[i], points[first], points[last]);
+        const double distance = perpendicularDistance(points[i], points[first], points[last]);
         if (distance > maxDistance) {
             maxDistance = distance;
             splitIndex = i;
@@ -563,7 +564,7 @@ void simplifyRdpRange(const AnimeCore::Vector<AnimeCore::PointF> &points,
     }
 }
 
-AnimeCore::Vector<AnimeCore::PointF> simplifyRdp(const AnimeCore::Vector<AnimeCore::PointF> &points, qreal epsilon)
+AnimeCore::Vector<AnimeCore::PointF> simplifyRdp(const AnimeCore::Vector<AnimeCore::PointF> &points, double epsilon)
 {
     if (epsilon <= 0.0 || points.size() <= 2) {
         return points;
@@ -721,7 +722,7 @@ py::dict strokeToDict(const AnimeVectorStroke &stroke, bool toPoly, double polyS
     data["raw_points"] = pointsToList(stroke.points);
     data["total_length"] = stroke.totalLength;
     py::list lengths;
-    for (qreal length : stroke.lengths) {
+    for (double length : stroke.lengths) {
         lengths.append(length);
     }
     data["lengths"] = lengths;
@@ -1052,7 +1053,7 @@ void clearAnimeanUiWindowsCallback()
     g_uiWindows = AnimeanWindowsApi();
 }
 
-void registerAnimeanUiOverlayCallback(std::function<void(const QString &view, const QVector<AnimeanOverlayItem> &items)> callback)
+void registerAnimeanUiOverlayCallback(std::function<void(const String &view, const Vector<AnimeanOverlayItem> &items)> callback)
 {
     g_uiOverlayCallback = std::move(callback);
 }
@@ -1062,7 +1063,7 @@ void clearAnimeanUiOverlayCallback()
     g_uiOverlayCallback = nullptr;
 }
 
-void registerAnimeanUiEditHandleCallback(std::function<void(const QString &view, const QVector<AnimeanEditHandle> &handles)> callback)
+void registerAnimeanUiEditHandleCallback(std::function<void(const String &view, const Vector<AnimeanEditHandle> &handles)> callback)
 {
     g_uiEditHandleCallback = std::move(callback);
 }
@@ -1077,7 +1078,7 @@ void registerAnimeanUiDrawSettingsCallback(std::function<void(int, int, int)> ca
     g_uiDrawSettingsCallback = std::move(callback);
 }
 
-void registerAnimeanUiDrawColorCallback(std::function<void(const QColor &color)> callback)
+void registerAnimeanUiDrawColorCallback(std::function<void(const Color &color)> callback)
 {
     g_uiDrawColorCallback = std::move(callback);
 }
@@ -1088,7 +1089,7 @@ void clearAnimeanUiDrawColorCallback()
     g_uiDrawSettingsCallback = nullptr;
 }
 
-void registerAnimeanUiPadValueCallback(std::function<void(const QString &pad, double x, double y)> callback)
+void registerAnimeanUiPadValueCallback(std::function<void(const String &pad, double x, double y)> callback)
 {
     g_uiPadValueCallback = std::move(callback);
 }
@@ -1098,7 +1099,7 @@ void clearAnimeanUiPadValueCallback()
     g_uiPadValueCallback = nullptr;
 }
 
-void registerAnimeanUiCursorCallback(std::function<void(const QString &view, const QString &name)> callback)
+void registerAnimeanUiCursorCallback(std::function<void(const String &view, const String &name)> callback)
 {
     g_uiCursorCallback = std::move(callback);
 }
@@ -1108,7 +1109,7 @@ void clearAnimeanUiCursorCallback()
     g_uiCursorCallback = nullptr;
 }
 
-void registerAnimeanUiFillPaintModeCallback(std::function<void(const QString &view, bool on)> callback)
+void registerAnimeanUiFillPaintModeCallback(std::function<void(const String &view, bool on)> callback)
 {
     g_uiFillPaintModeCallback = std::move(callback);
 }
@@ -1118,7 +1119,7 @@ void clearAnimeanUiFillPaintModeCallback()
     g_uiFillPaintModeCallback = nullptr;
 }
 
-void registerAnimeanUiLockedToolsCallback(std::function<void(const QString &view, const QStringList &tools)> callback)
+void registerAnimeanUiLockedToolsCallback(std::function<void(const String &view, const StringList &tools)> callback)
 {
     g_uiLockedToolsCallback = std::move(callback);
 }
@@ -1128,17 +1129,17 @@ void clearAnimeanUiLockedToolsCallback()
     g_uiLockedToolsCallback = nullptr;
 }
 
-bool animeanHookEventSubscribed(const QString &event)
+bool animeanHookEventSubscribed(const String &event)
 {
     return !g_hookEventMaskValid || g_hookEventMask.contains(event);
 }
 
-void setAnimeanUiTheme(const QString &mode)
+void setAnimeanUiTheme(const String &mode)
 {
     g_uiTheme = mode;
 }
 
-void registerAnimeanUiHistoryCallback(std::function<void(const QString &op, const QString &view, const QString &label)> callback)
+void registerAnimeanUiHistoryCallback(std::function<void(const String &op, const String &view, const String &label)> callback)
 {
     g_uiHistoryCallback = std::move(callback);
 }
@@ -1149,7 +1150,7 @@ void clearAnimeanUiHistoryCallback()
 }
 
 void registerAnimeanUiFieldCallback(
-    std::function<void(const QString &key, int width, int height, const QByteArray &data)> callback)
+    std::function<void(const String &key, int width, int height, const std::string &data)> callback)
 {
     g_uiFieldCallback = std::move(callback);
 }
@@ -1160,7 +1161,7 @@ void clearAnimeanUiFieldCallback()
 }
 
 void registerAnimeanUiFieldViewCallback(
-    std::function<void(const QString &view, const AnimeanFieldViewSpec &spec)> callback)
+    std::function<void(const String &view, const AnimeanFieldViewSpec &spec)> callback)
 {
     g_uiFieldViewCallback = std::move(callback);
 }
@@ -1170,8 +1171,7 @@ void clearAnimeanUiFieldViewCallback()
     g_uiFieldViewCallback = nullptr;
 }
 
-void registerAnimeanUiFieldDisplaySupportedCallback(
-    std::function<bool(const QString &view)> callback)
+void registerAnimeanUiFieldDisplaySupportedCallback(std::function<bool(const String &view)> callback)
 {
     g_uiFieldDisplaySupportedCallback = std::move(callback);
 }
@@ -1181,7 +1181,17 @@ void clearAnimeanUiFieldDisplaySupportedCallback()
     g_uiFieldDisplaySupportedCallback = nullptr;
 }
 
-AnimeSceneModel *animeanUiSceneForViewName(const QString &view)
+void registerAnimeanUiCallLaterCallback(std::function<void(int ms, std::function<void()> callback)> callback)
+{
+    g_uiCallLaterCallback = std::move(callback);
+}
+
+void clearAnimeanUiCallLaterCallback()
+{
+    g_uiCallLaterCallback = nullptr;
+}
+
+AnimeSceneModel *animeanUiSceneForViewName(const String &view)
 {
     return sceneForViewName(view);
 }
@@ -1251,7 +1261,7 @@ void bindAnimeanPythonModule(py::module_ &m)
                if (!g_uiOverlayCallback) {
                    return;
                }
-               QVector<AnimeanOverlayItem> converted;
+               Vector<AnimeanOverlayItem> converted;
                for (py::handle handle : items) {
                    if (!py::isinstance<py::dict>(handle)) {
                        throw py::type_error("overlay items must be dicts.");
@@ -1259,7 +1269,7 @@ void bindAnimeanPythonModule(py::module_ &m)
                    py::dict data = py::reinterpret_borrow<py::dict>(handle);
                    AnimeanOverlayItem item;
                    if (hasKey(data, "id")) {
-                       item.id = QString::fromStdString(data["id"].cast<std::string>());
+                       item.id = String::fromStdString(data["id"].cast<std::string>());
                    }
                    item.points = objectToPoints(data["points"], "overlay.points");
                    if (hasKey(data, "closed")) {
@@ -1287,11 +1297,11 @@ void bindAnimeanPythonModule(py::module_ &m)
                        item.draggable = data["draggable"].cast<bool>();
                    }
                    if (hasKey(data, "label")) {
-                       item.label = QString::fromStdString(data["label"].cast<std::string>());
+                       item.label = String::fromStdString(data["label"].cast<std::string>());
                    }
                    converted.append(item);
                }
-               g_uiOverlayCallback(QString::fromStdString(view), converted);
+               g_uiOverlayCallback(String::fromStdString(view), converted);
            },
            py::arg("view"),
            py::arg("items"));
@@ -1300,7 +1310,7 @@ void bindAnimeanPythonModule(py::module_ &m)
                if (!g_uiEditHandleCallback) {
                    return;
                }
-               QVector<AnimeanEditHandle> converted;
+               Vector<AnimeanEditHandle> converted;
                for (py::handle entry : handles) {
                    if (!py::isinstance<py::dict>(entry)) {
                        throw py::type_error("edit handles must be dicts.");
@@ -1308,9 +1318,9 @@ void bindAnimeanPythonModule(py::module_ &m)
                    py::dict data = py::reinterpret_borrow<py::dict>(entry);
                    AnimeanEditHandle handle;
                    if (hasKey(data, "id")) {
-                       handle.id = QString::fromStdString(data["id"].cast<std::string>());
+                       handle.id = String::fromStdString(data["id"].cast<std::string>());
                    }
-                   handle.pos = QPointF(data["x"].cast<double>(), data["y"].cast<double>());
+                   handle.pos = PointF(data["x"].cast<double>(), data["y"].cast<double>());
                    if (hasKey(data, "shape")) {
                        handle.shape = data["shape"].cast<int>();
                    }
@@ -1322,7 +1332,7 @@ void bindAnimeanPythonModule(py::module_ &m)
                    }
                    converted.append(handle);
                }
-               g_uiEditHandleCallback(QString::fromStdString(view), converted);
+               g_uiEditHandleCallback(String::fromStdString(view), converted);
            },
            py::arg("view"),
            py::arg("handles"));
@@ -1350,7 +1360,7 @@ void bindAnimeanPythonModule(py::module_ &m)
                // Tools use it to recenter a latched pad when the state the
                // held vector referred to no longer exists.
                if (g_uiPadValueCallback) {
-                   g_uiPadValueCallback(QString::fromStdString(pad), x, y);
+                   g_uiPadValueCallback(String::fromStdString(pad), x, y);
                }
            },
            py::arg("pad"),
@@ -1364,8 +1374,8 @@ void bindAnimeanPythonModule(py::module_ &m)
                // tool's box the cursor sits over - is policy, and lives in
                // Python. The pen's ring outranks it.
                if (g_uiCursorCallback) {
-                   g_uiCursorCallback(QString::fromStdString(view),
-                                      QString::fromStdString(name));
+                   g_uiCursorCallback(String::fromStdString(view),
+                                      String::fromStdString(name));
                }
            },
            py::arg("view"),
@@ -1378,7 +1388,7 @@ void bindAnimeanPythonModule(py::module_ &m)
                // stroke becomes - the caller that turned the mode on owns that
                // (pyfile/layer_tool_policy.py converts it on linefinish).
                if (g_uiFillPaintModeCallback) {
-                   g_uiFillPaintModeCallback(QString::fromStdString(view), on);
+                   g_uiFillPaintModeCallback(String::fromStdString(view), on);
                }
            },
            py::arg("view"),
@@ -1389,12 +1399,12 @@ void bindAnimeanPythonModule(py::module_ &m)
                // refuses to arm a locked tool, switching to Arrow when the
                // armed one is locked out from under the user. Arrow is the
                // escape hatch and is never refused. An empty list clears.
-               QStringList names;
+               StringList names;
                for (py::handle handle : tools) {
-                   names.append(QString::fromStdString(py::str(handle).cast<std::string>()));
+                   names.append(String::fromStdString(py::str(handle).cast<std::string>()));
                }
                if (g_uiLockedToolsCallback) {
-                   g_uiLockedToolsCallback(QString::fromStdString(view), names);
+                   g_uiLockedToolsCallback(String::fromStdString(view), names);
                }
            },
            py::arg("view"),
@@ -1403,9 +1413,9 @@ void bindAnimeanPythonModule(py::module_ &m)
            [](py::sequence events) {
                // python_hooks pushes the set of events that currently have at
                // least one hook; C++ dispatch sites skip everything else.
-               QSet<QString> mask;
+               Set<String> mask;
                for (py::handle handle : events) {
-                   mask.insert(QString::fromStdString(py::str(handle).cast<std::string>()));
+                   mask.insert(String::fromStdString(py::str(handle).cast<std::string>()));
                }
                g_hookEventMask = std::move(mask);
                g_hookEventMaskValid = true;
@@ -1418,19 +1428,19 @@ void bindAnimeanPythonModule(py::module_ &m)
                if (PyBytes_AsStringAndSize(data.ptr(), &buffer, &length) != 0) {
                    throw py::error_already_set();
                }
-               const qint64 expected = (width > 0 && height > 0)
-                                           ? qint64(width) * qint64(height) * 16LL
-                                           : -1LL;
-               if (width <= 0 || height <= 0 || qint64(length) != expected) {
+               const std::int64_t expected = (width > 0 && height > 0)
+                                                 ? std::int64_t(width) * std::int64_t(height) * 16LL
+                                                 : -1LL;
+               if (width <= 0 || height <= 0 || std::int64_t(length) != expected) {
                    throw py::value_error("set_field data length must equal width * height * 16.");
                }
                if (!g_uiFieldCallback) {
                    return;
                }
-               g_uiFieldCallback(QString::fromStdString(key),
+               g_uiFieldCallback(String::fromStdString(key),
                                  width,
                                  height,
-                                 QByteArray(buffer, int(length)));
+                                 std::string(buffer, static_cast<std::size_t>(length)));
            },
            py::arg("key"),
            py::arg("width"),
@@ -1442,7 +1452,7 @@ void bindAnimeanPythonModule(py::module_ &m)
                    if (g_uiFieldViewCallback) {
                        AnimeanFieldViewSpec emptySpec;
                        emptySpec.active = false;
-                       g_uiFieldViewCallback(QString::fromStdString(view), emptySpec);
+                       g_uiFieldViewCallback(String::fromStdString(view), emptySpec);
                    }
                    return;
                }
@@ -1453,19 +1463,18 @@ void bindAnimeanPythonModule(py::module_ &m)
                AnimeanFieldViewSpec spec;
                spec.active = true;
                if (hasKey(data, "field")) {
-                   spec.fieldKey = QString::fromStdString(data["field"].cast<std::string>());
+                   spec.fieldKey = String::fromStdString(data["field"].cast<std::string>());
                } else if (hasKey(data, "field_key")) {
-                   spec.fieldKey = QString::fromStdString(data["field_key"].cast<std::string>());
+                   spec.fieldKey = String::fromStdString(data["field_key"].cast<std::string>());
                }
                if (hasKey(data, "rect")) {
-                   const AnimeCore::RectF r = objectToRectF(data["rect"], "spec.rect");
-                   spec.rect = QRectF(r.x(), r.y(), r.width(), r.height());
+                   spec.rect = objectToRectF(data["rect"], "spec.rect");
                }
                if (hasKey(data, "max_edge")) {
                    spec.maxEdge = objectToQreal(data["max_edge"], "spec.max_edge");
                }
                if (hasKey(data, "source_view")) {
-                   spec.sourceView = QString::fromStdString(data["source_view"].cast<std::string>());
+                   spec.sourceView = String::fromStdString(data["source_view"].cast<std::string>());
                }
                if (hasKey(data, "columns")) {
                    py::sequence cols = data["columns"].cast<py::sequence>();
@@ -1499,7 +1508,7 @@ void bindAnimeanPythonModule(py::module_ &m)
                            pass.opacity = objectToQreal(passDict["opacity"], "pass.opacity");
                        }
                        if (hasKey(passDict, "tint") && !passDict["tint"].is_none()) {
-                           const AnimeCore::Color tint = objectToColor(passDict["tint"], "pass.tint");
+                           const Color tint = objectToColor(passDict["tint"], "pass.tint");
                            pass.tintR = tint.red();
                            pass.tintG = tint.green();
                            pass.tintB = tint.blue();
@@ -1517,11 +1526,11 @@ void bindAnimeanPythonModule(py::module_ &m)
                if (hasKey(data, "skip_properties") && !data["skip_properties"].is_none()) {
                    py::sequence skipSeq = data["skip_properties"].cast<py::sequence>();
                    for (py::handle prop : skipSeq) {
-                       spec.skipProperties.append(QString::fromStdString(py::str(prop).cast<std::string>()));
+                       spec.skipProperties.append(String::fromStdString(py::str(prop).cast<std::string>()));
                    }
                }
                if (g_uiFieldViewCallback) {
-                   g_uiFieldViewCallback(QString::fromStdString(view), spec);
+                   g_uiFieldViewCallback(String::fromStdString(view), spec);
                }
            },
            py::arg("view"),
@@ -1531,11 +1540,15 @@ void bindAnimeanPythonModule(py::module_ &m)
                if (!g_uiFieldDisplaySupportedCallback) {
                    return false;
                }
-               return g_uiFieldDisplaySupportedCallback(QString::fromStdString(view));
+               return g_uiFieldDisplaySupportedCallback(String::fromStdString(view));
            },
            py::arg("view") = "main");
     ui.def("call_later",
            [](int ms, py::function callable) {
+               if (!g_uiCallLaterCallback) {
+                   return;
+               }
+               // The callable is released under the GIL wherever the last copy dies.
                auto holder = std::shared_ptr<py::function>(
                    new py::function(std::move(callable)),
                    [](py::function *ptr) {
@@ -1550,7 +1563,7 @@ void bindAnimeanPythonModule(py::module_ &m)
                            delete ptr;
                        }
                    });
-               auto invoke = [holder = std::move(holder)]() mutable {
+               auto invoke = [holder]() mutable {
                    if (!Py_IsInitialized() || !holder) {
                        return;
                    }
@@ -1562,28 +1575,21 @@ void bindAnimeanPythonModule(py::module_ &m)
                            callback();
                        }
                    } catch (py::error_already_set &error) {
-                       qWarning().noquote()
-                           << QStringLiteral("[python call_later] %1").arg(QString::fromUtf8(error.what()));
+                       std::fprintf(stderr, "[python call_later] %s\n", error.what());
                    } catch (const std::exception &error) {
-                       qWarning().noquote()
-                           << QStringLiteral("[python call_later] %1").arg(QString::fromUtf8(error.what()));
+                       std::fprintf(stderr, "[python call_later] %s\n", error.what());
                    } catch (...) {
-                       qWarning().noquote() << QStringLiteral("[python call_later] unknown error");
+                       std::fprintf(stderr, "[python call_later] unknown error\n");
                    }
                };
-               const int delayMs = std::max(0, ms);
-               if (QCoreApplication *app = QCoreApplication::instance()) {
-                   QTimer::singleShot(delayMs, app, std::move(invoke));
-               } else {
-                   QTimer::singleShot(delayMs, std::move(invoke));
-               }
+               g_uiCallLaterCallback(std::max(0, ms), std::move(invoke));
            },
            py::arg("ms"),
            py::arg("callable"));
     ui.def("displace_begin",
            [](const std::string &view, int row, int layerIndex, py::sequence entries,
               double scaleX, double scaleY) {
-               AnimeSceneModel *model = sceneForViewName(QString::fromStdString(view));
+               AnimeSceneModel *model = sceneForViewName(String::fromStdString(view));
                if (!model) {
                    throw std::runtime_error("displace_begin: unknown view name.");
                }
@@ -1634,9 +1640,9 @@ void bindAnimeanPythonModule(py::module_ &m)
     ui.def("history_commit",
            [](const std::string &label, const std::string &view) {
                if (g_uiHistoryCallback) {
-                   g_uiHistoryCallback(QStringLiteral("commit"),
-                                       QString::fromStdString(view),
-                                       QString::fromStdString(label));
+                   g_uiHistoryCallback(String("commit"),
+                                       String::fromStdString(view),
+                                       String::fromStdString(label));
                }
            },
            py::arg("label"),
@@ -1644,14 +1650,14 @@ void bindAnimeanPythonModule(py::module_ &m)
     ui.def("history_undo",
            [](const std::string &view) {
                if (g_uiHistoryCallback) {
-                   g_uiHistoryCallback(QStringLiteral("undo"), QString::fromStdString(view), QString());
+                   g_uiHistoryCallback(String("undo"), String::fromStdString(view), String());
                }
            },
            py::arg("view") = "");
     ui.def("history_redo",
            [](const std::string &view) {
                if (g_uiHistoryCallback) {
-                   g_uiHistoryCallback(QStringLiteral("redo"), QString::fromStdString(view), QString());
+                   g_uiHistoryCallback(String("redo"), String::fromStdString(view), String());
                }
            },
            py::arg("view") = "");
@@ -1697,7 +1703,7 @@ void bindAnimeanPythonModule(py::module_ &m)
             entry["title"] = info.title.toStdString();
             entry["visible"] = info.visible;
             py::list pages;
-            for (const QString &page : info.pages) {
+            for (const String &page : info.pages) {
                 pages.append(page.toStdString());
             }
             entry["pages"] = pages;
@@ -1709,7 +1715,7 @@ void bindAnimeanPythonModule(py::module_ &m)
     uiWindows.def("show",
                   [](const std::string &name, bool on) {
                       if (g_uiWindows.show) {
-                          g_uiWindows.show(QString::fromStdString(name), on);
+                          g_uiWindows.show(String::fromStdString(name), on);
                       }
                   },
                   py::arg("name"),
@@ -1717,7 +1723,7 @@ void bindAnimeanPythonModule(py::module_ &m)
     uiWindows.def("select",
                   [](const std::string &name, const std::string &page) {
                       if (g_uiWindows.select) {
-                          g_uiWindows.select(QString::fromStdString(name), QString::fromStdString(page));
+                          g_uiWindows.select(String::fromStdString(name), String::fromStdString(page));
                       }
                   },
                   py::arg("name"),
@@ -1727,7 +1733,7 @@ void bindAnimeanPythonModule(py::module_ &m)
                       if (!g_uiWindows.list) {
                           return py::none();
                       }
-                      const QString wanted = QString::fromStdString(name);
+                      const String wanted = String::fromStdString(name);
                       for (const AnimeanWindowInfo &info : g_uiWindows.list()) {
                           if (info.name == wanted) {
                               return py::str(info.current.toStdString());
@@ -1769,7 +1775,7 @@ void bindAnimeanPythonModule(py::module_ &m)
 
     py::class_<AnimeVectorRange>(m, "VectorRange")
         .def(py::init<>())
-        .def(py::init<qreal, qreal>())
+        .def(py::init<double, double>())
         .def_readwrite("first", &AnimeVectorRange::first)
         .def_readwrite("second", &AnimeVectorRange::second)
         .def("to_dict", [](const AnimeVectorRange &range) {
@@ -1897,7 +1903,7 @@ void bindAnimeanPythonModule(py::module_ &m)
              py::arg("seed") = py::none())
         .def("clear_raster", &AnimeVectorImageModel::clearRasterImage)
         // Whether this cell carries a bitmap. A raster is stored as a top-left
-        // plus a QImage, so it can be scaled and moved but NOT rotated or
+        // plus an Image, so it can be scaled and moved but NOT rotated or
         // sheared: a tool that would produce one has to ask first and refuse.
         .def("has_raster", &AnimeVectorImageModel::hasRaster)
         .def("bounds", [](const AnimeVectorImageModel &image) {
@@ -2316,7 +2322,7 @@ void bindAnimeanPythonModule(py::module_ &m)
              py::arg("stroke"));
 
     py::module_ modelPybind = m.def_submodule("model_pybind", "Fast Python-to-Qt value conversion helpers.");
-    modelPybind.def("qreal", [](py::object value) {
+    modelPybind.def("q" "real", [](py::object value) {
         return objectToQreal(value, "value");
     });
     modelPybind.def("point", [](py::object value) {
@@ -2396,7 +2402,7 @@ void bindAnimeanPythonModule(py::module_ &m)
     vectorLogic.def("make_stroke",
                     [](py::object points,
                        py::object color,
-                       qreal width,
+                       double width,
                        int id,
                        bool filterInput,
                        bool smoothPath,
@@ -2431,7 +2437,7 @@ void bindAnimeanPythonModule(py::module_ &m)
     vectorLogic.def("make_stroke_object",
                     [](py::object points,
                        py::object color,
-                       qreal width,
+                       double width,
                        int id,
                        bool filterInput,
                        bool smoothPath,
@@ -2458,9 +2464,9 @@ void bindAnimeanPythonModule(py::module_ &m)
                     [](py::object commands,
                        py::object points,
                        py::object color,
-                       qreal width,
+                       double width,
                        int id) {
-                        // Generic mechanism: build a stroke whose QPainterPath keeps
+                        // Generic mechanism: build a stroke whose Path keeps
                         // its curve segments (from `commands`) while `points` carries a
                         // dense flattening so hit-testing / erasing / subStroke still
                         // work. The command format is the same one objectToPath()
@@ -2478,14 +2484,14 @@ void bindAnimeanPythonModule(py::module_ &m)
                     py::arg("width") = 3.0,
                     py::arg("id") = 0);
     vectorLogic.def("stroke_hits_circle",
-                    [](const AnimeVectorStroke &stroke, py::object center, qreal radius) {
+                    [](const AnimeVectorStroke &stroke, py::object center, double radius) {
                         return AnimeVectorLogic::strokeHitsCircle(stroke, objectToPointF(center, "center"), radius);
                     },
                     py::arg("stroke"),
                     py::arg("center"),
                     py::arg("radius"));
     vectorLogic.def("stroke_hits_circle",
-                    [](py::object points, py::object center, qreal radius, qreal width) {
+                    [](py::object points, py::object center, double radius, double width) {
                         const AnimeVectorStroke stroke = AnimeVectorLogic::makeStroke(objectToPoints(points),
                                                                                       AnimeCore::Color(0, 0, 0, 255),
                                                                                       width,
@@ -2499,7 +2505,7 @@ void bindAnimeanPythonModule(py::module_ &m)
                     py::arg("radius"),
                     py::arg("width") = 3.0);
     vectorLogic.def("stroke_hits_capsule",
-                    [](const AnimeVectorStroke &stroke, py::object fromPoint, py::object toPoint, qreal radius) {
+                    [](const AnimeVectorStroke &stroke, py::object fromPoint, py::object toPoint, double radius) {
                         return AnimeVectorLogic::strokeHitsCapsule(stroke,
                                                                     objectToPointF(fromPoint, "from"),
                                                                     objectToPointF(toPoint, "to"),
@@ -2510,7 +2516,7 @@ void bindAnimeanPythonModule(py::module_ &m)
                     py::arg("to_point"),
                     py::arg("radius"));
     vectorLogic.def("stroke_hits_capsule",
-                    [](py::object points, py::object fromPoint, py::object toPoint, qreal radius, qreal width) {
+                    [](py::object points, py::object fromPoint, py::object toPoint, double radius, double width) {
                         const AnimeVectorStroke stroke = AnimeVectorLogic::makeStroke(objectToPoints(points),
                                                                                       AnimeCore::Color(0, 0, 0, 255),
                                                                                       width,
@@ -2528,14 +2534,14 @@ void bindAnimeanPythonModule(py::module_ &m)
                     py::arg("radius"),
                     py::arg("width") = 3.0);
     vectorLogic.def("keep_ranges_for_circle",
-                    [](const AnimeVectorStroke &stroke, py::object center, qreal radius) {
+                    [](const AnimeVectorStroke &stroke, py::object center, double radius) {
                         return rangesToList(AnimeVectorLogic::keepRangesForCircle(stroke, objectToPointF(center, "center"), radius));
                     },
                     py::arg("stroke"),
                     py::arg("center"),
                     py::arg("radius"));
     vectorLogic.def("keep_ranges_for_capsule",
-                    [](const AnimeVectorStroke &stroke, py::object fromPoint, py::object toPoint, qreal radius) {
+                    [](const AnimeVectorStroke &stroke, py::object fromPoint, py::object toPoint, double radius) {
                         return rangesToList(AnimeVectorLogic::keepRangesForCapsule(stroke,
                                                                                    objectToPointF(fromPoint, "from"),
                                                                                    objectToPointF(toPoint, "to"),
@@ -2549,7 +2555,7 @@ void bindAnimeanPythonModule(py::module_ &m)
         return rangesToList(AnimeVectorLogic::complementRanges(objectToRanges(ranges)));
     });
     vectorLogic.def("sub_stroke",
-                    [](const AnimeVectorStroke &stroke, qreal fromW, qreal toW, int smoothValue,
+                    [](const AnimeVectorStroke &stroke, double fromW, double toW, int smoothValue,
                        int cornerValue, bool toPoly, double polyStep) {
                         const AnimeStrokeFitSettings settings{smoothValue, cornerValue};
                         return strokeToDict(AnimeVectorLogic::subStroke(stroke, fromW, toW, settings), toPoly, polyStep);
@@ -2562,7 +2568,7 @@ void bindAnimeanPythonModule(py::module_ &m)
                     py::arg("to_poly") = false,
                     py::arg("poly_step") = 4.0);
     vectorLogic.def("point_at_length",
-                    [](const AnimeVectorStroke &stroke, qreal length) {
+                    [](const AnimeVectorStroke &stroke, double length) {
                         return pointToDict(AnimeVectorLogic::pointAtLength(stroke, length));
                     },
                     py::arg("stroke"),

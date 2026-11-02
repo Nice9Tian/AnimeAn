@@ -1,7 +1,7 @@
 // The panels that start hidden, drawn to match the Qt build: History, Assets, the
 // Repulsion Pad, Python Debug, the New Project dialog and the texture board's
 // frame. Each takes plain data and reports what the user did.
-import { tabBar, scrollArea, scrollBar, createMenuBar } from "./panels.js";
+import { tabBar, scrollArea, scrollBar, createMenuBar, isUnboundedViewport, PRESS_ENDS, trackPress } from "./panels.js";
 import { onThemeChange, cosmeticStroke, flattenCubic, hintedTracking, trackedDiv } from "./timeline.js";
 
 function div(cls, text) {
@@ -93,7 +93,7 @@ export function createAssets(root, { onSelect, onAdd, onClear } = {}) {
     item.draggable = true;
     item.addEventListener("dragstart", (e) => {
       e.dataTransfer.effectAllowed = "copy";
-      e.dataTransfer.setData("text/plain", String(i));
+      e.dataTransfer.setData("application/x-animean-asset", String(i));
     });
   };
   return {
@@ -225,6 +225,17 @@ export function createForcePad(root, { onPress, onMove, onRelease } = {}) {
     if (springBack) value = { x: 0, y: 0 };
     paint();
   });
+  // A drag cut short would strand the listener in an open session; a centred
+  // release is the explicit cancel.
+  const cancel = () => {
+    if (!dragging) return;
+    dragging = false;
+    value = { x: 0, y: 0 };
+    onRelease?.(0, 0);
+    paint();
+  };
+  canvas.addEventListener("pointercancel", cancel);
+  canvas.addEventListener("lostpointercapture", cancel);
 
   function measure() {
     const dpr = window.devicePixelRatio || 1;
@@ -232,9 +243,7 @@ export function createForcePad(root, { onPress, onMove, onRelease } = {}) {
     width = page.clientWidth; height = page.clientHeight;
     canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr);
     canvas.style.width = `${width}px`; canvas.style.height = `${height}px`;
-    // A panel hidden mid-drag would strand the listener in an open session; a
-    // centred release is the explicit cancel.
-    if (wasShown && !width && dragging) { dragging = false; value = { x: 0, y: 0 }; onRelease?.(0, 0); }
+    if (wasShown && !width) cancel();
   }
   new ResizeObserver(() => { measure(); paint(); }).observe(page);
   onThemeChange(paint);
@@ -469,10 +478,7 @@ export function createNewProjectDialog(root, { onCreate, onCancel } = {}) {
     title.setPointerCapture(e.pointerId);
     const r = dialog.getBoundingClientRect(), host = shade.getBoundingClientRect();
     const dx = e.clientX - r.left, dy = e.clientY - r.top;
-    const move = (m) => { dialog.style.left = `${m.clientX - dx - host.left}px`; dialog.style.top = `${m.clientY - dy - host.top}px`; dialog.style.transform = "none"; };
-    const up = () => { title.removeEventListener("pointermove", move); title.removeEventListener("pointerup", up); };
-    title.addEventListener("pointermove", move);
-    title.addEventListener("pointerup", up);
+    trackPress(title, (m) => { dialog.style.left = `${m.clientX - dx - host.left}px`; dialog.style.top = `${m.clientY - dy - host.top}px`; dialog.style.transform = "none"; });
   });
 
   shade.style.display = "none";
@@ -509,7 +515,7 @@ const GRIP_DOTS = [[14, 5], [11, 8], [14, 8], [8, 11], [11, 11], [14, 11], [5, 1
 // placeholder }); put content in .body, or leave it empty to show the placeholder.
 // preview(rect|null) draws the drop wash in client pixels. onAffordance() on the
 // corner glyph; onDragStart/onDragMove/onDragEnd(x, y) past a 4px threshold on the bar.
-export function createSubControlFrame(root, { onAffordance, onDragStart, onDragMove, onDragEnd } = {}) {
+export function createSubControlFrame(root, { onAffordance, onDragStart, onDragMove, onDragEnd, onResize } = {}) {
   root.classList.add("subframe");
   const bar = div("subframe-title");
   const text = div("subframe-text");
@@ -525,7 +531,7 @@ export function createSubControlFrame(root, { onAffordance, onDragStart, onDragM
   glyph.addEventListener("click", () => onAffordance?.());
   bar.addEventListener("pointerdown", (e) => {
     if (e.button !== 0 || glyph.contains(e.target)) return;
-    bar.setPointerCapture(e.pointerId);
+    bar.setPointerCapture?.(e.pointerId);
     pressed = true; dragging = false; pressX = e.clientX; pressY = e.clientY;
   });
   bar.addEventListener("pointermove", (e) => {
@@ -534,6 +540,8 @@ export function createSubControlFrame(root, { onAffordance, onDragStart, onDragM
       if (Math.abs(e.clientX - pressX) + Math.abs(e.clientY - pressY) < 4) return;
       dragging = true;
       onDragStart?.(pressX, pressY);
+      // Floating moves the frame to another parent, which costs the press its capture.
+      bar.setPointerCapture?.(e.pointerId);
     }
     onDragMove?.(e.clientX, e.clientY);
   });
@@ -541,14 +549,57 @@ export function createSubControlFrame(root, { onAffordance, onDragStart, onDragM
     if (dragging) onDragEnd?.(e.clientX, e.clientY);
     pressed = false; dragging = false;
   });
+  const cancelDrag = () => {
+    if (dragging) onDragEnd?.(null, null);
+    pressed = false; dragging = false;
+  };
+  bar.addEventListener("pointercancel", cancelDrag);
+  bar.addEventListener("lostpointercapture", cancelDrag);
+
+  let resizing = false, resizeX = 0, resizeY = 0, startW = 0, startH = 0;
+  grip.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || !floating) return;
+    e.stopPropagation();
+    grip.setPointerCapture?.(e.pointerId);
+    const r = root.getBoundingClientRect();
+    resizing = true;
+    resizeX = e.clientX;
+    resizeY = e.clientY;
+    startW = r.width || parseFloat(root.style.width) || 320;
+    startH = r.height || parseFloat(root.style.height) || 260;
+  });
+  grip.addEventListener("pointermove", (e) => {
+    if (!resizing) return;
+    const w = Math.max(180, Math.round(startW + (e.clientX - resizeX)));
+    const h = Math.max(140, Math.round(startH + (e.clientY - resizeY)));
+    root.style.width = `${w}px`;
+    root.style.height = `${h}px`;
+    onResize?.(w, h);
+  });
+  for (const type of PRESS_ENDS) grip.addEventListener(type, () => { resizing = false; });
 
   let wash = null;
-  const refresh = () => { placeholder.style.display = body.childElementCount ? "none" : ""; };
+  const refresh = () => {
+    const hasBody = body.childElementCount > 0;
+    body.style.display = hasBody ? "" : "none";
+    placeholder.style.display = hasBody ? "none" : "";
+  };
   new MutationObserver(refresh).observe(body, { childList: true });
   refresh();
 
   return {
+    el: root,
+    bar,
+    glyph,
     body,
+    placeholder,
+    grip,
+    setContent(el) {
+      if (el) body.append(el);
+      else body.replaceChildren();
+      refresh();
+    },
+    syncPlaceholder: refresh,
     update({ title = "", floating: nextFloating = false, placeholder: note = "" } = {}) {
       floating = nextFloating;
       text.textContent = title;
@@ -558,6 +609,7 @@ export function createSubControlFrame(root, { onAffordance, onDragStart, onDragM
       bar.title = floating ? "Drag onto a panel to dock this control" : "Drag out to float this control";
       grip.style.display = floating ? "" : "none";
       root.classList.toggle("floating", floating);
+      refresh();
     },
     preview(rect) {
       if (!rect) { wash?.remove(); wash = null; return; }
@@ -593,18 +645,41 @@ export function createTexturePanel(root, { onTrigger, onScroll, onButton } = {})
   const menuHost = div("texture-menu");
   const menu = createMenuBar(menuHost, { onTrigger: (item) => onTrigger?.(item) });
   const options = div("texture-options");
+  options.style.display = "none";
   const stage = div("texture-stage");
   const host = div("board-host");
   const h = scrollBar(false, (v) => onScroll?.("h", v));
   const v = scrollBar(true, (value) => onScroll?.("v", value));
+  const syncBars = () => {
+    const hide = isUnboundedViewport(h.enabled(), v.enabled());
+    h.el.style.display = hide ? "none" : "";
+    v.el.style.display = hide ? "none" : "";
+    host.style.right = hide ? "0" : "";
+    host.style.bottom = hide ? "0" : "";
+  };
+  const setH = h.set, setV = v.set;
+  h.set = (next) => { setH(next); syncBars(); };
+  v.set = (next) => { setV(next); syncBars(); };
   stage.append(host, h.el, v.el);
   root.append(menuHost, options, stage);
+  let currentMenus = [SETTING_MENU];
+  let currentButtons = [];
   return {
-    host, h, v,
-    update({ menus, buttons = [] } = {}) {
-      menu.update(menus ?? [SETTING_MENU]);
-      options.replaceChildren(...buttons.map((button) => {
-        const b = pushButton(button.title ?? button.name);
+    el: root,
+    menuHost,
+    options,
+    stage,
+    host,
+    h,
+    v,
+    update({ menus, buttons } = {}) {
+      if (menus !== undefined) currentMenus = menus ?? [SETTING_MENU];
+      if (buttons !== undefined) currentButtons = buttons ?? [];
+      menu.update(currentMenus);
+      options.replaceChildren(...currentButtons.map((button) => {
+        const b = pushButton(button.title ?? button.text ?? button.name);
+        b.dataset.name = button.name ?? "";
+        if (button.tooltip) b.title = button.tooltip;
         let on = !!button.checked;
         b.classList.toggle("checked", on);
         b.addEventListener("click", () => {
@@ -613,7 +688,80 @@ export function createTexturePanel(root, { onTrigger, onScroll, onButton } = {})
         });
         return b;
       }));
-      options.style.display = buttons.length ? "" : "none";
+      options.style.display = currentButtons.length ? "" : "none";
     },
   };
+}
+
+// ---- QMessageBox -----------------------------------------------------------------
+export function messageBox({ title = "", text = "", buttons = ["OK"] } = {}) {
+  const list = Array.isArray(buttons) && buttons.length ? buttons.map(String) : ["OK"];
+  if (typeof document === "undefined" || !document.body) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const shade = div("qdialog-shade");
+    const dialog = div("qdialog");
+    Object.assign(dialog.style, { width: "auto", minWidth: "260px", maxWidth: "420px" });
+    const head = div("qdialog-title");
+    head.append(div("qdialog-caption", String(title ?? "")));
+    const close = div("qdialog-close");
+    close.innerHTML = `<svg width="10" height="10"><path d="M0.5 0.5 L9.5 9.5 M9.5 0.5 L0.5 9.5" stroke="currentColor" fill="none"/></svg>`;
+    head.append(close);
+    const body = div("qdialog-body");
+    Object.assign(body.style, {
+      width: "auto",
+      height: "auto",
+      padding: "12px",
+      display: "flex",
+      flexDirection: "column",
+      gap: "12px",
+      boxSizing: "border-box",
+    });
+    const msg = div("qdialog-caption-text", String(text ?? ""));
+    Object.assign(msg.style, { position: "static", whiteSpace: "pre-wrap", overflowWrap: "anywhere" });
+    const row = div("qdialog-buttons");
+    Object.assign(row.style, { position: "static", display: "flex", justifyContent: "flex-end", gap: "6px" });
+
+    let done = false;
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      if (typeof window !== "undefined") window.removeEventListener("keydown", onKey, true);
+      shade.remove();
+      resolve(result);
+    };
+    const onKey = (e) => {
+      if (e.key === "Enter") { e.preventDefault(); finish(list[0]); }
+      else if (e.key === "Escape") { e.preventDefault(); finish(null); }
+    };
+
+    const btnEls = list.map((label, i) => {
+      const b = pushButton(label, () => finish(label));
+      b.style.minWidth = "72px";
+      if (i === 0) b.classList.add("qdefault");
+      row.append(b);
+      return b;
+    });
+
+    close.addEventListener("click", () => finish(null));
+    dialog.tabIndex = -1;
+    dialog.addEventListener("keydown", onKey);
+    if (typeof window !== "undefined") window.addEventListener("keydown", onKey, true);
+    head.addEventListener("pointerdown", (e) => {
+      if (e.target?.closest?.(".qdialog-close")) return;
+      head.setPointerCapture?.(e.pointerId);
+      const r = dialog.getBoundingClientRect(), host = shade.getBoundingClientRect();
+      const dx = e.clientX - r.left, dy = e.clientY - r.top;
+      trackPress(head, (m) => {
+        dialog.style.left = `${m.clientX - dx - host.left}px`;
+        dialog.style.top = `${m.clientY - dy - host.top}px`;
+        dialog.style.transform = "none";
+      });
+    });
+
+    body.append(msg, row);
+    dialog.append(head, body);
+    shade.append(dialog);
+    document.body.append(shade);
+    (btnEls[0] ?? dialog).focus?.({ preventScroll: true });
+  });
 }

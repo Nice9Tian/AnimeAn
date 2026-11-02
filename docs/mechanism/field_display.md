@@ -25,7 +25,7 @@
 
 ## 退路
 
-`board.capabilities` 上报能力，WebGL2 为真，Canvas 2D 为假，桌面 Qt 版恒假。不支持时 Python 不开预览，行为和松手重跑完全一样。Canvas 2D 收到作用域整段跳过。
+`board.capabilities` 上报能力，WebGL2 为真，Canvas 2D 为假，没有页面连着时为假。不支持时 Python 不开预览，行为和松手重跑完全一样。Canvas 2D 收到作用域整段跳过。
 
 ## 求解在 Python
 

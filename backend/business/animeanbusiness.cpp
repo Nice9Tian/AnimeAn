@@ -1,35 +1,43 @@
 // Source: Copied from C:/Users/admin/Documents/VibeFrontend/animean/business/animeanbusiness.cpp
+#include "algorithm/core/color.h"
+#include "algorithm/core/containers.h"
+#include "algorithm/core/geometry.h"
+#include "algorithm/core/image.h"
+#include "algorithm/core/path.h"
+#include "algorithm/core/string.h"
+#include <cstdint>
+#include <utility>
 #include "animeanbusiness.h"
 
-#include "algorithm/core/qtbridge.h"
+
 #include "projectio.h"
 
-#include <QCoreApplication>
-#include <QDir>
-#include <QFile>
-#include <QFileInfo>
-#include <QJsonDocument>
-#include <QJsonParseError>
-#include <QJsonValue>
-#include <QPainter>
-#include <QPen>
-#include <QSaveFile>
-#include <QTimer>
+#include "algorithm/core/file.h"
+#include "algorithm/core/painter.h"
+#include "platform/signalslot.h"
+#include "platform/timer.h"
+#include "algorithm/core/json.h"
+
+
+
+
 
 #include <algorithm>
 #include <cmath>
 #include <string>
+using namespace AnimeCore;
 
 #ifdef ANIMEAN_WITH_PYTHON
 #ifdef slots
 #undef slots
-#define ANIMEAN_RESTORE_QT_SLOTS
+
 #endif
 #include <pybind11/embed.h>
 #include <pybind11/eval.h>
-#ifdef ANIMEAN_RESTORE_QT_SLOTS
-#define slots Q_SLOTS
-#undef ANIMEAN_RESTORE_QT_SLOTS
+#if 1
+
+
+
 #endif
 #include "pythonbind/python_bindings.h"
 namespace py = pybind11;
@@ -40,7 +48,7 @@ namespace {
 constexpr int kDefaultPlaybackFps = 12;
 
 #ifdef ANIMEAN_WITH_PYTHON
-py::dict pointToPythonDict(const QPointF &point)
+py::dict pointToPythonDict(const PointF &point)
 {
     py::dict pointInfo;
     pointInfo["x"] = point.x();
@@ -48,39 +56,39 @@ py::dict pointToPythonDict(const QPointF &point)
     return pointInfo;
 }
 
-py::object variantToPythonObject(const QVariant &value)
+py::object variantToPythonObject(const JsonVariant &value)
 {
-    switch (value.userType()) {
-    case QMetaType::Bool:
-        return py::bool_(value.toBool());
-    case QMetaType::Int:
-    case QMetaType::UInt:
-    case QMetaType::LongLong:
-    case QMetaType::ULongLong:
-        return py::int_(value.toLongLong());
-    case QMetaType::Float:
-    case QMetaType::Double:
-        return py::float_(value.toDouble());
+    const JsonValue &jv = value.toJsonValue(); if (jv.isBool()) return py::bool_(value.toBool()); if (jv.isInt64()) return py::int_(value.toLongLong()); if (jv.isDouble()) return py::float_(value.toDouble()); switch (0) {
+
+
+
+
+
+
+
+
+        break;
+
     default:
         return py::str(value.toString().toStdString());
     }
 }
 
-bool isQuietHookOutput(const QString &output)
+bool isQuietHookOutput(const String &output)
 {
-    return output.isEmpty() || output.endsWith(QStringLiteral("(no output)"));
+    return output.isEmpty() || output.endsWith(String("(no output)"));
 }
 
-QString pythonHookSendMessage(const py::dict &message)
+String pythonHookSendMessage(const py::dict &message)
 {
     if (!Py_IsInitialized()) {
-        return QString();
+        return String();
     }
     try {
         py::gil_scoped_acquire acquire;
         py::object hooks = py::module_::import("python_hooks");
         if (!hooks.attr("has_hooks")(message).cast<bool>()) {
-            return QString();
+            return String();
         }
         py::object io = py::module_::import("io");
         py::object contextlib = py::module_::import("contextlib");
@@ -91,17 +99,17 @@ QString pythonHookSendMessage(const py::dict &message)
 
         stdoutRedirect.attr("__enter__")();
         stderrRedirect.attr("__enter__")();
-        QString errorText;
+        String errorText;
         try {
             hooks.attr("dispatch")(message);
         } catch (const py::error_already_set &error) {
-            errorText = QString::fromUtf8(error.what());
+            errorText = String::fromUtf8(error.what());
         }
         stderrRedirect.attr("__exit__")(py::none(), py::none(), py::none());
         stdoutRedirect.attr("__exit__")(py::none(), py::none(), py::none());
 
-        QString output = QString::fromUtf8(stdoutBuffer.attr("getvalue")().cast<std::string>().c_str());
-        const QString stderrOutput = QString::fromUtf8(stderrBuffer.attr("getvalue")().cast<std::string>().c_str());
+        String output = String::fromUtf8(stdoutBuffer.attr("getvalue")().cast<std::string>().c_str());
+        const String stderrOutput = String::fromUtf8(stderrBuffer.attr("getvalue")().cast<std::string>().c_str());
         if (!stderrOutput.isEmpty()) {
             output += stderrOutput;
         }
@@ -109,117 +117,117 @@ QString pythonHookSendMessage(const py::dict &message)
             output += errorText;
         }
         if (output.trimmed().isEmpty()) {
-            output = QStringLiteral("(no output)");
+            output = String("(no output)");
         }
         const auto text = [&message](const char *key, const char *fallback) {
             if (!message.contains(py::str(key))) {
-                return QString::fromUtf8(fallback);
+                return String::fromUtf8(fallback);
             }
-            return QString::fromUtf8(py::str(message[key]).cast<std::string>().c_str());
+            return String::fromUtf8(py::str(message[key]).cast<std::string>().c_str());
         };
-        const QString event = text("event", "?");
-        const QString tool = text("tool", "-");
-        return QStringLiteral("[python feedback] %1 tool=%2\n%3").arg(event, tool, output.trimmed());
+        const String event = text("event", "?");
+        const String tool = text("tool", "-");
+        return String("[python feedback] %1 tool=%2\n%3").arg(event, tool, output.trimmed());
     } catch (const py::error_already_set &error) {
-        return QStringLiteral("[python feedback] hook setup error: %1").arg(QString::fromUtf8(error.what()));
+        return String("[python feedback] hook setup error: %1").arg(String::fromUtf8(error.what()));
     }
 }
 #endif
 
-QString fileNameForBuiltInTool(AnimeanBusiness::Tool tool)
+String fileNameForBuiltInTool(AnimeanBusiness::Tool tool)
 {
     switch (tool) {
     case AnimeanBusiness::Tool::Pen:
-        return QStringLiteral("pen.json");
+        return String("pen.json");
     case AnimeanBusiness::Tool::Fill:
-        return QStringLiteral("fill.json");
+        return String("fill.json");
     case AnimeanBusiness::Tool::Eraser:
     case AnimeanBusiness::Tool::DeleteLine:
     case AnimeanBusiness::Tool::CutLine:
-        return QStringLiteral("eraser.json");
+        return String("eraser.json");
     case AnimeanBusiness::Tool::Arrow:
-        return QStringLiteral("arrow.json");
+        return String("arrow.json");
     case AnimeanBusiness::Tool::Connect:
-        return QStringLiteral("connect.json");
+        return String("connect.json");
     case AnimeanBusiness::Tool::Transfer:
-        return QStringLiteral("transfer.json");
+        return String("transfer.json");
     }
-    return QStringLiteral("pen.json");
+    return String("pen.json");
 }
 
-QString resolveToolControlPath(const QString &fileName)
+String resolveToolControlPath(const String &fileName)
 {
-    const QString appPath = QCoreApplication::applicationDirPath();
-    const QStringList candidates = {
-        QDir(appPath).filePath(QStringLiteral("childrenpanel/tool_controls/%1").arg(fileName)),
-        QDir(appPath).filePath(QStringLiteral("tool_controls/%1").arg(fileName)),
+    const String appPath = CoreApplication::applicationDirPath();
+    const StringList candidates = {
+        Dir(appPath).filePath(String("childrenpanel/tool_controls/%1").arg(fileName)),
+        Dir(appPath).filePath(String("tool_controls/%1").arg(fileName)),
 #ifdef ANIMEAN_SOURCE_DIR
-        QDir(QStringLiteral(ANIMEAN_SOURCE_DIR)).filePath(QStringLiteral("childrenpanel/tool_controls/%1").arg(fileName)),
+        Dir(String(ANIMEAN_SOURCE_DIR)).filePath(String("childrenpanel/tool_controls/%1").arg(fileName)),
 #endif
     };
 
-    for (const QString &candidate : candidates) {
-        if (QFileInfo::exists(candidate)) {
+    for (const String &candidate : candidates) {
+        if (FileInfo::exists(candidate)) {
             return candidate;
         }
     }
-    return QString();
+    return String();
 }
 
-void setControlValue(QJsonObject *control, const QString &name, const QJsonValue &value)
+void setControlValue(JsonObject *control, const String &name, const JsonValue &value)
 {
-    if (control->value(QStringLiteral("name")).toString() == name) {
-        control->insert(QStringLiteral("value"), value);
+    if (control->value(String("name")).toString() == name) {
+        control->insert(String("value"), value);
     }
 }
 
-QJsonObject applyRuntimeStateToToolLayout(QJsonObject layout,
+JsonObject applyRuntimeStateToToolLayout(JsonObject layout,
                                           AnimeanBusiness::Tool tool,
                                           int smoothValue,
                                           int penWidth,
                                           AnimeanBusiness::FillScope fillScope)
 {
-    const QString fillScopeValue = fillScope == AnimeanBusiness::FillScope::AllLayers
-                                       ? QStringLiteral("all")
-                                       : QStringLiteral("current");
-    const QString eraserModeValue =
-        tool == AnimeanBusiness::Tool::DeleteLine ? QStringLiteral("line")
-        : tool == AnimeanBusiness::Tool::CutLine ? QStringLiteral("cut")
-                                                 : QStringLiteral("area");
+    const String fillScopeValue = fillScope == AnimeanBusiness::FillScope::AllLayers
+                                       ? String("all")
+                                       : String("current");
+    const String eraserModeValue =
+        tool == AnimeanBusiness::Tool::DeleteLine ? String("line")
+        : tool == AnimeanBusiness::Tool::CutLine ? String("cut")
+                                                 : String("area");
 
-    QJsonArray controls = layout.value(QStringLiteral("controls")).toArray();
+    JsonArray controls = layout.value(String("controls")).toArray();
     for (int index = 0; index < controls.size(); ++index) {
         if (!controls.at(index).isObject()) {
             continue;
         }
 
-        QJsonObject control = controls.at(index).toObject();
-        setControlValue(&control, QStringLiteral("smooth"), smoothValue);
-        setControlValue(&control, QStringLiteral("pen_width"), penWidth);
-        setControlValue(&control, QStringLiteral("fill_scope"), fillScopeValue);
-        setControlValue(&control, QStringLiteral("eraser_mode"), eraserModeValue);
+        JsonObject control = controls.at(index).toObject();
+        setControlValue(&control, String("smooth"), smoothValue);
+        setControlValue(&control, String("pen_width"), penWidth);
+        setControlValue(&control, String("fill_scope"), fillScopeValue);
+        setControlValue(&control, String("eraser_mode"), eraserModeValue);
         controls.replace(index, control);
     }
 
-    layout.insert(QStringLiteral("controls"), controls);
+    layout.insert(String("controls"), controls);
     return layout;
 }
 
-bool readJsonObjectFromFile(const QString &fileName, QJsonObject *object, QString *errorOut)
+bool readJsonObjectFromFile(const String &fileName, JsonObject *object, String *errorOut)
 {
-    QFile file(fileName);
-    if (!file.open(QIODevice::ReadOnly)) {
+    File file(fileName);
+    if (!file.open(IODevice::ReadOnly)) {
         if (errorOut) {
-            *errorOut = QStringLiteral("Failed to read file:\n%1").arg(file.errorString());
+            *errorOut = String("Failed to read file:\n%1").arg(file.errorString());
         }
         return false;
     }
 
-    QJsonParseError parseError;
-    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+    JsonParseError parseError;
+    const JsonDocument document = JsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != JsonParseError::NoError || !document.isObject()) {
         if (errorOut) {
-            *errorOut = QStringLiteral("File format error:\n%1").arg(parseError.errorString());
+            *errorOut = String("File format error:\n%1").arg(parseError.errorString());
         }
         return false;
     }
@@ -228,21 +236,21 @@ bool readJsonObjectFromFile(const QString &fileName, QJsonObject *object, QStrin
     return true;
 }
 
-bool writeJsonObjectToFile(const QJsonObject &object, const QString &fileName, QString *errorOut)
+bool writeJsonObjectToFile(const JsonObject &object, const String &fileName, String *errorOut)
 {
-    QSaveFile file(fileName);
-    if (!file.open(QIODevice::WriteOnly)) {
+    SaveFile file(fileName);
+    if (!file.open(IODevice::WriteOnly)) {
         if (errorOut) {
-            *errorOut = QStringLiteral("Failed to write file:\n%1").arg(file.errorString());
+            *errorOut = String("Failed to write file:\n%1").arg(file.errorString());
         }
         return false;
     }
 
-    const QJsonDocument document(object);
-    file.write(document.toJson(QJsonDocument::Indented));
+    const JsonDocument document(object);
+    file.write(document.toJson(JsonDocument::Indented));
     if (!file.commit()) {
         if (errorOut) {
-            *errorOut = QStringLiteral("Failed to save file:\n%1").arg(file.errorString());
+            *errorOut = String("Failed to save file:\n%1").arg(file.errorString());
         }
         return false;
     }
@@ -250,10 +258,10 @@ bool writeJsonObjectToFile(const QJsonObject &object, const QString &fileName, Q
     return true;
 }
 
-void renderSceneFrameContent(QPainter &painter,
+void renderSceneFrameContent(Painter &painter,
                              const AnimeSceneModel &model,
                              int frameIndex,
-                             qreal scale)
+                             double scale)
 {
     if (frameIndex < 0 || frameIndex >= model.frameCount()) {
         return;
@@ -267,18 +275,18 @@ void renderSceneFrameContent(QPainter &painter,
             continue;
         }
         if (image->hasRaster()) {
-            painter.drawImage(QPointF(image->raster().topLeft), QImage(image->raster().image));
+            painter.drawImage(PointF(image->raster().topLeft), Image(image->raster().image));
         }
         for (const AnimeVectorFillRegion &region : image->fillRegions()) {
             if (region.path.isEmpty()) {
                 continue;
             }
-            painter.setPen(QPen(QColor(region.color),
+            painter.setPen(Pen(Color(region.color),
                                 AnimeVectorLogic::kVectorRegionOverpaintWidth,
-                                Qt::SolidLine,
-                                Qt::RoundCap,
-                                Qt::RoundJoin));
-            painter.setBrush(QColor(region.color));
+                                SolidLine,
+                                RoundCap,
+                                RoundJoin));
+            painter.setBrush(Color(region.color));
             painter.drawPath(region.path);
         }
         for (const AnimeVectorStrokeNode &node : image->strokeNodes()) {
@@ -286,16 +294,16 @@ void renderSceneFrameContent(QPainter &painter,
             if (stroke.path.isEmpty()) {
                 continue;
             }
-            const Qt::PenStyle penStyle =
-                (stroke.penStyle >= Qt::SolidLine && stroke.penStyle <= Qt::DashDotDotLine)
-                    ? static_cast<Qt::PenStyle>(stroke.penStyle)
-                    : Qt::SolidLine;
-            painter.setBrush(Qt::NoBrush);
-            painter.setPen(QPen(QColor(stroke.color),
+            const PenStyle penStyle =
+                (stroke.penStyle >= SolidLine && stroke.penStyle <= DashDotDotLine)
+                    ? static_cast<PenStyle>(stroke.penStyle)
+                    : SolidLine;
+            painter.setBrush(NoBrush);
+            painter.setPen(Pen(Color(stroke.color),
                                 AnimeVectorLogic::displayStrokeWidth(stroke.width, scale),
                                 penStyle,
-                                Qt::RoundCap,
-                                Qt::RoundJoin));
+                                RoundCap,
+                                RoundJoin));
             painter.drawPath(stroke.path);
         }
     }
@@ -303,24 +311,24 @@ void renderSceneFrameContent(QPainter &painter,
 
 } // namespace
 
-AnimeanBusiness::AnimeanBusiness(QObject *parent)
-    : QObject(parent)
-    , m_internalMainViewObject(new QObject(this))
-    , m_internalChildViewObject(new QObject(this))
-    , m_playbackTimer(new QTimer(this))
-{
-    m_internalMainViewObject->setObjectName(QStringLiteral("main_paint_view_object"));
-    m_internalChildViewObject->setObjectName(QStringLiteral("child_paint_view_object"));
+AnimeanBusiness::AnimeanBusiness()
+    : m_playbackTimer(new Timer(this))
 
-    m_internalMainModel.setTextId(QStringLiteral("main_paint_view"));
+
+
+{
+
+
+
+    m_internalMainModel.setTextId(String("main_paint_view"));
     m_internalMainModel.setIntId(1);
-    m_internalChildModel.setTextId(QStringLiteral("child_paint_view"));
+    m_internalChildModel.setTextId(String("child_paint_view"));
     m_internalChildModel.setIntId(2);
 
-    m_internalMainHistory.reset(QStringLiteral("Initial"), m_internalMainModel);
-    m_internalChildHistory.reset(QStringLiteral("Initial"), m_internalChildModel);
+    m_internalMainHistory.reset(String("Initial"), m_internalMainModel);
+    m_internalChildHistory.reset(String("Initial"), m_internalChildModel);
 
-    for (const QString &viewName : {QStringLiteral("main"), QStringLiteral("child")}) {
+    for (const String &viewName : {String("main"), String("child")}) {
         AnimeSceneModel &model = modelForView(viewName);
         SelectionAttention &attention = m_attentionByView[viewName];
         attention.frame = model.currentFrame();
@@ -341,7 +349,7 @@ AnimeanBusiness::AnimeanBusiness(QObject *parent)
     }
 
     m_playbackTimer->setInterval(1000 / kDefaultPlaybackFps);
-    connect(m_playbackTimer, &QTimer::timeout, this, &AnimeanBusiness::advancePlaybackFrame);
+    m_playbackTimer->timeout.connect(this, &AnimeanBusiness::advancePlaybackFrame);
 
 #ifdef ANIMEAN_WITH_PYTHON
     registerAnimeanUiScene(&m_internalChildModel);
@@ -356,43 +364,43 @@ AnimeanBusiness::AnimeanBusiness(QObject *parent)
     registerAnimeanUiRefreshCallback([this](bool frame, bool layer, bool asset, bool) {
         syncAllViewAttentionsFromModels();
         if (frame) {
-            emit timelineChanged();
-            const int childFrame = modelForView(QStringLiteral("child")).currentFrame();
+            timelineChanged();
+            const int childFrame = modelForView(String("child")).currentFrame();
             if (childFrame != m_lastAutoFitChildFrame) {
                 m_lastAutoFitChildFrame = childFrame;
-                emit requestAutoFitTextureControlView();
+                requestAutoFitTextureControlView();
             }
         }
         if (layer) {
-            emit layersChanged(QStringLiteral("main"), attentionForView(QStringLiteral("main")).layer);
-            emit layersChanged(QStringLiteral("child"), attentionForView(QStringLiteral("child")).layer);
+            layersChanged(String("main"), attentionForView(String("main")).layer);
+            layersChanged(String("child"), attentionForView(String("child")).layer);
         }
         if (asset) {
-            const QString target = assetPanelTargetViewName();
-            emit assetsChanged(target, attentionForView(target).asset);
+            const String target = assetPanelTargetViewName();
+            assetsChanged(target, attentionForView(target).asset);
         }
         syncEmbeddedPythonState();
     });
-    registerAnimeanUiLockedToolsCallback([this](const QString &view, const QStringList &tools) {
+    registerAnimeanUiLockedToolsCallback([this](const String &view, const StringList &tools) {
         applyLockedTools(view, tools);
     });
-    registerAnimeanUiDrawColorCallback([this](const QColor &color) {
+    registerAnimeanUiDrawColorCallback([this](const Color &color) {
         setDrawingColor(color);
     });
     registerAnimeanUiDrawSettingsCallback([this](int stabilizer, int simplify, int corner) {
         setDrawSettings(stabilizer, simplify, corner);
     });
-    registerAnimeanUiHistoryCallback([this](const QString &op, const QString &viewName, const QString &label) {
+    registerAnimeanUiHistoryCallback([this](const String &op, const String &viewName, const String &label) {
         if (!viewName.isEmpty()
-            && viewName != QStringLiteral("main")
-            && viewName != QStringLiteral("child")) {
+            && viewName != String("main")
+            && viewName != String("child")) {
             return;
         }
-        if (op == QStringLiteral("commit")) {
-            commitHistory(label.isEmpty() ? QStringLiteral("Python") : label, viewName);
-        } else if (op == QStringLiteral("undo")) {
+        if (op == String("commit")) {
+            commitHistory(label.isEmpty() ? String("Python") : label, viewName);
+        } else if (op == String("undo")) {
             undo(viewName);
-        } else if (op == QStringLiteral("redo")) {
+        } else if (op == String("redo")) {
             redo(viewName);
         }
     });
@@ -418,58 +426,61 @@ AnimeanBusiness::~AnimeanBusiness()
     unregisterAnimeanUiScene(&m_internalChildModel);
     unregisterAnimeanUiScene(&m_internalMainModel);
 #endif
+    delete m_playbackTimer;
+#ifdef ANIMEAN_WITH_PYTHON
+#endif
 }
 
-QString AnimeanBusiness::resolveViewName(const QString &viewName) const
+String AnimeanBusiness::resolveViewName(const String &viewName) const
 {
-    if (viewName == QStringLiteral("child")) {
-        return QStringLiteral("child");
+    if (viewName == String("child")) {
+        return String("child");
     }
-    if (viewName == QStringLiteral("main")) {
-        return QStringLiteral("main");
+    if (viewName == String("main")) {
+        return String("main");
     }
-    return m_activeViewName == QStringLiteral("child")
-               ? QStringLiteral("child")
-               : QStringLiteral("main");
+    return m_activeViewName == String("child")
+               ? String("child")
+               : String("main");
 }
 
-AnimePaintViewAdapter *AnimeanBusiness::adapterFor(const QString &viewName)
+AnimePaintViewAdapter *AnimeanBusiness::adapterFor(const String &viewName)
 {
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     auto it = m_adapters.find(key);
     return it == m_adapters.end() ? nullptr : &it.value();
 }
 
-const AnimePaintViewAdapter *AnimeanBusiness::adapterFor(const QString &viewName) const
+const AnimePaintViewAdapter *AnimeanBusiness::adapterFor(const String &viewName) const
 {
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     auto it = m_adapters.constFind(key);
     return it == m_adapters.constEnd() ? nullptr : &it.value();
 }
 
-void AnimeanBusiness::bindPaintView(const QString &viewName, const AnimePaintViewAdapter &adapter)
+void AnimeanBusiness::bindPaintView(const String &viewName, const AnimePaintViewAdapter &adapter)
 {
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
 #ifdef ANIMEAN_WITH_PYTHON
     if (const AnimePaintViewAdapter *oldAdapter = adapterFor(key)) {
         if (oldAdapter->model) {
             unregisterAnimeanUiScene(oldAdapter->model);
         }
     }
-    unregisterAnimeanUiScene(key == QStringLiteral("child") ? &m_internalChildModel
+    unregisterAnimeanUiScene(key == String("child") ? &m_internalChildModel
                                                             : &m_internalMainModel);
 #endif
     m_adapters.insert(key, adapter);
 
     AnimeSceneModel &model = modelForView(key);
-    model.setTextId(key == QStringLiteral("child")
-                        ? QStringLiteral("child_paint_view")
-                        : QStringLiteral("main_paint_view"));
-    model.setIntId(key == QStringLiteral("child") ? 2 : 1);
+    model.setTextId(key == String("child")
+                        ? String("child_paint_view")
+                        : String("main_paint_view"));
+    model.setIntId(key == String("child") ? 2 : 1);
 
 #ifdef ANIMEAN_WITH_PYTHON
-    registerAnimeanUiScene(&modelForView(QStringLiteral("child")));
-    registerAnimeanUiScene(&modelForView(QStringLiteral("main")));
+    registerAnimeanUiScene(&modelForView(String("child")));
+    registerAnimeanUiScene(&modelForView(String("main")));
     registerAnimeanUiScene(&modelForView(m_activeViewName));
 #endif
 
@@ -479,19 +490,19 @@ void AnimeanBusiness::bindPaintView(const QString &viewName, const AnimePaintVie
     attention.asset = model.currentAsset();
     constrainAttention(model, &attention, AttentionChange::FrameChange);
 
-    if (key == QStringLiteral("main")) {
-        emit mainPaintViewObjectChanged(mainPaintViewObject());
-    } else if (key == QStringLiteral("child")) {
-        emit childPaintViewObjectChanged(childPaintViewObject());
+    if (key == String("main")) {
+        mainPaintViewObjectChanged(mainPaintViewObject());
+    } else if (key == String("child")) {
+        childPaintViewObjectChanged(childPaintViewObject());
     }
     if (key == m_activeViewName) {
-        emit activePaintViewObjectChanged(activePaintViewObject());
+        activePaintViewObjectChanged(activePaintViewObject());
     }
 }
 
-void AnimeanBusiness::unbindPaintView(const QString &viewName)
+void AnimeanBusiness::unbindPaintView(const String &viewName)
 {
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
 #ifdef ANIMEAN_WITH_PYTHON
     if (const AnimePaintViewAdapter *oldAdapter = adapterFor(key)) {
         if (oldAdapter->model) {
@@ -501,68 +512,68 @@ void AnimeanBusiness::unbindPaintView(const QString &viewName)
 #endif
     m_adapters.remove(key);
 #ifdef ANIMEAN_WITH_PYTHON
-    registerAnimeanUiScene(&modelForView(QStringLiteral("child")));
-    registerAnimeanUiScene(&modelForView(QStringLiteral("main")));
+    registerAnimeanUiScene(&modelForView(String("child")));
+    registerAnimeanUiScene(&modelForView(String("main")));
     registerAnimeanUiScene(&modelForView(m_activeViewName));
 #endif
-    if (key == QStringLiteral("main")) {
-        emit mainPaintViewObjectChanged(mainPaintViewObject());
-    } else if (key == QStringLiteral("child")) {
-        emit childPaintViewObjectChanged(childPaintViewObject());
+    if (key == String("main")) {
+        mainPaintViewObjectChanged(mainPaintViewObject());
+    } else if (key == String("child")) {
+        childPaintViewObjectChanged(childPaintViewObject());
     }
     if (key == m_activeViewName) {
-        emit activePaintViewObjectChanged(activePaintViewObject());
+        activePaintViewObjectChanged(activePaintViewObject());
     }
 }
 
-QObject *AnimeanBusiness::paintViewObject(const QString &viewName) const
+void *AnimeanBusiness::paintViewObject(const String &viewName) const
 {
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     if (const AnimePaintViewAdapter *adapter = adapterFor(key)) {
         if (adapter->viewObject) {
             return adapter->viewObject;
         }
     }
-    return key == QStringLiteral("child") ? m_internalChildViewObject : m_internalMainViewObject;
+    return key == String("child") ? m_internalChildViewObject : m_internalMainViewObject;
 }
 
-QObject *AnimeanBusiness::mainPaintViewObject() const
+void *AnimeanBusiness::mainPaintViewObject() const
 {
-    return paintViewObject(QStringLiteral("main"));
+    return paintViewObject(String("main"));
 }
 
-QObject *AnimeanBusiness::childPaintViewObject() const
+void *AnimeanBusiness::childPaintViewObject() const
 {
-    return paintViewObject(QStringLiteral("child"));
+    return paintViewObject(String("child"));
 }
 
-QObject *AnimeanBusiness::activePaintViewObject() const
+void *AnimeanBusiness::activePaintViewObject() const
 {
     return paintViewObject(m_activeViewName);
 }
 
-QString AnimeanBusiness::activeViewName() const
+String AnimeanBusiness::activeViewName() const
 {
     return m_activeViewName;
 }
 
-QString AnimeanBusiness::framePanelTargetViewName() const
+String AnimeanBusiness::framePanelTargetViewName() const
 {
-    if (m_activeViewName == QStringLiteral("child") && !m_changeableTimeline) {
-        return QStringLiteral("main");
+    if (m_activeViewName == String("child") && !m_changeableTimeline) {
+        return String("main");
     }
     return m_activeViewName;
 }
 
-QString AnimeanBusiness::layerPanelTargetViewName() const
+String AnimeanBusiness::layerPanelTargetViewName() const
 {
-    if (m_activeViewName == QStringLiteral("child") && !m_changeableTexture) {
-        return QStringLiteral("main");
+    if (m_activeViewName == String("child") && !m_changeableTexture) {
+        return String("main");
     }
     return m_activeViewName;
 }
 
-QString AnimeanBusiness::assetPanelTargetViewName() const
+String AnimeanBusiness::assetPanelTargetViewName() const
 {
     return layerPanelTargetViewName();
 }
@@ -583,8 +594,8 @@ void AnimeanBusiness::setChangeableTimeline(bool changeable)
         return;
     }
     m_changeableTimeline = changeable;
-    emit requestClearTimelineThumbnails();
-    emit timelineChanged();
+    requestClearTimelineThumbnails();
+    timelineChanged();
 }
 
 void AnimeanBusiness::setChangeableTexture(bool changeable)
@@ -593,13 +604,13 @@ void AnimeanBusiness::setChangeableTexture(bool changeable)
         return;
     }
     m_changeableTexture = changeable;
-    const QString target = assetPanelTargetViewName();
-    emit assetsChanged(target, attentionForView(target).asset);
+    const String target = assetPanelTargetViewName();
+    assetsChanged(target, attentionForView(target).asset);
 }
 
-void AnimeanBusiness::setActiveViewName(const QString &viewName)
+void AnimeanBusiness::setActiveViewName(const String &viewName)
 {
-    const QString resolved = resolveViewName(viewName);
+    const String resolved = resolveViewName(viewName);
     if (m_activeViewName == resolved) {
 #ifdef ANIMEAN_WITH_PYTHON
         registerAnimeanUiScene(&modelForView(m_activeViewName));
@@ -613,77 +624,77 @@ void AnimeanBusiness::setActiveViewName(const QString &viewName)
     registerAnimeanUiScene(&modelForView(m_activeViewName));
 #endif
 
-    emit activeViewChanged(m_activeViewName);
-    emit activePaintViewObjectChanged(activePaintViewObject());
-    emit requestClearTimelineThumbnails();
-    emit timelineChanged();
-    emit layersChanged(QStringLiteral("main"), attentionForView(QStringLiteral("main")).layer);
-    emit layersChanged(QStringLiteral("child"), attentionForView(QStringLiteral("child")).layer);
-    const QString assetTarget = assetPanelTargetViewName();
-    emit assetsChanged(assetTarget, attentionForView(assetTarget).asset);
-    emit historyChanged();
+    activeViewChanged(m_activeViewName);
+    activePaintViewObjectChanged(activePaintViewObject());
+    requestClearTimelineThumbnails();
+    timelineChanged();
+    layersChanged(String("main"), attentionForView(String("main")).layer);
+    layersChanged(String("child"), attentionForView(String("child")).layer);
+    const String assetTarget = assetPanelTargetViewName();
+    assetsChanged(assetTarget, attentionForView(assetTarget).asset);
+    historyChanged();
     syncEmbeddedPythonState();
     refreshToolLockState();
-    setStatusMessage(QStringLiteral("Active paint view: %1").arg(m_activeViewName));
+    setStatusMessage(String("Active paint view: %1").arg(m_activeViewName));
 }
 
-AnimeSceneModel &AnimeanBusiness::modelForView(const QString &viewName)
+AnimeSceneModel &AnimeanBusiness::modelForView(const String &viewName)
 {
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     if (AnimePaintViewAdapter *adapter = adapterFor(key)) {
         if (adapter->model) {
             return *adapter->model;
         }
     }
-    return key == QStringLiteral("child") ? m_internalChildModel : m_internalMainModel;
+    return key == String("child") ? m_internalChildModel : m_internalMainModel;
 }
 
-const AnimeSceneModel &AnimeanBusiness::modelForView(const QString &viewName) const
+const AnimeSceneModel &AnimeanBusiness::modelForView(const String &viewName) const
 {
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     if (const AnimePaintViewAdapter *adapter = adapterFor(key)) {
         if (adapter->model) {
             return *adapter->model;
         }
     }
-    return key == QStringLiteral("child") ? m_internalChildModel : m_internalMainModel;
+    return key == String("child") ? m_internalChildModel : m_internalMainModel;
 }
 
-SceneHistory &AnimeanBusiness::historyForView(const QString &viewName)
+SceneHistory &AnimeanBusiness::historyForView(const String &viewName)
 {
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     if (AnimePaintViewAdapter *adapter = adapterFor(key)) {
         if (adapter->history) {
             return *adapter->history;
         }
     }
-    return key == QStringLiteral("child") ? m_internalChildHistory : m_internalMainHistory;
+    return key == String("child") ? m_internalChildHistory : m_internalMainHistory;
 }
 
-const SceneHistory &AnimeanBusiness::historyForView(const QString &viewName) const
+const SceneHistory &AnimeanBusiness::historyForView(const String &viewName) const
 {
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     if (const AnimePaintViewAdapter *adapter = adapterFor(key)) {
         if (adapter->history) {
             return *adapter->history;
         }
     }
-    return key == QStringLiteral("child") ? m_internalChildHistory : m_internalMainHistory;
+    return key == String("child") ? m_internalChildHistory : m_internalMainHistory;
 }
 
-SelectionAttention &AnimeanBusiness::attentionForView(const QString &viewName)
+SelectionAttention &AnimeanBusiness::attentionForView(const String &viewName)
 {
     return m_attentionByView[resolveViewName(viewName)];
 }
 
-SelectionAttention AnimeanBusiness::attentionForView(const QString &viewName) const
+SelectionAttention AnimeanBusiness::attentionForView(const String &viewName) const
 {
     return m_attentionByView.value(resolveViewName(viewName));
 }
 
 void AnimeanBusiness::syncAllViewAttentionsFromModels()
 {
-    for (const QString &viewName : {QStringLiteral("main"), QStringLiteral("child")}) {
+    for (const String &viewName : {String("main"), String("child")}) {
         AnimeSceneModel &model = modelForView(viewName);
         SelectionAttention &attention = attentionForView(viewName);
         attention.frame = model.currentFrame();
@@ -710,13 +721,13 @@ void AnimeanBusiness::syncAllViewAttentionsFromModels()
     }
 }
 
-void AnimeanBusiness::updateAttention(const QString &viewName,
+void AnimeanBusiness::updateAttention(const String &viewName,
                                       AttentionChange change,
                                       int frame,
                                       int layer,
                                       int asset)
 {
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     AnimeSceneModel &model = modelForView(key);
     SelectionAttention &attention = attentionForView(key);
     const SelectionAttention previous = attention;
@@ -756,26 +767,26 @@ void AnimeanBusiness::updateAttention(const QString &viewName,
     }
 
     if (update.frame && key == framePanelTargetViewName()) {
-        emit timelineChanged();
+        timelineChanged();
     }
-    if (update.frame && key == QStringLiteral("child")) {
-        emit requestAutoFitTextureControlView();
+    if (update.frame && key == String("child")) {
+        requestAutoFitTextureControlView();
     }
     if (update.layer) {
-        emit layersChanged(key, attention.layer);
+        layersChanged(key, attention.layer);
     }
     if (update.asset && key == assetPanelTargetViewName()) {
-        emit assetsChanged(key, attention.asset);
+        assetsChanged(key, attention.asset);
     }
-    emit attentionUpdated(key, update.frame, update.layer, update.asset);
+    attentionUpdated(key, update.frame, update.layer, update.asset);
     syncEmbeddedPythonState();
 }
 
-QImage AnimeanBusiness::renderFrameThumbnail(int frameIndex,
-                                             const QSize &size,
-                                             const QString &viewName)
+Image AnimeanBusiness::renderFrameThumbnail(int frameIndex,
+                                             const Size &size,
+                                             const String &viewName)
 {
-    const QString key = viewName.isEmpty() ? framePanelTargetViewName() : resolveViewName(viewName);
+    const String key = viewName.isEmpty() ? framePanelTargetViewName() : resolveViewName(viewName);
     if (AnimePaintViewAdapter *adapter = adapterFor(key)) {
         if (adapter->renderFrameThumbnail) {
             return adapter->renderFrameThumbnail(frameIndex, size);
@@ -783,26 +794,26 @@ QImage AnimeanBusiness::renderFrameThumbnail(int frameIndex,
     }
 
     if (size.width() <= 0 || size.height() <= 0) {
-        return QImage();
+        return Image();
     }
-    QImage image(size, QImage::Format_ARGB32_Premultiplied);
-    image.fill(Qt::white);
+    Image image(size, Image::Format_ARGB32_Premultiplied);
+    image.fill(Color(255, 255, 255));
 
     const AnimeSceneModel &model = modelForView(key);
     if (frameIndex < 0 || frameIndex >= model.frameCount()) {
         return image;
     }
 
-    const QSize canvas = model.canvasSize();
+    const Size canvas = model.canvasSize();
     if (canvas.width() <= 0 || canvas.height() <= 0) {
         return image;
     }
-    const qreal scale = std::min(qreal(size.width()) / canvas.width(),
-                                 qreal(size.height()) / canvas.height());
+    const double scale = std::min(double(size.width()) / canvas.width(),
+                                 double(size.height()) / canvas.height());
 
-    QPainter painter(&image);
-    painter.setRenderHint(QPainter::Antialiasing);
-    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+    Painter painter(&image);
+    painter.setRenderHint(Painter::Antialiasing);
+    painter.setRenderHint(Painter::SmoothPixmapTransform);
     painter.translate((size.width() - canvas.width() * scale) * 0.5,
                       (size.height() - canvas.height() * scale) * 0.5);
     painter.scale(scale, scale);
@@ -811,108 +822,108 @@ QImage AnimeanBusiness::renderFrameThumbnail(int frameIndex,
     return image;
 }
 
-QString AnimeanBusiness::statusMessage() const
+String AnimeanBusiness::statusMessage() const
 {
     return m_statusMessage;
 }
 
-void AnimeanBusiness::setStatusMessage(const QString &message)
+void AnimeanBusiness::setStatusMessage(const String &message)
 {
     m_statusMessage = message;
-    emit statusMessageChanged(m_statusMessage);
+    statusMessageChanged(m_statusMessage);
 }
 
-QString AnimeanBusiness::currentFilePath() const
+String AnimeanBusiness::currentFilePath() const
 {
     return m_currentFilePath;
 }
 
-void AnimeanBusiness::setCurrentFilePath(const QString &filePath)
+void AnimeanBusiness::setCurrentFilePath(const String &filePath)
 {
     if (m_currentFilePath == filePath) {
         return;
     }
     m_currentFilePath = filePath;
-    emit projectFilePathChanged(m_currentFilePath);
-    emit windowTitleChanged(windowTitle());
+    projectFilePathChanged(m_currentFilePath);
+    windowTitleChanged(windowTitle());
 }
 
-QString AnimeanBusiness::childFilePath() const
+String AnimeanBusiness::childFilePath() const
 {
     return m_childFilePath;
 }
 
-void AnimeanBusiness::setChildFilePath(const QString &filePath)
+void AnimeanBusiness::setChildFilePath(const String &filePath)
 {
     if (m_childFilePath == filePath) {
         return;
     }
     m_childFilePath = filePath;
-    emit childFilePathChanged(m_childFilePath);
-    emit windowTitleChanged(windowTitle());
+    childFilePathChanged(m_childFilePath);
+    windowTitleChanged(windowTitle());
 }
 
-QString AnimeanBusiness::windowTitle() const
+String AnimeanBusiness::windowTitle() const
 {
-    const QString fileName = m_currentFilePath.isEmpty()
-                                 ? QStringLiteral("Untitled")
-                                 : QFileInfo(m_currentFilePath).fileName();
-    QString title = QStringLiteral("AnimeAn - %1").arg(fileName);
+    const String fileName = m_currentFilePath.isEmpty()
+                                 ? String("Untitled")
+                                 : FileInfo(m_currentFilePath).fileName();
+    String title = String("AnimeAn - %1").arg(fileName);
     if (!m_childFilePath.isEmpty()) {
-        title += QStringLiteral(" [texture: %1]").arg(QFileInfo(m_childFilePath).fileName());
+        title += String(" [texture: %1]").arg(FileInfo(m_childFilePath).fileName());
     }
     return title;
 }
 
-QSize AnimeanBusiness::canvasSize(const QString &viewName) const
+Size AnimeanBusiness::canvasSize(const String &viewName) const
 {
     return modelForView(viewName).canvasSize();
 }
 
-QString AnimeanBusiness::ensureProjectFileExtension(const QString &fileName)
+String AnimeanBusiness::ensureProjectFileExtension(const String &fileName)
 {
     return ::ensureProjectFileExtension(fileName);
 }
 
-QString AnimeanBusiness::ensureTextureViewFileExtension(const QString &fileName)
+String AnimeanBusiness::ensureTextureViewFileExtension(const String &fileName)
 {
     return ::ensureTextureViewFileExtension(fileName);
 }
 
-QString AnimeanBusiness::projectOpenFilter()
+String AnimeanBusiness::projectOpenFilter()
 {
     return ::projectOpenFilter();
 }
 
-QString AnimeanBusiness::projectSaveFilter()
+String AnimeanBusiness::projectSaveFilter()
 {
     return ::projectSaveFilter();
 }
 
-QString AnimeanBusiness::textureViewOpenFilter()
+String AnimeanBusiness::textureViewOpenFilter()
 {
     return ::textureViewOpenFilter();
 }
 
-QString AnimeanBusiness::textureViewSaveFilter()
+String AnimeanBusiness::textureViewSaveFilter()
 {
     return ::textureViewSaveFilter();
 }
 
-void AnimeanBusiness::newProject(const QSize &canvasSize)
+void AnimeanBusiness::newProject(const Size &canvasSize)
 {
     applyNewCanvasSize(canvasSize);
 }
 
-void AnimeanBusiness::applyNewCanvasSize(const QSize &size)
+void AnimeanBusiness::applyNewCanvasSize(const Size &size)
 {
-    AnimeSceneModel &mainModel = modelForView(QStringLiteral("main"));
-    if (QSize(mainModel.canvasSize()) == size) {
-        setStatusMessage(QStringLiteral("Canvas: %1 x %2 px").arg(size.width()).arg(size.height()));
+    AnimeSceneModel &mainModel = modelForView(String("main"));
+    if (Size(mainModel.canvasSize()) == size) {
+        setStatusMessage(String("Canvas: %1 x %2 px").arg(size.width()).arg(size.height()));
         return;
     }
 
-    if (AnimePaintViewAdapter *adapter = adapterFor(QStringLiteral("main"))) {
+    if (AnimePaintViewAdapter *adapter = adapterFor(String("main"))) {
         if (adapter->setCanvasSize) {
             adapter->setCanvasSize(size);
         } else {
@@ -922,27 +933,27 @@ void AnimeanBusiness::applyNewCanvasSize(const QSize &size)
         mainModel.setCanvasSize(size);
     }
 
-    commitHistory(QStringLiteral("Canvas Size"), QStringLiteral("main"));
-    emit canvasSizeChanged(QStringLiteral("main"), size);
+    commitHistory(String("Canvas Size"), String("main"));
+    canvasSizeChanged(String("main"), size);
     syncEmbeddedPythonState();
     refreshToolOptions();
-    setStatusMessage(QStringLiteral("Canvas: %1 x %2 px").arg(size.width()).arg(size.height()));
+    setStatusMessage(String("Canvas: %1 x %2 px").arg(size.width()).arg(size.height()));
 }
 
-void AnimeanBusiness::installLoadedModel(const QString &viewName, const AnimeSceneModel &model)
+void AnimeanBusiness::installLoadedModel(const String &viewName, const AnimeSceneModel &model)
 {
-    const QString key = resolveViewName(viewName);
-    const bool isChild = key == QStringLiteral("child");
+    const String key = resolveViewName(viewName);
+    const bool isChild = key == String("child");
     AnimeSceneModel &targetModel = modelForView(key);
     targetModel = model;
-    targetModel.setTextId(isChild ? QStringLiteral("child_paint_view")
-                                  : QStringLiteral("main_paint_view"));
+    targetModel.setTextId(isChild ? String("child_paint_view")
+                                  : String("main_paint_view"));
     targetModel.setIntId(isChild ? 2 : 1);
 }
 
-void AnimeanBusiness::activateLoadedModel(const QString &viewName, const QString &historyLabel)
+void AnimeanBusiness::activateLoadedModel(const String &viewName, const String &historyLabel)
 {
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     AnimeSceneModel &model = modelForView(key);
 #ifdef ANIMEAN_WITH_PYTHON
     registerAnimeanUiScene(&model);
@@ -964,142 +975,143 @@ void AnimeanBusiness::activateLoadedModel(const QString &viewName, const QString
             adapter->requestUpdate();
         }
     }
-    emit canvasSizeChanged(key, model.canvasSize());
+    canvasSizeChanged(key, model.canvasSize());
 }
 
-void AnimeanBusiness::adoptLoadedModel(const QString &viewName,
+void AnimeanBusiness::adoptLoadedModel(const String &viewName,
                                        const AnimeSceneModel &model,
-                                       const QString &historyLabel)
+                                       const String &historyLabel)
 {
     installLoadedModel(viewName, model);
     activateLoadedModel(viewName, historyLabel);
 }
 
-bool AnimeanBusiness::saveProjectTo(const QString &fileName, QString *errorOut)
+bool AnimeanBusiness::saveProjectTo(const String &fileName, String *errorOut)
 {
-    const QString projectFileName = ensureProjectFileExtension(fileName);
-    const QJsonObject json = projectToJson(modelForView(QStringLiteral("main")),
-                                           modelForView(QStringLiteral("child")));
+    const String projectFileName = ensureProjectFileExtension(fileName);
+    const JsonObject json = projectToJson(modelForView(String("main")),
+                                           modelForView(String("child")));
     if (!writeJsonObjectToFile(json, projectFileName, errorOut)) {
         return false;
     }
 
     m_currentFilePath = projectFileName;
-    emit projectFilePathChanged(m_currentFilePath);
-    emit windowTitleChanged(windowTitle());
-    setStatusMessage(QStringLiteral("Saved project (main + texture): %1")
-                         .arg(QFileInfo(projectFileName).fileName()));
+    projectFilePathChanged(m_currentFilePath);
+    windowTitleChanged(windowTitle());
+    setStatusMessage(String("Saved project (main + texture): %1")
+                         .arg(FileInfo(projectFileName).fileName()));
     return true;
 }
 
-bool AnimeanBusiness::loadProjectFrom(const QString &fileName, QString *errorOut)
+bool AnimeanBusiness::loadProjectFrom(const String &fileName, String *errorOut)
 {
     stopPlayback();
-    QJsonObject root;
+    JsonObject root;
     if (!readJsonObjectFromFile(fileName, &root, errorOut)) {
         return false;
     }
 
     AnimeSceneModel loadedMainModel;
     AnimeSceneModel loadedTextureModel;
-    QString error;
+    String error;
     AnimeCore::String coreError;
     if (!projectFromJson(root, &loadedMainModel, &loadedTextureModel, &coreError)) {
         error = coreError;
         if (errorOut) {
-            *errorOut = error.isEmpty() ? QStringLiteral("Unsupported project file.") : error;
+            *errorOut = error.isEmpty() ? String("Unsupported project file.") : error;
         }
         return false;
     }
 
-    installLoadedModel(QStringLiteral("main"), loadedMainModel);
-    installLoadedModel(QStringLiteral("child"), loadedTextureModel);
-    activateLoadedModel(QStringLiteral("main"), QStringLiteral("Open Project"));
-    activateLoadedModel(QStringLiteral("child"), QStringLiteral("Open Project"));
+    installLoadedModel(String("main"), loadedMainModel);
+    installLoadedModel(String("child"), loadedTextureModel);
+    activateLoadedModel(String("main"), String("Open Project"));
+    activateLoadedModel(String("child"), String("Open Project"));
 
     m_childFilePath.clear();
     m_currentFilePath = fileName;
-    emit childFilePathChanged(m_childFilePath);
-    emit projectFilePathChanged(m_currentFilePath);
-    emit windowTitleChanged(windowTitle());
-    setActiveViewName(QStringLiteral("main"));
+    childFilePathChanged(m_childFilePath);
+    projectFilePathChanged(m_currentFilePath);
+    windowTitleChanged(windowTitle());
+    requestSurfaceMainView();
+    setActiveViewName(String("main"));
     syncEmbeddedPythonState();
     refreshToolOptions();
-    setStatusMessage(QStringLiteral("Opened project (main + texture): %1")
-                         .arg(QFileInfo(fileName).fileName()));
+    setStatusMessage(String("Opened project (main + texture): %1")
+                         .arg(FileInfo(fileName).fileName()));
     return true;
 }
 
-bool AnimeanBusiness::openTextureViewFrom(const QString &fileName, QString *errorOut)
+bool AnimeanBusiness::openTextureViewFrom(const String &fileName, String *errorOut)
 {
     stopPlayback();
-    QJsonObject root;
+    JsonObject root;
     if (!readJsonObjectFromFile(fileName, &root, errorOut)) {
         return false;
     }
 
     AnimeSceneModel loadedModel;
-    QString error;
+    String error;
     AnimeCore::String coreError;
     if (!textureViewFromJson(root, &loadedModel, &coreError)) {
         error = coreError;
         if (errorOut) {
-            *errorOut = error.isEmpty() ? QStringLiteral("Unsupported texture file.") : error;
+            *errorOut = error.isEmpty() ? String("Unsupported texture file.") : error;
         }
         return false;
     }
 
-    adoptLoadedModel(QStringLiteral("child"), loadedModel, QStringLiteral("Open Texture View"));
+    adoptLoadedModel(String("child"), loadedModel, String("Open Texture View"));
     m_childFilePath = fileName;
-    emit childFilePathChanged(m_childFilePath);
-    emit windowTitleChanged(windowTitle());
-    emit requestSurfaceTextureView();
-    setActiveViewName(QStringLiteral("child"));
-    setStatusMessage(QStringLiteral("Opened texture view: %1").arg(QFileInfo(fileName).fileName()));
+    childFilePathChanged(m_childFilePath);
+    windowTitleChanged(windowTitle());
+    requestSurfaceTextureView();
+    setActiveViewName(String("child"));
+    setStatusMessage(String("Opened texture view: %1").arg(FileInfo(fileName).fileName()));
     return true;
 }
 
-bool AnimeanBusiness::saveTextureViewTo(const QString &fileName, QString *errorOut)
+bool AnimeanBusiness::saveTextureViewTo(const String &fileName, String *errorOut)
 {
-    const QString targetName = ensureTextureViewFileExtension(fileName);
-    const QJsonObject json = textureViewToJson(modelForView(QStringLiteral("child")));
+    const String targetName = ensureTextureViewFileExtension(fileName);
+    const JsonObject json = textureViewToJson(modelForView(String("child")));
     if (!writeJsonObjectToFile(json, targetName, errorOut)) {
         return false;
     }
 
     m_childFilePath = targetName;
-    emit childFilePathChanged(m_childFilePath);
-    emit windowTitleChanged(windowTitle());
-    setStatusMessage(QStringLiteral("Saved texture board: %1").arg(QFileInfo(targetName).fileName()));
+    childFilePathChanged(m_childFilePath);
+    windowTitleChanged(windowTitle());
+    setStatusMessage(String("Saved texture board: %1").arg(FileInfo(targetName).fileName()));
     return true;
 }
 
-int AnimeanBusiness::layerCount(const QString &viewName) const
+int AnimeanBusiness::layerCount(const String &viewName) const
 {
     return modelForView(viewName).layerCount();
 }
 
-int AnimeanBusiness::currentLayer(const QString &viewName) const
+int AnimeanBusiness::currentLayer(const String &viewName) const
 {
     return attentionForView(viewName).layer;
 }
 
-QString AnimeanBusiness::layerName(int layerIndex, const QString &viewName) const
+String AnimeanBusiness::layerName(int layerIndex, const String &viewName) const
 {
     return modelForView(viewName).layerName(layerIndex);
 }
 
-bool AnimeanBusiness::isLayerVisible(int layerIndex, const QString &viewName) const
+bool AnimeanBusiness::isLayerVisible(int layerIndex, const String &viewName) const
 {
     return modelForView(viewName).layerVisible(layerIndex);
 }
 
-QVector<AnimeLayerPanelRow> AnimeanBusiness::layerRowsForView(const QString &viewName) const
+Vector<AnimeLayerPanelRow> AnimeanBusiness::layerRowsForView(const String &viewName) const
 {
     const AnimeSceneModel &model = modelForView(viewName);
     const int frame = model.currentFrame();
 
-    QVector<AnimeLayerPanelRow> rows;
+    Vector<AnimeLayerPanelRow> rows;
     std::function<int(const AnimeCore::Vector<AnimeLayerNode> &, int)> collect =
         [&](const AnimeCore::Vector<AnimeLayerNode> &nodes, int depth) {
         int shown = 0;
@@ -1138,14 +1150,14 @@ QVector<AnimeLayerPanelRow> AnimeanBusiness::layerRowsForView(const QString &vie
     collect(model.layerTree(), 0);
 
     {
-        QHash<int, int> rowForLayer;
+        Hash<int, int> rowForLayer;
         for (int i = 0; i < rows.size(); ++i) {
             if (!rows[i].group) {
                 rowForLayer.insert(rows[i].layerIndex, i);
             }
         }
-        QVector<int> parentRow(rows.size(), -1);
-        QVector<QVector<int>> childRows(rows.size());
+        Vector<int> parentRow(rows.size(), -1);
+        Vector<Vector<int>> childRows(rows.size());
         bool nested = false;
         for (int i = 0; i < rows.size(); ++i) {
             if (rows[i].group) {
@@ -1165,9 +1177,9 @@ QVector<AnimeLayerPanelRow> AnimeanBusiness::layerRowsForView(const QString &vie
             nested = true;
         }
         if (nested) {
-            QVector<AnimeLayerPanelRow> nestedRows;
+            Vector<AnimeLayerPanelRow> nestedRows;
             nestedRows.reserve(rows.size());
-            QVector<char> emitted(rows.size(), 0);
+            Vector<char> emitted(rows.size(), 0);
             std::function<void(int, int)> emitRow = [&](int i, int depth) {
                 if (emitted[i]) {
                     return;
@@ -1178,7 +1190,7 @@ QVector<AnimeLayerPanelRow> AnimeanBusiness::layerRowsForView(const QString &vie
                 row.child = parentRow[i] >= 0;
                 row.parent = !childRows[i].isEmpty();
                 if (row.child) {
-                    row.name = QStringLiteral("└ ") + row.name;
+                    row.name = String("└ ") + row.name;
                 }
                 nestedRows.append(row);
                 for (int childIndex : childRows[i]) {
@@ -1207,12 +1219,129 @@ QVector<AnimeLayerPanelRow> AnimeanBusiness::layerRowsForView(const QString &vie
     return rows;
 }
 
-int AnimeanBusiness::reorderLayerTree(const QString &viewName,
-                                      const QVector<AnimeLayerNode> &capturedTree,
-                                      int movedColumnId,
-                                      const QVector<QPair<int, int>> &flatGroupAndLayerRoles)
+int AnimeanBusiness::applyLayerPanelStructure(const String &viewName,
+                                              const Vector<AnimeLayerPanelRow> &rows,
+                                              int movedColumnId)
 {
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
+    AnimeSceneModel &model = modelForView(key);
+    Set<int> hostedRows;
+
+    const auto parseLevel = [&](const auto &self,
+                                int &idx,
+                                int parentDepth,
+                                bool insideLeaf) -> Vector<AnimeLayerNode> {
+        Vector<AnimeLayerNode> nodes;
+        while (idx < rows.size()) {
+            const AnimeLayerPanelRow &row = rows[idx];
+            if (row.depth <= parentDepth) {
+                break;
+            }
+            ++idx;
+            if (insideLeaf || row.child) {
+                if (!row.group) {
+                    const int childLayerId = model.layerIdAt(row.layerIndex);
+                    if (childLayerId > 0) {
+                        hostedRows.insert(childLayerId);
+                    }
+                }
+                self(self, idx, row.depth, true);
+                continue;
+            }
+            if (row.group) {
+                AnimeLayerNode node;
+                node.groupId = row.groupId;
+                node.name = row.name;
+                node.collapsed = row.collapsed;
+                // The rows carry no tag: without reading it back, one drag strips
+                // "automapping" off every unit group and orphans its config.
+                node.tag = model.layerGroupTag(row.groupId);
+                node.children = self(self, idx, row.depth, false);
+                if (!node.children.isEmpty()) {
+                    nodes.append(node);
+                }
+            } else {
+                AnimeLayerNode node;
+                node.layerId = model.layerIdAt(row.layerIndex);
+                self(self, idx, row.depth, true);
+                if (node.layerId > 0) {
+                    nodes.append(node);
+                }
+            }
+        }
+        return nodes;
+    };
+
+    int idx = 0;
+    Vector<AnimeLayerNode> captured = parseLevel(parseLevel, idx, -1, false);
+
+    if (!hostedRows.isEmpty()) {
+        const auto appendToGroup = [&](const auto &self,
+                                       Vector<AnimeLayerNode> &nodes,
+                                       int groupId,
+                                       int layerId) -> bool {
+            for (AnimeLayerNode &node : nodes) {
+                if (!node.isGroup()) {
+                    continue;
+                }
+                if (node.groupId == groupId) {
+                    AnimeLayerNode leaf;
+                    leaf.layerId = layerId;
+                    node.children.append(leaf);
+                    return true;
+                }
+                if (self(self, node.children, groupId, layerId)) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        const auto restoreOriginalGroups = [&](const auto &self,
+                                               const Vector<AnimeLayerNode> &original,
+                                               int parentGroupId) -> void {
+            for (const AnimeLayerNode &node : original) {
+                if (node.isGroup()) {
+                    self(self, node.children, node.groupId);
+                    continue;
+                }
+                if (!hostedRows.contains(node.layerId)) {
+                    continue;
+                }
+                if (parentGroupId <= 0
+                    || !appendToGroup(appendToGroup, captured, parentGroupId, node.layerId)) {
+                    AnimeLayerNode leaf;
+                    leaf.layerId = node.layerId;
+                    captured.append(leaf);
+                }
+            }
+        };
+        restoreOriginalGroups(restoreOriginalGroups, model.layerTree(), 0);
+    }
+
+    Vector<std::pair<int, int>> flatGroupAndLayerRoles;
+    flatGroupAndLayerRoles.reserve(rows.size());
+    for (const AnimeLayerPanelRow &row : rows) {
+        const int groupId = row.group ? row.groupId : 0;
+        const int layerRole = row.group ? -1 : row.layerIndex;
+        flatGroupAndLayerRoles.append({groupId, layerRole});
+    }
+
+    const int landedOn = reorderLayerTree(key, captured, movedColumnId, flatGroupAndLayerRoles);
+    if (AnimePaintViewAdapter *adapter = adapterFor(key)) {
+        if (adapter->requestUpdate) {
+            adapter->requestUpdate();
+        }
+    }
+    return landedOn;
+}
+
+int AnimeanBusiness::reorderLayerTree(const String &viewName,
+                                      const Vector<AnimeLayerNode> &capturedTree,
+                                      int movedColumnId,
+                                      const Vector<std::pair<int, int>> &flatGroupAndLayerRoles)
+{
+    const String key = resolveViewName(viewName);
     AnimeSceneModel &model = modelForView(key);
 
     int landedOn = -1;
@@ -1237,7 +1366,7 @@ int AnimeanBusiness::reorderLayerTree(const QString &viewName,
             --toIndex;
         }
 
-        QVector<int> childIds;
+        Vector<int> childIds;
         for (int childIndex : model.childLayerIndices(fromIndex)) {
             childIds.append(model.layerIdAt(childIndex));
         }
@@ -1264,7 +1393,7 @@ int AnimeanBusiness::reorderLayerTree(const QString &viewName,
     }
 
     model.setLayerTree(capturedTree);
-    commitHistory(QStringLiteral("Reorder Layers"), key);
+    commitHistory(String("Reorder Layers"), key);
     const SelectionAttention currentAttention = attentionForView(key);
     updateAttention(key,
                     AttentionChange::LayerChange,
@@ -1274,9 +1403,9 @@ int AnimeanBusiness::reorderLayerTree(const QString &viewName,
     return landedOn;
 }
 
-int AnimeanBusiness::addLayer(const QString &viewName)
+int AnimeanBusiness::addLayer(const String &viewName)
 {
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     int layerIndex = -1;
     if (AnimePaintViewAdapter *adapter = adapterFor(key)) {
         if (adapter->addLayer) {
@@ -1287,7 +1416,7 @@ int AnimeanBusiness::addLayer(const QString &viewName)
         AnimeSceneModel &model = modelForView(key);
         layerIndex = model.addLayer();
         if (layerIndex >= 0) {
-            commitHistory(QStringLiteral("Add Layer"), key);
+            commitHistory(String("Add Layer"), key);
         }
     }
     if (layerIndex >= 0) {
@@ -1297,9 +1426,9 @@ int AnimeanBusiness::addLayer(const QString &viewName)
     return layerIndex;
 }
 
-bool AnimeanBusiness::deleteLayer(int layerIndex, const QString &viewName)
+bool AnimeanBusiness::deleteLayer(int layerIndex, const String &viewName)
 {
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     bool removed = false;
     if (AnimePaintViewAdapter *adapter = adapterFor(key)) {
         if (adapter->deleteLayer) {
@@ -1310,7 +1439,7 @@ bool AnimeanBusiness::deleteLayer(int layerIndex, const QString &viewName)
         AnimeSceneModel &model = modelForView(key);
         if (model.deleteLayer(layerIndex)) {
             model.remapFillSourceLayersAfterDelete(layerIndex);
-            commitHistory(QStringLiteral("Delete Layer"), key);
+            commitHistory(String("Delete Layer"), key);
             notifyHeadlessLayerChangedIfNeeded(key);
             removed = true;
         }
@@ -1324,9 +1453,9 @@ bool AnimeanBusiness::deleteLayer(int layerIndex, const QString &viewName)
     return removed;
 }
 
-int AnimeanBusiness::deleteLayerGroup(int groupId, const QString &viewName)
+int AnimeanBusiness::deleteLayerGroup(int groupId, const String &viewName)
 {
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     int deleted = 0;
     if (AnimePaintViewAdapter *adapter = adapterFor(key)) {
         if (adapter->deleteLayerGroup) {
@@ -1337,8 +1466,8 @@ int AnimeanBusiness::deleteLayerGroup(int groupId, const QString &viewName)
         AnimeSceneModel &model = modelForView(key);
         deleted = model.deleteLayerGroup(groupId);
         if (deleted > 0) {
-            commitHistory(deleted == 1 ? QStringLiteral("Delete Group")
-                                       : QStringLiteral("Delete Group (%1 layers)").arg(deleted),
+            commitHistory(deleted == 1 ? String("Delete Group")
+                                       : String("Delete Group (%1 layers)").arg(deleted),
                           key);
             notifyHeadlessLayerChangedIfNeeded(key);
         }
@@ -1351,26 +1480,26 @@ int AnimeanBusiness::deleteLayerGroup(int groupId, const QString &viewName)
     return deleted;
 }
 
-bool AnimeanBusiness::dissolveLayerGroup(int groupId, const QString &viewName)
+bool AnimeanBusiness::dissolveLayerGroup(int groupId, const String &viewName)
 {
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     AnimeSceneModel &model = modelForView(key);
     if (!model.dissolveLayerGroup(groupId)) {
         return false;
     }
-    commitHistory(QStringLiteral("Ungroup Layers"), key);
-    emit requestClearTimelineThumbnails();
-    emit timelineChanged();
-    emit layersChanged(QStringLiteral("main"), attentionForView(QStringLiteral("main")).layer);
-    emit layersChanged(QStringLiteral("child"), attentionForView(QStringLiteral("child")).layer);
-    const QString assetTarget = assetPanelTargetViewName();
-    emit assetsChanged(assetTarget, attentionForView(assetTarget).asset);
+    commitHistory(String("Ungroup Layers"), key);
+    requestClearTimelineThumbnails();
+    timelineChanged();
+    layersChanged(String("main"), attentionForView(String("main")).layer);
+    layersChanged(String("child"), attentionForView(String("child")).layer);
+    const String assetTarget = assetPanelTargetViewName();
+    assetsChanged(assetTarget, attentionForView(assetTarget).asset);
     return true;
 }
 
-bool AnimeanBusiness::moveLayer(int fromIndex, int toIndex, const QString &viewName)
+bool AnimeanBusiness::moveLayer(int fromIndex, int toIndex, const String &viewName)
 {
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     bool moved = false;
     if (AnimePaintViewAdapter *adapter = adapterFor(key)) {
         if (adapter->moveLayer) {
@@ -1381,7 +1510,7 @@ bool AnimeanBusiness::moveLayer(int fromIndex, int toIndex, const QString &viewN
         AnimeSceneModel &model = modelForView(key);
         if (model.moveLayer(fromIndex, toIndex)) {
             model.remapFillSourceLayersAfterMove(fromIndex, toIndex);
-            commitHistory(QStringLiteral("Move Layer"), key);
+            commitHistory(String("Move Layer"), key);
             notifyHeadlessLayerChangedIfNeeded(key);
             moved = true;
         }
@@ -1393,17 +1522,17 @@ bool AnimeanBusiness::moveLayer(int fromIndex, int toIndex, const QString &viewN
     return moved;
 }
 
-void AnimeanBusiness::setLayerGroupCollapsed(int groupId, bool collapsed, const QString &viewName)
+void AnimeanBusiness::setLayerGroupCollapsed(int groupId, bool collapsed, const String &viewName)
 {
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     if (groupId > 0) {
         modelForView(key).setLayerGroupCollapsed(groupId, collapsed);
     }
 }
 
-bool AnimeanBusiness::setLayerVisible(int layerIndex, bool visible, const QString &viewName)
+bool AnimeanBusiness::setLayerVisible(int layerIndex, bool visible, const String &viewName)
 {
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     bool handledByPython = false;
     if (AnimePaintViewAdapter *adapter = adapterFor(key)) {
         if (adapter->sendLayerVisibilityMessage) {
@@ -1420,19 +1549,20 @@ bool AnimeanBusiness::setLayerVisible(int layerIndex, bool visible, const QStrin
             return false;
         }
         model.setLayerVisible(layerIndex, visible);
+        requestClearTimelineThumbnails();
         if (AnimePaintViewAdapter *adapter = adapterFor(key)) {
             if (adapter->requestUpdate) {
                 adapter->requestUpdate();
             }
         }
-        emit layersChanged(key, attentionForView(key).layer);
+        layersChanged(key, attentionForView(key).layer);
     }
     return true;
 }
 
-void AnimeanBusiness::selectLayer(int layerIndex, const QString &viewName)
+void AnimeanBusiness::selectLayer(int layerIndex, const String &viewName)
 {
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     if (layerIndex < 0) {
         return;
     }
@@ -1440,48 +1570,48 @@ void AnimeanBusiness::selectLayer(int layerIndex, const QString &viewName)
     updateAttention(key, AttentionChange::LayerChange, current.frame, layerIndex, current.asset);
 }
 
-void AnimeanBusiness::unselectLayer(const QString &viewName)
+void AnimeanBusiness::unselectLayer(const String &viewName)
 {
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     const SelectionAttention current = attentionForView(key);
     updateAttention(key, AttentionChange::LayerChange, current.frame, -1, -1);
 }
 
-QString AnimeanBusiness::toolControlName(Tool tool)
+String AnimeanBusiness::toolControlName(Tool tool)
 {
     switch (tool) {
     case Tool::Pen:
-        return QStringLiteral("pen");
+        return String("pen");
     case Tool::Eraser:
-        return QStringLiteral("eraser");
+        return String("eraser");
     case Tool::DeleteLine:
-        return QStringLiteral("delete_line");
+        return String("delete_line");
     case Tool::CutLine:
-        return QStringLiteral("cut_line");
+        return String("cut_line");
     case Tool::Fill:
-        return QStringLiteral("fill");
+        return String("fill");
     case Tool::Arrow:
-        return QStringLiteral("arrow");
+        return String("arrow");
     case Tool::Connect:
-        return QStringLiteral("connect");
+        return String("connect");
     case Tool::Transfer:
-        return QStringLiteral("transfer");
+        return String("transfer");
     }
-    return QStringLiteral("pen");
+    return String("pen");
 }
 
-QString AnimeanBusiness::toolLockName(Tool tool)
+String AnimeanBusiness::toolLockName(Tool tool)
 {
     switch (tool) {
     case Tool::DeleteLine:
     case Tool::CutLine:
-        return QStringLiteral("eraser");
+        return String("eraser");
     default:
         return toolControlName(tool);
     }
 }
 
-QVector<AnimeanBusiness::Tool> AnimeanBusiness::lockableTools()
+Vector<AnimeanBusiness::Tool> AnimeanBusiness::lockableTools()
 {
     return {
         Tool::Arrow,
@@ -1508,12 +1638,12 @@ AnimeanBusiness::Tool AnimeanBusiness::currentToolEnum() const
     return static_cast<Tool>(currentTool());
 }
 
-QString AnimeanBusiness::activeExtraTool() const
+String AnimeanBusiness::activeExtraTool() const
 {
     return m_activeExtraTool;
 }
 
-QString AnimeanBusiness::activeExtraToolProperty() const
+String AnimeanBusiness::activeExtraToolProperty() const
 {
     return m_activeExtraToolProperty;
 }
@@ -1538,7 +1668,7 @@ AnimeanBusiness::FillScope AnimeanBusiness::toolFillScope() const
     return m_toolFillAllLayers ? FillScope::AllLayers : FillScope::CurrentLayer;
 }
 
-QColor AnimeanBusiness::drawingColor() const
+Color AnimeanBusiness::drawingColor() const
 {
     return m_drawingColor;
 }
@@ -1548,21 +1678,21 @@ AnimeStrokeFitSettings AnimeanBusiness::strokeFitSettings() const
     return m_strokeFitSettings;
 }
 
-QVector<AnimeExtraToolDefinition> AnimeanBusiness::parseExtraToolsJson(const QJsonArray &array)
+Vector<AnimeExtraToolDefinition> AnimeanBusiness::parseExtraToolsJson(const JsonArray &array)
 {
-    QVector<AnimeExtraToolDefinition> tools;
-    for (const QJsonValue &value : array) {
+    Vector<AnimeExtraToolDefinition> tools;
+    for (const JsonValue &value : array) {
         if (!value.isObject()) {
             continue;
         }
-        const QJsonObject object = value.toObject();
+        const JsonObject object = value.toObject();
         AnimeExtraToolDefinition tool;
-        tool.name = object.value(QStringLiteral("name")).toString();
-        tool.title = object.value(QStringLiteral("title")).toString(tool.name);
-        tool.property = object.value(QStringLiteral("property")).toString(tool.name);
-        tool.handler = object.value(QStringLiteral("handler")).toString();
-        tool.baseTool = object.value(QStringLiteral("base_tool")).toString();
-        tool.page = object.value(QStringLiteral("page")).toString(QStringLiteral("mapping"));
+        tool.name = object.value(String("name")).toString();
+        tool.title = object.value(String("title")).toString(tool.name);
+        tool.property = object.value(String("property")).toString(tool.name);
+        tool.handler = object.value(String("handler")).toString();
+        tool.baseTool = object.value(String("base_tool")).toString();
+        tool.page = object.value(String("page")).toString(String("mapping"));
         if (!tool.name.isEmpty()) {
             tools.append(tool);
         }
@@ -1570,7 +1700,7 @@ QVector<AnimeExtraToolDefinition> AnimeanBusiness::parseExtraToolsJson(const QJs
     return tools;
 }
 
-QVector<AnimeExtraToolDefinition> AnimeanBusiness::loadExtraTools()
+Vector<AnimeExtraToolDefinition> AnimeanBusiness::loadExtraTools()
 {
     m_extraTools.clear();
 #ifdef ANIMEAN_WITH_PYTHON
@@ -1580,51 +1710,51 @@ QVector<AnimeExtraToolDefinition> AnimeanBusiness::loadExtraTools()
             const std::string json = py::module_::import("extra_tools")
                                          .attr("tools_json")()
                                          .cast<std::string>();
-            QJsonParseError parseError;
-            const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json), &parseError);
-            if (parseError.error == QJsonParseError::NoError && document.isArray()) {
+            JsonParseError parseError;
+            const JsonDocument document = JsonDocument::fromJson(json, &parseError);
+            if (parseError.error == JsonParseError::NoError && document.isArray()) {
                 m_extraTools = parseExtraToolsJson(document.array());
             } else {
-                setStatusMessage(QStringLiteral("extra_tools JSON error: %1").arg(parseError.errorString()));
+                setStatusMessage(String("extra_tools JSON error: %1").arg(parseError.errorString()));
             }
         } catch (const py::error_already_set &error) {
-            setStatusMessage(QStringLiteral("extra_tools.py error: %1").arg(QString::fromUtf8(error.what())));
+            setStatusMessage(String("extra_tools.py error: %1").arg(String::fromUtf8(error.what())));
         }
     }
 #endif
     return m_extraTools;
 }
 
-QVector<AnimeExtraToolDefinition> AnimeanBusiness::extraTools() const
+Vector<AnimeExtraToolDefinition> AnimeanBusiness::extraTools() const
 {
     return m_extraTools;
 }
 
-QJsonObject AnimeanBusiness::loadBuiltInToolLayout(Tool tool,
+JsonObject AnimeanBusiness::loadBuiltInToolLayout(Tool tool,
                                                    int smoothValue,
                                                    int penWidth,
                                                    FillScope fillScope)
 {
-    const QString path = resolveToolControlPath(fileNameForBuiltInTool(tool));
+    const String path = resolveToolControlPath(fileNameForBuiltInTool(tool));
     if (path.isEmpty()) {
-        return QJsonObject();
+        return JsonObject();
     }
 
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        return QJsonObject();
+    File file(path);
+    if (!file.open(IODevice::ReadOnly | IODevice::Text)) {
+        return JsonObject();
     }
 
-    QJsonParseError parseError;
-    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
-        return QJsonObject();
+    JsonParseError parseError;
+    const JsonDocument document = JsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != JsonParseError::NoError || !document.isObject()) {
+        return JsonObject();
     }
 
     return applyRuntimeStateToToolLayout(document.object(), tool, smoothValue, penWidth, fillScope);
 }
 
-QString AnimeanBusiness::optionsForToolJsonByName(const QString &toolName) const
+String AnimeanBusiness::optionsForToolJsonByName(const String &toolName) const
 {
     Tool resolvedTool = Tool::Pen;
     for (Tool candidate : {Tool::Pen, Tool::Eraser, Tool::DeleteLine, Tool::CutLine,
@@ -1637,7 +1767,7 @@ QString AnimeanBusiness::optionsForToolJsonByName(const QString &toolName) const
     return optionsForToolJson(resolvedTool);
 }
 
-QString AnimeanBusiness::optionsForToolJson(Tool tool) const
+String AnimeanBusiness::optionsForToolJson(Tool tool) const
 {
 #ifdef ANIMEAN_WITH_PYTHON
     if (Py_IsInitialized()) {
@@ -1651,27 +1781,27 @@ QString AnimeanBusiness::optionsForToolJson(Tool tool) const
                                          .attr("options_for_tool_json")(toolControlName(tool).toStdString(), state)
                                          .cast<std::string>();
             if (!json.empty()) {
-                return QString::fromStdString(json);
+                return String::fromStdString(json);
             }
         } catch (const py::error_already_set &error) {
             const_cast<AnimeanBusiness *>(this)->setStatusMessage(
-                QStringLiteral("toolcontrol.py error: %1").arg(QString::fromUtf8(error.what())));
+                String("toolcontrol.py error: %1").arg(String::fromUtf8(error.what())));
         }
     }
 #endif
-    const QJsonObject fallback = loadBuiltInToolLayout(tool,
+    const JsonObject fallback = loadBuiltInToolLayout(tool,
                                                        m_toolSmoothValue,
                                                        m_toolPenWidth,
                                                        toolFillScope());
     if (fallback.isEmpty()) {
-        return QStringLiteral("{}");
+        return String("{}");
     }
-    return QString::fromUtf8(QJsonDocument(fallback).toJson(QJsonDocument::Compact));
+    return String::fromUtf8(JsonDocument(fallback).toJson(JsonDocument::Compact));
 }
 
-QJsonObject AnimeanBusiness::toolOptionsLayout(Tool tool) const
+JsonObject AnimeanBusiness::toolOptionsLayout(Tool tool) const
 {
-    QJsonObject layout;
+    JsonObject layout;
 #ifdef ANIMEAN_WITH_PYTHON
     if (Py_IsInitialized()) {
         try {
@@ -1683,17 +1813,17 @@ QJsonObject AnimeanBusiness::toolOptionsLayout(Tool tool) const
             const std::string json = py::module_::import("toolcontrol")
                                          .attr("options_for_tool_json")(toolControlName(tool).toStdString(), state)
                                          .cast<std::string>();
-            QJsonParseError parseError;
-            const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json), &parseError);
-            if (parseError.error == QJsonParseError::NoError && document.isObject()) {
+            JsonParseError parseError;
+            const JsonDocument document = JsonDocument::fromJson(json, &parseError);
+            if (parseError.error == JsonParseError::NoError && document.isObject()) {
                 layout = document.object();
             } else {
                 const_cast<AnimeanBusiness *>(this)->setStatusMessage(
-                    QStringLiteral("toolcontrol JSON error: %1").arg(parseError.errorString()));
+                    String("toolcontrol JSON error: %1").arg(parseError.errorString()));
             }
         } catch (const py::error_already_set &error) {
             const_cast<AnimeanBusiness *>(this)->setStatusMessage(
-                QStringLiteral("toolcontrol.py error: %1").arg(QString::fromUtf8(error.what())));
+                String("toolcontrol.py error: %1").arg(String::fromUtf8(error.what())));
         }
     }
 #endif
@@ -1703,10 +1833,10 @@ QJsonObject AnimeanBusiness::toolOptionsLayout(Tool tool) const
     return layout;
 }
 
-QString AnimeanBusiness::optionsForExtraToolJson(const QString &extraToolName) const
+String AnimeanBusiness::optionsForExtraToolJson(const String &extraToolName) const
 {
     if (extraToolName.isEmpty()) {
-        return QStringLiteral("{}");
+        return String("{}");
     }
 #ifdef ANIMEAN_WITH_PYTHON
     if (Py_IsInitialized()) {
@@ -1720,27 +1850,27 @@ QString AnimeanBusiness::optionsForExtraToolJson(const QString &extraToolName) c
                                          .attr("options_for_extra_tool_json")(extraToolName.toStdString(), state)
                                          .cast<std::string>();
             if (!json.empty()) {
-                return QString::fromStdString(json);
+                return String::fromStdString(json);
             }
         } catch (const py::error_already_set &error) {
             const_cast<AnimeanBusiness *>(this)->setStatusMessage(
-                QStringLiteral("toolcontrol.py error: %1").arg(QString::fromUtf8(error.what())));
+                String("toolcontrol.py error: %1").arg(String::fromUtf8(error.what())));
         }
     }
 #endif
-    return QStringLiteral("{}");
+    return String("{}");
 }
 
-QJsonObject AnimeanBusiness::extraToolOptionsLayout(const QString &extraToolName) const
+JsonObject AnimeanBusiness::extraToolOptionsLayout(const String &extraToolName) const
 {
-    QJsonObject extraLayout;
+    JsonObject extraLayout;
     if (extraToolName.isEmpty()) {
         return extraLayout;
     }
-    const QString json = optionsForExtraToolJson(extraToolName);
-    QJsonParseError parseError;
-    const QJsonDocument document = QJsonDocument::fromJson(json.toUtf8(), &parseError);
-    if (parseError.error == QJsonParseError::NoError && document.isObject()) {
+    const String json = optionsForExtraToolJson(extraToolName);
+    JsonParseError parseError;
+    const JsonDocument document = JsonDocument::fromJson(json.toUtf8(), &parseError);
+    if (parseError.error == JsonParseError::NoError && document.isObject()) {
         extraLayout = document.object();
     }
     return extraLayout;
@@ -1752,20 +1882,20 @@ bool AnimeanBusiness::isToolLocked(int tool) const
     if (value == Tool::Arrow) {
         return false;
     }
-    const QSet<QString> locked = m_lockedToolsByView.value(m_activeViewName);
+    const Set<String> locked = m_lockedToolsByView.value(m_activeViewName);
     return locked.contains(toolLockName(value));
 }
 
-QSet<QString> AnimeanBusiness::lockedToolsForView(const QString &viewName) const
+Set<String> AnimeanBusiness::lockedToolsForView(const String &viewName) const
 {
     return m_lockedToolsByView.value(resolveViewName(viewName));
 }
 
-void AnimeanBusiness::applyLockedTools(const QString &viewName, const QStringList &tools)
+void AnimeanBusiness::applyLockedTools(const String &viewName, const StringList &tools)
 {
-    QSet<QString> locked;
-    for (const QString &name : tools) {
-        const QString trimmed = name.trimmed().toLower();
+    Set<String> locked;
+    for (const String &name : tools) {
+        const String trimmed = name.trimmed().toLower();
         if (!trimmed.isEmpty()) {
             locked.insert(trimmed);
         }
@@ -1776,7 +1906,7 @@ void AnimeanBusiness::applyLockedTools(const QString &viewName, const QStringLis
 
 void AnimeanBusiness::refreshToolLockState()
 {
-    emit toolLockStateChanged();
+    toolLockStateChanged();
     if (isToolLocked(currentTool())) {
         applyTool(int(Tool::Arrow), true);
     }
@@ -1786,12 +1916,12 @@ bool AnimeanBusiness::applyTool(int tool, bool reloadOptions)
 {
     const Tool value = static_cast<Tool>(tool);
     if (value != Tool::Arrow && isToolLocked(tool)) {
-        emit toolChanged(currentTool(), m_activeExtraTool);
+        toolChanged(currentTool(), m_activeExtraTool);
         return false;
     }
 
     m_currentTool = tool;
-    for (const QString &viewKey : {QStringLiteral("main"), QStringLiteral("child")}) {
+    for (const String &viewKey : {String("main"), String("child")}) {
         if (AnimePaintViewAdapter *adapter = adapterFor(viewKey)) {
             if (adapter->setTool) {
                 adapter->setTool(tool);
@@ -1799,19 +1929,19 @@ bool AnimeanBusiness::applyTool(int tool, bool reloadOptions)
                 setHeadlessViewTool(viewKey, tool);
             }
             if (adapter->setStrokeProperty) {
-                adapter->setStrokeProperty(QString());
+                adapter->setStrokeProperty(String());
             } else {
-                setHeadlessViewStrokeProperty(viewKey, QString());
+                setHeadlessViewStrokeProperty(viewKey, String());
             }
         } else {
             setHeadlessViewTool(viewKey, tool);
-            setHeadlessViewStrokeProperty(viewKey, QString());
+            setHeadlessViewStrokeProperty(viewKey, String());
         }
     }
 
     m_activeExtraTool.clear();
     m_activeExtraToolProperty.clear();
-    emit toolChanged(m_currentTool, m_activeExtraTool);
+    toolChanged(m_currentTool, m_activeExtraTool);
     if (reloadOptions) {
         refreshToolOptions();
     }
@@ -1825,15 +1955,15 @@ void AnimeanBusiness::selectTool(int tool)
 
 void AnimeanBusiness::selectExtraTool(const AnimeExtraToolDefinition &tool)
 {
-    static const QHash<QString, Tool> baseTools = {
-        {QStringLiteral("fill"), Tool::Fill},
-        {QStringLiteral("arrow"), Tool::Arrow},
-        {QStringLiteral("transfer"), Tool::Transfer},
+    static const Hash<String, Tool> baseTools = {
+        {String("fill"), Tool::Fill},
+        {String("arrow"), Tool::Arrow},
+        {String("transfer"), Tool::Transfer},
     };
     const Tool baseTool = baseTools.value(tool.baseTool, Tool::Pen);
     m_currentTool = int(baseTool);
 
-    for (const QString &viewKey : {QStringLiteral("main"), QStringLiteral("child")}) {
+    for (const String &viewKey : {String("main"), String("child")}) {
         if (AnimePaintViewAdapter *adapter = adapterFor(viewKey)) {
             if (adapter->setTool) {
                 adapter->setTool(int(baseTool));
@@ -1863,7 +1993,7 @@ void AnimeanBusiness::selectExtraTool(const AnimeExtraToolDefinition &tool)
 
     m_activeExtraTool = tool.name;
     m_activeExtraToolProperty = tool.property;
-    emit toolChanged(m_currentTool, m_activeExtraTool);
+    toolChanged(m_currentTool, m_activeExtraTool);
     refreshExtraToolOptions();
 
 #ifdef ANIMEAN_WITH_PYTHON
@@ -1875,13 +2005,13 @@ void AnimeanBusiness::selectExtraTool(const AnimeExtraToolDefinition &tool)
                                           tool.name.toStdString(),
                                           tool.property.toStdString());
         } catch (const py::error_already_set &error) {
-            setStatusMessage(QStringLiteral("extra tool error: %1").arg(QString::fromUtf8(error.what())));
+            setStatusMessage(String("extra tool error: %1").arg(String::fromUtf8(error.what())));
         }
     }
 #endif
 }
 
-bool AnimeanBusiness::selectExtraToolByName(const QString &extraToolName)
+bool AnimeanBusiness::selectExtraToolByName(const String &extraToolName)
 {
     for (const AnimeExtraToolDefinition &tool : m_extraTools) {
         if (tool.name == extraToolName) {
@@ -1897,24 +2027,24 @@ bool AnimeanBusiness::selectExtraToolByName(const QString &extraToolName)
     return true;
 }
 
-void AnimeanBusiness::selectColor(const QColor &color)
+void AnimeanBusiness::selectColor(const Color &color)
 {
     const bool onFill = currentToolEnum() == Tool::Fill;
     applyTool(int(onFill ? Tool::Fill : Tool::Pen), false);
     setDrawingColor(color);
 }
 
-void AnimeanBusiness::setDrawingColor(const QColor &color)
+void AnimeanBusiness::setDrawingColor(const Color &color)
 {
     m_drawingColor = color;
-    for (const QString &viewKey : {QStringLiteral("main"), QStringLiteral("child")}) {
+    for (const String &viewKey : {String("main"), String("child")}) {
         if (AnimePaintViewAdapter *adapter = adapterFor(viewKey)) {
             if (adapter->setDrawingColor) {
                 adapter->setDrawingColor(color);
             }
         }
     }
-    emit drawingColorChanged(m_drawingColor);
+    drawingColorChanged(m_drawingColor);
 }
 
 void AnimeanBusiness::setFillScope(int scope)
@@ -1926,14 +2056,14 @@ void AnimeanBusiness::setFillAllLayers(bool allLayers)
 {
     m_toolFillAllLayers = allLayers;
     const int scopeValue = int(toolFillScope());
-    for (const QString &viewKey : {QStringLiteral("main"), QStringLiteral("child")}) {
+    for (const String &viewKey : {String("main"), String("child")}) {
         if (AnimePaintViewAdapter *adapter = adapterFor(viewKey)) {
             if (adapter->setFillScope) {
                 adapter->setFillScope(scopeValue);
             }
         }
     }
-    emit toolOptionsStateChanged();
+    toolOptionsStateChanged();
 }
 
 void AnimeanBusiness::selectEraserMode(int tool)
@@ -1944,27 +2074,27 @@ void AnimeanBusiness::selectEraserMode(int tool)
 void AnimeanBusiness::setSmoothValue(int value)
 {
     m_toolSmoothValue = std::max(0, std::min(100, value));
-    for (const QString &viewKey : {QStringLiteral("main"), QStringLiteral("child")}) {
+    for (const String &viewKey : {String("main"), String("child")}) {
         if (AnimePaintViewAdapter *adapter = adapterFor(viewKey)) {
             if (adapter->setSmoothValue) {
                 adapter->setSmoothValue(m_toolSmoothValue);
             }
         }
     }
-    emit toolOptionsStateChanged();
+    toolOptionsStateChanged();
 }
 
 void AnimeanBusiness::setPenWidth(int width)
 {
     m_toolPenWidth = std::max(1, std::min(50, width));
-    for (const QString &viewKey : {QStringLiteral("main"), QStringLiteral("child")}) {
+    for (const String &viewKey : {String("main"), String("child")}) {
         if (AnimePaintViewAdapter *adapter = adapterFor(viewKey)) {
             if (adapter->setPenWidth) {
                 adapter->setPenWidth(m_toolPenWidth);
             }
         }
     }
-    emit toolOptionsStateChanged();
+    toolOptionsStateChanged();
 }
 
 void AnimeanBusiness::setDrawSettings(int stabilizer, int simplify, int corner)
@@ -1972,7 +2102,7 @@ void AnimeanBusiness::setDrawSettings(int stabilizer, int simplify, int corner)
     m_toolSmoothValue = std::max(0, std::min(100, stabilizer));
     m_strokeFitSettings.simplify = std::max(0, std::min(100, simplify));
     m_strokeFitSettings.corner = std::max(0, std::min(100, corner));
-    for (const QString &viewKey : {QStringLiteral("main"), QStringLiteral("child")}) {
+    for (const String &viewKey : {String("main"), String("child")}) {
         if (AnimePaintViewAdapter *adapter = adapterFor(viewKey)) {
             if (adapter->setSmoothValue) {
                 adapter->setSmoothValue(m_toolSmoothValue);
@@ -1982,14 +2112,14 @@ void AnimeanBusiness::setDrawSettings(int stabilizer, int simplify, int corner)
             }
         }
     }
-    emit toolOptionsStateChanged();
+    toolOptionsStateChanged();
     refreshToolOptions();
 }
 
-void AnimeanBusiness::sendToolOption(const QString &hook,
-                                     const QString &name,
-                                     const QString &type,
-                                     const QVariant &value,
+void AnimeanBusiness::sendToolOption(const String &hook,
+                                     const String &name,
+                                     const String &type,
+                                     const JsonVariant &value,
                                      int row,
                                      int startColumn,
                                      int endColumn)
@@ -2005,32 +2135,32 @@ void AnimeanBusiness::sendToolOption(const QString &hook,
         dispatchHeadlessToolOptionHook(m_activeViewName, hook, name, type, value, row, startColumn, endColumn);
     }
 
-    if (hook == QStringLiteral("color")) {
-        const QColor color = value.canConvert<QColor>() ? value.value<QColor>() : QColor(value.toString());
+    if (hook == String("color")) {
+        const Color color(value.toString());
         if (color.isValid()) {
             selectColor(color);
         }
-    } else if (hook == QStringLiteral("fill_scope")) {
-        const bool allLayers = (value.toString() == QStringLiteral("all")
+    } else if (hook == String("fill_scope")) {
+        const bool allLayers = (value.toString() == String("all")
                                 || value.toInt() == int(FillScope::AllLayers));
         setFillScope(int(allLayers ? FillScope::AllLayers : FillScope::CurrentLayer));
-    } else if (hook == QStringLiteral("eraser_mode")) {
-        const QString mode = value.toString();
+    } else if (hook == String("eraser_mode")) {
+        const String mode = value.toString();
         Tool eraserTool = Tool::Eraser;
-        if (mode == QStringLiteral("line") || value.toInt() == int(Tool::DeleteLine)) {
+        if (mode == String("line") || value.toInt() == int(Tool::DeleteLine)) {
             eraserTool = Tool::DeleteLine;
-        } else if (mode == QStringLiteral("cut") || value.toInt() == int(Tool::CutLine)) {
+        } else if (mode == String("cut") || value.toInt() == int(Tool::CutLine)) {
             eraserTool = Tool::CutLine;
         }
         selectEraserMode(int(eraserTool));
-    } else if (hook == QStringLiteral("smooth")) {
+    } else if (hook == String("smooth")) {
         setSmoothValue(value.toInt());
-    } else if (hook == QStringLiteral("pen_width")) {
+    } else if (hook == String("pen_width")) {
         setPenWidth(value.toInt());
     }
 }
 
-void AnimeanBusiness::sendPadEvent(const QString &pad, const QString &phase, double x, double y)
+void AnimeanBusiness::sendPadEvent(const String &pad, const String &phase, double x, double y)
 {
     if (AnimePaintViewAdapter *adapter = adapterFor(m_activeViewName)) {
         if (adapter->sendPadMessage) {
@@ -2048,8 +2178,8 @@ void AnimeanBusiness::refreshToolOptions()
         return;
     }
     const Tool tool = static_cast<Tool>(m_currentTool);
-    const QJsonObject layout = toolOptionsLayout(tool);
-    emit toolOptionsLayoutChanged(layout, m_currentTool, false);
+    const JsonObject layout = toolOptionsLayout(tool);
+    toolOptionsLayoutChanged(layout, m_currentTool, false);
 }
 
 void AnimeanBusiness::refreshExtraToolOptions()
@@ -2057,33 +2187,33 @@ void AnimeanBusiness::refreshExtraToolOptions()
     if (m_activeExtraTool.isEmpty()) {
         return;
     }
-    const QJsonObject extraLayout = extraToolOptionsLayout(m_activeExtraTool);
-    emit toolOptionsLayoutChanged(extraLayout, m_currentTool, true);
+    const JsonObject extraLayout = extraToolOptionsLayout(m_activeExtraTool);
+    toolOptionsLayoutChanged(extraLayout, m_currentTool, true);
 }
 
-int AnimeanBusiness::assetCount(const QString &viewName) const
+int AnimeanBusiness::assetCount(const String &viewName) const
 {
-    const QString key = viewName.isEmpty() ? assetPanelTargetViewName() : resolveViewName(viewName);
+    const String key = viewName.isEmpty() ? assetPanelTargetViewName() : resolveViewName(viewName);
     return modelForView(key).assetCount();
 }
 
-int AnimeanBusiness::currentAsset(const QString &viewName) const
+int AnimeanBusiness::currentAsset(const String &viewName) const
 {
-    const QString key = viewName.isEmpty() ? assetPanelTargetViewName() : resolveViewName(viewName);
+    const String key = viewName.isEmpty() ? assetPanelTargetViewName() : resolveViewName(viewName);
     return attentionForView(key).asset;
 }
 
-QString AnimeanBusiness::assetName(int assetIndex, const QString &viewName) const
+String AnimeanBusiness::assetName(int assetIndex, const String &viewName) const
 {
-    const QString key = viewName.isEmpty() ? assetPanelTargetViewName() : resolveViewName(viewName);
+    const String key = viewName.isEmpty() ? assetPanelTargetViewName() : resolveViewName(viewName);
     return modelForView(key).assetName(assetIndex);
 }
 
-QStringList AnimeanBusiness::visibleAssetNames(const QString &viewName) const
+StringList AnimeanBusiness::visibleAssetNames(const String &viewName) const
 {
-    const QString key = viewName.isEmpty() ? assetPanelTargetViewName() : resolveViewName(viewName);
+    const String key = viewName.isEmpty() ? assetPanelTargetViewName() : resolveViewName(viewName);
     const AnimeSceneModel &model = modelForView(key);
-    QStringList names;
+    StringList names;
     for (int i = 0; i < model.assetCount(); ++i) {
         if (model.assetInternal(i)) {
             continue;
@@ -2093,9 +2223,9 @@ QStringList AnimeanBusiness::visibleAssetNames(const QString &viewName) const
     return names;
 }
 
-int AnimeanBusiness::addAsset(AnimeColumnType type, const QString &name, const QString &viewName)
+int AnimeanBusiness::addAsset(AnimeColumnType type, const String &name, const String &viewName)
 {
-    const QString key = viewName.isEmpty() ? assetPanelTargetViewName() : resolveViewName(viewName);
+    const String key = viewName.isEmpty() ? assetPanelTargetViewName() : resolveViewName(viewName);
     int assetIndex = -1;
     if (AnimePaintViewAdapter *adapter = adapterFor(key)) {
         if (adapter->addAsset) {
@@ -2106,7 +2236,7 @@ int AnimeanBusiness::addAsset(AnimeColumnType type, const QString &name, const Q
         AnimeSceneModel &model = modelForView(key);
         assetIndex = model.addAsset(type, name);
         if (assetIndex >= 0) {
-            commitHistory(QStringLiteral("Add Asset"), key);
+            commitHistory(String("Add Asset"), key);
         }
     }
     if (assetIndex >= 0) {
@@ -2116,23 +2246,23 @@ int AnimeanBusiness::addAsset(AnimeColumnType type, const QString &name, const Q
     return assetIndex;
 }
 
-void AnimeanBusiness::selectAsset(int assetIndex, const QString &viewName)
+void AnimeanBusiness::selectAsset(int assetIndex, const String &viewName)
 {
-    const QString key = viewName.isEmpty() ? assetPanelTargetViewName() : resolveViewName(viewName);
+    const String key = viewName.isEmpty() ? assetPanelTargetViewName() : resolveViewName(viewName);
     const SelectionAttention current = attentionForView(key);
     updateAttention(key, AttentionChange::AssetChange, current.frame, current.layer, assetIndex);
 }
 
-void AnimeanBusiness::unselectAsset(const QString &viewName)
+void AnimeanBusiness::unselectAsset(const String &viewName)
 {
-    const QString key = viewName.isEmpty() ? assetPanelTargetViewName() : resolveViewName(viewName);
+    const String key = viewName.isEmpty() ? assetPanelTargetViewName() : resolveViewName(viewName);
     const SelectionAttention current = attentionForView(key);
     updateAttention(key, AttentionChange::AssetChange, current.frame, -1, -1);
 }
 
-int AnimeanBusiness::addLayerForAsset(int assetIndex, const QString &viewName)
+int AnimeanBusiness::addLayerForAsset(int assetIndex, const String &viewName)
 {
-    const QString key = viewName.isEmpty() ? assetPanelTargetViewName() : resolveViewName(viewName);
+    const String key = viewName.isEmpty() ? assetPanelTargetViewName() : resolveViewName(viewName);
     int layerIndex = -1;
     if (AnimePaintViewAdapter *adapter = adapterFor(key)) {
         if (adapter->addLayerForAsset) {
@@ -2143,7 +2273,7 @@ int AnimeanBusiness::addLayerForAsset(int assetIndex, const QString &viewName)
         AnimeSceneModel &model = modelForView(key);
         layerIndex = model.addLayerForAsset(model.currentFrame(), assetIndex);
         if (layerIndex >= 0) {
-            commitHistory(QStringLiteral("Add Layer for Asset"), key);
+            commitHistory(String("Add Layer for Asset"), key);
         }
     }
     if (layerIndex >= 0) {
@@ -2153,9 +2283,9 @@ int AnimeanBusiness::addLayerForAsset(int assetIndex, const QString &viewName)
     return layerIndex;
 }
 
-bool AnimeanBusiness::assignAssetToLayer(int layerIndex, int assetIndex, const QString &viewName)
+bool AnimeanBusiness::assignAssetToLayer(int layerIndex, int assetIndex, const String &viewName)
 {
-    const QString key = viewName.isEmpty() ? assetPanelTargetViewName() : resolveViewName(viewName);
+    const String key = viewName.isEmpty() ? assetPanelTargetViewName() : resolveViewName(viewName);
     bool assigned = false;
     if (AnimePaintViewAdapter *adapter = adapterFor(key)) {
         if (adapter->assignAssetToLayer) {
@@ -2166,7 +2296,7 @@ bool AnimeanBusiness::assignAssetToLayer(int layerIndex, int assetIndex, const Q
         AnimeSceneModel &model = modelForView(key);
         assigned = model.assignAssetToLayer(model.currentFrame(), layerIndex, assetIndex);
         if (assigned) {
-            commitHistory(QStringLiteral("Assign Asset"), key);
+            commitHistory(String("Assign Asset"), key);
         }
     }
     if (assigned) {
@@ -2176,11 +2306,11 @@ bool AnimeanBusiness::assignAssetToLayer(int layerIndex, int assetIndex, const Q
     return assigned;
 }
 
-QString AnimeanBusiness::undoTargetViewName() const
+String AnimeanBusiness::undoTargetViewName() const
 {
-    QString target;
-    quint64 best = 0;
-    for (const QString &viewKey : {QStringLiteral("main"), QStringLiteral("child")}) {
+    String target;
+    std::uint64_t best = 0;
+    for (const String &viewKey : {String("main"), String("child")}) {
         const SceneHistory &history = historyForView(viewKey);
         if (!history.canUndo()) {
             continue;
@@ -2193,11 +2323,11 @@ QString AnimeanBusiness::undoTargetViewName() const
     return target;
 }
 
-QString AnimeanBusiness::redoTargetViewName() const
+String AnimeanBusiness::redoTargetViewName() const
 {
-    QString target;
-    quint64 best = 0;
-    for (const QString &viewKey : {QStringLiteral("main"), QStringLiteral("child")}) {
+    String target;
+    std::uint64_t best = 0;
+    for (const String &viewKey : {String("main"), String("child")}) {
         const SceneHistory &history = historyForView(viewKey);
         if (!history.canRedo()) {
             continue;
@@ -2220,10 +2350,10 @@ bool AnimeanBusiness::canRedo() const
     return !redoTargetViewName().isEmpty();
 }
 
-QStringList AnimeanBusiness::historyLabels(const QString &viewName) const
+StringList AnimeanBusiness::historyLabels(const String &viewName) const
 {
     const SceneHistory &history = historyForView(viewName.isEmpty() ? m_activeViewName : viewName);
-    QStringList labels;
+    StringList labels;
     labels.reserve(history.count());
     for (int i = 0; i < history.count(); ++i) {
         labels.append(history.labelAt(i));
@@ -2231,50 +2361,51 @@ QStringList AnimeanBusiness::historyLabels(const QString &viewName) const
     return labels;
 }
 
-int AnimeanBusiness::currentHistoryIndex(const QString &viewName) const
+int AnimeanBusiness::currentHistoryIndex(const String &viewName) const
 {
     const SceneHistory &history = historyForView(viewName.isEmpty() ? m_activeViewName : viewName);
     return history.currentIndex();
 }
 
-void AnimeanBusiness::commitHistory(const QString &label, const QString &viewName)
+void AnimeanBusiness::commitHistory(const String &label, const String &viewName)
 {
-    const QString key = viewName.isEmpty() ? m_activeViewName : resolveViewName(viewName);
-    const QString resolvedLabel = label.isEmpty() ? QStringLiteral("Edit") : label;
+    const String key = viewName.isEmpty() ? m_activeViewName : resolveViewName(viewName);
+    const String resolvedLabel = label.isEmpty() ? String("Edit") : label;
     if (AnimePaintViewAdapter *adapter = adapterFor(key)) {
         if (adapter->commitHistory) {
             adapter->commitHistory(resolvedLabel);
             handleViewHistoryCommitted(key);
-            emit requestClearTimelineThumbnails();
+            requestClearTimelineThumbnails();
             return;
         }
     }
     historyForView(key).commit(resolvedLabel, modelForView(key));
     handleViewHistoryCommitted(key);
-    emit requestClearTimelineThumbnails();
-    emit historyChanged();
+    requestClearTimelineThumbnails();
+    historyChanged();
 }
 
-void AnimeanBusiness::resetHistory(const QString &label, const QString &viewName)
+void AnimeanBusiness::resetHistory(const String &label, const String &viewName)
 {
-    const QString key = viewName.isEmpty() ? m_activeViewName : resolveViewName(viewName);
+    const String key = viewName.isEmpty() ? m_activeViewName : resolveViewName(viewName);
     if (AnimePaintViewAdapter *adapter = adapterFor(key)) {
         if (adapter->resetHistory) {
             adapter->resetHistory(label);
-            emit historyChanged();
+            requestClearTimelineThumbnails();
+            historyChanged();
             return;
         }
     }
     historyForView(key).reset(label, modelForView(key));
     notifyHeadlessHistoryRestore(key);
-    emit requestClearTimelineThumbnails();
-    emit historyChanged();
+    requestClearTimelineThumbnails();
+    historyChanged();
 }
 
-void AnimeanBusiness::handleViewHistoryCommitted(const QString &viewName)
+void AnimeanBusiness::handleViewHistoryCommitted(const String &viewName)
 {
-    const QString committedKey = resolveViewName(viewName);
-    for (const QString &otherKey : {QStringLiteral("main"), QStringLiteral("child")}) {
+    const String committedKey = resolveViewName(viewName);
+    for (const String &otherKey : {String("main"), String("child")}) {
         if (otherKey == committedKey) {
             continue;
         }
@@ -2286,20 +2417,21 @@ void AnimeanBusiness::handleViewHistoryCommitted(const QString &viewName)
         }
         historyForView(otherKey).truncateRedo();
     }
-    emit historyChanged();
+    requestClearTimelineThumbnails();
+    historyChanged();
 }
 
-void AnimeanBusiness::applyHistoryRestore(const QString &viewName)
+void AnimeanBusiness::applyHistoryRestore(const String &viewName)
 {
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     stopPlayback();
 
     AnimeSceneModel &model = modelForView(key);
-    if (key == QStringLiteral("child")) {
-        model.setTextId(QStringLiteral("child_paint_view"));
+    if (key == String("child")) {
+        model.setTextId(String("child_paint_view"));
         model.setIntId(2);
     } else {
-        model.setTextId(QStringLiteral("main_paint_view"));
+        model.setTextId(String("main_paint_view"));
         model.setIntId(1);
     }
 
@@ -2313,8 +2445,12 @@ void AnimeanBusiness::applyHistoryRestore(const QString &viewName)
         }
     }
 
-    if (key == QStringLiteral("child")) {
-        emit requestSurfaceTextureView();
+    // Chronological undo/redo may land on the board the user is not looking at:
+    // the main board behind the Texture page as much as a parked texture board.
+    if (key == String("child")) {
+        requestSurfaceTextureView();
+    } else {
+        requestSurfaceMainView();
     }
     setActiveViewName(key);
 
@@ -2323,20 +2459,20 @@ void AnimeanBusiness::applyHistoryRestore(const QString &viewName)
                     model.currentFrame(),
                     model.currentLayer(),
                     model.currentAsset());
-    emit requestClearTimelineThumbnails();
-    emit timelineChanged();
+    requestClearTimelineThumbnails();
+    timelineChanged();
     if (AnimePaintViewAdapter *adapter = adapterFor(key)) {
         if (adapter->requestUpdate) {
             adapter->requestUpdate();
         }
     }
-    emit historyRestored(key);
-    emit historyChanged();
+    historyRestored(key);
+    historyChanged();
 }
 
-bool AnimeanBusiness::undo(const QString &viewName)
+bool AnimeanBusiness::undo(const String &viewName)
 {
-    const QString target = viewName.isEmpty() ? undoTargetViewName() : resolveViewName(viewName);
+    const String target = viewName.isEmpty() ? undoTargetViewName() : resolveViewName(viewName);
     if (target.isEmpty()) {
         return false;
     }
@@ -2344,7 +2480,7 @@ bool AnimeanBusiness::undo(const QString &viewName)
     if (!history.canUndo()) {
         return false;
     }
-    const QString undoneLabel = history.labelAt(history.currentIndex());
+    const String undoneLabel = history.labelAt(history.currentIndex());
     bool ok = false;
     if (AnimePaintViewAdapter *adapter = adapterFor(target)) {
         if (adapter->undoHistory) {
@@ -2359,14 +2495,14 @@ bool AnimeanBusiness::undo(const QString &viewName)
     }
     if (ok) {
         applyHistoryRestore(target);
-        setStatusMessage(QStringLiteral("Undo in %1: %2").arg(target, undoneLabel));
+        setStatusMessage(String("Undo in %1: %2").arg(target, undoneLabel));
     }
     return ok;
 }
 
-bool AnimeanBusiness::redo(const QString &viewName)
+bool AnimeanBusiness::redo(const String &viewName)
 {
-    const QString target = viewName.isEmpty() ? redoTargetViewName() : resolveViewName(viewName);
+    const String target = viewName.isEmpty() ? redoTargetViewName() : resolveViewName(viewName);
     if (target.isEmpty()) {
         return false;
     }
@@ -2388,15 +2524,15 @@ bool AnimeanBusiness::redo(const QString &viewName)
     }
     if (ok) {
         applyHistoryRestore(target);
-        setStatusMessage(QStringLiteral("Redo in %1: %2")
+        setStatusMessage(String("Redo in %1: %2")
                              .arg(target, history.labelAt(history.currentIndex())));
     }
     return ok;
 }
 
-bool AnimeanBusiness::goToHistory(int row, const QString &viewName)
+bool AnimeanBusiness::goToHistory(int row, const String &viewName)
 {
-    const QString target = viewName.isEmpty() ? m_activeViewName : resolveViewName(viewName);
+    const String target = viewName.isEmpty() ? m_activeViewName : resolveViewName(viewName);
     if (row < 0) {
         return false;
     }
@@ -2415,26 +2551,26 @@ bool AnimeanBusiness::goToHistory(int row, const QString &viewName)
     if (ok) {
         applyHistoryRestore(target);
     } else {
-        emit historyChanged();
+        historyChanged();
     }
     return ok;
 }
 
-int AnimeanBusiness::frameCount(const QString &viewName) const
+int AnimeanBusiness::frameCount(const String &viewName) const
 {
-    const QString key = viewName.isEmpty() ? framePanelTargetViewName() : resolveViewName(viewName);
+    const String key = viewName.isEmpty() ? framePanelTargetViewName() : resolveViewName(viewName);
     return modelForView(key).frameCount();
 }
 
-int AnimeanBusiness::currentFrame(const QString &viewName) const
+int AnimeanBusiness::currentFrame(const String &viewName) const
 {
-    const QString key = viewName.isEmpty() ? framePanelTargetViewName() : resolveViewName(viewName);
+    const String key = viewName.isEmpty() ? framePanelTargetViewName() : resolveViewName(viewName);
     return attentionForView(key).frame;
 }
 
-int AnimeanBusiness::playbackFps(const QString &viewName) const
+int AnimeanBusiness::playbackFps(const String &viewName) const
 {
-    const QString key = viewName.isEmpty() ? framePanelTargetViewName() : resolveViewName(viewName);
+    const String key = viewName.isEmpty() ? framePanelTargetViewName() : resolveViewName(viewName);
     return modelForView(key).playbackFps();
 }
 
@@ -2448,7 +2584,7 @@ int AnimeanBusiness::playbackIndex() const
     return m_playbackIndex;
 }
 
-QString AnimeanBusiness::playbackViewName() const
+String AnimeanBusiness::playbackViewName() const
 {
     return m_playbackViewName;
 }
@@ -2483,17 +2619,17 @@ bool AnimeanBusiness::isOnionGuideLines() const
     return m_onionGuideLines;
 }
 
-QSet<int> AnimeanBusiness::onionFrames() const
+Set<int> AnimeanBusiness::onionFrames() const
 {
     return m_onionFrames;
 }
 
-QStringList AnimeanBusiness::onionExcludeProperties() const
+StringList AnimeanBusiness::onionExcludeProperties() const
 {
     return m_onionExcludeProperties;
 }
 
-QString AnimeanBusiness::onionLayerTag() const
+String AnimeanBusiness::onionLayerTag() const
 {
     return m_onionLayerTag;
 }
@@ -2516,7 +2652,7 @@ AnimeTimelineState AnimeanBusiness::timelineState() const
     state.fps = model.playbackFps();
     state.playbackActive = isPlaybackActive();
     state.loop = m_playbackLoop;
-    state.onionAvailable = (state.viewName == QStringLiteral("main"));
+    state.onionAvailable = (state.viewName == String("main"));
     state.onionEnabled = m_onionEnabled;
     state.onionLines = m_onionLines;
     state.onionFills = m_onionFills;
@@ -2529,7 +2665,7 @@ AnimeTimelineState AnimeanBusiness::timelineState() const
 void AnimeanBusiness::selectFrame(int frameIndex)
 {
     stopPlayback();
-    const QString key = framePanelTargetViewName();
+    const String key = framePanelTargetViewName();
     const SelectionAttention current = attentionForView(key);
     updateAttention(key, AttentionChange::FrameChange, frameIndex, current.layer, current.asset);
 }
@@ -2537,7 +2673,7 @@ void AnimeanBusiness::selectFrame(int frameIndex)
 void AnimeanBusiness::stepFrame(int delta)
 {
     stopPlayback();
-    const QString key = framePanelTargetViewName();
+    const String key = framePanelTargetViewName();
     const SelectionAttention current = attentionForView(key);
     const int frame = std::min(std::max(0, current.frame + delta),
                                std::max(0, frameCount(key) - 1));
@@ -2557,7 +2693,7 @@ void AnimeanBusiness::nextFrame()
 int AnimeanBusiness::addFrame()
 {
     stopPlayback();
-    const QString key = framePanelTargetViewName();
+    const String key = framePanelTargetViewName();
     int frameIndex = -1;
     if (AnimePaintViewAdapter *adapter = adapterFor(key)) {
         if (adapter->addFrame) {
@@ -2568,11 +2704,11 @@ int AnimeanBusiness::addFrame()
         AnimeSceneModel &model = modelForView(key);
         frameIndex = model.addFrame();
         if (frameIndex >= 0) {
-            commitHistory(QStringLiteral("Add Frame"), key);
+            commitHistory(String("Add Frame"), key);
         }
     }
     if (frameIndex >= 0) {
-        emit requestClearTimelineThumbnails();
+        requestClearTimelineThumbnails();
         const SelectionAttention current = attentionForView(key);
         updateAttention(key, AttentionChange::FrameChange, frameIndex, current.layer, current.asset);
     }
@@ -2582,7 +2718,7 @@ int AnimeanBusiness::addFrame()
 int AnimeanBusiness::addHoldFrame()
 {
     stopPlayback();
-    const QString key = framePanelTargetViewName();
+    const String key = framePanelTargetViewName();
     const SelectionAttention current = attentionForView(key);
     int frameIndex = -1;
     if (AnimePaintViewAdapter *adapter = adapterFor(key)) {
@@ -2594,11 +2730,11 @@ int AnimeanBusiness::addHoldFrame()
         AnimeSceneModel &model = modelForView(key);
         frameIndex = model.insertHoldFrameAfter(current.frame);
         if (frameIndex >= 0) {
-            commitHistory(QStringLiteral("Add Hold Frame"), key);
+            commitHistory(String("Add Hold Frame"), key);
         }
     }
     if (frameIndex >= 0) {
-        emit requestClearTimelineThumbnails();
+        requestClearTimelineThumbnails();
         updateAttention(key, AttentionChange::FrameChange, frameIndex, current.layer, current.asset);
     }
     return frameIndex;
@@ -2607,7 +2743,7 @@ int AnimeanBusiness::addHoldFrame()
 int AnimeanBusiness::duplicateFrame()
 {
     stopPlayback();
-    const QString key = framePanelTargetViewName();
+    const String key = framePanelTargetViewName();
     const SelectionAttention current = attentionForView(key);
     int frameIndex = -1;
     if (AnimePaintViewAdapter *adapter = adapterFor(key)) {
@@ -2619,11 +2755,11 @@ int AnimeanBusiness::duplicateFrame()
         AnimeSceneModel &model = modelForView(key);
         frameIndex = model.duplicateFrame(current.frame);
         if (frameIndex >= 0) {
-            commitHistory(QStringLiteral("Duplicate Frame"), key);
+            commitHistory(String("Duplicate Frame"), key);
         }
     }
     if (frameIndex >= 0) {
-        emit requestClearTimelineThumbnails();
+        requestClearTimelineThumbnails();
         updateAttention(key, AttentionChange::FrameChange, frameIndex, current.layer, current.asset);
     }
     return frameIndex;
@@ -2632,7 +2768,7 @@ int AnimeanBusiness::duplicateFrame()
 bool AnimeanBusiness::deleteFrame()
 {
     stopPlayback();
-    const QString key = framePanelTargetViewName();
+    const String key = framePanelTargetViewName();
     const SelectionAttention current = attentionForView(key);
     const int row = current.frame;
     bool deleted = false;
@@ -2644,12 +2780,12 @@ bool AnimeanBusiness::deleteFrame()
     if (!deleted && (!adapterFor(key) || !adapterFor(key)->deleteFrame)) {
         AnimeSceneModel &model = modelForView(key);
         if (model.deleteFrame(row)) {
-            commitHistory(QStringLiteral("Delete Frame"), key);
+            commitHistory(String("Delete Frame"), key);
             deleted = true;
         }
     }
     if (deleted) {
-        emit requestClearTimelineThumbnails();
+        requestClearTimelineThumbnails();
         const int count = frameCount(key);
         const int nextFrame = row < count ? row : count - 1;
         updateAttention(key, AttentionChange::FrameChange, nextFrame, current.layer, current.asset);
@@ -2660,8 +2796,8 @@ bool AnimeanBusiness::deleteFrame()
 bool AnimeanBusiness::moveFrame(int fromIndex, int toIndex)
 {
     stopPlayback();
-    const QString key = framePanelTargetViewName();
-    emit requestClearTimelineThumbnails();
+    const String key = framePanelTargetViewName();
+    requestClearTimelineThumbnails();
     bool moved = false;
     if (AnimePaintViewAdapter *adapter = adapterFor(key)) {
         if (adapter->moveFrame) {
@@ -2671,7 +2807,7 @@ bool AnimeanBusiness::moveFrame(int fromIndex, int toIndex)
     if (!moved && (!adapterFor(key) || !adapterFor(key)->moveFrame)) {
         AnimeSceneModel &model = modelForView(key);
         if (model.moveFrame(fromIndex, toIndex)) {
-            commitHistory(QStringLiteral("Move Frame"), key);
+            commitHistory(String("Move Frame"), key);
             moved = true;
         }
     }
@@ -2691,18 +2827,18 @@ bool AnimeanBusiness::moveFrame(int fromIndex, int toIndex)
 
 void AnimeanBusiness::setFps(int fps)
 {
-    const QString key = framePanelTargetViewName();
+    const String key = framePanelTargetViewName();
     AnimeSceneModel &model = modelForView(key);
     const int current = model.playbackFps();
     if (fps != current) {
         model.setPlaybackFps(fps);
-        commitHistory(QStringLiteral("Playback Rate"), key);
+        commitHistory(String("Playback Rate"), key);
     }
     if (m_playbackTimer && m_playbackTimer->isActive()) {
         m_playbackTimer->setInterval(1000 / std::max(1, model.playbackFps()));
     }
-    emit timelineChanged();
-    setStatusMessage(QStringLiteral("Playback: %1 fps").arg(model.playbackFps()));
+    timelineChanged();
+    setStatusMessage(String("Playback: %1 fps").arg(model.playbackFps()));
 }
 
 void AnimeanBusiness::startPlayback()
@@ -2711,15 +2847,15 @@ void AnimeanBusiness::startPlayback()
         return;
     }
 
-    const QString key = framePanelTargetViewName();
+    const String key = framePanelTargetViewName();
     const int totalFrames = frameCount(key);
     if (totalFrames < 2) {
-        setStatusMessage(QStringLiteral("Playback needs at least two frames."));
+        setStatusMessage(String("Playback needs at least two frames."));
         return;
     }
 
-    setStatusMessage(QStringLiteral("Prerendering %1 frames...").arg(totalFrames));
-    QString error;
+    setStatusMessage(String("Prerendering %1 frames...").arg(totalFrames));
+    String error;
     bool prerendered = true;
     if (AnimePaintViewAdapter *adapter = adapterFor(key)) {
         if (adapter->buildPlaybackCache) {
@@ -2727,7 +2863,7 @@ void AnimeanBusiness::startPlayback()
         }
     }
     if (!prerendered) {
-        setStatusMessage(QStringLiteral("Playback unavailable: %1").arg(error));
+        setStatusMessage(String("Playback unavailable: %1").arg(error));
         return;
     }
 
@@ -2743,8 +2879,8 @@ void AnimeanBusiness::startPlayback()
     m_playbackTimer->setInterval(1000 / fps);
     m_playbackTimer->start();
 
-    emit playbackStateChanged(true, m_playbackIndex, m_playbackViewName);
-    setStatusMessage(QStringLiteral("Playing %1 frames of %2 at %3 fps (prerendered)")
+    playbackStateChanged(true, m_playbackIndex, m_playbackViewName);
+    setStatusMessage(String("Playing %1 frames of %2 at %3 fps (prerendered)")
                          .arg(totalFrames)
                          .arg(key)
                          .arg(1000 / m_playbackTimer->interval()));
@@ -2766,7 +2902,7 @@ void AnimeanBusiness::advancePlaybackFrame()
             adapter->showPlaybackFrame(m_playbackIndex);
         }
     }
-    emit playbackStateChanged(true, m_playbackIndex, m_playbackViewName);
+    playbackStateChanged(true, m_playbackIndex, m_playbackViewName);
 }
 
 void AnimeanBusiness::stopPlayback()
@@ -2776,7 +2912,7 @@ void AnimeanBusiness::stopPlayback()
     }
 
     m_playbackTimer->stop();
-    const QString viewKey = m_playbackViewName;
+    const String viewKey = m_playbackViewName;
     const int pausedFrame = m_playbackIndex;
     m_playbackViewName.clear();
     m_playbackFrameCount = 0;
@@ -2786,11 +2922,11 @@ void AnimeanBusiness::stopPlayback()
             adapter->endPlayback();
         }
     }
-    emit playbackStateChanged(false, pausedFrame, viewKey);
+    playbackStateChanged(false, pausedFrame, viewKey);
 
     const SelectionAttention current = attentionForView(viewKey);
     updateAttention(viewKey, AttentionChange::FrameChange, pausedFrame, current.layer, current.asset);
-    setStatusMessage(QStringLiteral("Paused at frame %1 (vector view)").arg(pausedFrame + 1));
+    setStatusMessage(String("Paused at frame %1 (vector view)").arg(pausedFrame + 1));
 }
 
 void AnimeanBusiness::setPlaybackLoop(bool loop)
@@ -2799,101 +2935,101 @@ void AnimeanBusiness::setPlaybackLoop(bool loop)
         return;
     }
     m_playbackLoop = loop;
-    emit timelineChanged();
+    timelineChanged();
 }
 
 void AnimeanBusiness::setOnionEnabled(bool on)
 {
-    if (framePanelTargetViewName() != QStringLiteral("main")) {
+    if (framePanelTargetViewName() != String("main")) {
         return;
     }
     m_onionEnabled = on;
     if (on && m_onionFrames.isEmpty()) {
-        const int frame = attentionForView(QStringLiteral("main")).frame;
+        const int frame = attentionForView(String("main")).frame;
         if (frame > 0) {
             m_onionFrames.insert(frame - 1);
         }
-        if (frame + 1 < frameCount(QStringLiteral("main"))) {
+        if (frame + 1 < frameCount(String("main"))) {
             m_onionFrames.insert(frame + 1);
         }
-        if (AnimePaintViewAdapter *adapter = adapterFor(QStringLiteral("main"))) {
+        if (AnimePaintViewAdapter *adapter = adapterFor(String("main"))) {
             if (adapter->setOnionFrames) {
                 adapter->setOnionFrames(m_onionFrames);
             }
         }
     }
-    if (AnimePaintViewAdapter *adapter = adapterFor(QStringLiteral("main"))) {
+    if (AnimePaintViewAdapter *adapter = adapterFor(String("main"))) {
         if (adapter->setOnionEnabled) {
             adapter->setOnionEnabled(on);
         }
     }
-    emit onionStateChanged();
-    emit timelineChanged();
+    onionStateChanged();
+    timelineChanged();
 }
 
 void AnimeanBusiness::setOnionLines(bool on)
 {
-    if (framePanelTargetViewName() != QStringLiteral("main")) {
+    if (framePanelTargetViewName() != String("main")) {
         return;
     }
     m_onionLines = on;
-    if (AnimePaintViewAdapter *adapter = adapterFor(QStringLiteral("main"))) {
+    if (AnimePaintViewAdapter *adapter = adapterFor(String("main"))) {
         if (adapter->setOnionLines) {
             adapter->setOnionLines(on);
         }
     }
-    emit onionStateChanged();
-    emit timelineChanged();
+    onionStateChanged();
+    timelineChanged();
 }
 
 void AnimeanBusiness::setOnionFills(bool on)
 {
-    if (framePanelTargetViewName() != QStringLiteral("main")) {
+    if (framePanelTargetViewName() != String("main")) {
         return;
     }
     m_onionFills = on;
-    if (AnimePaintViewAdapter *adapter = adapterFor(QStringLiteral("main"))) {
+    if (AnimePaintViewAdapter *adapter = adapterFor(String("main"))) {
         if (adapter->setOnionFills) {
             adapter->setOnionFills(on);
         }
     }
-    emit onionStateChanged();
-    emit timelineChanged();
+    onionStateChanged();
+    timelineChanged();
 }
 
 void AnimeanBusiness::setOnionAmLayers(bool on)
 {
-    if (framePanelTargetViewName() != QStringLiteral("main")) {
+    if (framePanelTargetViewName() != String("main")) {
         return;
     }
     m_onionAmLayers = on;
-    if (AnimePaintViewAdapter *adapter = adapterFor(QStringLiteral("main"))) {
+    if (AnimePaintViewAdapter *adapter = adapterFor(String("main"))) {
         if (adapter->setOnionAmLayers) {
             adapter->setOnionAmLayers(on);
         }
     }
-    emit onionStateChanged();
-    emit timelineChanged();
+    onionStateChanged();
+    timelineChanged();
 }
 
 void AnimeanBusiness::setOnionGuideLines(bool on)
 {
-    if (framePanelTargetViewName() != QStringLiteral("main")) {
+    if (framePanelTargetViewName() != String("main")) {
         return;
     }
     m_onionGuideLines = on;
-    if (AnimePaintViewAdapter *adapter = adapterFor(QStringLiteral("main"))) {
+    if (AnimePaintViewAdapter *adapter = adapterFor(String("main"))) {
         if (adapter->setOnionGuideLines) {
             adapter->setOnionGuideLines(on);
         }
     }
-    emit onionStateChanged();
-    emit timelineChanged();
+    onionStateChanged();
+    timelineChanged();
 }
 
 void AnimeanBusiness::toggleOnionFrame(int frame, bool on)
 {
-    if (framePanelTargetViewName() != QStringLiteral("main")) {
+    if (framePanelTargetViewName() != String("main")) {
         return;
     }
     if (on) {
@@ -2901,13 +3037,13 @@ void AnimeanBusiness::toggleOnionFrame(int frame, bool on)
     } else {
         m_onionFrames.remove(frame);
     }
-    if (AnimePaintViewAdapter *adapter = adapterFor(QStringLiteral("main"))) {
+    if (AnimePaintViewAdapter *adapter = adapterFor(String("main"))) {
         if (adapter->setOnionFrames) {
             adapter->setOnionFrames(m_onionFrames);
         }
     }
-    emit onionStateChanged();
-    emit timelineChanged();
+    onionStateChanged();
+    timelineChanged();
 }
 
 void AnimeanBusiness::pullOnionPolicy()
@@ -2921,40 +3057,40 @@ void AnimeanBusiness::pullOnionPolicy()
         const std::string json = py::module_::import("python_hooks")
                                      .attr("onion_guide_properties_json")()
                                      .cast<std::string>();
-        const QJsonDocument document = QJsonDocument::fromJson(QByteArray::fromStdString(json));
-        QStringList properties;
-        for (const QJsonValue &value : document.array()) {
-            const QString property = value.toString();
+        const JsonDocument document = JsonDocument::fromJson(json);
+        StringList properties;
+        for (const JsonValue &value : document.array()) {
+            const String property = value.toString();
             if (!property.isEmpty()) {
                 properties.append(property);
             }
         }
         m_onionExcludeProperties = properties;
-        if (AnimePaintViewAdapter *adapter = adapterFor(QStringLiteral("main"))) {
+        if (AnimePaintViewAdapter *adapter = adapterFor(String("main"))) {
             if (adapter->setOnionExcludeProperties) {
                 adapter->setOnionExcludeProperties(properties);
             }
         }
     } catch (const py::error_already_set &error) {
-        setStatusMessage(QStringLiteral("onion guide properties error: %1")
-                             .arg(QString::fromUtf8(error.what())));
+        setStatusMessage(String("onion guide properties error: %1")
+                             .arg(String::fromUtf8(error.what())));
     }
     try {
         py::gil_scoped_acquire acquire;
         const std::string json = py::module_::import("python_hooks")
                                      .attr("onion_layer_tag_json")()
                                      .cast<std::string>();
-        const QJsonArray array =
-            QJsonDocument::fromJson("[" + QByteArray::fromStdString(json) + "]").array();
-        m_onionLayerTag = array.isEmpty() ? QString() : array.at(0).toString();
-        if (AnimePaintViewAdapter *adapter = adapterFor(QStringLiteral("main"))) {
+        const JsonArray array =
+            JsonDocument::fromJson("[" + json + "]").array();
+        m_onionLayerTag = array.isEmpty() ? String() : array.at(0).toString();
+        if (AnimePaintViewAdapter *adapter = adapterFor(String("main"))) {
             if (adapter->setOnionLayerTag) {
                 adapter->setOnionLayerTag(m_onionLayerTag);
             }
         }
     } catch (const py::error_already_set &error) {
-        setStatusMessage(QStringLiteral("onion layer tag error: %1")
-                             .arg(QString::fromUtf8(error.what())));
+        setStatusMessage(String("onion layer tag error: %1")
+                             .arg(String::fromUtf8(error.what())));
     }
 #endif
 }
@@ -2969,8 +3105,8 @@ void AnimeanBusiness::syncEmbeddedPythonState()
             py::object animeanPython = py::module_::import("animean_python");
             py::object animeModel = py::module_::import("animemodel");
             AnimeSceneModel &activeModel = modelForView(m_activeViewName);
-            AnimeSceneModel &mainModel = modelForView(QStringLiteral("main"));
-            AnimeSceneModel &childModel = modelForView(QStringLiteral("child"));
+            AnimeSceneModel &mainModel = modelForView(String("main"));
+            AnimeSceneModel &childModel = modelForView(String("child"));
             globals["animean_python"] = animeanPython;
             globals["animemodel"] = animeModel;
             globals["ui"] = animeModel.attr("ui");
@@ -2988,72 +3124,72 @@ void AnimeanBusiness::syncEmbeddedPythonState()
             globals["child_canvas_width"] = childModel.canvasSize().width();
             globals["child_canvas_height"] = childModel.canvasSize().height();
         } catch (const py::error_already_set &error) {
-            emit pythonDebugMessage(QStringLiteral("[python register] error: %1").arg(QString::fromUtf8(error.what())));
-            setStatusMessage(QStringLiteral("Python state sync error: %1").arg(QString::fromUtf8(error.what())));
+            pythonDebugMessage(String("[python register] error: %1").arg(String::fromUtf8(error.what())));
+            setStatusMessage(String("Python state sync error: %1").arg(String::fromUtf8(error.what())));
         }
     }
 #endif
-    emit pythonStateSyncRequested();
+    pythonStateSyncRequested();
 }
 
-QString AnimeanBusiness::resolvePythonScriptPath(const QString &scriptName)
+String AnimeanBusiness::resolvePythonScriptPath(const String &scriptName)
 {
-    const QFileInfo directInfo(scriptName);
+    const FileInfo directInfo(scriptName);
     if (directInfo.exists()) {
         return directInfo.absoluteFilePath();
     }
 
-    const QString appPath = QCoreApplication::applicationDirPath();
-    const QStringList candidates = {
-        QDir(appPath).filePath(scriptName),
-        QDir(appPath).filePath(QStringLiteral("pyfile/%1").arg(scriptName)),
-        QDir(appPath).filePath(QStringLiteral("../pyfile/%1").arg(scriptName)),
-        QDir(appPath).filePath(QStringLiteral("../../pyfile/%1").arg(scriptName)),
+    const String appPath = CoreApplication::applicationDirPath();
+    const StringList candidates = {
+        Dir(appPath).filePath(scriptName),
+        Dir(appPath).filePath(String("pyfile/%1").arg(scriptName)),
+        Dir(appPath).filePath(String("../pyfile/%1").arg(scriptName)),
+        Dir(appPath).filePath(String("../../pyfile/%1").arg(scriptName)),
 #ifdef ANIMEAN_PYFILE_DIR
-        QDir(QStringLiteral(ANIMEAN_PYFILE_DIR)).filePath(scriptName),
+        Dir(String(ANIMEAN_PYFILE_DIR)).filePath(scriptName),
 #endif
 #ifdef ANIMEAN_PYTHONBIND_DIR
-        QDir(QStringLiteral(ANIMEAN_PYTHONBIND_DIR)).filePath(scriptName),
+        Dir(String(ANIMEAN_PYTHONBIND_DIR)).filePath(scriptName),
 #endif
 #ifdef ANIMEAN_SOURCE_DIR
-        QDir(QStringLiteral(ANIMEAN_SOURCE_DIR)).filePath(scriptName),
+        Dir(String(ANIMEAN_SOURCE_DIR)).filePath(scriptName),
 #endif
     };
 
-    for (const QString &candidate : candidates) {
-        if (QFileInfo::exists(candidate)) {
-            return QFileInfo(candidate).absoluteFilePath();
+    for (const String &candidate : candidates) {
+        if (FileInfo::exists(candidate)) {
+            return FileInfo(candidate).absoluteFilePath();
         }
     }
 
-    return QString();
+    return String();
 }
 
-QString AnimeanBusiness::runEmbeddedPythonCommand(const QString &command, const QString &scriptDir)
+String AnimeanBusiness::runEmbeddedPythonCommand(const String &command, const String &scriptDir)
 {
 #ifdef ANIMEAN_WITH_PYTHON
     if (!Py_IsInitialized()) {
-        return QStringLiteral("Python disabled");
+        return String("Python disabled");
     }
     try {
         py::gil_scoped_acquire acquire;
         py::module_ sys = py::module_::import("sys");
         py::list sysPath = sys.attr("path");
-        QStringList searchDirs;
+        StringList searchDirs;
         if (!scriptDir.isEmpty()) {
-            searchDirs.append(QDir::cleanPath(scriptDir));
+            searchDirs.append(Dir::cleanPath(scriptDir));
         }
 #ifdef ANIMEAN_PYFILE_DIR
-        searchDirs.append(QDir::cleanPath(QStringLiteral(ANIMEAN_PYFILE_DIR)));
+        searchDirs.append(Dir::cleanPath(String(ANIMEAN_PYFILE_DIR)));
 #endif
 #ifdef ANIMEAN_PYTHONBIND_DIR
-        searchDirs.append(QDir::cleanPath(QStringLiteral(ANIMEAN_PYTHONBIND_DIR)));
+        searchDirs.append(Dir::cleanPath(String(ANIMEAN_PYTHONBIND_DIR)));
 #endif
-        for (const QString &dir : searchDirs) {
-            if (dir.isEmpty() || !QFileInfo::exists(dir)) {
+        for (const String &dir : searchDirs) {
+            if (dir.isEmpty() || !FileInfo::exists(dir)) {
                 continue;
             }
-            const std::string cleanDir = QDir::cleanPath(dir).toStdString();
+            const std::string cleanDir = Dir::cleanPath(dir).toStdString();
             if (!sysPath.contains(py::str(cleanDir))) {
                 sysPath.insert(0, cleanDir);
             }
@@ -3062,18 +3198,18 @@ QString AnimeanBusiness::runEmbeddedPythonCommand(const QString &command, const 
         py::dict globals = py::module_::import("__main__").attr("__dict__");
         syncEmbeddedPythonState();
 
-        const QString runPrefix = QStringLiteral("run ");
-        QString scriptName;
-        if (command.endsWith(QStringLiteral(".py"), Qt::CaseInsensitive)) {
+        const String runPrefix = String("run ");
+        String scriptName;
+        if (command.endsWith(String(".py"), CaseInsensitive)) {
             scriptName = command;
-        } else if (command.startsWith(runPrefix, Qt::CaseInsensitive)) {
+        } else if (command.startsWith(runPrefix, CaseInsensitive)) {
             scriptName = command.mid(runPrefix.size()).trimmed();
         }
 
         const bool runScript = !scriptName.isEmpty();
-        const QString scriptPath = runScript ? resolvePythonScriptPath(scriptName) : QString();
+        const String scriptPath = runScript ? resolvePythonScriptPath(scriptName) : String();
         if (runScript && scriptPath.isEmpty()) {
-            return QStringLiteral("Python script not found: %1").arg(scriptName);
+            return String("Python script not found: %1").arg(scriptName);
         }
 
         py::object io = py::module_::import("io");
@@ -3083,16 +3219,16 @@ QString AnimeanBusiness::runEmbeddedPythonCommand(const QString &command, const 
         py::object stdoutRedirect = contextlib.attr("redirect_stdout")(stdoutBuffer);
         py::object stderrRedirect = contextlib.attr("redirect_stderr")(stderrBuffer);
 
-        QString errorText;
+        String errorText;
         stdoutRedirect.attr("__enter__")();
         stderrRedirect.attr("__enter__")();
         try {
             if (runScript) {
                 globals["__file__"] = scriptPath.toStdString();
-                const QString normalizedPath = QDir::toNativeSeparators(scriptPath);
-                const QString scriptLiteral = QString::fromStdString(
+                const String normalizedPath = Dir::toNativeSeparators(scriptPath);
+                const String scriptLiteral = String::fromStdString(
                     py::repr(py::str(normalizedPath.toStdString())).cast<std::string>());
-                const QString code = QStringLiteral(
+                const String code = String(
                     "with open(%1, 'r', encoding='utf-8') as __animean_file:\n"
                     "    __animean_code = __animean_file.read()\n"
                     "exec(compile(__animean_code, %1, 'exec'), globals())\n")
@@ -3113,13 +3249,13 @@ QString AnimeanBusiness::runEmbeddedPythonCommand(const QString &command, const 
                 py::exec(runner, globals);
             }
         } catch (const py::error_already_set &error) {
-            errorText = QString::fromUtf8(error.what());
+            errorText = String::fromUtf8(error.what());
         }
         stderrRedirect.attr("__exit__")(py::none(), py::none(), py::none());
         stdoutRedirect.attr("__exit__")(py::none(), py::none(), py::none());
 
-        QString output = QString::fromUtf8(stdoutBuffer.attr("getvalue")().cast<std::string>().c_str());
-        const QString stderrOutput = QString::fromUtf8(stderrBuffer.attr("getvalue")().cast<std::string>().c_str());
+        String output = String::fromUtf8(stdoutBuffer.attr("getvalue")().cast<std::string>().c_str());
+        const String stderrOutput = String::fromUtf8(stderrBuffer.attr("getvalue")().cast<std::string>().c_str());
         if (!stderrOutput.isEmpty()) {
             output += stderrOutput;
         }
@@ -3127,7 +3263,7 @@ QString AnimeanBusiness::runEmbeddedPythonCommand(const QString &command, const 
             output += errorText;
         }
         if (output.trimmed().isEmpty()) {
-            output = QStringLiteral("(no output)");
+            output = String("(no output)");
         }
         AnimeSceneModel &activeModel = modelForView(m_activeViewName);
         updateAttention(m_activeViewName,
@@ -3135,7 +3271,7 @@ QString AnimeanBusiness::runEmbeddedPythonCommand(const QString &command, const 
                         activeModel.currentFrame(),
                         activeModel.currentLayer(),
                         activeModel.currentAsset());
-        for (const QString &viewKey : {QStringLiteral("main"), QStringLiteral("child")}) {
+        for (const String &viewKey : {String("main"), String("child")}) {
             if (AnimePaintViewAdapter *adapter = adapterFor(viewKey)) {
                 if (adapter->requestUpdate) {
                     adapter->requestUpdate();
@@ -3144,65 +3280,65 @@ QString AnimeanBusiness::runEmbeddedPythonCommand(const QString &command, const 
         }
         return output;
     } catch (const py::error_already_set &error) {
-        return QStringLiteral("Python debug error: %1").arg(QString::fromUtf8(error.what()));
+        return String("Python debug error: %1").arg(String::fromUtf8(error.what()));
     }
 #else
-    Q_UNUSED(command);
-    Q_UNUSED(scriptDir);
-    return QStringLiteral("Python disabled");
+    (void)(command);
+    (void)(scriptDir);
+    return String("Python disabled");
 #endif
 }
 
-QString AnimeanBusiness::runPythonInitializationScript(QString *outputOut)
+String AnimeanBusiness::runPythonInitializationScript(String *outputOut)
 {
 #ifdef ANIMEAN_WITH_PYTHON
-    emit pythonDebugMessage(QStringLiteral("> initalize.py"));
-    const QString output = runEmbeddedPythonCommand(QStringLiteral("initalize.py")).trimmed();
+    pythonDebugMessage(String("> initalize.py"));
+    const String output = runEmbeddedPythonCommand(String("initalize.py")).trimmed();
     if (outputOut) {
         *outputOut = output;
     }
-    emit pythonDebugMessage(output);
+    pythonDebugMessage(output);
     loadExtraTools();
     pullOnionPolicy();
     return output;
 #else
     if (outputOut) {
-        *outputOut = QStringLiteral("Python disabled");
+        *outputOut = String("Python disabled");
     }
-    return QStringLiteral("Python disabled");
+    return String("Python disabled");
 #endif
 }
 
-void AnimeanBusiness::setHeadlessViewTool(const QString &viewName, int tool)
+void AnimeanBusiness::setHeadlessViewTool(const String &viewName, int tool)
 {
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     HeadlessViewState &state = m_headlessViewState[key];
     const Tool oldTool = static_cast<Tool>(state.tool);
     const Tool newTool = static_cast<Tool>(tool);
     if ((oldTool == Tool::Arrow || oldTool == Tool::Connect || oldTool == Tool::Transfer)
         && newTool != oldTool) {
-        dispatchHeadlessHandleHook(key, QStringLiteral("cancel"));
+        dispatchHeadlessHandleHook(key, String("cancel"));
     }
     state.tool = tool;
-    dispatchHeadlessHandleHook(key, QStringLiteral("arm"));
+    dispatchHeadlessHandleHook(key, String("arm"));
 }
 
-void AnimeanBusiness::setHeadlessViewStrokeProperty(const QString &viewName, const QString &property)
+void AnimeanBusiness::setHeadlessViewStrokeProperty(const String &viewName, const String &property)
 {
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     HeadlessViewState &state = m_headlessViewState[key];
     const bool changed = state.strokeProperty != property;
     state.strokeProperty = property;
-    state.activePythonTool = property.isEmpty() ? QString() : QStringLiteral("extra");
+    state.activePythonTool = property.isEmpty() ? String() : String("extra");
     if (changed) {
-        dispatchHeadlessHandleHook(key, QStringLiteral("arm"));
+        dispatchHeadlessHandleHook(key, String("arm"));
     }
 }
 
-void AnimeanBusiness::notifyHeadlessFrameChangedIfNeeded(const QString &viewName)
+void AnimeanBusiness::notifyHeadlessFrameChangedIfNeeded(const String &viewName)
 {
 #ifdef ANIMEAN_WITH_PYTHON
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     const AnimeSceneModel &model = modelForView(key);
     HeadlessViewState &state = m_headlessViewState[key];
     const int frame = model.currentFrame();
@@ -3210,7 +3346,7 @@ void AnimeanBusiness::notifyHeadlessFrameChangedIfNeeded(const QString &viewName
         return;
     }
     state.pythonNotifiedFrame = frame;
-    if (!Py_IsInitialized() || !animeanHookEventSubscribed(QStringLiteral("framechange"))) {
+    if (!Py_IsInitialized() || !animeanHookEventSubscribed(String("framechange"))) {
         return;
     }
     const int layer = model.currentLayer();
@@ -3222,7 +3358,7 @@ void AnimeanBusiness::notifyHeadlessFrameChangedIfNeeded(const QString &viewName
     cellInfo["asset"] = cell.assetIndex;
     cellInfo["frame_id"] = cell.frameId;
 
-    const QString baseToolName = toolControlName(static_cast<Tool>(state.tool));
+    const String baseToolName = toolControlName(static_cast<Tool>(state.tool));
     py::dict message;
     message["event"] = "framechange";
     message["view"] = key.toStdString();
@@ -3231,22 +3367,22 @@ void AnimeanBusiness::notifyHeadlessFrameChangedIfNeeded(const QString &viewName
     message["property"] = state.strokeProperty.toStdString();
     message["cell"] = cellInfo;
     message["stroke"] = py::dict();
-    message["position"] = pointToPythonDict(QPointF());
-    message["delta"] = pointToPythonDict(QPointF());
+    message["position"] = pointToPythonDict(PointF());
+    message["delta"] = pointToPythonDict(PointF());
 
-    const QString output = pythonHookSendMessage(message);
+    const String output = pythonHookSendMessage(message);
     if (!isQuietHookOutput(output)) {
-        emit pythonDebugMessage(output);
+        pythonDebugMessage(output);
     }
 #else
-    Q_UNUSED(viewName);
+    (void)(viewName);
 #endif
 }
 
-void AnimeanBusiness::notifyHeadlessLayerChangedIfNeeded(const QString &viewName)
+void AnimeanBusiness::notifyHeadlessLayerChangedIfNeeded(const String &viewName)
 {
 #ifdef ANIMEAN_WITH_PYTHON
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     const AnimeSceneModel &model = modelForView(key);
     HeadlessViewState &state = m_headlessViewState[key];
     const int layer = model.currentLayer();
@@ -3257,7 +3393,7 @@ void AnimeanBusiness::notifyHeadlessLayerChangedIfNeeded(const QString &viewName
     const int previous = state.pythonNotifiedLayer;
     state.pythonNotifiedLayer = layer;
     state.pythonNotifiedLayerId = layerId;
-    if (!Py_IsInitialized() || !animeanHookEventSubscribed(QStringLiteral("layerchange"))) {
+    if (!Py_IsInitialized() || !animeanHookEventSubscribed(String("layerchange"))) {
         return;
     }
 
@@ -3270,7 +3406,7 @@ void AnimeanBusiness::notifyHeadlessLayerChangedIfNeeded(const QString &viewName
     cellInfo["asset"] = cell.assetIndex;
     cellInfo["frame_id"] = cell.frameId;
 
-    const QString baseToolName = toolControlName(static_cast<Tool>(state.tool));
+    const String baseToolName = toolControlName(static_cast<Tool>(state.tool));
     py::dict message;
     message["event"] = "layerchange";
     message["view"] = key.toStdString();
@@ -3279,32 +3415,32 @@ void AnimeanBusiness::notifyHeadlessLayerChangedIfNeeded(const QString &viewName
     message["property"] = state.strokeProperty.toStdString();
     message["cell"] = cellInfo;
     message["stroke"] = py::dict();
-    message["position"] = pointToPythonDict(QPointF());
-    message["delta"] = pointToPythonDict(QPointF());
+    message["position"] = pointToPythonDict(PointF());
+    message["delta"] = pointToPythonDict(PointF());
     message["layer"] = layer;
     message["layer_id"] = layerId;
     message["previous"] = previous == -2 ? -1 : previous;
 
-    const QString output = pythonHookSendMessage(message);
+    const String output = pythonHookSendMessage(message);
     if (!isQuietHookOutput(output)) {
-        emit pythonDebugMessage(output);
+        pythonDebugMessage(output);
     }
 #else
-    Q_UNUSED(viewName);
+    (void)(viewName);
 #endif
 }
 
-void AnimeanBusiness::notifyHeadlessHistoryRestore(const QString &viewName)
+void AnimeanBusiness::notifyHeadlessHistoryRestore(const String &viewName)
 {
 #ifdef ANIMEAN_WITH_PYTHON
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     const AnimeSceneModel &model = modelForView(key);
     HeadlessViewState &state = m_headlessViewState[key];
     state.pythonNotifiedFrame = model.currentFrame();
     state.pythonNotifiedLayer = model.currentLayer();
     state.pythonNotifiedLayerId =
         state.pythonNotifiedLayer >= 0 ? model.layerIdAt(state.pythonNotifiedLayer) : 0;
-    if (!Py_IsInitialized() || !animeanHookEventSubscribed(QStringLiteral("historyrestore"))) {
+    if (!Py_IsInitialized() || !animeanHookEventSubscribed(String("historyrestore"))) {
         return;
     }
 
@@ -3318,7 +3454,7 @@ void AnimeanBusiness::notifyHeadlessHistoryRestore(const QString &viewName)
     cellInfo["asset"] = cell.assetIndex;
     cellInfo["frame_id"] = cell.frameId;
 
-    const QString baseToolName = toolControlName(static_cast<Tool>(state.tool));
+    const String baseToolName = toolControlName(static_cast<Tool>(state.tool));
     py::dict message;
     message["event"] = "historyrestore";
     message["view"] = key.toStdString();
@@ -3327,25 +3463,25 @@ void AnimeanBusiness::notifyHeadlessHistoryRestore(const QString &viewName)
     message["property"] = state.strokeProperty.toStdString();
     message["cell"] = cellInfo;
     message["stroke"] = py::dict();
-    message["position"] = pointToPythonDict(QPointF());
-    message["delta"] = pointToPythonDict(QPointF());
+    message["position"] = pointToPythonDict(PointF());
+    message["delta"] = pointToPythonDict(PointF());
 
-    const QString output = pythonHookSendMessage(message);
+    const String output = pythonHookSendMessage(message);
     if (!isQuietHookOutput(output)) {
-        emit pythonDebugMessage(output);
+        pythonDebugMessage(output);
     }
 #else
-    Q_UNUSED(viewName);
+    (void)(viewName);
 #endif
 }
 
-void AnimeanBusiness::dispatchHeadlessHandleHook(const QString &viewName, const QString &phase)
+void AnimeanBusiness::dispatchHeadlessHandleHook(const String &viewName, const String &phase)
 {
 #ifdef ANIMEAN_WITH_PYTHON
-    if (!Py_IsInitialized() || !animeanHookEventSubscribed(QStringLiteral("handle"))) {
+    if (!Py_IsInitialized() || !animeanHookEventSubscribed(String("handle"))) {
         return;
     }
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     const AnimeSceneModel &model = modelForView(key);
     const HeadlessViewState &state = m_headlessViewState[key];
     const int frameRow = model.currentFrame();
@@ -3371,7 +3507,7 @@ void AnimeanBusiness::dispatchHeadlessHandleHook(const QString &viewName, const 
     keys["alt"] = false;
     keys["constrain"] = false;
 
-    const QString baseToolName = toolControlName(static_cast<Tool>(state.tool));
+    const String baseToolName = toolControlName(static_cast<Tool>(state.tool));
     py::dict message;
     message["event"] = "handle";
     message["view"] = key.toStdString();
@@ -3380,37 +3516,37 @@ void AnimeanBusiness::dispatchHeadlessHandleHook(const QString &viewName, const 
     message["property"] = state.strokeProperty.toStdString();
     message["cell"] = cellInfo;
     message["stroke"] = py::dict();
-    message["position"] = pointToPythonDict(QPointF());
-    message["delta"] = pointToPythonDict(QPointF());
+    message["position"] = pointToPythonDict(PointF());
+    message["delta"] = pointToPythonDict(PointF());
     message["phase"] = phase.toStdString();
     message["handle"] = "";
     message["color"] = currentColor;
     message["modifiers"] = keys;
     message["zoom"] = 1.0;
 
-    const QString output = pythonHookSendMessage(message);
+    const String output = pythonHookSendMessage(message);
     if (!isQuietHookOutput(output)) {
-        emit pythonDebugMessage(output);
+        pythonDebugMessage(output);
     }
 #else
-    Q_UNUSED(viewName);
-    Q_UNUSED(phase);
+    (void)(viewName);
+    (void)(phase);
 #endif
 }
 
-void AnimeanBusiness::dispatchHeadlessExtraToolHook(const QString &viewName,
-                                                    const QString &name,
-                                                    const QString &property)
+void AnimeanBusiness::dispatchHeadlessExtraToolHook(const String &viewName,
+                                                    const String &name,
+                                                    const String &property)
 {
 #ifdef ANIMEAN_WITH_PYTHON
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     HeadlessViewState &state = m_headlessViewState[key];
-    const QString previousTool = state.activePythonTool;
-    const QString previousProperty = state.strokeProperty;
-    state.activePythonTool = name.isEmpty() ? QStringLiteral("extra") : name;
+    const String previousTool = state.activePythonTool;
+    const String previousProperty = state.strokeProperty;
+    state.activePythonTool = name.isEmpty() ? String("extra") : name;
     state.strokeProperty = property;
 
-    if (Py_IsInitialized() && animeanHookEventSubscribed(QStringLiteral("extra"))) {
+    if (Py_IsInitialized() && animeanHookEventSubscribed(String("extra"))) {
         const AnimeSceneModel &model = modelForView(key);
         const int row = model.currentFrame();
         const int layer = model.currentLayer();
@@ -3422,7 +3558,7 @@ void AnimeanBusiness::dispatchHeadlessExtraToolHook(const QString &viewName,
         cellInfo["asset"] = cell.assetIndex;
         cellInfo["frame_id"] = cell.frameId;
 
-        const QString baseToolName = toolControlName(static_cast<Tool>(state.tool));
+        const String baseToolName = toolControlName(static_cast<Tool>(state.tool));
         py::dict message;
         message["event"] = "extra";
         message["view"] = key.toStdString();
@@ -3431,38 +3567,38 @@ void AnimeanBusiness::dispatchHeadlessExtraToolHook(const QString &viewName,
         message["property"] = state.strokeProperty.toStdString();
         message["cell"] = cellInfo;
         message["stroke"] = py::dict();
-        message["position"] = pointToPythonDict(QPointF());
-        message["delta"] = pointToPythonDict(QPointF());
+        message["position"] = pointToPythonDict(PointF());
+        message["delta"] = pointToPythonDict(PointF());
 
-        const QString output = pythonHookSendMessage(message);
+        const String output = pythonHookSendMessage(message);
         if (!isQuietHookOutput(output)) {
-            emit pythonDebugMessage(output);
+            pythonDebugMessage(output);
         }
     }
 
     state.activePythonTool = previousTool;
     state.strokeProperty = previousProperty;
 #else
-    Q_UNUSED(viewName);
-    Q_UNUSED(name);
-    Q_UNUSED(property);
+    (void)(viewName);
+    (void)(name);
+    (void)(property);
 #endif
 }
 
-void AnimeanBusiness::dispatchHeadlessToolOptionHook(const QString &viewName,
-                                                     const QString &hook,
-                                                     const QString &name,
-                                                     const QString &type,
-                                                     const QVariant &value,
+void AnimeanBusiness::dispatchHeadlessToolOptionHook(const String &viewName,
+                                                     const String &hook,
+                                                     const String &name,
+                                                     const String &type,
+                                                     const JsonVariant &value,
                                                      int row,
                                                      int startColumn,
                                                      int endColumn)
 {
 #ifdef ANIMEAN_WITH_PYTHON
-    if (!Py_IsInitialized() || !animeanHookEventSubscribed(QStringLiteral("option"))) {
+    if (!Py_IsInitialized() || !animeanHookEventSubscribed(String("option"))) {
         return;
     }
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     const AnimeSceneModel &model = modelForView(key);
     const HeadlessViewState &state = m_headlessViewState[key];
     const int frameRow = model.currentFrame();
@@ -3485,7 +3621,7 @@ void AnimeanBusiness::dispatchHeadlessToolOptionHook(const QString &viewName,
     optionInfo["start_column"] = startColumn;
     optionInfo["end_column"] = endColumn;
 
-    const QString baseToolName = toolControlName(static_cast<Tool>(state.tool));
+    const String baseToolName = toolControlName(static_cast<Tool>(state.tool));
     py::dict message;
     message["event"] = "option";
     message["view"] = key.toStdString();
@@ -3494,8 +3630,8 @@ void AnimeanBusiness::dispatchHeadlessToolOptionHook(const QString &viewName,
     message["property"] = state.strokeProperty.toStdString();
     message["cell"] = cellInfo;
     message["stroke"] = py::dict();
-    message["position"] = pointToPythonDict(QPointF());
-    message["delta"] = pointToPythonDict(QPointF());
+    message["position"] = pointToPythonDict(PointF());
+    message["delta"] = pointToPythonDict(PointF());
     message["option"] = optionInfo;
     message["name"] = name.toStdString();
     message["type"] = type.toStdString();
@@ -3505,33 +3641,33 @@ void AnimeanBusiness::dispatchHeadlessToolOptionHook(const QString &viewName,
     message["start_column"] = startColumn;
     message["end_column"] = endColumn;
 
-    const QString output = pythonHookSendMessage(message);
+    const String output = pythonHookSendMessage(message);
     if (!isQuietHookOutput(output)) {
-        emit pythonDebugMessage(output);
+        pythonDebugMessage(output);
     }
 #else
-    Q_UNUSED(viewName);
-    Q_UNUSED(hook);
-    Q_UNUSED(name);
-    Q_UNUSED(type);
-    Q_UNUSED(value);
-    Q_UNUSED(row);
-    Q_UNUSED(startColumn);
-    Q_UNUSED(endColumn);
+    (void)(viewName);
+    (void)(hook);
+    (void)(name);
+    (void)(type);
+    (void)(value);
+    (void)(row);
+    (void)(startColumn);
+    (void)(endColumn);
 #endif
 }
 
-void AnimeanBusiness::dispatchHeadlessPadHook(const QString &viewName,
-                                              const QString &pad,
-                                              const QString &phase,
+void AnimeanBusiness::dispatchHeadlessPadHook(const String &viewName,
+                                              const String &pad,
+                                              const String &phase,
                                               double x,
                                               double y)
 {
 #ifdef ANIMEAN_WITH_PYTHON
-    if (!Py_IsInitialized() || !animeanHookEventSubscribed(QStringLiteral("pad"))) {
+    if (!Py_IsInitialized() || !animeanHookEventSubscribed(String("pad"))) {
         return;
     }
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     const AnimeSceneModel &model = modelForView(key);
     const HeadlessViewState &state = m_headlessViewState[key];
     const int frameRow = model.currentFrame();
@@ -3545,7 +3681,7 @@ void AnimeanBusiness::dispatchHeadlessPadHook(const QString &viewName,
     cellInfo["asset"] = cell.assetIndex;
     cellInfo["frame_id"] = cell.frameId;
 
-    const QString baseToolName = toolControlName(static_cast<Tool>(state.tool));
+    const String baseToolName = toolControlName(static_cast<Tool>(state.tool));
     py::dict message;
     message["event"] = "pad";
     message["view"] = key.toStdString();
@@ -3554,34 +3690,34 @@ void AnimeanBusiness::dispatchHeadlessPadHook(const QString &viewName,
     message["property"] = state.strokeProperty.toStdString();
     message["cell"] = cellInfo;
     message["stroke"] = py::dict();
-    message["position"] = pointToPythonDict(QPointF());
-    message["delta"] = pointToPythonDict(QPointF());
+    message["position"] = pointToPythonDict(PointF());
+    message["delta"] = pointToPythonDict(PointF());
     message["pad"] = pad.toStdString();
     message["phase"] = phase.toStdString();
-    message["value"] = pointToPythonDict(QPointF(x, y));
+    message["value"] = pointToPythonDict(PointF(x, y));
 
-    const QString output = pythonHookSendMessage(message);
+    const String output = pythonHookSendMessage(message);
     if (!isQuietHookOutput(output)) {
-        emit pythonDebugMessage(output);
+        pythonDebugMessage(output);
     }
 #else
-    Q_UNUSED(viewName);
-    Q_UNUSED(pad);
-    Q_UNUSED(phase);
-    Q_UNUSED(x);
-    Q_UNUSED(y);
+    (void)(viewName);
+    (void)(pad);
+    (void)(phase);
+    (void)(x);
+    (void)(y);
 #endif
 }
 
-bool AnimeanBusiness::dispatchHeadlessLayerVisibilityHook(const QString &viewName,
+bool AnimeanBusiness::dispatchHeadlessLayerVisibilityHook(const String &viewName,
                                                           int layerIndex,
                                                           bool visible)
 {
 #ifdef ANIMEAN_WITH_PYTHON
-    if (!Py_IsInitialized() || !animeanHookEventSubscribed(QStringLiteral("visibility"))) {
+    if (!Py_IsInitialized() || !animeanHookEventSubscribed(String("visibility"))) {
         return false;
     }
-    const QString key = resolveViewName(viewName);
+    const String key = resolveViewName(viewName);
     const AnimeSceneModel &model = modelForView(key);
     const HeadlessViewState &state = m_headlessViewState[key];
     const int frameRow = model.currentFrame();
@@ -3594,7 +3730,7 @@ bool AnimeanBusiness::dispatchHeadlessLayerVisibilityHook(const QString &viewNam
     cellInfo["asset"] = cell.assetIndex;
     cellInfo["frame_id"] = cell.frameId;
 
-    const QString baseToolName = toolControlName(static_cast<Tool>(state.tool));
+    const String baseToolName = toolControlName(static_cast<Tool>(state.tool));
     py::dict message;
     message["event"] = "visibility";
     message["view"] = key.toStdString();
@@ -3603,14 +3739,14 @@ bool AnimeanBusiness::dispatchHeadlessLayerVisibilityHook(const QString &viewNam
     message["property"] = state.strokeProperty.toStdString();
     message["cell"] = cellInfo;
     message["stroke"] = py::dict();
-    message["position"] = pointToPythonDict(QPointF());
-    message["delta"] = pointToPythonDict(QPointF());
+    message["position"] = pointToPythonDict(PointF());
+    message["delta"] = pointToPythonDict(PointF());
     message["layer"] = layerIndex;
     message["visible"] = visible;
 
-    const QString output = pythonHookSendMessage(message);
+    const String output = pythonHookSendMessage(message);
     if (!isQuietHookOutput(output)) {
-        emit pythonDebugMessage(output);
+        pythonDebugMessage(output);
     }
 
     try {
@@ -3622,9 +3758,9 @@ bool AnimeanBusiness::dispatchHeadlessLayerVisibilityHook(const QString &viewNam
     }
     return false;
 #else
-    Q_UNUSED(viewName);
-    Q_UNUSED(layerIndex);
-    Q_UNUSED(visible);
+    (void)(viewName);
+    (void)(layerIndex);
+    (void)(visible);
     return false;
 #endif
 }

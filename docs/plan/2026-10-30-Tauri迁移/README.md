@@ -1,6 +1,6 @@
 # Tauri 迁移计划
 
-2026-10-30。状态：方向已定；用户确认的一级、二级修改已落到本分支，G6、R4 到对应步骤写入（见「文档修改进度」）；真实软件已对接（见「对接真实软件」），WebGL 画板和计算层去 Qt 已完成（见「WebGL 画板」「计算层去 Qt」）。
+2026-10-30（2026-11-02 回填）。状态：方向已定；用户确认的一级、二级修改已落到本分支，G6 改成窄版写入，R4 的词条保留（见「文档修改进度」）；真实软件已对接（见「对接真实软件」），WebGL 画板和计算层去 Qt 已完成（见「WebGL 画板」「计算层去 Qt」）；第 5、6、7 步代码已完成并进 `claude/tauri-migration`（Qt 桌面界面已删除，后端不链接任何 Qt 模块）；第 0 步探针（`webui/pen_probe.html`）已做好，真笔对比等用户跑。2026-11-02 验收通过，见「验收结果」；同日用户指示合入 `main`，合入前语义文档交 Argon 交叉审核。
 
 来源：用户要在浏览器里快速调试、亲手试手感，两边界面一致，随后决定「现在定 Tauri」，并在审阅页逐条拍板。
 
@@ -105,6 +105,7 @@ Python 仍然嵌在后端进程里，所以 `pydeps` 的 pip 自装、To 3D 的 
 
 0. **真笔门槛。** 用真数位板在 WebView2 里测采样率、压感和系统手势，和 Qt 版画同样的线对比。
    预计半天。通过标准：样本数不低于 Qt 版的 80%（这个门槛是提议，可改），没有系统手势抢笔。不通过就回到 Qt 路线。
+   实际结果：探针做好了（`webui/pen_probe.html`、`webui/src/pen_probe.ts`、`webui/tests/pen_probe.test.ts`，支持 `ANIMEAN_START_PAGE=pen_probe.html` 在 Tauri 外壳内直开），真笔对比等用户跑。
 1. **计算层去 Qt。** 已完成，见「计算层去 Qt」。把 `algorithm/`、`projectio.*`、`clipreader.*` 改成不依赖 Qt 的纯 C++。Qt 主程序在边界上转换类型，继续能跑。
    顺序：先换 `QPointF`、`QVector`、`QString`、`QJson` 这些基础类型（量大但简单）；再换 `QPainterPath` 的布尔运算和描边（`vectorlogic.cpp` 的填充区域，第 2605、2666、2679、2746 行）；最后处理撤销快照依赖的隐式共享（`scenehistory.h`）。
    预计 3–5 周。完成标志：`animean_core` 不链接 Qt；`ctest` 和 `tests/t_*.py` 全过；Qt 版行为不变，填充结果和替换前逐例比较。
@@ -116,10 +117,13 @@ Python 仍然嵌在后端进程里，所以 `pydeps` 的 pip 自装、To 3D 的 
    预计 1–1.5 周。完成标志：网页里的图层面板操作的是真模型；浮动面板能拖到第二块屏幕。
 5. **画板引擎和 WebGL 渲染端。** 从 `PaintOpenGLWidget` 抽出采样、交互事件和覆盖层，变成不依赖 Qt 的引擎，输出绘制列表。这是最大的一步。
    预计 3–5 周。完成标志：两块板能画线、擦除、拖轴线、跑 Auto Mapping；录制的钩子消息回放后逐字段一致；同一工程和 Qt 版对比，除抗锯齿外一致。
+   实际结果：代码完成，进了 `claude/tauri-migration`。`openglwidget.*` 与 `backend/board/`（`BoardSurface`、`RecordingDevice`、`inputevent.h`、`cursor.h`、基于 Win32 GDI `GetGlyphOutlineW` 的 `textpath.*`）、`backend/platform/`（`Signal`、`EventLoop`、`Timer`、`ElapsedTimer`）、`backend/net/wsserver.*` 全部改用 `AnimeCore` 与原生实现，后端不再链接任何 Qt 模块；`backend/tests/golden/` 新旧录制对比通过。
 6. **补齐面板。** 按现有长相做菜单、工具、选项、时间轴、调色板、对话框、导入。
    预计 3.5–5 周。完成标志：按 `../../tools_user_workflow/README.md` 列出的工具页逐页手测通过。
+   实际结果：代码完成，进了 `claude/tauri-migration`。补齐了帧缩略图（`timeline.thumbnails`）、纹理板菜单与脚本按钮（`textureMenus`、`texture.viewButton`）、工具选项内嵌纹理视图与三处归属切换（`texture.setHome`）、图层树拖拽重排（`layer.applyStructure`）、时间轴横竖停靠与 `Settings` 持久化、导入与保存探测；Qt 面板 `.cpp` / `.h` 已全部删除，只留 `childrenpanel/tool_controls/*.json`。
 7. **打包和合并。** Tauri 与后端打成压缩包，在离线的新机器上验证，然后找时机合并进 `main`。
    预计 1 周。完成标志：迁移分支相对 merge-base 的 `pyfile/` 差异为空，`tests/t_*.py` 全过，文档里没有旧术语，R4 已处理。合并和删除 Qt 界面代码都由用户确认。
+   实际结果：第 7 步代码与打包完成，进了 `claude/tauri-migration`。`build_scripts/agent_build.ps1`、`build_scripts/package_tauri.ps1` 与 `build_scripts/toolchain_location.ps1` 编译 `AnimeAnBackend` 与 Tauri 外壳并输出无 Qt 的 `dist\AnimeAn\`；三级机制文档与 `algorithm/core/README.md` 已更新到现状。2026-11-02 用户指示合入 `main`。
 
 ## 对接真实软件
 
@@ -155,8 +159,9 @@ Python 仍然嵌在后端进程里，所以 `pydeps` 的 pip 自装、To 3D 的 
 **真实功能已手测：** 加图层、画线、稳定器、撤销、Mapping 页工具、H Center Line 触发 Python 建 Auto-Mapping 图层、Python 菜单、主题切换。端到端测试 `backend/tests/session_smoke.mjs`、`npm test`、`cargo test`、`tests/t_*.py` 全过，`pyfile/` 相对 `origin/main` 无差异。
 
 **还没做的：** 帧缩略图（后端没有接口）；纹理页的菜单和脚本按钮；工具选项里的内嵌纹理视图（现在是一行提示）；浮动面板还在同一窗口里，没有变成独立窗口（D3）；时间轴的竖向停靠只发了命令，没有实际改布局；真笔、压感和高分屏没测；第 0 步没做。
+（2026-11-02 回填：帧缩略图、纹理页菜单和脚本按钮、工具选项内嵌纹理视图、时间轴竖向停靠、独立面板窗口命令、后端去 Qt 与无 Qt 打包已在第 5、6、7 步完成并进 `claude/tauri-migration`；第 0 步探针 `webui/pen_probe.html` 已做好，真笔对比等用户跑；`main` 没有合并。）
 
-G6 仍未写入 `../../developer_guide.md`：面板现在是手写代码，「界面只在设计文件里改」不成立。
+G6 的原文不成立：面板是手写代码，「界面只在设计文件里改」做不到。2026-11-02 用户批准了窄版，见「文档修改进度」。
 
 ## WebGL 画板
 
@@ -257,6 +262,7 @@ G6 仍未写入 `../../developer_guide.md`：面板现在是手写代码，「�
 - 总工作量改为 15–22 周，第一个能用的版本改为 10–16 周。
 
 G6 等 Web 导出做出来再写进 `../../developer_guide.md`，现在写进去还不成立。
+（2026-11-02 回填：Web 导出没有做，G6 改成窄版写入，见「文档修改进度」。）
 
 ## 文档修改进度
 
@@ -287,8 +293,20 @@ G6 等 Web 导出做出来再写进 `../../developer_guide.md`，现在写进去
 
 **用户已认可，到对应步骤写入：**
 
-- G6：界面只在设计文件里改，导出的代码不手改。第 2 步的结论经用户确认、Web 导出做出来之后写进 `../../developer_guide.md`。
-- R4：`../../glossary.md` 的「同步脚本」词条，第 7 步切换后如果不再需要就删掉。
+- G6：原文是「界面只在设计文件里改，导出的代码不手改」。面板是手写的，也没有导出的代码，原文不成立。2026-11-02 用户批准窄版，已写进 `../../developer_guide.md` 的「分工」。
+- R4：`../../glossary.md` 的「同步脚本」词条，第 7 步切换后如果不再需要就删掉。2026-11-02 核实：`sync_pyfiles.ps1` 还在用，词条保留。
+
+## 验收结果
+
+2026-11-02，集成分支 f7fe7a7，任务记录 `../../long_time_work/2026-11-02-Tauri迁移收尾.md`。
+
+- 后端不链接任何 Qt 模块：包内 0 个 Qt 文件，`AnimeAnBackend.exe` 的导入表没有 Qt。Qt 只留在三处，都不在产品构建里：`algorithm/core/qtbridge*.h` 和 `tests/core/` 的差分测试（找到 Qt 才编），本目录 `bench/main.cpp` 的绘制基准，`bench/penprobe` 的对比探针。
+- 包拷到别处、PATH 只留 System32：全部模块来自包或系统，`session_smoke` 通过。339 MB。
+- `pyfile/`、`pythonbind/animemodel.py`、`opentoonz_tools/` 相对 merge-base 零差异，`tests/t_*.py` 全过。
+- 新旧对比 26 个场景、497 步，差异全部有去向。
+- 打包版在隐藏桌面上跑完 #37 里不需要真人和真笔的项。
+
+还没做的是第 0 步的真笔对比和要真人的项，都在 #37。
 
 ## 风险
 
@@ -298,7 +316,7 @@ G6 等 Web 导出做出来再写进 `../../developer_guide.md`，现在写进去
 - **接口悄悄走样。** 钩子消息少一个字段，Python 不一定报错，只是行为变了。要靠录制比对发现。
 - **手感要重新调。** 输入路径变了，稳定器和拟合参数可能要调。这些参数改动是三级；Auto Mapping 的常量仍是一级。
 - **画板引擎难拆。** `openglwidget.cpp` 有 4424 行，界面和逻辑混在一起，估算的不确定性最大。
-- **独立窗口。** 纹理板能在中央页、子控件框、停车位之间搬迁，变成跨窗口搬迁后，canvas 和 WebGL 上下文要重建，这部分还没有验证。
+- **独立窗口。** 纹理板不跨窗口搬迁，是这次的〔裁〕之一：它所在的面板变成独立窗口时，框留在主窗口里浮着。
 - **低端显卡没有数据。** 全部绘制数字来自 RTX 3080。
 - **绘制结果不会逐像素相同。** WebGL 和 QPainter 的抗锯齿不同，笔画形状以后端的路径为准。
 - **WebView2 自动更新。** 引擎版本由系统更新，发布时要确认是否随包固定版本。

@@ -1,4 +1,7 @@
 #include "algorithm/core/image.h"
+#include "algorithm/core/color.h"
+#include "algorithm/core/file.h"
+#include "algorithm/core/string.h"
 
 #include <algorithm>
 #include <atomic>
@@ -6,7 +9,7 @@
 #include <cstring>
 #include <limits>
 
-#define STBI_ONLY_PNG
+
 #define STBI_NO_STDIO
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -61,6 +64,42 @@ bool hasPngSignature(const unsigned char *data, std::size_t size)
 
 } // namespace
 
+namespace {
+
+// The page and PNG want straight alpha while the raster device paints premultiplied.
+// Exact division, half rounding down; Qt's fixed-point inverse can land one level off.
+unsigned int unpremultiply(unsigned int argb)
+{
+    const unsigned int alpha = argb >> 24;
+    if (alpha == 255u) {
+        return argb;
+    }
+    if (alpha == 0u) {
+        return 0u;
+    }
+    const auto scale = [alpha](unsigned int channel) {
+        return std::min(255u, (channel * 510u + alpha - 1u) / (2u * alpha));
+    };
+    return (alpha << 24) | (scale((argb >> 16) & 0xffu) << 16) | (scale((argb >> 8) & 0xffu) << 8)
+           | scale(argb & 0xffu);
+}
+
+unsigned int premultiply(unsigned int argb)
+{
+    const unsigned int alpha = argb >> 24;
+    if (alpha == 255u) {
+        return argb;
+    }
+    const auto scale = [alpha](unsigned int channel) {
+        const unsigned int t = channel * alpha;
+        return (t + (t >> 8) + 0x80u) >> 8;
+    };
+    return (alpha << 24) | (scale((argb >> 16) & 0xffu) << 16) | (scale((argb >> 8) & 0xffu) << 8)
+           | scale(argb & 0xffu);
+}
+
+} // namespace
+
 struct Image::Data {
     std::vector<unsigned char> pixels;
     int width = 0;
@@ -68,6 +107,7 @@ struct Image::Data {
     int bytesPerLine = 0;
     Format format = Format_Invalid;
     std::int64_t cacheKey = 0;
+    double devicePixelRatio = 1.0;
 };
 
 Image::Image(int width, int height, Format format)
@@ -171,6 +211,20 @@ std::size_t Image::sizeInBytes() const
     return m_data ? m_data->pixels.size() : 0;
 }
 
+double Image::devicePixelRatio() const
+{
+    return m_data ? m_data->devicePixelRatio : 1.0;
+}
+
+void Image::setDevicePixelRatio(double ratio)
+{
+    if (!m_data || m_data->devicePixelRatio == ratio) {
+        return;
+    }
+    detach();
+    m_data->devicePixelRatio = ratio;
+}
+
 std::int64_t Image::cacheKey() const
 {
     return m_data ? m_data->cacheKey : 0;
@@ -237,6 +291,51 @@ void Image::fill(unsigned int pixelValue)
     const std::size_t count = m_data->pixels.size() / 4;
     for (std::size_t i = 0; i < count; ++i) {
         std::memcpy(dst + i * 4, &word, 4);
+    }
+}
+
+void Image::fill(const Color &color)
+{
+    if (!m_data) {
+        return;
+    }
+    const int r = color.isValid() ? color.red() : 0;
+    const int g = color.isValid() ? color.green() : 0;
+    const int b = color.isValid() ? color.blue() : 0;
+    const int a = color.isValid() ? color.alpha() : 255;
+
+    switch (m_data->format) {
+    case Format_ARGB32:
+        fill(qRgba(r, g, b, a));
+        break;
+    case Format_RGB32:
+        fill(qRgb(r, g, b));
+        break;
+    case Format_ARGB32_Premultiplied: {
+        const int pr = (r * a + 127) / 255;
+        const int pg = (g * a + 127) / 255;
+        const int pb = (b * a + 127) / 255;
+        fill(qRgba(pr, pg, pb, a));
+        break;
+    }
+    case Format_RGBA8888: {
+        const unsigned int word = (static_cast<unsigned int>(a) << 24)
+                                  | (static_cast<unsigned int>(b) << 16)
+                                  | (static_cast<unsigned int>(g) << 8)
+                                  | static_cast<unsigned int>(r);
+        fill(word);
+        break;
+    }
+    case Format_Grayscale8: {
+        const int pr = (r * a + 127) / 255;
+        const int pg = (g * a + 127) / 255;
+        const int pb = (b * a + 127) / 255;
+        fill(static_cast<unsigned int>(qGray(pr, pg, pb)));
+        break;
+    }
+    case Format_Invalid:
+    default:
+        break;
     }
 }
 
@@ -347,14 +446,16 @@ Image Image::convertToFormat(Format targetFormat) const
     if (out.isNull()) {
         return out;
     }
+    out.setDevicePixelRatio(devicePixelRatio());
     for (int y = 0; y < m_data->height; ++y) {
         for (int x = 0; x < m_data->width; ++x) {
-            const unsigned int c = pixel(x, y);
+            // pixel() hands back premultiplied values untouched, as Qt's image does.
+            const unsigned int c = m_data->format == Format_ARGB32_Premultiplied ? unpremultiply(pixel(x, y)) : pixel(x, y);
             if (targetFormat == Format_Grayscale8) {
                 out.m_data->pixels[static_cast<std::size_t>(y) * static_cast<std::size_t>(out.m_data->bytesPerLine)
                                    + static_cast<std::size_t>(x)] = static_cast<unsigned char>(qGray(c));
             } else {
-                out.setPixel(x, y, c);
+                out.setPixel(x, y, targetFormat == Format_ARGB32_Premultiplied ? premultiply(c) : c);
             }
         }
     }
@@ -375,6 +476,7 @@ Image Image::mirrored(bool horizontally, bool vertically) const
     if (out.isNull()) {
         return out;
     }
+    out.setDevicePixelRatio(devicePixelRatio());
     const int w = m_data->width;
     const int h = m_data->height;
     const int bpp = bytesPerPixelForFormat(m_data->format);
@@ -698,13 +800,141 @@ bool Image::operator!=(const Image &other) const
     return !(*this == other);
 }
 
-Image Image::decodePng(const unsigned char *data, std::size_t size)
+static int readJpegExifOrientation(const unsigned char *data, std::size_t size)
 {
-    if (!hasPngSignature(data, size)
+    if (!data || size < 4 || data[0] != 0xFF || data[1] != 0xD8) {
+        return 1;
+    }
+    std::size_t pos = 2;
+    while (pos + 4 <= size) {
+        if (data[pos] != 0xFF) {
+            break;
+        }
+        while (pos < size && data[pos] == 0xFF) {
+            ++pos;
+        }
+        if (pos >= size) {
+            break;
+        }
+        const unsigned char marker = data[pos++];
+        if (marker == 0xD9 || marker == 0xDA || marker == 0x00) {
+            break;
+        }
+        if ((marker >= 0xD0 && marker <= 0xD8) || marker == 0x01) {
+            continue;
+        }
+        if (pos + 2 > size) {
+            break;
+        }
+        const std::size_t segLen = (static_cast<std::size_t>(data[pos]) << 8) | data[pos + 1];
+        if (segLen < 2 || pos + segLen > size) {
+            break;
+        }
+        if (marker == 0xE1 && segLen >= 16) {
+            const unsigned char *payload = data + pos + 2;
+            const std::size_t payloadLen = segLen - 2;
+            if (std::memcmp(payload, "Exif\0\0", 6) == 0) {
+                const unsigned char *tiff = payload + 6;
+                const std::size_t tiffLen = payloadLen - 6;
+                bool littleEndian = false;
+                if (tiffLen >= 8 && tiff[0] == 'I' && tiff[1] == 'I') {
+                    littleEndian = true;
+                } else if (tiffLen >= 8 && tiff[0] == 'M' && tiff[1] == 'M') {
+                    littleEndian = false;
+                } else {
+                    pos += segLen;
+                    continue;
+                }
+                const auto readU16 = [tiff, littleEndian](std::size_t off) -> unsigned int {
+                    return littleEndian
+                               ? (static_cast<unsigned int>(tiff[off]) | (static_cast<unsigned int>(tiff[off + 1]) << 8))
+                               : ((static_cast<unsigned int>(tiff[off]) << 8) | static_cast<unsigned int>(tiff[off + 1]));
+                };
+                const auto readU32 = [tiff, littleEndian](std::size_t off) -> std::size_t {
+                    return littleEndian
+                               ? (static_cast<std::size_t>(tiff[off])
+                                  | (static_cast<std::size_t>(tiff[off + 1]) << 8)
+                                  | (static_cast<std::size_t>(tiff[off + 2]) << 16)
+                                  | (static_cast<std::size_t>(tiff[off + 3]) << 24))
+                               : ((static_cast<std::size_t>(tiff[off]) << 24)
+                                  | (static_cast<std::size_t>(tiff[off + 1]) << 16)
+                                  | (static_cast<std::size_t>(tiff[off + 2]) << 8)
+                                  | static_cast<std::size_t>(tiff[off + 3]));
+                };
+                if (readU16(2) == 0x002Au) {
+                    const std::size_t ifdOffset = readU32(4);
+                    if (ifdOffset + 2 <= tiffLen) {
+                        const unsigned int count = readU16(ifdOffset);
+                        for (unsigned int i = 0; i < count; ++i) {
+                            const std::size_t entry = ifdOffset + 2 + static_cast<std::size_t>(i) * 12;
+                            if (entry + 12 > tiffLen) {
+                                break;
+                            }
+                            if (readU16(entry) == 0x0112u) {
+                                const unsigned int val = readU16(entry + 8);
+                                if (val >= 1u && val <= 8u) {
+                                    return static_cast<int>(val);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        pos += segLen;
+    }
+    return 1;
+}
+
+static Image applyExifOrientation(const Image &src, int orientation)
+{
+    if (src.isNull() || orientation <= 1 || orientation > 8) {
+        return src;
+    }
+    const int w = src.width();
+    const int h = src.height();
+    const bool swapDims = orientation >= 5;
+    const int dstW = swapDims ? h : w;
+    const int dstH = swapDims ? w : h;
+    Image dst(dstW, dstH, Image::Format_RGBA8888);
+    if (dst.isNull()) {
+        return src;
+    }
+    const unsigned char *sBits = src.constBits();
+    unsigned char *dBits = dst.bits();
+    const int sStride = src.bytesPerLine();
+    const int dStride = dst.bytesPerLine();
+    for (int y = 0; y < dstH; ++y) {
+        unsigned char *dRow = dBits + static_cast<std::size_t>(y) * static_cast<std::size_t>(dStride);
+        for (int x = 0; x < dstW; ++x) {
+            int sx = x;
+            int sy = y;
+            switch (orientation) {
+            case 2: sx = w - 1 - x; sy = y; break;
+            case 3: sx = w - 1 - x; sy = h - 1 - y; break;
+            case 4: sx = x; sy = h - 1 - y; break;
+            case 5: sx = y; sy = x; break;
+            case 6: sx = y; sy = h - 1 - x; break;
+            case 7: sx = w - 1 - y; sy = h - 1 - x; break;
+            case 8: sx = w - 1 - y; sy = x; break;
+            default: break;
+            }
+            const unsigned char *sPx = sBits + static_cast<std::size_t>(sy) * static_cast<std::size_t>(sStride)
+                                       + static_cast<std::size_t>(sx) * 4;
+            std::memcpy(dRow + static_cast<std::size_t>(x) * 4, sPx, 4);
+        }
+    }
+    return dst;
+}
+
+static Image decodeImageBytes(const unsigned char *data, std::size_t size)
+{
+    if (!data || size == 0
         || size > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
         return Image();
     }
 
+    const int orientation = readJpegExifOrientation(data, size);
     const int len = static_cast<int>(size);
     int w = 0;
     int h = 0;
@@ -715,33 +945,33 @@ Image Image::decodePng(const unsigned char *data, std::size_t size)
         if (!decoded16) {
             return Image();
         }
-        Image out(w, h, Format_RGBA8888);
+        Image out(w, h, Image::Format_RGBA8888);
         if (!out.isNull()) {
-            unsigned char *dst = out.m_data->pixels.data();
+            unsigned char *dst = out.bits();
             const std::size_t total = static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4;
             for (std::size_t i = 0; i < total; ++i) {
                 dst[i] = static_cast<unsigned char>((static_cast<unsigned int>(decoded16[i]) + 128u) / 257u);
             }
         }
         stbi_image_free(decoded16);
-        return out;
+        return applyExifOrientation(out, orientation);
     }
 
     stbi_uc *decoded8 = stbi_load_from_memory(data, len, &w, &h, &channels, 4);
     if (!decoded8) {
         return Image();
     }
-    Image out(w, h, Format_RGBA8888);
+    Image out(w, h, Image::Format_RGBA8888);
     if (!out.isNull()) {
-        std::memcpy(out.m_data->pixels.data(),
+        std::memcpy(out.bits(),
                     decoded8,
                     static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4);
     }
     stbi_image_free(decoded8);
-    return out;
+    return applyExifOrientation(out, orientation);
 }
 
-Image Image::decodePng(const std::vector<unsigned char> &bytes)
+Image Image::decodePng(const unsigned char *data, std::size_t size) { return hasPngSignature(data, size) ? decodeImageBytes(data, size) : Image(); } Image Image::decodePng(const std::vector<unsigned char> &bytes)
 {
     return decodePng(bytes.data(), bytes.size());
 }
@@ -862,6 +1092,45 @@ std::string encodeBase64(const unsigned char *data, std::size_t size)
 std::string encodeBase64(const std::vector<unsigned char> &data)
 {
     return toBase64(data.data(), data.size());
+}
+
+bool Image::save(const String &fileName, const char *format, int quality) const
+{
+    (void)format;
+    (void)quality;
+    if (isNull() || fileName.isEmpty()) {
+        return false;
+    }
+    const std::vector<unsigned char> png = encodePng();
+    if (png.empty()) {
+        return false;
+    }
+    File out(fileName);
+    if (!out.open(IODevice::WriteOnly | IODevice::Truncate)) {
+        return false;
+    }
+    return out.write(png) == static_cast<std::int64_t>(png.size());
+}
+
+bool Image::load(const String &fileName, const char *format)
+{
+    (void)format;
+    if (fileName.isEmpty()) {
+        *this = Image();
+        return false;
+    }
+    File in(fileName);
+    if (!in.open(IODevice::ReadOnly)) {
+        *this = Image();
+        return false;
+    }
+    const std::string bytes = in.readAll();
+    if (bytes.empty()) {
+        *this = Image();
+        return false;
+    }
+    *this = decodeImageBytes(reinterpret_cast<const unsigned char *>(bytes.data()), bytes.size());
+    return !isNull();
 }
 
 std::vector<unsigned char> fromBase64(const char *data, std::size_t size)

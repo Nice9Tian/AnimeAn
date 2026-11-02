@@ -2,8 +2,9 @@
 // swatch box and the three pickers. Same geometry and maths as
 // childrenpanel/palettecontrol.cpp, drawn with DOM for the box and canvas for
 // the pickers. Colours travel as #aarrggbb, the form Python stores.
+import { PRESS_ENDS } from "./panels.js";
 
-const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const css = (name) => (typeof getComputedStyle === "function" ? getComputedStyle(document.documentElement).getPropertyValue(name).trim() : "");
 const STRIP = 15, GAP = 9, RING = 14, READOUT_W = 44, READOUT_H = 24;
 
 export function parseColor(text) {
@@ -14,11 +15,111 @@ export function parseColor(text) {
   if (t.length === 6) {
     return { a: 255, r: parseInt(t.slice(0, 2), 16), g: parseInt(t.slice(2, 4), 16), b: parseInt(t.slice(4, 6), 16) };
   }
+  if (t.length === 3) {
+    const r = parseInt(t[0], 16), g = parseInt(t[1], 16), b = parseInt(t[2], 16);
+    return { a: 255, r: (r << 4) | r, g: (g << 4) | g, b: (b << 4) | b };
+  }
   return { a: 255, r: 0, g: 0, b: 0 };
 }
 const hex2 = (n) => n.toString(16).padStart(2, "0");
 export const toHexRgb = (c) => `#${hex2(c.r)}${hex2(c.g)}${hex2(c.b)}`;
 export const toHexArgb = (c) => `#${hex2(c.a)}${hex2(c.r)}${hex2(c.g)}${hex2(c.b)}`;
+
+function toColorObj(c) {
+  if (typeof c === "string") return parseColor(c);
+  return {
+    r: Math.max(0, Math.min(255, Math.round(Number(c?.r ?? 0)))),
+    g: Math.max(0, Math.min(255, Math.round(Number(c?.g ?? 0)))),
+    b: Math.max(0, Math.min(255, Math.round(Number(c?.b ?? 0)))),
+    a: Math.max(0, Math.min(255, Math.round(Number(c?.a ?? 255)))),
+  };
+}
+
+export function colorLightness(c) {
+  const { r, g, b } = toColorObj(c);
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  return Math.floor(((max + min) * 257 + 256) / 514);
+}
+
+function toHsv16({ r, g, b }) {
+  const rf = (r * 257) / 65535, gf = (g * 257) / 65535, bf = (b * 257) / 65535;
+  const max = Math.max(rf, gf, bf), min = Math.min(rf, gf, bf), d = max - min;
+  const v = Math.round(max * 65535);
+  if (d === 0 || max === 0) return { h: -1, s: 0, v };
+  const s = Math.round((d / max) * 65535);
+  let h = 0;
+  if (rf === max) h = (gf - bf) / d;
+  else if (gf === max) h = 2 + (bf - rf) / d;
+  else h = 4 + (rf - gf) / d;
+  h /= 6;
+  if (h < 0) h += 1;
+  const h16 = Math.round(h * 36000);
+  return { h: h16 === 36000 ? 0 : h16, s, v };
+}
+
+function fromHsv16(h, s, v, a = 255) {
+  const vf = v / 65535, sf = s / 65535;
+  let rf = vf, gf = vf, bf = vf;
+  if (s > 0 && h >= 0) {
+    const sector = (h === 36000 ? 0 : h) / 6000;
+    const i = Math.floor(sector);
+    const f = sector - i;
+    const p = vf * (1 - sf);
+    if (i & 1) {
+      const q = vf * (1 - sf * f);
+      if (i === 1) { rf = q; gf = vf; bf = p; }
+      else if (i === 3) { rf = p; gf = q; bf = vf; }
+      else if (i === 5) { rf = vf; gf = p; bf = q; }
+    } else {
+      const t = vf * (1 - sf * (1 - f));
+      if (i === 0) { rf = vf; gf = t; bf = p; }
+      else if (i === 2) { rf = p; gf = vf; bf = t; }
+      else if (i === 4) { rf = t; gf = p; bf = vf; }
+    }
+  }
+  const div257 = (u16) => Math.floor((Math.round(u16) + 128) / 257);
+  return {
+    r: div257(rf * 65535),
+    g: div257(gf * 65535),
+    b: div257(bf * 65535),
+    a,
+  };
+}
+
+export function colorLighter(c, factor = 150) {
+  const col = toColorObj(c);
+  if (factor <= 0) return col;
+  if (factor < 100) return colorDarker(col, Math.round(10000 / factor));
+  let { h, s, v } = toHsv16(col);
+  v = Math.floor((v * factor) / 100);
+  if (v > 65535) {
+    s = Math.max(0, s - (v - 65535));
+    v = 65535;
+  }
+  return fromHsv16(h, s, v, col.a);
+}
+
+export function colorDarker(c, factor = 200) {
+  const col = toColorObj(c);
+  if (factor <= 0) return col;
+  if (factor < 100) return colorLighter(col, Math.round(10000 / factor));
+  const { h, s, v } = toHsv16(col);
+  return fromHsv16(h, s, Math.round((v * 100) / factor), col.a);
+}
+
+export function colorButtonColors(c) {
+  const col = toColorObj(c);
+  const dark = colorLightness(col) < 128;
+  const hover = dark ? colorLighter(col, 135) : colorDarker(col, 108);
+  const pressed = dark ? colorLighter(col, 165) : colorDarker(col, 125);
+  return {
+    background: toHexRgb(col),
+    color: dark ? "white" : "black",
+    hoverBackground: toHexRgb(hover),
+    pressedBackground: toHexRgb(pressed),
+  };
+}
+export { colorLightness as lightness, colorLighter as lighter, colorDarker as darker, colorButtonColors as colorButtonStyle };
 
 function rgbToHsv({ r, g, b }) {
   const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
@@ -123,24 +224,26 @@ class Picker {
     this.canvas.addEventListener("pointermove", (e) => {
       if (this.dragging && this.apply(e.offsetX, e.offsetY, false)) { this.paint(); this.onPreview(this.hsva.color()); }
     });
-    this.canvas.addEventListener("pointerup", () => {
-      if (!this.dragging) return;
-      this.dragging = false; this.zone = -1;
-      // One message per drag: a continuous emit would arm a tool on every move.
-      this.onCommit(this.hsva.color());
-    });
+    for (const type of PRESS_ENDS) {
+      this.canvas.addEventListener(type, () => {
+        if (!this.dragging) return;
+        this.dragging = false; this.zone = -1;
+        // One message per drag: a continuous emit would arm a tool on every move.
+        this.onCommit(this.hsva.color());
+      });
+    }
   }
   setColor(c) { this.hsva.setColor(c); if (this.canvas.isConnected) this.paint(); }
   layout(width) {
     this.width = width;
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
     this.canvas.width = width * dpr; this.canvas.height = this.height * dpr;
     this.canvas.style.width = `${width}px`; this.canvas.style.height = `${this.height}px`;
     this.ctx = this.canvas.getContext("2d");
-    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.ctx?.setTransform?.(dpr, 0, 0, dpr, 0, 0);
     this.paint();
   }
-  paint() { if (!this.ctx) return; this.ctx.clearRect(0, 0, this.width, this.height); this.draw(this.ctx); }
+  paint() { if (!this.ctx?.clearRect) return; this.ctx.clearRect(0, 0, this.width, this.height); this.draw(this.ctx); }
 }
 
 class CirclePicker extends Picker {
@@ -320,7 +423,8 @@ export function createPalette(emit, { pickersOnly = false } = {}) {
     page = i;
     [...tabs.children].forEach((t, k) => t.classList.toggle("sel", k === (pickersOnly ? i - 1 : i)));
     box.style.display = i === 0 ? "" : "none";
-    pickers.forEach((p, k) => { p.canvas.style.display = k + 1 === i ? "block" : "none"; if (k + 1 === i) { p.layout(el.clientWidth - 34); p.setColor(color); } });
+    const w = el.clientWidth > 34 ? el.clientWidth - 34 : 262;
+    pickers.forEach((p, k) => { p.canvas.style.display = k + 1 === i ? "block" : "none"; if (k + 1 === i) { p.layout(w); p.setColor(color); } });
   }
   function drawBox() {
     box.replaceChildren();
@@ -353,7 +457,8 @@ export function createPalette(emit, { pickersOnly = false } = {}) {
       pickers.forEach((p) => p.setColor(color));
       show(page);
     },
-    addSwatch(text) { if (!swatches.includes(text)) { swatches.push(text); drawBox(); emit("box", "add:" + text); } commit(parseColor(text)); },
+    // Value first: the rebuild the add triggers reads the current colour back.
+    addSwatch(text) { commit(parseColor(text)); if (!swatches.includes(text)) { swatches.push(text); drawBox(); emit("box", "add:" + text); } },
     color: () => color,
   };
 }

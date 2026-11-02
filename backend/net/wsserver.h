@@ -1,70 +1,80 @@
 #ifndef ANIMEAN_BACKEND_NET_WSSERVER_H
 #define ANIMEAN_BACKEND_NET_WSSERVER_H
 
-#include <QByteArray>
-#include <QList>
-#include <QObject>
-#include <QPointer>
-#include <QString>
-#include <QTcpServer>
-#include <QTcpSocket>
+#include "algorithm/core/string.h"
+#include "platform/signalslot.h"
 
-class WsServer : public QObject
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+class WsServer
 {
-    Q_OBJECT
-
 public:
-    explicit WsServer(const QString &token, QObject *parent = nullptr);
-    ~WsServer() override;
+    explicit WsServer(const AnimeCore::String &token);
+    ~WsServer();
 
-    bool listen(quint16 port = 0);
-    quint16 port() const;
+    WsServer(const WsServer &) = delete;
+    WsServer &operator=(const WsServer &) = delete;
 
-    void sendText(const QByteArray &data);
-    void sendBinary(const QByteArray &data);
+    bool listen(std::uint16_t port = 0);
+    std::uint16_t port() const;
+
+    void sendText(const std::string &data);
+    void sendBinary(const std::string &data);
 
     bool hasClient() const;
 
-signals:
-    void clientConnected();
-    void clientDisconnected();
-    void textReceived(QByteArray data);
-    void binaryReceived(QByteArray data);
+    Signal<> clientConnected;
+    Signal<> clientDisconnected;
+    Signal<std::string> textReceived;
+    Signal<std::string> binaryReceived;
 
 private:
+    using SocketHandle = std::uintptr_t;
+
     struct PendingClient {
-        QPointer<QTcpSocket> socket;
-        QByteArray buffer;
+        SocketHandle socket = 0;
+        std::string buffer;
     };
 
-    void onNewConnection();
-    void onPendingReadyRead(QTcpSocket *socket);
-    void onPendingDisconnected(QTcpSocket *socket);
-    void removePending(QTcpSocket *socket);
+    void closeListener();
+    void onAcceptReady();
+    void onPendingSocketEvent(SocketHandle socket, unsigned int events);
+    void removePending(SocketHandle socket);
+    void closeAndRemovePending(SocketHandle socket);
 
-    bool tryCompleteHandshake(PendingClient &pending);
-    static bool isOriginAllowed(const QByteArray &origin);
-    static void rejectHttp(QTcpSocket *socket, int statusCode, const char *reasonPhrase);
+    bool tryCompleteHandshake(SocketHandle socket);
+    static bool isOriginAllowed(const std::string &originRaw);
+    void rejectHttp(SocketHandle socket, int statusCode, const char *reasonPhrase);
 
-    void promoteClient(QTcpSocket *socket, const QByteArray &initialBuffer);
-    void disconnectActiveClient(quint16 closeCode);
+    void promoteClient(SocketHandle socket, std::string initialBuffer);
+    void disconnectActiveClient(std::uint16_t closeCode);
 
-    void onClientReadyRead();
+    void onClientSocketEvent(SocketHandle socket, unsigned int events);
     void onClientDisconnected();
-    bool processFrames(QTcpSocket *socket);
-    void sendFrame(quint8 opcode, const QByteArray &payload);
-    void sendCloseFrame(QTcpSocket *socket, quint16 closeCode);
+    bool processFrames(SocketHandle socket);
+    void sendFrame(std::uint8_t opcode, const std::string &payload);
+    static void sendCloseFrameImmediate(SocketHandle socket, std::uint16_t closeCode);
+    void queueWrite(const char *data, std::size_t size);
+    void flushWriteBuffer();
+    void updateClientPollEvents();
 
-    QString m_token;
-    QTcpServer m_server;
+    AnimeCore::String m_token;
+    SocketHandle m_listenSocket = ~SocketHandle(0);
+    std::uint16_t m_port = 0;
 
-    QList<PendingClient> m_pendingClients;
-    QTcpSocket *m_client = nullptr;
-    QByteArray m_readBuffer;
+    std::vector<PendingClient> m_pendingClients;
+    SocketHandle m_client = ~SocketHandle(0);
+    std::string m_readBuffer;
+    std::string m_writeBuffer;
+    std::size_t m_writeOffset = 0;
+    bool m_watchingWrite = false;
 
     bool m_inFragment = false;
-    quint8 m_fragmentOpcode = 0;
-    QByteArray m_fragmentBuffer;
+    std::uint8_t m_fragmentOpcode = 0;
+    std::string m_fragmentBuffer;
 };
 
 #endif // ANIMEAN_BACKEND_NET_WSSERVER_H

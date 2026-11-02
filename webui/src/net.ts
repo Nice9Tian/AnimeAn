@@ -14,6 +14,8 @@ export interface ImageMeta {
   w: number;
   h: number;
   bytes: number;
+  // The board that drew it. Cursors and thumbnails belong to no board.
+  view?: string;
 }
 
 export interface FieldMeta {
@@ -104,6 +106,7 @@ export class BackendClient {
   private anyStateListeners = new Set<(key: string, value: unknown) => void>();
   private boardListeners = new Map<string, Set<(msg: BoardMessage) => void>>();
   private imageListeners = new Set<(meta: ImageMeta, data: Uint8Array) => void>();
+  private imageForgetListeners = new Set<(view: string, key: string) => void>();
   private fieldListeners = new Set<(meta: FieldMeta, data: Float32Array) => void>();
   private disconnectListeners = new Set<(ev?: unknown) => void>();
   private pendingImageMeta: ImageMeta | null = null;
@@ -286,6 +289,13 @@ export class BackendClient {
     };
   }
 
+  onImageForget(fn: (view: string, key: string) => void): () => void {
+    this.imageForgetListeners.add(fn);
+    return () => {
+      this.imageForgetListeners.delete(fn);
+    };
+  }
+
   onField(fn: (meta: FieldMeta, data: Float32Array) => void): () => void {
     this.fieldListeners.add(fn);
     return () => {
@@ -310,6 +320,7 @@ export class BackendClient {
           w: Number(msg.w ?? 0),
           h: Number(msg.h ?? 0),
           bytes: Number(msg.bytes ?? 0),
+          ...(typeof msg.view === "string" ? { view: msg.view } : {}),
         };
         return;
       }
@@ -328,6 +339,13 @@ export class BackendClient {
       // 若上一帧是未配对的 image 或 field 文本帧，被其它文本帧打断则丢弃挂起头
       this.pendingImageMeta = null;
       this.pendingFieldMeta = null;
+
+      if (t === "image.forget") {
+        for (const fn of this.imageForgetListeners) {
+          fn(String(msg.view ?? ""), String(msg.key ?? ""));
+        }
+        return;
+      }
 
       if (t === "reply") {
         const id = Number(msg.id);

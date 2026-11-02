@@ -97,6 +97,17 @@ bool compareElementsBitwise(const Path &cp, const QPainterPath &qp, const char *
             std::fprintf(stderr,
                          "FAIL [%s case=%d elem=%d]: core=(type=%d, %.17g, %.17g) qt=(type=%d, %.17g, %.17g)\n",
                          ctx, caseIdx, i, int(ce.type), ce.x, ce.y, int(qe.type), qe.x, qe.y);
+            for (int k = 0; k < cp.elementCount(); ++k) {
+                const auto cEl = cp.elementAt(k);
+                const auto qEl = qp.elementAt(k);
+                std::fprintf(stderr,
+                             "  [%d] core=(%d, %.17g [0x%016llx], %.17g [0x%016llx]) qt=(%d, %.17g [0x%016llx], %.17g [0x%016llx])\n",
+                             k,
+                             int(cEl.type), cEl.x, static_cast<unsigned long long>(toBits(cEl.x)),
+                             cEl.y, static_cast<unsigned long long>(toBits(cEl.y)),
+                             int(qEl.type), qEl.x, static_cast<unsigned long long>(toBits(qEl.x)),
+                             qEl.y, static_cast<unsigned long long>(toBits(qEl.y)));
+            }
             ++g_failures;
             return false;
         }
@@ -655,11 +666,311 @@ void testAddSelf()
     }
 }
 
+void testEllipseAndRoundedRect()
+{
+    const RectF fixedRects[] = {
+        RectF(0.0, 0.0, 2.0, 2.0),
+        RectF(10.0, 20.0, 100.0, 50.0),
+        RectF(-15.5, 8.25, 42.75, 19.125),
+        RectF(10.0, 20.0, -100.0, 50.0),
+        RectF(10.0, 20.0, 100.0, -50.0),
+        RectF(10.0, 20.0, -100.0, -50.0),
+        RectF(10.0, 20.0, 0.0, 50.0),
+        RectF(10.0, 20.0, 100.0, 0.0),
+        RectF(10.0, 20.0, 0.0, 0.0),
+        RectF(0.0, 0.0, 0.0, 0.0),
+    };
+
+    for (int i = 0; i < int(sizeof(fixedRects) / sizeof(fixedRects[0])); ++i) {
+        const RectF r = fixedRects[i];
+        const QRectF qr(r.x(), r.y(), r.width(), r.height());
+        {
+            Path cp;
+            QPainterPath qp;
+            cp.addEllipse(r);
+            qp.addEllipse(qr);
+            compareElementsBitwise(cp, qp, "addEllipse_fixed", i);
+            cp.lineTo(77.0, 88.0);
+            qp.lineTo(77.0, 88.0);
+            compareElementsBitwise(cp, qp, "addEllipse_fixed_after_lineTo", i);
+            cp.closeSubpath();
+            qp.closeSubpath();
+            compareElementsBitwise(cp, qp, "addEllipse_fixed_after_close", i);
+        }
+        {
+            Path cp;
+            QPainterPath qp;
+            cp.moveTo(5.0, 6.0);
+            qp.moveTo(5.0, 6.0);
+            cp.addEllipse(r);
+            qp.addEllipse(qr);
+            compareElementsBitwise(cp, qp, "addEllipse_after_moveTo", i);
+        }
+    }
+
+    const double radiiPairs[][2] = {
+        {3.0, 3.0},
+        {10.0, 15.0},
+        {60.0, 10.0},
+        {10.0, 40.0},
+        {200.0, 200.0},
+        {0.0, 10.0},
+        {10.0, 0.0},
+        {0.0, 0.0},
+        {-5.0, 10.0},
+        {10.0, -5.0},
+        {-5.0, -5.0},
+    };
+
+    int rrCase = 0;
+    for (const RectF &r : fixedRects) {
+        const QRectF qr(r.x(), r.y(), r.width(), r.height());
+        for (const auto &rad : radiiPairs) {
+            const double rx = rad[0];
+            const double ry = rad[1];
+            {
+                Path cp;
+                QPainterPath qp;
+                cp.addRoundedRect(r, rx, ry);
+                qp.addRoundedRect(qr, rx, ry);
+                compareElementsBitwise(cp, qp, "addRoundedRect_fixed", rrCase);
+                cp.lineTo(77.0, 88.0);
+                qp.lineTo(77.0, 88.0);
+                compareElementsBitwise(cp, qp, "addRoundedRect_fixed_after_lineTo", rrCase);
+                cp.closeSubpath();
+                qp.closeSubpath();
+                compareElementsBitwise(cp, qp, "addRoundedRect_fixed_after_close", rrCase);
+            }
+            {
+                Path cp;
+                QPainterPath qp;
+                cp.moveTo(5.0, 6.0);
+                qp.moveTo(5.0, 6.0);
+                cp.addRoundedRect(r, rx, ry);
+                qp.addRoundedRect(qr, rx, ry);
+                compareElementsBitwise(cp, qp, "addRoundedRect_after_moveTo", rrCase);
+            }
+            ++rrCase;
+        }
+    }
+
+    std::mt19937_64 rng(0xE11195E2026ULL);
+    std::uniform_real_distribution<double> coordDist(-500.0, 500.0);
+    std::uniform_real_distribution<double> sizeDist(-300.0, 300.0);
+    std::uniform_real_distribution<double> radDist(-50.0, 250.0);
+
+    for (int i = 0; i < 2000; ++i) {
+        if (g_failures >= 50) return;
+
+        const double x = coordDist(rng);
+        const double y = coordDist(rng);
+        double w = (i % 10 == 0) ? 0.0 : sizeDist(rng);
+        double h = (i % 11 == 0) ? 0.0 : sizeDist(rng);
+        const RectF r(x, y, w, h);
+        const QRectF qr(x, y, w, h);
+
+        {
+            Path cp;
+            QPainterPath qp;
+            if (i % 4 == 1) {
+                cp.moveTo(coordDist(rng), coordDist(rng));
+                qp.moveTo(cp.currentPosition().x(), cp.currentPosition().y());
+            } else if (i % 4 == 2) {
+                const double sx = coordDist(rng), sy = coordDist(rng);
+                const double lx = coordDist(rng), ly = coordDist(rng);
+                cp.moveTo(sx, sy);
+                cp.lineTo(lx, ly);
+                qp.moveTo(sx, sy);
+                qp.lineTo(lx, ly);
+            }
+            cp.addEllipse(r);
+            qp.addEllipse(qr);
+            if (i % 3 == 0) {
+                const double nx = coordDist(rng), ny = coordDist(rng);
+                cp.lineTo(nx, ny);
+                qp.lineTo(nx, ny);
+            }
+            if (!compareElementsBitwise(cp, qp, "addEllipse_random", i)) {
+                return;
+            }
+        }
+
+        {
+            const double rx = (i % 9 == 0) ? 0.0 : radDist(rng);
+            const double ry = (i % 13 == 0) ? 0.0 : radDist(rng);
+            Path cp;
+            QPainterPath qp;
+            if (i % 4 == 1) {
+                cp.moveTo(coordDist(rng), coordDist(rng));
+                qp.moveTo(cp.currentPosition().x(), cp.currentPosition().y());
+            } else if (i % 4 == 2) {
+                const double sx = coordDist(rng), sy = coordDist(rng);
+                const double lx = coordDist(rng), ly = coordDist(rng);
+                cp.moveTo(sx, sy);
+                cp.lineTo(lx, ly);
+                qp.moveTo(sx, sy);
+                qp.lineTo(lx, ly);
+            }
+            cp.addRoundedRect(r, rx, ry);
+            qp.addRoundedRect(qr, rx, ry);
+            if (i % 3 == 0) {
+                const double nx = coordDist(rng), ny = coordDist(rng);
+                cp.lineTo(nx, ny);
+                qp.lineTo(nx, ny);
+            }
+            if (!compareElementsBitwise(cp, qp, "addRoundedRect_random", i)) {
+                return;
+            }
+        }
+    }
+}
+
+// Arc end points are not bit for bit: Qt approximates them on its Bezier quadrant
+// where the core takes the true ellipse. Half a thousandth of the rectangle is well
+// under a pixel, and the only arc in the program is the rotate cursor's bitmap.
+bool compareElementsNear(const Path &cp, const QPainterPath &qp, double size, const char *ctx, int caseIdx)
+{
+    if (cp.elementCount() != qp.elementCount()) {
+        std::fprintf(stderr, "FAIL [%s case=%d]: elementCount mismatch core=%d qt=%d\n", ctx, caseIdx,
+                     cp.elementCount(), int(qp.elementCount()));
+        ++g_failures;
+        return false;
+    }
+    const double tolerance = 0.002 * std::max(1.0, size);
+    for (int i = 0; i < cp.elementCount(); ++i) {
+        const Path::Element ce = cp.elementAt(i);
+        const QPainterPath::Element qe = qp.elementAt(i);
+        if (int(ce.type) != int(qe.type) || std::abs(ce.x - qe.x) > tolerance || std::abs(ce.y - qe.y) > tolerance) {
+            std::fprintf(stderr, "FAIL [%s case=%d elem=%d]: core=(type=%d, %.17g, %.17g) qt=(type=%d, %.17g, %.17g)\n",
+                         ctx, caseIdx, i, int(ce.type), ce.x, ce.y, int(qe.type), qe.x, qe.y);
+            ++g_failures;
+            return false;
+        }
+    }
+    return true;
+}
+
+void testArc()
+{    // Exact rotate cursor from openglwidget.cpp
+    {
+        const PointF centre(12.0, 12.0);
+        const double radius = 6.5;
+        const RectF ring(centre.x() - radius, centre.y() - radius, radius * 2.0, radius * 2.0);
+        const QRectF qRing(ring.x(), ring.y(), ring.width(), ring.height());
+        Path cp;
+        QPainterPath qp;
+        cp.arcMoveTo(ring, 55.0);
+        cp.arcTo(ring, 55.0, 250.0);
+        qp.arcMoveTo(qRing, 55.0);
+        qp.arcTo(qRing, 55.0, 250.0);
+        compareElementsNear(cp, qp, radius * 2.0, "rotate_cursor_arc", 0);
+    }
+
+    const RectF fixedRects[] = {
+        RectF(5.5, 5.5, 13.0, 13.0),
+        RectF(0.0, 0.0, 100.0, 50.0),
+        RectF(-20.25, 15.75, 80.5, 40.25),
+        RectF(10.0, 20.0, -60.0, 40.0),
+        RectF(10.0, 20.0, 60.0, -40.0),
+        RectF(10.0, 20.0, 0.0, 40.0),
+        RectF(10.0, 20.0, 60.0, 0.0),
+        RectF(0.0, 0.0, 0.0, 0.0),
+    };
+
+    const double anglePairs[][2] = {
+        {0.0, 90.0},
+        {0.0, 180.0},
+        {0.0, 270.0},
+        {0.0, 360.0},
+        {0.0, -90.0},
+        {0.0, -180.0},
+        {0.0, -360.0},
+        {55.0, 250.0},
+        {55.0, -250.0},
+        {30.0, 45.0},
+        {45.0, 90.0},
+        {15.0, 30.0},
+        {75.0, 40.0},
+        {135.0, -200.0},
+        {-45.0, 120.0},
+        {360.0, 90.0},
+        {-360.0, -90.0},
+        {45.0, 0.0},
+        {90.0, 500.0},
+        {90.0, -500.0},
+    };
+
+    int caseIdx = 0;
+    for (const RectF &r : fixedRects) {
+        const QRectF qr(r.x(), r.y(), r.width(), r.height());
+        for (const auto &ap : anglePairs) {
+            const double startAngle = ap[0];
+            const double sweep = ap[1];
+            {
+                Path cp;
+                QPainterPath qp;
+                cp.arcMoveTo(r, startAngle);
+                cp.arcTo(r, startAngle, sweep);
+                qp.arcMoveTo(qr, startAngle);
+                qp.arcTo(qr, startAngle, sweep);
+                if (!compareElementsNear(cp, qp, std::max(std::abs(r.width()), std::abs(r.height())), "arc_fixed_move_then_arc", caseIdx))
+                    return;
+            }
+            {
+                Path cp;
+                QPainterPath qp;
+                cp.arcTo(r.x(), r.y(), r.width(), r.height(), startAngle, sweep);
+                qp.arcTo(qr.x(), qr.y(), qr.width(), qr.height(), startAngle, sweep);
+                if (!compareElementsNear(cp, qp, std::max(std::abs(r.width()), std::abs(r.height())), "arc_fixed_on_empty", caseIdx))
+                    return;
+            }
+            ++caseIdx;
+        }
+    }
+
+    std::mt19937_64 rng(0xA4C2026ULL);
+    std::uniform_real_distribution<double> coordDist(-300.0, 300.0);
+    std::uniform_real_distribution<double> sizeDist(-200.0, 200.0);
+    std::uniform_real_distribution<double> angleDist(-720.0, 720.0);
+
+    for (int i = 0; i < 2000; ++i) {
+        if (g_failures >= 50) return;
+
+        const double x = coordDist(rng);
+        const double y = coordDist(rng);
+        const double w = (i % 15 == 0) ? 0.0 : sizeDist(rng);
+        const double h = (i % 17 == 0) ? 0.0 : sizeDist(rng);
+        const double startAngle = (i % 8 == 0) ? (90.0 * (i % 9 - 4)) : angleDist(rng);
+        const double sweep = (i % 9 == 0) ? (90.0 * (i % 9 - 4)) : angleDist(rng);
+
+        const RectF r(x, y, w, h);
+        const QRectF qr(x, y, w, h);
+
+        Path cp;
+        QPainterPath qp;
+        if (i % 3 == 0) {
+            cp.arcMoveTo(r, startAngle);
+            qp.arcMoveTo(qr, startAngle);
+        } else if (i % 3 == 1) {
+            const double mx = coordDist(rng), my = coordDist(rng);
+            cp.moveTo(mx, my);
+            qp.moveTo(mx, my);
+        }
+        cp.arcTo(r, startAngle, sweep);
+        qp.arcTo(qr, startAngle, sweep);
+        if (!compareElementsNear(cp, qp, std::max(std::abs(w), std::abs(h)), "arc_random", i)) {
+            return;
+        }
+    }
+}
+
 } // namespace
 
 int main()
 {
     testEdgeCases();
+    testEllipseAndRoundedRect();
+    testArc();
     testBridgedCopy();
     testAddSelf();
     testImplicitSharing();

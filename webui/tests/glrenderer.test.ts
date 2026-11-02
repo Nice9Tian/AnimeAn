@@ -765,6 +765,11 @@ describe("GlBoardRenderer", () => {
     assert.ok(glRenderer.getImage("k1"));
     assert.ok(mock.calls.some((c) => c.fn === "texImage2D"), "Should upload adopted image texture and draw");
     assert.ok(mock.calls.some((c) => c.fn === "blitFramebuffer"), "Should resolve adopted frame to screen");
+
+    mock.calls.length = 0;
+    glRenderer.forgetImage("k1");
+    assert.equal(glRenderer.getImage("k1"), undefined);
+    assert.ok(mock.calls.some((c) => c.fn === "deleteTexture"), "A forgotten image gives its texture back");
   });
 
   it("handles K clip stencil bit 0x80, G gradients, M composite modes, batching, and context loss/restore", () => {

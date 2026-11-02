@@ -17,6 +17,7 @@ namespace AnimeCore {
 class JsonArray;
 class JsonObject;
 class JsonValueRef;
+class JsonVariant;
 
 class JsonValue
 {
@@ -39,6 +40,7 @@ public:
     JsonValue(const AnimeCore::String &s);
     JsonValue(AnimeCore::Latin1String s);
     JsonValue(const char *s);
+    JsonValue(const std::string &s) : JsonValue(AnimeCore::String::fromStdString(s)) {}
     JsonValue(const JsonArray &a);
     JsonValue(JsonArray &&a) noexcept;
     JsonValue(const JsonObject &o);
@@ -84,6 +86,7 @@ public:
     JsonArray toArray(const JsonArray &defaultValue) const;
     JsonObject toObject() const;
     JsonObject toObject(const JsonObject &defaultValue) const;
+    JsonVariant toVariant() const;
 
     JsonValue operator[](const AnimeCore::String &key) const;
     JsonValue operator[](AnimeCore::Latin1String key) const;
@@ -299,7 +302,7 @@ public:
     int length() const noexcept { return size(); }
     bool isEmpty() const noexcept { return !m_d || m_d->empty(); }
 
-    std::vector<String> keys() const;
+    StringList keys() const;
 
     bool contains(const String &key) const noexcept;
     bool contains(Latin1String key) const noexcept { return contains(String(key)); }
@@ -392,6 +395,13 @@ public:
     static JsonDocument fromJson(const std::string &utf8, JsonParseError *error = nullptr);
     static JsonDocument fromJson(const char *utf8, int size = -1, JsonParseError *error = nullptr);
 
+    template <typename ByteContainer,
+              typename = decltype(std::declval<const ByteContainer &>().constData())>
+    static JsonDocument fromJson(const ByteContainer &utf8, JsonParseError *error = nullptr)
+    {
+        return fromJson(utf8.constData(), static_cast<int>(utf8.size()), error);
+    }
+
     std::string toJson(JsonFormat format = Indented) const;
 
     bool isNull() const noexcept { return m_kind == Kind::Null; }
@@ -419,5 +429,42 @@ private:
     JsonObject m_object;
     JsonArray m_array;
 };
+
+class JsonVariant
+{
+public:
+    JsonVariant() noexcept = default;
+    explicit JsonVariant(const JsonValue &val) : m_val(val) {}
+
+    template <typename T, typename = std::enable_if_t<BridgesToCore<T, JsonVariant>::value>>
+    JsonVariant(const T &foreign)
+        : JsonVariant(Bridge<T>::toCore(foreign))
+    {
+    }
+
+    template <typename T, typename = std::enable_if_t<BridgesFromCore<T, JsonVariant>::value>>
+    operator T() const
+    {
+        return Bridge<T>::fromCore(*this);
+    }
+
+    bool isValid() const noexcept { return !m_val.isUndefined(); }
+    bool isNull() const noexcept { return m_val.isNull() || m_val.isUndefined(); }
+    const JsonValue &toJsonValue() const noexcept { return m_val; }
+
+    bool toBool() const noexcept;
+    int toInt(bool *ok = nullptr) const noexcept;
+    long long toLongLong(bool *ok = nullptr) const noexcept;
+    double toDouble(bool *ok = nullptr) const noexcept;
+    String toString() const;
+
+private:
+    JsonValue m_val = JsonValue(JsonValue::Undefined);
+};
+
+inline JsonVariant JsonValue::toVariant() const
+{
+    return JsonVariant(*this);
+}
 
 } // namespace AnimeCore

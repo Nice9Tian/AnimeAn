@@ -1,146 +1,190 @@
 #include "openglwidget.h"
 
-#include <QCoreApplication>
-#include <QDir>
-#include <QFile>
-#include <QFileInfo>
-#include <QGuiApplication>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonParseError>
-#include <QPainter>
-#include <QPainterPath>
-#include <QStringList>
+#include "algorithm/core/color.h"
+#include "algorithm/core/containers.h"
+#include "algorithm/core/file.h"
+#include "algorithm/core/geometry.h"
+#include "algorithm/core/json.h"
+#include "algorithm/core/painter.h"
+#include "algorithm/core/path.h"
+
+#include "algorithm/core/string.h"
+#include "backend/platform/eventloop.h"
+#include "backend/platform/timer.h"
 
 #ifdef ANIMEAN_WITH_PYTHON
-#ifdef slots
 #undef slots
-#define ANIMEAN_RESTORE_QT_SLOTS
-#endif
 #include <pybind11/embed.h>
-#ifdef ANIMEAN_RESTORE_QT_SLOTS
-#define slots Q_SLOTS
-#undef ANIMEAN_RESTORE_QT_SLOTS
-#endif
 #include "pythonbind/python_bindings.h"
 namespace py = pybind11;
 #endif
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <stdexcept>
 
+using namespace AnimeCore;
+
 namespace {
 
-class ClipAndFlushTestSurface : public BoardSurface
+void setEnvVar(const char *name, const String &value)
+{
+#ifdef _WIN32
+    _putenv_s(name, value.toLocal8Bit().c_str());
+#else
+    setenv(name, value.toLocal8Bit().c_str(), 1);
+#endif
+}
+
+void pumpEventLoop()
+{
+    Timer::singleShot(0, []() {
+        EventLoop::instance().post([]() {
+            EventLoop::instance().quit(0);
+        });
+    });
+    EventLoop::instance().exec();
+}
+
+class FlushTestSurface : public BoardSurface
 {
 public:
     bool throwInPaint = false;
-    QVector<quint64> observedMouseTimestamps;
+    Vector<std::uint64_t> observedMouseTimestamps;
 
 protected:
     void paintGL() override
     {
-        QPainter painter(this);
-        painter.fillRect(QRectF(0, 0, 100, 100), Qt::white);
+        Painter painter(this);
+        painter.fillRect(RectF(0, 0, 100, 100), Color(255, 255, 255));
         if (throwInPaint) {
             throw std::runtime_error("simulated python callback error in paintGL");
         }
-
-        // 1. setClipRect with ReplaceClip then IntersectClip
-        painter.setClipRect(QRectF(10, 20, 100, 80), Qt::ReplaceClip);
-        painter.fillRect(QRectF(0, 0, 200, 200), Qt::red);
-        painter.setClipRect(QRectF(50, 40, 100, 80), Qt::IntersectClip);
-        painter.fillRect(QRectF(0, 0, 200, 200), Qt::blue);
-
-        // 2. setClipPath with ReplaceClip then IntersectClip
-        QPainterPath p1;
-        p1.addRect(QRectF(0, 0, 90, 90));
-        QPainterPath p2;
-        p2.addRect(QRectF(30, 25, 90, 90));
-        painter.setClipPath(p1, Qt::ReplaceClip);
-        painter.setClipPath(p2, Qt::IntersectClip);
-        painter.fillRect(QRectF(0, 0, 200, 200), Qt::green);
-
-        painter.setClipping(false);
-        painter.fillRect(QRectF(0, 0, 10, 10), Qt::black);
+        painter.fillRect(RectF(0, 0, 10, 10), Color(0, 0, 0));
     }
 
-    void mousePressEvent(QMouseEvent *event) override
+    void mousePressEvent(MouseEvent *event) override
     {
         observedMouseTimestamps.append(event->timestamp());
         event->accept();
     }
 
-    void mouseMoveEvent(QMouseEvent *event) override
+    void mouseMoveEvent(MouseEvent *event) override
     {
         observedMouseTimestamps.append(event->timestamp());
         event->accept();
     }
 
-    void mouseReleaseEvent(QMouseEvent *event) override
+    void mouseReleaseEvent(MouseEvent *event) override
     {
         observedMouseTimestamps.append(event->timestamp());
         event->accept();
     }
 };
 
-QRectF clipPathBounds(const QJsonArray &flatPath)
+class ImageTestSurface : public BoardSurface
 {
-    double minX = std::numeric_limits<double>::infinity();
-    double minY = std::numeric_limits<double>::infinity();
-    double maxX = -std::numeric_limits<double>::infinity();
-    double maxY = -std::numeric_limits<double>::infinity();
-    bool any = false;
+public:
+    Vector<Image> toDraw;
 
-    int i = 0;
-    while (i < flatPath.size()) {
-        const int cmd = flatPath.at(i++).toInt(-1);
-        if (cmd == 0 || cmd == 1) {
-            if (i + 1 >= flatPath.size()) {
-                break;
-            }
-            const double x = flatPath.at(i++).toDouble();
-            const double y = flatPath.at(i++).toDouble();
-            minX = std::min(minX, x);
-            minY = std::min(minY, y);
-            maxX = std::max(maxX, x);
-            maxY = std::max(maxY, y);
-            any = true;
-        } else if (cmd == 2) {
-            if (i + 5 >= flatPath.size()) {
-                break;
-            }
-            for (int k = 0; k < 3; ++k) {
-                const double x = flatPath.at(i++).toDouble();
-                const double y = flatPath.at(i++).toDouble();
-                minX = std::min(minX, x);
-                minY = std::min(minY, y);
-                maxX = std::max(maxX, x);
-                maxY = std::max(maxY, y);
-            }
-            any = true;
-        } else if (cmd == 3) {
-            // close subpath
-        } else {
-            break;
+protected:
+    void paintGL() override
+    {
+        Painter painter(this);
+        for (const Image &image : toDraw) {
+            painter.drawImage(PointF(0.0, 0.0), image);
         }
     }
-    if (!any) {
-        return QRectF();
-    }
-    return QRectF(QPointF(minX, minY), QPointF(maxX, maxY));
+};
+
+Image solidImage(int shade)
+{
+    Image image(10, 10, Image::Format_RGBA8888);
+    image.fill(Color(shade, shade, shade));
+    return image;
 }
 
-bool runClipAndFlushUnitTests()
+// The client keeps every image it was sent until told otherwise, so the board has
+// to bound that: a new onion ghost per view change once ran a page out of memory.
+bool runImageBudgetTests()
 {
-    ClipAndFlushTestSurface surface;
+    const std::int64_t oneImage = 10 * 10 * 4;
+    ImageTestSurface surface;
+    surface.setImageBudget(2 * oneImage);
+    surface.resizeSurface(100, 100, 1.0);
+
+    std::uint64_t lastFrame = 0;
+    StringList sent;
+    StringList forgotten;
+    surface.setCanSendFrame([]() { return true; });
+    surface.setFrameSink([&](const BoardFrame &frame) { lastFrame = frame.frame; });
+    surface.setImageSink(
+        [&](const String &key, const Image &) { sent.append(key); },
+        [&](const String &key) { forgotten.append(key); });
+
+    const auto draw = [&](const Vector<Image> &images) {
+        surface.toDraw = images;
+        surface.update();
+        pumpEventLoop();
+        surface.acknowledgeFrame(lastFrame);
+    };
+
+    const Image a = solidImage(10), b = solidImage(20), c = solidImage(30);
+    draw({a});
+    draw({b});
+    if (sent.size() != 2 || !forgotten.isEmpty()) {
+        std::fprintf(stderr, "Expected two images held within the budget\n");
+        return false;
+    }
+    const String keyA = sent.at(0), keyB = sent.at(1);
+
+    // Over budget: the one drawn longest ago goes, and only that one.
+    draw({c});
+    if (sent.size() != 3 || forgotten != StringList{keyA}) {
+        std::fprintf(stderr, "Expected the oldest image evicted, got %d\n", int(forgotten.size()));
+        return false;
+    }
+    const String keyC = sent.at(2);
+
+    // Drawing a held image counts as use: b outlives c here.
+    draw({b});
+    draw({a});
+    if (sent.size() != 4 || sent.at(3) != keyA || forgotten != (StringList{keyA, keyC})) {
+        std::fprintf(stderr, "Expected a resent and c evicted after b was reused\n");
+        return false;
+    }
+
+    // What the current frame draws stays, even past the budget.
+    forgotten.clear();
+    sent.clear();
+    draw({a, b, c});
+    if (sent != StringList{keyC} || !forgotten.isEmpty()) {
+        std::fprintf(stderr, "Expected the images of the current frame kept\n");
+        return false;
+    }
+
+    // A new client holds nothing.
+    sent.clear();
+    surface.forgetSentImages();
+    draw({a, b});
+    if (sent.size() != 2) {
+        std::fprintf(stderr, "Expected images resent to a new client\n");
+        return false;
+    }
+    return true;
+}
+
+bool runFlushUnitTests()
+{
+    FlushTestSurface surface;
     surface.resizeSurface(200, 200, 1.0);
 
     // Flush with no client (no FrameSink attached): must not set waitingForAck or consume forceFullFrame.
-    QCoreApplication::processEvents();
+    pumpEventLoop();
     if (surface.isWaitingForAck()) {
         std::fprintf(stderr, "Expected isWaitingForAck() == false when no client is connected\n");
         return false;
@@ -161,7 +205,7 @@ bool runClipAndFlushUnitTests()
 
     // Still no client because canSendFrame returns false.
     surface.update();
-    QCoreApplication::processEvents();
+    pumpEventLoop();
     if (sinkCallCount != 0 || surface.isWaitingForAck() || !surface.forceFullFrame()) {
         std::fprintf(stderr, "Expected no frame sent and forceFullFrame preserved when canSendFrame is false\n");
         return false;
@@ -171,7 +215,7 @@ bool runClipAndFlushUnitTests()
     clientPresent = true;
     surface.throwInPaint = true;
     surface.update();
-    QCoreApplication::processEvents();
+    pumpEventLoop();
     if (sinkCallCount != 0 || surface.isWaitingForAck() || !surface.forceFullFrame()) {
         std::fprintf(stderr, "Expected exception in paintGL to abort flush without setting waitingForAck or consuming forceFullFrame\n");
         return false;
@@ -180,7 +224,7 @@ bool runClipAndFlushUnitTests()
     // Now paintGL succeeds: should send full frame (keep == 0) and set waitingForAck.
     surface.throwInPaint = false;
     surface.update();
-    QCoreApplication::processEvents();
+    pumpEventLoop();
     if (sinkCallCount != 1 || !surface.isWaitingForAck() || surface.forceFullFrame()) {
         std::fprintf(stderr, "Expected successful flush to send frame and set waitingForAck\n");
         return false;
@@ -190,57 +234,17 @@ bool runClipAndFlushUnitTests()
         return false;
     }
 
-    // Verify K ops in receivedFrame.ops have intersected clip bounds.
-    QJsonParseError err;
-    const QJsonDocument doc = QJsonDocument::fromJson(receivedFrame.ops, &err);
-    if (err.error != QJsonParseError::NoError || !doc.isArray()) {
-        std::fprintf(stderr, "Failed to parse clip test ops JSON\n");
-        return false;
-    }
-    QVector<QRectF> nonNullClipBounds;
-    int nullClipCount = 0;
-    for (const QJsonValue &val : doc.array()) {
-        const QJsonArray op = val.toArray();
-        if (op.isEmpty() || op.at(0).toString() != QStringLiteral("K")) {
-            continue;
-        }
-        if (op.at(1).isNull()) {
-            ++nullClipCount;
-        } else if (op.at(1).isArray()) {
-            nonNullClipBounds.append(clipPathBounds(op.at(1).toArray()));
-        }
-    }
-    if (nonNullClipBounds.size() < 3 || nullClipCount < 1) {
-        std::fprintf(stderr, "Expected at least 3 non-null K ops and 1 null K op, got %d and %d\n",
-                     int(nonNullClipBounds.size()), nullClipCount);
-        return false;
-    }
-    // K[0]: ReplaceClip (10, 20, 100, 80)
-    // K[1]: IntersectClip with (50, 40, 100, 80) -> intersection is (50, 40, 60, 60)
-    const QRectF rectIntersect = nonNullClipBounds.at(1);
-    if (std::abs(rectIntersect.left() - 50.0) > 1e-3
-        || std::abs(rectIntersect.top() - 40.0) > 1e-3
-        || std::abs(rectIntersect.width() - 60.0) > 1e-3
-        || std::abs(rectIntersect.height() - 60.0) > 1e-3) {
-        std::fprintf(stderr, "Unexpected setClipRect IntersectClip bounds: (%f, %f, %f, %f), expected (50, 40, 60, 60)\n",
-                     rectIntersect.left(), rectIntersect.top(), rectIntersect.width(), rectIntersect.height());
-        return false;
-    }
-    // K[2]: setClipPath ReplaceClip (0,0,90,90) + IntersectClip (30,25,90,90) -> intersection is (30, 25, 60, 65)
-    const QRectF pathIntersect = nonNullClipBounds.last();
-    if (std::abs(pathIntersect.left() - 30.0) > 1e-3
-        || std::abs(pathIntersect.top() - 25.0) > 1e-3
-        || std::abs(pathIntersect.width() - 60.0) > 1e-3
-        || std::abs(pathIntersect.height() - 65.0) > 1e-3) {
-        std::fprintf(stderr, "Unexpected setClipPath IntersectClip bounds: (%f, %f, %f, %f), expected (30, 25, 60, 65)\n",
-                     pathIntersect.left(), pathIntersect.top(), pathIntersect.width(), pathIntersect.height());
+    JsonParseError err;
+    const JsonDocument doc = JsonDocument::fromJson(receivedFrame.ops, &err);
+    if (err.error != JsonParseError::NoError || !doc.isArray() || doc.array().isEmpty()) {
+        std::fprintf(stderr, "Failed to parse flush test ops JSON\n");
         return false;
     }
 
     // Verify injectMouse timestamps are set and monotonically non-decreasing.
-    surface.injectMouse(QEvent::MouseButtonPress, QPointF(10, 10), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier, 1000);
-    surface.injectMouse(QEvent::MouseMove, QPointF(20, 20), Qt::NoButton, Qt::LeftButton, Qt::NoModifier, 950); // out-of-order, clamped to 1000
-    surface.injectMouse(QEvent::MouseButtonRelease, QPointF(30, 30), Qt::LeftButton, Qt::NoButton, Qt::NoModifier, 1050);
+    surface.injectMouse(Event::MouseButtonPress, PointF(10, 10), LeftButton, LeftButton, NoModifier, 1000);
+    surface.injectMouse(Event::MouseMove, PointF(20, 20), NoButton, LeftButton, NoModifier, 950); // out-of-order, clamped to 1000
+    surface.injectMouse(Event::MouseButtonRelease, PointF(30, 30), LeftButton, NoButton, NoModifier, 1050);
     if (surface.observedMouseTimestamps.size() != 3
         || surface.observedMouseTimestamps[0] != 1000
         || surface.observedMouseTimestamps[1] != 1000
@@ -261,10 +265,10 @@ bool runFieldScopeAndHideColumnsUnitTests()
 {
     PaintOpenGLWidget mainBoard;
     PaintOpenGLWidget childBoard;
-    mainBoard.setViewName(QStringLiteral("main"));
-    mainBoard.model().setTextId(QStringLiteral("main_paint_view"));
-    childBoard.setViewName(QStringLiteral("child"));
-    childBoard.model().setTextId(QStringLiteral("child_paint_view"));
+    mainBoard.setViewName(String("main"));
+    mainBoard.model().setTextId(String("main_paint_view"));
+    childBoard.setViewName(String("child"));
+    childBoard.model().setTextId(String("child_paint_view"));
 
     // Add a stroke on mainBoard column 0 at frame 0 (in red, R=210, G=30, B=40).
     {
@@ -289,7 +293,7 @@ bool runFieldScopeAndHideColumnsUnitTests()
         AnimeVectorFillRegion fill;
         fill.id = 1;
         fill.color = AnimeCore::Color(10, 200, 50, 255);
-        fill.path.addRect(QRectF(10.0, 10.0, 40.0, 40.0));
+        fill.path.addRect(RectF(10.0, 10.0, 40.0, 40.0));
         fill.bounds = fill.path.boundingRect();
         childImg->addFillRegion(fill);
 
@@ -297,50 +301,50 @@ bool runFieldScopeAndHideColumnsUnitTests()
         pts1.append(AnimeCore::PointF(15.0, 15.0));
         pts1.append(AnimeCore::PointF(85.0, 65.0));
         AnimeVectorStroke s1 = AnimeVectorLogic::makeStroke(pts1, AnimeCore::Color(20, 40, 220, 255), 4.0, 1, false, false);
-        s1.property = QStringLiteral("keep_prop");
+        s1.property = String("keep_prop");
         childImg->addStroke(s1);
 
         AnimeCore::Vector<AnimeCore::PointF> pts2;
         pts2.append(AnimeCore::PointF(30.0, 30.0));
         pts2.append(AnimeCore::PointF(90.0, 90.0));
         AnimeVectorStroke s2 = AnimeVectorLogic::makeStroke(pts2, AnimeCore::Color(250, 120, 10, 255), 6.0, 2, false, false);
-        s2.property = QStringLiteral("skip_prop");
+        s2.property = String("skip_prop");
         childImg->addStroke(s2);
 
         childBoard.model().setLayerVisible(0, false);
         childBoard.model().setLayerOpacity(0, 0.75);
     }
 
-    QHash<QString, quint64> fieldVersions;
-    quint64 nextVersion = 1;
+    Hash<String, std::uint64_t> fieldVersions;
+    std::uint64_t nextVersion = 1;
     mainBoard.setFieldLookup(
-        [&](const QString &key) -> quint64 { return fieldVersions.value(key, 0); },
-        [&](const QString &viewName) -> const AnimeSceneModel * {
-            if (viewName == QStringLiteral("child")) {
+        [&](const String &key) -> std::uint64_t { return fieldVersions.value(key, 0); },
+        [&](const String &viewName) -> const AnimeSceneModel * {
+            if (viewName == String("child")) {
                 return &childBoard.model();
             }
-            if (viewName == QStringLiteral("main")) {
+            if (viewName == String("main")) {
                 return &mainBoard.model();
             }
             return nullptr;
         });
 
-    QJsonArray fullOps;
+    JsonArray fullOps;
     BoardFrame lastFrame;
     bool gotFrame = false;
     mainBoard.setFrameSink([&](const BoardFrame &frame) {
         lastFrame = frame;
         gotFrame = true;
-        QJsonParseError err;
-        const QJsonDocument doc = QJsonDocument::fromJson(frame.ops, &err);
-        if (err.error != QJsonParseError::NoError || !doc.isArray()) {
+        JsonParseError err;
+        const JsonDocument doc = JsonDocument::fromJson(frame.ops, &err);
+        if (err.error != JsonParseError::NoError || !doc.isArray()) {
             std::fprintf(stderr, "Invalid ops JSON in field scope test\n");
             std::exit(1);
         }
         while (fullOps.size() > frame.keep) {
             fullOps.removeLast();
         }
-        for (const QJsonValue &val : doc.array()) {
+        for (const JsonValue &val : doc.array()) {
             fullOps.append(val);
         }
     });
@@ -349,7 +353,7 @@ bool runFieldScopeAndHideColumnsUnitTests()
         gotFrame = false;
         int spins = 0;
         while (!gotFrame && spins < 1000) {
-            QCoreApplication::processEvents();
+            pumpEventLoop();
             ++spins;
         }
         if (!gotFrame) {
@@ -392,6 +396,10 @@ bool runFieldScopeAndHideColumnsUnitTests()
         ui.attr("set_field")("k", 2, 2, py::bytes(std::string(64, '\0')));
         ui.attr("set_field_view")("main", py::none());
 
+        // ui.call_later runs on the host's event loop; the session registers the same hook.
+        registerAnimeanUiCallLaterCallback([](int ms, std::function<void()> callback) {
+            Timer::singleShot(ms, std::move(callback));
+        });
         // Test call_later execution and exception swallowing
         py::dict ns;
         ns["called"] = 0;
@@ -406,7 +414,7 @@ bool runFieldScopeAndHideColumnsUnitTests()
             "animean_python.ui.call_later(0, _cb_boom)\n",
             ns, ns);
         for (int i = 0; i < 50 && ns["called"].cast<int>() == 0; ++i) {
-            QCoreApplication::processEvents();
+            pumpEventLoop();
         }
         if (ns["called"].cast<int>() != 1) {
             std::fprintf(stderr, "Expected call_later callback to run once, got %d\n", ns["called"].cast<int>());
@@ -414,14 +422,14 @@ bool runFieldScopeAndHideColumnsUnitTests()
         }
     }
 
-    registerAnimeanUiFieldCallback([&](const QString &key, int, int, const QByteArray &) {
+    registerAnimeanUiFieldCallback([&](const String &key, int, int, const std::string &) {
         fieldVersions[key] = nextVersion++;
         if (mainBoard.fieldViewSpec().active && mainBoard.fieldViewSpec().fieldKey == key) {
             mainBoard.update();
         }
     });
-    registerAnimeanUiFieldViewCallback([&](const QString &view, const AnimeanFieldViewSpec &spec) {
-        if (view != QStringLiteral("main")) {
+    registerAnimeanUiFieldViewCallback([&](const String &view, const AnimeanFieldViewSpec &spec) {
+        if (view != String("main")) {
             return;
         }
         if (!spec.active) {
@@ -453,8 +461,8 @@ bool runFieldScopeAndHideColumnsUnitTests()
         mainBoard.setFieldViewSpec(converted);
     });
     bool mainFieldCap = true;
-    registerAnimeanUiFieldDisplaySupportedCallback([&](const QString &view) {
-        return view == QStringLiteral("main") ? mainFieldCap : false;
+    registerAnimeanUiFieldDisplaySupportedCallback([&](const String &view) {
+        return view == String("main") ? mainFieldCap : false;
     });
 
     {
@@ -493,13 +501,13 @@ bool runFieldScopeAndHideColumnsUnitTests()
         ui.attr("set_field_view")("main", spec);
     }
 #else
-    fieldVersions[QStringLiteral("k")] = nextVersion++;
+    fieldVersions[String("k")] = nextVersion++;
     PaintOpenGLWidget::FieldViewSpec spec;
     spec.active = true;
-    spec.fieldKey = QStringLiteral("k");
-    spec.rect = QRectF(10.0, 20.0, 100.0, 120.0);
+    spec.fieldKey = String("k");
+    spec.rect = RectF(10.0, 20.0, 100.0, 120.0);
     spec.maxEdge = 8.0;
-    spec.sourceView = QStringLiteral("child");
+    spec.sourceView = String("child");
     spec.columns = {0};
     spec.frame = 0;
     spec.widthScale = 1.5;
@@ -507,7 +515,7 @@ bool runFieldScopeAndHideColumnsUnitTests()
         PaintOpenGLWidget::FieldPass{-1.0, 1.0, 0.8, 0, 0, 0, 0},
         PaintOpenGLWidget::FieldPass{1.0, 2.0, 0.5, 120, 140, 160, 200},
     };
-    spec.skipProperties = {QStringLiteral("skip_prop")};
+    spec.skipProperties = {String("skip_prop")};
     mainBoard.setFieldViewSpec(spec);
 #endif
 
@@ -518,13 +526,13 @@ bool runFieldScopeAndHideColumnsUnitTests()
     int fOpIndex = -1;
     int endFOpIndex = -1;
     for (int i = 0; i < fullOps.size(); ++i) {
-        const QJsonArray op = fullOps.at(i).toArray();
+        const JsonArray op = fullOps.at(i).toArray();
         if (op.isEmpty()) {
             continue;
         }
-        if (op.at(0).toString() == QStringLiteral("F")) {
+        if (op.at(0).toString() == String("F")) {
             fOpIndex = i;
-        } else if (op.at(0).toString() == QStringLiteral("f")) {
+        } else if (op.at(0).toString() == String("f")) {
             endFOpIndex = i;
         }
     }
@@ -535,15 +543,15 @@ bool runFieldScopeAndHideColumnsUnitTests()
     }
 
     // Verify F op fields and non-zero hash in RecordingPaintEngine
-    const QVector<RecordedOp> &rawOps = mainBoard.recordingEngine()->ops();
+    const Vector<RecordedOp> &rawOps = mainBoard.recordingDevice()->ops();
     if (fOpIndex >= rawOps.size() || endFOpIndex >= rawOps.size()
         || rawOps[fOpIndex].hash == 0 || rawOps[endFOpIndex].hash == 0
         || rawOps[fOpIndex].hash == rawOps[endFOpIndex].hash) {
         std::fprintf(stderr, "Expected non-zero distinct hashes for F and f ops\n");
         return false;
     }
-    const QJsonArray fOp = fullOps.at(fOpIndex).toArray();
-    if (fOp.at(1).toString() != QStringLiteral("k")
+    const JsonArray fOp = fullOps.at(fOpIndex).toArray();
+    if (fOp.at(1).toString() != String("k")
         || fOp.at(2).toInteger() != 1
         || fOp.at(3).toDouble() != 10.0
         || fOp.at(4).toDouble() != 20.0
@@ -552,11 +560,11 @@ bool runFieldScopeAndHideColumnsUnitTests()
         || fOp.at(7).toDouble() != 8.0
         || !fOp.at(8).isArray() || fOp.at(8).toArray().size() != 2) {
         std::fprintf(stderr, "Unexpected F op parameters: %s\n",
-                     QJsonDocument(fOp).toJson(QJsonDocument::Compact).constData());
+                     JsonDocument(fOp).toJson(JsonDocument::Compact).c_str());
         return false;
     }
-    const QJsonArray p0 = fOp.at(8).toArray().at(0).toArray();
-    const QJsonArray p1 = fOp.at(8).toArray().at(1).toArray();
+    const JsonArray p0 = fOp.at(8).toArray().at(0).toArray();
+    const JsonArray p1 = fOp.at(8).toArray().at(1).toArray();
     if (p0.size() != 7 || p0.at(0).toDouble() != -1.0 || p0.at(1).toDouble() != 1.0
         || std::abs(p0.at(2).toDouble() - 0.8) > 1e-6
         || p0.at(3).toInt() != 0 || p0.at(4).toInt() != 0 || p0.at(5).toInt() != 0 || p0.at(6).toInt() != 0
@@ -564,7 +572,7 @@ bool runFieldScopeAndHideColumnsUnitTests()
         || std::abs(p1.at(2).toDouble() - 0.5) > 1e-6
         || p1.at(3).toInt() != 120 || p1.at(4).toInt() != 140 || p1.at(5).toInt() != 160 || p1.at(6).toInt() != 200) {
         std::fprintf(stderr, "Unexpected F op passes: %s\n",
-                     QJsonDocument(fOp.at(8).toArray()).toJson(QJsonDocument::Compact).constData());
+                     JsonDocument(fOp.at(8).toArray()).toJson(JsonDocument::Compact).c_str());
         return false;
     }
 
@@ -578,23 +586,23 @@ bool runFieldScopeAndHideColumnsUnitTests()
     bool sawKeptStroke = false;
     bool sawSkippedStroke = false;
     for (int i = fOpIndex + 1; i < endFOpIndex; ++i) {
-        const QJsonArray op = fullOps.at(i).toArray();
-        const QString kind = op.at(0).toString();
-        if (kind == QStringLiteral("O") && std::abs(op.at(1).toDouble() - 0.75) < 1e-6) {
+        const JsonArray op = fullOps.at(i).toArray();
+        const String kind = op.at(0).toString();
+        if (kind == String("O") && std::abs(op.at(1).toDouble() - 0.75) < 1e-6) {
             sawColumnOpacity = true;
-        } else if (kind == QStringLiteral("B")
+        } else if (kind == String("B")
                    && op.at(1).toInt() == 10 && op.at(2).toInt() == 200 && op.at(3).toInt() == 50) {
             sawChildFill = true;
-        } else if (kind == QStringLiteral("P")) {
+        } else if (kind == String("P")) {
             if (op.at(1).toInt() == 20 && op.at(2).toInt() == 40 && op.at(3).toInt() == 220
                 && std::abs(op.at(5).toDouble() - expectedWidth) < 1e-6) {
                 for (int j = i + 1; j < endFOpIndex; ++j) {
-                    const QString nextKind = fullOps.at(j).toArray().at(0).toString();
-                    if (nextKind == QStringLiteral("S")) {
+                    const String nextKind = fullOps.at(j).toArray().at(0).toString();
+                    if (nextKind == String("S")) {
                         sawKeptStroke = true;
                         break;
                     }
-                    if (nextKind != QStringLiteral("B")) {
+                    if (nextKind != String("B")) {
                         break;
                     }
                 }
@@ -614,8 +622,8 @@ bool runFieldScopeAndHideColumnsUnitTests()
     // Verify mainBoard's own stroke (210, 30, 40) was drawn BEFORE F when hide_columns is empty.
     const auto hasMainStrokeBeforeF = [&](int limitIndex) {
         for (int i = 0; i < limitIndex && i < fullOps.size(); ++i) {
-            const QJsonArray op = fullOps.at(i).toArray();
-            if (op.at(0).toString() == QStringLiteral("P")
+            const JsonArray op = fullOps.at(i).toArray();
+            if (op.at(0).toString() == String("P")
                 && op.at(1).toInt() == 210 && op.at(2).toInt() == 30 && op.at(3).toInt() == 40) {
                 return true;
             }
@@ -644,7 +652,7 @@ bool runFieldScopeAndHideColumnsUnitTests()
     py::module_::import("animean_python").attr("ui").attr("set_field")(
         "k", 2, 2, py::bytes(std::string(64, '\x01')));
 #else
-    fieldVersions[QStringLiteral("k")] = nextVersion++;
+    fieldVersions[String("k")] = nextVersion++;
     mainBoard.update();
 #endif
     BoardFrame fVer2 = waitFrame();
@@ -672,7 +680,7 @@ bool runFieldScopeAndHideColumnsUnitTests()
 
     int newFOpIndex = -1;
     for (int i = 0; i < fullOps.size(); ++i) {
-        if (fullOps.at(i).toArray().at(0).toString() == QStringLiteral("F")) {
+        if (fullOps.at(i).toArray().at(0).toString() == String("F")) {
             newFOpIndex = i;
             break;
         }
@@ -684,12 +692,12 @@ bool runFieldScopeAndHideColumnsUnitTests()
 
     // Verify renderFrameThumbnail (which passes a non-null SceneContentFilter) ignores hide_columns!
     {
-        const QImage thumb = mainBoard.renderFrameThumbnail(0, QSize(160, 120));
+        const Image thumb = mainBoard.renderFrameThumbnail(0, Size(160, 120));
         bool foundRedThumbPixel = false;
         for (int y = 0; y < thumb.height() && !foundRedThumbPixel; ++y) {
             for (int x = 0; x < thumb.width(); ++x) {
-                const QColor c = thumb.pixelColor(x, y);
-                if (c.red() > 150 && c.green() < 100 && c.blue() < 100) {
+                const unsigned int c = thumb.pixel(x, y);
+                if (qRed(c) > 150 && qGreen(c) < 100 && qBlue(c) < 100) {
                     foundRedThumbPixel = true;
                     break;
                 }
@@ -719,8 +727,8 @@ bool runFieldScopeAndHideColumnsUnitTests()
         return false;
     }
     for (int i = 0; i < fullOps.size(); ++i) {
-        const QString kind = fullOps.at(i).toArray().at(0).toString();
-        if (kind == QStringLiteral("F") || kind == QStringLiteral("f")) {
+        const String kind = fullOps.at(i).toArray().at(0).toString();
+        if (kind == String("F") || kind == String("f")) {
             std::fprintf(stderr, "Expected no F or f ops after clearing field view\n");
             return false;
         }
@@ -733,7 +741,7 @@ bool runOverlayDragThrottleUnitTests()
 {
 #ifdef ANIMEAN_WITH_PYTHON
     PaintOpenGLWidget board;
-    board.setViewName(QStringLiteral("main"));
+    board.setViewName(String("main"));
     board.resizeSurface(400, 300, 1.0);
 
     int frameCount = 0;
@@ -741,15 +749,15 @@ bool runOverlayDragThrottleUnitTests()
         ++frameCount;
         board.acknowledgeFrame(frame.frame);
     });
-    QCoreApplication::processEvents();
+    pumpEventLoop();
 
     PaintOpenGLWidget::OverlayItem item;
-    item.id = QStringLiteral("drag_item_1");
-    item.points = {QPointF(50.0, 50.0), QPointF(150.0, 50.0)};
+    item.id = String("drag_item_1");
+    item.points = {PointF(50.0, 50.0), PointF(150.0, 50.0)};
     item.draggable = true;
     item.removable = false;
     board.setOverlayItems({item});
-    QCoreApplication::processEvents();
+    pumpEventLoop();
 
     py::dict ns;
     py::exec(
@@ -776,12 +784,12 @@ bool runOverlayDragThrottleUnitTests()
     };
 
     const auto waitMs = [](int ms) {
-        QElapsedTimer timer;
+        ElapsedTimer timer;
         timer.start();
         while (timer.elapsed() < ms) {
-            QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+            pumpEventLoop();
         }
-        QCoreApplication::processEvents();
+        pumpEventLoop();
     };
 
     const auto moveEvents = [&]() -> py::list {
@@ -790,18 +798,18 @@ bool runOverlayDragThrottleUnitTests()
 
     // 1. Burst of moves within 33ms then pause 60ms: trailing timer delivers the last position
     //    and last modifiers, triggers update(), and subsequent release/wait sends no extra move.
-    board.injectMouse(QEvent::MouseButtonPress, QPointF(80.0, 50.0), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
-    board.injectMouse(QEvent::MouseMove, QPointF(90.0, 60.0), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
-    board.injectMouse(QEvent::MouseMove, QPointF(100.0, 70.0), Qt::NoButton, Qt::LeftButton, Qt::ShiftModifier);
-    board.injectMouse(QEvent::MouseMove, QPointF(110.0, 80.0), Qt::NoButton, Qt::LeftButton, Qt::ControlModifier);
-    board.injectMouse(QEvent::MouseMove, QPointF(125.0, 95.0), Qt::NoButton, Qt::LeftButton, Qt::AltModifier);
+    board.injectMouse(Event::MouseButtonPress, PointF(80.0, 50.0), LeftButton, LeftButton, NoModifier);
+    board.injectMouse(Event::MouseMove, PointF(90.0, 60.0), NoButton, LeftButton, NoModifier);
+    board.injectMouse(Event::MouseMove, PointF(100.0, 70.0), NoButton, LeftButton, ShiftModifier);
+    board.injectMouse(Event::MouseMove, PointF(110.0, 80.0), NoButton, LeftButton, ControlModifier);
+    board.injectMouse(Event::MouseMove, PointF(125.0, 95.0), NoButton, LeftButton, AltModifier);
 
     if (moveEvents().size() != 1) {
         std::fprintf(stderr, "Expected 1 immediate move in 33ms burst, got %d\n", int(moveEvents().size()));
         cleanupHooks();
         return false;
     }
-    QCoreApplication::processEvents();
+    pumpEventLoop();
     const int framesBeforeTail = frameCount;
 
     waitMs(60);
@@ -828,7 +836,7 @@ bool runOverlayDragThrottleUnitTests()
         return false;
     }
 
-    board.injectMouse(QEvent::MouseButtonRelease, QPointF(125.0, 95.0), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    board.injectMouse(Event::MouseButtonRelease, PointF(125.0, 95.0), LeftButton, NoButton, NoModifier);
     const int movesAtRelease1 = int(moveEvents().size());
     waitMs(60);
     if (int(moveEvents().size()) != movesAtRelease1) {
@@ -840,11 +848,11 @@ bool runOverlayDragThrottleUnitTests()
     // 2. Burst of moves within 33ms followed immediately by release: timer is invalidated,
     //    waiting 60ms after release must not deliver any trailing move.
     py::exec("events.clear()", ns, ns);
-    board.injectMouse(QEvent::MouseButtonPress, QPointF(80.0, 50.0), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
-    board.injectMouse(QEvent::MouseMove, QPointF(90.0, 60.0), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
-    board.injectMouse(QEvent::MouseMove, QPointF(105.0, 75.0), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
-    board.injectMouse(QEvent::MouseMove, QPointF(120.0, 90.0), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
-    board.injectMouse(QEvent::MouseButtonRelease, QPointF(120.0, 90.0), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    board.injectMouse(Event::MouseButtonPress, PointF(80.0, 50.0), LeftButton, LeftButton, NoModifier);
+    board.injectMouse(Event::MouseMove, PointF(90.0, 60.0), NoButton, LeftButton, NoModifier);
+    board.injectMouse(Event::MouseMove, PointF(105.0, 75.0), NoButton, LeftButton, NoModifier);
+    board.injectMouse(Event::MouseMove, PointF(120.0, 90.0), NoButton, LeftButton, NoModifier);
+    board.injectMouse(Event::MouseButtonRelease, PointF(120.0, 90.0), LeftButton, NoButton, NoModifier);
 
     const int totalEventsAfterImmediateRelease = py::len(ns["events"]);
     const int movesAfterImmediateRelease = int(moveEvents().size());
@@ -859,10 +867,10 @@ bool runOverlayDragThrottleUnitTests()
     // 3. Burst of moves within 33ms followed immediately by cancel (and overlay clear):
     //    waiting 60ms must not deliver any trailing move.
     py::exec("events.clear()", ns, ns);
-    board.injectMouse(QEvent::MouseButtonPress, QPointF(80.0, 50.0), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
-    board.injectMouse(QEvent::MouseMove, QPointF(90.0, 60.0), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
-    board.injectMouse(QEvent::MouseMove, QPointF(105.0, 75.0), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
-    board.injectMouse(QEvent::MouseMove, QPointF(120.0, 90.0), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    board.injectMouse(Event::MouseButtonPress, PointF(80.0, 50.0), LeftButton, LeftButton, NoModifier);
+    board.injectMouse(Event::MouseMove, PointF(90.0, 60.0), NoButton, LeftButton, NoModifier);
+    board.injectMouse(Event::MouseMove, PointF(105.0, 75.0), NoButton, LeftButton, NoModifier);
+    board.injectMouse(Event::MouseMove, PointF(120.0, 90.0), NoButton, LeftButton, NoModifier);
     board.setTool(PaintOpenGLWidget::Tool::Arrow); // triggers cancelActiveOverlayDrag()
 
     const int movesAfterCancel = int(moveEvents().size());
@@ -872,14 +880,14 @@ bool runOverlayDragThrottleUnitTests()
         cleanupHooks();
         return false;
     }
-    board.injectMouse(QEvent::MouseButtonRelease, QPointF(120.0, 90.0), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    board.injectMouse(Event::MouseButtonRelease, PointF(120.0, 90.0), LeftButton, NoButton, NoModifier);
     board.setTool(PaintOpenGLWidget::Tool::Pen);
 
     // Also verify clearing the dragged overlay item via setOverlayItems invalidates the timer.
     py::exec("events.clear()", ns, ns);
-    board.injectMouse(QEvent::MouseButtonPress, QPointF(80.0, 50.0), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
-    board.injectMouse(QEvent::MouseMove, QPointF(90.0, 60.0), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
-    board.injectMouse(QEvent::MouseMove, QPointF(110.0, 80.0), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    board.injectMouse(Event::MouseButtonPress, PointF(80.0, 50.0), LeftButton, LeftButton, NoModifier);
+    board.injectMouse(Event::MouseMove, PointF(90.0, 60.0), NoButton, LeftButton, NoModifier);
+    board.injectMouse(Event::MouseMove, PointF(110.0, 80.0), NoButton, LeftButton, NoModifier);
     board.setOverlayItems({});
     const int movesAfterOverlayClear = int(moveEvents().size());
     waitMs(60);
@@ -888,22 +896,22 @@ bool runOverlayDragThrottleUnitTests()
         cleanupHooks();
         return false;
     }
-    board.injectMouse(QEvent::MouseButtonRelease, QPointF(110.0, 80.0), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    board.injectMouse(Event::MouseButtonRelease, PointF(110.0, 80.0), LeftButton, NoButton, NoModifier);
     board.setOverlayItems({item});
 
     // 4. Continuous movement: move frequency never exceeds the 33ms throttle window.
     py::exec("events.clear()", ns, ns);
-    board.injectMouse(QEvent::MouseButtonPress, QPointF(80.0, 50.0), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
-    QElapsedTimer burstClock;
+    board.injectMouse(Event::MouseButtonPress, PointF(80.0, 50.0), LeftButton, LeftButton, NoModifier);
+    ElapsedTimer burstClock;
     burstClock.start();
     constexpr int kStepCount = 20;
     for (int i = 1; i <= kStepCount; ++i) {
-        board.injectMouse(QEvent::MouseMove, QPointF(80.0 + i * 2.0, 50.0 + i), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        board.injectMouse(Event::MouseMove, PointF(80.0 + i * 2.0, 50.0 + i), NoButton, LeftButton, NoModifier);
         if (i < kStepCount) {
             waitMs(5);
         }
     }
-    const qint64 burstElapsedMs = std::max<qint64>(1, burstClock.elapsed());
+    const std::int64_t burstElapsedMs = std::max<std::int64_t>(1, burstClock.elapsed());
     const int movesInBurst = int(moveEvents().size());
     const int maxAllowedMoves = 1 + int(burstElapsedMs / 33) + 1;
     if (movesInBurst > maxAllowedMoves || movesInBurst >= kStepCount) {
@@ -921,8 +929,8 @@ bool runOverlayDragThrottleUnitTests()
         cleanupHooks();
         return false;
     }
-    board.injectMouse(QEvent::MouseButtonRelease, QPointF(80.0 + kStepCount * 2.0, 50.0 + kStepCount),
-                      Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    board.injectMouse(Event::MouseButtonRelease, PointF(80.0 + kStepCount * 2.0, 50.0 + kStepCount),
+                      LeftButton, NoButton, NoModifier);
 
     cleanupHooks();
 #endif
@@ -931,45 +939,43 @@ bool runOverlayDragThrottleUnitTests()
 
 int main(int argc, char *argv[])
 {
-    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) {
-        qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
+    if (!runImageBudgetTests()) {
+        return 1;
     }
 
-    QGuiApplication app(argc, argv);
-
-    if (!runClipAndFlushUnitTests()) {
+    if (!runFlushUnitTests()) {
         return 1;
     }
 
 #ifdef ANIMEAN_WITH_PYTHON
-    const QString appDir = QCoreApplication::applicationDirPath();
-    QString pythonHome = QStringLiteral(ANIMEAN_PYTHON_HOME);
-    if (!QFileInfo::exists(QDir(pythonHome).filePath(QStringLiteral("python312.dll")))) {
-        pythonHome = QDir(appDir).filePath(QStringLiteral(ANIMEAN_PYTHON_DIR_NAME));
+    const String appDir = CoreApplication::applicationDirPath();
+    String pythonHome = String(ANIMEAN_PYTHON_HOME);
+    if (!FileInfo::exists(Dir(pythonHome).filePath(String("python312.dll")))) {
+        pythonHome = Dir(appDir).filePath(String(ANIMEAN_PYTHON_DIR_NAME));
     }
 
-    QStringList pythonPath;
-    if (QFileInfo::exists(QDir(QStringLiteral(ANIMEAN_PYFILE_DIR)).filePath(QStringLiteral("hello_world.py")))) {
-        pythonPath << QStringLiteral(ANIMEAN_PYFILE_DIR);
+    StringList pythonPath;
+    if (FileInfo::exists(Dir(String(ANIMEAN_PYFILE_DIR)).filePath(String("hello_world.py")))) {
+        pythonPath << String(ANIMEAN_PYFILE_DIR);
     }
     pythonPath << appDir;
-    if (QFileInfo::exists(QDir(QStringLiteral(ANIMEAN_PYTHONBIND_DIR)).filePath(QStringLiteral("animemodel.py")))) {
-        pythonPath << QStringLiteral(ANIMEAN_PYTHONBIND_DIR);
+    if (FileInfo::exists(Dir(String(ANIMEAN_PYTHONBIND_DIR)).filePath(String("animemodel.py")))) {
+        pythonPath << String(ANIMEAN_PYTHONBIND_DIR);
     }
-    if (QFileInfo::exists(QDir(QStringLiteral(ANIMEAN_OPENTOONZ_TOOLS_DIR)).filePath(QStringLiteral("toonz_to_dict.py")))) {
-        pythonPath << QStringLiteral(ANIMEAN_OPENTOONZ_TOOLS_DIR);
-    }
-
-    QStringList dllPath;
-    dllPath << pythonHome << QDir(pythonHome).filePath(QStringLiteral("DLLs"));
-    const QByteArray existingPath = qgetenv("PATH");
-    if (!existingPath.isEmpty()) {
-        dllPath << QString::fromLocal8Bit(existingPath);
+    if (FileInfo::exists(Dir(String(ANIMEAN_OPENTOONZ_TOOLS_DIR)).filePath(String("toonz_to_dict.py")))) {
+        pythonPath << String(ANIMEAN_OPENTOONZ_TOOLS_DIR);
     }
 
-    qputenv("PATH", QDir::toNativeSeparators(dllPath.join(QLatin1Char(';'))).toLocal8Bit());
-    qputenv("PYTHONHOME", QDir::toNativeSeparators(pythonHome).toLocal8Bit());
-    qputenv("PYTHONPATH", QDir::toNativeSeparators(pythonPath.join(QLatin1Char(';'))).toLocal8Bit());
+    StringList dllPath;
+    dllPath << pythonHome << Dir(pythonHome).filePath(String("DLLs"));
+    const char *existingPath = std::getenv("PATH");
+    if (existingPath && existingPath[0] != '\0') {
+        dllPath << String::fromLocal8Bit(existingPath);
+    }
+
+    setEnvVar("PATH", Dir::toNativeSeparators(dllPath.join(Char(u';'))));
+    setEnvVar("PYTHONHOME", Dir::toNativeSeparators(pythonHome));
+    setEnvVar("PYTHONPATH", Dir::toNativeSeparators(pythonPath.join(Char(u';'))));
 
     py::scoped_interpreter guard;
     py::module_::import("animean_python");
@@ -989,7 +995,7 @@ int main(int argc, char *argv[])
     registerAnimeanUiScene(&board.model());
 #endif
 
-    QJsonArray fullOps;
+    JsonArray fullOps;
     BoardFrame lastFrame;
     bool gotFrame = false;
 
@@ -997,20 +1003,20 @@ int main(int argc, char *argv[])
         lastFrame = frame;
         gotFrame = true;
 
-        QJsonParseError err;
-        const QJsonDocument doc = QJsonDocument::fromJson(frame.ops, &err);
-        if (err.error != QJsonParseError::NoError || !doc.isArray()) {
+        JsonParseError err;
+        const JsonDocument doc = JsonDocument::fromJson(frame.ops, &err);
+        if (err.error != JsonParseError::NoError || !doc.isArray()) {
             std::fprintf(stderr, "Invalid ops JSON at frame %llu: %s\n",
                          static_cast<unsigned long long>(frame.frame),
-                         err.errorString().toUtf8().constData());
+                         err.errorString().toUtf8().c_str());
             std::exit(1);
         }
 
         while (fullOps.size() > frame.keep) {
             fullOps.removeLast();
         }
-        const QJsonArray delta = doc.array();
-        for (const QJsonValue &val : delta) {
+        const JsonArray delta = doc.array();
+        for (const JsonValue &val : delta) {
             fullOps.append(val);
         }
     });
@@ -1019,7 +1025,7 @@ int main(int argc, char *argv[])
         gotFrame = false;
         int spins = 0;
         while (!gotFrame && spins < 1000) {
-            QCoreApplication::processEvents();
+            pumpEventLoop();
             ++spins;
         }
         if (!gotFrame) {
@@ -1041,14 +1047,14 @@ int main(int argc, char *argv[])
         std::fprintf(stderr, "Expected first frame keep == 0, got %d\n", first.keep);
         return 1;
     }
-    if (first.ops.isEmpty() || fullOps.isEmpty()) {
+    if (first.ops.empty() || fullOps.isEmpty()) {
         std::fprintf(stderr, "Expected non-empty first frame ops\n");
         return 1;
     }
     board.acknowledgeFrame(first.frame);
 
-    const QPointF startPos(100.0, 120.0);
-    board.injectMouse(QEvent::MouseButtonPress, startPos, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    const PointF startPos(100.0, 120.0);
+    board.injectMouse(Event::MouseButtonPress, startPos, LeftButton, LeftButton, NoModifier);
     {
         const BoardFrame f = waitForFrame();
         if (f.keep <= 0) {
@@ -1059,8 +1065,8 @@ int main(int argc, char *argv[])
     }
 
     for (int i = 1; i <= 10; ++i) {
-        const QPointF movePos(100.0 + i * 15.0, 120.0 + i * 8.0);
-        board.injectMouse(QEvent::MouseMove, movePos, Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        const PointF movePos(100.0 + i * 15.0, 120.0 + i * 8.0);
+        board.injectMouse(Event::MouseMove, movePos, NoButton, LeftButton, NoModifier);
         const BoardFrame f = waitForFrame();
         if (f.keep <= 0) {
             std::fprintf(stderr, "Expected move %d frame keep > 0, got %d\n", i, f.keep);
@@ -1069,8 +1075,8 @@ int main(int argc, char *argv[])
         board.acknowledgeFrame(f.frame);
     }
 
-    const QPointF endPos(250.0, 200.0);
-    board.injectMouse(QEvent::MouseButtonRelease, endPos, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    const PointF endPos(250.0, 200.0);
+    board.injectMouse(Event::MouseButtonRelease, endPos, LeftButton, NoButton, NoModifier);
     {
         const BoardFrame f = waitForFrame();
         if (f.keep <= 0) {
@@ -1086,9 +1092,9 @@ int main(int argc, char *argv[])
     {
         const BoardFrame f = waitForFrame();
         board.acknowledgeFrame(f.frame);
-        for (const QJsonValue &val : fullOps) {
-            const QJsonArray op = val.toArray();
-            if (op.at(0).toString() == QStringLiteral("T")) {
+        for (const JsonValue &val : fullOps) {
+            const JsonArray op = val.toArray();
+            if (op.at(0).toString() == String("T")) {
                 if (op.at(1).toDouble() != 1.0 || op.at(4).toDouble() != 1.0) {
                     std::fprintf(stderr, "Expected logical transform at ratio 1.25, got scale %g\n",
                                  op.at(1).toDouble());
@@ -1100,12 +1106,12 @@ int main(int argc, char *argv[])
     }
 
     if (argc > 1 && argv[1] && argv[1][0] != '\0') {
-        QFile outFile(QString::fromLocal8Bit(argv[1]));
-        if (!outFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        File outFile(String::fromLocal8Bit(argv[1]));
+        if (!outFile.open(IODevice::WriteOnly | IODevice::Truncate)) {
             std::fprintf(stderr, "Failed to open output file: %s\n", argv[1]);
             return 1;
         }
-        outFile.write(QJsonDocument(fullOps).toJson(QJsonDocument::Compact));
+        outFile.write(JsonDocument(fullOps).toJson(JsonDocument::Compact));
         outFile.close();
     }
 

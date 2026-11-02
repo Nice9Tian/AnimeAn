@@ -3,7 +3,9 @@
 
 #include <QBuffer>
 #include <QByteArray>
+#include <QDir>
 #include <QImage>
+#include <QTemporaryDir>
 #include <QRgb>
 
 #include <algorithm>
@@ -456,6 +458,92 @@ void testBase64Differential()
     }
 }
 
+void testSizeFillAndSaveLoad()
+{
+    AnimeCore::Image fromZeroSize(AnimeCore::Size(0, 5), AnimeCore::Image::Format_RGBA8888);
+    check(fromZeroSize.isNull(), "Image(Size(0, 5)) should be null");
+
+    AnimeCore::Image fromSize(AnimeCore::Size(12, 9), AnimeCore::Image::Format_RGBA8888);
+    QImage qFromSize(QSize(12, 9), QImage::Format_RGBA8888);
+    check(!fromSize.isNull() && fromSize.size() == AnimeCore::Size(12, 9),
+          "Image(Size(12, 9)) dimensions should match");
+
+    const AnimeCore::Color colors[] = {
+        AnimeCore::Color(0, 0, 0, 0),
+        AnimeCore::Color(255, 0, 128, 255),
+        AnimeCore::Color(17, 134, 211, 93),
+    };
+    for (const AnimeCore::Color &c : colors) {
+        QColor qc(c.red(), c.green(), c.blue(), c.alpha());
+        fromSize.fill(c);
+        qFromSize.fill(qc);
+        check(compareRgbaImages(fromSize, qFromSize, 0),
+              "Image::fill(Color) on RGBA8888 should match QImage::fill(QColor)");
+
+        AnimeCore::Image grayImg(AnimeCore::Size(7, 6), AnimeCore::Image::Format_Grayscale8);
+        QImage qGrayImg(QSize(7, 6), QImage::Format_Grayscale8);
+        grayImg.fill(c);
+        qGrayImg.fill(qc);
+        for (int y = 0; y < 6; ++y) {
+            for (int x = 0; x < 7; ++x) {
+                if (grayImg.gray(x, y) != ::qGray(qGrayImg.pixel(x, y))) {
+                    std::fprintf(stderr, "Gray fill mismatch for rgba=(%d,%d,%d,%d): got=%d expected=%d\n",
+                                 c.red(), c.green(), c.blue(), c.alpha(),
+                                 grayImg.gray(x, y), ::qGray(qGrayImg.pixel(x, y)));
+                }
+                check(grayImg.gray(x, y) == ::qGray(qGrayImg.pixel(x, y)),
+                      "Image::fill(Color) on Grayscale8 should match QImage::fill(QColor)");
+            }
+        }
+    }
+
+    QTemporaryDir tmpDir;
+    check(tmpDir.isValid(), "QTemporaryDir should be valid for save/load test");
+    if (tmpDir.isValid()) {
+        const QString qPath = tmpDir.filePath(QStringLiteral("测试_image_save.png"));
+        const AnimeCore::String cPath = qPath;
+        check(fromSize.save(cPath, "PNG"), "Image::save should succeed on Unicode path");
+
+        QImage qLoaded(qPath, "PNG");
+        check(!qLoaded.isNull() && compareRgbaImages(fromSize, qLoaded, 0),
+              "Image::save file loaded by QImage should match pixel-for-pixel");
+
+        AnimeCore::Image cLoaded;
+        check(cLoaded.load(cPath, "PNG") && compareRgbaImages(cLoaded, qFromSize, 0),
+              "Image::load should read saved PNG and match QImage pixel-for-pixel");
+
+        // Past MAX_PATH: QImage reads and writes these, and a deep folder should not stop an import.
+        QString longDir = tmpDir.path();
+        while (longDir.size() < 280) {
+            longDir += QStringLiteral("/long_directory_name");
+        }
+        check(QDir().mkpath(longDir), "should create the long test directory");
+        const AnimeCore::String longPath = QString(longDir + QStringLiteral("/image.png"));
+        check(fromSize.save(longPath, "PNG"), "Image::save should succeed past MAX_PATH");
+        AnimeCore::Image longLoaded;
+        check(longLoaded.load(longPath, "PNG") && compareRgbaImages(longLoaded, qFromSize, 0),
+              "Image::load should read a file past MAX_PATH");
+
+        AnimeCore::Image nullImg;
+        check(!nullImg.save(cPath, "PNG"), "Image::save on null Image should return false");
+        check(!cLoaded.load(AnimeCore::String(), "PNG") && cLoaded.isNull(),
+              "Image::load on empty path should fail and reset image to null");
+    }
+}
+
+void testDevicePixelRatioSurvives()
+{
+    AnimeCore::Image image(4, 4, AnimeCore::Image::Format_ARGB32_Premultiplied);
+    image.setDevicePixelRatio(2.0);
+    QImage qImage(4, 4, QImage::Format_ARGB32_Premultiplied);
+    qImage.setDevicePixelRatio(2.0);
+    check(image.convertToFormat(AnimeCore::Image::Format_RGBA8888).devicePixelRatio()
+              == qImage.convertToFormat(QImage::Format_RGBA8888).devicePixelRatio(),
+          "convertToFormat should keep the device pixel ratio");
+    check(image.mirrored(true, false).devicePixelRatio() == 2.0,
+          "mirrored should keep the device pixel ratio");
+}
+
 void testQtBridge()
 {
     // Null conversions
@@ -786,8 +874,38 @@ void testScaledDifferential()
 
 } // namespace
 
-int main()
+void testPremultipliedConversions()
 {
+    // Every channel value at every alpha, through real QImage and the core type.
+    QImage premul(256, 256, QImage::Format_ARGB32_Premultiplied);
+    QImage straight(256, 256, QImage::Format_ARGB32);
+    for (int a = 0; a < 256; ++a) {
+        for (int c = 0; c < 256; ++c) {
+            reinterpret_cast<QRgb *>(premul.scanLine(a))[c] = qRgba(std::min(c, a), std::min(c, a) / 2, 0, a);
+            reinterpret_cast<QRgb *>(straight.scanLine(a))[c] = qRgba(c, 255 - c, c / 2, a);
+        }
+    }
+    const AnimeCore::Image corePremul = AnimeCore::Image(premul.constBits(), 256, 256, premul.bytesPerLine(),
+                                                         AnimeCore::Image::Format_ARGB32_Premultiplied);
+    const AnimeCore::Image coreStraight = AnimeCore::Image(straight.constBits(), 256, 256, straight.bytesPerLine(),
+                                                           AnimeCore::Image::Format_ARGB32);
+    const QImage qtToRgba = premul.convertToFormat(QImage::Format_RGBA8888);
+    const AnimeCore::Image coreToRgba = corePremul.convertToFormat(AnimeCore::Image::Format_RGBA8888);
+    const QImage qtToPremul = straight.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    const AnimeCore::Image coreToPremul = coreStraight.convertToFormat(AnimeCore::Image::Format_ARGB32_Premultiplied);
+    for (int y = 0; y < 256; ++y) {
+        // One level of rounding apart at most: Qt's fixed-point inverse is not exact.
+        for (int i = 0; i < 256 * 4; ++i) {
+            check(std::abs(qtToRgba.constScanLine(y)[i] - coreToRgba.constScanLine(y)[i]) <= 1, "premultiplied to RGBA8888");
+        }
+        check(std::memcmp(qtToPremul.constScanLine(y), coreToPremul.constScanLine(y), 256 * 4) == 0, "ARGB32 to premultiplied");
+        for (int x = 0; x < 256; ++x) {
+            check(premul.pixel(x, y) == corePremul.pixel(x, y), "pixel of a premultiplied image");
+        }
+    }
+}
+
+int main(){
     testNullAndZeroSizedImages();
     testBasicOperationsAndGrayscale();
     testImplicitSharingAndCacheKey();
@@ -796,5 +914,8 @@ int main()
     testBase64Differential();
     testQtBridge();
     testScaledDifferential();
+    testSizeFillAndSaveLoad();
+    testDevicePixelRatioSurvives();
+    testPremultipliedConversions();
     return failures == 0 ? 0 : 1;
 }

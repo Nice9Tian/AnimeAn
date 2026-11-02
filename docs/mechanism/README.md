@@ -8,7 +8,7 @@
 | `hook_events.md` | C++ → Python 事件、Python → C++ 绑定、声明式界面、回传约定、覆盖层显示列表 | 初稿（同上） |
 | `history_scriptdata.md` | 快照式历史、全局序号、scriptData 命名空间 | 初稿（同上） |
 | `windows_theme.md` | 窗口层级、`ui.windows`、纹理板单一所有权、主题、洋葱皮范围、工具锁定开关 | 初稿（同上） |
-| `project_files.md` | `.anproj` / `.textureview`、QSettings、导入格式、样例文件 | 初稿（同上） |
+| `project_files.md` | `.anproj` / `.textureview`、`Settings`（`settings.json`）、导入格式、样例文件 | 初稿（同上） |
 | `backend_protocol.md` | Tauri 外壳、后端进程、网页界面之间的连接：消息、绘制指令、增量绘制、状态键 | 初稿 |
 | `field_display.md` | 让图层隔着位移场显示：场的发送和背压、作用域、细分、退路、求解放在哪 | 初稿 |
 | `build_deploy.md` | 构建脚本、脚本同步、测试基线、分支与部署、依赖 wheel | 初稿（同上） |

@@ -465,6 +465,7 @@ describe("Field Texture & F..f Scope Rendering", () => {
     const prevWin = globalThis.window;
     const prevStorage = globalThis.localStorage;
     const prevRO = globalThis.ResizeObserver;
+    const prevMO = globalThis.MutationObserver;
 
     const mockGl = createMockGlCanvas();
     const calls: Array<{ method: string; params: unknown }> = [];
@@ -491,7 +492,12 @@ describe("Field Texture & F..f Scope Rendering", () => {
         getBoundingClientRect: () => ({ left: 0, top: 0, width: 200, height: 150 }),
         getContext(kind: string) {
           if (kind === "webgl2") return mockGl.gl;
-          if (kind === "2d") return createMinimal2DCanvas().getContext("2d");
+          if (kind === "2d") {
+            // The shell's labels measure their text when they are built.
+            const ctx = createMinimal2DCanvas().getContext("2d") as unknown as Record<string, unknown>;
+            ctx.measureText ??= (t: string) => ({ width: t.length * 7 });
+            return ctx;
+          }
           return null;
         },
       };
@@ -510,6 +516,14 @@ describe("Field Texture & F..f Scope Rendering", () => {
         observe() {}
         disconnect() {}
       } as unknown as typeof ResizeObserver;
+      // The Tauri shell's panels watch their own children.
+      globalThis.MutationObserver = class {
+        observe() {}
+        disconnect() {}
+        takeRecords() {
+          return [];
+        }
+      } as unknown as typeof MutationObserver;
       globalThis.window = {
         devicePixelRatio: 1,
         addEventListener() {},
@@ -563,6 +577,7 @@ describe("Field Texture & F..f Scope Rendering", () => {
       globalThis.window = prevWin;
       globalThis.localStorage = prevStorage;
       globalThis.ResizeObserver = prevRO;
+      globalThis.MutationObserver = prevMO;
     }
   });
 });

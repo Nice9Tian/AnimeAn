@@ -10,6 +10,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QString>
+#include <QVariant>
 
 namespace AnimeCore {
 
@@ -95,6 +96,16 @@ inline QJsonObject Bridge<QJsonObject>::fromCore(const JsonObject &c)
     for (auto it = c.constBegin(); it != c.constEnd(); ++it)
         out.insert(Bridge<QString>::fromCore(it.key()), Bridge<QJsonValue>::fromCore(it.value()));
     return out;
+}
+
+inline JsonVariant Bridge<QVariant>::toCore(const QVariant &q)
+{
+    return JsonVariant(Bridge<QJsonValue>::toCore(QJsonValue::fromVariant(q)));
+}
+
+inline QVariant Bridge<QVariant>::fromCore(const JsonVariant &c)
+{
+    return Bridge<QJsonValue>::fromCore(c.toJsonValue()).toVariant();
 }
 
 #ifdef ANIMECORE_HAS_COREOF

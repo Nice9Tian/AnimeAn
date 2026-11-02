@@ -17,7 +17,7 @@ This document describes how Python code talks to the AnimeAn C++ data model and
 - `animean_python.model_pybind`
   - Fast value conversion facade for Python input.
   - Accepts Python primitives, tuple/list values, and dict values, then converts
-    them to Qt/C++ types internally.
+    them to C++ `AnimeCore` types internally.
 - `animean_python.vectorlogic`
   - Full Python-facing wrapper around `AnimeVectorLogic`.
   - Uses `model_pybind` conversion rules for function arguments.
@@ -49,19 +49,19 @@ This document describes how Python code talks to the AnimeAn C++ data model and
    color = (255, 80, 20, 255)
    ```
 
-3. `model_pybind` converts those values to C++ Qt types:
+3. `model_pybind` converts those values to C++ `AnimeCore` types:
 
-   - `float/int` -> `qreal`
-   - `(x, y)` or `{"x": x, "y": y}` -> `QPointF`
-   - `(x, y, width, height)` or `{"x","y","width","height"}` -> `QRectF`
-   - `(r, g, b[, a])` or `{"r","g","b","a"}` -> `QColor`
-   - `((x1, y1), (x2, y2))`, `(x1, y1, x2, y2)`, or `{"from": p0, "to": p1}` -> `QLineF`
+   - `float/int` -> `double`
+   - `(x, y)` or `{"x": x, "y": y}` -> `AnimeCore::PointF`
+   - `(x, y, width, height)` or `{"x","y","width","height"}` -> `AnimeCore::RectF`
+   - `(r, g, b[, a])` or `{"r","g","b","a"}` -> `AnimeCore::Color`
+   - `((x1, y1), (x2, y2))`, `(x1, y1, x2, y2)`, or `{"from": p0, "to": p1}` -> `AnimeCore::LineF`
 
 4. C++ functions operate on native AnimeAn model/vector types.
 
 5. Results are returned as Python objects:
 
-   - Simple Qt values return dicts.
+   - Simple values (points, rects, lines, colors) return dicts.
    - Paths return dicts with `bounds`, `commands`, and optional `polylines`.
    - Strokes return `VectorStroke` objects or serializable dicts.
 
@@ -128,7 +128,8 @@ animean_python.ui.call_later(ms: int, fn: Callable[[], object]) -> None
 
 - `set_field(key, width, height, data)` uploads a 2D deformation field
   of `width * height * 4` little-endian `float32` values (`len(data) == width * height * 16`,
-  raising `ValueError` otherwise). Each pixel stores `(X, Y, valid, tag)`.
+  raising `ValueError` otherwise). Each pixel stores `(dx, dy, tag, 0)`: the displacement, the layer-order
+  tag (0 for an invalid node) and a reserved channel.
 - `set_field_view(view, spec)` configures (or clears when `spec` is `None`) a
   field-deformed drawing scope on `"main"` or `"child"` (`"main_paint_view"` /
   `"child_paint_view"` also accepted):
@@ -155,11 +156,13 @@ animean_python.ui.call_later(ms: int, fn: Callable[[], object]) -> None
   the live board `paintGL` pass; thumbnails, exports, playback cache, and onion
   skin remain unaffected.
 - `field_display_supported(view)` returns `True` when the connected web view has
-  reported `fieldDisplay: true` via `board.capabilities` (always `False` in the
-  desktop Qt build or when no client is connected).
-- `call_later(ms, fn)` schedules `fn()` on the main thread via a single-shot
-  `QTimer` after `ms` milliseconds (`ms < 0` clamped to `0`). Exceptions raised
-  by `fn` are printed and swallowed so they do not escape the event loop.
+  reported `fieldDisplay: true` via `board.capabilities` (`False` when no client
+  is connected).
+- `call_later(ms, fn)` schedules `fn()` on the backend's event loop after `ms`
+  milliseconds (`ms < 0` clamped to `0`); the backend session supplies the timer
+  through `registerAnimeanUiCallLaterCallback`, and without one (the bare Python
+  module) the call is dropped. Exceptions raised by `fn` are printed and
+  swallowed so they do not escape the event loop.
 
 ## ExtraTool and Hook Development
 
@@ -877,7 +880,7 @@ Structure dict:
 - The Python API is strongest for vector image and scene-structure work. Raster
   image authoring and more fill-layer editing operations still live mostly in
   C++ and are not fully exposed as Python editing APIs.
-- `VectorStroke` internals such as point arrays, color, and `QPainterPath` data
+- `VectorStroke` internals such as point arrays, color, and `AnimeCore::Path` data
   are mainly intended to be created through `vectorlogic.make_stroke_object()`
   or `add_polyline()`. Direct mutation of complex stroke internals from Python
   is not the primary supported path.

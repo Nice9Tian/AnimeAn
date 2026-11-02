@@ -140,6 +140,43 @@ struct Cubic
         return {x1, y1, x12, y12, x123, y123, x1234, y1234};
     }
 
+    void parameterSplitLeft(double t, Cubic *left)
+    {
+        left->x1 = x1;
+        left->y1 = y1;
+
+        left->x2 = x1 + t * (x2 - x1);
+        left->y2 = y1 + t * (y2 - y1);
+
+        left->x3 = x2 + t * (x3 - x2);
+        left->y3 = y2 + t * (y3 - y2);
+
+        x3 = x3 + t * (x4 - x3);
+        y3 = y3 + t * (y4 - y3);
+
+        x2 = left->x3 + t * (x3 - left->x3);
+        y2 = left->y3 + t * (y3 - left->y3);
+
+        left->x3 = left->x2 + t * (left->x3 - left->x2);
+        left->y3 = left->y2 + t * (left->y3 - left->y2);
+
+        left->x4 = x1 = left->x3 + t * (x2 - left->x3);
+        left->y4 = y1 = left->y3 + t * (y2 - left->y3);
+    }
+
+    Cubic bezierOnInterval(double t0, double t1) const
+    {
+        if (t0 == 0.0 && t1 == 1.0)
+            return *this;
+
+        Cubic bezier = *this;
+        Cubic result;
+        bezier.parameterSplitLeft(t0, &result);
+        double trueT = (t1 - t0) / (1.0 - t0);
+        bezier.parameterSplitLeft(trueT, &result);
+        return result;
+    }
+
     // Bisects until the prefix is within 0.01 of the wanted length. The result
     // depends on where that stops, so the steps follow Qt's exactly: a different
     // bisection lands on another t, about 1e-5 away.
@@ -432,9 +469,12 @@ void Path::closeSubpath()
     detach();
     m_d->require_moveTo = true;
     const Element &first = m_d->elements[static_cast<std::size_t>(m_d->cStart)];
-    const Element &last = m_d->elements.back();
+    Element &last = m_d->elements.back();
     if (first.x != last.x || first.y != last.y) {
-        if (!fuzzyCompare(PointF(first.x, first.y), PointF(last.x, last.y))) {
+        if (fuzzyCompare(PointF(first.x, first.y), PointF(last.x, last.y))) {
+            last.x = first.x;
+            last.y = first.y;
+        } else {
             m_d->elements.push_back(Element{first.x, first.y, LineToElement});
         }
     }
@@ -518,6 +558,248 @@ PointF Path::currentPosition() const
                : PointF(m_d->elements.back().x, m_d->elements.back().y);
 }
 
+namespace {
+
+constexpr double kArcKappa = 0.5522847498;
+
+double tForArcAngle(double angle)
+{
+    if (fuzzyIsNull(angle))
+        return 0.0;
+    if (fuzzyCompare(angle, 90.0))
+        return 1.0;
+
+    double radians = degreesToRadians(angle);
+    double cosAngle = std::cos(radians);
+    double sinAngle = std::sin(radians);
+
+    double tc = angle / 90.0;
+    double ts = tc * tc;
+
+    double b = 0.5;
+    double a = 0.0;
+
+    if (angle < 45.0) {
+        double x = 0.5 - kArcKappa;
+        double A = 3.0 * kArcKappa - 2.0;
+        double B = 6.0 * x;
+        double C = 3.0 * kArcKappa;
+        while (b > 1e-12) {
+            a = A * ts * tc + B * ts + C * tc - sinAngle;
+            if (std::abs(a) < 1e-12)
+                break;
+            b *= 0.5;
+            tc += (a < 0.0 ? b : -b);
+            ts = tc * tc;
+        }
+    } else {
+        double x = kArcKappa - 0.5;
+        double A = 2.0 - 3.0 * kArcKappa;
+        double B = 3.0 * (kArcKappa - 1.0);
+        while (b > 1e-12) {
+            a = (A * tc + B) * ts + 1.0 - cosAngle;
+            if (std::abs(a) < 1e-12)
+                break;
+            b *= 0.5;
+            tc += (a < 0.0 ? -b : b);
+            ts = tc * tc;
+        }
+    }
+    return tc;
+}
+
+void findEllipseCoords(const RectF &r, double angle, double length,
+                       PointF *startPoint, PointF *endPoint)
+{
+    if (r.isNull()) {
+        if (startPoint)
+            *startPoint = PointF();
+        if (endPoint)
+            *endPoint = PointF();
+        return;
+    }
+
+    double w2 = r.width() / 2.0;
+    double h2 = r.height() / 2.0;
+
+    double angles[2] = { angle, angle + length };
+    PointF *points[2] = { startPoint, endPoint };
+
+    for (int i = 0; i < 2; ++i) {
+        if (!points[i])
+            continue;
+
+        double theta = angles[i] - 360.0 * std::floor(angles[i] / 360.0);
+        double t = theta / 90.0;
+        int quadrant = int(t);
+        t -= quadrant;
+
+        t = tForArcAngle(90.0 * t);
+
+        if (quadrant & 1)
+            t = 1.0 - t;
+
+        Cubic unitQuad{1.0, 0.0, 1.0, kArcKappa, kArcKappa, 1.0, 0.0, 1.0};
+        PointF pt = unitQuad.pointAt(t);
+        double x = pt.x();
+        double y = pt.y();
+
+        switch (quadrant) {
+        case 0:
+            y = -y;
+            break;
+        case 1:
+            x = -x;
+            y = -y;
+            break;
+        case 2:
+            x = -x;
+            break;
+        case 3:
+        default:
+            break;
+        }
+
+        *points[i] = PointF(r.x() + w2 + w2 * x, r.y() + h2 + h2 * y);
+    }
+}
+
+Cubic arcQuadrantBezier(const RectF &rect, int quadrant, bool counterClockwise)
+{
+    const double x = rect.x();
+    const double y = rect.y();
+    const double w2 = rect.width() / 2.0;
+    const double h2 = rect.height() / 2.0;
+    const double w2k = w2 * kArcKappa;
+    const double h2k = h2 * kArcKappa;
+    const double cx = x + w2;
+    const double cy = y + h2;
+    const double right = x + rect.width();
+    const double bottom = y + rect.height();
+
+    Cubic c{};
+    switch (quadrant & 3) {
+    case 0:
+        c = {right, cy, right, cy - h2k, cx + w2k, y, cx, y};
+        break;
+    case 1:
+        c = {cx, y, cx - w2k, y, x, cy - h2k, x, cy};
+        break;
+    case 2:
+        c = {x, cy, x, cy + h2k, cx - w2k, bottom, cx, bottom};
+        break;
+    case 3:
+    default:
+        c = {cx, bottom, cx + w2k, bottom, right, cy + h2k, right, cy};
+        break;
+    }
+    if (!counterClockwise) {
+        return {c.x4, c.y4, c.x3, c.y3, c.x2, c.y2, c.x1, c.y1};
+    }
+    return c;
+}
+
+PointF curvesForArc(const RectF &rect, double startAngle, double sweepLength,
+                    PointF *curves, int *pointCount)
+{
+    *pointCount = 0;
+    if (rect.isNull())
+        return PointF();
+
+    if (sweepLength > 360.0)
+        sweepLength = 360.0;
+    else if (sweepLength < -360.0)
+        sweepLength = -360.0;
+
+    int startSegment = int(std::floor(startAngle / 90.0));
+    int endSegment = int(std::floor((startAngle + sweepLength) / 90.0));
+
+    double startT = (startAngle - startSegment * 90) / 90.0;
+    double endT = (startAngle + sweepLength - endSegment * 90) / 90.0;
+
+    int delta = sweepLength > 0 ? 1 : -1;
+    if (delta < 0) {
+        startT = 1.0 - startT;
+        endT = 1.0 - endT;
+    }
+
+    if (fuzzyIsNull(startT - 1.0)) {
+        startT = 0.0;
+        startSegment += delta;
+    }
+    if (fuzzyIsNull(endT)) {
+        endT = 1.0;
+        endSegment -= delta;
+    }
+
+    startT = tForArcAngle(startT * 90.0);
+    endT = tForArcAngle(endT * 90.0);
+
+    const bool splitAtStart = !fuzzyIsNull(startT);
+    const bool splitAtEnd = !fuzzyIsNull(endT - 1.0);
+
+    const int end = endSegment + delta;
+
+    if (startSegment == end) {
+        PointF startPoint;
+        findEllipseCoords(rect, startAngle, sweepLength, &startPoint, nullptr);
+        return startPoint;
+    }
+
+    PointF startPoint, endPoint;
+    findEllipseCoords(rect, startAngle, sweepLength, &startPoint, &endPoint);
+
+    for (int i = startSegment; i != end; i += delta) {
+        const int quadrant = ((i % 4) + 4) % 4;
+        Cubic c = arcQuadrantBezier(rect, quadrant, delta > 0);
+        double t0 = 0.0;
+        double t1 = 1.0;
+        if (i == startSegment && splitAtStart)
+            t0 = startT;
+        if (i == endSegment && splitAtEnd)
+            t1 = endT;
+        c = c.bezierOnInterval(t0, t1);
+        curves[(*pointCount)++] = PointF(c.x2, c.y2);
+        curves[(*pointCount)++] = PointF(c.x3, c.y3);
+        curves[(*pointCount)++] = PointF(c.x4, c.y4);
+    }
+
+    if (*pointCount > 0) {
+        curves[*pointCount - 1] = endPoint;
+    }
+    return startPoint;
+}
+
+} // namespace
+
+void Path::arcMoveTo(const RectF &rect, double angle)
+{
+    if (rect.isNull())
+        return;
+    PointF pt;
+    findEllipseCoords(rect, angle, 0.0, &pt, nullptr);
+    moveTo(pt);
+}
+
+void Path::arcTo(const RectF &rect, double startAngle, double sweepLength)
+{
+    if (rect.isNull())
+        return;
+    int pointCount = 0;
+    PointF pts[15];
+    PointF curveStart = curvesForArc(rect, startAngle, sweepLength, pts, &pointCount);
+    lineTo(curveStart);
+    // No sweep, no curve: a zero-length arc stops at its start point.
+    if (std::abs(sweepLength) <= 1e-12) {
+        return;
+    }
+    for (int i = 0; i < pointCount; i += 3) {
+        cubicTo(pts[i].x(), pts[i].y(),
+                pts[i + 1].x(), pts[i + 1].y(),
+                pts[i + 2].x(), pts[i + 2].y());
+    }
+}
+
 void Path::addRect(const RectF &r)
 {
     if (r.isNull())
@@ -531,15 +813,80 @@ void Path::addRect(const RectF &r)
     const double x2 = r.x() + r.width();
     const double y2 = r.y() + r.height();
     moveTo(x1, y1);
-    lineTo(x2, y1);
-    lineTo(x2, y2);
-    lineTo(x1, y2);
-    lineTo(x1, y1);
+    m_d->elements.push_back(Element{x2, y1, LineToElement});
+    m_d->elements.push_back(Element{x2, y2, LineToElement});
+    m_d->elements.push_back(Element{x1, y2, LineToElement});
+    m_d->elements.push_back(Element{x1, y1, LineToElement});
     m_d->require_moveTo = true;
 }
 
-void Path::addPolygon(const Vector<PointF> &polygon)
+void Path::addEllipse(const RectF &rect)
 {
+    if (rect.isNull())
+        return;
+    const double kappa = 0.5522847498;
+    const double x = rect.x();
+    const double y = rect.y();
+    const double w2 = rect.width() / 2.0;
+    const double h2 = rect.height() / 2.0;
+    const double w2k = w2 * kappa;
+    const double h2k = h2 * kappa;
+    const double cx = x + w2;
+    const double cy = y + h2;
+    const double right = x + rect.width();
+    const double bottom = y + rect.height();
+    moveTo(right, cy);
+    cubicTo(right, cy + h2k, cx + w2k, bottom, cx, bottom);
+    cubicTo(cx - w2k, bottom, x, cy + h2k, x, cy);
+    cubicTo(x, cy - h2k, cx - w2k, y, cx, y);
+    cubicTo(cx + w2k, y, right, cy - h2k, right, cy);
+    m_d->require_moveTo = true;
+}
+
+void Path::addRoundedRect(const RectF &rect, double xRadius, double yRadius)
+{
+    const RectF r = rect.normalized();
+    if (r.isNull())
+        return;
+    // Qt turns an absolute radius into a percentage and back, and the round trip
+    // moves the corners by an ULP, so the same steps are taken here.
+    const double halfW = r.width() / 2.0;
+    const double halfH = r.height() / 2.0;
+    xRadius = (halfW == 0.0) ? 0.0 : (100.0 * std::min(xRadius, halfW) / halfW);
+    yRadius = (halfH == 0.0) ? 0.0 : (100.0 * std::min(yRadius, halfH) / halfH);
+    if (xRadius <= 0.0 || yRadius <= 0.0) {
+        addRect(r);
+        return;
+    }
+    const double kappa = 0.5522847498;
+    const double rxx2 = r.width() * xRadius / 100.0;
+    const double ryy2 = r.height() * yRadius / 100.0;
+    const double rx = rxx2 / 2.0;
+    const double ry = ryy2 / 2.0;
+    const double kx = rx * kappa;
+    const double ky = ry * kappa;
+    const double left = r.x();
+    const double top = r.y();
+    const double ex = left + r.width() - rxx2;
+    const double ey = top + r.height() - ryy2;
+    const double cxL = left + rx;
+    const double cyT = top + ry;
+    const double cxR = ex + rx;
+    const double cyB = ey + ry;
+    const double right = rxx2 + ex;
+    const double bottom = ryy2 + ey;
+    moveTo(-rx + cxL, cyT);
+    cubicTo(left, cyT - ky, cxL - kx, top, cxL, -ry + cyT);
+    lineTo(cxR, -ry + cyT);
+    cubicTo(cxR + kx, top, right, cyT - ky, rx + cxR, cyT);
+    lineTo(rx + cxR, cyB);
+    cubicTo(right, cyB + ky, cxR + kx, bottom, cxR, ry + cyB);
+    lineTo(cxL, ry + cyB);
+    cubicTo(cxL - kx, bottom, left, cyB + ky, -rx + cxL, cyB);
+    closeSubpath();
+}
+
+void Path::addPolygon(const Vector<PointF> &polygon){
     if (polygon.isEmpty())
         return;
     detach();

@@ -597,6 +597,7 @@ export class GlBoardRenderer {
 
   private unsubBoard?: () => void;
   private unsubImage?: () => void;
+  private unsubForget?: () => void;
   private unsubField?: () => void;
 
   private fieldProg: WebGLProgram | null = null;
@@ -703,8 +704,13 @@ export class GlBoardRenderer {
 
     if (this.client) {
       this.unsubImage = this.client.onImage?.((meta, data) => {
-        if (!meta.key.startsWith("cur_")) {
+        if (meta.view === this.view) {
           this.putImage(meta, data);
+        }
+      });
+      this.unsubForget = this.client.onImageForget?.((view, key) => {
+        if (view === this.view) {
+          this.forgetImage(key);
         }
       });
       this.unsubField = this.client.onField?.((meta, data) => {
@@ -783,6 +789,16 @@ export class GlBoardRenderer {
 
   getLastDrawCalls(): number {
     return this.lastDrawCalls;
+  }
+
+  forgetImage(key: string): void {
+    const texture = this.imageTextures.get(key);
+    if (texture && !this.contextLost) {
+      this.gl.deleteTexture(texture);
+    }
+    this.imageTextures.delete(key);
+    this.images.delete(key);
+    this.rawImages.delete(key);
   }
 
   putImage(meta: ImageMeta, data: Uint8Array): void {
@@ -967,9 +983,11 @@ export class GlBoardRenderer {
   destroy(): void {
     this.unsubBoard?.();
     this.unsubImage?.();
+    this.unsubForget?.();
     this.unsubBoard = undefined;
     this.unsubField?.();
     this.unsubImage = undefined;
+    this.unsubForget = undefined;
     this.unsubField = undefined;
     this.canvas.removeEventListener?.("webglcontextlost", this.onContextLostBound);
     this.canvas.removeEventListener?.("webglcontextrestored", this.onContextRestoredBound);
