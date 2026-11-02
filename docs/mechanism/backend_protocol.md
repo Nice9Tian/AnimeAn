@@ -119,8 +119,9 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 |---|---|
 | `window` | 标题、状态栏文字、活动画板 `activeView`、素材面板目标画板 `assetView`、画布尺寸、工程与纹理路径、`pythonDebug` 日志（最多保留 2000 条） |
 | `theme` | `AnimeTheme` 的模式和全部颜色 |
-| `menus` | 菜单栏的完整结构，含 Python 返回的菜单 |
-| `textureMenus` | 纹理板菜单栏的完整结构：内建的 `File`、`Setting`，加 Python 注册的 `child` 菜单（如 `View`）。脚本按钮行不在这里，在 `windows.textureViewButtons` |
+| `menus` | 主窗口菜单栏的完整结构，全部是 Python 声明的（File、Edit、Theme、Windows 在 `pyfile/app_menus.py`，其余由脚本登记），按 Python 给的顺序，见 `hook_events.md`「菜单栏」 |
+| `textureMenus` | 纹理板菜单栏的完整结构，也是 Python 声明的：`File`、`Setting`（`app_menus.py`），加脚本登记的 `child` 菜单（如 `View`）。脚本按钮行不在这里，在 `windows.textureViewButtons` |
+| `textureSettings` | 纹理板的设置：`changeableTimeline`、`changeableTexture`、`background`（`white`、`black`、`transparent`），纹理板的 Setting 菜单按它打勾 |
 | `tools` | 工具页、当前工具、被锁定的工具 |
 | `toolOptions` | Python 返回的选项 JSON |
 | `drawColor`、`drawSettings` | 当前颜色、绘制设置 |
@@ -149,7 +150,11 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 | `timeline.thumbnails` | `{ frames?, width, height, view? }` | 用 `renderFrameThumbnail` 渲染指定帧缩略图，新渲染的通过 `image` 帧下发，已缓存的不重发（连接时补发过），返回 `{ view, width, height, revision, thumbnails, frames }`。缓存作废时 `thumbnails` 状态的 `revision` 加一，网页据此重新请求屏幕上的帧 |
 | `file.import` | `{ kind, paths, view?, probe?, fitToCanvas? }` | 应用 File 菜单的导入（未传 `view`）进主画板，`view: "child"` 或 `kind` 带 `texture.` 前缀时进纹理板，不是探测时先把目标板显示出来；矢量导入支持 `probe: true` 先返回 `{ needsScale, sourceBounds, canvasWidth, canvasHeight }` |
 | `project.save`、`project.saveAs`、`file.texture` | `{ path, probe?, overwrite? }`；`file.texture` 另带 `kind`（`open`、`save`、`saveAs`、`exportImage`） | 保存类调用支持 `probe: true` 检查后缀补全改写后的目标文件是否已存在，返回 `{ needsConfirmOverwrite, fileName, path }` |
-| `menu.trigger` | `{ id, title?, checked? }` | `file.` 开头的项转给 Python（`menu` 事件，`menu` 为 `file`），选择框、覆盖确认、出错提示都由 `pyfile/file_menu.py` 决定，它再调上面这些文件方法；`settings:<名字>` 请 Python 开设置窗 |
+| `menu.trigger` | `{ id, title?, checked? }` | 菜单项都回到 Python。Python 带 `id` 声明的项（`file.open`、`edit.undo`、`windows.timeline` 等），作为声明它的菜单的 `menu` 事件交回，`checked` 给了才带上，不给表示切换；没有处理器置 `handled` 时返回错误。File 项的选择框、覆盖确认、出错提示由 `pyfile/file_menu.py` 决定，它再调上面这些文件方法。`script:<host>:<菜单>:<项>` 交给那个脚本菜单；`settings:<名字>` 请 Python 开设置窗；别的 id 返回 `Unknown menu id` |
+| `windows.setVisible` | `{ name, visible? }` | 显示或隐藏一个窗口（面板名或 `timeline`），不给 `visible` 就切换。Windows 菜单（Python）和网页的面板关闭钮、Timeline 的关闭钮和小圆钮都走它。返回 `{ name, visible }` |
+| `windows.showTextureView` | `{}` | Windows ▸ Texture View：让纹理子控件框显示，发 `textureSubControl.surface` 事件 |
+| `texture.setChangeable` | `{ timeline?, texture? }` | 纹理板的 Changable Timeline / Changable Texture，返回 `textureSettings` |
+| `texture.setBackground` | `{ mode }`（`white`、`black`、`transparent`） | 纹理板的背景，返回 `textureSettings` |
 | `dialog.result` | `{ id, action, value? }`，`action` 是 `button`、`accept`、`cancel`、`closed`、`error` | 一个对话框的回答，转成 Python 的 `dialog` 事件。兜底：`closed`（窗口被关）、`error`（页面出错）、Python 处理时抛错或没有接（没置 `message["handled"]`），C++ 都从 `dialogs` 里删掉这一条并记下 id，Python 之后再发旧栈也带不回来 |
 | `dialog.request` | `{ kind, ... }`，如颜色控件的 `{ kind: "color", hook, name, value, menu? }`（`menu` 是设置窗的名字，选好的颜色发回哪个方法由 Python 定） | 网页请 Python 开一个对话框，转成 `dialog` 事件（`action` 为 `request`）；Python 没有开（没置 `message["handled"]`）时返回错误 |
 

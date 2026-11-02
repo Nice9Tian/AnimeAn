@@ -283,6 +283,7 @@ const StringList &allStateKeys()
         String("freeze"),
         String("pad"),
         String("dialogs"),
+        String("textureSettings"),
     };
     return keys;
 }
@@ -640,12 +641,11 @@ void BackendSession::initializePythonStartup()
     // before runPythonInitializationScript() runs initalize.py.
     m_business->loadExtraTools();
     m_business->refreshToolOptions();
-    captureScriptMenuNames();
     loadProtectedPropertiesForChild();
 
+    // The menu bars are whatever Python has registered when they are built
+    // (app_menus.py and the script modules initalize.py imports).
     m_business->runPythonInitializationScript();
-    // Modules imported by initalize.py register menus too (Settings).
-    captureScriptMenuNames();
     loadProtectedPropertiesForChild();
     m_mainBoard->resetHistory(String("Initial"));
     m_childBoard->resetHistory(String("Initial"));
@@ -681,43 +681,6 @@ void BackendSession::saveTimelineSettings() const
     settings.setValue(String("collapsed"), m_timelineCollapsed);
     settings.setValue(String("visible"), m_timelineVisible);
     settings.endGroup();
-}
-
-void BackendSession::captureScriptMenuNames()
-{
-    m_mainScriptMenus.clear();
-    m_childScriptMenus.clear();
-#ifdef ANIMEAN_WITH_PYTHON
-    if (!Py_IsInitialized()) {
-        return;
-    }
-    auto captureForHost = [this](const char *host, Vector<std::pair<String, String>> *out) {
-        try {
-            py::gil_scoped_acquire acquire;
-            const std::string json = py::module_::import("python_hooks")
-                                         .attr("menus_json")(std::string(host))
-                                         .cast<std::string>();
-            JsonParseError parseError;
-            const JsonDocument document = JsonDocument::fromJson(json, &parseError);
-            if (parseError.error != JsonParseError::NoError || !document.isArray()) {
-                return;
-            }
-            for (const JsonValue &value : document.array()) {
-                const JsonObject object = value.toObject();
-                const String name = object.value(String("name")).toString();
-                if (name.isEmpty()) {
-                    continue;
-                }
-                const String title = object.value(String("title")).toString(name);
-                out->append(std::make_pair(name, title));
-            }
-        } catch (const py::error_already_set &error) {
-            m_business->setStatusMessage(String("menus error: %1").arg(String::fromUtf8(error.what())));
-        }
-    };
-    captureForHost("main", &m_mainScriptMenus);
-    captureForHost("child", &m_childScriptMenus);
-#endif
 }
 
 void BackendSession::surfaceTextureView()
@@ -2483,6 +2446,74 @@ JsonObject BackendSession::dispatchCall(const String &method, const JsonObject &
         return JsonObject{{String("requested"), true}};
     }
 
+    // Which windows are shown is held here; which menu lists them is Python's
+    // (app_menus.py). Without "visible" the window toggles.
+    if (method == String("windows.setVisible")) {
+        const String name = params.value(String("name")).toString();
+        const bool given = params.contains(String("visible"));
+        const bool visible = params.value(String("visible")).toBool(false);
+        if (name == String("timeline")) {
+            m_timelineVisible = given ? visible : !m_timelineVisible;
+            saveTimelineSettings();
+            markDirty(String("windows"));
+            markDirty(String("timeline"));
+            markDirty(String("menus"));
+            return JsonObject{{String("name"), name}, {String("visible"), m_timelineVisible}};
+        }
+        for (AnimeanWindowInfo &info : m_windowInfos) {
+            if (info.name == name) {
+                info.visible = given ? visible : !info.visible;
+                markDirty(String("windows"));
+                markDirty(String("menus"));
+                return JsonObject{{String("name"), name}, {String("visible"), info.visible}};
+            }
+        }
+        return makeError(String("Unknown window: %1").arg(name));
+    }
+
+    // Windows > Texture View: bring the texture board's control up.
+    if (method == String("windows.showTextureView")) {
+        m_textureSubControlVisible = true;
+        emitUiEvent(String("textureSubControl.surface"));
+        markDirty(String("windows"));
+        return JsonObject{{String("textureSubControlVisible"), true}};
+    }
+
+    // The texture board's settings; its Setting menu is Python's (app_menus.py).
+    if (method == String("texture.setChangeable")) {
+        if (params.contains(String("timeline"))) {
+            m_business->setChangeableTimeline(params.value(String("timeline")).toBool(false));
+        }
+        if (params.contains(String("texture"))) {
+            m_business->setChangeableTexture(params.value(String("texture")).toBool(false));
+            markDirty(String("window"));
+        }
+        markDirty(String("textureSettings"));
+        markDirty(String("menus"));
+        markDirty(String("textureMenus"));
+        return buildTextureSettingsState();
+    }
+
+    if (method == String("texture.setBackground")) {
+        const String mode = params.value(String("mode")).toString().trimmed().toLower();
+        PaintOpenGLWidget::BackgroundMode next = PaintOpenGLWidget::BackgroundMode::White;
+        if (mode == String("black")) {
+            next = PaintOpenGLWidget::BackgroundMode::Black;
+        } else if (mode == String("transparent")) {
+            next = PaintOpenGLWidget::BackgroundMode::Transparent;
+        } else if (mode != String("white")) {
+            return makeError(String("Unknown background: %1").arg(mode));
+        }
+        if (!m_childBoard) {
+            return makeError(String("No texture board"));
+        }
+        m_childBoard->setBackgroundMode(next);
+        markDirty(String("textureSettings"));
+        markDirty(String("menus"));
+        markDirty(String("textureMenus"));
+        return buildTextureSettingsState();
+    }
+
     if (method == String("theme.set")) {
         const JsonValue modeVal = params.contains(String("mode"))
                                        ? params.value(String("mode"))
@@ -3243,103 +3274,6 @@ bool BackendSession::triggerMenuById(const String &id, const JsonObject &params,
         }
     }
 
-    // The File menu's items: which picker, which question, which message is
-    // Python's (file_menu.py); it calls the file methods back.
-    if (id.startsWith(String("file."))) {
-        return forwardMenuToPython(String("file"), id, errorOut);
-    }
-    if (id == String("edit.undo")) {
-        m_business->undo();
-        return true;
-    }
-    if (id == String("edit.redo")) {
-        m_business->redo();
-        return true;
-    }
-    if (id == String("theme.dark")) {
-        AnimeTheme::setMode(AnimeTheme::Mode::Dark);
-#ifdef ANIMEAN_WITH_PYTHON
-        setAnimeanUiTheme(AnimeTheme::modeName(AnimeTheme::mode()));
-#endif
-        markDirty(String("theme"));
-        markDirty(String("menus"));
-        return true;
-    }
-    if (id == String("theme.light")) {
-        AnimeTheme::setMode(AnimeTheme::Mode::Light);
-#ifdef ANIMEAN_WITH_PYTHON
-        setAnimeanUiTheme(AnimeTheme::modeName(AnimeTheme::mode()));
-#endif
-        markDirty(String("theme"));
-        markDirty(String("menus"));
-        return true;
-    }
-    if (id == String("windows.texture_view")) {
-        m_textureSubControlVisible = true;
-        emitUiEvent(String("textureSubControl.surface"));
-        markDirty(String("windows"));
-        return true;
-    }
-    if (id == String("windows.timeline")) {
-        m_timelineVisible = params.contains(String("checked"))
-                                ? params.value(String("checked")).toBool()
-                                : !m_timelineVisible;
-        saveTimelineSettings();
-        markDirty(String("windows"));
-        markDirty(String("timeline"));
-        markDirty(String("menus"));
-        return true;
-    }
-    if (id.startsWith(String("windows."))) {
-        const String winName = id.mid(String("windows.").size());
-        for (AnimeanWindowInfo &info : m_windowInfos) {
-            if (info.name == winName) {
-                info.visible = params.contains(String("checked"))
-                                   ? params.value(String("checked")).toBool()
-                                   : !info.visible;
-                markDirty(String("windows"));
-                markDirty(String("menus"));
-                return true;
-            }
-        }
-    }
-    if (id == String("child.setting.changeableTimeline")) {
-        const bool next = params.contains(String("checked"))
-                              ? params.value(String("checked")).toBool()
-                              : !m_business->changeableTimeline();
-        m_business->setChangeableTimeline(next);
-        markDirty(String("menus"));
-        markDirty(String("textureMenus"));
-        return true;
-    }
-    if (id == String("child.setting.changeableTexture")) {
-        const bool next = params.contains(String("checked"))
-                              ? params.value(String("checked")).toBool()
-                              : !m_business->changeableTexture();
-        m_business->setChangeableTexture(next);
-        markDirty(String("window"));
-        markDirty(String("menus"));
-        markDirty(String("textureMenus"));
-        return true;
-    }
-    if (id == String("child.setting.background.white") && m_childBoard) {
-        m_childBoard->setBackgroundMode(PaintOpenGLWidget::BackgroundMode::White);
-        markDirty(String("menus"));
-        markDirty(String("textureMenus"));
-        return true;
-    }
-    if (id == String("child.setting.background.black") && m_childBoard) {
-        m_childBoard->setBackgroundMode(PaintOpenGLWidget::BackgroundMode::Black);
-        markDirty(String("menus"));
-        markDirty(String("textureMenus"));
-        return true;
-    }
-    if (id == String("child.setting.background.transparent") && m_childBoard) {
-        m_childBoard->setBackgroundMode(PaintOpenGLWidget::BackgroundMode::Transparent);
-        markDirty(String("menus"));
-        markDirty(String("textureMenus"));
-        return true;
-    }
     if (id.startsWith(String("settings:"))) {
         const String target = id.mid(String("settings:").size());
         openScriptSettings(target, params.value(String("title")).toString(target));
@@ -3368,6 +3302,13 @@ bool BackendSession::triggerMenuById(const String &id, const JsonObject &params,
                 return true;
             }
         }
+    }
+
+    // An item Python declared with its own id (app_menus.py: file.open,
+    // edit.undo, windows.timeline, ...): the choice goes back to that menu.
+    MenuRoute route;
+    if (findMenuRoute(id, &route)) {
+        return forwardMenuToPython(route, params, errorOut);
     }
 
     if (errorOut) {
@@ -3481,17 +3422,35 @@ int BackendSession::dispatchPythonEvent(const JsonObject &event, String *errorOu
 #endif
 }
 
-bool BackendSession::forwardMenuToPython(const String &menu, const String &item, String *errorOut)
+bool BackendSession::findMenuRoute(const String &id, MenuRoute *out) const
 {
+    if (!m_menuRoutes.contains(id)) {
+        // The routes are learnt while the bars are built, and a trigger can come first.
+        buildMenusState();
+        buildTextureMenusState();
+    }
+    if (!m_menuRoutes.contains(id)) {
+        return false;
+    }
+    *out = m_menuRoutes.value(id);
+    return true;
+}
+
+bool BackendSession::forwardMenuToPython(const MenuRoute &route, const JsonObject &params, String *errorOut)
+{
+    JsonObject event{
+        {String("event"), String("menu")},
+        {String("menu"), route.menu},
+        {String("name"), route.name},
+        {String("view"), route.host},
+    };
+    // A choice from the menu says what a check becomes; a bare trigger leaves
+    // it out, and the item toggles.
+    if (params.contains(String("checked"))) {
+        event.insert(String("checked"), params.value(String("checked")).toBool(false));
+    }
     String error;
-    const int handled = dispatchPythonEvent(JsonObject{
-                                                {String("event"), String("menu")},
-                                                {String("menu"), menu},
-                                                {String("name"), item},
-                                                {String("view"), String("main")},
-                                                {String("checked"), false},
-                                            },
-                                            &error);
+    const int handled = dispatchPythonEvent(event, &error);
     if (handled > 0) {
         return true;
     }
@@ -3499,7 +3458,7 @@ bool BackendSession::forwardMenuToPython(const String &menu, const String &item,
     if (errorOut && handled < 0) {
         *errorOut = error;
     } else if (errorOut) {
-        *errorOut = String("Nothing handles the menu item %1").arg(item);
+        *errorOut = String("Nothing handles the menu item %1").arg(route.name);
     }
     return false;
 }
@@ -3814,6 +3773,9 @@ JsonValue BackendSession::buildStateValue(const String &key) const
     if (key == String("textureMenus")) {
         return buildTextureMenusState();
     }
+    if (key == String("textureSettings")) {
+        return buildTextureSettingsState();
+    }
     if (key == String("tools")) {
         return buildToolsState();
     }
@@ -3924,17 +3886,28 @@ JsonObject BackendSession::buildThemeState() const
     return out;
 }
 
+namespace {
+// A submenu may show another registered menu; menus that show each other stop here.
+constexpr int kMaxMenuDepth = 8;
+}
+
 JsonArray BackendSession::buildScriptMenuItems(const String &host,
                                                 const String &menuName,
-                                                const JsonArray &items) const
+                                                const JsonArray &items,
+                                                PythonMenus *menus,
+                                                int depth) const
 {
     JsonArray out;
     int sepIndex = 0;
     for (const JsonValue &val : items) {
         const JsonObject obj = val.toObject();
         const String kind = obj.value(String("kind")).toString(String("action"));
+        // An item may name its own id: the page's and the tests' name for it.
+        const String explicitId = obj.value(String("id")).toString();
         if (kind == String("separator")) {
-            out.append(makeMenuItem(String("%1.%2.sep%3").arg(host, menuName).arg(++sepIndex),
+            ++sepIndex;
+            out.append(makeMenuItem(explicitId.isEmpty() ? String("%1.%2.sep%3").arg(host, menuName).arg(sepIndex)
+                                                         : explicitId,
                                     String(),
                                     String(),
                                     String("separator")));
@@ -3947,15 +3920,26 @@ JsonArray BackendSession::buildScriptMenuItems(const String &host,
         const bool checked = obj.value(String("checked")).toBool(false);
 
         if (kind == String("submenu")) {
-            const JsonArray children =
-                buildScriptMenuItems(host, menuName, obj.value(String("items")).toArray());
-            out.append(makeMenuItem(String("submenu:%1:%2:%3").arg(host, menuName, itemName.isEmpty() ? title : itemName),
-                                    title,
-                                    shortcut,
-                                    String("submenu"),
-                                    false,
-                                    enabled,
-                                    children));
+            JsonArray children;
+            if (depth < kMaxMenuDepth) {
+                const String shown = obj.value(String("menu")).toString();
+                if (shown.isEmpty()) {
+                    children = buildScriptMenuItems(host, menuName, obj.value(String("items")).toArray(), menus, depth + 1);
+                } else {
+                    // Another registered menu shown here: its items keep that menu's ids and routes.
+                    const String shownHost = obj.value(String("host")).toString(host);
+                    const JsonObject shownMenu = pythonMenu(shownHost, shown, menus);
+                    children = buildScriptMenuItems(shownHost,
+                                                    shown,
+                                                    shownMenu.value(String("items")).toArray(),
+                                                    menus,
+                                                    depth + 1);
+                }
+            }
+            const String id = explicitId.isEmpty()
+                                  ? String("submenu:%1:%2:%3").arg(host, menuName, itemName.isEmpty() ? title : itemName)
+                                  : explicitId;
+            out.append(makeMenuItem(id, title, shortcut, String("submenu"), false, enabled, children));
             continue;
         }
         if (kind == String("settings")) {
@@ -3968,370 +3952,98 @@ JsonArray BackendSession::buildScriptMenuItems(const String &host,
                                     enabled));
             continue;
         }
-        out.append(makeMenuItem(String("script:%1:%2:%3").arg(host, menuName, itemName),
-                                title.isEmpty() ? itemName : title,
-                                shortcut,
-                                kind,
-                                checked,
-                                enabled));
+        String id = String("script:%1:%2:%3").arg(host, menuName, itemName);
+        if (!explicitId.isEmpty()) {
+            id = explicitId;
+            m_menuRoutes.insert(explicitId, MenuRoute{host, menuName, itemName.isEmpty() ? explicitId : itemName});
+        }
+        out.append(makeMenuItem(id, title.isEmpty() ? itemName : title, shortcut, kind, checked, enabled));
     }
     return out;
 }
 
-JsonArray BackendSession::buildMenusState() const
+JsonArray BackendSession::pythonMenus(const String &host, PythonMenus *menus) const
 {
-    JsonArray menus;
-
-    // 1. File menu (from mainwindow.ui + createMainTextureMenu + createTextureFileMenu)
-    JsonArray importChildren{
-        makeMenuItem(String("file.import.raster"), String("Raster..."), String(), String("action")),
-        makeMenuItem(String("file.import.opentoonz"), String("OpenToonz Lines..."), String(), String("action")),
-        makeMenuItem(String("file.import.csp"), String("Clip Studio Paint..."), String(), String("action")),
-    };
-
-    JsonArray texImportChildren{
-        makeMenuItem(String("file.texture.import.raster"), String("Raster..."), String(), String("action")),
-        makeMenuItem(String("file.texture.import.opentoonz"), String("OpenToonz Lines..."), String(), String("action")),
-        makeMenuItem(String("file.texture.import.csp"), String("Clip Studio Paint..."), String(), String("action")),
-    };
-
-    const PaintOpenGLWidget::BackgroundMode bgMode =
-        m_childBoard ? m_childBoard->backgroundMode() : PaintOpenGLWidget::BackgroundMode::White;
-    JsonArray bgChildren{
-        makeMenuItem(String("child.setting.background.white"),
-                     String("White"),
-                     String(),
-                     String("radio"),
-                     bgMode == PaintOpenGLWidget::BackgroundMode::White),
-        makeMenuItem(String("child.setting.background.black"),
-                     String("Black"),
-                     String(),
-                     String("radio"),
-                     bgMode == PaintOpenGLWidget::BackgroundMode::Black),
-        makeMenuItem(String("child.setting.background.transparent"),
-                     String("Transparent"),
-                     String(),
-                     String("radio"),
-                     bgMode == PaintOpenGLWidget::BackgroundMode::Transparent),
-    };
-
-    JsonArray childSettingChildren{
-        makeMenuItem(String("child.setting.changeableTimeline"),
-                     String("Changable Timeline"),
-                     String(),
-                     String("check"),
-                     m_business->changeableTimeline()),
-        makeMenuItem(String("child.setting.changeableTexture"),
-                     String("Changable Texture"),
-                     String(),
-                     String("check"),
-                     m_business->changeableTexture()),
-        makeMenuItem(String("child.setting.sep1"), String(), String(), String("separator")),
-        makeMenuItem(String("child.setting.background"),
-                     String("Background"),
-                     String(),
-                     String("submenu"),
-                     false,
-                     true,
-                     bgChildren),
-    };
-
+    if (!menus->contains(host)) {
+        JsonArray list;
 #ifdef ANIMEAN_WITH_PYTHON
-    if (Py_IsInitialized()) {
-        try {
-            py::gil_scoped_acquire acquire;
-            const std::string json = py::module_::import("python_hooks")
-                                         .attr("menus_json")(std::string("child"))
-                                         .cast<std::string>();
-            const JsonDocument doc = JsonDocument::fromJson(json);
-            Hash<String, JsonObject> liveChildMenus;
-            for (const JsonValue &val : doc.array()) {
-                const JsonObject obj = val.toObject();
-                const String mName = obj.value(String("name")).toString();
-                if (!mName.isEmpty()) {
-                    liveChildMenus.insert(mName, obj);
+        if (Py_IsInitialized()) {
+            try {
+                py::gil_scoped_acquire acquire;
+                const std::string json = py::module_::import("python_hooks")
+                                             .attr("menus_json")(host.toStdString())
+                                             .cast<std::string>();
+                JsonParseError parseError;
+                const JsonDocument doc = JsonDocument::fromJson(json, &parseError);
+                if (parseError.error == JsonParseError::NoError && doc.isArray()) {
+                    list = doc.array();
                 }
+            } catch (...) {
             }
-            for (const std::pair<String, String> &entry : m_childScriptMenus) {
-                const String &mName = entry.first;
-                const JsonObject obj = liveChildMenus.value(mName);
-                const String mTitle = obj.value(String("title")).toString(entry.second);
-                const JsonArray items =
-                    buildScriptMenuItems(String("child"), mName, obj.value(String("items")).toArray());
-                childSettingChildren.append(makeMenuItem(String("child.menu.%1").arg(mName),
-                                                         mTitle,
-                                                         String(),
-                                                         String("submenu"),
-                                                         false,
-                                                         true,
-                                                         items));
-            }
-        } catch (...) {
+        }
+#endif
+        menus->insert(host, list);
+    }
+    return menus->value(host);
+}
+
+JsonObject BackendSession::pythonMenu(const String &host, const String &name, PythonMenus *menus) const
+{
+    for (const JsonValue &val : pythonMenus(host, menus)) {
+        const JsonObject obj = val.toObject();
+        if (obj.value(String("name")).toString() == name) {
+            return obj;
         }
     }
-#endif
+    return JsonObject();
+}
 
-    JsonArray textureChildren{
-        makeMenuItem(String("file.texture.import"),
-                     String("Import"),
-                     String(),
-                     String("submenu"),
-                     false,
-                     true,
-                     texImportChildren),
-        makeMenuItem(String("file.texture.sep1"), String(), String(), String("separator")),
-        makeMenuItem(String("file.texture.open"), String("Open Texture View..."), String(), String("action")),
-        makeMenuItem(String("file.texture.save"), String("Save Texture View"), String(), String("action")),
-        makeMenuItem(String("file.texture.saveAs"), String("Save Texture View As..."), String(), String("action")),
-        makeMenuItem(String("file.texture.exportImage"), String("Export Texture View Image..."), String(), String("action")),
-        makeMenuItem(String("file.texture.sep2"), String(), String(), String("separator")),
-        makeMenuItem(String("file.texture.setting"),
-                     String("Setting"),
-                     String(),
-                     String("submenu"),
-                     false,
-                     true,
-                     childSettingChildren),
-    };
-
-    JsonArray fileChildren{
-        makeMenuItem(String("file.new"), String("Canvas Size..."), String(), String("action")),
-        makeMenuItem(String("file.open"), String("Open..."), String("Ctrl+O"), String("action")),
-        makeMenuItem(String("file.save"), String("Save"), String("Ctrl+S"), String("action")),
-        makeMenuItem(String("file.saveAs"), String("Save As..."), String("Ctrl+Shift+S"), String("action")),
-        makeMenuItem(String("file.sep1"), String(), String(), String("separator")),
-        makeMenuItem(String("file.import"),
-                     String("Import"),
-                     String(),
-                     String("submenu"),
-                     false,
-                     true,
-                     importChildren),
-        makeMenuItem(String("file.texture"),
-                     String("Texture"),
-                     String(),
-                     String("submenu"),
-                     false,
-                     true,
-                     textureChildren),
-    };
-    menus.append(makeMenuItem(String("file"), String("File"), String(), String("submenu"), false, true, fileChildren));
-
-    // 2. Edit menu
-    JsonArray editChildren{
-        makeMenuItem(String("edit.undo"),
-                     String("Undo"),
-                     String("Ctrl+Z"),
-                     String("action"),
-                     false,
-                     m_business->canUndo()),
-        makeMenuItem(String("edit.redo"),
-                     String("Redo"),
-                     String("Ctrl+Y"),
-                     String("action"),
-                     false,
-                     m_business->canRedo()),
-    };
-    menus.append(makeMenuItem(String("edit"), String("Edit"), String(), String("submenu"), false, true, editChildren));
-
-    // 3..5. Python script menus for "main" (captured at createScriptMenus time: View, Auto Mapping, Draw).
-    // A menu registered with "place": "end" goes after Windows instead.
-    JsonArray menusAtEnd;
-#ifdef ANIMEAN_WITH_PYTHON
-    if (Py_IsInitialized()) {
-        try {
-            py::gil_scoped_acquire acquire;
-            const std::string json = py::module_::import("python_hooks")
-                                         .attr("menus_json")(std::string("main"))
-                                         .cast<std::string>();
-            const JsonDocument doc = JsonDocument::fromJson(json);
-            Hash<String, JsonObject> liveMainMenus;
-            for (const JsonValue &val : doc.array()) {
-                const JsonObject obj = val.toObject();
-                const String mName = obj.value(String("name")).toString();
-                if (!mName.isEmpty()) {
-                    liveMainMenus.insert(mName, obj);
-                }
-            }
-            for (const std::pair<String, String> &entry : m_mainScriptMenus) {
-                const String &mName = entry.first;
-                const JsonObject obj = liveMainMenus.value(mName);
-                const String mTitle = obj.value(String("title")).toString(entry.second);
-                const JsonArray items =
-                    buildScriptMenuItems(String("main"), mName, obj.value(String("items")).toArray());
-                const JsonObject menu = makeMenuItem(mName, mTitle, String(), String("submenu"), false, true, items);
-                if (obj.value(String("place")).toString() == String("end")) {
-                    menusAtEnd.append(menu);
-                } else {
-                    menus.append(menu);
-                }
-            }
-        } catch (...) {
-        }
-    }
-#endif
-
-    // 6. Theme menu
-    JsonArray themeChildren{
-        makeMenuItem(String("theme.dark"),
-                     String("Dark"),
-                     String(),
-                     String("radio"),
-                     AnimeTheme::mode() == AnimeTheme::Mode::Dark),
-        makeMenuItem(String("theme.light"),
-                     String("Light"),
-                     String(),
-                     String("radio"),
-                     AnimeTheme::mode() == AnimeTheme::Mode::Light),
-    };
-    menus.append(makeMenuItem(String("theme"), String("Theme"), String(), String("submenu"), false, true, themeChildren));
-
-    // 7. Windows menu
-    JsonArray windowsChildren{
-        makeMenuItem(String("windows.texture_view"),
-                     String("Texture View"),
-                     String(),
-                     String("action")),
-        makeMenuItem(String("windows.sep1"), String(), String(), String("separator")),
-    };
-    for (const AnimeanWindowInfo &info : m_windowInfos) {
-        if (info.name == String("paint")) {
+// A menu bar is what Python declares for it, in Python's order: app_menus.py
+// holds File, Edit, Theme and Windows (File and Setting on the texture board),
+// and script modules add their own. No menu is built in here.
+JsonArray BackendSession::buildMenuBar(const String &host) const
+{
+    PythonMenus menus;
+    JsonArray bar;
+    for (const JsonValue &val : pythonMenus(host, &menus)) {
+        const JsonObject obj = val.toObject();
+        const String name = obj.value(String("name")).toString();
+        if (name.isEmpty()) {
             continue;
         }
-        windowsChildren.append(makeMenuItem(String("windows.%1").arg(info.name),
-                                            info.title,
-                                            String(),
-                                            String("check"),
-                                            info.visible));
+        const JsonArray items = buildScriptMenuItems(host, name, obj.value(String("items")).toArray(), &menus, 0);
+        bar.append(makeMenuItem(name, obj.value(String("title")).toString(name), String(), String("submenu"), false, true, items));
     }
-    windowsChildren.append(makeMenuItem(String("windows.timeline"),
-                                        String("Timeline"),
-                                        String(),
-                                        String("check"),
-                                        m_timelineVisible));
-    menus.append(makeMenuItem(String("windows"), String("Windows"), String(), String("submenu"), false, true, windowsChildren));
-    for (const JsonValue &menu : menusAtEnd) {
-        menus.append(menu);
-    }
+    return bar;
+}
 
-    return menus;
+JsonArray BackendSession::buildMenusState() const
+{
+    return buildMenuBar(String("main"));
 }
 
 JsonArray BackendSession::buildTextureMenusState() const
 {
-    JsonArray menus;
+    return buildMenuBar(String("child"));
+}
 
-    JsonArray texImportChildren{
-        makeMenuItem(String("file.texture.import.raster"), String("Raster..."), String(), String("action")),
-        makeMenuItem(String("file.texture.import.opentoonz"), String("OpenToonz Lines..."), String(), String("action")),
-        makeMenuItem(String("file.texture.import.csp"), String("Clip Studio Paint..."), String(), String("action")),
-    };
-
-    JsonArray fileChildren{
-        makeMenuItem(String("file.texture.import"),
-                     String("Import"),
-                     String(),
-                     String("submenu"),
-                     false,
-                     true,
-                     texImportChildren),
-        makeMenuItem(String("file.texture.sep1"), String(), String(), String("separator")),
-        makeMenuItem(String("file.texture.open"), String("Open Texture View..."), String(), String("action")),
-        makeMenuItem(String("file.texture.save"), String("Save Texture View"), String(), String("action")),
-        makeMenuItem(String("file.texture.saveAs"), String("Save Texture View As..."), String(), String("action")),
-        makeMenuItem(String("file.texture.exportImage"), String("Export Texture View Image..."), String(), String("action")),
-    };
-    menus.append(makeMenuItem(String("file.texture"), String("File"), String(), String("submenu"), false, true, fileChildren));
-
-    const PaintOpenGLWidget::BackgroundMode bgMode =
-        m_childBoard ? m_childBoard->backgroundMode() : PaintOpenGLWidget::BackgroundMode::White;
-    JsonArray bgChildren{
-        makeMenuItem(String("child.setting.background.white"),
-                     String("White"),
-                     String(),
-                     String("radio"),
-                     bgMode == PaintOpenGLWidget::BackgroundMode::White),
-        makeMenuItem(String("child.setting.background.black"),
-                     String("Black"),
-                     String(),
-                     String("radio"),
-                     bgMode == PaintOpenGLWidget::BackgroundMode::Black),
-        makeMenuItem(String("child.setting.background.transparent"),
-                     String("Transparent"),
-                     String(),
-                     String("radio"),
-                     bgMode == PaintOpenGLWidget::BackgroundMode::Transparent),
-    };
-
-    JsonArray childSettingChildren{
-        makeMenuItem(String("child.setting.changeableTimeline"),
-                     String("Changable Timeline"),
-                     String(),
-                     String("check"),
-                     m_business->changeableTimeline()),
-        makeMenuItem(String("child.setting.changeableTexture"),
-                     String("Changable Texture"),
-                     String(),
-                     String("check"),
-                     m_business->changeableTexture()),
-        makeMenuItem(String("child.setting.sep1"), String(), String(), String("separator")),
-        makeMenuItem(String("child.setting.background"),
-                     String("Background"),
-                     String(),
-                     String("submenu"),
-                     false,
-                     true,
-                     bgChildren),
-    };
-
-    JsonArray topLevelChildMenus;
-#ifdef ANIMEAN_WITH_PYTHON
-    if (Py_IsInitialized()) {
-        try {
-            py::gil_scoped_acquire acquire;
-            const std::string json = py::module_::import("python_hooks")
-                                         .attr("menus_json")(std::string("child"))
-                                         .cast<std::string>();
-            const JsonDocument doc = JsonDocument::fromJson(json);
-            Hash<String, JsonObject> liveChildMenus;
-            for (const JsonValue &val : doc.array()) {
-                const JsonObject obj = val.toObject();
-                const String mName = obj.value(String("name")).toString();
-                if (!mName.isEmpty()) {
-                    liveChildMenus.insert(mName, obj);
-                }
-            }
-            for (const std::pair<String, String> &entry : m_childScriptMenus) {
-                const String &mName = entry.first;
-                const JsonObject obj = liveChildMenus.value(mName);
-                const String mTitle = obj.value(String("title")).toString(entry.second);
-                const JsonArray items =
-                    buildScriptMenuItems(String("child"), mName, obj.value(String("items")).toArray());
-                childSettingChildren.append(makeMenuItem(String("child.menu.%1").arg(mName),
-                                                         mTitle,
-                                                         String(),
-                                                         String("submenu"),
-                                                         false,
-                                                         true,
-                                                         items));
-                topLevelChildMenus.append(makeMenuItem(mName,
-                                                       mTitle,
-                                                       String(),
-                                                       String("submenu"),
-                                                       false,
-                                                       true,
-                                                       items));
-            }
-        } catch (...) {
+// The texture board's settings, which its Setting menu (app_menus.py) shows.
+JsonObject BackendSession::buildTextureSettingsState() const
+{
+    String background = String("white");
+    if (m_childBoard) {
+        const PaintOpenGLWidget::BackgroundMode mode = m_childBoard->backgroundMode();
+        if (mode == PaintOpenGLWidget::BackgroundMode::Black) {
+            background = String("black");
+        } else if (mode == PaintOpenGLWidget::BackgroundMode::Transparent) {
+            background = String("transparent");
         }
     }
-#endif
-
-    menus.append(makeMenuItem(String("child.setting"), String("Setting"), String(), String("submenu"), false, true, childSettingChildren));
-    for (const JsonValue &menuVal : topLevelChildMenus) {
-        menus.append(menuVal);
-    }
-    return menus;
+    return JsonObject{
+        {String("changeableTimeline"), m_business->changeableTimeline()},
+        {String("changeableTexture"), m_business->changeableTexture()},
+        {String("background"), background},
+    };
 }
 
 JsonArray BackendSession::buildTextureViewButtonsState() const

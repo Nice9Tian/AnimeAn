@@ -99,10 +99,20 @@ def register_menu(definition):
 
     definition: {"name": str, "title": str, "items": [item, ...],
                  "host": "main" (default) | "child",
-                 "place": "end" (after Windows; default: before Theme)}
+                 "order": number (lower first, default 50; ties keep the
+                          order of registration)}
     item:       {"name": str, "title": str,
                  "kind": "action" | "check" | "radio" | "separator" | "submenu",
-                 "checked": bool, "items": [...] (submenu only)}
+                 "checked": bool, "enabled": bool, "shortcut": str,
+                 "id": str (optional: the item's id as the page sees it;
+                            without one C++ makes "script:<host>:<menu>:<name>"),
+                 "items": [...] (submenu only),
+                 "menu": str, "host": str (submenu only: show that registered
+                          menu's items here, with that menu's ids)}
+
+    The whole menu bar is declared this way, the File, Edit, Theme and
+    Windows menus included (app_menus.py): which items a menu has is Python's
+    (developer_guide.md, "分工"). C++ builds the bars in `menus_json` order.
 
     HOST is which menu bar the menu belongs to. It is part of the identity,
     not just a filter: the same name may legitimately appear on both bars -
@@ -143,9 +153,7 @@ def menus_json(host=None):
         return out
 
     menus = []
-    for menu in _MENUS:
-        if host is not None and (menu.get("host") or "main") != host:
-            continue
+    for menu in registered_menus(host):
         entry = dict(menu)
         try:
             entry["items"] = resolve(entry.get("items"))
@@ -154,6 +162,21 @@ def menus_json(host=None):
             continue
         menus.append(entry)
     return json.dumps(menus)
+
+
+DEFAULT_MENU_ORDER = 50
+
+
+def _menu_order(menu):
+    order = menu.get("order")
+    return order if isinstance(order, (int, float)) and not isinstance(order, bool) else DEFAULT_MENU_ORDER
+
+
+def registered_menus(host=None):
+    """The registered menus of one bar (or all), in menu-bar order, items unevaluated."""
+    menus = [menu for menu in _MENUS if host is None or (menu.get("host") or "main") == host]
+    # sorted() is stable: menus with the same order keep their registration order.
+    return sorted(menus, key=_menu_order)
 
 
 # Settings windows a tool module contributes, keyed by name. The layout is the

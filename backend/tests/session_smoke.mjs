@@ -261,6 +261,7 @@ try {
         "freeze",
         "pad",
         "dialogs",
+        "textureSettings",
     ];
 
     await waitForState(
@@ -674,10 +675,46 @@ try {
     const languageReply = await callBackend("menu.trigger", { id: "script:main:Settings:language.ja", checked: true });
     assert.equal(languageReply.ok, true, `Settings > Language failed: ${languageReply.error}`);
     await waitForState((map) => map.get("py/preferences")?.language === "ja", "the language choice is broadcast");
-    // What no Python flow takes is reported, not silently answered.
+    // What no Python menu declares is reported, not silently answered.
     const unknownFile = await callBackend("menu.trigger", { id: "file.nothing" });
-    assert.equal(unknownFile.ok, false, "a File item no flow runs is reported");
-    assert.match(String(unknownFile.error), /Nothing handles the menu item file\.nothing/);
+    assert.equal(unknownFile.ok, false, "an id no menu declares is reported");
+    assert.match(String(unknownFile.error), /Unknown menu id: file\.nothing/);
+
+    // The bar's own menus are Python's too (app_menus.py), with the ids they always had;
+    // a choice goes back to Python, which calls a generic method.
+    const itemIds = (items) => (items ?? []).flatMap((item) => [item.id, ...itemIds(item.children)]);
+    const findItem = (items, id) => {
+        for (const item of items ?? []) {
+            if (item.id === id) return item;
+            const inner = findItem(item.children, id);
+            if (inner) return inner;
+        }
+        return null;
+    };
+    assert.deepEqual([menusNow[0]?.id, menusNow[1]?.id, menusNow.at(-3)?.id, menusNow.at(-2)?.id], ["file", "edit", "theme", "windows"]);
+    const fileIds = itemIds(menusNow[0]?.children);
+    for (const id of ["file.new", "file.open", "file.saveAs", "file.import.csp", "file.texture.exportImage", "child.setting.changeableTimeline", "child.setting.background.black"]) {
+        assert(fileIds.includes(id), `File keeps ${id}`);
+    }
+    assert.equal(findItem(menusNow, "file.save")?.shortcut, "Ctrl+S", "shortcuts are kept");
+    assert.deepEqual((stateMap.get("textureMenus") ?? []).map((m) => m.id).slice(0, 2), ["file.texture", "child.setting"]);
+    const themeBefore = stateMap.get("theme")?.mode;
+    const themeOther = themeBefore === "dark" ? "light" : "dark";
+    const themeReply = await callBackend("menu.trigger", { id: `theme.${themeOther}`, checked: true });
+    assert.equal(themeReply.ok, true, `Theme > ${themeOther} failed: ${themeReply.error}`);
+    await waitForState((map) => map.get("theme")?.mode === themeOther && findItem(map.get("menus"), `theme.${themeOther}`)?.checked === true, "Theme switches and its radio follows");
+    await callBackend("menu.trigger", { id: `theme.${themeBefore}`, checked: true });
+    await waitForState((map) => map.get("theme")?.mode === themeBefore, "and back");
+    const debugBefore = Boolean(stateMap.get("windows")?.python_debug?.visible);
+    await callBackend("menu.trigger", { id: "windows.python_debug", checked: !debugBefore });
+    await waitForState((map) => map.get("windows")?.python_debug?.visible === !debugBefore && findItem(map.get("menus"), "windows.python_debug")?.checked === !debugBefore, "Windows ticks a window");
+    await callBackend("windows.setVisible", { name: "python_debug" });
+    await waitForState((map) => map.get("windows")?.python_debug?.visible === debugBefore, "windows.setVisible without visible toggles it back");
+    assert.equal((await callBackend("windows.setVisible", { name: "nothing" })).ok, false, "an unknown window is reported");
+    await callBackend("menu.trigger", { id: "child.setting.background.black", checked: true });
+    await waitForState((map) => map.get("textureSettings")?.background === "black" && findItem(map.get("textureMenus"), "child.setting.background.black")?.checked === true, "Setting > Background on the texture board");
+    await callBackend("menu.trigger", { id: "child.setting.background.white", checked: true });
+    await waitForState((map) => map.get("textureSettings")?.background === "white", "and back to white");
     const unknownKind = await callBackend("dialog.request", { kind: "nothing" });
     assert.equal(unknownKind.ok, false, "a request for a kind Python does not open is reported");
     assert.match(String(unknownKind.error), /Nothing opens a dialog for 'nothing'/);

@@ -50,9 +50,10 @@ AnimeAnBackend.exe（backend/main.cpp）
  4. 构造 WsServer 与 BackendSession（内含 AnimeanBusiness 及 main / child 两块 PaintOpenGLWidget 画板，注册 ui 回调）
  5. BackendSession::initializePythonStartup()：
     a. 注册 ui 回调；syncEmbeddedPythonState() 往 __main__ 写 main_model、child_model、model、active_view、ui、current 等
-    b. 首轮收集：extra_tools.tools_json() 生成 Mapping 组按钮，刷新工具选项，python_hooks.menus_json() 记下 main / child 脚本菜单名，读 child 受保护属性
+    b. 首轮收集：extra_tools.tools_json() 生成 Mapping 组按钮，刷新工具选项，读 child 受保护属性
     c. runPythonInitializationScript() 运行 initalize.main()：按 BOOTSTRAP_MODULES → PYTHON_FILE_MODULES 的顺序导入，
        再发现目录里其余脚本；模块在导入时登记 hook、菜单、设置窗、视图按钮、受保护属性、洋葱皮引导属性
+       （菜单栏每次建都按 python_hooks.menus_json() 当时登记的菜单和 order，File 等在 app_menus.py）
     d. 再读一次 child 受保护属性，重置两块板各自的历史基线，刷新工具选项
  6. pythonStartupText() 调 hello_world.hello_world() 设置状态栏初始文字
  7. WsServer::listen 监听 127.0.0.1，向 stdout 打印 ANIMEAN_BACKEND_PORT=<端口>，进入 EventLoop::instance().exec()
@@ -100,6 +101,7 @@ AnimeAnBackend.exe（backend/main.cpp）
 | `pyfile/palette_box.py` | 调色板的色块集合（存 scriptData）；+ 开 New Color |
 | `pyfile/dialogs.py` | 对话框栈：开着哪些、哪个在最上、是否模态，回答交给回调；通用请求（颜色控件取色、脚本设置窗）。见 `windows_theme.md`「对话框窗口」 |
 | `pyfile/file_menu.py` | File 菜单的流程（选择框、覆盖确认、导入问缩放、失败提示）和启动时的 Canvas Size |
+| `pyfile/app_menus.py` | 菜单栏自己的菜单：主窗口 File、Edit、Theme、Windows，纹理板 File、Setting。声明它们的项、id、勾选和顺序，把选择交给 `file_menu.py` 或通用方法 |
 | `pyfile/ui_settings.py` | Settings 菜单：画板渲染器和界面语言，选择广播成 `py/preferences` |
 | `pyfile/edit_tool.py` | Arrow 的三种编辑模式；Arrow 菜单（选中轮廓的显示设置） |
 | `pyfile/transfer_tool.py` | Transfer 的框、控制手柄、旋转与修饰键 |

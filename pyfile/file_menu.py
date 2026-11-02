@@ -3,14 +3,12 @@
 Which picker opens, the question before a file is replaced, the question before
 an import is scaled to the canvas, and the message after a failure are decided
 here (developer_guide.md, "分工"). C++ does the file work (project.*,
-file.import, file.texture) and forwards the File menu's items here as "menu"
-events with menu "file"; the page draws the dialogs.
+file.import, file.texture); app_menus.py declares the File menus and hands each
+item here through run(); the page draws the dialogs.
 """
 
 import dialogs
 import python_hooks
-
-MENU = "file"
 
 PROJECT = [{"name": "AnimeAn Projects", "extensions": ["anproj"]}]
 TEXTURE = [{"name": "AnimeAn Texture Views", "extensions": ["textureview"]}]
@@ -231,12 +229,6 @@ def run(item):
     return True
 
 
-def _on_menu(message):
-    # An item none of the flows knows is left unhandled, and C++ reports it.
-    if message.get("menu") == MENU and run(str(message.get("name") or "")):
-        message["handled"] = True
-
-
 _STARTUP = {"id": None}
 
 
@@ -276,6 +268,5 @@ def _ask_canvas_size_at_startup():
         ui.call_later(0, _startup_canvas_size)
 
 
-python_hooks.set_hook(_on_menu, menu=True)
 python_hooks.set_hook(_on_history_restore, historyrestore=True)
 _ask_canvas_size_at_startup()

@@ -16,7 +16,7 @@ export function minSizeForDock(dockId, runtime) {
 export function triggerDockClosed(store, dockId) {
   const name = WINDOW_FOR_DOCK[dockId];
   if (name) {
-    return store.call("menu.trigger", { id: `windows.${name}` });
+    return store.call("windows.setVisible", { name, visible: false });
   }
   return undefined;
 }

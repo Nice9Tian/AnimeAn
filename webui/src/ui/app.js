@@ -365,9 +365,9 @@ export function panelFactories(store, client, { satellite = false } = {}) {
       floatFrame();
     } else if (placement === "embedded") {
       if (!isHostVisible(hostName)) {
-        const winId = hostName === "options" ? "windows.tool_options" : "windows.tools";
+        const winName = hostName === "options" ? "tool_options" : "tools";
         if (canHost(hostName)) {
-          call("menu.trigger", { id: winId, checked: true });
+          call("windows.setVisible", { name: winName, visible: true });
         } else {
           floatFrame();
         }
@@ -575,7 +575,7 @@ export function panelFactories(store, client, { satellite = false } = {}) {
         onPause: () => call("playback.stop"),
         onLoop: (on) => call("playback.setLoop", { loop: on }),
         onRate: (fps) => call("frame.setFps", { fps }),
-        onClose: () => call("menu.trigger", { id: "windows.timeline" }),
+        onClose: () => call("windows.setVisible", { name: "timeline", visible: false }),
         onCollapse: (collapsed) => call("timeline.setCollapsed", { collapsed }),
         onFloat: (floating) => call("timeline.setFloating", { floating }),
         onOrientation: (vertical) => call("timeline.setDockArea", { dockArea: vertical ? sideArea : "bottom", floating: false }),
@@ -663,7 +663,7 @@ export function panelFactories(store, client, { satellite = false } = {}) {
           call("view.setActive", { viewName: view });
         },
         onScroll: (axis, value) => call("board.scroll", { view: "main", axis, value }),
-        onPill: () => call("menu.trigger", { id: "windows.timeline" }),
+        onPill: () => call("windows.setVisible", { name: "timeline" }),
       });
       centralPanel = panel;
       boards = createBoards(panel.host, texturePanel.host, client, store);

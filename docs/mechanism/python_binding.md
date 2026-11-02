@@ -165,7 +165,8 @@ animean_python.ui.call_later(ms: int, fn: Callable[[], object]) -> None
   swallowed so they do not escape the event loop.
 
 Dialogs, states of Python's own and backend calls (used by `pyfile/dialogs.py`,
-`file_menu.py` and `ui_settings.py`; see `windows_theme.md`, "对话框窗口"):
+`file_menu.py`, `ui_settings.py` and `app_menus.py`; see `windows_theme.md`,
+"对话框窗口"):
 
 ```python
 animean_python.ui.set_dialogs(dialogs_json: str) -> None
@@ -187,10 +188,12 @@ animean_python.ui.call(method: str, params: dict | None = None) -> dict
   `file.import`, `tool.option`...) and returns its result; a failed call raises
   `RuntimeError` with the backend's message.
 - Answers come back as the `dialog` hook event (`python_hooks.set_hook(fn,
-  dialog=True)`), and the File menu's items as `menu` events with menu `file`.
-  The handler that takes one sets `message["handled"] = True`; when none does,
-  the backend drops the dialog the answer was for, or reports the request or
-  the File item as unhandled.
+  dialog=True)`). Menu items declared with an `id` (the File, Edit, Theme and
+  Windows menus in `pyfile/app_menus.py`, among others) come back as `menu`
+  events whose `menu` is the declaring menu, such as `file`. The handler that
+  takes one sets `message["handled"] = True`; when none does, the backend drops
+  the dialog the answer was for, or reports the request or the menu item as
+  unhandled. See `hook_events.md`, "菜单栏".
 
 ## ExtraTool and Hook Development
 
