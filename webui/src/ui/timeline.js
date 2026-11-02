@@ -761,6 +761,8 @@ function createStrip(trigger) {
     ctx.textBaseline = "alphabetic";
     ctx.textAlign = "left";
 
+    const onScreen = [];
+    let previewSize = null;
     for (const cell of cells) {
       const r = cell.rect;
       if (r.x >= width || r.y >= height || r.x + r.w <= 0 || r.y + r.h <= 0) continue;
@@ -773,6 +775,8 @@ function createStrip(trigger) {
       if (!cell.hold) {
         const preview = previewOf(cell);
         if (preview) {
+          onScreen.push(cell.frame);
+          previewSize ??= { width: preview.w, height: preview.h };
           ctx.fillStyle = "#fff";
           ctx.fillRect(preview.x, preview.y, preview.w, preview.h);
           const image = thumbnailFor(cell.frame);
@@ -828,6 +832,8 @@ function createStrip(trigger) {
     hBar.el.hidden = vertical || !overflowing;
     vBar.el.hidden = !vertical || !overflowing;
     if (overflowing) (vertical ? vBar : hBar).set({ min: 0, max: extent - view, page: view, value: scroll });
+    // A collapsed strip is out of the page: it shows no frames, so it asks for none.
+    if (el.isConnected !== false) trigger("Preview", onScreen, previewSize);
   }
 
   function cellAt(x, y) {
@@ -942,12 +948,6 @@ function createStrip(trigger) {
       relayout();
       if (moved && !hBar.held() && !vBar.held()) ensureCurrentVisible();
       paint();
-    },
-    // What thumbnails should be rendered at: the preview a key cell has now.
-    previewSize() {
-      const key = cells.find((cell) => !cell.hold);
-      const preview = key && previewOf(key);
-      return preview ? { width: preview.w, height: preview.h } : null;
     },
   };
 }
@@ -1139,7 +1139,6 @@ export function createTimeline(root, handlers = {}, options = {}) {
       const strip = state.collapsed && !state.floating ? 0 : kKeyCellHeight + kScrollThickness;
       return { height: bar.height() + strip };
     },
-    previewSize: () => strip.previewSize(),
     minimum: { thickness: kMinStripThickness, column: kMinStripColumn },
   };
 }

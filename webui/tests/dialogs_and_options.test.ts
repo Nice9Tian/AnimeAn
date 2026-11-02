@@ -619,6 +619,50 @@ test("无限画布隐藏双滚动条并占满，主画板单轴禁用仍显示�
   });
 });
 
+test("Windows 菜单开关的每个面板都跟着 windows 状态显示和隐藏", async () => {
+  await withDom(async () => {
+    const { syncDocks } = await import("../src/ui/app.js");
+    const shown = new Map<string, boolean>();
+    let onWindows: (value: unknown) => void = () => {};
+    syncDocks(
+      { dockSetVisible: (dock: string, visible: boolean) => shown.set(dock, visible) },
+      { on: (_key: string, fn: (value: unknown) => void) => { onWindows = fn; } },
+    );
+    onWindows({ tools: { visible: true }, tool_options: { visible: true }, layers: { visible: false }, timeline: { visible: true } });
+    assert.equal(shown.get("toolsDock"), true);
+    assert.equal(shown.get("toolOptionsDock"), true);
+    assert.equal(shown.get("layersDock"), false);
+    assert.equal(shown.get("timelineDock"), true);
+  });
+});
+
+test("Options 里的纹理板行吃掉面板剩下的高度，没有这一行时不留空", async () => {
+  await withDom(async ({ body }) => {
+    const root = new FakeElement("div");
+    body.append(root);
+    const panel = createToolOptions(root, {
+      onOption() {},
+      onPalette() {},
+      onNewColor() {},
+      onSubWindow: () => new FakeElement("div"),
+    });
+    const grid = root.querySelector(".opt-grid")!;
+    panel.build({
+      controls: [
+        { type: "button", name: "a", title: "A", row: 0, start_column: 0, end_column: 0 },
+        { type: "button", name: "b", title: "B", row: 1, start_column: 0, end_column: 0 },
+        { type: "subwindow", name: "texture_view", title: "Texture", row: 2, start_column: 0, end_column: 2 },
+      ],
+    });
+    assert.equal(grid.classList.contains("has-subwindow"), true);
+    assert.equal(grid.style.gridTemplateRows, "repeat(2, auto) minmax(min-content, 1fr)");
+
+    panel.build({ controls: [{ type: "button", name: "a", title: "A", row: 0, start_column: 0, end_column: 0 }] });
+    assert.equal(grid.classList.contains("has-subwindow"), false);
+    assert.equal(grid.style.gridTemplateRows, "");
+  });
+});
+
 test("Options 的 color 控件与带 state.color 的 button 控件", async () => {
   await withDom(async ({ body }) => {
     const root = new FakeElement("div");

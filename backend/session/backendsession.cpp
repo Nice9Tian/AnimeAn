@@ -273,6 +273,7 @@ const StringList &allStateKeys()
         String("assets/main"),
         String("assets/child"),
         String("timeline"),
+        String("thumbnails"),
         String("history"),
         String("windows"),
         String("cursor/main"),
@@ -1101,6 +1102,7 @@ void BackendSession::setupBusinessConnections()
                 ++it;
             }
         }
+        markDirty(String("thumbnails"));
     });
     m_business->layersChanged.connect([this](const String &viewName, int) {
         if (viewName == String("child")) {
@@ -2535,10 +2537,11 @@ JsonObject BackendSession::dispatchCall(const String &method, const JsonObject &
                                            ? rendered
                                            : rendered.convertToFormat(Image::Format_RGBA8888);
                     m_cachedImages.insert(key, rgba);
+                    // A cached key is already at the client: it went out here or at connect.
+                    sendImagePacket(key, rgba);
                 }
             }
             if (m_cachedImages.contains(key)) {
-                sendImagePacket(key, m_cachedImages.value(key));
                 thumbnailsObj.insert(String::number(frameIndex), key);
                 framesArr.append(JsonObject{{String("frame"), frameIndex}, {String("key"), key}});
             }
@@ -3444,6 +3447,9 @@ JsonValue BackendSession::buildStateValue(const String &key) const
     }
     if (key == String("toolOptions")) {
         return buildToolOptionsState();
+    }
+    if (key == String("thumbnails")) {
+        return JsonObject{{String("revision"), static_cast<std::int64_t>(m_thumbnailRevision)}};
     }
     if (key == String("drawColor")) {
         return buildDrawColorState();

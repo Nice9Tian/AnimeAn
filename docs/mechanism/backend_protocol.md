@@ -122,6 +122,7 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 | `layers/main`、`layers/child` | 图层树 |
 | `assets/main`、`assets/child` | 素材列表 |
 | `timeline` | 帧数、当前帧、播放状态、洋葱皮 |
+| `thumbnails` | `{ revision }`，帧缩略图缓存的版本，画面变了就加一 |
 | `history` | 历史记录 |
 | `windows` | 面板的显示状态 |
 | `cursor/main`、`cursor/child` | 光标：形状名，或者图片 `key` 加热点和 `scale`。位图是屏幕像素，`w`、`h` 也是；热点是逻辑像素，`scale` 是位图每个逻辑像素的像素数，网页用 `image-set` 声明 |
@@ -138,7 +139,7 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 |---|---|---|
 | `menu.refresh` | `{}` | 从 Python 重新生成菜单结构并返回 `{ menus }`，同时标记 `menus` 状态更新 |
 | `layer.applyStructure` | `{ view, rows, movedLayer }` | 按拖动后的树形行序列重排图层与图层组（含父层携带跟随子层），返回 `{ landedOn, selected }` |
-| `timeline.thumbnails` | `{ frames?, width, height, view? }` | 用 `renderFrameThumbnail` 渲染指定帧缩略图并通过 `image` 帧下发，返回 `{ view, width, height, revision, thumbnails, frames }` |
+| `timeline.thumbnails` | `{ frames?, width, height, view? }` | 用 `renderFrameThumbnail` 渲染指定帧缩略图，新渲染的通过 `image` 帧下发，已缓存的不重发（连接时补发过），返回 `{ view, width, height, revision, thumbnails, frames }`。缓存作废时 `thumbnails` 状态的 `revision` 加一，网页据此重新请求屏幕上的帧 |
 | `file.import` | `{ kind, paths, view?, probe?, fitToCanvas? }` | 未传 `view` 时按 `framePanelTargetViewName` 选择目标板；矢量导入支持 `probe: true` 先返回 `{ needsScale, sourceBounds, canvasWidth, canvasHeight }` |
 | `project.save`、`project.saveAs`、`file.texture` | `{ path, probe?, overwrite? }` | 支持 `probe: true` 检查后缀补全改写后的目标文件是否已存在，返回 `{ needsConfirmOverwrite, fileName, path }` |
 

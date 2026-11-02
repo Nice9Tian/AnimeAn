@@ -255,6 +255,10 @@ export function createToolOptions(root, { onOption, onPalette, onNewColor, onSub
       }
     }
     grid.style.gridTemplateColumns = `repeat(${columns}, minmax(0, 1fr))`;
+    // The embedded board takes what height the panel has left (ToolOptPanel's greedy row).
+    const boardRow = controls.some((c) => c.type === "subwindow" && (c.row ?? 0) === rows - 1);
+    grid.classList.toggle("has-subwindow", boardRow);
+    grid.style.gridTemplateRows = boardRow ? `repeat(${rows - 1}, auto) minmax(min-content, 1fr)` : "";
     applyVisibility();
     onAfterBuild?.(layout);
   }

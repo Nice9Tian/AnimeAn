@@ -565,6 +565,7 @@ try {
         const thumbReply = await callBackend("timeline.thumbnails", { frames: [0], width: 83, height: 62 });
         assert.equal(thumbReply.ok, true, `timeline.thumbnails failed: ${thumbReply.error}`);
         assert(typeof thumbReply.result?.thumbnails?.["0"] === "string", "timeline.thumbnails must return key for frame 0");
+        assert.equal(thumbReply.result?.revision, stateMap.get("thumbnails")?.revision, "thumbnails state must carry the revision");
 
         const curRows = stateMap.get("layers/main")?.rows ?? [];
         if (curRows.length >= 2) {

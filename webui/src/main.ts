@@ -134,6 +134,7 @@ async function bootstrap(): Promise<void> {
     try {
       await client.connect(wsUrl);
       (store as { boards?: { resendSizes(): void } }).boards?.resendSizes();
+      (store as { texture?: { announceHome(): void } }).texture?.announceHome();
     } catch (e) {
       console.error("连接后端失败:", e);
     }
