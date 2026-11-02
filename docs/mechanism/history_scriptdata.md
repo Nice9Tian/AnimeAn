@@ -6,7 +6,7 @@
 
 - 每步操作完成后整份 `AnimeSceneModel` 入历史（`AnimeCore` 容器与位图隐式共享，只有改动的部分占内存）；条目 0 是基线；每块板一份，有条数上限。
 - 每条带全局单调序号：Ctrl+Z 撤的是两块板合起来最近的一步，Ctrl+Y 严格按反序恢复；任一块板上的新操作清掉两块板的重做尾巴。
-- 撤到另一块板上的操作时，主窗口显示并激活那块板，状态栏说明。主画板在 Texture 页后面时切回 Drawing 页；纹理板开在子控件框里时留在框里，否则切到 Texture 页。`AnimeanBusiness::applyHistoryRestore` 发请求，`BackendSession` 的 `surfaceMainView` / `surfaceTextureView` 执行，打开工程走同一条路回到 Drawing 页。
+- 撤到另一块板上的操作时，主窗口显示并激活那块板，状态栏说明。主画板在 Texture 页后面（纹理板的家是 `central`）时切回 Drawing 页；纹理板开在子控件框里时留在框里，否则切到 Texture 页。`AnimeanBusiness::applyHistoryRestore` 发请求，`BackendSession` 的 `surfaceMainView` / `surfaceTextureView` 执行，打开工程走同一条路回到 Drawing 页。
 - 恢复是整份拷回模型，Python 侧的场景指针保持有效；恢复后强制重新施加两块板固定的场景身份（main / child），并派发 `historyrestore` 事件让脚本重建自己的缓存（引导线覆盖层、工具锁定、单元焦点）。
 - 打开工程重置两块板的历史；只打开 `.textureview` 重置纹理板。历史不写入文件。
 - Python 改了模型后调 `ui.history_commit(label, view)` 成为一条可撤销记录；`ui.history_undo` / `ui.history_redo` 也可用。交互事件 hook 里 `message["cancel_history"]` 可阻止 C++ 为这一步提交（避免空记录截断重做尾巴）。

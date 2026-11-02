@@ -510,6 +510,45 @@ test("三个家（central、control、parked）搬迁复用同一个 canvas 节�
   });
 });
 
+test("活动板拿到键盘焦点（Qt 的 setActivePaintView）：首个状态不抢，对话框开着不抢", async () => {
+  await withTextureHarness(async ({ body, store, emitState }) => {
+    const doc: any = globalThis.document;
+    const focused: string[] = [];
+    for (const view of ["main", "child"]) {
+      const canvas = store.boards.slots[view].canvas;
+      canvas.focus = () => {
+        doc.activeElement = canvas;
+        focused.push(view);
+      };
+    }
+
+    // The state a connection starts with is not a change: the startup dialog keeps the keys.
+    emitState("window", { activeView: "main" });
+    assert.deepEqual(focused, []);
+
+    emitState("window", { activeView: "child" });
+    assert.deepEqual(focused, ["child"]);
+    emitState("window", { activeView: "child", statusMessage: "same board" });
+    assert.deepEqual(focused, ["child"]);
+
+    const shade = new FakeElement("div");
+    shade.className = "qdialog-shade";
+    body.append(shade);
+    doc.activeElement = shade;
+    emitState("window", { activeView: "main" });
+    assert.deepEqual(focused, ["child"], "a dialog keeps the keys it has");
+    shade.remove();
+    doc.activeElement = null;
+
+    emitState("window", { activeView: "child" });
+    assert.deepEqual(focused, ["child", "child"]);
+    // A board that already has the keys is left alone.
+    doc.activeElement = store.boards.slots.main.canvas;
+    emitState("window", { activeView: "main" });
+    assert.deepEqual(focused, ["child", "child"]);
+  });
+});
+
 test("Mapping 工具 subwindow 自动嵌入 Options、手动浮出时不抢、拖拽嵌进 Tools/Options 与右下角拉大小", async () => {
   await withTextureHarness(async ({ body, optionsEl, toolsEl, store, inputs, emitState }) => {
     const childCanvas = store.boards.slots.child.canvas;
