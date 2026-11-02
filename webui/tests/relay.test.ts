@@ -222,6 +222,13 @@ class FakeElement {
     this.append(...nodes);
   }
 
+  replaceWith(node: FakeElement) {
+    const siblings = this.parentElement?.children;
+    if (siblings) siblings[siblings.indexOf(this)] = node;
+    node.parentElement = this.parentElement;
+    this.parentElement = null;
+  }
+
   remove() {
     if (!this.parentElement) return;
     const idx = this.parentElement.children.indexOf(this);
@@ -1077,7 +1084,7 @@ test("卫星页 createChrome：不弹启动画布对话框，不处理一次性 
     });
     await new Promise((r) => setTimeout(r, 10));
     assert.equal(defaultPrevented, true);
-    assert.deepEqual(triggeredMenus, [{ id: "edit.undo" }]);
+    assert.deepEqual(triggeredMenus.map((m: any) => m.id), ["edit.undo"]);
 
     // 重做还有一个菜单上不显示的键：Ctrl+Shift+Z
     backend.emitState("menus", [
@@ -1097,7 +1104,7 @@ test("卫星页 createChrome：不弹启动画布对话框，不处理一次性 
       preventDefault() {},
     });
     await new Promise((r) => setTimeout(r, 10));
-    assert.deepEqual(triggeredMenus, [{ id: "edit.undo" }, { id: "edit.redo" }]);
+    assert.deepEqual(triggeredMenus.map((m: any) => m.id), ["edit.undo", "edit.redo"]);
 
     satClient.close();
     host.close();

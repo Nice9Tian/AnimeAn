@@ -4,7 +4,7 @@ import { BoardRenderer } from "../board/renderer.ts";
 import { GlBoardRenderer } from "../board/glrenderer.ts";
 import { attachBoardInput } from "../board/input.ts";
 import { cursorCss } from "../board/cursor.ts";
-import { createCentral, createLayers, createMenuBar, popupMenu, scrollArea } from "./panels.js";
+import { askForMenu, createCentral, createLayers, createMenuBar, popupMenu, scrollArea } from "./panels.js";
 import { createToolOptions } from "./options.js";
 import { createPalette, toHexArgb } from "./palette.js";
 import { createAssets, createForcePad, createHistory, createNewProjectDialog, createPythonDebug, createSubControlFrame, createTexturePanel, messageBox } from "./panels2.js";
@@ -170,6 +170,7 @@ export function panelFactories(store, client, { satellite = false } = {}) {
     if (!item?.id) return;
     call("menu.trigger", {
       id: item.id,
+      title: item.text,
       checked: item.kind === "check" ? !item.checked : item.kind === "radio" ? true : undefined,
     });
   };
@@ -198,7 +199,6 @@ export function panelFactories(store, client, { satellite = false } = {}) {
   let optionsExtraSlot = null;
   let toolsSlot = null;
   let boards = null;
-  let rebuildingOptions = false;
 
   const getToolsEl = () =>
     store.toolsHostEl ??
@@ -210,6 +210,10 @@ export function panelFactories(store, client, { satellite = false } = {}) {
     const dockId = targetHost === "options" ? "toolOptionsDock" : targetHost === "tools" ? "toolsDock" : "";
     return Boolean(dockId && store.externalDocks?.has?.(dockId));
   };
+
+  // A panel out in its own window has no room for the board here; a hidden one still does.
+  const canHost = (targetHost) =>
+    !isHostExternal(targetHost) && Boolean(targetHost === "options" ? optionsEl : getToolsEl());
 
   const isHostVisible = (targetHost) => {
     if (isHostExternal(targetHost)) return false;
@@ -287,7 +291,7 @@ export function panelFactories(store, client, { satellite = false } = {}) {
     },
     onDragEnd: (x, y) => {
       subframe.preview(null);
-      const candidate = findDropHost(x, y);
+      const candidate = x === null ? null : findDropHost(x, y);
       if (candidate) embedIn(candidate);
     },
     onResize: (w, h) => {
@@ -344,7 +348,15 @@ export function panelFactories(store, client, { satellite = false } = {}) {
     if (placement === "embedded" && hostName) lastHost = hostName;
     placement = "floating";
     hostName = null;
-    if (pos) floatingPos = { x: Math.round(pos.x), y: Math.round(pos.y) };
+    if (pos) {
+      floatingPos = { x: Math.round(pos.x), y: Math.round(pos.y) };
+    } else if (typeof window !== "undefined" && window.innerWidth > 0) {
+      // Back where it was last dropped, which may be a panel at the window's edge.
+      floatingPos = {
+        x: Math.max(0, Math.min(floatingPos.x, window.innerWidth - floatingSize.width)),
+        y: Math.max(0, Math.min(floatingPos.y, window.innerHeight - floatingSize.height)),
+      };
+    }
     subframeRoot.style.display = "";
     subframeRoot.style.left = `${floatingPos.x}px`;
     subframeRoot.style.top = `${floatingPos.y}px`;
@@ -354,13 +366,8 @@ export function panelFactories(store, client, { satellite = false } = {}) {
       (typeof document !== "undefined" && typeof document.getElementById === "function" && document.getElementById("app")) ||
       (typeof document !== "undefined" ? document.body : null);
     floatContainer?.append(subframeRoot);
-    if (wasInOptions && !rebuildingOptions && optionsPanel?.hasSubWindow("texture_view")) {
-      rebuildingOptions = true;
-      try {
-        optionsPanel.rebuild();
-      } finally {
-        rebuildingOptions = false;
-      }
+    if (wasInOptions && optionsPanel?.hasSubWindow("texture_view")) {
+      optionsPanel.refreshSubWindows();
     }
     updateTextureHome();
   }
@@ -377,13 +384,8 @@ export function panelFactories(store, client, { satellite = false } = {}) {
     if (gridSlotEl) {
       gridSlotEl.replaceChildren(subframeRoot);
     } else if (targetHost === "options") {
-      if (!rebuildingOptions && optionsPanel?.hasSubWindow("texture_view")) {
-        rebuildingOptions = true;
-        try {
-          optionsPanel.rebuild();
-        } finally {
-          rebuildingOptions = false;
-        }
+      if (optionsPanel?.hasSubWindow("texture_view")) {
+        optionsPanel.refreshSubWindows();
         return;
       }
       optionsExtraSlot?.replaceChildren(subframeRoot);
@@ -401,18 +403,24 @@ export function panelFactories(store, client, { satellite = false } = {}) {
     updateTextureHome();
   }
 
-  function park(keepLastHost = true) {
-    if (keepLastHost && placement === "embedded" && hostName) lastHost = hostName;
+  // Putting the frame away also forgets where it came from: the next surface floats
+  // it rather than re-entering a panel the user has finished with.
+  function stowFrame() {
+    lastHost = null;
     placement = "parked";
     hostName = null;
     subframeRoot.style.display = "none";
     parkedHost.append(subframeRoot);
+  }
+
+  function park() {
+    stowFrame();
     updateTextureHome();
   }
 
   function toggleFloating() {
     if (placement === "floating") {
-      if (lastHost && isHostVisible(lastHost)) embedIn(lastHost);
+      if (lastHost && canHost(lastHost)) embedIn(lastHost);
       else park();
       return;
     }
@@ -425,7 +433,7 @@ export function panelFactories(store, client, { satellite = false } = {}) {
     } else if (placement === "embedded") {
       if (!isHostVisible(hostName)) {
         const winId = hostName === "options" ? "windows.tool_options" : "windows.tools";
-        if (!isHostExternal(hostName) && (hostName === "options" ? optionsEl : getToolsEl())) {
+        if (canHost(hostName)) {
           call("menu.trigger", { id: winId, checked: true });
         } else {
           floatFrame();
@@ -512,23 +520,12 @@ export function panelFactories(store, client, { satellite = false } = {}) {
       el.append(tabs, body.frame);
       const panel = createToolOptions(body.view, {
         onOption: (option) => call("tool.option", option),
-        onPalette: (action, control) => call("tool.option", {
-          hook: "palette_box", name: control.name, type: "palette", value: action,
-          row: control.row ?? 0, startColumn: control.start_column ?? 0, endColumn: control.end_column ?? 0,
-        }),
         onNewColor: (palette) => openNewColor(palette),
         onBeforeBuild: () => {
-          if (!rebuildingOptions && placement === "embedded" && hostName === "options") {
-            lastHost = "options";
-            placement = "parked";
-            hostName = null;
-            subframeRoot.style.display = "none";
-            parkedHost.append(subframeRoot);
-          }
+          if (placement === "embedded" && hostName === "options") stowFrame();
         },
         onSubWindow: () => {
           if (satellite) return subWindowFloatingNote("Texture is in the main window");
-          if (!lastHost) lastHost = "options";
           if (placement === "floating") return subWindowFloatingNote();
           const slot = document.createElement("div");
           slot.className = "opt-subwindow-cell";
@@ -577,8 +574,9 @@ export function panelFactories(store, client, { satellite = false } = {}) {
             layer: row && !row.group ? row.layer : -1,
             members,
           };
+          const wanted = askForMenu();
           const reply = await call("layer.contextMenu", target);
-          if (!reply?.items?.length) return;
+          if (!reply?.items?.length || !wanted()) return;
           popupMenu(reply.items, x, y, (item) => call("layer.contextAction", { ...target, id: item.id, title: item.text }));
         },
       });
@@ -916,6 +914,7 @@ export function createChrome(menuEl, statusEl, store, options = {}) {
     }
     return store.call("menu.trigger", {
       id: item.id,
+      title: item.text,
       checked: item.kind === "check" ? !item.checked : item.kind === "radio" ? true : undefined,
     });
   };
@@ -1007,7 +1006,7 @@ export function createChrome(menuEl, statusEl, store, options = {}) {
   const shortcuts = new Map();
   const collect = (items) => {
     for (const item of items ?? []) {
-      if (item.shortcut && item.enabled !== false) shortcuts.set(normalizeKey(item.shortcut), item.id);
+      if (item.shortcut && item.enabled !== false) shortcuts.set(normalizeKey(item.shortcut), item);
       collect(item.children);
     }
   };
@@ -1023,8 +1022,8 @@ export function createChrome(menuEl, statusEl, store, options = {}) {
   window.addEventListener("keydown", (e) => {
     if (frozen) return;
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-    const id = shortcuts.get(keyName(e));
-    if (id) { e.preventDefault(); store.call("menu.trigger", { id }); }
+    const item = shortcuts.get(keyName(e));
+    if (item) { e.preventDefault(); trigger(item); }
   });
 
   const dialogRoot = document.createElement("div");
@@ -1165,7 +1164,6 @@ function openSettings(store, { name, title, layout }) {
   document.body.append(shade);
   createToolOptions(body, {
     onOption: (option) => store.call("settings.option", { ...option, menu: name }),
-    onPalette: () => {},
     onNewColor: (palette) => openNewColor(palette),
     onSubWindow: () => null,
   }).build(layout);

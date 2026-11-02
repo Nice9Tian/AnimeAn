@@ -53,11 +53,14 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 {"t":"reply","id":1,"ok":false,"error":"..."}
 {"t":"state","key":"layers/main","value":{}}
 {"t":"board","view":"main","frame":42,"w":567,"h":690,"keep":120,"ops":[]}
-{"t":"image","key":"a1b2","w":100,"h":80,"bytes":320000}
+{"t":"image","key":"a1b2","view":"main","w":100,"h":80,"bytes":320000}
+{"t":"image.forget","key":"a1b2","view":"main"}
 ```
 
 - 连接建立后，后端先把全部 `state` 键发一遍。之后只发变了的键，值是该键的完整新值。
 - `image` 文本帧之后紧跟一个二进制帧，内容是 RGBA8 非预乘像素，逐行从上到下。
+- `image` 的 `view` 说明图是哪块画板画的，只有那块画板收下。光标和缩略图不带 `view`，归页面。
+- 画板发过的图由后端记账，每块画板上限 512 MB。超了就从最久没画过的开始发 `image.forget`，网页收到就释放，当前帧画到的图不淘汰。之后再画到时重新发 `image` 帧。后端不留副本，新客户端连上时清零记账，下一帧重新发。
 
 ## 绘制指令
 

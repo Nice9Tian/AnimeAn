@@ -419,6 +419,9 @@ test("图层拖动：区分行上方、行下方、组里面，支持拖组、�
   assert.equal(panels.layerDropZone({ offsetY: 22 }, fakeEl, groupRow), "below");
   assert.equal(panels.layerDropZone({ offsetY: 4 }, fakeEl, leafRow), "above");
   assert.equal(panels.layerDropZone({ offsetY: 18 }, fakeEl, leafRow), "below");
+  // Over the row's arrow or checkbox offsetY counts from that, not from the row.
+  assert.equal(panels.layerDropZone({ clientY: 12, offsetY: 3 }, fakeEl, groupRow), "inside");
+  assert.equal(panels.layerDropZone({ clientY: 16, offsetY: 8 }, fakeEl, leafRow), "below");
 
   const treeRows = [
     { group: true, group_id: 10, name: "Grp", depth: 0, collapsed: false },

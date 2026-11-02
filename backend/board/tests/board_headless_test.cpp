@@ -86,6 +86,98 @@ protected:
     }
 };
 
+class ImageTestSurface : public BoardSurface
+{
+public:
+    Vector<Image> toDraw;
+
+protected:
+    void paintGL() override
+    {
+        Painter painter(this);
+        for (const Image &image : toDraw) {
+            painter.drawImage(PointF(0.0, 0.0), image);
+        }
+    }
+};
+
+Image solidImage(int shade)
+{
+    Image image(10, 10, Image::Format_RGBA8888);
+    image.fill(Color(shade, shade, shade));
+    return image;
+}
+
+// The client keeps every image it was sent until told otherwise, so the board has
+// to bound that: a new onion ghost per view change once ran a page out of memory.
+bool runImageBudgetTests()
+{
+    const std::int64_t oneImage = 10 * 10 * 4;
+    ImageTestSurface surface;
+    surface.setImageBudget(2 * oneImage);
+    surface.resizeSurface(100, 100, 1.0);
+
+    std::uint64_t lastFrame = 0;
+    StringList sent;
+    StringList forgotten;
+    surface.setCanSendFrame([]() { return true; });
+    surface.setFrameSink([&](const BoardFrame &frame) { lastFrame = frame.frame; });
+    surface.setImageSink(
+        [&](const String &key, const Image &) { sent.append(key); },
+        [&](const String &key) { forgotten.append(key); });
+
+    const auto draw = [&](const Vector<Image> &images) {
+        surface.toDraw = images;
+        surface.update();
+        pumpEventLoop();
+        surface.acknowledgeFrame(lastFrame);
+    };
+
+    const Image a = solidImage(10), b = solidImage(20), c = solidImage(30);
+    draw({a});
+    draw({b});
+    if (sent.size() != 2 || !forgotten.isEmpty()) {
+        std::fprintf(stderr, "Expected two images held within the budget\n");
+        return false;
+    }
+    const String keyA = sent.at(0), keyB = sent.at(1);
+
+    // Over budget: the one drawn longest ago goes, and only that one.
+    draw({c});
+    if (sent.size() != 3 || forgotten != StringList{keyA}) {
+        std::fprintf(stderr, "Expected the oldest image evicted, got %d\n", int(forgotten.size()));
+        return false;
+    }
+    const String keyC = sent.at(2);
+
+    // Drawing a held image counts as use: b outlives c here.
+    draw({b});
+    draw({a});
+    if (sent.size() != 4 || sent.at(3) != keyA || forgotten != (StringList{keyA, keyC})) {
+        std::fprintf(stderr, "Expected a resent and c evicted after b was reused\n");
+        return false;
+    }
+
+    // What the current frame draws stays, even past the budget.
+    forgotten.clear();
+    sent.clear();
+    draw({a, b, c});
+    if (sent != StringList{keyC} || !forgotten.isEmpty()) {
+        std::fprintf(stderr, "Expected the images of the current frame kept\n");
+        return false;
+    }
+
+    // A new client holds nothing.
+    sent.clear();
+    surface.forgetSentImages();
+    draw({a, b});
+    if (sent.size() != 2) {
+        std::fprintf(stderr, "Expected images resent to a new client\n");
+        return false;
+    }
+    return true;
+}
+
 bool runFlushUnitTests()
 {
     FlushTestSurface surface;
@@ -171,6 +263,10 @@ bool runFlushUnitTests()
 
 int main(int argc, char *argv[])
 {
+    if (!runImageBudgetTests()) {
+        return 1;
+    }
+
     if (!runFlushUnitTests()) {
         return 1;
     }

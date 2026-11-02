@@ -615,6 +615,9 @@ bool WsServer::tryCompleteHandshake(SocketHandle socket)
 
     promoteClient(socket, std::move(remainingBuffer));
     queueWrite(handshakeResponse.data(), handshakeResponse.size());
+    if (m_client != socket) {
+        return true; // The send failed and has already reported the disconnect.
+    }
 
     clientConnected();
 
@@ -651,6 +654,8 @@ void WsServer::disconnectActiveClient(std::uint16_t closeCode)
     }
 
     const SocketHandle oldClient = m_client;
+    // A close frame sent now would land in the middle of the half-written one.
+    const bool midFrame = m_writeOffset > 0 && m_writeOffset < m_writeBuffer.size();
     m_client = kInvalidSocket;
     m_readBuffer.clear();
     m_writeBuffer.clear();
@@ -661,7 +666,7 @@ void WsServer::disconnectActiveClient(std::uint16_t closeCode)
     m_fragmentBuffer.clear();
 
     EventLoop::instance().removeSocket(oldClient);
-    if (closeCode != 0) {
+    if (closeCode != 0 && !midFrame) {
         sendCloseFrameImmediate(oldClient, closeCode);
     }
     ::shutdown(static_cast<SOCKET>(oldClient), SD_SEND);
@@ -677,6 +682,8 @@ void WsServer::onClientDisconnected()
     }
 
     const SocketHandle oldClient = m_client;
+    // A close frame sent now would land in the middle of the half-written one.
+    const bool midFrame = m_writeOffset > 0 && m_writeOffset < m_writeBuffer.size();
     m_client = kInvalidSocket;
     m_readBuffer.clear();
     m_writeBuffer.clear();

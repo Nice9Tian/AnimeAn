@@ -1,9 +1,7 @@
 #include "algorithm/core/image.h"
 #include "algorithm/core/color.h"
+#include "algorithm/core/file.h"
 #include "algorithm/core/string.h"
-
-#include <filesystem>
-#include <fstream>
 
 #include <algorithm>
 #include <atomic>
@@ -448,6 +446,7 @@ Image Image::convertToFormat(Format targetFormat) const
     if (out.isNull()) {
         return out;
     }
+    out.setDevicePixelRatio(devicePixelRatio());
     for (int y = 0; y < m_data->height; ++y) {
         for (int x = 0; x < m_data->width; ++x) {
             // pixel() hands back premultiplied values untouched, as Qt's image does.
@@ -477,6 +476,7 @@ Image Image::mirrored(bool horizontally, bool vertically) const
     if (out.isNull()) {
         return out;
     }
+    out.setDevicePixelRatio(devicePixelRatio());
     const int w = m_data->width;
     const int h = m_data->height;
     const int bpp = bytesPerPixelForFormat(m_data->format);
@@ -1105,15 +1105,11 @@ bool Image::save(const String &fileName, const char *format, int quality) const
     if (png.empty()) {
         return false;
     }
-    std::error_code ec;
-    const std::filesystem::path fsPath(fileName.u16String());
-    std::ofstream out(fsPath, std::ios::binary | std::ios::trunc);
-    if (!out.is_open()) {
+    File out(fileName);
+    if (!out.open(IODevice::WriteOnly | IODevice::Truncate)) {
         return false;
     }
-    out.write(reinterpret_cast<const char *>(png.data()),
-              static_cast<std::streamsize>(png.size()));
-    return static_cast<bool>(out);
+    return out.write(png) == static_cast<std::int64_t>(png.size());
 }
 
 bool Image::load(const String &fileName, const char *format)
@@ -1123,24 +1119,17 @@ bool Image::load(const String &fileName, const char *format)
         *this = Image();
         return false;
     }
-    const std::filesystem::path fsPath(fileName.u16String());
-    std::ifstream in(fsPath, std::ios::binary | std::ios::ate);
-    if (!in.is_open()) {
+    File in(fileName);
+    if (!in.open(IODevice::ReadOnly)) {
         *this = Image();
         return false;
     }
-    const std::streamsize fileSize = in.tellg();
-    if (fileSize <= 0) {
+    const std::string bytes = in.readAll();
+    if (bytes.empty()) {
         *this = Image();
         return false;
     }
-    in.seekg(0, std::ios::beg);
-    std::vector<unsigned char> bytes(static_cast<std::size_t>(fileSize));
-    if (!in.read(reinterpret_cast<char *>(bytes.data()), fileSize)) {
-        *this = Image();
-        return false;
-    }
-    *this = decodeImageBytes(bytes.data(), bytes.size());
+    *this = decodeImageBytes(reinterpret_cast<const unsigned char *>(bytes.data()), bytes.size());
     return !isNull();
 }
 

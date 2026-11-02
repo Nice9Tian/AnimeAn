@@ -8,6 +8,20 @@ function div(cls, text) {
   return d;
 }
 
+// A press ends with a release, or with the browser taking the pointer back (a pen
+// or touch gesture, a lost capture), which sends no pointerup.
+export const PRESS_ENDS = ["pointerup", "pointercancel", "lostpointercapture"];
+
+// Runs move(e) until the press on el ends.
+export function trackPress(el, move) {
+  const end = () => {
+    el.removeEventListener("pointermove", move);
+    for (const type of PRESS_ENDS) el.removeEventListener(type, end);
+  };
+  el.addEventListener("pointermove", move);
+  for (const type of PRESS_ENDS) el.addEventListener(type, end);
+}
+
 // Qt sums hinted glyph advances, the browser unhinted ones, so the two disagree
 // by a pixel or two per label. These are the widths the Qt build lays out at
 // 9pt Segoe UI; a label outside the table falls back to measuring.
@@ -62,14 +76,11 @@ export function scrollBar(vertical, onValue) {
     if (!enabled) return;
     handle.setPointerCapture(e.pointerId);
     const start = vertical ? e.clientY : e.clientX, from = value;
-    const move = (m) => {
+    trackPress(handle, (m) => {
       const { free } = metrics();
       const delta = (vertical ? m.clientY : m.clientX) - start;
       set(from + (free > 0 ? (delta / free) * (max - min) : 0));
-    };
-    const up = () => { handle.removeEventListener("pointermove", move); handle.removeEventListener("pointerup", up); };
-    handle.addEventListener("pointermove", move);
-    handle.addEventListener("pointerup", up);
+    });
     e.stopPropagation();
   });
   new ResizeObserver(draw).observe(s);
@@ -240,9 +251,11 @@ export function layerDropZone(e, el, row, fromIndex = -1, toIndex = -1) {
     return fromIndex >= 0 && toIndex >= 0 && fromIndex < toIndex ? "below" : "above";
   }
   const h = (rect && rect.height > 0 ? rect.height : el?.clientHeight) || 24;
-  const y = typeof e?.offsetY === "number"
-    ? e.offsetY
-    : (typeof e?.clientY === "number" && rect ? e.clientY - rect.top : h * 0.5);
+  // offsetY counts from whatever is under the pointer, the row's arrow or checkbox
+  // as often as the row.
+  const y = typeof e?.clientY === "number" && rect
+    ? e.clientY - rect.top
+    : (typeof e?.offsetY === "number" ? e.offsetY : h * 0.5);
   const ratio = Math.max(0, Math.min(1, y / h));
   if (row?.group) {
     if (ratio < 0.25) return "above";
@@ -438,7 +451,8 @@ export function createLayers(root, handlers) {
         const members = [];
         if (row.group) {
           for (let i = index + 1; i < rows.length && rows[i].depth > row.depth; i++) {
-            if (!rows[i].group) members.push(rows[i].layer);
+            // A row hosted under a leaf is shown there by a parent link, not by the group.
+            if (!rows[i].group && !rows[i].child) members.push(rows[i].layer);
           }
         }
         handlers.onContext(p.view, row, members, e.clientX, e.clientY);
@@ -476,8 +490,29 @@ export function createLayers(root, handlers) {
 
 // ---- Menu bar and popup menus -----------------------------------------------
 let openMenu = null;
-function closeMenus() { if (openMenu) { openMenu.remove(); openMenu = null; } }
-if (typeof window !== "undefined") window.addEventListener("pointerdown", (e) => { if (openMenu && !e.target.closest?.(".qmenu")) closeMenus(); }, true);
+let openTitle = null;
+let titleClosedByPress = null;
+let menuRequest = 0;
+function closeMenus() {
+  if (openMenu) { openMenu.remove(); openMenu = null; }
+  openTitle?.classList.remove("open");
+  openTitle = null;
+}
+if (typeof window !== "undefined") {
+  window.addEventListener("pointerdown", (e) => {
+    titleClosedByPress = null;
+    if (e.target.closest?.(".qmenu")) return;
+    menuRequest++;
+    titleClosedByPress = openTitle;
+    closeMenus();
+  }, true);
+}
+
+// A menu that has to wait for a reply: true while no press or newer menu got there first.
+export function askForMenu() {
+  const request = ++menuRequest;
+  return () => request === menuRequest;
+}
 
 export function popupMenu(items, x, y, onTrigger, parent) {
   const m = div("qmenu");
@@ -520,8 +555,8 @@ export function createMenuBar(root, { onTrigger, onOpen }) {
     const current = menus.find((m) => (m.id && fallbackMenu.id ? m.id === fallbackMenu.id : m.text === fallbackMenu.text)) ?? menus[index] ?? fallbackMenu;
     const r = item.getBoundingClientRect?.() ?? { left: 0, bottom: 0 };
     popupMenu(current?.children ?? [], r.left, r.bottom, onTrigger);
-    bar.querySelectorAll(".item").forEach((n) => n.classList.remove("open"));
     item.classList.add("open");
+    openTitle = item;
   }
   function paint() {
     bar.replaceChildren();
@@ -533,7 +568,9 @@ export function createMenuBar(root, { onTrigger, onOpen }) {
       const open = () => {
         const res = onOpen?.(menu);
         if (res && typeof res.then === "function") {
+          const wanted = askForMenu();
           res.then(() => {
+            if (!wanted()) return;
             const matched = Array.from(bar.querySelectorAll(".item")).find((n) => n.textContent === menu.text) ?? item;
             showPopup(matched, index, menu);
           });
@@ -541,7 +578,8 @@ export function createMenuBar(root, { onTrigger, onOpen }) {
         }
         showPopup(item, index, menu);
       };
-      item.addEventListener("click", open);
+      // The press on an open title has already closed its menu: the click must not reopen it.
+      item.addEventListener("click", () => { if (titleClosedByPress !== item) open(); titleClosedByPress = null; });
       item.addEventListener("pointerenter", () => { if (openMenu) open(); });
       bar.append(item);
       x += w + GAP;

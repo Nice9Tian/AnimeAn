@@ -1252,8 +1252,11 @@ int AnimeanBusiness::applyLayerPanelStructure(const String &viewName,
                 node.groupId = row.groupId;
                 node.name = row.name;
                 node.collapsed = row.collapsed;
+                // The rows carry no tag: without reading it back, one drag strips
+                // "automapping" off every unit group and orphans its config.
+                node.tag = model.layerGroupTag(row.groupId);
                 node.children = self(self, idx, row.depth, false);
-                if (node.isGroup() || node.layerId > 0) {
+                if (!node.children.isEmpty()) {
                     nodes.append(node);
                 }
             } else {

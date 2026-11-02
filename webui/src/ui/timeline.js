@@ -872,11 +872,14 @@ function createStrip(trigger) {
     if (vertical) for (let i = 0; i < kStripCommandCount; i++) if (contains(commandRect(i), x, y)) hover = i;
     if (hover !== hoverCommand) { hoverCommand = hover; paint(); }
   });
+  const cancelPress = () => { pressedCommand = -1; pressedCell = -1; dragging = false; };
+  canvas.addEventListener("pointercancel", cancelPress);
+  canvas.addEventListener("lostpointercapture", cancelPress);
   canvas.addEventListener("pointerup", (e) => {
     if (e.button !== 0) return;
     const [x, y] = local(e);
     const command = pressedCommand, cellIndex = pressedCell, dragged = dragging;
-    pressedCommand = -1; pressedCell = -1; dragging = false;
+    cancelPress();
     if (command >= 0) { trigger(FRAME_COMMANDS[command]); return; }
     if (cellIndex < 0 || cellIndex >= cells.length) return;
     const cell = cells[cellIndex];

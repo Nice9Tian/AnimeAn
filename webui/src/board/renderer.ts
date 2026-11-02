@@ -307,6 +307,7 @@ export class BoardRenderer {
   private rawImages = new Map<string, { key: string; width: number; height: number; data: Uint8Array; source: unknown }>();
   private unsubBoard?: () => void;
   private unsubImage?: () => void;
+  private unsubForget?: () => void;
 
   constructor(canvas: CanvasLike, options: BoardRendererOptions = {}) {
     const ctx = canvas.getContext("2d");
@@ -324,8 +325,13 @@ export class BoardRenderer {
 
     if (this.client) {
       this.unsubImage = this.client.onImage((meta, data) => {
-        if (!meta.key.startsWith("cur_")) {
+        if (meta.view === this.view) {
           this.putImage(meta, data);
+        }
+      });
+      this.unsubForget = this.client.onImageForget?.((view, key) => {
+        if (view === this.view) {
+          this.forgetImage(key);
         }
       });
       this.unsubBoard = this.client.onBoard(this.view, (msg) => {
@@ -361,6 +367,11 @@ export class BoardRenderer {
       }
     }
     this.images.set(meta.key, { key: meta.key, width: w, height: h, data });
+  }
+
+  forgetImage(key: string): void {
+    this.images.delete(key);
+    this.rawImages.delete(key);
   }
 
   renderFrame(msg: BoardMessage): void {
@@ -484,8 +495,10 @@ export class BoardRenderer {
   destroy(): void {
     this.unsubBoard?.();
     this.unsubImage?.();
+    this.unsubForget?.();
     this.unsubBoard = undefined;
     this.unsubImage = undefined;
+    this.unsubForget = undefined;
     this.images.clear();
     this.rawImages.clear();
     this.fullOps = [];

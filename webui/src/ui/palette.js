@@ -2,6 +2,7 @@
 // swatch box and the three pickers. Same geometry and maths as
 // childrenpanel/palettecontrol.cpp, drawn with DOM for the box and canvas for
 // the pickers. Colours travel as #aarrggbb, the form Python stores.
+import { PRESS_ENDS } from "./panels.js";
 
 const css = (name) => (typeof getComputedStyle === "function" ? getComputedStyle(document.documentElement).getPropertyValue(name).trim() : "");
 const STRIP = 15, GAP = 9, RING = 14, READOUT_W = 44, READOUT_H = 24;
@@ -223,12 +224,14 @@ class Picker {
     this.canvas.addEventListener("pointermove", (e) => {
       if (this.dragging && this.apply(e.offsetX, e.offsetY, false)) { this.paint(); this.onPreview(this.hsva.color()); }
     });
-    this.canvas.addEventListener("pointerup", () => {
-      if (!this.dragging) return;
-      this.dragging = false; this.zone = -1;
-      // One message per drag: a continuous emit would arm a tool on every move.
-      this.onCommit(this.hsva.color());
-    });
+    for (const type of PRESS_ENDS) {
+      this.canvas.addEventListener(type, () => {
+        if (!this.dragging) return;
+        this.dragging = false; this.zone = -1;
+        // One message per drag: a continuous emit would arm a tool on every move.
+        this.onCommit(this.hsva.color());
+      });
+    }
   }
   setColor(c) { this.hsva.setColor(c); if (this.canvas.isConnected) this.paint(); }
   layout(width) {
@@ -454,7 +457,8 @@ export function createPalette(emit, { pickersOnly = false } = {}) {
       pickers.forEach((p) => p.setColor(color));
       show(page);
     },
-    addSwatch(text) { if (!swatches.includes(text)) { swatches.push(text); drawBox(); emit("box", "add:" + text); } commit(parseColor(text)); },
+    // Value first: the rebuild the add triggers reads the current colour back.
+    addSwatch(text) { commit(parseColor(text)); if (!swatches.includes(text)) { swatches.push(text); drawBox(); emit("box", "add:" + text); } },
     color: () => color,
   };
 }

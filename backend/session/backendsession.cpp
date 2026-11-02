@@ -720,6 +720,20 @@ void BackendSession::surfaceTextureView()
     m_business->setActiveViewName(String("child"));
 }
 
+void BackendSession::surfaceMainView()
+{
+    for (AnimeanWindowInfo &info : m_windowInfos) {
+        if (info.name == String("paint") && info.current != String("drawing")) {
+            info.current = String("drawing");
+            markDirty(String("windows"));
+            emitUiEvent(String("window.select"),
+                        JsonObject{{String("name"), info.name}, {String("page"), info.current}});
+            break;
+        }
+    }
+    m_business->setActiveViewName(String("main"));
+}
+
 BackendSession::TextureViewSlot *BackendSession::textureViewSlotFor(const String &home)
 {
     if (home == String("central")) {
@@ -773,7 +787,12 @@ void BackendSession::autoFitTextureControlView()
             return;
         }
     }
-    m_childBoard->fitViewToContent(false);
+    if (!m_childBoard->fitViewToContent(false)) {
+        return;
+    }
+    m_textureViewControl.zoom = m_childBoard->zoom();
+    m_textureViewControl.pan = m_childBoard->panOffset();
+    m_textureViewControl.valid = true;
     m_textureAutoFitFrame = m_childBoard->model().currentFrame();
 }
 
@@ -873,9 +892,17 @@ void BackendSession::setupBoardSinks(const String &viewName, PaintOpenGLWidget *
     paintView->setFrameSink([this, viewName](const BoardFrame &frame) {
         handleFrameSink(viewName, frame);
     });
-    paintView->setImageSink([this](const AnimeCore::String &key, const AnimeCore::Image &rgba) {
-        handleImageSink(key, rgba);
-    });
+    paintView->setImageSink(
+        [this, viewName](const AnimeCore::String &key, const AnimeCore::Image &rgba) {
+            handleImageSink(viewName, key, rgba);
+        },
+        [this, viewName](const AnimeCore::String &key) {
+            sendJson(JsonObject{
+                {String("t"), String("image.forget")},
+                {String("view"), viewName},
+                {String("key"), key},
+            });
+        });
     paintView->setCursorSink([this, viewName](const AnimeCore::Cursor &cursor) {
         handleCursorSink(viewName, cursor);
     });
@@ -1088,7 +1115,7 @@ void BackendSession::setupBusinessConnections()
         markDirty(String("assets/child"));
     });
     m_business->requestSurfaceTextureView.connect([this]() {
-        emitUiEvent(String("textureView.surface"));
+        surfaceTextureView();
     });
     m_business->requestAutoFitTextureControlView.connect([this]() {
         autoFitTextureControlView();
@@ -1136,8 +1163,7 @@ void BackendSession::setupBusinessConnections()
         markDirty(String("tools"));
     });
     m_business->toolOptionsLayoutChanged.connect(
-            [this](const JsonObject &layout, int, bool) {
-        m_lastToolOptions = layout;
+            [this](const JsonObject &, int, bool) {
         markDirty(String("toolOptions"));
     });
     m_business->toolOptionsStateChanged.connect([this]() {
@@ -1418,12 +1444,14 @@ void BackendSession::onClientConnected()
     }
 
     if (m_mainBoard) {
+        m_mainBoard->forgetSentImages();
         m_mainBoard->acknowledgeFrame(m_lastBoardFrameId.value(String("main"), 0));
         m_mainBoard->resizeSurface(m_mainBoard->width(),
                                    m_mainBoard->height(),
                                    m_mainBoard->devicePixelRatioF());
     }
     if (m_childBoard) {
+        m_childBoard->forgetSentImages();
         m_childBoard->acknowledgeFrame(m_lastBoardFrameId.value(String("child"), 0));
         m_childBoard->resizeSurface(m_childBoard->width(),
                                     m_childBoard->height(),
@@ -2594,14 +2622,18 @@ JsonObject BackendSession::handleFileImportCall(const JsonObject &params)
 
     const String requestedView = params.value(String("view"))
                                       .toString(params.value(String("viewName")).toString());
+    // The main menu's Import is for the main board whatever is active; the texture
+    // board has its own File menu.
     const String targetView = (isTextureImport || requestedView == String("child"))
                                    ? String("child")
-                                   : (requestedView.isEmpty()
-                                          ? m_business->framePanelTargetViewName()
-                                          : resolveViewName(requestedView));
+                                   : (requestedView.isEmpty() ? String("main") : resolveViewName(requestedView));
     const bool probe = params.value(String("probe")).toBool(false);
-    if (!probe && targetView == String("child")) {
-        surfaceTextureView();
+    if (!probe) {
+        if (targetView == String("child")) {
+            surfaceTextureView();
+        } else {
+            surfaceMainView();
+        }
     }
     PaintOpenGLWidget *board = boardForView(targetView);
     if (!board) {
@@ -3219,6 +3251,10 @@ void BackendSession::openScriptSettings(const String &name, const String &title)
         }
     }
 #endif
+    if (layout.isEmpty()) {
+        m_business->setStatusMessage(String("No settings registered for '%1'.").arg(name));
+        return;
+    }
     emitUiEvent(String("settings.open"),
                 JsonObject{
                     {String("name"), name},
@@ -3265,7 +3301,7 @@ void BackendSession::handleFrameSink(const String &viewName, const BoardFrame &f
     m_ws->sendText(payload);
 }
 
-void BackendSession::handleImageSink(const String &key, const AnimeCore::Image &rgbaImg)
+void BackendSession::handleImageSink(const String &view, const String &key, const AnimeCore::Image &rgbaImg)
 {
     const Image rgba(rgbaImg); if (key.isEmpty() || rgba.isNull()) {
         return;
@@ -3273,11 +3309,10 @@ void BackendSession::handleImageSink(const String &key, const AnimeCore::Image &
     const Image formatted = (rgba.format() == Image::Format_RGBA8888)
                                  ? rgba
                                  : rgba.convertToFormat(Image::Format_RGBA8888);
-    m_cachedImages.insert(key, formatted);
-    sendImagePacket(key, formatted);
+    sendImagePacket(key, formatted, view);
 }
 
-void BackendSession::sendImagePacket(const String &key, const Image &rgba)
+void BackendSession::sendImagePacket(const String &key, const Image &rgba, const String &view)
 {
     if (!m_ws || !m_ws->hasClient() || rgba.isNull()) {
         return;
@@ -3288,13 +3323,16 @@ void BackendSession::sendImagePacket(const String &key, const Image &rgba)
     if (expectedBytes <= 0) {
         return;
     }
-    const JsonObject header{
+    JsonObject header{
         {String("t"), String("image")},
         {String("key"), key},
         {String("w"), w},
         {String("h"), h},
         {String("bytes"), expectedBytes},
     };
+    if (!view.isEmpty()) {
+        header.insert(String("view"), view);
+    }
     sendJson(header);
     if (rgba.bytesPerLine() == w * 4) {
         m_ws->sendBinary(std::string(reinterpret_cast<const char *>(rgba.constBits()), static_cast<std::size_t>(expectedBytes)));
@@ -3347,7 +3385,9 @@ void BackendSession::setPythonUiFrozen(bool frozen)
     }
     const bool isFrozen = (m_pythonFreezeDepth > 0);
     if (wasFrozen != isFrozen) {
-        markDirty(String("freeze"));
+        // Sent now: the script runs inside one call, so a dirty flush would only
+        // happen after it has finished and unfrozen again.
+        sendStateKey(String("freeze"));
     }
 }
 
@@ -4042,9 +4082,8 @@ JsonObject BackendSession::buildToolsState() const
 
 JsonObject BackendSession::buildToolOptionsState() const
 {
-    if (!m_lastToolOptions.isEmpty()) {
-        return m_lastToolOptions;
-    }
+    // Built fresh: a layout kept from the last tool switch carries that moment's
+    // values, and the web panel rebuilds from whatever it is sent.
     if (!m_business->activeExtraTool().isEmpty()) {
         return m_business->extraToolOptionsLayout(m_business->activeExtraTool());
     }

@@ -186,10 +186,11 @@ function color(control, send) {
   return wrap;
 }
 
-export function createToolOptions(root, { onOption, onPalette, onNewColor, onSubWindow, onBeforeBuild = undefined, onAfterBuild = undefined }) {
+export function createToolOptions(root, { onOption, onNewColor, onSubWindow, onBeforeBuild = undefined, onAfterBuild = undefined }) {
   const grid = div("opt-grid");
   root.append(grid);
   let visibility = [];
+  let subWindows = [];
   let lastLayout = null;
   const values = new Map();
 
@@ -204,6 +205,7 @@ export function createToolOptions(root, { onOption, onPalette, onNewColor, onSub
     onBeforeBuild?.(layout);
     grid.replaceChildren();
     visibility = [];
+    subWindows = [];
     values.clear();
     const controls = layout?.controls ?? [];
     grid.style.rowGap = `${layout?.row_spacing ?? 8}px`;
@@ -229,8 +231,8 @@ export function createToolOptions(root, { onOption, onPalette, onNewColor, onSub
         case "color": el = color(control, send); break;
         case "palette": {
           const palette = createPalette((kind, value) => {
-            if (kind === "color") send("color", value);
-            else if (kind === "box") onPalette(value, control);
+            if (kind === "color") send("palette", value);
+            else if (kind === "box") onOption({ hook: "palette_box", name: control.name, type: "palette", value, row, startColumn: start, endColumn: end });
             else if (kind === "newColor") onNewColor(palette);
           });
           el = palette.el;
@@ -240,6 +242,7 @@ export function createToolOptions(root, { onOption, onPalette, onNewColor, onSub
         case "subwindow": el = onSubWindow(control); break;
       }
       if (!el) continue;
+      if (control.type === "subwindow") subWindows.push({ control, el });
       if (control.name) values.set(control.name, String(control.value ?? ""));
       el.style.gridRow = String(row + 1);
       el.style.gridColumn = `${start + 1} / ${end + 2}`;
@@ -265,8 +268,19 @@ export function createToolOptions(root, { onOption, onPalette, onNewColor, onSub
 
   return {
     build,
-    rebuild() {
-      if (lastLayout) build(lastLayout);
+    // The board came or went: only its cell changes, the other controls keep what
+    // the user set on them since the layout was built.
+    refreshSubWindows() {
+      for (const entry of subWindows) {
+        const next = onSubWindow(entry.control);
+        if (!next) continue;
+        next.style.gridRow = entry.el.style.gridRow;
+        next.style.gridColumn = entry.el.style.gridColumn;
+        for (const rule of visibility) if (rule.el === entry.el) rule.el = next;
+        entry.el.replaceWith(next);
+        entry.el = next;
+      }
+      applyVisibility();
     },
     hasSubWindow(name) {
       return (lastLayout?.controls ?? []).some(
