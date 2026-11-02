@@ -33,7 +33,6 @@ function sendControlMessage(target, action, dockId) {
 
 export function setupSatelliteDock(rootEl, dockId, relayOrChannel, options = {}) {
   const getTauri = () => options.tauri ?? (typeof window !== "undefined" ? window.__TAURI__ : undefined);
-  const win = options.window ?? (typeof window !== "undefined" ? window : undefined);
 
   const isHeaderDragEvent = (e) => {
     const target = e?.target;
@@ -67,10 +66,6 @@ export function setupSatelliteDock(rootEl, dockId, relayOrChannel, options = {})
     tauri?.window?.getCurrentWindow?.()?.startDragging?.();
   };
 
-  const onPageHide = () => {
-    sendControlMessage(relayOrChannel, "closed", dockId);
-  };
-
   // This dock is always floating, but the page does not know of any other: the
   // header builds its button for a docked panel.
   const showRestoreButton = () => {
@@ -90,9 +85,6 @@ export function setupSatelliteDock(rootEl, dockId, relayOrChannel, options = {})
     rootEl.addEventListener("pointerdown", onPointerDownCapture, true);
     rootEl.addEventListener("mousedown", onMouseDownCapture, true);
   }
-  if (win && typeof win.addEventListener === "function") {
-    win.addEventListener("pagehide", onPageHide);
-  }
 
   return {
     onDockFloatRequest,
@@ -103,9 +95,6 @@ export function setupSatelliteDock(rootEl, dockId, relayOrChannel, options = {})
       if (rootEl && typeof rootEl.removeEventListener === "function") {
         rootEl.removeEventListener("pointerdown", onPointerDownCapture, true);
         rootEl.removeEventListener("mousedown", onMouseDownCapture, true);
-      }
-      if (win && typeof win.removeEventListener === "function") {
-        win.removeEventListener("pagehide", onPageHide);
       }
     },
   };
@@ -288,15 +277,18 @@ export function createPanelWindows(runtime, store, options = {}) {
   if (options.host && typeof options.host.onPanelAction === "function") {
     unsubHost = options.host.onPanelAction(handleAction);
   }
+  const closedByUser = getTauri()?.event?.listen?.("panel-closed", (event) => {
+    handleAction("closed", String(event?.payload ?? "").replace(/^panel-/, ""));
+  });
   const channel = options.channel;
   let onChannelMsg;
   if (channel && !unsubHost) {
     onChannelMsg = (ev) => {
       const msg = ev && typeof ev === "object" && "data" in ev ? ev.data : ev;
       if (!msg || typeof msg !== "object") return;
-      if (msg.t === "restore" || msg.t === "close" || msg.t === "closed") {
+      if (msg.t === "restore" || msg.t === "close") {
         handleAction(msg.t, String(msg.dockId ?? ""));
-      } else if (msg.t === "panel" && (msg.action === "restore" || msg.action === "close" || msg.action === "closed")) {
+      } else if (msg.t === "panel" && (msg.action === "restore" || msg.action === "close")) {
         handleAction(msg.action, String(msg.dockId ?? ""));
       }
     };
@@ -363,6 +355,7 @@ export function createPanelWindows(runtime, store, options = {}) {
     handleAction,
     destroy() {
       unsubHost?.();
+      void closedByUser?.then((unlisten) => unlisten?.());
       if (channel && onChannelMsg && typeof channel.removeEventListener === "function") {
         channel.removeEventListener("message", onChannelMsg);
       }
