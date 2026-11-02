@@ -29,6 +29,7 @@ bridge segments in Python - with zero C++ changes. Fill is a single click,
 not a per-frame interaction, so Python-side geometry is acceptable.
 """
 
+import board_effects
 import python_hooks
 
 TO_INDEPENDENT_ACTION = "fill_to_independent"
@@ -101,6 +102,16 @@ def _region_path(scene, frame, seed, bounds, layer_index):
     if path is None:
         return None
     return path["commands"]
+
+
+def _same_color(info_color, color):
+    """A region's stored colour (the bindings give a dict) against an rgba tuple."""
+    if isinstance(info_color, dict):
+        info_color = tuple(int(info_color.get(k, 255 if k == "a" else 0)) for k in "rgba")
+    try:
+        return tuple(int(v) for v in info_color) == tuple(color)
+    except (TypeError, ValueError):
+        return False
 
 
 def _dispatch_fillfinish(message, cell):
@@ -228,6 +239,7 @@ def _run_fill(scene, structure, frame, message):
     # snapshot stays valid for the lower indices still to visit.
     infos = image.fill_regions_info()
     updated_existing = False
+    previous_color = None
     for index in range(len(infos) - 1, -1, -1):
         info = infos[index]
         same_refer = bool(info["based_on_all_layers"]) == all_layers
@@ -237,6 +249,7 @@ def _run_fill(scene, structure, frame, message):
                 and image.fill_region_contains(index, seed)):
             continue
         if not updated_existing:
+            previous_color = info.get("color")
             image.set_fill_region(index, path=path, color=color, seed=seed)
             updated_existing = True
         else:
@@ -251,6 +264,15 @@ def _run_fill(scene, structure, frame, message):
             source_layer_index=source_layer,
             based_on_all_layers=all_layers,
         )
+
+    # The colour spreads from the click to the region's edge - when the board
+    # will show a change: not for a repeat click in the same colour, nor on a
+    # hidden layer (no frame would follow, and the page would wait for one).
+    # Asked inside the hook, so before the board's next frame leaves.
+    target_info = _layer_info(structure, target_layer)
+    target_visible = created_layer or target_info is None or target_info.get("visible", True)
+    if target_visible and not (updated_existing and _same_color(previous_color, color)):
+        board_effects.fill_spread(view, seed, path)
 
     if tracked and original_layer >= 0:
         # Back to the layer the user was ON. They filled FROM the line layer

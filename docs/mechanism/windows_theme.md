@@ -12,6 +12,12 @@
 - Tauri 外壳中停靠面板（含 `timelineDock`）浮动时由 `webui/src/ui/panelwindows.js` 打开无边框独立窗口 `panel-<dockId>`（加载 `index.html?only=<dockId>&satellite=1`），经 `BroadcastChannel("animean.relay")`（`webui/src/relay.ts` 的 `RelayHost` / `RelayClient`）与主窗口共享单 WebSocket 连接。四边拉伸靠 Tauri 对无边框窗口的处理。关掉再打开回到关闭时的位置和大小，`close_panel_window` 把它报回来；拖回主窗口再浮出时用新的落点。用户关窗（Alt+F4）由外壳发 `panel-closed` 告诉主窗口，窗口表跟着变；主窗口关闭时 Windows 先带走它拥有的独立窗口，这些窗口收不到关闭请求，不算用户关的，所以不能用页面的 `pagehide` 判断。纹理板子控件框 `texture_view` 因画布上下文不能跨窗口搬迁，继续在主窗口内浮动；它所在的面板变成独立窗口时，框自己在主窗口里浮出来。普通浏览器里浮动都在页面内。
 - 打包的窗口是应用窗口：Ctrl、Alt 组合键和功能键的浏览器默认动作、右键浏览器菜单都关掉（输入框除外），否则 F5 重载页面后主窗口就不再认得已打开的独立窗口。浏览器里开发时不关。
 
+## 面板滑动（网页界面）
+
+- `webui/src/dock_glide.ts`，在 `webui/src/player.ts` 的 `applyViews` 里调用；`webui/vf/` 的副本不动。
+- 什么时候滑：停靠布局的「形状」变了才滑。形状是 `dockShapeKey`：每个停靠区每组里有哪些**可见**面板、区内多组时的并排方向、哪些浮动（按集合比，`dockFloat` 移动浮动面板时会把它挪到列表末尾），不含尺寸、当前页签和浮动位置。所以停靠、浮出（含 Tauri 里浮成独立窗口，主窗口里那块变成不可见）、叠页签、并排、上下改左右、Windows 菜单开关会滑；拖分隔条、改窗口大小、切页签、拖着或拉着浮动面板走不滑。页面第一次收到按下或按键之前不滑，后端在启动时开的面板直接出现；`prefers-reduced-motion` 时不滑。
+- 怎么滑：新布局先整份写上，再让每个顶层面板（舞台的直接子元素，含中央区）从旧框动画到新框（Web Animations 动 `left / top / width / height`，240 ms，`cubic-bezier(0.2, 0.7, 0.2, 1)`）。旧框读计算样式，所以滑到一半又变时从当前位置接着滑：旧的那段用 `Glide.stop()` 当场结束并还原样式（浏览器的 `cancel` 事件要稍后才到，不能等它，否则新一段会把钉住的尺寸当原样存下）。滑到一半目标又变了却没有新形状（改窗口大小、拖分隔条）、或者面板被隐藏，也当场结束。面板里的内容一开始就按最终尺寸排好，滑动时外框 `overflow: hidden` 裁住；里面的 canvas 钉在最终的像素尺寸，画板只给后端发一次 resize，也不会被拉伸。新出现的面板直接出现，消失的直接消失。
+
 ## 对话框窗口
 
 承诺见 `../product_features.md`「画板与工作区」，规则见 `../developer_guide.md`「分工」第二条，计划见 `../plan/2026-11-03-对话框窗口.md`。

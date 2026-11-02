@@ -2749,6 +2749,65 @@ JsonObject BackendSession::dispatchCall(const String &method, const JsonObject &
         };
     }
 
+    // A tool's short animation (pyfile/board_effects.py decides which, when and
+    // how long; webui/src/board/effects.ts draws it). The backend only moves
+    // the canvas geometry onto the board - center, radius, width and the flat
+    // paths clip / path - with the view's zoom and pan (algorithm/viewscale.h),
+    // and passes every other field through untouched. Never kept for replay: a
+    // page that connects later has nothing to animate.
+    if (method == String("board.effect")) {
+        PaintOpenGLWidget *board = boardForView(resolveViewName(view));
+        if (!board) {
+            return makeError(String("Board not found"));
+        }
+        const double zoom = board->zoom();
+        const PointF pan = board->panOffset();
+        const auto toBoard = [&](double x, double y) {
+            return AnimeViewScale::toScreen(PointF(x, y), zoom, pan);
+        };
+        // [0, x, y, 1, x, y, 2, c1x, c1y, c2x, c2y, x, y, 3]: the S op's format.
+        const auto mapPath = [&](const JsonArray &flat) {
+            JsonArray out;
+            int i = 0;
+            while (i < flat.size()) {
+                const int op = flat.at(i).toInt(-1);
+                const int pairs = (op == 0 || op == 1) ? 1 : (op == 2 ? 3 : 0);
+                if (op < 0 || op > 3 || i + 2 * pairs >= flat.size()) {
+                    break;
+                }
+                out.append(op);
+                for (int k = 0; k < pairs; ++k) {
+                    const PointF p = toBoard(flat.at(i + 1 + 2 * k).toDouble(0.0),
+                                             flat.at(i + 2 + 2 * k).toDouble(0.0));
+                    out.append(p.x());
+                    out.append(p.y());
+                }
+                i += 1 + 2 * pairs;
+            }
+            return out;
+        };
+        JsonObject args = params;
+        args.insert(String("view"), board->viewName());
+        if (params.value(String("center")).isArray()) {
+            const JsonArray c = params.value(String("center")).toArray();
+            const PointF p = toBoard(c.at(0).toDouble(0.0), c.at(1).toDouble(0.0));
+            args.insert(String("center"), JsonArray{p.x(), p.y()});
+        }
+        for (const char *key : {"radius", "width"}) {
+            if (params.contains(String(key))) {
+                args.insert(String(key),
+                            AnimeViewScale::toScreenLength(params.value(String(key)).toDouble(0.0), zoom));
+            }
+        }
+        for (const char *key : {"clip", "path"}) {
+            if (params.value(String(key)).isArray()) {
+                args.insert(String(key), mapPath(params.value(String(key)).toArray()));
+            }
+        }
+        emitUiEvent(String("board.effect"), args, false);
+        return JsonObject{{String("view"), board->viewName()}};
+    }
+
     if (method == String("board.capabilities")) {
         const String targetView = resolveViewName(view);
         const bool fieldDisplay = params.value(String("fieldDisplay")).toBool(false);
@@ -3540,16 +3599,19 @@ void BackendSession::dropDialog(const String &id)
     }
 }
 
-void BackendSession::emitUiEvent(const String &name, const JsonObject &args)
+void BackendSession::emitUiEvent(const String &name, const JsonObject &args, bool replay)
 {
-    m_lastEvent = JsonObject{
+    const JsonObject event{
         {String("name"), name},
         {String("args"), args},
     };
+    if (replay) {
+        m_lastEvent = event;
+    }
     const JsonObject packet{
         {String("t"), String("state")},
         {String("key"), String("event")},
-        {String("value"), m_lastEvent},
+        {String("value"), event},
     };
     sendJson(packet);
 }

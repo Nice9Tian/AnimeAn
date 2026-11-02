@@ -1,4 +1,5 @@
 import { t } from "./i18n/index.js";
+import { dockShapeKey, glideBox, sameRect, shownRect, type Glide, type GlideRect } from "./dock_glide.ts";
 import {
   computeDockWindowLayout,
   syncDockHeaderDom,
@@ -440,6 +441,17 @@ export function createPlayer(
   let clockTimer: number | null = null;
   let currentBoxes = new Map<string, ComputedBox>();
   let isApplying = false;
+
+  // Panels glide when the dock layout changes shape (dock_glide.ts). Not
+  // before the user has touched the page: the panels the backend opens at
+  // start-up just appear.
+  let lastDockShape: string | undefined;
+  let glideArmed = false;
+  const glides = new Map<string, { glide: Glide; to: GlideRect }>();
+  const armGlide = () => { glideArmed = true; };
+  doc.addEventListener("pointerdown", armGlide, { capture: true, once: true });
+  doc.addEventListener("keydown", armGlide, { capture: true, once: true });
+  const reducedMotion = () => Boolean(win.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
 
   const stopClockTimer = () => {
     if (clockTimer !== null) {
@@ -1127,8 +1139,46 @@ export function createPlayer(
       }
 
       if (layoutChanged || updateAll) {
+        const shape = dockShapeKey(runtime.getDockLayout(rootId), (nid) => runtime.view(nid).visible);
+        const glide = glideArmed && lastDockShape !== undefined && shape !== lastDockShape && !reducedMotion();
+        lastDockShape = shape;
+        // Where every top-level panel shows now, before the new layout lands.
+        const before = new Map<string, GlideRect>();
+        if (glide) {
+          for (const [id, entry] of mounted) {
+            if (entry.wrapper.parentElement !== stageEl || entry.wrapper.style.display === "none") continue;
+            const rect = shownRect(entry.wrapper);
+            if (rect) before.set(id, rect);
+          }
+        }
         for (const [id, entry] of mounted) {
           updateNodeBoxAndPlacement(id, entry, rootSize);
+        }
+        // A running glide ends here when this pass glides that panel again
+        // (it restarts below from where it shows now, measured above) or when
+        // its target moved without a new shape (window resized, splitter
+        // dragged): it would end on the old box.
+        for (const [id, running] of glides) {
+          const entry = mounted.get(id);
+          const box = entry?.lastBox;
+          const stale = !box || entry.wrapper.style.display === "none"
+            || !sameRect(running.to, { x: box.x, y: box.y, width: box.width, height: box.height });
+          if (before.has(id) || stale) {
+            running.glide.stop();
+            glides.delete(id);
+          }
+        }
+        for (const [id, from] of before) {
+          const entry = mounted.get(id);
+          const to = entry?.lastBox;
+          if (!entry || !to || entry.wrapper.style.display === "none") continue;
+          const target = { x: to.x, y: to.y, width: to.width, height: to.height };
+          if (sameRect(from, target)) continue;
+          const glide = glideBox(entry.wrapper, from, target);
+          if (glide) {
+            glides.set(id, { glide, to: target });
+            glide.animation.addEventListener("finish", () => { if (glides.get(id)?.glide === glide) glides.delete(id); });
+          }
         }
         for (const lineId of lineNodeIds) {
           const lineEntry = mounted.get(lineId);

@@ -408,6 +408,56 @@ finally:
     else:
         sys.modules["layer_tool_policy"] = saved_policy
 
+# 7b) The spread animation (board_effects.py) is asked for inside the hook,
+#     before the history commit (the board's next frame leaves after the hook
+#     returns), from the click, with the traced region - and only when the
+#     board will change: a refused click, a repeat click in the same colour and
+#     a fill on a hidden layer ask nothing (no frame would follow).
+scene, ui = fresh_world()
+line = scene.add_layer()
+scene.set_current_layer(line)
+spread_log = []
+saved_spread = ft.board_effects.fill_spread
+saved_add = FakeImage.add_fill_region
+
+
+def _logged_add(self, *args, **kwargs):
+    spread_log.append("write")
+    return saved_add(self, *args, **kwargs)
+
+
+ft.board_effects.fill_spread = lambda view, seed, path: spread_log.append(("spread", view, seed, path))
+saved_commit = ui.history_commit
+ui.history_commit = lambda label, view="": spread_log.append(("commit", label))
+FakeImage.add_fill_region = _logged_add
+try:
+    ft._fill_request({}, {}, fill_message("current", seed=(12.0, 34.0)))
+    assert spread_log == ["write", ("spread", "main", (12.0, 34.0), ["default"]), ("commit", "Fill")], spread_log
+
+    # Same region, same colour: nothing on the board changes.
+    fills = scene.images[scene.layer_id_at(1)].fills
+    fills[0]["contains"] = True
+    spread_log.clear()
+    ft._fill_request({}, {}, fill_message("current", seed=(12.0, 34.0)))
+    assert spread_log == [("commit", "Fill")], spread_log
+    # Same region, a new colour: it spreads.
+    spread_log.clear()
+    recolor = fill_message("current", seed=(12.0, 34.0))
+    recolor["color"] = {"r": 200, "g": 0, "b": 0, "a": 255}
+    ft._fill_request({}, {}, recolor)
+    assert [e for e in spread_log if e[0] == "spread"], spread_log
+    assert ft._same_color({"r": 200, "g": 0, "b": 0, "a": 255}, (200, 0, 0, 255))
+    assert not ft._same_color({"r": 200, "g": 0, "b": 0, "a": 255}, (200, 0, 0, 128))
+
+    spread_log.clear()
+    scene.trace[line] = None   # an open area: no fill, no animation
+    ft._fill_request({}, {}, fill_message("current", seed=(1.0, 1.0)))
+    assert spread_log == [], spread_log
+finally:
+    ui.history_commit = saved_commit
+    ft.board_effects.fill_spread = saved_spread
+    FakeImage.add_fill_region = saved_add
+
 # 8) The hooks are actually registered for the events the policy needs.
 events = set()
 for hook in python_hooks._HOOKS:

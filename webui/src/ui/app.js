@@ -4,6 +4,7 @@ import { BoardRenderer } from "../board/renderer.ts";
 import { GlBoardRenderer } from "../board/glrenderer.ts";
 import { attachBoardInput } from "../board/input.ts";
 import { cursorCss } from "../board/cursor.ts";
+import { BoardEffects } from "../board/effects.ts";
 import { label, language, onLanguage, setLanguage, t } from "../i18n/index.js";
 import { createDialogHost } from "./dialoghost.js";
 import { askForMenu, createCentral, createLayers, createMenuBar, popupMenu, scrollArea, tabBar } from "./panels.js";
@@ -745,7 +746,11 @@ function createBoards(mainHost, childHost, client, store) {
     child: { view: "child", host: childHost ?? mainHost },
   };
   const mount = (slot, kind) => {
-    const { canvas, renderer, kind: started } = startRenderer(kind, { view: slot.view, client });
+    const { canvas, renderer, kind: started } = startRenderer(kind, {
+      view: slot.view,
+      client,
+      onAck: () => slot.effects.frame(),
+    });
     const hadFocus = slot.canvas && document.activeElement === slot.canvas;
     if (slot.canvas) slot.canvas.replaceWith(canvas);
     else slot.host.append(canvas);
@@ -754,6 +759,7 @@ function createBoards(mainHost, childHost, client, store) {
       slot.renderer.destroy();
       slot.input.destroy();
     }
+    slot.effects.stop();
     Object.assign(slot, { canvas, renderer, input: attachBoardInput(canvas, { view: slot.view, client }) });
     if (hadFocus) canvas.focus({ preventScroll: true });
     paintCursor(slot);
@@ -786,6 +792,46 @@ function createBoards(mainHost, childHost, client, store) {
       boards.show(boards.current);
     },
   };
+  // A tool's short animation (pyfile/board_effects.py), drawn above each board.
+  const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  for (const slot of Object.values(slots)) slot.effects = new BoardEffects({ canvas: () => slot.canvas ?? null, reducedMotion });
+  store.on("event", (event) => {
+    if (event?.name !== "board.effect") return;
+    slots[event.args?.view]?.effects.play(event.args);
+  });
+  const stopEffects = () => {
+    for (const slot of Object.values(slots)) slot.effects.stop();
+  };
+  // The hand coming back - anywhere: the board, a panel, the menu, a key such
+  // as Ctrl+Z - ends a tool's animation at once. What it does next must land
+  // on the board as it is, not under the picture from before.
+  const page = mainHost?.ownerDocument;
+  if (typeof page?.addEventListener === "function") {
+    for (const type of ["pointerdown", "keydown", "wheel"]) page.addEventListener(type, stopEffects, { capture: true, passive: true });
+  }
+  // The view scrolled or zoomed (scroll bar, Fit View, the texture board
+  // fitting itself): the picture from before no longer lines up.
+  for (const slot of Object.values(slots)) {
+    let seen;
+    store.on(`viewport/${slot.view}`, (value) => {
+      const key = JSON.stringify(value ?? null);
+      if (seen !== undefined && key !== seen) slot.effects.stop();
+      seen = key;
+    });
+  }
+  // Another frame on show: the picture from before belongs to the old one.
+  let shownFrame;
+  store.on("timeline", (value) => {
+    if (value?.currentFrame === shownFrame) return;
+    shownFrame = value?.currentFrame;
+    stopEffects();
+  });
+  client?.onDisconnect?.(() => {
+    for (const slot of Object.values(slots)) {
+      slot.effects.stop();
+      slot.effects.framesSeen = 0;
+    }
+  });
   boards.rendererKind = mount(slots.main, boards.rendererKind);
   mount(slots.child, boards.rendererKind);
   for (const slot of Object.values(slots)) store.on(`cursor/${slot.view}`, () => paintCursor(slot));
