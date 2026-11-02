@@ -664,7 +664,8 @@ try {
     const colorDialog = openDialogs().find((d) => d.kind === "color");
     await callBackend("dialog.result", { id: colorDialog.id, action: "accept", value: "#ff123456" });
     await waitForState((map) => map.get("drawColor")?.rgba === "#ff123456", "the chosen colour reaches the pen");
-    assert.equal(openDialogs().length, 0, "the colour dialog closed");
+    // Both states are marked in the same step and the backend sends them in no set order.
+    await waitDialogs((list) => list.length === 0, "the colour dialog closed");
 
     // Settings is a Python menu at the end of the bar; a choice is broadcast for the page.
     const menusNow = stateMap.get("menus") ?? [];
