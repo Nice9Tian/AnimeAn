@@ -1347,9 +1347,13 @@ int JsonVariant::toInt(bool *ok) const noexcept
 {
     if (m_val.isDouble()) {
         if (m_val.isInt64()) {
+            // QVariant::toInt wraps a 64-bit value into int and reports success;
+            // here a value outside int fails, so it never turns into a small one.
+            const long long v = m_val.int64Value();
+            const bool inRange = v >= std::numeric_limits<int>::min() && v <= std::numeric_limits<int>::max();
             if (ok)
-                *ok = true;
-            return static_cast<int>(m_val.int64Value());
+                *ok = inRange;
+            return inRange ? static_cast<int>(v) : 0;
         }
         const double d = m_val.toDouble();
         if (std::isfinite(d)

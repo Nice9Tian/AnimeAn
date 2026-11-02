@@ -40,7 +40,7 @@
 
 | 中文名 | 英文名 / 项目标识 | 状态 | 说明 |
 |---|---|---|---|
-| 父窗 | ParentWindow / `ui.windows` 名 `tools`、`tool_options`、`layers`、`assets`、`history`、`repulsion_pad`、`python_debug` | 现有 | 带页签的停靠窗；Python 按名字寻址、选页。 |
+| 父窗 | `ui.windows` 名 `tools`、`tool_options`、`layers`、`assets`、`history`、`repulsion_pad`、`python_debug` | 现有 | 带页签的停靠窗；Python 按名字寻址、选页。 |
 | 页 | page / `painting`、`mapping`、`main`、`child`、`drawing`、`texture` | 现有 | 父窗或中央区里的一页。不要译成 Pagination。 |
 | 中央区 | CentralPaintArea / `paint` | 现有 | Drawing 与 Texture 两页，不是停靠窗。 |
 | 子控件框 | SubControlFrame / `texture_view` | 现有 | 可嵌进面板或浮动的框；纹理板的三个家之一。 |
@@ -48,7 +48,7 @@
 | 无限画布 | unbounded canvas / `setUnboundedCanvas` | 现有 | 纹理板没有页面边框，图案画在哪都行。 |
 | 活动板 | active view / `active_view` | 现有 | 撤销、面板、工具消息作用的那块板，边缘有蓝色描边。 |
 | Changable Timeline / Changable Texture | 纹理板 Setting 菜单的两个开关 | 现有 | 前者决定时间轴是否跟随纹理板；后者关着时纹理板图案受保护，只有引导线工具能画。 |
-| 选项面板 | Options / ToolOptPanel、`tool_controls/*.json` | 现有 | 声明式：按 JSON 布局渲染 slider / list / check / button / color / subwindow / settings。 |
+| 选项面板 | Options / `createToolOptions`（`webui/src/ui/options.js`）、`tool_controls/*.json` | 现有 | 声明式：按 JSON 布局渲染 slider / list / check / button / color / subwindow / settings。 |
 | 设置窗 | settings window / `register_settings` | 现有 | 菜单项或右键项打开的声明式窗口（Draw Setting、Line Display Settings、Advanced Settings）。 |
 | 脚本菜单 | script menu / `register_menu`（宿主 `main` / `child`） | 现有 | Python 注册的菜单：Draw、Arrow、Auto Mapping、两块板各自的 View。 |
 | 主题 | AnimeTheme / Dark、Light | 现有 | 界面颜色角色的唯一出处；画纸恒白。 |
@@ -150,7 +150,7 @@
 | 〔裁〕 | trim mark | 现有 | 执行中穷尽解法表仍达不到时对二级、三级的最小修改标记。见 `long_time_work/README.md`。 |
 | 解法表 | solution table | 现有 | 卡住时的候选、评分与扫描记录。见 `long_time_work/solution_table.md`。 |
 | 同步脚本 | `sync_pyfiles.ps1` | 现有 | 改 Python 后把脚本同步到每个 exe 旁。 |
-| 构建脚本 | `build_scripts\agent_build.ps1`、`deploy_AnimeAn` | 现有 | 改 C++ 后的完整构建与部署。 |
+| 构建脚本 | `build_scripts\agent_build.ps1`、`build_scripts\package_tauri.ps1` | 现有 | 改 C++ 后的完整构建与打包。 |
 
 ## 8. 界面语言
 

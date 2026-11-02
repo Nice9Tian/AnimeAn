@@ -15,6 +15,13 @@
 
 除 `%APPDATA%\AnimeAn\settings.json` 外程序不落盘（`Settings` 只出现在 `theme.cpp` 与 `backend/session/backendsession.cpp`；网页的渲染器偏好 `animean.boardRenderer` 和 Tools 分组的折叠状态 `animean.toolGroups` 存 WebView2 的 `localStorage`）。
 
+另外几处写盘都不是用户数据，`../developer_guide.md` 的「不落盘」不管它们：
+
+- To 3D 把页面写到 `%TEMP%\animean_to3d_<时间>.html` 再打开（`pyfile/auto_mapping.py`）。
+- `pydeps` 首次运行时把 `pywheels\` 里缺的库装进自带的 `python312\`。
+- WebView2 在 `%LOCALAPPDATA%\com.animean.app\` 下存自己的配置和缓存，上面的 `localStorage` 也在这里。
+- Python 在脚本旁写 `__pycache__`。
+
 ## 文件归属与身份
 
 - File 菜单的 Save / Save As 永远存完整 `.anproj`（两块板）；Open 一起替换两块板并重置两份历史。
