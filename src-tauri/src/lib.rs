@@ -490,6 +490,44 @@ fn spawn_exit_watcher(
     });
 }
 
+fn validate_panel_label(label: &str) -> Result<&str, String> {
+    let trimmed = label.trim();
+    if trimmed.is_empty() {
+        return Err("Panel window label cannot be empty".to_string());
+    }
+    if trimmed == "main" {
+        return Err("Cannot use reserved label 'main' for panel window".to_string());
+    }
+    if !trimmed.starts_with("panel-") || trimmed.len() <= "panel-".len() {
+        return Err(format!(
+            "Invalid panel window label '{trimmed}': must start with 'panel-'"
+        ));
+    }
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(format!("Invalid characters in panel window label '{trimmed}'"));
+    }
+    Ok(trimmed)
+}
+
+fn min_size_for_panel(
+    label: &str,
+    min_width: Option<f64>,
+    min_height: Option<f64>,
+) -> (f64, f64) {
+    let default_min_w = if label == "panel-timelineDock" {
+        134.0
+    } else {
+        80.0
+    };
+    let default_min_h = 60.0;
+    let w = min_width.unwrap_or(default_min_w).max(default_min_w);
+    let h = min_height.unwrap_or(default_min_h).max(default_min_h);
+    (w, h)
+}
+
 fn parse_webview_url(url: &str) -> Result<tauri::WebviewUrl, String> {
     let trimmed = url.trim();
     if trimmed.starts_with("http://")
@@ -508,6 +546,14 @@ fn parse_webview_url(url: &str) -> Result<tauri::WebviewUrl, String> {
         }
     } else {
         let rel = trimmed.trim_start_matches('/');
+        let path_part = rel.split('?').next().unwrap_or(rel);
+        if path_part.contains("..")
+            || path_part.contains('\\')
+            || path_part.contains(':')
+            || trimmed.contains("://")
+        {
+            return Err(format!("Invalid relative panel URL '{trimmed}'"));
+        }
         let target = if rel.is_empty() { "index.html" } else { rel };
         Ok(tauri::WebviewUrl::App(PathBuf::from(target)))
     }
@@ -542,25 +588,40 @@ async fn open_panel_window(
     y: f64,
     width: f64,
     height: f64,
+    min_width: Option<f64>,
+    min_height: Option<f64>,
 ) -> Result<(), String> {
-    if label == "main" {
-        return Err("Cannot use reserved label 'main' for panel window".to_string());
-    }
+    let valid_label = validate_panel_label(&label)?.to_string();
+    let main_win = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window 'main' not found".to_string())?;
+    let (min_w, min_h) = min_size_for_panel(&valid_label, min_width, min_height);
+    let w = width.max(min_w);
+    let h = height.max(min_h);
 
-    if let Some(existing) = app.get_webview_window(&label) {
-        let _ = existing.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
-        let _ = existing.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
+    if let Some(existing) = app.get_webview_window(&valid_label) {
+        let _ = existing.set_min_size(Some(tauri::Size::Logical(tauri::LogicalSize::new(
+            min_w, min_h,
+        ))));
+        let _ =
+            existing.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
+        let _ = existing.set_size(tauri::Size::Logical(tauri::LogicalSize::new(w, h)));
         let _ = existing.show();
         let _ = existing.set_focus();
         return Ok(());
     }
 
     let webview_url = parse_webview_url(&url)?;
-    tauri::WebviewWindowBuilder::new(&app, &label, webview_url)
+    tauri::WebviewWindowBuilder::new(&app, &valid_label, webview_url)
+        .title("AnimeAn")
+        .parent(&main_win)
+        .map_err(|e| e.to_string())?
+        .skip_taskbar(true)
         .decorations(false)
         .resizable(true)
         .position(x, y)
-        .inner_size(width, height)
+        .inner_size(w, h)
+        .min_inner_size(min_w, min_h)
         .build()
         .map(|_| ())
         .map_err(|e| e.to_string())
@@ -568,10 +629,8 @@ async fn open_panel_window(
 
 #[tauri::command]
 async fn close_panel_window(app: tauri::AppHandle, label: String) -> Result<(), String> {
-    if label == "main" {
-        return Err("Cannot close main window via close_panel_window".to_string());
-    }
-    if let Some(win) = app.get_webview_window(&label) {
+    let valid_label = validate_panel_label(&label)?;
+    if let Some(win) = app.get_webview_window(valid_label) {
         win.close().map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -692,6 +751,16 @@ pub fn run() {
         })
         .on_window_event(move |window, event| {
             if window.label() == "main" {
+                if matches!(
+                    event,
+                    WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed
+                ) {
+                    for (lbl, win) in window.app_handle().webview_windows() {
+                        if lbl.starts_with("panel-") {
+                            let _ = win.close();
+                        }
+                    }
+                }
                 if let WindowEvent::Destroyed = event {
                     manager_for_window.shutdown();
                     window.app_handle().exit(0);
@@ -810,5 +879,80 @@ mod tests {
 
         let fp = tauri_plugin_dialog::FilePath::Path(PathBuf::from(r"C:\test\sample.png"));
         assert_eq!(file_path_to_string(fp), r"C:\test\sample.png");
+    }
+
+    #[test]
+    fn test_parse_webview_url() {
+        match parse_webview_url("index.html?only=toolsDock&satellite=1").unwrap() {
+            tauri::WebviewUrl::App(p) => {
+                assert_eq!(p, PathBuf::from("index.html?only=toolsDock&satellite=1"));
+            }
+            other => panic!("Expected WebviewUrl::App, got {other:?}"),
+        }
+        match parse_webview_url("/index.html?only=timelineDock&satellite=1").unwrap() {
+            tauri::WebviewUrl::App(p) => {
+                assert_eq!(p, PathBuf::from("index.html?only=timelineDock&satellite=1"));
+            }
+            other => panic!("Expected WebviewUrl::App, got {other:?}"),
+        }
+        match parse_webview_url("").unwrap() {
+            tauri::WebviewUrl::App(p) => assert_eq!(p, PathBuf::from("index.html")),
+            other => panic!("Expected WebviewUrl::App, got {other:?}"),
+        }
+        assert!(matches!(
+            parse_webview_url("http://localhost:1430/index.html?only=layersDock&satellite=1")
+                .unwrap(),
+            tauri::WebviewUrl::External(_)
+        ));
+        assert!(matches!(
+            parse_webview_url("http://127.0.0.1:1430/index.html").unwrap(),
+            tauri::WebviewUrl::External(_)
+        ));
+        assert!(matches!(
+            parse_webview_url("tauri://localhost/index.html").unwrap(),
+            tauri::WebviewUrl::External(_)
+        ));
+        assert!(parse_webview_url("https://example.com/index.html").is_err());
+        assert!(parse_webview_url("../secret.html").is_err());
+        assert!(parse_webview_url("javascript:alert(1)").is_err());
+        assert!(parse_webview_url("file:///C:/Windows/win.ini").is_err());
+    }
+
+    #[test]
+    fn test_validate_panel_label_and_min_size() {
+        assert_eq!(
+            validate_panel_label("panel-toolsDock").unwrap(),
+            "panel-toolsDock"
+        );
+        assert_eq!(
+            validate_panel_label("panel-timelineDock").unwrap(),
+            "panel-timelineDock"
+        );
+        assert_eq!(
+            validate_panel_label("  panel-layers_1 ").unwrap(),
+            "panel-layers_1"
+        );
+        assert!(validate_panel_label("").is_err());
+        assert!(validate_panel_label("main").is_err());
+        assert!(validate_panel_label("panel-").is_err());
+        assert!(validate_panel_label("toolsDock").is_err());
+        assert!(validate_panel_label("panel-tools/dock").is_err());
+
+        assert_eq!(
+            min_size_for_panel("panel-toolsDock", None, None),
+            (80.0, 60.0)
+        );
+        assert_eq!(
+            min_size_for_panel("panel-timelineDock", None, None),
+            (134.0, 60.0)
+        );
+        assert_eq!(
+            min_size_for_panel("panel-layersDock", Some(120.0), Some(90.0)),
+            (120.0, 90.0)
+        );
+        assert_eq!(
+            min_size_for_panel("panel-layersDock", Some(20.0), Some(10.0)),
+            (80.0, 60.0)
+        );
     }
 }

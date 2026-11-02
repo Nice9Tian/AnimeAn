@@ -12,3 +12,4 @@ import "./dialogs_and_options.test.ts";
 import "./dialogs_and_options.test.ts";
 import "./pen_probe.test.ts";
 import "./texture_panel.test.ts";
+import "./relay.test.ts";
