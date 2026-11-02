@@ -590,8 +590,9 @@ def _finish(view, session, scene):
     if drag is None or not drag["changed"]:
         return
     line = drag["line"]
-    unchanged = (drag["snap"] is not None and drag["snap"]["kind"] == "start") or \
-                (drag["snap"] is not None and drag["start"] is None)
+    # Ended where it began - back on the start, back on a tip that was sharp,
+    # or a pull too small to leave a rounding: nothing changed for the user.
+    unchanged = drag["rounds"].get(drag["joint"]) == drag["start"]
     if unchanged:
         # Back where it began: put the stroke back exactly, nothing to record.
         scene.image_at(drag["row"], line["layer"], True).replace_stroke_with_pieces(
@@ -776,7 +777,9 @@ def _on_handle(message):
     if phase == "arm":
         session["cache"] = None
         return
-    if phase == "leave":
+    if phase == "view":
+        pass                      # zoom changed: the marks are screen-sized, redraw
+    elif phase == "leave":
         session["cursor"] = None
         session["target"] = None
     elif phase == "hover":

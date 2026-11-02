@@ -62,7 +62,7 @@
 | 拉回起点 | 用户 2026-11-02 定：拉回这次按下的位置附近会吸住，圆角精确回到按下前的样子，松手不留撤销步 |
 | 起点就在吸附范围里 | 按下时就在角尖或起点的吸附范围里，要先离开一次才会吸，小幅微调不被吸住 |
 | Shift | 两边等长 |
-| 取消 | 拖动中右键或 Esc，恢复按下前的样子 |
+| 取消 | demo 里是拖动中右键或 Esc；软件里只有右键（按键不送到工具） |
 | 线转得太歪 | 超过两条腿允许的切线范围时，圆角全偏到更近的腿上，另一边为 0 |
 | 腿不够长 | 每边最多切到这一段的另一端；那一端已有圆角时让给它，两个圆角之间留 0.5 像素 |
 | 一条腿跨几段 | 现在只在相邻的一段里切 |
@@ -81,7 +81,7 @@
 
 ## 接进软件（2026-11-03）
 
-用户 2026-11-03 要求把两个工具接进软件、加进 Tools 面板。一级工具页和二级承诺按规则由 Agent 起草，标「草稿待拍板」：`../../tools_user_workflow/curve.md`、`../../tools_user_workflow/round_corner.md`、`../../product_features.md`「绘画工具」两条和图层锁定一条。机制（三级）写进 `../../mechanism/painting_tools.md` 和 `../../mechanism/hook_events.md`。
+用户 2026-11-03 要求把两个工具接进软件、加进 Tools 面板。一级工具页和二级承诺按规则由 Agent 起草，标「草稿待拍板」：`../../tools_user_workflow/curve.md`、`../../tools_user_workflow/round_corner.md`、`../../product_features.md`「绘画工具」两条、「图层决定工具」（工具锁定）一条和「图层锁定」一条。机制（三级）写进 `../../mechanism/painting_tools.md` 和 `../../mechanism/hook_events.md`。
 
 **C++ 补的基础函数**（`openglwidget.cpp`，不含工具名）：脚本工具武装时也收 `hover`（带修饰键）；右键按下发 `context`（拖动中带拖动的 id）；光标离开画板发 `leave`。原来只有 Connect 和 Transfer 收 hover，右键在 C++ 里直接丢掉。
 

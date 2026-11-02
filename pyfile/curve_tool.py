@@ -554,8 +554,8 @@ def _preview_spans(session):
             return []
         anchors += other
     else:
-        if bezier.dist(cursor, anchors[-1]) < EPS:
-            return []
+        if bezier.dist(cursor, anchors[-1]) < _px(session, MIN_GAP_PX):
+            return []   # a click here would place nothing, so nothing is previewed
         anchors.append(target["at"] if target is not None else cursor)
     spans = catmull_rom(anchors, closed)
     first_changed = max(0, len(active["anchors"]) - 2)
@@ -706,7 +706,11 @@ def _on_history(message):
             scene = _scene_model(view)
         except Exception:
             continue
-        if active is not None and active.get("uid") is not None:
+        if active is not None and active.get("uid") is None:
+            # A lone anchor never was in the model: an undo stepped back past
+            # it (it undid something else), so it goes too.
+            session["active"] = None
+        elif active is not None:
             try:
                 record = _record_by_uid(scene, active["uid"])
                 strokes = scene.cell_to_dict(active["layer"], active["row"], False, 4.0)["image"]["strokes"]

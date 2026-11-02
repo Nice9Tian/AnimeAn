@@ -227,14 +227,16 @@ describe("Board Input conversions & event binding", () => {
       shiftKey: false, ctrlKey: false, altKey: false, timeStamp: 1020,
       getCoalescedEvents: () => [],
     });
+    // 按键变化先报，随后才是这一帧的移动（移动带的已经是变化后的按键状态）
     const before = messages.length;
     chord(2, 3);
-    assert.deepEqual(messages.slice(before + 1).map((m: any) => [m.kind, m.button, m.buttons]),
-                     [["press", QT_RIGHT_BUTTON, QT_LEFT_BUTTON | QT_RIGHT_BUTTON]]);
+    assert.deepEqual(messages.slice(before).map((m: any) => [m.kind, m.button, m.buttons]),
+                     [["press", QT_RIGHT_BUTTON, QT_LEFT_BUTTON | QT_RIGHT_BUTTON],
+                      ["move", 0, QT_LEFT_BUTTON | QT_RIGHT_BUTTON]]);
     const mid = messages.length;
     chord(0, 2);
-    assert.deepEqual(messages.slice(mid + 1).map((m: any) => [m.kind, m.button, m.buttons]),
-                     [["release", QT_LEFT_BUTTON, QT_RIGHT_BUTTON]]);
+    assert.deepEqual(messages.slice(mid).map((m: any) => [m.kind, m.button, m.buttons]),
+                     [["release", QT_LEFT_BUTTON, QT_RIGHT_BUTTON], ["move", 0, QT_RIGHT_BUTTON]]);
     const plain = messages.length;
     chord(-1, 2);
     assert.equal(messages.length, plain + 1);      // a plain move is only a move

@@ -823,8 +823,11 @@ void PaintOpenGLWidget::wheelEvent(WheelEvent *event)
     // threshold in SCREEN space), so a zoom while handles are up re-asks
     // Python which handles survive at the new magnification. Connect's
     // button offsets are screen-sized too, so its handles re-place as well.
-    if ((m_tool == Tool::Arrow || m_tool == Tool::Connect)
-        && !m_editHandles.isEmpty() && m_activeHandleDrag.isEmpty()) {
+    // An armed script tool hears every zoom: what it draws for the pointer
+    // is sized in screen pixels.
+    if (m_activeHandleDrag.isEmpty()
+        && (((m_tool == Tool::Arrow || m_tool == Tool::Connect) && !m_editHandles.isEmpty())
+            || !m_activePythonTool.isEmpty())) {
         sendPythonHandleMessage(String("view"), String(), docAnchor);
     }
     event->accept();

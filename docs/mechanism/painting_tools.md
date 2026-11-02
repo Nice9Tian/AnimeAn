@@ -4,7 +4,7 @@
 
 ## 共用的机制
 
-- **handle 事件是工具面。** 阶段 `arm`（每次换工具或换笔画属性）、`pick`、`press`、`move`、`release`、`cancel`、`hover`、`view`（显示控制手柄时缩放变了）；消息带 tool / base_tool / property、文档坐标、缩放、修饰键（shift / ctrl / alt / constrain）和当前颜色。`pick` 回 `message["grab"] = id` 即认领这次按下为拖拽。控制手柄按**屏幕**尺寸画、按屏幕命中；可拖的覆盖层项在任何工具下都能拖。
+- **handle 事件是工具面。** 阶段 `arm`（每次换工具或换笔画属性）、`pick`、`press`、`move`、`release`、`cancel`、`hover`、`view`（显示控制手柄时、或脚本工具武装时缩放变了）、`context`（脚本工具武装时右键按下）、`leave`（脚本工具武装时光标离开画板）；消息带 tool / base_tool / property、文档坐标、缩放、修饰键（shift / ctrl / alt / constrain）和当前颜色。`pick` 回 `message["grab"] = id` 即认领这次按下为拖拽。控制手柄按**屏幕**尺寸画、按屏幕命中；可拖的覆盖层项在任何工具下都能拖。
 - **覆盖层**经 `overlay_stack.set_items(view, owner, items)` 合成；光标经 `ui.set_cursor(view, name)`，C++ 每次 `setTool` 清掉脚本光标，Python 换会话时要丢自己的光标记忆。
 - **每工具颜色**（`tool_colors`）：键是脚本工具的笔画属性、否则是基础工具名；`arm` 时记下当前颜色，工具从不自己"恢复默认色"（曾让第二条 H 轴画成画笔色）。
 - **调色板**（`palette_box`）：色块集存主场景 scriptData 键 `palette`，随文档；`color` hook 直接套用颜色，`palette_box` hook 走 `add:#AARRGGBB` / `remove:…`；Pen 和 Fill 面板各按自己的槽取种子。
@@ -38,15 +38,15 @@
 - 锚点记在场景 scriptData 键 `curve_tool`：每条线一条记录（uid、所在格的 `(asset_index, frame_id)`、锚点、是否闭合）；记录按几何认笔画——路径的每个控制点都等于这些锚点算出的曲线的那一条，不认下标。笔画被擦、切、改过（哪怕只动了一个手柄）就对不上，悬停时跳过，下次在同一格写线时删掉。悬停不写文档。续画时保留这条线原来的颜色和粗细；每次写线前确认图层仍可画、还是开始画时那一层（`layer_id_at`），不是就结束这条线。
 - 撤销：`historyrestore` 后正在画的线按恢复后的记录接着画，方向和撤销前一致（Ctrl+Z 收回最后一个锚点）；撤到线还不是笔画时留下第一个锚点；笔画没了就结束。换帧结束这条线。写线后让跟随这一层的填充层重描（`fill_tool.retrace_after_edit`），并进同一条历史。
 - 吸附：`SNAP_PX` = 16 屏幕像素，吸住后放宽到 `STICK` = 1.35 倍；离上一个锚点 `MIN_GAP_PX` = 3 屏幕像素以内的点击不放点；Alt 或 Options 的 Snap 关掉不吸。接线只在同一格里。
-- 显示：全部经 `overlay_stack`（owner `curve_tool`），项都 `removable = False`；预览只画下一次点击会改的一段和新的一段。
+- 显示：全部经 `overlay_stack`（owner `curve_tool`），项都 `removable = False`；预览只画下一次点击会改的一段和新的一段（接线时是接上后的整段，闭合时是闭合段），离上一个锚点 `MIN_GAP_PX` 以内不画；缩放（`view`）、换帧、撤销后重画。只剩一个还没成笔画的锚点时撤销，这个锚点也去掉。历史名 `Curve`、`Join Curves`、`Close Curve`。
 
 ## Round Corner（`round_corner_tool.py`）
 
 - 注册：`extra_tools.py` 里 `round_corner`，属性 `round_corner_tool`，宿主是 Arrow。`pick` 吸到抓点时回 `grab = "round:drag"` 认领拖动，`move` / `release` 带这个 id；拖动中 `context` 取消。
 - 尖角：单子路径的笔画（直线、二次段升成三次）里相邻两段在接点的切向差超过 `CORNER_DEG` = 15°；带属性的笔画（别的工具的线）不碰。
-- 圆角：接点 j 记两段弧长 `L1`、`L2`、控制线抓的是哪一端 `s`、拖动时的形状 `k`；两条腿用 `bezier.cubic_segment` 精确切片（共享轮子，不重拟合），切点之间补一段三次，手柄长 k × 切掉长度。两个圆角切同一段时之间留 `GAP` = 0.5 画布像素。
+- 圆角：接点 j 记两段弧长 `L1`、`L2`、控制线抓的是哪一端 `s`、拖动时的形状 `k`；两条腿用 `bezier.cubic_segment` 精确切片（共享轮子，不重拟合），切点之间补一段三次，手柄长 k × 切掉长度。每边最多切到这一段另一端（含那一端已切掉的）前 `GAP` = 0.5 画布像素。作用于当前帧所有可见、未锁、非填充层上不带属性的笔画，不只当前层。缩放（`view`）、撤销、换帧换层后重画或清掉标记。
 - 控制线：两个切点的弦，钉在角尖，两端是 角尖 ± 弦 / 2；抓着的一端等于鼠标。直腿闭式解 `端点 − 角尖 = s (L1 e1 + L2 e2) / 2`（e1 = −u1，e2 = u2），弯腿用 Levenberg-Marquardt 在真实的弦上解，拖动时从上一刻接着解；够不到的位置停在最近处。Shift 两边等长。
-- 吸附点：拖动中角尖和起点各是一个停靠点，半径 `SNAP_PX` = 16 屏幕像素；按下时就在范围里的停靠点要先离开一次才生效。吸到起点或新角吸回角尖，松手时笔画按原命令放回、不提交历史。
+- 吸附点：悬停吸附 `SNAP_PX` = 16 屏幕像素，吸住后放宽到 `STICK` = 1.35 倍；按下后移动不到 `DRAG_START_PX` = 2 屏幕像素什么都不改。拖动中角尖和起点各是一个停靠点，半径 `SNAP_PX`；按下时就在范围里的停靠点要先离开一次才生效。松手时这个角的圆角和按下前一样（吸到起点、新角吸回角尖、或拉得太小两边都不到 `GAP`），笔画按原命令放回、不提交历史。抓着的端点保持按下时离它的偏移；Shift、转出范围、腿切到头时端点停在够得到的最近处。
 - 写回：每次移动 `replace_stroke_with_pieces` 原地换（保留 id、颜色、线宽、线型），松手先让跟随这一层的填充层重描，再 `history_commit("Round Corner")` 一次；scriptData 键 `round_corner` 记每条倒过圆角的笔画：所在格、未倒圆角的段、各接点的圆角、结果路径的全部控制点（用来认笔画）。认不出的笔画（包括被别的工具动过一个手柄的）就按它现在的尖角处理。松手没到达就开始下一次按下时，上一次拖动按松手收尾。
 - 显示：经 `overlay_stack`（owner `round_corner_tool`），只标光标 `NEAR_PX` = 120 屏幕像素以内的角。
 

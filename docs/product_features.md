@@ -36,7 +36,7 @@
 - **Round Corner**（草稿待拍板）：吸附线上的尖角，按住拉出一条控制线，线长决定圆角多平滑，线的角度决定偏向哪边；拉回角尖恢复尖角，拉回起点回到原样；倒过的圆角能再调。现有（issue #100）。机制（三级）：`mechanism/painting_tools.md`。
 - **Repulsion Pad**：手柄把当前帧重叠或贴近的线推开，实时预览，拓扑不变，锁定层不动。现有。机制（三级）：`mechanism/painting_tools.md`。
 - 图层决定工具：Auto-Mapping 单元里的层展开 Mapping 组；跟随线稿的填充层锁 Pen / Eraser / Connect / Transfer / Curve / Round Corner，只留 Arrow 和 Fill；独立填充层锁 Connect / Curve / Round Corner（Curve、Round Corner 两项草稿待拍板）。现有。机制（三级）：`mechanism/fill_layers.md`。
-- 图层锁定：模型里有锁，现在只有 Transfer 尊重它、面板没有开关。规划：Layers 面板加锁定开关，锁定的层所有工具都不改。
+- 图层锁定：模型里有锁，现在只有 Transfer、Curve、Round Corner 尊重它（后两个草稿待拍板）、面板没有开关。规划：Layers 面板加锁定开关，锁定的层所有工具都不改。
 
 ## 逐帧动画：帧、图层与时间轴
 

@@ -205,9 +205,11 @@ export function attachBoardInput(
     });
   };
 
+  // The button change goes first: the moves this event carries are already
+  // reported with the new button state.
   const onPointerMove = (e: PointerEvent) => {
-    if (!rawUpdateActive) emitMoveSamples(e);
     emitChordedButton(e);
+    if (!rawUpdateActive) emitMoveSamples(e);
   };
 
   const onPointerUpOrCancel = (e: PointerEvent) => {

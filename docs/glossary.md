@@ -70,7 +70,7 @@
 | 跟随线稿的填充层 | tracked fill layer / `parentLayerId`、To Independent Layer | 现有 | 自动建在线稿层下、随线稿重算的填充层；解除跟随成独立填充层。 |
 | 区域刷 | region brush / `ui.set_fill_paint_mode` | 现有 | 独立填充层上画笔的含义：画过的封闭区域都填上。 |
 | 工具锁定 | locked tools / `ui.set_locked_tools`、`layer_tool_policy.py` | 现有 | 当前层决定哪些工具不可用；Arrow 永不锁。与"图层锁定"是两回事。 |
-| 图层锁定 | layer lock / `set_layer_locked`、`layer_locked` | 现有（模型与绑定）/ 规划（面板开关） | 锁定的层不被工具改动；现在只有 Transfer 尊重它，Layers 面板加开关是规划（用户 2026-09-28）。 |
+| 图层锁定 | layer lock / `set_layer_locked`、`layer_locked` | 现有（模型与绑定）/ 规划（面板开关） | 锁定的层不被工具改动；现在只有 Transfer、Curve、Round Corner 尊重它，Layers 面板加开关是规划（用户 2026-09-28）。 |
 | 变形 | Transfer / `Tool::Transfer`、`transfer_tool.py` | 现有 | 当前层内容的缩放、拉伸、平移、旋转框；Python 工具。用户口中的"放大缩小"若指内容变形即此；视口缩放是 C++ 基础能力。 |
 | 连接 | Connect / `Tool::Connect`、`connect_tool.py`；PolyMode / CurveMode / SmoothMode | 现有 | 两个点之间生成一条新笔画。 |
 | 曲线工具 | Curve / `curve`、`pyfile/curve_tool.py` | 现有（草稿待拍板） | 点击放锚点，锚点之间用向心 Catmull-Rom 连成平滑曲线；右键结束，吸端点续画、接线、闭合。 |
