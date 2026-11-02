@@ -209,4 +209,37 @@ assert pb.swatches(scene) == ["#ff000000", "#ffffffff", "#ffc81e28", "#ff283cc8"
 assert pb.add("#ff283cc8", scene) is False           # once saved, a repeat is a no-op again
 print("13) Add keeps a colour that was only in the seed")
 
+
+# 14) The box's + asks Python for the New Color dialog (developer_guide.md,
+# "分工"): Python opens it, and Add draws with the colour and keeps it.
+opened = []
+sent = []
+fake_dialogs = types.ModuleType("dialogs")
+fake_dialogs.color = lambda value, on_result, title="Select Color", accept="OK": opened.append((value, title, accept, on_result))
+fake_dialogs.call = lambda method, params: sent.append((method, params))
+real_dialogs = sys.modules.get("dialogs")
+sys.modules["dialogs"] = fake_dialogs
+scene = fresh()
+refreshed = []
+pb._scene = lambda required=True: scene
+pb._refresh = lambda: refreshed.append(1)
+try:
+    pb._option_changed({"hook": "palette_box", "value": "new:#ff336699"})
+    assert [entry[:3] for entry in opened] == [("#ff336699", "New Color", "Add")]
+    opened[0][3](None)                                  # Cancel
+    assert sent == [] and not refreshed
+    opened[0][3]("#ff336699")                           # Add
+    assert sent == [("tool.option", {"hook": "color", "name": "palette", "type": "palette", "value": "#ff336699"})]
+    assert pb.swatches(scene)[-1] == "#ff336699" and refreshed == [1]
+    pb._option_changed({"hook": "palette_box", "value": "new:"})
+    assert opened[1][0] == pb.current_color()            # no colour sent: the pen's
+finally:
+    pb._scene = real_scene
+    pb._refresh = real_refresh
+    if real_dialogs is None:
+        sys.modules.pop("dialogs", None)
+    else:
+        sys.modules["dialogs"] = real_dialogs
+print("14) + opens New Color in Python; Add draws with it and keeps it")
+
 print("t_palette: ALL OK")
