@@ -2,6 +2,7 @@
 // swatch box and the three pickers. Same geometry and maths as
 // childrenpanel/palettecontrol.cpp, drawn with DOM for the box and canvas for
 // the pickers. Colours travel as #aarrggbb, the form Python stores.
+import { label as labelled } from "../i18n/index.js";
 import { PRESS_ENDS } from "./panels.js";
 
 const css = (name) => (typeof getComputedStyle === "function" ? getComputedStyle(document.documentElement).getPropertyValue(name).trim() : "");
@@ -410,7 +411,7 @@ export function createPalette(emit, { pickersOnly = false } = {}) {
     const i = pickersOnly ? n + 1 : n;
     const t = document.createElement("div");
     t.className = "pal-tab";
-    t.textContent = text;
+    labelled(t, text);
     t.addEventListener("click", () => show(i));
     // Same integer split as PaletteTabStrip::tabRect, so the dividers land on
     // the same columns at any width.

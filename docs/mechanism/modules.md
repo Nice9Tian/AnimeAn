@@ -35,7 +35,7 @@ AnimeAn.exe（src-tauri/src/lib.rs）
  3. 读后端 stdout 直到拿到 ANIMEAN_BACKEND_PORT=<端口>，拼出 ws://127.0.0.1:<端口>/?token=<token> 存下
  4. WebView2 加载 webui/index.html；webui/src/main.ts 装配 webui/design/ 场景与 webui/src/ui/app.js 面板工厂
  5. 网页调用 Tauri 命令 backend_endpoint 取回 { url }，连接这个地址
- 6. 后端推送全量初始 state；网页收到第一个 window 状态后弹出 New Project 对话框询问画布尺寸
+ 6. 后端推送全量初始 state；网页收到第一个 window 状态后弹出 New Project 对话框询问画布尺寸（后端已经开着工程时不弹）
 ```
 
 ### 2. 后端启动与 Python 装载顺序
@@ -44,9 +44,9 @@ AnimeAn.exe（src-tauri/src/lib.rs）
 AnimeAnBackend.exe（backend/main.cpp）
  1. 解析 --port 与 --token；调 AnimeTheme::mode() 从 %APPDATA%\AnimeAn\settings.json 读取保存的深 / 浅色模式
  2. 定位 Python：PYTHONHOME = exe 旁 python312\，没有则用构建时记下的 tools\python312
-    PYTHONPATH = 源码 pyfile\（存在时最优先）→ exe 目录 → pythonbind\ → opentoonz_tools\
+    PYTHONPATH = 源码 pyfile\ → pythonbind\ → opentoonz_tools\（各自存在时）→ exe 目录
     PATH 前置 python312\ 与 python312\DLLs
- 3. 启动嵌入解释器（py::scoped_interpreter）
+ 3. 启动嵌入解释器（py::scoped_interpreter，不把工作目录放上 sys.path）
  4. 构造 WsServer 与 BackendSession（内含 AnimeanBusiness 及 main / child 两块 PaintOpenGLWidget 画板，注册 ui 回调）
  5. BackendSession::initializePythonStartup()：
     a. 注册 ui 回调；syncEmbeddedPythonState() 往 __main__ 写 main_model、child_model、model、active_view、ui、current 等
@@ -58,7 +58,7 @@ AnimeAnBackend.exe（backend/main.cpp）
  7. WsServer::listen 监听 127.0.0.1，向 stdout 打印 ANIMEAN_BACKEND_PORT=<端口>，进入 EventLoop::instance().exec()
 ```
 
-装载顺序有意义：`toolcontrol`、`python_hooks` 先于一切；`tool_colors` 先于 `palette_box`（后者从前者的缓存取种子）；`window_manager` 与 `fill_tool` 先于 `layer_tool_policy`。开发机上源码 `pyfile\` 排在 exe 目录之前，所以改脚本不重建也生效；例外是 `initalize.py`、`animemodel.py`、`toonz_to_dict.py`，见 `build_deploy.md`。发布的文件夹没有源码树，从 exe 旁加载。`bind_test()` 会改场景，只能从调试窗手动跑，启动不跑。
+装载顺序有意义：`toolcontrol`、`python_hooks` 先于一切；`tool_colors` 先于 `palette_box`（后者从前者的缓存取种子）；`window_manager` 与 `fill_tool` 先于 `layer_tool_policy`。要定顺序就把模块加进 `initalize.py` 的 `PYTHON_FILE_MODULES`；没列的不用登记，排在后面按文件名导入（`_` 开头的不导入）。开发机上源码的 `pyfile\`、`pythonbind\`、`opentoonz_tools\` 排在 exe 目录之前，`initalize.py` 也先在源码目录里找，所以改脚本不重建也生效，见 `build_deploy.md`。发布的文件夹没有源码树，从 exe 旁加载。`bind_test()` 会改场景，只能从调试窗手动跑，启动不跑。
 
 ## C++ 模块
 
@@ -101,6 +101,7 @@ AnimeAnBackend.exe（backend/main.cpp）
 | `pyfile/edit_tool.py` | Arrow 的三种编辑模式；Arrow 菜单（选中轮廓的显示设置） |
 | `pyfile/transfer_tool.py` | Transfer 的框、控制手柄、旋转与修饰键 |
 | `pyfile/connect_tool.py` | Connect 的吸附与三种连接 |
+| `pyfile/ui_language.py` | 记下网页当前的界面语言，给 To 3D 页和画板上的折叠气泡挑文字 |
 | `pyfile/fill_tool.py` | 填充策略：落在哪层、范围升级、重复点击、跟随线稿层、To Independent Layer |
 | `pyfile/layer_tool_policy.py` | 当前层决定 Tools 页与锁定的工具、填充层上的区域刷 |
 | `pyfile/visibility_tool.py` | 图层可见性开关的策略 |
@@ -127,7 +128,7 @@ AnimeAnBackend.exe（backend/main.cpp）
 - **共享轮子唯一。** 贝塞尔劈分（`algorithm/beziersplit.h` ↔ `pyfile/bezier.py`）、屏幕 ↔ 画布换算（`algorithm/viewscale.h` ↔ `pyfile/viewscale.py`）只有一个家，C++ 与 Python 各一份镜像，调用处注释指回；劈分永不改变画出的形状，切片不重拟合；步长密度策略留给调用方。
 - **决定空间再写常数。** 手和眼的量（抖动、点选容差、按住不动半径、最小可见宽度）是屏幕像素，经 `viewscale` 换算；作品的量（几何、弧长、步长）是画布像素，不换算。交互事件预算按屏幕像素一次性换算，几何按真实缩放。
 - **省事就用库，不重复造轮子。** Python 侧有现成库能用的（numpy、三角化）就直接用，不是原则，是省事：wheel 入 `pywheels/`，经 `pydeps.ensure()` 加载——首次缺库先从随包 wheel 离线安装，再退网络，全失败返回 None 由调用方降级（例如三角化退回纯 Python 实现）。
-- **新工具**：一律是 Python，C++ 不加枚举（`../developer_guide.md`「分工」）。登记在 `pyfile/extra_tools.py`，后端启动时由 `AnimeanBusiness::loadExtraTools` 读入，选中时 `selectExtraTool` 按 `base_tool` 切到 Fill、Arrow、Transfer 或 Pen 的交互事件；选项布局在 `pyfile/toolcontrol.py`，按钮在 `webui/design/`。`PaintOpenGLWidget::Tool` 与 `AnimeanBusiness::Tool` 的枚举只给内建工具；动内建工具时，`openglwidget.cpp` 的 `toolName`、`AnimeanBusiness::toolControlName` / `fileNameForBuiltInTool`、`BackendSession` 的 `parseToolValue` / `toolEnumDisplayName` 与兜底 `childrenpanel/tool_controls/*.json` 各有一处，漏了任一处会静默拿到画笔的选项面板。
+- **新工具**：一律是 Python，C++ 不加枚举（`../developer_guide.md`「分工」）。策略模块用 `python_hooks.set_hook` 订阅要用的事件。按钮登记在 `pyfile/extra_tools.py`（`handler` 是选中时调用的函数），后端启动时由 `AnimeanBusiness::loadExtraTools` 读入，选中时 `selectExtraTool` 按 `base_tool` 切到 Fill、Arrow、Transfer 或 Pen 的交互事件；选项布局在 `pyfile/toolcontrol.py`，按钮在 `webui/design/`，`webui/tests/tool_groups.test.ts` 检查 `extra_tools.py` 里的每个工具在那里都有节点、状态和图标。`PaintOpenGLWidget::Tool` 与 `AnimeanBusiness::Tool` 的枚举只给内建工具；动内建工具时，`openglwidget.cpp` 的 `toolName`、`AnimeanBusiness::toolControlName` / `fileNameForBuiltInTool`、`BackendSession` 的 `parseToolValue` / `toolEnumDisplayName` 与兜底 `childrenpanel/tool_controls/*.json` 各有一处，漏了任一处会静默拿到画笔的选项面板。
 
 ## 已核实的边角
 

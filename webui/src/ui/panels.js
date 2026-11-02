@@ -1,5 +1,6 @@
 // Panels of the main window, drawn to match the Qt build. Each takes plain
 // data and reports what the user did; the wiring to the backend is elsewhere.
+import { isSourceLanguage, label, language, t } from "../i18n/index.js";
 
 function div(cls, text) {
   const d = document.createElement("div");
@@ -24,23 +25,26 @@ export function trackPress(el, move) {
 
 // Qt sums hinted glyph advances, the browser unhinted ones, so the two disagree
 // by a pixel or two per label. These are the widths the Qt build lays out at
-// 9pt Segoe UI; a label outside the table falls back to measuring.
+// 9pt Segoe UI, for the English labels; anything else falls back to measuring.
 const MENU_WIDTH = { File: 26, Edit: 28, Setting: 46, View: 32, "Auto Mapping": 88, Draw: 32, Theme: 44, Windows: 62 };
 const TAB_WIDTH = { Painting: 66, Mapping: 70, Drawing: 66, Texture: 60, Options: 64, "Main Layers": 85, "Child Layers": 86 };
 
 // ---- tabs as the stylesheet in parentwindow.cpp draws them ------------------
-export function tabBar(labels, onSelect) {
+export function tabBar(labels, onSelect, widths = TAB_WIDTH) {
   const bar = div("tabbar-row");
   const measure = document.createElement("canvas").getContext("2d");
   measure.font = '12px "Segoe UI"';
+  const fit = (tab, source) => {
+    const known = isSourceLanguage() ? widths[source] : undefined;
+    tab.style.width = `${known ?? Math.ceil(measure.measureText(tab.textContent).width) + 22}px`;
+  };
   const tabs = labels.map((text, i) => {
-    const t = div("tab", text);
-    t.style.width = `${TAB_WIDTH[text] ?? Math.ceil(measure.measureText(text).width) + 22}px`;
-    t.addEventListener("click", () => onSelect(i));
-    bar.append(t);
-    return t;
+    const tab = label(div("tab"), text, fit);
+    tab.addEventListener("click", () => onSelect(i));
+    bar.append(tab);
+    return tab;
   });
-  return { el: bar, select: (i) => tabs.forEach((t, k) => t.classList.toggle("sel", k === i)) };
+  return { el: bar, select: (i) => tabs.forEach((tab, k) => tab.classList.toggle("sel", k === i)) };
 }
 
 // ---- Scrollbar --------------------------------------------------------------
@@ -142,12 +146,13 @@ export function createCentral(root, { onPage, onScroll, onPill, bottomChrome = d
   h.set = (next) => { setH(next); syncBars(); };
   v.set = (next) => { setV(next); syncBars(); };
   const pill = div("pill");
-  pill.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24"><path d="M6 14 L12 8 L18 14" fill="none" stroke="currentColor" stroke-width="2"/></svg><span>TIMELINE</span>`;
+  pill.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24"><path d="M6 14 L12 8 L18 14" fill="none" stroke="currentColor" stroke-width="2"/></svg>`;
+  pill.append(label(document.createElement("span"), "TIMELINE"));
   pill.addEventListener("click", onPill);
   stage.append(host, h.el, v.el, pill);
   const texturePage = div("central-texture");
   const textureSlot = div("central-texture-slot");
-  const texturePlaceholder = div("central-placeholder", "The texture view is open in its own control.");
+  const texturePlaceholder = label(div("central-placeholder"), "The texture view is open in its own control.");
   texturePage.append(textureSlot, texturePlaceholder);
   const syncTexture = () => {
     const hasContent = textureSlot.childElementCount > 0;
@@ -343,7 +348,7 @@ export function createLayers(root, handlers) {
     const add = document.createElement("button");
     const del = document.createElement("button");
     const clear = document.createElement("button");
-    add.textContent = "Add Layer"; del.textContent = "Remove Layer"; clear.textContent = "Clear Selection";
+    label(add, "Add Layer"); label(del, "Remove Layer"); label(clear, "Clear Selection");
     for (const b of [add, del, clear]) { b.type = "button"; b.className = "qbutton"; }
     const p = { frame: null, tree: list.view, view, current: null, pickedGroup: 0 };
     add.addEventListener("click", () => handlers.onAdd(view));
@@ -521,7 +526,7 @@ export function popupMenu(items, x, y, onTrigger, parent) {
     const row = div("qmenu-item");
     row.classList.toggle("disabled", item.enabled === false);
     const mark = div("qmenu-mark", item.checked ? "✓" : "");
-    const text = div("qmenu-text", item.text ?? "");
+    const text = div("qmenu-text", t(item.text));
     const key = div("qmenu-key", item.shortcut ?? "");
     row.append(mark, text, key);
     if (item.kind === "submenu") {
@@ -540,7 +545,15 @@ export function popupMenu(items, x, y, onTrigger, parent) {
   }
   m.style.left = `${x}px`; m.style.top = `${y}px`;
   (parent ?? document.body).append(m);
-  if (!parent) { closeMenus(); openMenu = m; }
+  if (!parent) {
+    closeMenus();
+    openMenu = m;
+    // Back inside the window: a longer translation must not push it off the edge.
+    const view = typeof window !== "undefined" ? window : null;
+    const box = m.getBoundingClientRect?.();
+    if (box && view?.innerWidth && box.right > view.innerWidth) m.style.left = `${Math.max(0, view.innerWidth - box.width)}px`;
+    if (box && view?.innerHeight && box.bottom > view.innerHeight) m.style.top = `${Math.max(0, view.innerHeight - box.height)}px`;
+  }
   return m;
 }
 
@@ -548,7 +561,7 @@ export function createMenuBar(root, { onTrigger, onOpen }) {
   const bar = div("menubar");
   root.append(bar);
   const GAP = 6, PAD = 3;
-  let menus = [];
+  let menus = [], paintedIn = null;
   const measure = document.createElement("canvas").getContext("2d");
   measure.font = '12px "Segoe UI"';
   function showPopup(item, index, fallbackMenu) {
@@ -561,9 +574,12 @@ export function createMenuBar(root, { onTrigger, onOpen }) {
   function paint() {
     bar.replaceChildren();
     let x = GAP;
+    paintedIn = language();
     menus.forEach((menu, index) => {
-      const item = div("item", menu.text);
-      const w = MENU_WIDTH[menu.text] ?? Math.ceil(measure.measureText(menu.text).width) + 2 * PAD;
+      const text = t(menu.text);
+      const item = div("item", text);
+      const known = isSourceLanguage() ? MENU_WIDTH[menu.text] : undefined;
+      const w = known ?? Math.ceil(measure.measureText(text).width) + 2 * PAD;
       item.style.left = `${x}px`; item.style.width = `${w}px`;
       const open = () => {
         const res = onOpen?.(menu);
@@ -571,7 +587,7 @@ export function createMenuBar(root, { onTrigger, onOpen }) {
           const wanted = askForMenu();
           res.then(() => {
             if (!wanted()) return;
-            const matched = Array.from(bar.querySelectorAll(".item")).find((n) => n.textContent === menu.text) ?? item;
+            const matched = Array.from(bar.querySelectorAll(".item")).find((n) => n.textContent === t(menu.text)) ?? item;
             showPopup(matched, index, menu);
           });
           return;
@@ -589,8 +605,9 @@ export function createMenuBar(root, { onTrigger, onOpen }) {
     update(next) {
       const nextMenus = next ?? [];
       // A new element under the pointer fires pointerenter, which reopens the menu,
-      // which refreshes it again: the bar is rebuilt only when its titles change.
-      const sameTitles = nextMenus.length === menus.length && nextMenus.every((m, i) => m.text === menus[i].text);
+      // which refreshes it again: the bar is rebuilt only when its titles change,
+      // in their own words or in the language they are shown in.
+      const sameTitles = paintedIn === language() && nextMenus.length === menus.length && nextMenus.every((m, i) => m.text === menus[i].text);
       menus = nextMenus;
       if (!sameTitles) paint();
     },

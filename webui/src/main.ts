@@ -1,7 +1,9 @@
 /// <reference types="vite/client" />
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { removeNodeReferences, type Project } from "../vf/src/model.ts";
+import { onLanguage, t } from "./i18n/index.js";
+import type { Value } from "../vf/src/expr.ts";
+import { removeNodeReferences, type ComponentCreate, type Project } from "../vf/src/model.ts";
 import { loadProject, type ProjectIO } from "../vf/src/project.ts";
 import { BackendClient } from "./net.ts";
 import { createPlayer } from "./player.ts";
@@ -118,6 +120,40 @@ export function keepOnlyDock(project: Project, dockId: string): void {
   delete dock.widthStep;
 }
 
+// Scene props holding words. The design keeps them in English and its components
+// know nothing of languages, so they are handed translated text. tipTitle and tip
+// are the hover tip of a Tools chip.
+const SCENE_TEXT_PROPS = ["text", "label", "title", "tipTitle", "tip"];
+
+function translatedProps(props: Record<string, Value>): Record<string, Value> {
+  const out = { ...props };
+  for (const key of SCENE_TEXT_PROPS) {
+    const text = out[key];
+    if (typeof text === "string") out[key] = t(text);
+  }
+  return out;
+}
+
+function translateComponent(component: { create?: ComponentCreate }): void {
+  const create = component.create;
+  if (!create) return;
+  component.create = (el, ctx) => {
+    let props = ctx.props;
+    const inner = create(el, { ...ctx, props: translatedProps(props) });
+    const stop = onLanguage(() => inner?.update?.(translatedProps(props)));
+    return {
+      update(next) {
+        props = next;
+        inner?.update?.(translatedProps(next));
+      },
+      destroy() {
+        stop();
+        inner?.destroy?.();
+      },
+    };
+  };
+}
+
 async function bootstrap(): Promise<void> {
   const appEl = document.getElementById("app");
   if (!appEl) throw new Error("找不到 #app 容器");
@@ -146,6 +182,9 @@ async function bootstrap(): Promise<void> {
       create(el);
       return { update() {}, destroy() { el.replaceChildren(); } };
     };
+  }
+  for (const [type, component] of project.components) {
+    if (!(type in factories)) translateComponent(component);
   }
 
   let onTimelineDockChanged: ((dockId: string) => void) | undefined;
@@ -196,6 +235,7 @@ async function bootstrap(): Promise<void> {
   const statusEl = document.getElementById("qt-statusbar")!;
   createChrome(menuEl, statusEl, store, { satellite: isSatellite });
   menuEl.hidden = statusEl.hidden = Boolean(onlyDock || isSatellite);
+  onLanguage(() => player.refreshDockHeaders());
 
   if (isSatellite) {
     await client.connect("");

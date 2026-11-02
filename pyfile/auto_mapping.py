@@ -54,6 +54,7 @@ import gridsolve
 import python_hooks
 import overlay_stack
 import script_store
+import ui_language
 
 H_PROPERTY = "h_center_line"
 V_PROPERTY = "v_center_line"
@@ -6205,10 +6206,13 @@ def _fold_regions():
             and _assets_for("main")[H_PROPERTY if turn[1] == "H" else V_PROPERTY].get("auto")
             and any(other[0] == "child" and other[1] == turn[1]
                     and (other[2] > 0.0) == (turn[2] > 0.0) for other in turnbacks))]
+        # The backend draws these notes, so their words come in the page's
+        # language from ui_language rather than being translated by the page.
+        say = ui_language.text
         for view, axis, _hat, tail, point in turnbacks:
             regions.append({"view": view, "point": point, "text": "\n".join((
-                "Fold here", f"The {axis} axis on the {board_title[view]} board",
-                f"doubles back {tail:.0f} px from its end"))})
+                say("Fold here"), say("The {0} axis on the {1} board", axis, say(board_title[view])),
+                say("doubles back {0} px from its end", f"{tail:.0f}")))})
 
         def explained(cells):
             for _view, axis, hat, _tail, _point in turnbacks:
@@ -6222,7 +6226,7 @@ def _fold_regions():
             r, c = min(cells, key=lambda cell: (cell[0] + 0.5 - half) ** 2
                                                + (cell[1] + 0.5 - half) ** 2)
             regions.append({"view": "main", "point": nodes[r][c],
-                            "text": "Fold: the pattern turns over here"})
+                            "text": say("Fold: the pattern turns over here")})
         del regions[FOLD_NOTE_MAX:]
     _FOLD_NOTES["regions"] = regions
     return regions
@@ -6233,6 +6237,17 @@ def _fold_note_items(view_name):
              "label": region["text"], "color": FOLD_NOTE_COLOR, "fill_color": FOLD_NOTE_FILL,
              "width": 1.2, "removable": False}
             for index, region in enumerate(_fold_regions()) if region["view"] == view_name]
+
+
+def _redraw_fold_notes():
+    """The page switched language: notes on show are drawn again in the new one."""
+    if _FOLD_NOTES["regions"]:
+        _FOLD_NOTES["regions"] = None
+        for view in ("child", "main"):
+            _push_overlay(view)
+
+
+ui_language.on_change(_redraw_fold_notes)
 
 
 def _overlays_changed(view_name):
@@ -14293,7 +14308,10 @@ def _export_three_html(surface, path):
     }
     payload = json.dumps(data, separators=(",", ":")).replace("</", "<\\/")
     importmap = json.dumps(_three_importmap()).replace("</", "<\\/")
-    html = (_TO3D_TEMPLATE
+    html = _TO3D_TEMPLATE
+    for placeholder, text in ui_language.to3d_text().items():
+        html = html.replace(placeholder, text)
+    html = (html
             .replace("__ANIMEAN_IMPORTMAP__", importmap)
             .replace("__ANIMEAN_DATA__", payload))
     with open(path, "w", encoding="utf-8") as handle:
@@ -14301,7 +14319,7 @@ def _export_three_html(surface, path):
 
 
 _TO3D_TEMPLATE = r"""<!DOCTYPE html>
-<html lang="en">
+<html lang="__T_LANG__">
 <head>
 <meta charset="utf-8">
 <title>AnimeAn To 3D</title>
@@ -14316,18 +14334,17 @@ _TO3D_TEMPLATE = r"""<!DOCTYPE html>
 </head>
 <body>
 <div id="ui">
-  <div><b>AnimeAn To 3D</b> - reconstructed sheet</div>
-  <div>Relief scale <input id="relief" type="range" min="0" max="300"
+  <div><b>AnimeAn To 3D</b> - __T_SHEET__</div>
+  <div>__T_RELIEF__ <input id="relief" type="range" min="0" max="300"
        value="100"></div>
-  <div><label><input id="flip" type="checkbox"> flip relief</label>
+  <div><label><input id="flip" type="checkbox"> __T_FLIP__</label>
        <label style="margin-left:12px"><input id="wire" type="checkbox">
-       wireframe</label></div>
+       __T_WIRE__</label></div>
   <div><button id="homecam" type="button" style="margin-top:4px">
-       original camera</button>
+       __T_CAMERA__</button>
        <button id="transfergrid" type="button" style="margin-top:4px">
-       Transfer Grid</button></div>
-  <div style="opacity:.7">drag: rotate &middot; wheel: zoom &middot;
-       right-drag: pan</div>
+       __T_GRID__</button></div>
+  <div style="opacity:.7">__T_HELP__</div>
 </div>
 <script type="importmap">
 __ANIMEAN_IMPORTMAP__

@@ -42,6 +42,7 @@
 | 构建、同步脚本、测试、依赖、部署 | `mechanism/build_deploy.md` |
 | 模块在哪、启动链、装载顺序 | `mechanism/modules.md` |
 | 术语和界面文案 | `glossary.md` |
+| 新增或修改界面文字、界面语言 | `mechanism/i18n.md`（新文字要进 `zh-CN.json`、`ja.json`） |
 | 无人值守的长时间工作 | `long_time_work/README.md`（阶段权限、〔裁〕、任务记录） |
 
 ## 规则
@@ -49,8 +50,9 @@
 ### 分工
 
 - **C++ 通用，Python 具体。** C++ 只写基础函数：交互事件、模型与几何、通用开关、事件派发；渲染和声明式界面在网页端。功能的含义（工具流程、属性名、颜色、数据结构、菜单内容、图层联动、Auto Mapping 全部算法）在 `pyfile/*.py`。C++ 里出现工具名、属性名、颜色常量或「if 工具 == …」就是放错了地方：抽成机制，语义留在 Python。
+- 程序层面的界面状态和流程，例如对话框弹什么、是否模态、哪些窗口能操作、菜单有哪些项，也是逻辑，归 Python。网页只按声明画，C++ 只提供开窗口、广播状态、出错兜底这类通用函数。
 - **C++ 内建的基础工具只有三个**：Pen、Eraser、视口缩放平移。其余工具一律 Python；不为了性能把功能搬回 C++。
-- **机制 / 策略成对。** 加一个 C++ 机制就要有一个 Python 策略模块用它；handle 事件是工具面。**新工具**：策略是 `pyfile/` 里的一个模块，用 `python_hooks.set_hook` 订阅要用的事件；按钮登记在 `pyfile/extra_tools.py`（`handler` 是选中时调用的函数，`base_tool` 指定借用哪个基础工具的交互事件），选项布局写在 `pyfile/toolcontrol.py`；Tools 面板上的按钮在 `webui/design/` 里加，`webui/tests/tool_groups.test.ts` 检查两边对得上。C++ 不为新工具加枚举。
+- **机制 / 策略成对。** 加一个 C++ 机制就要有一个 Python 策略模块用它；handle 事件是工具面。**新工具**是 `pyfile/` 里的一个策略模块加 Tools 面板上的一个按钮；C++ 只在缺基础函数时才加。
 - **Python 层装会变的东西。** 实验性算法、随功能扩展变化的逻辑都在 Python。现成的库能省事就用，wheel 入 `pywheels/`、经 `pydeps.ensure()` 加载并保留降级路径；这是不重复造轮子，不是原则。
 - **Rust 只做外壳，不写算法。**
 - **界面在哪里改。** 停靠布局和 Tools 的控件在 `webui/design/` 里改；其余面板、菜单栏和对话框在 `webui/src/ui/` 里改。`webui/vf/` 是 VibeFrontend 运行层的副本，改动要记进 `webui/vf/README.md`。
@@ -76,10 +78,9 @@
 
 ### 部署与脚本
 
-- 新增 `pyfile/` 模块不用登记部署：打包脚本复制 `pyfile\` 下全部 `.py`，启动时 `initalize.py` 自动发现并导入；对导入顺序有要求时，加进 `initalize.py` 的 `PYTHON_FILE_MODULES`。
-- 改了 `.py` 不重建时跑 `sync_pyfiles.ps1`；用户测试的程序是主仓库的 `dist\AnimeAn\AnimeAn.exe`，它拉起同目录的 `AnimeAnBackend.exe`。
+- 改了 `.py` 不重建时跑 `sync_pyfiles.ps1`。
 - 系统 PATH 上的 `python` 是无效的 Store 存根；用 `py` 启动器或 `dist\AnimeAn\python312\python.exe`。
-- 程序不落盘用户数据：文档级状态进 scriptData；机器级偏好只放两处：后端的 `Settings`（`%APPDATA%\AnimeAn\settings.json`）和网页的 `localStorage`（键名以 `animean.` 开头），都不进工程文件。
+- 程序不落盘用户数据：文档级状态进 scriptData，机器级偏好不进工程文件。
 
 ### 文档
 
@@ -100,11 +101,12 @@
 | 编译检查 | `cmake --build build\wt-check --target AnimeAnBackend --parallel 10`（新 worktree 先 `git submodule update --init --depth 1`） | 改到 C++，合并前 |
 | 后端会话冒烟 | `node backend/tests/session_smoke.mjs <AnimeAnBackend.exe>` | 改到 `backend/`、`openglwidget.*` |
 | 新旧对比 | `node backend/tests/golden/record.mjs --backend <AnimeAnBackend.exe> --out <输出.jsonl>`，再用 `compare.mjs` 比基线，见 `mechanism/build_deploy.md` | 改到后端行为 |
-| 网页 | 在 `webui/` 下跑 `npm test`、`npx tsc --noEmit` | 改到 `webui/` |
+| 网页 | 在 `webui/` 下跑 `npm test`（含词条检查）、`npx tsc --noEmit` | 改到 `webui/` |
 | 外壳 | `cargo test --manifest-path src-tauri/Cargo.toml` | 改到 `src-tauri/` |
 | 部署构建 | `PowerShell -ExecutionPolicy Bypass -File .\build_scripts\agent_build.ps1`，结束行 `===== AGENT BUILD DONE EXIT_CODE=0 =====`；必须在沙箱外 | 改到 C++ 合并后；发布前 |
 | 脚本同步 | `powershell -ExecutionPolicy Bypass -File sync_pyfiles.ps1` | 每次改 `.py` 而不重建 |
 | 真机验证 | 在 `dist\AnimeAn\AnimeAn.exe` 里按 `tools_user_workflow/` 的步骤手测 | 改到用户看得见的行为 |
+| 界面语言覆盖 | `node backend/tests/i18n_coverage.mjs <AnimeAnBackend.exe>` | 改到 C++ 或 Python 发给界面的文字（菜单、选项、设置窗、状态栏） |
 | 文档链接 | `py build_scripts\check_doc_links.py`（反引号里的 `.md` 路径都要存在） | 改到 `docs/` 或根目录的 README / AGENTS / CLAUDE |
 
 ## 提交与发布

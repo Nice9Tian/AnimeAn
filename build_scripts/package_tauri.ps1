@@ -271,32 +271,20 @@ foreach ($pyDll in @("python312.dll", "python3.dll", "vcruntime140.dll", "vcrunt
 # =========================
 # 步骤 6：从仓库补齐 pyfile、pythonbind、opentoonz_tools、pywheels 与 tool_controls
 # =========================
-# 无源码树机器上编译期宏路径不存在，backend/main.cpp 将 PYTHONPATH 设为 <appDir>（即 dist/AnimeAn），
-# 因此所有 .py 模块需位于 <appDir> 根目录，同时保留子目录副本以兼容相对路径访问。
+# 发布的文件夹没有源码树，backend/main.cpp 只把 <appDir>（即 dist/AnimeAn）放上 PYTHONPATH，
+# initalize.py 也在 <appDir> 里找，所以全部 .py 都放在 <appDir> 根目录，不另放子目录副本。
 Write-Host "[6/6] Copying Python scripts, bindings, wheels, and tool controls from repository..."
 
 $pyfileSrcDir = Join-Path $repoRoot "pyfile"
-$distPyfileDir = Join-Path $distDir "pyfile"
-New-Item -ItemType Directory -Path $distPyfileDir -Force | Out-Null
 Get-ChildItem -LiteralPath $pyfileSrcDir -Filter "*.py" -File | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $distDir $_.Name) -Force
-    Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $distPyfileDir $_.Name) -Force
 }
 
-$animemodelSrc = Join-Path $repoRoot "pythonbind\animemodel.py"
-if (Test-Path -LiteralPath $animemodelSrc -PathType Leaf) {
-    $distPythonbindDir = Join-Path $distDir "pythonbind"
-    New-Item -ItemType Directory -Path $distPythonbindDir -Force | Out-Null
-    Copy-Item -LiteralPath $animemodelSrc -Destination (Join-Path $distDir "animemodel.py") -Force
-    Copy-Item -LiteralPath $animemodelSrc -Destination (Join-Path $distPythonbindDir "animemodel.py") -Force
-}
-
-$toonzSrc = Join-Path $repoRoot "opentoonz_tools\toonz_to_dict.py"
-if (Test-Path -LiteralPath $toonzSrc -PathType Leaf) {
-    $distOpentoonzDir = Join-Path $distDir "opentoonz_tools"
-    New-Item -ItemType Directory -Path $distOpentoonzDir -Force | Out-Null
-    Copy-Item -LiteralPath $toonzSrc -Destination (Join-Path $distDir "toonz_to_dict.py") -Force
-    Copy-Item -LiteralPath $toonzSrc -Destination (Join-Path $distOpentoonzDir "toonz_to_dict.py") -Force
+foreach ($extra in @("pythonbind\animemodel.py", "opentoonz_tools\toonz_to_dict.py")) {
+    $extraSrc = Join-Path $repoRoot $extra
+    if (Test-Path -LiteralPath $extraSrc -PathType Leaf) {
+        Copy-Item -LiteralPath $extraSrc -Destination (Join-Path $distDir (Split-Path -Leaf $extraSrc)) -Force
+    }
 }
 
 $pywheelsSrc = Join-Path $repoRoot "pywheels"

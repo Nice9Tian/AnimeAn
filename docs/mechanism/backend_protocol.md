@@ -148,4 +148,4 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 | `file.import` | `{ kind, paths, view?, probe?, fitToCanvas? }` | 应用 File 菜单的导入（未传 `view`）进主画板，`view: "child"` 或 `kind` 带 `texture.` 前缀时进纹理板，不是探测时先把目标板显示出来；矢量导入支持 `probe: true` 先返回 `{ needsScale, sourceBounds, canvasWidth, canvasHeight }` |
 | `project.save`、`project.saveAs`、`file.texture` | `{ path, probe?, overwrite? }`；`file.texture` 另带 `kind`（`open`、`save`、`saveAs`、`exportImage`） | 保存类调用支持 `probe: true` 检查后缀补全改写后的目标文件是否已存在，返回 `{ needsConfirmOverwrite, fileName, path }` |
 
-Qt 版打开时先弹 New Project 对话框，网页版同样在收到第一个 `window` 状态后弹出。
+Qt 版打开时先弹 New Project 对话框，网页版同样在收到第一个 `window` 状态后弹出；这时后端若已经有打开的工程（`currentFilePath` 不空，比如网页连上之前已经 `project.open` 过，或网页重载），不弹，留着那个工程（`webui/src/ui/startup.js`）。

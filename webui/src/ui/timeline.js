@@ -5,6 +5,7 @@
 // The bar is DOM (real cells, a real <input>). The strip is a canvas and a direct
 // port of TimelineStrip::paintEvent, because Qt paints it without antialiasing and
 // a sheet can run to thousands of cells.
+import { isSourceLanguage, label, t } from "../i18n/index.js";
 import { scrollBar } from "./panels.js";
 
 // ---- design metrics, same names as the anonymous namespace in the .cpp ---------
@@ -45,7 +46,7 @@ export function shortTextForFps(fps) {
 // Qt sums hinted advances, and the layout below depends on them: these are the
 // widths QFontMetrics reports at labelFont(10), and Consolas Bold is 6px per
 // character at 11px and 5px at 10px once hinted.
-const LABEL_WIDTH = { GUIDE: 32, LINE: 23, FILL: 20, AM: 19, LAYER: 32 };
+const LABEL_WIDTH = { GUIDE: 32, LINE: 23, "LINE (guide)": 23, FILL: 20, AM: 19, LAYER: 32 };
 const MONO11_ADVANCE = 6, MONO10_ADVANCE = 5;
 
 // The same story for the application font: at 9pt Qt lays Segoe UI out on whole-pixel
@@ -71,6 +72,10 @@ function tracked(cls, text) {
   return d;
 }
 export { tracked as trackedDiv };
+// The same for text that stays on screen and follows the language.
+export function trackedLabel(cls, text) {
+  return label(div(cls), text, (el) => { el.style.letterSpacing = hintedTracking(el.textContent); });
+}
 
 // ---- glyphs: glyphPath() on its 24x24 sheet -------------------------------------
 const rect = (x, y, w, h) => `M${x} ${y}h${w}v${h}h${-w}z`;
@@ -272,9 +277,11 @@ const measurer = document.createElement("canvas").getContext("2d");
 function labelDiv(cls, text, width, nudge) {
   const d = document.createElement("div");
   d.className = cls;
-  d.textContent = text;
-  measurer.font = 'bold 10px "Segoe UI"';
-  d.style.letterSpacing = `${(width - measurer.measureText(text).width) / text.length}px`;
+  label(d, text, () => {
+    measurer.font = 'bold 10px "Segoe UI"';
+    const shown = d.textContent;
+    d.style.letterSpacing = isSourceLanguage() ? `${(width - measurer.measureText(shown).width) / shown.length}px` : "0px";
+  });
   if (nudge) d.classList.add("tl-nudge");
   return d;
 }
@@ -301,8 +308,9 @@ export function onThemeChange(repaint) {
 // is asked at show time because the strip's tip depends on where the pointer is.
 let tipEl = null, tipTimer = 0;
 function hideTip() { clearTimeout(tipTimer); tipTimer = 0; if (tipEl) { tipEl.remove(); tipEl = null; } }
-export function qtTooltip(target, text) {
+export function qtTooltip(target, source) {
   let last = null;
+  const text = (e) => t(source(e));
   const show = () => {
     const value = text(last);
     if (!value) return;
@@ -346,7 +354,7 @@ function showRateMenu(anchor, fps, onPick) {
   for (const c of kCadences) {
     const row = div("rate-item");
     row.innerHTML = `<span class="rate-check">${CHECK}${fps === c.fps ? CHECK_MARK : ""}</svg></span>`;
-    row.append(tracked("rate-text", `${c.title}  -  ${c.fps} fps`));
+    row.append(tracked("rate-text", `${t(c.title)}  -  ${c.fps} fps`));
     row.addEventListener("click", () => { closeRateMenu(); onPick(c.fps); });
     menu.append(row);
   }
@@ -362,7 +370,7 @@ function showRateMenu(anchor, fps, onPick) {
     closeRateMenu();
     onPick(next);
   });
-  typed.append(tracked("rate-note", "or type"), field, tracked("rate-note", "fps · 1-120"));
+  typed.append(tracked("rate-note", t("or type")), field, tracked("rate-note", t("fps · 1-120")));
   menu.append(typed);
   document.body.append(menu);
   const height = menu.getBoundingClientRect().height;
@@ -376,7 +384,7 @@ function showRateMenu(anchor, fps, onPick) {
 // ---- transport ------------------------------------------------------------------
 const FRAME_COMMANDS = ["AddFrame", "AddHold", "Duplicate", "DeleteFrame"];
 const SMALL_GLYPHS = new Set(["Orientation", "Collapse", "Close", "Float"]);
-const TWO_LINE = { OnionAmLayers: ["AM", "LAYER"], GuideLines: ["GUIDE", "LINE"] };
+const TWO_LINE = { OnionAmLayers: ["AM", "LAYER"], GuideLines: ["GUIDE", "LINE (guide)"] };
 // What is happening right now rather than a setting: these take the focus colour.
 const LIVE_COMMANDS = new Set(["Play", "Onion"]);
 const ONE_LINE = { OnionLines: "LINE", OnionFills: "FILL" };
