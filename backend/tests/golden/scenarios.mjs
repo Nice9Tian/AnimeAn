@@ -1319,5 +1319,615 @@ export function buildScenarios(ctx) {
         callStep("menu_theme_dark", "menu.trigger", { id: "theme.dark" }),
       ],
     },
+
+    {
+      name: "free_out_line",
+      steps: [
+        callStep("new_project", "project.new", { width: 800, height: 600 }),
+        callStep("create_boundary_line_layer_on_main", "layer.contextAction", {
+          view: "main",
+          layer: -1,
+          id: "script:new_line_layer",
+        }),
+        callStep("select_pen_for_main_boundary", "tool.select", { tool: "Pen" }),
+        callStep("set_smooth_0", "draw.setSmooth", { value: 0 }),
+        callStep("set_width_3", "draw.setPenWidth", { width: 3 }),
+        strokeStep("draw_closed_boundary_on_main", "main", [
+          [220, 150],
+          [580, 150],
+          [580, 450],
+          [220, 450],
+          [220, 150],
+        ]),
+        callStep("create_auto_mapping_layer", "layer.contextAction", {
+          view: "main",
+          layer: 0,
+          id: "script:new_automapping_layer",
+        }),
+        callStep("activate_child_for_texture", "view.setActive", { view: "child" }),
+        callStep("select_pen_on_child", "tool.select", { tool: "Pen" }),
+        callStep("set_pattern_color_blue", "color.set", { hex: "#1e88e5", a: 255 }),
+        strokeStep("draw_closed_pattern_on_child", "child", [
+          [120, 120],
+          [280, 120],
+          [280, 280],
+          [120, 280],
+          [120, 120],
+        ]),
+        callStep("select_h_center_line_child", "tool.selectExtra", {
+          name: "h_center_line",
+        }),
+        strokeStep("draw_h_axis_on_child", "child", [
+          [80, 200],
+          [200, 200],
+          [320, 200],
+        ]),
+        callStep("select_v_center_line_child", "tool.selectExtra", {
+          name: "v_center_line",
+        }),
+        strokeStep("draw_v_axis_on_child", "child", [
+          [200, 80],
+          [200, 200],
+          [200, 320],
+        ]),
+        callStep("select_free_out_line_on_child", "tool.selectExtra", {
+          name: "free_out_line",
+        }),
+        strokeStep("draw_contour_on_child", "child", [
+          [100, 100],
+          [300, 100],
+          [300, 300],
+          [100, 300],
+          [100, 100],
+        ]),
+        callStep("activate_main_for_contour", "view.setActive", { view: "main" }),
+        callStep("select_am_unit_layer_on_main", "layer.select", {
+          view: "main",
+          index: 0,
+        }),
+        callStep("select_free_out_line_on_main", "tool.selectExtra", {
+          name: "free_out_line",
+        }),
+        strokeStep("draw_contour_on_main_pairs_on_release", "main", [
+          [210, 140],
+          [590, 140],
+          [590, 460],
+          [210, 460],
+          [210, 140],
+        ]),
+        clickStep("remove_main_contour_via_badge", "main", 601, 129),
+        strokeStep("redraw_contour_on_main_pairs_again", "main", [
+          [215, 145],
+          [585, 145],
+          [585, 455],
+          [215, 455],
+          [215, 145],
+        ]),
+      ],
+    },
+
+    {
+      name: "choice_line",
+      steps: [
+        callStep("new_project", "project.new", { width: 800, height: 600 }),
+        callStep("create_auto_mapping_layer", "layer.contextAction", {
+          view: "main",
+          layer: -1,
+          id: "script:new_automapping_layer",
+        }),
+        callStep("activate_child_for_texture", "view.setActive", { view: "child" }),
+        callStep("select_pen_on_child", "tool.select", { tool: "Pen" }),
+        callStep("set_smooth_0", "draw.setSmooth", { value: 0 }),
+        strokeStep("draw_pattern_on_child", "child", [
+          [120, 120],
+          [280, 120],
+          [280, 280],
+          [120, 280],
+          [120, 120],
+        ]),
+        callStep("select_h_center_line_child", "tool.selectExtra", {
+          name: "h_center_line",
+        }),
+        strokeStep("draw_h_axis_on_child", "child", [
+          [80, 200],
+          [200, 200],
+          [320, 200],
+        ]),
+        callStep("select_v_center_line_child", "tool.selectExtra", {
+          name: "v_center_line",
+        }),
+        strokeStep("draw_v_axis_on_child", "child", [
+          [200, 80],
+          [200, 200],
+          [200, 320],
+        ]),
+        callStep("select_free_out_line_child", "tool.selectExtra", {
+          name: "free_out_line",
+        }),
+        strokeStep("draw_contour_on_child", "child", [
+          [100, 100],
+          [300, 100],
+          [300, 300],
+          [100, 300],
+          [100, 100],
+        ]),
+        callStep("activate_main", "view.setActive", { view: "main" }),
+        callStep("select_free_out_line_main", "tool.selectExtra", {
+          name: "free_out_line",
+        }),
+        strokeStep("draw_contour_on_main", "main", [
+          [210, 140],
+          [590, 140],
+          [590, 460],
+          [210, 460],
+          [210, 140],
+        ]),
+        callStep("select_additional_line_tool", "tool.selectExtra", {
+          name: "additional_line",
+        }),
+        strokeStep("draw_additional_line_on_main", "main", [
+          [280, 220],
+          [400, 235],
+          [520, 220],
+        ]),
+        callStep("select_choice_line_tool", "tool.selectExtra", {
+          name: "choice_line",
+        }),
+        clickStep("select_h_axis_on_main", "main", 300, 300),
+        callStep("set_ground_line_on_h_axis", "tool.option", {
+          name: "ground_line",
+          type: "check",
+          value: "on",
+          hook: "ground_line",
+        }),
+        callStep("unset_ground_line_on_h_axis", "tool.option", {
+          name: "ground_line",
+          type: "check",
+          value: "off",
+          hook: "ground_line",
+        }),
+        clickStep("select_additional_line_on_main", "main", 400, 235),
+        callStep("set_ground_line_on_additional_line", "tool.option", {
+          name: "ground_line",
+          type: "check",
+          value: "on",
+          hook: "ground_line",
+        }),
+        clickStep("select_contour_on_main", "main", 210, 300),
+        callStep("unset_ground_line_on_contour", "tool.option", {
+          name: "ground_line",
+          type: "check",
+          value: "off",
+          hook: "ground_line",
+        }),
+        callStep("restore_ground_line_on_contour", "tool.option", {
+          name: "ground_line",
+          type: "check",
+          value: "on",
+          hook: "ground_line",
+        }),
+        clickStep("click_blank_space_keeps_choice", "main", 50, 50),
+        callStep("switch_to_pen_disarms_choice_halo", "tool.select", {
+          tool: "Pen",
+        }),
+        callStep("switch_back_to_choice_line_restores_halo", "tool.selectExtra", {
+          name: "choice_line",
+        }),
+        clickStep("reselect_additional_line_on_main", "main", 400, 235),
+        clickStep("delete_selected_additional_line_clears_selection", "main", 531, 209),
+      ],
+    },
+
+    {
+      name: "deform_line",
+      steps: [
+        callStep("new_project", "project.new", { width: 800, height: 600 }),
+        callStep("create_auto_mapping_layer", "layer.contextAction", {
+          view: "main",
+          layer: -1,
+          id: "script:new_automapping_layer",
+        }),
+        callStep("activate_child_for_texture", "view.setActive", { view: "child" }),
+        callStep("select_pen_on_child", "tool.select", { tool: "Pen" }),
+        callStep("set_smooth_0", "draw.setSmooth", { value: 0 }),
+        strokeStep("draw_pattern_on_child", "child", [
+          [120, 120],
+          [280, 120],
+          [280, 280],
+          [120, 280],
+          [120, 120],
+        ]),
+        callStep("select_h_center_line_child", "tool.selectExtra", {
+          name: "h_center_line",
+        }),
+        strokeStep("draw_h_axis_on_child", "child", [
+          [80, 200],
+          [200, 200],
+          [320, 200],
+        ]),
+        callStep("select_v_center_line_child", "tool.selectExtra", {
+          name: "v_center_line",
+        }),
+        strokeStep("draw_v_axis_on_child", "child", [
+          [200, 80],
+          [200, 200],
+          [200, 320],
+        ]),
+        callStep("select_free_out_line_child", "tool.selectExtra", {
+          name: "free_out_line",
+        }),
+        strokeStep("draw_contour_on_child", "child", [
+          [100, 100],
+          [300, 100],
+          [300, 300],
+          [100, 300],
+          [100, 100],
+        ]),
+        callStep("activate_main", "view.setActive", { view: "main" }),
+        callStep("select_free_out_line_main", "tool.selectExtra", {
+          name: "free_out_line",
+        }),
+        strokeStep("draw_contour_on_main_generates_auto_axes", "main", [
+          [210, 140],
+          [590, 140],
+          [590, 460],
+          [210, 460],
+          [210, 140],
+        ]),
+        callStep("select_deform_line_tool", "tool.selectExtra", {
+          name: "deform_line",
+        }),
+        clickStep("single_click_h_axis_does_not_alter_line", "main", 300, 300),
+        callStep("set_deform_radius_90", "tool.option", {
+          name: "deform_radius",
+          type: "int",
+          value: 90,
+          hook: "deform_radius",
+        }),
+        strokeStep("drag_deform_h_axis_on_main", "main", [
+          [320, 300],
+          [320, 325],
+          [320, 345],
+        ]),
+        strokeStep("drag_deform_contour_on_main", "main", [
+          [400, 140],
+          [400, 125],
+          [400, 115],
+        ]),
+        inputStep("begin_drag_v_axis_without_release", "main", [
+          { type: "press", x: 400, y: 220, button: "left", pressure: 1, modifiers: 0 },
+          { type: "move", x: 435, y: 220, button: "left", buttons: 1, pressure: 1, modifiers: 0 },
+        ]),
+        callStep("undo_interrupts_active_deform_drag", "history.undo", {
+          view: "main",
+        }),
+        inputStep("release_after_undo_interrupted_drag", "main", [
+          { type: "release", x: 435, y: 220, button: "left", buttons: 0, pressure: 0, modifiers: 0 },
+        ]),
+      ],
+    },
+
+    {
+      name: "additional_line",
+      steps: [
+        callStep("new_project", "project.new", { width: 800, height: 600 }),
+        callStep("create_auto_mapping_layer", "layer.contextAction", {
+          view: "main",
+          layer: -1,
+          id: "script:new_automapping_layer",
+        }),
+        callStep("activate_child_for_texture", "view.setActive", { view: "child" }),
+        callStep("select_pen_on_child", "tool.select", { tool: "Pen" }),
+        callStep("set_smooth_0", "draw.setSmooth", { value: 0 }),
+        strokeStep("draw_pattern_on_child", "child", [
+          [120, 120],
+          [280, 120],
+          [280, 280],
+          [120, 280],
+          [120, 120],
+        ]),
+        callStep("select_h_center_line_child", "tool.selectExtra", {
+          name: "h_center_line",
+        }),
+        strokeStep("draw_h_axis_on_child", "child", [
+          [80, 200],
+          [200, 200],
+          [320, 200],
+        ]),
+        callStep("select_v_center_line_child", "tool.selectExtra", {
+          name: "v_center_line",
+        }),
+        strokeStep("draw_v_axis_on_child", "child", [
+          [200, 80],
+          [200, 200],
+          [200, 320],
+        ]),
+        callStep("activate_main", "view.setActive", { view: "main" }),
+        callStep("select_h_center_line_main", "tool.selectExtra", {
+          name: "h_center_line",
+        }),
+        strokeStep("draw_h_axis_on_main", "main", [
+          [240, 300],
+          [400, 300],
+          [560, 300],
+        ]),
+        callStep("select_v_center_line_main", "tool.selectExtra", {
+          name: "v_center_line",
+        }),
+        strokeStep("draw_v_axis_on_main", "main", [
+          [400, 170],
+          [400, 300],
+          [400, 430],
+        ]),
+        callStep("select_additional_line_tool", "tool.selectExtra", {
+          name: "additional_line",
+        }),
+        strokeStep("draw_additional_line_0_on_child", "child", [
+          [140, 150],
+          [200, 165],
+          [260, 150],
+        ]),
+        strokeStep("redraw_additional_line_0_on_main", "main", [
+          [280, 210],
+          [400, 240],
+          [520, 210],
+        ]),
+        strokeStep("draw_additional_line_1_on_main", "main", [
+          [280, 390],
+          [400, 365],
+          [520, 390],
+        ]),
+        clickStep("delete_additional_line_0_via_main_badge", "main", 531, 199),
+        clickStep("delete_additional_line_1_via_main_badge", "main", 531, 379),
+        strokeStep("draw_additional_line_2_on_child", "child", [
+          [145, 245],
+          [200, 230],
+          [255, 245],
+        ]),
+        callStep("run_auto_mapping_explicitly", "tool.selectExtra", {
+          name: "auto_mapping_2",
+        }),
+      ],
+    },
+
+    {
+      name: "mapping_area",
+      steps: [
+        callStep("new_project", "project.new", { width: 800, height: 600 }),
+        callStep("create_boundary_line_layer_on_main", "layer.contextAction", {
+          view: "main",
+          layer: -1,
+          id: "script:new_line_layer",
+        }),
+        callStep("select_pen_for_main_boundary", "tool.select", { tool: "Pen" }),
+        callStep("set_smooth_0", "draw.setSmooth", { value: 0 }),
+        callStep("set_width_3", "draw.setPenWidth", { width: 3 }),
+        strokeStep("draw_closed_boundary_on_main", "main", [
+          [220, 150],
+          [580, 150],
+          [580, 450],
+          [220, 450],
+          [220, 150],
+        ]),
+        callStep("create_auto_mapping_layer", "layer.contextAction", {
+          view: "main",
+          layer: 0,
+          id: "script:new_automapping_layer",
+        }),
+        callStep("activate_child_for_texture", "view.setActive", { view: "child" }),
+        callStep("select_pen_on_child", "tool.select", { tool: "Pen" }),
+        strokeStep("draw_closed_pattern_on_child", "child", [
+          [120, 120],
+          [280, 120],
+          [280, 280],
+          [120, 280],
+          [120, 120],
+        ]),
+        callStep("select_h_center_line_child", "tool.selectExtra", {
+          name: "h_center_line",
+        }),
+        strokeStep("draw_h_axis_on_child", "child", [
+          [80, 200],
+          [200, 200],
+          [320, 200],
+        ]),
+        callStep("select_v_center_line_child", "tool.selectExtra", {
+          name: "v_center_line",
+        }),
+        strokeStep("draw_v_axis_on_child", "child", [
+          [200, 80],
+          [200, 200],
+          [200, 320],
+        ]),
+        callStep("select_mapping_area_child", "tool.selectExtra", {
+          name: "mapping_area",
+        }),
+        clickStep("set_mapping_area_on_child", "child", 200, 165),
+        callStep("activate_main_for_axes", "view.setActive", { view: "main" }),
+        callStep("select_am_unit_layer_on_main", "layer.select", {
+          view: "main",
+          index: 0,
+        }),
+        callStep("select_h_center_line_main", "tool.selectExtra", {
+          name: "h_center_line",
+        }),
+        strokeStep("draw_h_axis_on_main", "main", [
+          [240, 300],
+          [400, 300],
+          [560, 300],
+        ]),
+        callStep("select_v_center_line_main", "tool.selectExtra", {
+          name: "v_center_line",
+        }),
+        strokeStep("draw_v_axis_on_main", "main", [
+          [400, 170],
+          [400, 300],
+          [400, 430],
+        ]),
+        callStep("select_mapping_area_main", "tool.selectExtra", {
+          name: "mapping_area",
+        }),
+        clickStep("set_mapping_area_on_main", "main", 350, 250),
+        callStep("run_mapping_with_areas", "tool.selectExtra", {
+          name: "auto_mapping_2",
+        }),
+        clickStep("remove_main_mapping_area_via_badge", "main", 591, 139),
+        clickStep("remove_child_mapping_area_via_badge", "child", 291, 109),
+        callStep("run_mapping_after_removing_areas", "tool.selectExtra", {
+          name: "auto_mapping_2",
+        }),
+      ],
+    },
+
+    {
+      name: "fold_bubble",
+      steps: [
+        callStep("new_project", "project.new", { width: 800, height: 600 }),
+        callStep("create_auto_mapping_layer", "layer.contextAction", {
+          view: "main",
+          layer: -1,
+          id: "script:new_automapping_layer",
+        }),
+        callStep("activate_child_for_texture", "view.setActive", { view: "child" }),
+        callStep("select_pen_on_child", "tool.select", { tool: "Pen" }),
+        callStep("set_smooth_0", "draw.setSmooth", { value: 0 }),
+        strokeStep("draw_pattern_on_child", "child", [
+          [120, 120],
+          [280, 120],
+          [280, 280],
+          [120, 280],
+          [120, 120],
+        ]),
+        callStep("select_h_center_line_child", "tool.selectExtra", {
+          name: "h_center_line",
+        }),
+        strokeStep("draw_h_axis_on_child", "child", [
+          [80, 200],
+          [200, 200],
+          [320, 200],
+        ]),
+        callStep("select_v_center_line_child", "tool.selectExtra", {
+          name: "v_center_line",
+        }),
+        strokeStep("draw_v_axis_on_child", "child", [
+          [200, 80],
+          [200, 200],
+          [200, 320],
+        ]),
+        callStep("activate_main", "view.setActive", { view: "main" }),
+        callStep("select_v_center_line_main", "tool.selectExtra", {
+          name: "v_center_line",
+        }),
+        strokeStep("draw_v_axis_on_main", "main", [
+          [400, 150],
+          [400, 300],
+          [400, 450],
+        ]),
+        callStep("select_h_center_line_main", "tool.selectExtra", {
+          name: "h_center_line",
+        }),
+        callStep("set_smooth_0_on_main", "draw.setSmooth", { value: 0 }),
+        strokeStep("draw_folded_h_axis_on_main_shows_bubble", "main", [
+          [240, 300],
+          [400, 300],
+          [540, 300],
+          [560, 300],
+          [560, 330],
+          [520, 330],
+          [480, 330],
+          [430, 330],
+        ]),
+        callStep("run_auto_mapping_on_folded_axes", "tool.selectExtra", {
+          name: "auto_mapping_2",
+        }),
+      ],
+    },
+
+    {
+      name: "horizon_line",
+      steps: [
+        callStep("new_project", "project.new", { width: 800, height: 600 }),
+        callStep("create_auto_mapping_layer", "layer.contextAction", {
+          view: "main",
+          layer: -1,
+          id: "script:new_automapping_layer",
+        }),
+        callStep("trigger_horizon_line_on", "menu.trigger", {
+          id: "script:main:auto_mapping:horizon",
+        }),
+        strokeStep("drag_horizon_line_down", "main", [
+          [400, 300],
+          [400, 260],
+          [400, 220],
+        ]),
+        callStep("trigger_horizon_line_off", "menu.trigger", {
+          id: "script:main:auto_mapping:horizon",
+        }),
+        callStep("trigger_horizon_line_on_again", "menu.trigger", {
+          id: "script:main:auto_mapping:horizon",
+        }),
+      ],
+    },
+
+    {
+      name: "to_3d",
+      steps: [
+        callStep("new_project", "project.new", { width: 800, height: 600 }),
+        callStep("create_auto_mapping_layer", "layer.contextAction", {
+          view: "main",
+          layer: -1,
+          id: "script:new_automapping_layer",
+        }),
+        callStep("activate_child_for_texture", "view.setActive", { view: "child" }),
+        callStep("select_pen_on_child", "tool.select", { tool: "Pen" }),
+        callStep("set_smooth_0", "draw.setSmooth", { value: 0 }),
+        strokeStep("draw_pattern_on_child", "child", [
+          [120, 120],
+          [280, 120],
+          [280, 280],
+          [120, 280],
+          [120, 120],
+        ]),
+        callStep("select_h_center_line_child", "tool.selectExtra", {
+          name: "h_center_line",
+        }),
+        strokeStep("draw_h_axis_on_child", "child", [
+          [80, 200],
+          [200, 200],
+          [320, 200],
+        ]),
+        callStep("select_v_center_line_child", "tool.selectExtra", {
+          name: "v_center_line",
+        }),
+        strokeStep("draw_v_axis_on_child", "child", [
+          [200, 80],
+          [200, 200],
+          [200, 320],
+        ]),
+        callStep("activate_main", "view.setActive", { view: "main" }),
+        callStep("select_h_center_line_main", "tool.selectExtra", {
+          name: "h_center_line",
+        }),
+        strokeStep("draw_h_axis_on_main", "main", [
+          [240, 300],
+          [400, 280],
+          [560, 300],
+        ]),
+        callStep("select_v_center_line_main", "tool.selectExtra", {
+          name: "v_center_line",
+        }),
+        strokeStep("draw_v_axis_on_main", "main", [
+          [400, 170],
+          [400, 280],
+          [400, 430],
+        ]),
+        callStep("trigger_horizon_for_3d", "menu.trigger", {
+          id: "script:main:auto_mapping:horizon",
+        }),
+        callStep("trigger_to_3d_menu", "menu.trigger", {
+          id: "script:main:auto_mapping:to_3d",
+        })
+      ],
+    },
   ];
 }
