@@ -23,7 +23,7 @@ $fullLogPath = Join-Path -Path $sourceDir -ChildPath "build_full.log"
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $logLock = New-Object System.Object
 
-$buildDir = Join-Path -Path $sourceDir -ChildPath "build\Desktop_Qt_6_9_1_MinGW_64_bit-Release"
+$buildDir = Join-Path -Path $sourceDir -ChildPath "build\Release"
 
 # =========================
 # Cross-process build queue
@@ -53,6 +53,7 @@ $hasMutex = $false
 function Write-AgentLog {
     param(
         [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
         [string]$Message,
 
         [switch]$Console,
@@ -83,6 +84,7 @@ function Write-AgentLog {
 function Write-AgentSummary {
     param(
         [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
         [string]$Message,
 
         [switch]$DoNotWriteFullLog
@@ -98,6 +100,7 @@ function Write-AgentSummary {
 function Write-FullLog {
     param(
         [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
         [string]$Message
     )
 
@@ -192,13 +195,13 @@ try {
         Split-Path -Parent $MyInvocation.MyCommand.Path
     }
 
-    $qtEnvLocationPath = Join-Path -Path $scriptDir -ChildPath "qt_env_location.ps1"
-    if (-not (Test-Path -LiteralPath $qtEnvLocationPath -PathType Leaf)) {
-        throw "Qt env location file not found: $qtEnvLocationPath"
+    $toolchainPath = Join-Path -Path $scriptDir -ChildPath "toolchain_location.ps1"
+    if (-not (Test-Path -LiteralPath $toolchainPath -PathType Leaf)) {
+        throw "Toolchain location file not found: $toolchainPath"
     }
 
-    . $qtEnvLocationPath
-    Write-StepPassed "load_qt_env_location"
+    . $toolchainPath
+    Write-StepPassed "load_toolchain_location"
 
     $generator = "MinGW Makefiles"
     $makeProgram = Join-Path -Path $mingwBin -ChildPath "mingw32-make.exe"
@@ -227,10 +230,6 @@ try {
 
     if (-not (Test-Path -LiteralPath $cxxCompiler -PathType Leaf)) {
         throw "g++ not found: $cxxCompiler"
-    }
-
-    if (-not (Test-Path -LiteralPath $qtPrefixPath -PathType Container)) {
-        throw "Qt prefix path not found: $qtPrefixPath"
     }
 
     Write-StepPassed "check_toolchain_paths"
@@ -276,7 +275,7 @@ try {
     # =========================
     # Step 2: CMake configure
     # =========================
-    $configArguments = "-S `"$sourceDir`" -B `"$buildDir`" -G `"$generator`" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=`"$qtPrefixPath`" -DCMAKE_MAKE_PROGRAM=`"$makeProgram`" -DCMAKE_C_COMPILER=`"$cCompiler`" -DCMAKE_CXX_COMPILER=`"$cxxCompiler`""
+    $configArguments = "-S `"$sourceDir`" -B `"$buildDir`" -G `"$generator`" -DCMAKE_BUILD_TYPE=Release -DCMAKE_MAKE_PROGRAM=`"$makeProgram`" -DCMAKE_C_COMPILER=`"$cCompiler`" -DCMAKE_CXX_COMPILER=`"$cxxCompiler`""
 
     Write-AgentSummary "cmake_configure:running"
     Write-FullLog "CONFIG_COMMAND=$cmake $configArguments"
@@ -406,8 +405,11 @@ try {
         Write-AgentSummary "package:running"
         $packageScript = Join-Path -Path $scriptDir -ChildPath "package_tauri.ps1"
         $backendBuildDir = Join-Path -Path $buildDir -ChildPath "backend"
+        # Vite and cargo report progress on stderr; under Stop the first such line would throw.
+        $ErrorActionPreference = "Continue"
         $packageOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $packageScript -BackendDir $backendBuildDir 2>&1
         $ec = $LASTEXITCODE
+        $ErrorActionPreference = "Stop"
         foreach ($line in $packageOutput) {
             Write-FullLog "$line"
         }

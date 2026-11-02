@@ -20,7 +20,7 @@
        pywheels/、childrenpanel/tool_controls/ 一并复制到发布目录。
 
 .PARAMETER BackendDir
-    包含 AnimeAnBackend.exe 的目录路径（例如 build/Desktop_Qt_6_9_1_MinGW_64_bit-Release/backend）。
+    包含 AnimeAnBackend.exe 的目录路径（例如 build/Release/backend）。
     若不传则自动在仓库的 build/ 下查找。
 
 .PARAMETER PythonHome
@@ -35,7 +35,7 @@
 
 .EXAMPLE
     PowerShell -ExecutionPolicy Bypass -File .\build_scripts\package_tauri.ps1 `
-        -BackendDir .\build\Desktop_Qt_6_9_1_MinGW_64_bit-Release\backend `
+        -BackendDir .\build\Release\backend `
         -PythonHome .\tools\python312
 #>
 
@@ -63,10 +63,10 @@ $scriptDir = if ($PSScriptRoot) {
 }
 $repoRoot = (Resolve-Path (Join-Path $scriptDir "..")).ProviderPath
 
-# 若存在 qt_env_location.ps1 且调用方未显式覆盖默认路径，则读取其中的默认配置
-$qtEnvFile = Join-Path $scriptDir "qt_env_location.ps1"
-if (Test-Path -LiteralPath $qtEnvFile -PathType Leaf) {
-    . $qtEnvFile
+# 若存在 toolchain_location.ps1 且调用方未显式覆盖默认路径，则读取其中的默认配置
+$toolchainFile = Join-Path $scriptDir "toolchain_location.ps1"
+if (Test-Path -LiteralPath $toolchainFile -PathType Leaf) {
+    . $toolchainFile
     if (-not $PSBoundParameters.ContainsKey("MingwBin") -and $mingwBin) {
         $MingwBin = $mingwBin
     }
@@ -94,8 +94,8 @@ function Resolve-ExistingDirectory {
 $resolvedBackendDir = Resolve-ExistingDirectory -InputPath $BackendDir -BaseDir $repoRoot
 if (-not $resolvedBackendDir) {
     $candidates = @(
-        (Join-Path $repoRoot "build\Desktop_Qt_6_9_1_MinGW_64_bit-Release\backend"),
-        (Join-Path $repoRoot "build\Desktop_Qt_6_9_1_MinGW_64_bit-Release"),
+        (Join-Path $repoRoot "build\Release\backend"),
+        (Join-Path $repoRoot "build\Release"),
         (Join-Path $repoRoot "build\wt-check\backend"),
         (Join-Path $repoRoot "build\backend")
     )
@@ -189,7 +189,8 @@ if ($LASTEXITCODE -ne 0) {
     throw "cargo build --release 失败，退出码: $LASTEXITCODE"
 }
 
-$builtShellExe = Join-Path $repoRoot "src-tauri\target\release\animean-shell.exe"
+$cargoTarget = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $repoRoot "src-tauri\target" }
+$builtShellExe = Join-Path $cargoTarget "release\animean-shell.exe"
 if (-not (Test-Path -LiteralPath $builtShellExe -PathType Leaf)) {
     throw "未找到编译后的外壳程序: $builtShellExe"
 }
@@ -209,11 +210,9 @@ Copy-Item -LiteralPath $builtShellExe -Destination (Join-Path $distDir "AnimeAn.
 # 复制 AnimeAnBackend.exe
 Copy-Item -LiteralPath $backendExeSrc -Destination (Join-Path $distDir "AnimeAnBackend.exe") -Force
 
-# 复制 -BackendDir 下 AnimeAnBackend.exe 旁边的非 Qt dll
+# 复制 -BackendDir 下 AnimeAnBackend.exe 旁边的 dll
 Get-ChildItem -LiteralPath $resolvedBackendDir -Filter "*.dll" -File -ErrorAction SilentlyContinue | ForEach-Object {
-    if ($_.Name -notlike "Qt6*.dll" -and $_.Name -notin @("opengl32sw.dll", "d3dcompiler_47.dll")) {
-        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $distDir $_.Name) -Force
-    }
+    Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $distDir $_.Name) -Force
 }
 
 Get-ChildItem -LiteralPath $resolvedBackendDir -Filter "*.py" -File -ErrorAction SilentlyContinue | ForEach-Object {
