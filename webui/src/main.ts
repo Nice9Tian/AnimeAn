@@ -4,7 +4,9 @@ import { removeNodeReferences, type Project } from "../vf/src/model.ts";
 import { loadProject, type ProjectIO } from "../vf/src/project.ts";
 import { BackendClient } from "./net.ts";
 import { createPlayer } from "./player.ts";
+import { RelayClient, RelayHost } from "./relay.ts";
 import { createChrome, createStore, DOCK_FOR_WINDOW, panelFactories, syncDocks } from "./ui/app.js";
+import { createPanelWindows, setupSatelliteDock, triggerDockClosed } from "./ui/panelwindows.js";
 import { watchTimelineDock } from "./ui/timeline.js";
 import { raiseBusiness, syncTools, watchToolsScroll } from "./ui/tools.js";
 import "./ui/qt.css";
@@ -77,7 +79,7 @@ async function resolveBackendWsUrl(): Promise<string | null> {
 }
 
 // ?only=<dock id> leaves that dock alone in the window, to work on one panel by itself.
-function keepOnlyDock(project: Project, dockId: string): void {
+export function keepOnlyDock(project: Project, dockId: string): void {
   const { scene } = project;
   const dock = scene.nodes[dockId];
   if (!dock) throw new Error(`场景里没有 ${dockId}`);
@@ -87,6 +89,15 @@ function keepOnlyDock(project: Project, dockId: string): void {
   const removed = new Set(Object.keys(scene.nodes).filter((id) => !kept.has(id)));
   removeNodeReferences(scene, removed);
   for (const id of removed) delete scene.nodes[id];
+  const root = scene.nodes[scene.root];
+  if (root) {
+    delete root.docks;
+    delete root.dockLayout;
+    root.children = [dockId];
+    root.layout = { kind: "vbox" };
+  }
+  dock.size = { horizontal: "expanding", vertical: "expanding" };
+  delete dock.widthStep;
 }
 
 async function bootstrap(): Promise<void> {
@@ -95,11 +106,19 @@ async function bootstrap(): Promise<void> {
 
   const io = createGlobProjectIO(rawDesignFiles);
   const project = await loadProject(io);
-  const onlyDock = new URLSearchParams(window.location.search).get("only");
-  if (onlyDock) keepOnlyDock(project, onlyDock);
-  const client = new BackendClient();
+  const params = new URLSearchParams(window.location.search);
+  const onlyDock = params.get("only");
+  const isSatellite = params.get("satellite") === "1";
+  if (onlyDock) {
+    keepOnlyDock(project, onlyDock);
+    appEl.style.top = "0";
+    appEl.style.bottom = "0";
+  }
+
+  const client = isSatellite ? new RelayClient() : new BackendClient();
+  const relayHost = !isSatellite && typeof BroadcastChannel !== "undefined" ? new RelayHost(client) : null;
   const store = createStore(client);
-  const factories = panelFactories(store, client);
+  const factories = panelFactories(store, client, { satellite: isSatellite });
   for (const [type, create] of Object.entries(factories)) {
     const component = project.components.get(type);
     if (!component) throw new Error(`design 里缺少 ${type}`);
@@ -109,25 +128,60 @@ async function bootstrap(): Promise<void> {
       return { update() {}, destroy() { el.replaceChildren(); } };
     };
   }
+
   let onTimelineDockChanged: ((dockId: string) => void) | undefined;
+  let panelWindows: ReturnType<typeof createPanelWindows> | undefined;
+  const satelliteHooks = isSatellite && onlyDock ? setupSatelliteDock(appEl, onlyDock, client) : null;
+
   const player = createPlayer(appEl, project, {
-    onDockChanged: (dockId) => onTimelineDockChanged?.(dockId),
+    onDockChanged: (dockId) => {
+      onTimelineDockChanged?.(dockId);
+      panelWindows?.onDockChanged(dockId);
+    },
+    onDockFloatRequest: satelliteHooks ? (dockId) => satelliteHooks.onDockFloatRequest(dockId) : undefined,
     raiseBusiness: (name, args) => raiseBusiness(store, name, args),
     onDockClosed(dockId: string) {
-      const name = Object.entries(DOCK_FOR_WINDOW).find(([, dock]) => dock === dockId)?.[0];
-      if (name) void store.call("menu.trigger", { id: `windows.${name}` });
+      if (satelliteHooks) {
+        satelliteHooks.onDockClosed(dockId);
+        return;
+      }
+      void triggerDockClosed(store, dockId);
     },
   });
-  for (const dock of [...Object.values(DOCK_FOR_WINDOW), "timelineDock"]) player.runtime.dockSetVisible(dock, false);
-  syncDocks(player.runtime, store);
+
+  if (!onlyDock) {
+    for (const dock of [...Object.values(DOCK_FOR_WINDOW), "timelineDock"]) {
+      player.runtime.dockSetVisible(dock, false);
+    }
+    panelWindows = createPanelWindows(player.runtime, store, {
+      host: relayHost ?? undefined,
+      onDockRestored: (dockId: string) => onTimelineDockChanged?.(dockId),
+      onDockClosed: (dockId: string) => {
+        void triggerDockClosed(store, dockId);
+      },
+      onExternalChanged: () => {
+        (store as { texture?: { updateHome(): void } }).texture?.updateHome();
+      },
+    });
+    (store as { externalDocks?: Set<string> }).externalDocks = panelWindows.externalDocks;
+    syncDocks(player.runtime, store, panelWindows.externalDocks);
+  }
+
   const toolState = project.logic.state?.tools as { locked?: object } | undefined;
   syncTools(player.runtime, store, Object.keys(toolState?.locked ?? {}));
   watchToolsScroll(appEl, player.runtime, store);
-  onTimelineDockChanged = watchTimelineDock(player.runtime, store);
+  if (!onlyDock) {
+    onTimelineDockChanged = watchTimelineDock(player.runtime, store);
+  }
   const menuEl = document.getElementById("qt-menubar")!;
   const statusEl = document.getElementById("qt-statusbar")!;
-  createChrome(menuEl, statusEl, store);
-  menuEl.hidden = statusEl.hidden = Boolean(onlyDock);
+  createChrome(menuEl, statusEl, store, { satellite: isSatellite });
+  menuEl.hidden = statusEl.hidden = Boolean(onlyDock || isSatellite);
+
+  if (isSatellite) {
+    await client.connect("");
+    return;
+  }
 
   const wsUrl = await resolveBackendWsUrl();
   if (wsUrl) {

@@ -976,7 +976,7 @@ export function watchTimelineDock(runtime, store) {
   const findArea = (areas) => ["bottom", "top", "left", "right"].find((name) => areas[name]?.groups.some((g) => g.tabs.includes("timelineDock")));
   const fit = () => {
     const layout = runtime.getDockLayout();
-    const isFloating = Boolean(layout.floating?.some((f) => f.dockId === "timelineDock"));
+    const isFloating = Boolean(layout.floating?.some((f) => f.dockId === "timelineDock")) || Boolean(runtime.externalDocks?.has?.("timelineDock"));
     let area = findArea(layout.areas);
     const value = store.get("timeline");
     const targetArea = targetDockArea(value);
@@ -1026,7 +1026,7 @@ export function watchTimelineDock(runtime, store) {
   return (dockId) => {
     if (dockId !== "timelineDock") return;
     const layout = runtime.getDockLayout();
-    const floating = Boolean(layout.floating?.some((f) => f.dockId === "timelineDock"));
+    const floating = Boolean(layout.floating?.some((f) => f.dockId === "timelineDock")) || Boolean(runtime.externalDocks?.has?.("timelineDock"));
     const value = store.get("timeline");
     if (floating) {
       if (!value?.floating) store.call?.("timeline.setFloating", { floating: true });

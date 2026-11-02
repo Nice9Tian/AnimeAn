@@ -1,14 +1,14 @@
 # 窗口与主题（windows_theme）
 
-三级机制。从属于 `../architecture.md`，与它冲突时以它为准。代码：`parentwindow.*`、`centralpaintarea.*`、`subcontrolframe.*`、`childrenpanel/texturepanel.*`、`childrenpanel/timelinewindow.*`、`windowedgeresize.*`、`theme.*`、`mainwindow.cpp`（`updateTextureHome`、视口槽位）、`pyfile/window_manager.py`。2026-09-28 从架构文档下沉。
+三级机制。从属于 `../architecture.md`，与它冲突时以它为准。代码：`webui/design/ui/scene.json`、`webui/src/player.ts`、`webui/src/ui/app.js`（`DOCK_FOR_WINDOW`、`updateTextureHome`）、`webui/src/ui/panels2.js`、`webui/src/ui/panelwindows.js`、`webui/src/relay.ts`、`src-tauri/src/lib.rs`、`backend/session/backendsession.*`（窗口表、视口槽位）、`theme.*`、`pyfile/window_manager.py`。2026-09-28 从架构文档下沉。
 
 ## 窗口层级
 
-- `QMainWindow → ParentWindow（QDockWidget + 顶部页签，一页也显示页签）→ 页`。
+- 场景 `webui/design/ui/scene.json` 里是 `停靠窗 → 顶部页签（一页也显示页签）→ 页`。`DOCK_FOR_WINDOW` 把后端的窗口名对到停靠窗，Windows 菜单和面板的关闭按钮都走后端的窗口表。
 - Python 按名字寻址：`paint`（中央区，页 `drawing` / `texture`）、`tools`（`painting` / `mapping`）、`tool_options`、`layers`（`main` / `child`）、`assets`、`history`、`repulsion_pad`、`python_debug`。`ui.windows.list / show / select / current` 是机制，`window_manager.py` 是策略；不认识的名字静默忽略。
 - 中央区不是停靠窗：`show()` 对它是空操作；选它的 `texture` 页会把纹理板从子控件里拿走，选 `drawing` 还回去。
 - 时间轴是停靠窗但不是父窗（没有页），`ui.windows` 不列它；它的播放条就是标题栏，停在底边是横条，停在左右是竖条加细标题。
-- 无边框浮动的顶层窗由 `WindowEdgeResize` 提供四边拉伸。
+- Tauri 外壳中停靠面板（含 `timelineDock`）浮动时由 `webui/src/ui/panelwindows.js` 打开无边框独立窗口 `panel-<dockId>`（加载 `index.html?only=<dockId>&satellite=1`），经 `BroadcastChannel("animean.relay")`（`webui/src/relay.ts` 的 `RelayHost` / `RelayClient`）与主窗口共享单 WebSocket 连接。四边拉伸靠 Tauri 对无边框窗口的处理。纹理板子控件框 `texture_view` 因画布上下文不能跨窗口搬迁，继续在页面内浮动。普通浏览器里浮动都在页面内。
 
 ## Tools 面板（网页界面）
 
@@ -33,13 +33,13 @@
 
 - 纹理面板（菜单栏 + 选项行 + 画板容器，`webui/src/ui/panels2.js` 的 `createTexturePanel`）是一个可搬迁的部件，有三个家：中央 Texture 页、名为 `texture_view` 的子控件框（`createSubControlFrame`，可嵌进 Options 或 Tools 面板，也可在页面内浮动）、停车位。任一时刻只在一处，`webui/src/ui/app.js` 的 `updateTextureHome` 是唯一路由，搬迁时直接移动同一个 DOM 节点而不重建 WebGL 上下文，并通过 `texture.setHome` 通知后端。
 - 每个家记自己的视口（缩放、平移）；子控件里自动按长边适配，用户手动缩放后到下次进入前不再自动适配。
-- Mapping 组工具的 Options 面板最后一行嵌的就是 `texture_view` 子控件；框浮动或缺失时面板显示一行说明。
+- Mapping 组工具的 Options 面板最后一行嵌的就是 `texture_view` 子控件；框浮动或缺失时面板显示一行说明。卫星页不显示纹理板，Options 外出时那一行是说明文字。
 - 两个图层面板目标固定（Main Layers → 主画板，Child Layers → 纹理板）；`Changable Texture` 只管内容可否编辑和资产面板，`Changable Timeline` 决定时间轴是否跟随纹理板。
 
 ## 主题
 
-- `AnimeTheme` 是界面颜色的唯一出处：颜色角色（窗口地、表面、文字、分隔线、强调色、芯片色、画板围场、洋葱皮前后色）+ 深 / 浅模式，`themeChanged` 通知所有自绘部件重画。模式存 QSettings，启动时在构造窗口之前施加。
-- 画纸在两种模式下都是白的（是作品的地，不是界面）。`.ui` 里的样式表用调色板角色，不写死颜色。
+- `AnimeTheme` 是后端绘制颜色的唯一出处：颜色角色（窗口地、表面、文字、分隔线、强调色、芯片色、画板围场、洋葱皮前后色）+ 深 / 浅模式。模式存 `Settings`（键 `theme/mode`），经 `theme` 状态告诉网页；网页的颜色是 `webui/src/ui/qt.css` 的 CSS 变量，跟 `data-theme` 切换。
+- 画纸在两种模式下都是白的（是作品的地，不是界面）。
 - 画板围场随画纸走：`AnimeTheme::surroundFor(paper)` 按画纸亮度选色，深色画纸（亮度小于 0.5）用 `ViewportSurroundDeep`（`#141516`），浅色画纸用 `ViewportSurround`（深色主题 `#2a2c2e`，和 Tools 按钮同色；浅色主题 `#cfd0d3`，因为那边的按钮色几乎是白的，和白纸分不开）。网页里的 `--viewport-surround` 跟着 `ViewportSurround` 走。
 - 当前活动的画板有一圈 3 像素的框，有焦点时用 `Accent`，失去焦点时用 `BoardFrameIdle`（深色 `#b4b6bc`，浅色 `#bcbdc0`）。框只标在活动画板上，失焦不会让它消失。网页的 `blur` 经 `focused: false` 送到 `BoardSurface::injectBlur`。
 - 强调色分两级（网页界面，`--accent` 和 `--accent-2`）：蓝色 `--accent` 只给当前焦点，即正在用的工具、有焦点的画板、正在拖动的滑动条、输入框的焦点框和选中文字、折叠组上表示当前工具的点、时间轴当前帧、播放中的播放键、开启的洋葱皮总开关、停靠落点提示；其余选中或开启的状态（页签、列表和图层选中项、复选框、静止的滑动条、开关按钮、调色板当前色、菜单悬停）用次强调色 `--accent-2`：两个主题都是比主蓝更靠近背景的蓝，深色主题 `#34566f`，浅色主题 `#a6d0ee`，和 `--accent` 的对比度都约 2.2:1，上面的文字用 `--on-accent-2`。它和背景的对比度不高，只用作大面积的底色和填充，不用作文字或图标的颜色。hover 边框、页签下划线、当前色外框这些细线用更亮的 `--accent-2-line`（深色 `#7aa7c7`，浅色 `#5f9ecd`），否则和静止时的 `--divider` 分不开。

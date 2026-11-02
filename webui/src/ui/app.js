@@ -155,7 +155,7 @@ export const DOCK_FOR_WINDOW = {
 };
 
 // Panels keyed by the component type the scene names.
-export function panelFactories(store, client) {
+export function panelFactories(store, client, { satellite = false } = {}) {
   const { on, call } = store;
   // The transport sits under the canvas while the strip is docked to a side. The
   // scene decides which panel is built first, so neither can ask the other for it.
@@ -206,7 +206,13 @@ export function panelFactories(store, client) {
       ? document.querySelector('[data-vf-id="toolsDock"], [data-vf-id="toolsScroll"]')
       : null);
 
+  const isHostExternal = (targetHost) => {
+    const dockId = targetHost === "options" ? "toolOptionsDock" : targetHost === "tools" ? "toolsDock" : "";
+    return Boolean(dockId && store.externalDocks?.has?.(dockId));
+  };
+
   const isHostVisible = (targetHost) => {
+    if (isHostExternal(targetHost)) return false;
     const wins = store.get("windows");
     if (targetHost === "options") {
       if (!optionsEl || optionsEl.style?.display === "none") return false;
@@ -294,7 +300,7 @@ export function panelFactories(store, client) {
   // The first placement happens while the scene is built, before there is a
   // connection; main.ts says it again once there is one.
   function announceTextureHome() {
-    if (client.connected === false) return;
+    if (satellite || client.connected === false) return;
     Promise.resolve(call("texture.setHome", { home: currentHome, subControlVisible: isFrameLive() })).then((reply) => {
       if (Array.isArray(reply?.viewButtons)) {
         texturePanel.update({ buttons: reply.viewButtons });
@@ -419,7 +425,7 @@ export function panelFactories(store, client) {
     } else if (placement === "embedded") {
       if (!isHostVisible(hostName)) {
         const winId = hostName === "options" ? "windows.tool_options" : "windows.tools";
-        if (hostName === "options" ? optionsEl : getToolsEl()) {
+        if (!isHostExternal(hostName) && (hostName === "options" ? optionsEl : getToolsEl())) {
           call("menu.trigger", { id: winId, checked: true });
         } else {
           floatFrame();
@@ -459,18 +465,20 @@ export function panelFactories(store, client) {
     }
     updateTextureHome();
   });
-  on("event", (event) => {
-    if (event?.name === "textureSubControl.surface") {
-      surfaceSubControl();
-    } else if (event?.name === "textureView.surface") {
-      surfaceTextureView();
-    } else if (event?.name === "window.select" && event.args?.name === "paint") {
-      const child = event.args.page === "texture";
-      centralPanel?.show(child ? 1 : 0);
-      boards?.show(child ? "child" : "main");
-      updateTextureHome();
-    }
-  });
+  if (!satellite) {
+    on("event", (event) => {
+      if (event?.name === "textureSubControl.surface") {
+        surfaceSubControl();
+      } else if (event?.name === "textureView.surface") {
+        surfaceTextureView();
+      } else if (event?.name === "window.select" && event.args?.name === "paint") {
+        const child = event.args.page === "texture";
+        centralPanel?.show(child ? 1 : 0);
+        boards?.show(child ? "child" : "main");
+        updateTextureHome();
+      }
+    });
+  }
 
   store.texture = {
     panel: texturePanel,
@@ -519,6 +527,7 @@ export function panelFactories(store, client) {
           }
         },
         onSubWindow: () => {
+          if (satellite) return subWindowFloatingNote("Texture is in the main window");
           if (!lastHost) lastHost = "options";
           if (placement === "floating") return subWindowFloatingNote();
           const slot = document.createElement("div");
@@ -744,10 +753,10 @@ export function panelFactories(store, client) {
   };
 }
 
-function subWindowFloatingNote() {
+function subWindowFloatingNote(text = "Texture is floating — drag it back") {
   const note = document.createElement("div");
   note.className = "opt-title";
-  note.textContent = "Texture is floating — drag it back";
+  note.textContent = text;
   return note;
 }
 
@@ -882,17 +891,20 @@ function createBoards(mainHost, childHost, client, store) {
 }
 
 // Keeps scene docks in step with the backend's window list.
-export function syncDocks(runtime, store) {
+export function syncDocks(runtime, store, isExternal) {
+  const skip = (dock) => (typeof isExternal === "function" ? isExternal(dock) : isExternal?.has?.(dock)) || Boolean(runtime?.externalDocks?.has?.(dock));
   store.on("windows", (value) => {
     for (const [name, dock] of Object.entries(DOCK_FOR_WINDOW)) {
+      if (skip(dock)) continue;
       runtime.dockSetVisible(dock, Boolean(value?.[name]?.visible));
     }
-    runtime.dockSetVisible("timelineDock", Boolean(value?.timeline?.visible));
+    if (!skip("timelineDock")) runtime.dockSetVisible("timelineDock", Boolean(value?.timeline?.visible));
   });
 }
 
 // The chrome outside the docked scene: menu bar and status bar.
-export function createChrome(menuEl, statusEl, store) {
+export function createChrome(menuEl, statusEl, store, options = {}) {
+  const isSatellite = Boolean(options?.satellite);
   let frozen = false;
   const RENDERER_ITEM = "settings.renderer.";
   const trigger = (item) => {
@@ -907,7 +919,7 @@ export function createChrome(menuEl, statusEl, store) {
       checked: item.kind === "check" ? !item.checked : item.kind === "radio" ? true : undefined,
     });
   };
-  const bar = createMenuBar(menuEl, {
+  const bar = isSatellite || !menuEl ? null : createMenuBar(menuEl, {
     onTrigger: trigger,
     onOpen: async () => {
       if (frozen) return;
@@ -936,14 +948,15 @@ export function createChrome(menuEl, statusEl, store) {
       }],
     };
   };
-  const paintMenus = () => bar.update([...(store.get("menus") ?? []), settingsMenu()]);
-  store.on("menus", paintMenus);
+  const paintMenus = () => bar?.update([...(store.get("menus") ?? []), settingsMenu()]);
+  if (!isSatellite) store.on("menus", paintMenus);
   const text = document.createElement("div");
   text.className = "status-text";
   const grip = document.createElement("div");
   grip.className = "size-grip";
-  statusEl.append(text, grip);
+  if (!isSatellite && statusEl) statusEl.append(text, grip);
   store.on("window", (value) => {
+    if (isSatellite) return;
     if (!frozen) text.textContent = value?.status ?? "";
     if (value?.title) window.__TAURI__?.core.invoke("set_window_title", { title: value.title });
   });
@@ -989,7 +1002,33 @@ export function createChrome(menuEl, statusEl, store) {
   store.on("theme", (value) => {
     document.documentElement.dataset.theme = value?.mode === "dark" ? "dark" : "light";
   });
+
+  // Menu shortcuts: the menus state carries them, so Python-added ones work too.
+  const shortcuts = new Map();
+  const collect = (items) => {
+    for (const item of items ?? []) {
+      if (item.shortcut && item.enabled !== false) shortcuts.set(normalizeKey(item.shortcut), item.id);
+      collect(item.children);
+    }
+  };
+  const rebuildShortcuts = () => {
+    shortcuts.clear();
+    collect(store.get("menus"));
+    collect(store.get("textureMenus"));
+    // Redo has a second key that the menu does not print.
+    if (shortcuts.has("ctrl+y")) shortcuts.set("ctrl+shift+z", shortcuts.get("ctrl+y"));
+  };
+  store.on("menus", rebuildShortcuts);
+  store.on("textureMenus", rebuildShortcuts);
+  window.addEventListener("keydown", (e) => {
+    if (frozen) return;
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+    const id = shortcuts.get(keyName(e));
+    if (id) { e.preventDefault(); store.call("menu.trigger", { id }); }
+  });
+
   const dialogRoot = document.createElement("div");
+  if (isSatellite) return;
   document.body.append(dialogRoot);
   const canvasDialog = createNewProjectDialog(dialogRoot, {
     onCreate: (size) => store.call("project.new", size),
@@ -1103,28 +1142,6 @@ export function createChrome(menuEl, statusEl, store) {
         break;
       }
     }
-  });
-
-  // Menu shortcuts: the menus state carries them, so Python-added ones work too.
-  const shortcuts = new Map();
-  const collect = (items) => {
-    for (const item of items ?? []) {
-      if (item.shortcut && item.enabled !== false) shortcuts.set(normalizeKey(item.shortcut), item.id);
-      collect(item.children);
-    }
-  };
-  const rebuildShortcuts = () => {
-    shortcuts.clear();
-    collect(store.get("menus"));
-    collect(store.get("textureMenus"));
-  };
-  store.on("menus", rebuildShortcuts);
-  store.on("textureMenus", rebuildShortcuts);
-  window.addEventListener("keydown", (e) => {
-    if (frozen) return;
-    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-    const id = shortcuts.get(keyName(e));
-    if (id) { e.preventDefault(); store.call("menu.trigger", { id }); }
   });
 }
 
