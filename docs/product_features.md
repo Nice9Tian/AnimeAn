@@ -16,6 +16,7 @@
 - Tools 面板放不下全部工具时可以滚动：底部出现向下箭头，滚动后顶部出现向上箭头，滚轮也能滚；放得下时不显示箭头。现有。机制（三级）：`mechanism/windows_theme.md`。
 - 鼠标停在工具按钮上显示工具名和一句说明。现有。机制（三级）：`mechanism/windows_theme.md`。
 - 时间轴帧条放不下时出现和其它面板一样的滚动条，手柄可以拖；手动滚开后，只有当前帧变了才跟回去，按住手柄时不跟。收起帧条时高度让给画板，展开时回到收起前的高度；同一停靠区还开着别的面板时不缩。现有。
+- 面板停靠、浮出、叠页签、并排、开关时，其余面板和画板滑到新位置，不是一下跳过去；拖窗口边、拖分隔条改大小时不滑，跟手。打开软件后第一次操作之前不滑；系统设了减少动态效果时不滑。现有。机制（三级）：`mechanism/windows_theme.md`。
 - Tools 面板拖宽拖窄时，工具按钮大小不变，按整列增减：一列、两列、三列……N 列；停靠时面板宽度吸附到整列，不留半列空白。现有。机制（三级）：`mechanism/windows_theme.md`。
 - 深 / 浅主题，下次启动沿用；画纸恒白；画布外的填充色跟着画纸深浅走，白纸周围不用接近全黑的颜色。现有。
 - 画板渲染器在 Settings ▸ Board Renderer 里切换 WebGL 或 Canvas 2D，切换时画面不丢，下次启动沿用；缺省 WebGL，显卡不支持时用 Canvas 2D。现有。机制（三级）：`mechanism/backend_protocol.md`。
@@ -33,6 +34,7 @@
 - **Arrow**：选中笔画或填充并拖动；Default / Artist / Debug 三种编辑模式；选中轮廓的颜色线宽可设；Auto Mapping 的引导线、手柄、视平线都在 Arrow 下直接拖。现有。机制（三级）：`mechanism/painting_tools.md`。
 - **Transfer**：当前层内容的缩放、拉伸、平移、旋转框，修饰键锁比例锁轴吸附角度；栅格不旋转。现有。机制（三级）：`mechanism/painting_tools.md`。
 - **Connect**：两点之间生成连接笔画，Auto Snap 吸端点拐角顶点，PolyMode / CurveMode / SmoothMode，接受 / 删除按钮或 Auto Accept。现有。机制（三级）：`mechanism/painting_tools.md`。
+- 结果落下时的短动画：Fill 的颜色从点下的位置铺开到区域边缘；Connect 的新线从第一点画向第二点；画完 H / V 轴线或 Free Out Line 后，Auto Mapping 的新结果淡入。拖动时的实时重算不播。动画期间一按下画板或滚轮就立刻结束；系统设了减少动态效果时不播。现有。机制（三级）：`mechanism/painting_tools.md`。
 - **Repulsion Pad**：手柄把当前帧重叠或贴近的线推开，实时预览，拓扑不变，锁定层不动。现有。机制（三级）：`mechanism/painting_tools.md`。
 - 图层决定工具：Auto-Mapping 单元里的层展开 Mapping 组；跟随线稿的填充层锁 Pen / Eraser / Connect / Transfer，只留 Arrow 和 Fill；独立填充层锁 Connect。现有。机制（三级）：`mechanism/fill_layers.md`。
 - 图层锁定：模型里有锁，现在只有 Transfer 尊重它、面板没有开关。规划：Layers 面板加锁定开关，锁定的层所有工具都不改。
