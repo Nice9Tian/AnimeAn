@@ -4,14 +4,10 @@ Documentation lives in `docs/` and is organised in semantic tiers; start with
 `docs/developer_guide.md` (rules) and `docs/README.md` (index by tier). The
 product itself is described in `docs/product_purpose.md`.
 
-AnimeAn (**Anime** + **An**notation — structural guide-line annotations on 2D line art) is a 2D line-art animation tool for animators
-(Windows desktop). Its core feature is Auto Mapping: a pattern drawn on the
-texture board is mapped onto the line art of every frame along axis lines, and
-the parts that fold to the back disappear and leave a crease.
-
-Its interface is a web UI in a Tauri shell; a separate C++ backend (no Qt)
-embeds Python through `pybind11`, so scripts can inspect and edit the C++ scene
-model and use vector geometry helpers.
+AnimeAn (**Anime** + **An**notation — structural guide-line annotations on 2D line art) is a Windows desktop application for animation and vector drawing
+experiments. Its interface is a web UI in a Tauri shell; a separate C++ backend
+(no Qt) embeds Python through `pybind11`, so scripts can inspect and edit the
+C++ scene model and use vector geometry helpers.
 
 ## Main Features
 
@@ -50,6 +46,8 @@ model and use vector geometry helpers.
 
 ## Build
 
+The project uses CMake.
+
 ### Windows
 
 Needs CMake + MinGW, Node.js and Rust; no Qt libraries.
@@ -59,9 +57,7 @@ PowerShell -ExecutionPolicy Bypass -File .\build_scripts\agent_build.ps1
 ```
 
 This builds `AnimeAnBackend`, the web UI and the Tauri shell, and packages
-`dist\AnimeAn\`. The expected final log line is
-`===== AGENT BUILD DONE EXIT_CODE=0 =====`. Backend-only builds:
-`docs/mechanism/build_deploy.md`.
+`dist\AnimeAn\`. Backend-only builds: `docs/mechanism/build_deploy.md`.
 
 ### Python Support
 
@@ -75,6 +71,20 @@ To build the optional standalone Python extension module:
 ```powershell
 cmake -S . -B build -DANIMEAN_BUILD_PYTHON_MODULE=ON
 cmake --build build --config Release
+```
+
+## Deploy Verification
+
+For agent-side release verification, use:
+
+```powershell
+PowerShell -ExecutionPolicy Bypass -File ".\build_scripts\agent_build.ps1"
+```
+
+The expected final log line is:
+
+```text
+===== AGENT BUILD DONE EXIT_CODE=0 =====
 ```
 
 ## Python Entry Points
