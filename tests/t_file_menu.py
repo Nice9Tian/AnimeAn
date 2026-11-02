@@ -1,8 +1,9 @@
 """The File menu's flows, driven the way the backend and the page drive them:
-C++ forwards the menu item as a "menu" event, the page answers each dialog, and
-every file operation goes out through ui.call. Covers the pickers, the question
-before a file is replaced, the question before an import is scaled, the message
-after a failure, the canvas size at startup and the names a save picker opens on."""
+C++ hands the File menu's item (declared in app_menus.py) back as a "menu"
+event, the page answers each dialog, and every file operation goes out through
+ui.call. Covers the pickers, the question before a file is replaced, the
+question before an import is scaled, the message after a failure, the canvas
+size at startup and the names a save picker opens on."""
 import json
 import os
 import sys
@@ -45,6 +46,7 @@ class FakeUi:
 UI = FakeUi()
 sys.modules["animean_python"] = types.SimpleNamespace(ui=UI)
 
+import app_menus  # noqa: E402,F401  (declares the File menu and routes its items)
 import dialogs  # noqa: E402
 import file_menu  # noqa: E402
 import python_hooks  # noqa: E402
@@ -56,8 +58,8 @@ def report(name, ok):
 
 
 def menu(item):
-    """A File item as C++ forwards it; returns the message after the hooks ran."""
-    message = {"event": "menu", "menu": "file", "name": item, "view": "main", "checked": False}
+    """A File item as C++ hands it back; returns the message after the hooks ran."""
+    message = {"event": "menu", "menu": "file", "name": item, "view": "main"}
     python_hooks.dispatch(message)
     return message
 

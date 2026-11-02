@@ -665,24 +665,11 @@ export function createSubControlFrame(root, { onAffordance, onDragStart, onDragM
 }
 
 // ---- TexturePanel ----------------------------------------------------------------
-const SETTING_MENU = {
-  text: "Setting",
-  children: [
-    { kind: "action", text: "Changable Timeline", checked: false, id: "changable_timeline" },
-    { kind: "action", text: "Changable Texture", checked: true, id: "changable_texture" },
-    { kind: "separator" },
-    { kind: "submenu", text: "Background", children: [
-      { kind: "action", text: "White", checked: true, id: "background:white" },
-      { kind: "action", text: "Black", checked: false, id: "background:black" },
-      { kind: "action", text: "Transparent", checked: false, id: "background:transparent" },
-    ] },
-  ],
-};
-
 // The texture board and what configures it, as one reparentable body: menu bar,
 // optional script-button row, the board's host with its scroll bars.
 // update({ menus, buttons: [{ name, title, checkable, checked }] }): menus replaces
-// the bar and defaults to Setting alone, the shell adds File and the script's View.
+// the bar. Every menu on it is Python's (File, Setting, the scripts' View); until
+// the backend sends them the bar is empty.
 // onTrigger(item), onScroll(axis, value), onButton(name, on). Returns { host, h, v }
 // so the owner can drop its board canvas in and drive the scroll bars.
 export function createTexturePanel(root, { onTrigger, onScroll, onButton } = {}) {
@@ -707,7 +694,7 @@ export function createTexturePanel(root, { onTrigger, onScroll, onButton } = {})
   v.set = (next) => { setV(next); syncBars(); };
   stage.append(host, h.el, v.el);
   root.append(menuHost, options, stage);
-  let currentMenus = [SETTING_MENU];
+  let currentMenus = [];
   let currentButtons = [];
   // The panel can be parked off the page, out of the document's reach.
   onLanguage(() => {
@@ -723,7 +710,7 @@ export function createTexturePanel(root, { onTrigger, onScroll, onButton } = {})
     h,
     v,
     update({ menus, buttons } = {}) {
-      if (menus !== undefined) currentMenus = menus ?? [SETTING_MENU];
+      if (menus !== undefined) currentMenus = menus ?? [];
       if (buttons !== undefined) currentButtons = buttons ?? [];
       menu.update(currentMenus);
       options.replaceChildren(...currentButtons.map((button) => {

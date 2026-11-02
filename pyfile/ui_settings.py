@@ -85,6 +85,7 @@ def _on_report(message):
         _STATE["webgl"] = value not in (False, 0, "false", "0", "")
 
 
-python_hooks.register_menu({"name": MENU, "title": "Settings", "place": "end", "items": _items})
+# Last on the bar, after Windows (app_menus.py has the bar's other orders).
+python_hooks.register_menu({"name": MENU, "title": "Settings", "order": 100, "items": _items})
 python_hooks.set_hook(_on_menu, menu=True)
 python_hooks.set_hook(_on_report, option=True)

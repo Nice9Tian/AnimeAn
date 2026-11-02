@@ -69,7 +69,6 @@ private:
     void initWindowInfos();
     void loadTimelineSettings();
     void saveTimelineSettings() const;
-    void captureScriptMenuNames();
     void loadProtectedPropertiesForChild();
     void surfaceTextureView();
     void surfaceMainView();
@@ -108,7 +107,16 @@ private:
     // message["handled"], 0 when none did, -1 when one of them raised (the text
     // in *errorOut).
     int dispatchPythonEvent(const JsonObject &event, String *errorOut = nullptr);
-    bool forwardMenuToPython(const String &menu, const String &item, String *errorOut);
+
+    // A menu item Python declared with its own id ("file.open", "windows.timeline"):
+    // which bar and menu declared it, and the name its "menu" event carries.
+    struct MenuRoute {
+        String host;
+        String menu;
+        String name;
+    };
+    bool findMenuRoute(const String &id, MenuRoute *out) const;
+    bool forwardMenuToPython(const MenuRoute &route, const JsonObject &params, String *errorOut);
     // The open dialogs are Python's (dialogs.py); these keep the broadcast copy.
     void setDialogsFromPython(const String &json);
     void dropDialog(const String &id);
@@ -135,10 +143,23 @@ private:
     JsonObject buildThemeState() const;
     JsonArray buildMenusState() const;
     JsonArray buildTextureMenusState() const;
+    JsonObject buildTextureSettingsState() const;
     JsonArray buildTextureViewButtonsState() const;
+    // One bar being built: the menus Python declares (python_hooks.menus_json,
+    // fetched once per host, in Python's order) and the routes the bar's items
+    // with their own ids leave behind.
+    struct MenuBuild {
+        Hash<String, JsonArray> menus;
+        Hash<String, MenuRoute> routes;
+    };
+    JsonArray buildMenuBar(const String &host) const;
+    JsonArray pythonMenus(const String &host, MenuBuild *build) const;
+    JsonObject pythonMenu(const String &host, const String &name, MenuBuild *build) const;
     JsonArray buildScriptMenuItems(const String &host,
                                     const String &menuName,
-                                    const JsonArray &items) const;
+                                    const JsonArray &items,
+                                    MenuBuild *build,
+                                    int depth) const;
     JsonObject buildToolsState() const;
     JsonObject buildToolOptionsState() const;
     JsonObject buildDrawColorState() const;
@@ -174,8 +195,10 @@ private:
     TextureViewSlot m_textureViewCentral;
     TextureViewSlot m_textureViewControl;
 
-    Vector<std::pair<String, String>> m_mainScriptMenus;
-    Vector<std::pair<String, String>> m_childScriptMenus;
+    // Learnt while the bars are built, per bar and replaced when that bar is
+    // built again: a trigger of one of these ids goes back to the Python menu
+    // that declared it (the main bar's first when both bars have the id).
+    mutable Hash<String, Hash<String, MenuRoute>> m_menuRoutes;
 
     PointF m_forcePadValue{0.0, 0.0};
     Hash<String, PointF> m_padValues;

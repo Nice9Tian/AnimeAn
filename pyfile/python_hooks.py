@@ -99,10 +99,25 @@ def register_menu(definition):
 
     definition: {"name": str, "title": str, "items": [item, ...],
                  "host": "main" (default) | "child",
-                 "place": "end" (after Windows; default: before Theme)}
+                 "order": number (lower first, default 50; ties keep the
+                          order of registration)}
     item:       {"name": str, "title": str,
                  "kind": "action" | "check" | "radio" | "separator" | "submenu",
-                 "checked": bool, "items": [...] (submenu only)}
+                 "checked": bool, "enabled": bool, "shortcut": str,
+                 "extraShortcuts": [str] (more keys for it, not printed),
+                 "id": str (optional: the item's id as the page sees it;
+                            without one C++ makes "script:<host>:<menu>:<name>".
+                            An id names one item: declared in two menus, as
+                            File > Texture and the texture board's File do,
+                            it is one item, and its event names the main
+                            bar's menu),
+                 "items": [...] (submenu only),
+                 "menu": str, "host": str (submenu only: show that registered
+                          menu's items here, with that menu's ids)}
+
+    The whole menu bar is declared this way, the File, Edit, Theme and
+    Windows menus included (app_menus.py): which items a menu has is Python's
+    (developer_guide.md, "分工"). C++ builds the bars in `menus_json` order.
 
     HOST is which menu bar the menu belongs to. It is part of the identity,
     not just a filter: the same name may legitimately appear on both bars -
@@ -142,18 +157,32 @@ def menus_json(host=None):
             out.append(entry)
         return out
 
+    # Each menu is written on its own: one that fails, or holds a value JSON
+    # cannot carry, drops out alone instead of taking the whole bar with it.
     menus = []
-    for menu in _MENUS:
-        if host is not None and (menu.get("host") or "main") != host:
-            continue
+    for menu in registered_menus(host):
         entry = dict(menu)
         try:
             entry["items"] = resolve(entry.get("items"))
+            menus.append(json.dumps(entry))
         except Exception as error:
             print(f"[python_hooks] menu '{entry.get('name')}' failed: {error}")
-            continue
-        menus.append(entry)
-    return json.dumps(menus)
+    return "[" + ",".join(menus) + "]"
+
+
+DEFAULT_MENU_ORDER = 50
+
+
+def _menu_order(menu):
+    order = menu.get("order")
+    return order if isinstance(order, (int, float)) and not isinstance(order, bool) else DEFAULT_MENU_ORDER
+
+
+def registered_menus(host=None):
+    """The registered menus of one bar (or all), in menu-bar order, items unevaluated."""
+    menus = [menu for menu in _MENUS if host is None or (menu.get("host") or "main") == host]
+    # sorted() is stable: menus with the same order keep their registration order.
+    return sorted(menus, key=_menu_order)
 
 
 # Settings windows a tool module contributes, keyed by name. The layout is the

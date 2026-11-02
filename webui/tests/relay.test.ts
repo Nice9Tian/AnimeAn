@@ -825,7 +825,7 @@ test("panelwindows 与 syncDocks：WINDOW_FOR_DOCK 反推、缺省窗口视为�
     store.set("windows", { assets: { visible: false }, layers: { visible: true }, timeline: { visible: false } });
     assert.equal(tauriCalls.at(-1)?.cmd, "close_panel_window");
     assert.equal(tauriCalls.at(-1)?.args.label, "panel-assetsDock");
-    // 主窗口主动关闭时外壳也会报 panel-closed，不应再触发 menu.trigger
+    // 主窗口主动关闭时外壳也会报 panel-closed，不应再请后端隐藏一次
     tauriListeners.get("panel-closed")?.({ payload: "panel-assetsDock" });
     assert.equal(storeCalls.length, 0);
     await new Promise((r) => setTimeout(r, 0));
@@ -886,7 +886,7 @@ test("panelwindows 与 syncDocks：WINDOW_FOR_DOCK 反推、缺省窗口视为�
     assert.equal(tauriCalls.at(-1)?.cmd, "close_panel_window");
     assert.deepEqual(externalChangedLog, ["assetsDock", "assetsDock"]);
 
-    // 6. 再次浮出并由用户按 Alt+F4（外壳报 panel-closed）：主窗口走 onDockClosed 触发 windows.assets
+    // 6. 再次浮出并由用户按 Alt+F4（外壳报 panel-closed）：主窗口走 onDockClosed 请后端隐藏 assets
     floatingList.push({ dockId: "assetsDock", x: 50, y: 60, width: 240, height: 280 });
     panelWins.onDockChanged("assetsDock", true);
     assert.equal(tauriCalls.at(-1)?.cmd, "open_panel_window");
@@ -898,8 +898,8 @@ test("panelwindows 与 syncDocks：WINDOW_FOR_DOCK 反推、缺省窗口视为�
 
     tauriListeners.get("panel-closed")?.({ payload: "panel-assetsDock" });
     assert.deepEqual(storeCalls.at(-1), {
-      method: "menu.trigger",
-      params: { id: "windows.assets" },
+      method: "windows.setVisible",
+      params: { name: "assets", visible: false },
     });
 
     satHooks.destroy();
@@ -1025,13 +1025,13 @@ test("卫星页与主窗口纹理板归属：卫星页不碰纹理板并显示�
     assert.equal(mainStore.texture.placement, "parked");
     assert.equal(mainStore.texture.home, "parked");
 
-    // Windows ▸ Texture View（textureSubControl.surface）：在主窗口浮出纹理框，不调 menu.trigger
+    // Windows ▸ Texture View（textureSubControl.surface）：在主窗口浮出纹理框，不去开关面板窗口
     backendCalls.length = 0;
     backend.emitState("event", { name: "textureSubControl.surface" });
     assert.equal(mainStore.texture.isFloating(), true);
     assert.equal(mainStore.texture.home, "control");
     assert.equal(
-      backendCalls.some((c) => c.method === "menu.trigger"),
+      backendCalls.some((c) => c.method === "menu.trigger" || c.method === "windows.setVisible"),
       false,
     );
     assert.deepEqual(
@@ -1130,15 +1130,8 @@ test("卫星页 createChrome：不开对话框窗口也不弹选择框，模态�
     assert.equal(defaultPrevented, true);
     assert.deepEqual(triggeredMenus.map((m: any) => m.id), ["edit.undo"]);
 
-    // 重做还有一个菜单上不显示的键：Ctrl+Shift+Z
-    backend.emitState("menus", [
-      {
-        id: "edit",
-        text: "Edit",
-        children: [{ id: "edit.redo", text: "Redo", shortcut: "Ctrl+Y", enabled: true }],
-      },
-    ]);
-    win.dispatchEvent({
+    // 重做还有一个菜单上不显示的键：Ctrl+Shift+Z，由 Python 在菜单项上声明（extraShortcuts），页面自己不加键
+    const shiftZ = {
       type: "keydown",
       key: "Z",
       ctrlKey: true,
@@ -1146,7 +1139,25 @@ test("卫星页 createChrome：不开对话框窗口也不弹选择框，模态�
       shiftKey: true,
       target: dockEl,
       preventDefault() {},
-    });
+    };
+    backend.emitState("menus", [
+      {
+        id: "edit",
+        text: "Edit",
+        children: [{ id: "edit.redo", text: "Redo", shortcut: "Ctrl+Y", enabled: true }],
+      },
+    ]);
+    win.dispatchEvent(shiftZ);
+    await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual(triggeredMenus.map((m: any) => m.id), ["edit.undo"], "a key nobody declared does nothing");
+    backend.emitState("menus", [
+      {
+        id: "edit",
+        text: "Edit",
+        children: [{ id: "edit.redo", text: "Redo", shortcut: "Ctrl+Y", extraShortcuts: ["Ctrl+Shift+Z"], enabled: true }],
+      },
+    ]);
+    win.dispatchEvent(shiftZ);
     await new Promise((r) => setTimeout(r, 10));
     assert.deepEqual(triggeredMenus.map((m: any) => m.id), ["edit.undo", "edit.redo"]);
 

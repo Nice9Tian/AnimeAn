@@ -53,8 +53,8 @@ def choose(item, menu="Settings"):
 
 def main():
     menu = settings_menu()
-    results = [report("Settings is a main-bar menu placed after Windows", menu is not None
-                      and menu["title"] == "Settings" and menu["place"] == "end")]
+    results = [report("Settings is a main-bar menu placed last, after Windows (order 100)", menu is not None
+                      and menu["title"] == "Settings" and menu["order"] == 100)]
     results.append(report("it holds Board Renderer and Language", [i["title"] for i in menu["items"]] == ["Board Renderer", "Language"]))
     results.append(report("WebGL is ticked at first", radios(menu, "renderer") == {
         "renderer.webgl": (True, True), "renderer.canvas2d": (False, True)}))
