@@ -20,8 +20,8 @@
   cmake -S . -B build\wt-check -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_MAKE_PROGRAM=C:\Qt\Tools\mingw1310_64\bin\mingw32-make.exe -DCMAKE_C_COMPILER=C:\Qt\Tools\mingw1310_64\bin\gcc.exe -DCMAKE_CXX_COMPILER=C:\Qt\Tools\mingw1310_64\bin\g++.exe
   cmake --build build\wt-check --target AnimeAnBackend --parallel 10
   ```
-- **只改 Python 时**跑 `sync_pyfiles.ps1`：把 `pyfile\*.py`、`pythonbind\animemodel.py`、`opentoonz_tools\toonz_to_dict.py` 与 `pywheels\` 按哈希同步到每个含 `AnimeAn.exe` 或 `AnimeAnBackend.exe` 的构建 / 部署目录，并提示比源码旧的可执行文件。`backend/CMakeLists.txt` 与 `build_scripts/package_tauri.ps1` 的复制清单都要列出每个 `pyfile` 模块，漏了就不会进 dist。
-- 构建目录（`build\Release`）与 `dist\AnimeAn\` 各有一份脚本副本；开发机上源码 `pyfile\` 在 `PYTHONPATH` 里排第一，所以源码优先；发布文件夹从 exe 旁加载。
+- **只改 Python 时**跑 `sync_pyfiles.ps1`：把 `pyfile\*.py`、`pythonbind\animemodel.py`、`opentoonz_tools\toonz_to_dict.py` 与 `pywheels\` 按哈希同步到 `build\` 和 `dist\` 下每个含 `AnimeAn.exe` 的目录，并提示比源码旧的可执行文件。`build_scripts/package_tauri.ps1` 按通配复制 `pyfile\*.py`，新模块不用登记；`backend/CMakeLists.txt` 只复制 Python 的 DLL。
+- 脚本副本在 `dist\AnimeAn\` 的根目录（`AnimeAn.exe` 旁）；打包时另放的 `dist\AnimeAn\pyfile\` 等子目录副本没人读，`sync_pyfiles.ps1` 也不更新。开发机上源码 `pyfile\` 在 `PYTHONPATH` 里排第一，所以源码优先；例外是 `initalize.py`（按文件执行，先找 exe 旁的副本）和 `animemodel.py`、`toonz_to_dict.py`（源码目录排在 exe 目录之后），改这三个要先跑 `sync_pyfiles.ps1`。发布文件夹从 exe 旁加载。
 
 ## 测试
 

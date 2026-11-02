@@ -50,7 +50,7 @@
 
 - **C++ 通用，Python 具体。** C++ 只写基础函数：交互事件、模型与几何、通用开关、事件派发；渲染和声明式界面在网页端。功能的含义（工具流程、属性名、颜色、数据结构、菜单内容、图层联动、Auto Mapping 全部算法）在 `pyfile/*.py`。C++ 里出现工具名、属性名、颜色常量或「if 工具 == …」就是放错了地方：抽成机制，语义留在 Python。
 - **C++ 内建的基础工具只有三个**：Pen、Eraser、视口缩放平移。其余工具一律 Python；不为了性能把功能搬回 C++。
-- **机制 / 策略成对。** 加一个 C++ 机制就要有一个 Python 策略模块用它；handle 事件是工具面。**新工具**：[缺省]代码完成后填入。
+- **机制 / 策略成对。** 加一个 C++ 机制就要有一个 Python 策略模块用它；handle 事件是工具面。**新工具**：策略是 `pyfile/` 里的一个模块，用 `python_hooks.set_hook` 订阅要用的事件；按钮登记在 `pyfile/extra_tools.py`（`handler` 是选中时调用的函数，`base_tool` 指定借用哪个基础工具的交互事件），选项布局写在 `pyfile/toolcontrol.py`；Tools 面板上的按钮在 `webui/design/` 里加，`webui/tests/tool_groups.test.ts` 检查两边对得上。C++ 不为新工具加枚举。
 - **Python 层装会变的东西。** 实验性算法、随功能扩展变化的逻辑都在 Python。现成的库能省事就用，wheel 入 `pywheels/`、经 `pydeps.ensure()` 加载并保留降级路径；这是不重复造轮子，不是原则。
 - **Rust 只做外壳，不写算法。**
 - **界面在哪里改。** 停靠布局和 Tools 的控件在 `webui/design/` 里改；其余面板、菜单栏和对话框在 `webui/src/ui/` 里改。`webui/vf/` 是 VibeFrontend 运行层的副本，改动要记进 `webui/vf/README.md`。
@@ -76,10 +76,10 @@
 
 ### 部署与脚本
 
-- 新增 `pyfile/` 模块的部署：[缺省]代码完成后填入。
-- 改了 `.py` 不重建时跑 `sync_pyfiles.ps1`；用户测试的程序：[缺省]代码完成后填入。
+- 新增 `pyfile/` 模块不用登记部署：打包脚本复制 `pyfile\` 下全部 `.py`，启动时 `initalize.py` 自动发现并导入；对导入顺序有要求时，加进 `initalize.py` 的 `PYTHON_FILE_MODULES`。
+- 改了 `.py` 不重建时跑 `sync_pyfiles.ps1`；用户测试的程序是主仓库的 `dist\AnimeAn\AnimeAn.exe`，它拉起同目录的 `AnimeAnBackend.exe`。
 - 系统 PATH 上的 `python` 是无效的 Store 存根；用 `py` 启动器或 `dist\AnimeAn\python312\python.exe`。
-- 程序不落盘用户数据：文档级状态进 scriptData；机器级偏好：[缺省]代码完成后填入。
+- 程序不落盘用户数据：文档级状态进 scriptData；机器级偏好只放两处：后端的 `Settings`（`%APPDATA%\AnimeAn\settings.json`）和网页的 `localStorage`（键名以 `animean.` 开头），都不进工程文件。
 
 ### 文档
 

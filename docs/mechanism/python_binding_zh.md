@@ -126,7 +126,7 @@ finally:
 
 ## ExtraTool 开发边界
 
-当前 ExtraTool 是“Python 辅助的 Pen 工作流”，不是完整自定义鼠标工具框架。用户点击 ExtraTool 后，绘图窗口仍使用原生 Pen，C++ 会给后续笔画设置 `property`，Python 通过 hook 接收事件。
+当前 ExtraTool 是“建立在内建工具上的 Python 辅助工作流”，不是完整自定义鼠标工具框架。用户点击 ExtraTool 后，画板切到登记里 `base_tool` 指定的基础工具（`fill`、`arrow`、`transfer`，不写就是 Pen），C++ 会给后续笔画设置 `property`，Python 通过 hook 接收事件。
 
 适合现在开始开发的算法：
 
@@ -137,7 +137,6 @@ finally:
 暂时不适合的算法：
 
 - 完全接管鼠标按下、拖动、释放的自定义交互。
-- Python 端实时绘制 preview overlay。
 - 大量 raster 图像写入或复杂 fill layer 编辑；这些入口目前没有完整 Python API。
 
 ExtraTool 在 `pyfile/extra_tools.py` 中注册。每一项给出按钮名、工具激活期间 Pen 给笔画打上的 `property`、以及选中工具时调用的 `module.function` 处理器；`page` 指定按钮放在 Tools 的哪一页（`"painting"` 或 `"mapping"`，省略即 `"mapping"`）。下面的 `example_tool` 只是供照抄的占位示例，不是随软件发布的工具；实际清单是 `pyfile/auto_mapping.py` 里的 Auto Mapping 一族：
