@@ -57,7 +57,7 @@
 - **Choice Line**：点选轴线、附加线或轮廓，在 Options 里勾选是否为地线。现有。
 - **Deform**：拖动任意线变形，影响范围可调；拖轮廓时配对不变。拖动时只移动线，松手才重算。现有。
 - **输出几何**：Bezier / Spline / Polyline 三种 Calculation Mode 都跟随形变，原始顶点永远是锚点，RDP 只抽插入的采样点。现有。规格（一级）：`auto_mapping/stroke_mapping_pipeline.md`。Bezier 模式在轴线折点处先劈分再搬运控制柄的修复（2026-09-25，`tests/t_bezier_knots.py`）尚在工作区未提交。待办：提交。
-- **Auto-Mapping 单元**：一个单元一套配置（两边轴线、Mapping Area、附加线、锚点、选项），输出可随时重生成；焦点进入单元显示引导、离开隐藏；拖轴线、改附加线、改选项、改纹理图案都就地重跑（Live Re-render 可关）；Duplicate、To Editable Layer、Convert 旧组；Advanced Settings 管显示开关与 front / back / crease 可见性。现有。规格（一级）：`auto_mapping/layer_units.md`。
+- **Auto-Mapping 单元**：一个单元一套配置（两边轴线、Mapping Area、附加线、锚点、选项），输出可随时重生成；焦点进入单元显示引导、离开隐藏；拖轴线、改附加线、改选项、改纹理图案都就地重跑（Live Re-render 可关）；拖线时实时显示映射结果，松手换成精确结果（WebGL 不可用时只在松手重跑）；Duplicate、To Editable Layer、Convert 旧组；Advanced Settings 管显示开关与 front / back / crease 可见性。现有。规格（一级）：`auto_mapping/layer_units.md`。
 - 无单元的旧文档：引导线常显，按钮手动跑，每次新建一层置顶。现有。
 - **参考网格与遮挡**：两块板叠橙色 Refer Rect，在 Mapping 工具的 Options 里开关，密度可选，可向轴线端点外延展；纹理板 Occluded Areas 染出会折到背面的区域。现有。
 - **折叠气泡**：映射折叠的地方，画板上显示气泡。轴线折返时气泡指向折返点，只显示在这条轴所在的板上，并说明是哪条轴；其他折叠显示在主画板上。现有。规格（一级）：`auto_mapping/fold_notes.md`。

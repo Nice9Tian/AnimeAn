@@ -14,6 +14,16 @@ struct RecordedOp {
     std::string json;
 };
 
+struct FieldScopePass {
+    double tagLo = 0.0;
+    double tagHi = 0.0;
+    double opacity = 1.0;
+    int tintR = 0;
+    int tintG = 0;
+    int tintB = 0;
+    int tintA = 0;
+};
+
 class RecordingDevice : public AnimeCore::PaintDevice
 {
 public:
@@ -48,6 +58,16 @@ public:
     void setImageBudget(std::int64_t bytes) { m_imageBudgetBytes = bytes; }
     const AnimeCore::Vector<RecordedOp> &ops() const { return m_ops; }
 
+    // What is drawn between the two is shown through the displacement field the
+    // page holds under key; version says which upload of it.
+    void beginFieldScope(const AnimeCore::PaintState &state,
+                         const std::string &key,
+                         std::uint64_t version,
+                         const AnimeCore::RectF &rect,
+                         double maxEdge,
+                         const AnimeCore::Vector<FieldScopePass> &passes);
+    void endFieldScope();
+
 private:
     void syncCommonState(const AnimeCore::PaintState &state);
     void syncStateForShape(const AnimeCore::PaintState &state, bool usePen, bool useBrush);
@@ -62,6 +82,7 @@ private:
     void emitPathOp(const AnimeCore::Path &path);
     std::string ensureImageSent(const AnimeCore::Image &image);
     void appendOp(std::string json);
+    void forgetEmittedStyle();
 
     struct SentImage {
         std::int64_t bytes = 0;

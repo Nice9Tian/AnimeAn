@@ -3,6 +3,7 @@
 
 #include "algorithm/core/json.h"
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -98,10 +99,41 @@ public:
         bool interactive = true;
     };
 
+    struct FieldPass {
+        double tagLo = 0.0;
+        double tagHi = 0.0;
+        double opacity = 1.0;
+        int tintR = 0;
+        int tintG = 0;
+        int tintB = 0;
+        int tintA = 0;
+    };
+
+    // Layers a script wants shown through a displacement field the page holds:
+    // drawn once more inside a field scope, the originals optionally hidden.
+    struct FieldViewSpec {
+        bool active = false;
+        AnimeCore::String fieldKey;
+        AnimeCore::RectF rect;
+        double maxEdge = 8.0;
+        AnimeCore::String sourceView;
+        AnimeCore::Vector<int> columns;
+        int frame = 0;
+        double widthScale = 1.0;
+        AnimeCore::Vector<FieldPass> passes;
+        AnimeCore::Vector<int> hideColumns;
+        AnimeCore::StringList skipProperties;
+    };
+
     explicit PaintOpenGLWidget(void *parent = nullptr);
 
     void setOverlayItems(const AnimeCore::Vector<OverlayItem> &items);
     void setEditHandles(const AnimeCore::Vector<EditHandle> &handles);
+    void setFieldViewSpec(const FieldViewSpec &spec);
+    void clearFieldViewSpec();
+    const FieldViewSpec &fieldViewSpec() const { return m_fieldViewSpec; }
+    void setFieldLookup(std::function<std::uint64_t(const AnimeCore::String &key)> versionLookup,
+                        std::function<const AnimeSceneModel *(const AnimeCore::String &viewName)> sceneLookup = {});
     // The pointer a script asks for by NAME ("size_all", "rotate", ""); which
     // affordance sits under the cursor is the tool's decision, drawing the
     // name is this widget's. Empty restores the default. The pen ignores it:
@@ -380,6 +412,7 @@ private:
     void scheduleOnionCacheRefresh();
     void paintOverlayItems(AnimeCore::Painter &painter);
     void paintOverlayLabels(AnimeCore::Painter &painter) const;
+    void paintFieldScope(AnimeCore::Painter &painter);
     // Badge just above-right of `anchor`, clamped into view. `slot` counts
     // leftwards from the x badge (1 = the check badge); `slotCount` is how
     // many badges the id carries, so an edge clamp keeps the pair side by
@@ -397,6 +430,8 @@ private:
     // Clears m_activeOverlayDrag and sends the owning tool a "cancel" so it
     // restores its persisted baseline. Safe to call with no drag in flight.
     void cancelActiveOverlayDrag();
+    void stopOverlayDragMoveTimer();
+    void flushPendingOverlayDragMove();
     // Emits "framechange" when the model's frame moved past the last frame
     // Python was told about - regardless of who moved it.
     void notifyFrameChangedIfNeeded();
@@ -581,8 +616,13 @@ private:
     // none. Routed through the same "handle" hook events as edit handles.
     AnimeCore::String m_activeOverlayDrag;
     // Overlay-drag "move" messages share the pointer-rate throttle cadence:
-    // the owning tool re-renders overlays per message.
+    // the owning tool re-renders overlays per message. When a move is skipped
+    // inside the throttle window, a single-shot timer flushes the latest
+    // position and modifiers at the end of the window.
     AnimeCore::ElapsedTimer m_overlayDragHookThrottle;
+    std::unique_ptr<AnimeCore::Timer> m_overlayDragMoveTimer;
+    AnimeCore::PointF m_pendingOverlayDragPos;
+    AnimeCore::KeyboardModifiers m_pendingOverlayDragModifiers = AnimeCore::NoModifier;
     // The frame Python was last told about via "framechange". The frame lives
     // on the model and can be mutated behind the widget's back (ui.set_current,
     // addFrame, project load), so the notification baseline must be the
@@ -656,6 +696,9 @@ private:
     AnimeCore::Hash<std::int64_t, AnimeCore::Image> m_rasterCache;
     AnimeCore::Vector<OverlayItem> m_overlayItems;
     AnimeCore::Vector<OverlayHandle> m_overlayHandles;
+    FieldViewSpec m_fieldViewSpec;
+    std::function<std::uint64_t(const AnimeCore::String &key)> m_fieldVersionLookup;
+    std::function<const AnimeSceneModel *(const AnimeCore::String &viewName)> m_fieldSceneLookup;
 };
 
 #endif // OPENGLWIDGET_H

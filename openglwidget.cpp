@@ -240,12 +240,38 @@ void PaintOpenGLWidget::resetHistory(const String &label)
     historyChanged();
 }
 
+void PaintOpenGLWidget::stopOverlayDragMoveTimer()
+{
+    if (m_overlayDragMoveTimer) {
+        m_overlayDragMoveTimer->stop();
+    }
+}
+
+void PaintOpenGLWidget::flushPendingOverlayDragMove()
+{
+    if (m_activeOverlayDrag.isEmpty()) {
+        return;
+    }
+    if (m_overlayDragHookThrottle.isValid()) {
+        const std::int64_t elapsed = m_overlayDragHookThrottle.elapsed();
+        if (elapsed < kUpdateHookIntervalMs) {
+            m_overlayDragMoveTimer->start(int(kUpdateHookIntervalMs - elapsed));
+            return;
+        }
+    }
+    m_overlayDragHookThrottle.restart();
+    sendPythonHandleMessage(String("move"), m_activeOverlayDrag,
+                            m_pendingOverlayDragPos, m_pendingOverlayDragModifiers);
+    update();
+}
+
 void PaintOpenGLWidget::cancelActiveOverlayDrag()
 {
     // A context change (tool, stroke property, frame) invalidates an
     // in-flight overlay drag transaction: tell the owning tool to restore
     // its persisted baseline. One home for the teardown - the call sites
     // differ only in when they fire, never in how.
+    stopOverlayDragMoveTimer();
     if (m_activeOverlayDrag.isEmpty()) {
         return;
     }
@@ -352,6 +378,7 @@ bool PaintOpenGLWidget::goToHistory(int index)
     // restore just made authoritative. The restore also covers the frame
     // and layer, so they become the notified baselines.
     m_activeOverlayDrag.clear();
+    stopOverlayDragMoveTimer();
     m_pythonNotifiedFrame = m_model.currentFrame();
     m_pythonNotifiedLayer = m_model.currentLayer();
     m_pythonNotifiedLayerId =
@@ -1960,6 +1987,7 @@ void PaintOpenGLWidget::setOverlayItems(const Vector<OverlayItem> &items)
         }
         if (!present) {
             m_activeOverlayDrag.clear();
+            stopOverlayDragMoveTimer();
         }
     }
     update();
@@ -1978,6 +2006,30 @@ namespace {
 constexpr double kEditHandleScreenPx = 9.0;   // drawn size
 constexpr double kEditHandleHitPx = 7.0;      // half-size of the hit box
 constexpr double kEditHandleButtonScale = 1.8; // button shapes (3, 4) grow by this
+}
+
+void PaintOpenGLWidget::setFieldViewSpec(const FieldViewSpec &spec)
+{
+    m_fieldViewSpec = spec;
+    update();
+}
+
+void PaintOpenGLWidget::clearFieldViewSpec()
+{
+    if (!m_fieldViewSpec.active) {
+        m_fieldViewSpec = FieldViewSpec();
+        return;
+    }
+    m_fieldViewSpec = FieldViewSpec();
+    update();
+}
+
+void PaintOpenGLWidget::setFieldLookup(
+    std::function<std::uint64_t(const String &key)> versionLookup,
+    std::function<const AnimeSceneModel *(const String &viewName)> sceneLookup)
+{
+    m_fieldVersionLookup = std::move(versionLookup);
+    m_fieldSceneLookup = std::move(sceneLookup);
 }
 
 void PaintOpenGLWidget::paintEditHandles(Painter &painter)
@@ -2137,6 +2189,108 @@ String PaintOpenGLWidget::sendPythonHandleMessage(const String &phase,
 #endif
 }
 
+namespace {
+void paintFieldColumnContent(Painter &painter,
+                             const AnimeVectorImageModel &image,
+                             double zoom,
+                             double widthScale,
+                             const StringList *skipProperties)
+{
+    painter.setPen(NoPen);
+    for (const AnimeVectorFillRegion &fill : image.fillRegions()) {
+        painter.setBrush(Color(fill.color));
+        painter.drawPath(fill.path);
+    }
+    painter.setBrush(NoBrush);
+    for (const AnimeVectorStrokeNode &node : image.strokeNodes()) {
+        const AnimeVectorStroke &stroke = node.stroke;
+        if (skipProperties && !stroke.property.isEmpty()
+            && skipProperties->contains(String(stroke.property))) {
+            continue;
+        }
+        const PenStyle penStyle =
+            (stroke.penStyle >= SolidLine && stroke.penStyle <= DashDotDotLine)
+                ? static_cast<PenStyle>(stroke.penStyle)
+                : SolidLine;
+        Pen pen(Color(stroke.color),
+                AnimeVectorLogic::displayStrokeWidth(stroke.width * widthScale, zoom),
+                penStyle, RoundCap, RoundJoin);
+        painter.setPen(pen);
+        painter.drawPath(stroke.path);
+    }
+}
+} // namespace
+
+// The layers a script asked for, drawn again inside a field scope: the page
+// shows this stretch of the op list through the displacement field it holds.
+void PaintOpenGLWidget::paintFieldScope(Painter &painter)
+{
+    if (!m_fieldViewSpec.active || m_fieldViewSpec.fieldKey.isEmpty()) {
+        return;
+    }
+    RecordingDevice *device = recordingDevice();
+    if (!device) {
+        return;
+    }
+    const AnimeSceneModel *sourceModel = nullptr;
+    if (m_fieldSceneLookup) {
+        sourceModel = m_fieldSceneLookup(m_fieldViewSpec.sourceView);
+    }
+#ifdef ANIMEAN_WITH_PYTHON
+    if (!sourceModel && !m_fieldViewSpec.sourceView.isEmpty()) {
+        sourceModel = animeanUiSceneForViewName(m_fieldViewSpec.sourceView);
+    }
+#endif
+    if (!sourceModel && (m_fieldViewSpec.sourceView.isEmpty() || m_fieldViewSpec.sourceView == m_viewName)) {
+        sourceModel = &m_model;
+    }
+
+    const std::uint64_t version = m_fieldVersionLookup ? m_fieldVersionLookup(m_fieldViewSpec.fieldKey) : 0;
+    Vector<FieldScopePass> passes;
+    passes.reserve(m_fieldViewSpec.passes.size());
+    for (const FieldPass &p : m_fieldViewSpec.passes) {
+        FieldScopePass outPass;
+        outPass.tagLo = p.tagLo;
+        outPass.tagHi = p.tagHi;
+        outPass.opacity = p.opacity;
+        outPass.tintR = p.tintR;
+        outPass.tintG = p.tintG;
+        outPass.tintB = p.tintB;
+        outPass.tintA = p.tintA;
+        passes.append(outPass);
+    }
+
+    device->beginFieldScope(painter.state(),
+                            m_fieldViewSpec.fieldKey.toStdString(),
+                            version,
+                            m_fieldViewSpec.rect,
+                            m_fieldViewSpec.maxEdge,
+                            passes);
+
+    if (sourceModel) {
+        const AnimeScene &sourceScene = sourceModel->scene();
+        const double widthScale = m_fieldViewSpec.widthScale;
+        const StringList *skipProps =
+            m_fieldViewSpec.skipProperties.isEmpty() ? nullptr : &m_fieldViewSpec.skipProperties;
+        for (int columnIndex : m_fieldViewSpec.columns) {
+            if (columnIndex < 0 || columnIndex >= sourceScene.xsheet.columns.size()) {
+                continue;
+            }
+            const AnimeColumn &column = sourceScene.xsheet.columns[columnIndex];
+            const AnimeCell cell = column.cellAt(m_fieldViewSpec.frame);
+            const VectorImageModel *image = sourceModel->imageForCell(cell);
+            if (!image) {
+                continue;
+            }
+            painter.setOpacity(column.opacity);
+            paintFieldColumnContent(painter, *image, m_zoom, widthScale, skipProps);
+        }
+        painter.setOpacity(1.0);
+    }
+
+    device->endFieldScope();
+}
+
 void PaintOpenGLWidget::paintSceneContent(Painter &painter, int frameIndex, bool includeCurrentStroke,
                                           const SceneContentFilter *filter)
 {
@@ -2153,6 +2307,9 @@ void PaintOpenGLWidget::paintSceneContent(Painter &painter, int frameIndex, bool
     Hash<std::int64_t, Image> nextRasterCache;
     const auto paintColumn = [&](int columnIndex) {
         const AnimeColumn &column = scene.xsheet.columns[columnIndex];
+        if (!filter && m_fieldViewSpec.active && m_fieldViewSpec.hideColumns.contains(columnIndex)) {
+            return;
+        }
         if (!column.visible) {
             return;
         }
@@ -2296,7 +2453,8 @@ bool PaintOpenGLWidget::buildPlaybackCache(int frameCount, String *error)
             painter.fillRect(documentRect(), Color(255, 255, 255));
         }
         // Overlays and the in-progress stroke are editing aids, not content.
-        paintSceneContent(painter, frame, false);
+        SceneContentFilter filter;
+        paintSceneContent(painter, frame, false, &filter);
         painter.end();
 
         m_playbackFrames.append(image);
@@ -2796,7 +2954,8 @@ Image PaintOpenGLWidget::renderFrameThumbnail(int frameIndex, const Size &size)
     // at, and that is the thumbnail's, not the board's.
     const double previousZoom = m_zoom;
     m_zoom = scale;
-    paintSceneContent(painter, frameIndex, false);
+    SceneContentFilter filter;
+    paintSceneContent(painter, frameIndex, false, &filter);
     m_zoom = previousZoom;
     painter.end();
     return image;
@@ -2866,6 +3025,7 @@ void PaintOpenGLWidget::paintGL()
     paintOnionGhosts(painter);
 
     paintSceneContent(painter, m_model.currentFrame(), true);
+    paintFieldScope(painter);
 
     // Predictive preview: a thin, translucent, UNFILTERED line from the
     // stabilized tip to the physical pen tip. The stabilized ink trails the
@@ -3251,6 +3411,7 @@ bool PaintOpenGLWidget::pressOverlayOrBadge(const PointF &screenPos,
         return true;
     }
     if (!overlayId.isEmpty()) {
+        stopOverlayDragMoveTimer();
         m_activeOverlayDrag = overlayId;
         // Each drag gets a fresh throttle window so its first "move" is never
         // swallowed by the previous overlay drag's timestamp.
@@ -3525,13 +3686,28 @@ void PaintOpenGLWidget::mouseMoveEvent(MouseEvent *event)
     if (!m_activeOverlayDrag.isEmpty()) {
         // Throttled like the other pointer-rate hooks: the owning tool
         // re-renders its overlays on every message, which must not run at
-        // mouse rate. The release in mouseReleaseEvent always goes through,
-        // so the final position is never lost to the throttle.
+        // mouse rate. A move swallowed by the throttle arms a single-shot
+        // timer for the end of the window so pausing mid-drag still delivers
+        // the latest position.
         if (!m_overlayDragHookThrottle.isValid()
             || m_overlayDragHookThrottle.elapsed() >= kUpdateHookIntervalMs) {
+            stopOverlayDragMoveTimer();
             m_overlayDragHookThrottle.restart();
             sendPythonHandleMessage(String("move"), m_activeOverlayDrag, m_hoverPos,
                                     event->modifiers());
+        } else {
+            m_pendingOverlayDragPos = m_hoverPos;
+            m_pendingOverlayDragModifiers = event->modifiers();
+            if (!m_overlayDragMoveTimer) {
+                m_overlayDragMoveTimer = std::make_unique<Timer>();
+                m_overlayDragMoveTimer->setSingleShot(true);
+                m_overlayDragMoveTimer->timeout.connect([this]() { flushPendingOverlayDragMove(); });
+            }
+            if (!m_overlayDragMoveTimer->isActive()) {
+                const std::int64_t remaining =
+                    std::max<std::int64_t>(1, kUpdateHookIntervalMs - m_overlayDragHookThrottle.elapsed());
+                m_overlayDragMoveTimer->start(int(remaining));
+            }
         }
         update();
         event->accept();
@@ -3635,6 +3811,7 @@ void PaintOpenGLWidget::mouseReleaseEvent(MouseEvent *event)
     }
 
     if (!m_activeOverlayDrag.isEmpty()) {
+        stopOverlayDragMoveTimer();
         const String overlayId = m_activeOverlayDrag;
         m_activeOverlayDrag.clear();
         const PointF docPos = mapToDocument(event->position());

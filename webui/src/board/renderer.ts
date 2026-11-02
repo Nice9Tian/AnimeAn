@@ -1,4 +1,27 @@
-import type { BackendClient, BoardMessage, ImageMeta } from "../net.ts";
+import type { BackendClient, BoardMessage, FieldMeta, ImageMeta } from "../net.ts";
+
+export interface RawFieldData {
+  key: string;
+  w: number;
+  h: number;
+  version: number;
+  data: Float32Array;
+}
+
+export function findScopeStartContaining(ops: ReadonlyArray<unknown[]>, keep: number): number {
+  const limit = Math.max(0, Math.min(keep, ops.length));
+  let scopeStart = -1;
+  for (let i = 0; i < limit; i++) {
+    const op = ops[i];
+    if (!Array.isArray(op) || op.length === 0) continue;
+    if (op[0] === "F" && scopeStart < 0) {
+      scopeStart = i;
+    } else if (op[0] === "f" && scopeStart >= 0) {
+      scopeStart = -1;
+    }
+  }
+  return scopeStart >= 0 ? scopeStart : limit;
+}
 
 export interface Canvas2DContextLike {
   save(): void;
@@ -305,7 +328,9 @@ export class BoardRenderer {
   // The bytes as sent. A 2D canvas stores premultiplied alpha, so a renderer taking
   // over must not read an image back from it.
   private rawImages = new Map<string, { key: string; width: number; height: number; data: Uint8Array; source: unknown }>();
+  private rawFields = new Map<string, RawFieldData>();
   private unsubBoard?: () => void;
+  private unsubField?: () => void;
   private unsubImage?: () => void;
   private unsubForget?: () => void;
 
@@ -334,6 +359,9 @@ export class BoardRenderer {
           this.forgetImage(key);
         }
       });
+      this.unsubField = this.client.onField?.((meta, data) => {
+        this.putField(meta, data);
+      });
       this.unsubBoard = this.client.onBoard(this.view, (msg) => {
         this.renderFrame(msg);
       });
@@ -346,6 +374,19 @@ export class BoardRenderer {
 
   getImage(key: string): unknown {
     return this.images.get(key);
+  }
+
+  getField(key: string): RawFieldData | undefined {
+    return this.rawFields.get(key);
+  }
+
+  putField(meta: Pick<FieldMeta, "key" | "w" | "h" | "version"> & Partial<FieldMeta>, data: Float32Array): void {
+    const w = Math.max(1, Math.round(meta.w));
+    const h = Math.max(1, Math.round(meta.h));
+    const version = Number(meta.version ?? 0);
+    const copy = new Float32Array(w * h * 4);
+    copy.set(data.subarray(0, Math.min(data.length, copy.length)));
+    this.rawFields.set(meta.key, { key: meta.key, w, h, version, data: copy });
   }
 
   putImage(meta: ImageMeta, data: Uint8Array): void {
@@ -413,9 +454,10 @@ export class BoardRenderer {
       this.cachedState = defaultDrawState();
     }
 
-    const keep = Math.max(0, Math.min(Math.round(msg.keep ?? 0), this.fullOps.length));
+    const rawKeep = Math.max(0, Math.min(Math.round(msg.keep ?? 0), this.fullOps.length));
     const incomingOps = Array.isArray(msg.ops) ? msg.ops : [];
-    this.fullOps = this.fullOps.slice(0, keep).concat(incomingOps);
+    this.fullOps = this.fullOps.slice(0, rawKeep).concat(incomingOps);
+    const keep = findScopeStartContaining(this.fullOps, rawKeep);
 
     if (keep === 0) {
       const mainState = defaultDrawState();
@@ -473,6 +515,7 @@ export class BoardRenderer {
     getOps(): ReadonlyArray<unknown[]>;
     images?: Map<string, unknown>;
     rawImages?: Map<string, { key: string; width: number; height: number; data: Uint8Array | null; source: unknown }>;
+    rawFields?: Map<string, RawFieldData>;
     logicalW?: number;
     logicalH?: number;
   }): void {
@@ -486,6 +529,9 @@ export class BoardRenderer {
       }
     }
     const w = prev.logicalW ?? 0;
+    for (const [key, field] of prev.rawFields ?? []) {
+      this.rawFields.set(key, { ...field, data: new Float32Array(field.data) });
+    }
     const h = prev.logicalH ?? 0;
     if (w > 0 && h > 0) {
       this.drawFrame({ t: "board", view: this.view, frame: 0, w, h, keep: 0, ops: this.fullOps });
@@ -499,6 +545,9 @@ export class BoardRenderer {
     this.unsubBoard = undefined;
     this.unsubImage = undefined;
     this.unsubForget = undefined;
+    this.unsubField?.();
+    this.unsubField = undefined;
+    this.rawFields.clear();
     this.images.clear();
     this.rawImages.clear();
     this.fullOps = [];
@@ -648,7 +697,9 @@ export class BoardRenderer {
     state: DrawState,
     dpr: number,
   ): void {
-    for (let i = start; i < end; i++) {
+    const effStart = Math.max(0, Math.min(start, ops.length));
+    const effEnd = Math.max(effStart, Math.min(end, ops.length));
+    for (let i = effStart; i < effEnd; i++) {
       const op = ops[i];
       if (!Array.isArray(op) || op.length === 0) continue;
       const code = op[0];
@@ -846,6 +897,23 @@ export class BoardRenderer {
         case "H": {
           state.smooth = Boolean(op[1]);
           ctx.imageSmoothingEnabled = state.smooth;
+          break;
+        }
+
+        case "F": {
+          let j = i + 1;
+          while (j < effEnd) {
+            const cur = ops[j];
+            if (Array.isArray(cur) && cur[0] === "f") {
+              break;
+            }
+            j++;
+          }
+          i = j;
+          break;
+        }
+
+        case "f": {
           break;
         }
       }
