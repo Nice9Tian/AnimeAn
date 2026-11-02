@@ -1,5 +1,5 @@
 import { t } from "./i18n/index.js";
-import { dockShapeKey, glideBox, sameRect, shownRect, type GlideRect } from "./dock_glide.ts";
+import { dockShapeKey, glideBox, sameRect, shownRect, type Glide, type GlideRect } from "./dock_glide.ts";
 import {
   computeDockWindowLayout,
   syncDockHeaderDom,
@@ -447,7 +447,7 @@ export function createPlayer(
   // start-up just appear.
   let lastDockShape: string | undefined;
   let glideArmed = false;
-  const glides = new Map<string, Animation>();
+  const glides = new Map<string, { glide: Glide; to: GlideRect }>();
   const armGlide = () => { glideArmed = true; };
   doc.addEventListener("pointerdown", armGlide, { capture: true, once: true });
   doc.addEventListener("keydown", armGlide, { capture: true, once: true });
@@ -1154,17 +1154,30 @@ export function createPlayer(
         for (const [id, entry] of mounted) {
           updateNodeBoxAndPlacement(id, entry, rootSize);
         }
+        // A running glide ends here when this pass glides that panel again
+        // (it restarts below from where it shows now, measured above) or when
+        // its target moved without a new shape (window resized, splitter
+        // dragged): it would end on the old box.
+        for (const [id, running] of glides) {
+          const entry = mounted.get(id);
+          const box = entry?.lastBox;
+          const stale = !box || entry.wrapper.style.display === "none"
+            || !sameRect(running.to, { x: box.x, y: box.y, width: box.width, height: box.height });
+          if (before.has(id) || stale) {
+            running.glide.stop();
+            glides.delete(id);
+          }
+        }
         for (const [id, from] of before) {
           const entry = mounted.get(id);
           const to = entry?.lastBox;
           if (!entry || !to || entry.wrapper.style.display === "none") continue;
           const target = { x: to.x, y: to.y, width: to.width, height: to.height };
           if (sameRect(from, target)) continue;
-          glides.get(id)?.cancel();
-          const animation = glideBox(entry.wrapper, from, target);
-          if (animation) {
-            glides.set(id, animation);
-            animation.addEventListener("finish", () => { if (glides.get(id) === animation) glides.delete(id); });
+          const glide = glideBox(entry.wrapper, from, target);
+          if (glide) {
+            glides.set(id, { glide, to: target });
+            glide.animation.addEventListener("finish", () => { if (glides.get(id)?.glide === glide) glides.delete(id); });
           }
         }
         for (const lineId of lineNodeIds) {

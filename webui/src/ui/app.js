@@ -822,8 +822,8 @@ function createBoards(mainHost, childHost, client, store) {
   // Another frame on show: the picture from before belongs to the old one.
   let shownFrame;
   store.on("timeline", (value) => {
-    if (value?.current === shownFrame) return;
-    shownFrame = value?.current;
+    if (value?.currentFrame === shownFrame) return;
+    shownFrame = value?.currentFrame;
     stopEffects();
   });
   client?.onDisconnect?.(() => {
