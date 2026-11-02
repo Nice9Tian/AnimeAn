@@ -117,6 +117,7 @@ AnimeAnBackend.exe（backend/main.cpp）
 | `pyfile/script_store.py` | scriptData 的命名空间读写 |
 | `pyfile/viewscale.py`、`pyfile/bezier.py` | 两只共享轮子的 Python 镜像 |
 | `pyfile/gridsolve.py` | 二维规则网格上的通用预条件共轭梯度（PCG）求解器、四单侧模板最小雅可比行列式与连通区域标记 |
+| `pyfile/polyline_boxes.py` | 折线各段的包围盒树：两条折线可能相交的段对（按逐段双重循环的 (i, j) 序；近平行的段对包围盒相离也给出，因为双重循环的求交在那里会被舍入误差判成相交）和最近的顶点对，导引线求交用，结果与双重循环逐值相同 |
 | `pyfile/mapping_preview.py` | 拖动轴线、附加线、轮廓线时的主画板实时场预览（热启动求解、批量采样、正反面与连通区域层序打包） |
 | `pyfile/pydeps.py` | 第三方库自愈安装 |
 | `pyfile/extra_tools.py` | Mapping 组按钮清单与处理器解析 |
