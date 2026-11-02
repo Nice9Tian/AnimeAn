@@ -11,7 +11,7 @@ function div(cls, text) {
 // Qt sums hinted glyph advances, the browser unhinted ones, so the two disagree
 // by a pixel or two per label. These are the widths the Qt build lays out at
 // 9pt Segoe UI; a label outside the table falls back to measuring.
-const MENU_WIDTH = { File: 26, Edit: 28, View: 32, "Auto Mapping": 88, Draw: 32, Theme: 44, Windows: 62 };
+const MENU_WIDTH = { File: 26, Edit: 28, Setting: 46, View: 32, "Auto Mapping": 88, Draw: 32, Theme: 44, Windows: 62 };
 const TAB_WIDTH = { Painting: 66, Mapping: 70, Drawing: 66, Texture: 60, Options: 64, "Main Layers": 85, "Child Layers": 86 };
 
 // ---- tabs as the stylesheet in parentwindow.cpp draws them ------------------
@@ -114,6 +114,7 @@ export function isUnboundedViewport(hOrViewport, vEnabled) {
 }
 
 export function createCentral(root, { onPage, onScroll, onPill, bottomChrome = div("central-bottom") }) {
+  let current = 0;
   const tabs = tabBar(["Drawing", "Texture"], (i) => { show(i); onPage(i === 0 ? "main" : "child"); });
   const stage = div("central-stage");
   const host = div("board-host");
@@ -133,10 +134,42 @@ export function createCentral(root, { onPage, onScroll, onPill, bottomChrome = d
   pill.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24"><path d="M6 14 L12 8 L18 14" fill="none" stroke="currentColor" stroke-width="2"/></svg><span>TIMELINE</span>`;
   pill.addEventListener("click", onPill);
   stage.append(host, h.el, v.el, pill);
-  root.append(tabs.el, stage, bottomChrome);
-  function show(i) { tabs.select(i); }
+  const texturePage = div("central-texture");
+  const textureSlot = div("central-texture-slot");
+  const texturePlaceholder = div("central-placeholder", "The texture view is open in its own control.");
+  texturePage.append(textureSlot, texturePlaceholder);
+  const syncTexture = () => {
+    const hasContent = textureSlot.childElementCount > 0;
+    textureSlot.style.display = hasContent ? "" : "none";
+    texturePlaceholder.style.display = hasContent ? "none" : "";
+  };
+  new MutationObserver(syncTexture).observe(textureSlot, { childList: true });
+  syncTexture();
+  root.append(tabs.el, stage, texturePage, bottomChrome);
+  function show(i) {
+    current = i === 1 ? 1 : 0;
+    tabs.select(current);
+    stage.style.display = current === 0 ? "" : "none";
+    texturePage.style.display = current === 1 ? "" : "none";
+  }
   show(0);
-  return { host, h, v, pill, bottomChrome, show };
+  return {
+    host,
+    h,
+    v,
+    pill,
+    bottomChrome,
+    show,
+    current: () => (current === 1 ? "texture" : "drawing"),
+    texturePage,
+    textureSlot,
+    texturePlaceholder,
+    setTextureContent(el) {
+      if (el) textureSlot.append(el);
+      else textureSlot.replaceChildren();
+      syncTexture();
+    },
+  };
 }
 
 // ---- Layer tree ---------------------------------------------------------------

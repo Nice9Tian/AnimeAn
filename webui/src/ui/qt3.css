@@ -151,19 +151,26 @@
 
 /* ---- texture board frame ---- */
 .subframe { box-sizing: border-box; display: flex; flex-direction: column; padding: 0; background: var(--surface); border: 1px solid var(--divider); color: var(--text); }
+.subframe.floating { position: fixed; z-index: 700; }
+.subframe:not(.floating) { min-height: 180px; flex: 1; }
 .subframe-title { position: relative; flex: none; height: 20px; box-sizing: border-box; background: var(--surface-alt); border-bottom: 1px solid var(--divider); cursor: move; }
 .subframe-text { position: absolute; left: 6px; right: 26px; top: 0; font: 11.33px/21px "Segoe UI", sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .subframe-glyph { position: absolute; right: 6px; top: 3px; width: 14px; height: 14px; color: var(--text-dim); cursor: default; }
 .subframe-glyph svg { display: block; overflow: visible; }
 .subframe-glyph:hover { color: var(--text); }
-.subframe-body { position: relative; flex: 1; min-height: 0; }
+.subframe-body { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .subframe-body:empty { display: none; }
 .subframe-placeholder { flex: 1; display: flex; align-items: center; justify-content: center; text-align: center; padding: 8px 10px 8px 8px; color: var(--text-dim); }
 .subframe-grip { flex: none; align-self: flex-end; width: 17px; height: 17px; cursor: nwse-resize; }
 .subframe-grip svg { display: block; }
 .subframe-wash { position: fixed; z-index: 800; box-sizing: border-box; background: rgba(61, 142, 201, 0.25); border: 1px solid var(--accent); pointer-events: none; }
 
-.texture-panel { display: flex; flex-direction: column; background: var(--surface); }
+.central-texture, .central-texture-slot { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.central-placeholder { flex: 1; display: flex; align-items: center; justify-content: center; text-align: center; color: var(--text-dim); }
+.opt-subcontrol-slot:not(:empty) { display: flex; flex-direction: column; padding: 0 8px 8px; }
+.tools-subcontrol-slot:not(:empty) { display: flex; flex-direction: column; padding: 4px; flex: 1; min-height: 180px; }
+
+.texture-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; background: var(--surface); }
 .texture-menu { position: relative; flex: none; height: 21px; }
 .texture-options { display: flex; gap: 12px; margin: 4px 4px 0; }
 .texture-stage { position: relative; flex: 1; min-height: 0; margin: 4px; }

@@ -263,6 +263,7 @@ const StringList &allStateKeys()
         String("window"),
         String("theme"),
         String("menus"),
+        String("textureMenus"),
         String("tools"),
         String("toolOptions"),
         String("drawColor"),
@@ -543,6 +544,10 @@ BackendSession::BackendSession(WsServer *ws)
     m_childBoard->model().setIntId(2);
     m_childBoard->setActiveIndicator(false);
     m_childBoard->resizeSurface(400, 400, 1.0);
+    m_textureViewCentral.zoom = m_childBoard->zoom();
+    m_textureViewCentral.pan = m_childBoard->panOffset();
+    m_textureViewCentral.valid = true;
+    m_textureViewCentral.autoFitSuspended = false;
 
     setupBoardSinks(String("main"), m_mainBoard.get());
     setupBoardSinks(String("child"), m_childBoard.get());
@@ -712,6 +717,63 @@ void BackendSession::surfaceTextureView()
     }
     emitUiEvent(String("textureView.surface"));
     m_business->setActiveViewName(String("child"));
+}
+
+BackendSession::TextureViewSlot *BackendSession::textureViewSlotFor(const String &home)
+{
+    if (home == String("central")) {
+        return &m_textureViewCentral;
+    }
+    if (home == String("control")) {
+        return &m_textureViewControl;
+    }
+    return nullptr;
+}
+
+void BackendSession::saveTextureViewSlot(const String &home)
+{
+    if (!m_childBoard) {
+        return;
+    }
+    TextureViewSlot *slot = textureViewSlotFor(home.isEmpty() ? String("central") : home);
+    if (!slot) {
+        return;
+    }
+    slot->zoom = m_childBoard->zoom();
+    slot->pan = m_childBoard->panOffset();
+    slot->valid = true;
+}
+
+void BackendSession::restoreTextureViewSlot()
+{
+    if (!m_childBoard) {
+        return;
+    }
+    TextureViewSlot *slot = textureViewSlotFor(m_textureHome);
+    if (slot && slot->valid) {
+        m_childBoard->setViewTransform(slot->zoom, slot->pan);
+    }
+    if (m_textureHome == String("control")) {
+        if (slot) {
+            slot->autoFitSuspended = false;
+        }
+        autoFitTextureControlView();
+    }
+    markDirty(String("viewport/child"));
+}
+
+void BackendSession::autoFitTextureControlView()
+{
+    if (!m_childBoard) {
+        return;
+    }
+    if (!m_textureHome.isEmpty()) {
+        if (m_textureHome != String("control") || m_textureViewControl.autoFitSuspended) {
+            return;
+        }
+    }
+    m_childBoard->fitViewToContent(false);
+    m_textureAutoFitFrame = m_childBoard->model().currentFrame();
 }
 
 void BackendSession::initWindowInfos()
@@ -978,6 +1040,11 @@ void BackendSession::bindPaintViewToBusiness(const String &viewName, PaintOpenGL
                                                       : String("viewport/main"));
     });
     paintView->userTransformed.connect([this, viewName]() {
+        if (viewName == String("child")) {
+            if (TextureViewSlot *slot = textureViewSlotFor(m_textureHome)) {
+                slot->autoFitSuspended = true;
+            }
+        }
         markDirty(viewName == String("child") ? String("viewport/child")
                                                       : String("viewport/main"));
     });
@@ -1023,10 +1090,7 @@ void BackendSession::setupBusinessConnections()
         emitUiEvent(String("textureView.surface"));
     });
     m_business->requestAutoFitTextureControlView.connect([this]() {
-        if (m_childBoard) {
-            m_childBoard->fitViewToContent(false);
-            m_textureAutoFitFrame = m_childBoard->model().currentFrame();
-        }
+        autoFitTextureControlView();
     });
     m_business->requestClearTimelineThumbnails.connect([this]() {
         ++m_thumbnailRevision;
@@ -1132,8 +1196,7 @@ void BackendSession::registerPythonUiCallbacks()
         if (frame) {
             markDirty(String("timeline"));
             if (m_childBoard && m_childBoard->model().currentFrame() != m_textureAutoFitFrame) {
-                m_childBoard->fitViewToContent(false);
-                m_textureAutoFitFrame = m_childBoard->model().currentFrame();
+                autoFitTextureControlView();
             }
         }
         if (layer) {
@@ -1482,6 +1545,9 @@ void BackendSession::handleInputMessage(const JsonObject &msg)
         const int h = msg.value(String("h")).toInt(msg.value(String("height")).toInt(board->height()));
         const double dpr = msg.value(String("dpr")).toDouble(1.0);
         board->resizeSurface(w, h, dpr);
+        if (view == String("child") && m_textureHome == String("control")) {
+            autoFitTextureControlView();
+        }
         markDirty(view == String("child") ? String("viewport/child")
                                                   : String("viewport/main"));
     } else if (kind == String("focus")) {
@@ -2251,6 +2317,9 @@ JsonObject BackendSession::dispatchCall(const String &method, const JsonObject &
         const String scriptDir = params.value(String("scriptDir")).toString();
         const String output = m_business->runEmbeddedPythonCommand(command, scriptDir);
         appendPythonDebug(String("> %1\n%2").arg(command.trimmed(), output.trimmed()));
+        if (!buildTextureViewButtonsState().isEmpty()) {
+            markDirty(String("windows"));
+        }
         return JsonObject{{String("output"), output}};
     }
 
@@ -2355,6 +2424,77 @@ JsonObject BackendSession::dispatchCall(const String &method, const JsonObject &
             {String("collapsed"), m_timelineCollapsed},
             {String("floating"), m_timelineFloating},
             {String("dockArea"), m_timelineDockArea},
+        };
+    }
+
+    if (method == String("texture.setHome")) {
+        const String wanted = params.value(String("home"))
+                                  .toString(params.value(String("where"))
+                                                .toString(params.value(String("target")).toString()))
+                                  .trimmed()
+                                  .toLower();
+        if (wanted != String("central")
+            && wanted != String("control")
+            && wanted != String("parked")) {
+            return makeError(String("Invalid texture home: %1").arg(wanted));
+        }
+        if (wanted != m_textureHome) {
+            saveTextureViewSlot(m_textureHome);
+            m_textureHome = wanted;
+            restoreTextureViewSlot();
+        }
+        if (params.contains(String("subControlVisible"))) {
+            const bool vis = params.value(String("subControlVisible")).toBool();
+            if (m_textureSubControlVisible != vis) {
+                m_textureSubControlVisible = vis;
+                markDirty(String("windows"));
+            }
+        } else if (wanted == String("control") && !m_textureSubControlVisible) {
+            m_textureSubControlVisible = true;
+            markDirty(String("windows"));
+        } else if (wanted == String("parked") && m_textureSubControlVisible) {
+            m_textureSubControlVisible = false;
+            markDirty(String("windows"));
+        }
+        return JsonObject{
+            {String("home"), m_textureHome},
+            {String("zoom"), m_childBoard ? m_childBoard->zoom() : 1.0},
+            {String("panX"), m_childBoard ? m_childBoard->panOffset().x() : 0.0},
+            {String("panY"), m_childBoard ? m_childBoard->panOffset().y() : 0.0},
+            {String("autoFitSuspended"),
+             m_textureHome == String("control") ? m_textureViewControl.autoFitSuspended
+                                                : m_textureViewCentral.autoFitSuspended},
+            {String("viewButtons"), buildTextureViewButtonsState()},
+        };
+    }
+
+    if (method == String("texture.viewButton") || method == String("view.button")) {
+        const String targetView = params.value(String("view"))
+                                      .toString(params.value(String("host")).toString(String("child")));
+        const String name = params.value(String("name"))
+                                .toString(params.value(String("id")).toString());
+        if (name.isEmpty()) {
+            return makeError(String("name is required"));
+        }
+        const bool on = params.value(String("on"))
+                            .toBool(params.value(String("checked")).toBool(false));
+        PaintOpenGLWidget *owner = boardForView(targetView);
+        if (!owner) {
+            return makeError(String("Unknown view"));
+        }
+        owner->sendPythonViewButtonMessage(name, on);
+        markDirty(String("menus"));
+        markDirty(String("textureMenus"));
+        markDirty(String("toolOptions"));
+        markDirty(String("timeline"));
+        markDirty(String("layers/main"));
+        markDirty(String("layers/child"));
+        markDirty(String("assets/main"));
+        markDirty(String("assets/child"));
+        return JsonObject{
+            {String("name"), name},
+            {String("on"), on},
+            {String("viewButtons"), buildTextureViewButtonsState()},
         };
     }
 
@@ -2880,6 +3020,9 @@ bool BackendSession::triggerMenuById(const String &id, const JsonObject &params,
         if (owner) {
             owner->sendPythonMenuMessage(menuName, itemName, checked);
             markDirty(String("menus"));
+            if (host == String("child")) {
+                markDirty(String("textureMenus"));
+            }
             markDirty(String("toolOptions"));
             markDirty(String("timeline"));
             markDirty(String("layers/main"));
@@ -2988,6 +3131,7 @@ bool BackendSession::triggerMenuById(const String &id, const JsonObject &params,
                               : !m_business->changeableTimeline();
         m_business->setChangeableTimeline(next);
         markDirty(String("menus"));
+        markDirty(String("textureMenus"));
         return true;
     }
     if (id == String("child.setting.changeableTexture")) {
@@ -2997,21 +3141,25 @@ bool BackendSession::triggerMenuById(const String &id, const JsonObject &params,
         m_business->setChangeableTexture(next);
         markDirty(String("window"));
         markDirty(String("menus"));
+        markDirty(String("textureMenus"));
         return true;
     }
     if (id == String("child.setting.background.white") && m_childBoard) {
         m_childBoard->setBackgroundMode(PaintOpenGLWidget::BackgroundMode::White);
         markDirty(String("menus"));
+        markDirty(String("textureMenus"));
         return true;
     }
     if (id == String("child.setting.background.black") && m_childBoard) {
         m_childBoard->setBackgroundMode(PaintOpenGLWidget::BackgroundMode::Black);
         markDirty(String("menus"));
+        markDirty(String("textureMenus"));
         return true;
     }
     if (id == String("child.setting.background.transparent") && m_childBoard) {
         m_childBoard->setBackgroundMode(PaintOpenGLWidget::BackgroundMode::Transparent);
         markDirty(String("menus"));
+        markDirty(String("textureMenus"));
         return true;
     }
     if (id.startsWith(String("settings:"))) {
@@ -3030,6 +3178,9 @@ bool BackendSession::triggerMenuById(const String &id, const JsonObject &params,
             if (owner) {
                 owner->sendPythonMenuMessage(menuName, itemName, checked);
                 markDirty(String("menus"));
+                if (host == String("child")) {
+                    markDirty(String("textureMenus"));
+                }
                 markDirty(String("toolOptions"));
                 markDirty(String("timeline"));
                 markDirty(String("layers/main"));
@@ -3284,6 +3435,9 @@ JsonValue BackendSession::buildStateValue(const String &key) const
     }
     if (key == String("menus")) {
         return buildMenusState();
+    }
+    if (key == String("textureMenus")) {
+        return buildTextureMenusState();
     }
     if (key == String("tools")) {
         return buildToolsState();
@@ -3675,6 +3829,158 @@ JsonArray BackendSession::buildMenusState() const
     return menus;
 }
 
+JsonArray BackendSession::buildTextureMenusState() const
+{
+    JsonArray menus;
+
+    JsonArray texImportChildren{
+        makeMenuItem(String("file.texture.import.raster"), String("Raster..."), String(), String("action")),
+        makeMenuItem(String("file.texture.import.opentoonz"), String("OpenToonz Lines..."), String(), String("action")),
+        makeMenuItem(String("file.texture.import.csp"), String("Clip Studio Paint..."), String(), String("action")),
+    };
+
+    JsonArray fileChildren{
+        makeMenuItem(String("file.texture.import"),
+                     String("Import"),
+                     String(),
+                     String("submenu"),
+                     false,
+                     true,
+                     texImportChildren),
+        makeMenuItem(String("file.texture.sep1"), String(), String(), String("separator")),
+        makeMenuItem(String("file.texture.open"), String("Open Texture View..."), String(), String("action")),
+        makeMenuItem(String("file.texture.save"), String("Save Texture View"), String(), String("action")),
+        makeMenuItem(String("file.texture.saveAs"), String("Save Texture View As..."), String(), String("action")),
+        makeMenuItem(String("file.texture.exportImage"), String("Export Texture View Image..."), String(), String("action")),
+    };
+    menus.append(makeMenuItem(String("file.texture"), String("File"), String(), String("submenu"), false, true, fileChildren));
+
+    const PaintOpenGLWidget::BackgroundMode bgMode =
+        m_childBoard ? m_childBoard->backgroundMode() : PaintOpenGLWidget::BackgroundMode::White;
+    JsonArray bgChildren{
+        makeMenuItem(String("child.setting.background.white"),
+                     String("White"),
+                     String(),
+                     String("radio"),
+                     bgMode == PaintOpenGLWidget::BackgroundMode::White),
+        makeMenuItem(String("child.setting.background.black"),
+                     String("Black"),
+                     String(),
+                     String("radio"),
+                     bgMode == PaintOpenGLWidget::BackgroundMode::Black),
+        makeMenuItem(String("child.setting.background.transparent"),
+                     String("Transparent"),
+                     String(),
+                     String("radio"),
+                     bgMode == PaintOpenGLWidget::BackgroundMode::Transparent),
+    };
+
+    JsonArray childSettingChildren{
+        makeMenuItem(String("child.setting.changeableTimeline"),
+                     String("Changable Timeline"),
+                     String(),
+                     String("check"),
+                     m_business->changeableTimeline()),
+        makeMenuItem(String("child.setting.changeableTexture"),
+                     String("Changable Texture"),
+                     String(),
+                     String("check"),
+                     m_business->changeableTexture()),
+        makeMenuItem(String("child.setting.sep1"), String(), String(), String("separator")),
+        makeMenuItem(String("child.setting.background"),
+                     String("Background"),
+                     String(),
+                     String("submenu"),
+                     false,
+                     true,
+                     bgChildren),
+    };
+
+    JsonArray topLevelChildMenus;
+#ifdef ANIMEAN_WITH_PYTHON
+    if (Py_IsInitialized()) {
+        try {
+            py::gil_scoped_acquire acquire;
+            const std::string json = py::module_::import("python_hooks")
+                                         .attr("menus_json")(std::string("child"))
+                                         .cast<std::string>();
+            const JsonDocument doc = JsonDocument::fromJson(json);
+            Hash<String, JsonObject> liveChildMenus;
+            for (const JsonValue &val : doc.array()) {
+                const JsonObject obj = val.toObject();
+                const String mName = obj.value(String("name")).toString();
+                if (!mName.isEmpty()) {
+                    liveChildMenus.insert(mName, obj);
+                }
+            }
+            for (const std::pair<String, String> &entry : m_childScriptMenus) {
+                const String &mName = entry.first;
+                const JsonObject obj = liveChildMenus.value(mName);
+                const String mTitle = obj.value(String("title")).toString(entry.second);
+                const JsonArray items =
+                    buildScriptMenuItems(String("child"), mName, obj.value(String("items")).toArray());
+                childSettingChildren.append(makeMenuItem(String("child.menu.%1").arg(mName),
+                                                         mTitle,
+                                                         String(),
+                                                         String("submenu"),
+                                                         false,
+                                                         true,
+                                                         items));
+                topLevelChildMenus.append(makeMenuItem(mName,
+                                                       mTitle,
+                                                       String(),
+                                                       String("submenu"),
+                                                       false,
+                                                       true,
+                                                       items));
+            }
+        } catch (...) {
+        }
+    }
+#endif
+
+    menus.append(makeMenuItem(String("child.setting"), String("Setting"), String(), String("submenu"), false, true, childSettingChildren));
+    for (const JsonValue &menuVal : topLevelChildMenus) {
+        menus.append(menuVal);
+    }
+    return menus;
+}
+
+JsonArray BackendSession::buildTextureViewButtonsState() const
+{
+    JsonArray out;
+#ifdef ANIMEAN_WITH_PYTHON
+    if (Py_IsInitialized()) {
+        try {
+            py::gil_scoped_acquire acquire;
+            const std::string json = py::module_::import("python_hooks")
+                                         .attr("view_buttons_json")(std::string("child"))
+                                         .cast<std::string>();
+            JsonParseError parseError;
+            const JsonDocument doc = JsonDocument::fromJson(json, &parseError);
+            if (parseError.error == JsonParseError::NoError && doc.isArray()) {
+                for (const JsonValue &val : doc.array()) {
+                    const JsonObject obj = val.toObject();
+                    const String name = obj.value(String("name")).toString();
+                    if (name.isEmpty()) {
+                        continue;
+                    }
+                    out.append(JsonObject{
+                        {String("name"), name},
+                        {String("title"), obj.value(String("title")).toString(name)},
+                        {String("checkable"), obj.value(String("checkable")).toBool(false)},
+                        {String("checked"), obj.value(String("checked")).toBool(false)},
+                        {String("tooltip"), obj.value(String("tooltip")).toString()},
+                    });
+                }
+            }
+        } catch (...) {
+        }
+    }
+#endif
+    return out;
+}
+
 JsonObject BackendSession::buildToolsState() const
 {
     const AnimeanBusiness::Tool curTool = m_business->currentToolEnum();
@@ -3936,6 +4242,10 @@ JsonObject BackendSession::buildWindowsState() const
     };
     out.insert(String("timeline"), timelineObj);
     out.insert(String("textureSubControlVisible"), m_textureSubControlVisible);
+    const JsonArray viewButtons = buildTextureViewButtonsState();
+    if (!viewButtons.isEmpty()) {
+        out.insert(String("textureViewButtons"), viewButtons);
+    }
     out.insert(String("list"), listArr);
     return out;
 }

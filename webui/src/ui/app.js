@@ -7,7 +7,7 @@ import { cursorCss } from "../board/cursor.ts";
 import { createCentral, createLayers, createMenuBar, popupMenu, scrollArea } from "./panels.js";
 import { createToolOptions } from "./options.js";
 import { createPalette, toHexArgb } from "./palette.js";
-import { createAssets, createForcePad, createHistory, createNewProjectDialog, createPythonDebug, messageBox } from "./panels2.js";
+import { createAssets, createForcePad, createHistory, createNewProjectDialog, createPythonDebug, createSubControlFrame, createTexturePanel, messageBox } from "./panels2.js";
 import { createTimeline } from "./timeline.js";
 
 export function warningTitleForCall(method, params = {}) {
@@ -157,13 +157,338 @@ export function panelFactories(store, client) {
   // scene decides which panel is built first, so neither can ask the other for it.
   const bottomChrome = document.createElement("div");
   bottomChrome.className = "central-bottom";
+
+  const parkedHost = document.createElement("div");
+  parkedHost.style.display = "none";
+
+  const textureRoot = document.createElement("div");
+  const triggerTextureMenu = (item) => {
+    if (!item?.id) return;
+    call("menu.trigger", {
+      id: item.id,
+      checked: item.kind === "check" ? !item.checked : item.kind === "radio" ? true : undefined,
+    });
+  };
+  const texturePanel = createTexturePanel(textureRoot, {
+    onTrigger: triggerTextureMenu,
+    onScroll: (axis, value) => call("board.scroll", { view: "child", axis, value }),
+    onButton: (name, onVal) =>
+      Promise.resolve(call("texture.viewButton", { view: "child", name, on: onVal })).then((reply) => {
+        if (Array.isArray(reply?.viewButtons)) texturePanel.update({ buttons: reply.viewButtons });
+      }),
+  });
+  parkedHost.append(textureRoot);
+
+  const subframeRoot = document.createElement("div");
+  subframeRoot.style.display = "none";
+  let placement = "parked"; // "parked" | "embedded" | "floating"
+  let hostName = null;      // "options" | "tools" | null
+  let lastHost = null;      // "options" | "tools" | null
+  let floatingPos = { x: 180, y: 120 };
+  let floatingSize = { width: 320, height: 260 };
+  let dragOffset = { x: 0, y: 0 };
+  let currentHome = "";
+  let centralPanel = null;
+  let optionsPanel = null;
+  let optionsEl = null;
+  let optionsExtraSlot = null;
+  let toolsSlot = null;
+  let boards = null;
+  let rebuildingOptions = false;
+
+  const getToolsEl = () =>
+    store.toolsHostEl ??
+    (typeof document !== "undefined" && typeof document.querySelector === "function"
+      ? document.querySelector('[data-vf-id="toolsDock"], [data-vf-id="toolsScroll"]')
+      : null);
+
+  const isHostVisible = (targetHost) => {
+    const wins = store.get("windows");
+    if (targetHost === "options") {
+      if (!optionsEl || optionsEl.style?.display === "none") return false;
+      return wins?.tool_options?.visible !== false;
+    }
+    if (targetHost === "tools") {
+      const tEl = getToolsEl();
+      if (!tEl || tEl.style?.display === "none") return false;
+      return wins?.tools?.visible !== false;
+    }
+    return false;
+  };
+
+  const isFrameLive = () => {
+    if (placement === "floating") return subframeRoot.style?.display !== "none";
+    if (placement === "embedded") return isHostVisible(hostName);
+    return false;
+  };
+
+  const placeholderNote = () =>
+    centralPanel && centralPanel.current() === "texture"
+      ? "Open in the main view"
+      : "The texture board is parked";
+
+  const hitRect = (el, x, y) => {
+    if (!el || typeof el.getBoundingClientRect !== "function") return null;
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return null;
+    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom ? r : null;
+  };
+
+  const findDropHost = (x, y) => {
+    if (isHostVisible("options") && hitRect(optionsEl, x, y)) return "options";
+    const tEl = getToolsEl();
+    if (isHostVisible("tools") && hitRect(tEl, x, y)) return "tools";
+    return null;
+  };
+
+  const dropPreviewRect = (targetHost) => {
+    const el = targetHost === "options" ? optionsEl : getToolsEl();
+    if (!el || typeof el.getBoundingClientRect !== "function") return null;
+    const r = el.getBoundingClientRect();
+    const h = Math.min(Math.max(120, Math.round(r.height * 0.45)), Math.max(40, r.height - 16));
+    return {
+      x: Math.round(r.left + 6),
+      y: Math.round(Math.max(r.top + 6, r.bottom - h - 6)),
+      width: Math.max(0, Math.round(r.width - 12)),
+      height: Math.max(0, h),
+    };
+  };
+
+  const subframe = createSubControlFrame(subframeRoot, {
+    onAffordance: () => toggleFloating(),
+    onDragStart: (pressX, pressY) => {
+      const r = subframeRoot.getBoundingClientRect();
+      const w = r.width > 0 ? r.width : floatingSize.width;
+      const h = r.height > 0 ? r.height : floatingSize.height;
+      dragOffset = {
+        x: r.width > 0 ? pressX - r.left : Math.round(w * 0.5),
+        y: r.height > 0 ? pressY - r.top : 10,
+      };
+      if (placement !== "floating") {
+        floatFrame({ x: pressX - dragOffset.x, y: pressY - dragOffset.y });
+      }
+    },
+    onDragMove: (x, y) => {
+      floatingPos = { x: Math.round(x - dragOffset.x), y: Math.round(y - dragOffset.y) };
+      subframeRoot.style.left = `${floatingPos.x}px`;
+      subframeRoot.style.top = `${floatingPos.y}px`;
+      const candidate = findDropHost(x, y);
+      subframe.preview(candidate ? dropPreviewRect(candidate) : null);
+    },
+    onDragEnd: (x, y) => {
+      subframe.preview(null);
+      const candidate = findDropHost(x, y);
+      if (candidate) embedIn(candidate);
+    },
+    onResize: (w, h) => {
+      floatingSize = { width: w, height: h };
+      if (currentHome === "control") boards?.resendChildSize?.();
+    },
+  });
+  parkedHost.append(subframeRoot);
+
+  function updateTextureHome() {
+    const centralWantsIt = Boolean(centralPanel && centralPanel.current() === "texture");
+    const controlWantsIt = !centralWantsIt && isFrameLive();
+    const wanted = centralWantsIt ? "central" : controlWantsIt ? "control" : "parked";
+    subframe.update({
+      title: "Texture",
+      floating: placement === "floating",
+      placeholder: placeholderNote(),
+    });
+    if (wanted !== currentHome) {
+      currentHome = wanted;
+      if (wanted === "central" && centralPanel) {
+        subframe.setContent(null);
+        centralPanel.setTextureContent(textureRoot);
+      } else if (wanted === "control") {
+        centralPanel?.setTextureContent(null);
+        subframe.setContent(textureRoot);
+      } else {
+        centralPanel?.setTextureContent(null);
+        subframe.setContent(null);
+        parkedHost.append(textureRoot);
+      }
+      Promise.resolve(call("texture.setHome", { home: wanted, subControlVisible: isFrameLive() })).then((reply) => {
+        if (Array.isArray(reply?.viewButtons)) {
+          texturePanel.update({ buttons: reply.viewButtons });
+        }
+      });
+      if (wanted !== "parked") {
+        boards?.resendChildSize?.();
+      }
+    } else {
+      subframe.syncPlaceholder?.();
+    }
+  }
+
+  function floatFrame(pos) {
+    const wasInOptions = placement === "embedded" && hostName === "options";
+    if (placement === "embedded" && hostName) lastHost = hostName;
+    placement = "floating";
+    hostName = null;
+    if (pos) floatingPos = { x: Math.round(pos.x), y: Math.round(pos.y) };
+    subframeRoot.style.display = "";
+    subframeRoot.style.left = `${floatingPos.x}px`;
+    subframeRoot.style.top = `${floatingPos.y}px`;
+    subframeRoot.style.width = `${floatingSize.width}px`;
+    subframeRoot.style.height = `${floatingSize.height}px`;
+    const floatContainer =
+      (typeof document !== "undefined" && typeof document.getElementById === "function" && document.getElementById("app")) ||
+      (typeof document !== "undefined" ? document.body : null);
+    floatContainer?.append(subframeRoot);
+    if (wasInOptions && !rebuildingOptions && optionsPanel?.hasSubWindow("texture_view")) {
+      rebuildingOptions = true;
+      try {
+        optionsPanel.rebuild();
+      } finally {
+        rebuildingOptions = false;
+      }
+    }
+    updateTextureHome();
+  }
+
+  function embedIn(targetHost, gridSlotEl = null) {
+    placement = "embedded";
+    hostName = targetHost;
+    lastHost = targetHost;
+    subframeRoot.style.display = "";
+    subframeRoot.style.left = "";
+    subframeRoot.style.top = "";
+    subframeRoot.style.width = "";
+    subframeRoot.style.height = "";
+    if (gridSlotEl) {
+      gridSlotEl.replaceChildren(subframeRoot);
+    } else if (targetHost === "options") {
+      if (!rebuildingOptions && optionsPanel?.hasSubWindow("texture_view")) {
+        rebuildingOptions = true;
+        try {
+          optionsPanel.rebuild();
+        } finally {
+          rebuildingOptions = false;
+        }
+        return;
+      }
+      optionsExtraSlot?.replaceChildren(subframeRoot);
+    } else if (targetHost === "tools") {
+      const tEl = getToolsEl();
+      if (tEl) {
+        if (!toolsSlot || toolsSlot.parentElement !== tEl) {
+          toolsSlot = document.createElement("div");
+          toolsSlot.className = "tools-subcontrol-slot";
+          tEl.append(toolsSlot);
+        }
+        toolsSlot.replaceChildren(subframeRoot);
+      }
+    }
+    updateTextureHome();
+  }
+
+  function park(keepLastHost = true) {
+    if (keepLastHost && placement === "embedded" && hostName) lastHost = hostName;
+    placement = "parked";
+    hostName = null;
+    subframeRoot.style.display = "none";
+    parkedHost.append(subframeRoot);
+    updateTextureHome();
+  }
+
+  function toggleFloating() {
+    if (placement === "floating") {
+      if (lastHost && isHostVisible(lastHost)) embedIn(lastHost);
+      else park();
+      return;
+    }
+    floatFrame();
+  }
+
+  function surfaceSubControl() {
+    if (placement === "parked") {
+      floatFrame();
+    } else if (placement === "embedded") {
+      if (!isHostVisible(hostName)) {
+        const winId = hostName === "options" ? "windows.tool_options" : "windows.tools";
+        if (hostName === "options" ? optionsEl : getToolsEl()) {
+          call("menu.trigger", { id: winId, checked: true });
+        } else {
+          floatFrame();
+        }
+      }
+    } else {
+      subframeRoot.style.display = "";
+      subframeRoot.parentElement?.append(subframeRoot);
+    }
+    updateTextureHome();
+    if (currentHome === "control") {
+      call("view.setActive", { view: "child" });
+    }
+  }
+
+  function surfaceTextureView() {
+    if (!isFrameLive() && centralPanel) {
+      centralPanel.show(1);
+      boards?.show("child");
+    }
+    updateTextureHome();
+  }
+
+  on("textureMenus", (value) => {
+    const menus = Array.isArray(value) ? value : value?.menus;
+    const buttons = Array.isArray(value?.buttons) ? value.buttons : undefined;
+    texturePanel.update({ menus, ...(buttons !== undefined ? { buttons } : {}) });
+  });
+  on("viewport/child", (value) => {
+    if (!value) return;
+    texturePanel.h.set(value.h);
+    texturePanel.v.set(value.v);
+  });
+  on("windows", (value) => {
+    if (Array.isArray(value?.textureViewButtons)) {
+      texturePanel.update({ buttons: value.textureViewButtons });
+    }
+    updateTextureHome();
+  });
+  on("event", (event) => {
+    if (event?.name === "textureSubControl.surface") {
+      surfaceSubControl();
+    } else if (event?.name === "textureView.surface") {
+      surfaceTextureView();
+    } else if (event?.name === "window.select" && event.args?.name === "paint") {
+      const child = event.args.page === "texture";
+      centralPanel?.show(child ? 1 : 0);
+      boards?.show(child ? "child" : "main");
+      updateTextureHome();
+    }
+  });
+
+  store.texture = {
+    panel: texturePanel,
+    frame: subframe,
+    get home() { return currentHome; },
+    get placement() { return placement; },
+    get host() { return hostName; },
+    get lastHost() { return lastHost; },
+    isFloating: () => placement === "floating",
+    isEmbedded: () => placement === "embedded",
+    isLive: isFrameLive,
+    floatFrame,
+    embedIn,
+    park,
+    toggleFloating,
+    surface: surfaceSubControl,
+    updateHome: updateTextureHome,
+  };
+
   return {
     QtToolOptions(el) {
       el.classList.add("dock-page", "toolopt-gap");
+      optionsEl = el;
       const tabs = document.createElement("div");
       tabs.className = "tabbar-row";
       tabs.innerHTML = `<div class="tab sel" style="width:64px">Options</div>`;
       const body = scrollArea("opt-body");
+      optionsExtraSlot = document.createElement("div");
+      optionsExtraSlot.className = "opt-subcontrol-slot";
       el.append(tabs, body.frame);
       const panel = createToolOptions(body.view, {
         onOption: (option) => call("tool.option", option),
@@ -172,8 +497,29 @@ export function panelFactories(store, client) {
           row: control.row ?? 0, startColumn: control.start_column ?? 0, endColumn: control.end_column ?? 0,
         }),
         onNewColor: (palette) => openNewColor(palette),
-        onSubWindow: () => subWindowNote(),
+        onBeforeBuild: () => {
+          if (!rebuildingOptions && placement === "embedded" && hostName === "options") {
+            lastHost = "options";
+            placement = "parked";
+            hostName = null;
+            subframeRoot.style.display = "none";
+            parkedHost.append(subframeRoot);
+          }
+        },
+        onSubWindow: () => {
+          if (!lastHost) lastHost = "options";
+          if (placement === "floating") return subWindowFloatingNote();
+          const slot = document.createElement("div");
+          slot.className = "opt-subwindow-cell";
+          embedIn("options", slot);
+          return slot;
+        },
+        onAfterBuild: () => {
+          body.view.append(optionsExtraSlot);
+          updateTextureHome();
+        },
       });
+      optionsPanel = panel;
       on("toolOptions", (value) => panel.build(value));
     },
 
@@ -352,45 +698,37 @@ export function panelFactories(store, client) {
       el.classList.add("central");
       const panel = createCentral(el, {
         bottomChrome,
-        onPage: (view) => { switchView(view); call("view.setActive", { viewName: view }); },
-        onScroll: (axis, value) => call("board.scroll", { view: boards.current, axis, value }),
+        onPage: (view) => {
+          boards?.show(view);
+          updateTextureHome();
+          call("view.setActive", { viewName: view });
+        },
+        onScroll: (axis, value) => call("board.scroll", { view: "main", axis, value }),
         onPill: () => call("menu.trigger", { id: "windows.timeline" }),
       });
-      const boards = createBoards(panel.host, client, store);
+      centralPanel = panel;
+      boards = createBoards(panel.host, texturePanel.host, client, store);
       store.boards = boards;
       store.boardsHost = panel.host;
-      const syncScroll = (view) => (value) => {
-        if (view !== boards.current || !value) return;
-        panel.h.set(value.h);
-        panel.v.set(value.v);
-      };
-      const switchView = (view) => {
-        boards.show(view);
-        syncScroll(view)(store.get(`viewport/${view}`));
-      };
       on("windows", (value) => {
         const visible = Boolean(value?.timeline?.visible);
         panel.pill.style.display = visible ? "none" : "";
         bottomChrome.hidden = !visible;
       });
-      on("event", (event) => {
-        if (event?.name === "textureView.surface") { panel.show(1); switchView("child"); }
-        if (event?.name === "window.select" && event.args?.name === "paint") {
-          const child = event.args.page === "texture";
-          panel.show(child ? 1 : 0);
-          switchView(child ? "child" : "main");
-        }
+      on("viewport/main", (value) => {
+        if (!value) return;
+        panel.h.set(value.h);
+        panel.v.set(value.v);
       });
-      on("viewport/main", syncScroll("main"));
-      on("viewport/child", syncScroll("child"));
+      updateTextureHome();
     },
   };
 }
 
-function subWindowNote() {
+function subWindowFloatingNote() {
   const note = document.createElement("div");
   note.className = "opt-title";
-  note.textContent = "Texture view: on the Texture page";
+  note.textContent = "Texture is floating — drag it back";
   return note;
 }
 
@@ -475,13 +813,16 @@ function startRenderer(kind, options) {
   return { canvas, renderer: new BoardRenderer(canvas, options), kind: "canvas2d" };
 }
 
-function createBoards(host, client, store) {
-  const slots = { main: { view: "main" }, child: { view: "child" } };
+function createBoards(mainHost, childHost, client, store) {
+  const slots = {
+    main: { view: "main", host: mainHost },
+    child: { view: "child", host: childHost ?? mainHost },
+  };
   const mount = (slot, kind) => {
     const { canvas, renderer, kind: started } = startRenderer(kind, { view: slot.view, client });
     const hadFocus = slot.canvas && document.activeElement === slot.canvas;
     if (slot.canvas) slot.canvas.replaceWith(canvas);
-    else host.append(canvas);
+    else slot.host.append(canvas);
     if (slot.renderer) {
       renderer.adopt(slot.renderer);
       slot.renderer.destroy();
@@ -498,12 +839,14 @@ function createBoards(host, client, store) {
   };
   const boards = {
     current: "main",
+    slots,
     rendererKind: savedRendererKind(),
     resendSizes: () => Object.values(slots).forEach((slot) => slot.input.resend?.()),
+    resendChildSize: () => slots.child.input.resend?.(),
     show(view) {
       boards.current = view;
-      slots.main.canvas.style.visibility = view === "main" ? "visible" : "hidden";
-      slots.child.canvas.style.visibility = view === "child" ? "visible" : "hidden";
+      slots.main.canvas.style.visibility = "visible";
+      slots.child.canvas.style.visibility = "visible";
     },
     setRenderer(kind) {
       boards.rendererKind = mount(slots.main, kind);
@@ -597,8 +940,11 @@ export function createChrome(menuEl, statusEl, store) {
     if (store.boardsHost?.style) {
       store.boardsHost.style.pointerEvents = frozen ? "none" : "";
     }
+    if (store.texture?.panel?.host?.style) {
+      store.texture.panel.host.style.pointerEvents = frozen ? "none" : "";
+    }
     if (typeof document !== "undefined" && document.querySelectorAll) {
-      for (const el of document.querySelectorAll(".qt-panel, .vf-dock, .settings-dialog")) {
+      for (const el of document.querySelectorAll(".qt-panel, .vf-dock, .settings-dialog, .subframe")) {
         if (isAllowedWhenFrozen(el, store.pythonDebugEl) || (store.pythonDebugEl && el.contains?.(store.pythonDebugEl))) {
           el.inert = false;
           if (el.style) el.style.pointerEvents = "";
@@ -748,7 +1094,13 @@ export function createChrome(menuEl, statusEl, store) {
       collect(item.children);
     }
   };
-  store.on("menus", (value) => { shortcuts.clear(); collect(value); });
+  const rebuildShortcuts = () => {
+    shortcuts.clear();
+    collect(store.get("menus"));
+    collect(store.get("textureMenus"));
+  };
+  store.on("menus", rebuildShortcuts);
+  store.on("textureMenus", rebuildShortcuts);
   window.addEventListener("keydown", (e) => {
     if (frozen) return;
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
