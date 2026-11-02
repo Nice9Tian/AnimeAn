@@ -1,0 +1,469 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>曲线工具试验台</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: one screen, options row on top, the board fills the rest, status line under it.
+   Colours are AnimeAn's own theme table (webui/src/ui/qt.css); --accent is for the current focus only. */
+:root {
+  --window: #f5f5f6; --surface: #ffffff; --surface-alt: #e8e8ea;
+  --text: #1d1f20; --text-dim: #6b6d72; --divider: #bcbdc0;
+  --accent: #3d8ec9; --accent-2: #a6d0ee; --on-accent-2: #1d1f20; --accent-2-line: #5f9ecd;
+  --btn-border: #afafb0; --btn-top: #fdfdfd; --btn-bottom: #e8e8e8;
+  --end: #e6a817; --end-line: #8a6200;
+  --font: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --window: #1d1f20; --surface: #232526; --surface-alt: #2a2c2e;
+  --text: #f5f5f8; --text-dim: #b4b6bc; --divider: #575a5c;
+  --accent: #3d8ec9; --accent-2: #34566f; --on-accent-2: #f5f5f8; --accent-2-line: #7aa7c7;
+  --btn-border: #151617; --btn-top: #3d3f41; --btn-bottom: #343637;
+  --end: #ffc846; --end-line: #6d5311;
+  color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --window: #1d1f20; --surface: #232526; --surface-alt: #2a2c2e;
+  --text: #f5f5f8; --text-dim: #b4b6bc; --divider: #575a5c;
+  --accent: #3d8ec9; --accent-2: #34566f; --on-accent-2: #f5f5f8; --accent-2-line: #7aa7c7;
+  --btn-border: #151617; --btn-top: #3d3f41; --btn-bottom: #343637;
+  --end: #ffc846; --end-line: #6d5311;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body {
+  display: flex; flex-direction: column; gap: 10px; box-sizing: border-box; margin: 0;
+  padding-block: 12px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  background: var(--window); color: var(--text);
+  font: 13px/18px var(--font); user-select: none; -webkit-user-select: none;
+}
+.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+h1 { margin: 0; font-size: 15px; line-height: 24px; font-weight: 600; white-space: nowrap; }
+.group { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.group > .name { color: var(--text-dim); white-space: nowrap; }
+.spacer { flex: 1 1 0; }
+button {
+  font: inherit; color: var(--text); height: 26px; padding: 0 10px; box-sizing: border-box; cursor: pointer;
+  border: 1px solid var(--btn-border); border-radius: 3px;
+  background: linear-gradient(var(--btn-top), var(--btn-bottom)); white-space: nowrap;
+}
+button:hover:not(:disabled) { border-color: var(--accent-2-line); }
+button:disabled { color: var(--text-dim); cursor: default; }
+button[aria-pressed="true"] { background: var(--accent-2); color: var(--on-accent-2); border-color: var(--accent-2-line); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.seg { display: flex; }
+.seg button { border-radius: 0; margin-left: -1px; }
+.seg button:first-child { border-radius: 3px 0 0 3px; margin-left: 0; }
+.seg button:last-child { border-radius: 0 3px 3px 0; }
+input[type="range"] { width: 96px; accent-color: var(--accent-2-line); margin: 0; }
+output { min-width: 3.2em; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+#touchBreak { display: none; }
+@media (hover: none) { #touchBreak { display: inline-block; } .legend { display: none; } }
+#board {
+  flex: 1 1 0; min-height: 240px; position: relative; overflow: hidden;
+  background: var(--surface); border: 1px solid var(--divider);
+}
+#board canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
+.status { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; min-height: 22px; }
+.pill {
+  padding: 1px 8px; border-radius: 3px; white-space: nowrap; font-size: 12px;
+  background: var(--surface-alt); color: var(--text); font-variant-numeric: tabular-nums;
+}
+.pill.on { background: var(--accent-2); color: var(--on-accent-2); }
+#hint { min-width: 0; flex: 1 1 14em; }
+.legend { color: var(--text-dim); font-size: 12px; white-space: nowrap; }
+kbd { font: inherit; padding: 0 4px; border: 1px solid var(--divider); border-radius: 3px; background: var(--surface); }
+</style>
+
+<div class="bar">
+  <h1>曲线工具试验台</h1>
+  <label class="group"><span class="name">平滑度</span><input id="smooth" type="range" min="0" max="100" value="100"><output id="smoothOut">100%</output></label>
+  <div class="group">
+    <button id="snapOn" type="button" aria-pressed="true">吸附</button>
+  </div>
+  <label class="group"><span class="name">吸附半径</span><input id="radius" type="range" min="6" max="48" value="16"><output id="radiusOut">16 px</output></label>
+  <button id="anchorsOn" type="button" aria-pressed="true">显示锚点</button>
+  <span class="spacer"></span>
+  <div class="group">
+    <button id="touchBreak" type="button">中断</button>
+    <button id="undo" type="button">撤销</button>
+    <button id="redo" type="button">重做</button>
+    <button id="clear" type="button">清空</button>
+  </div>
+</div>
+
+<div id="board"><canvas id="cv" aria-label="画板：左键放锚点，右键中断"></canvas></div>
+
+<div class="status">
+  <span id="pill" class="pill">空闲</span>
+  <span id="hint"></span>
+  <span class="legend"><kbd>左键</kbd> 放锚点　<kbd>右键</kbd> 中断　<kbd>Alt</kbd> 按住时不吸附　<kbd>Ctrl+Z</kbd> 撤销</span>
+</div>
+
+<script>
+"use strict";
+// ---- geometry: anchors -> cubic Bezier segments [p0, c1, c2, p1] -------------------------
+const sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y });
+const add = (a, b) => ({ x: a.x + b.x, y: a.y + b.y });
+const mul = (a, k) => ({ x: a.x * k, y: a.y * k });
+const len = a => Math.hypot(a.x, a.y);
+const dist = (a, b) => len(sub(a, b));
+const lerp = (a, b, t) => add(a, mul(sub(b, a), t));
+const EPS = 1e-6;
+
+// Centripetal Catmull-Rom. m[i] is the Barry-Goldman tangent in the knot parameter.
+// An open end has no tangent of its own, the end segment is the parabola into m[1].
+function catmullRom(P, closed) {
+  const n = P.length, count = closed ? n : n - 1;
+  const at = i => P[(i + n) % n];
+  const d = [];
+  for (let i = 0; i < count; i++) d[i] = Math.max(Math.sqrt(dist(at(i), at(i + 1))), EPS);
+  const gap = i => d[(i + n) % n];
+  const m = [];
+  for (let i = 0; i < n; i++) {
+    if (!closed && (i === 0 || i === n - 1)) continue;
+    const d0 = gap(i - 1), d1 = gap(i), a = at(i - 1), b = at(i), c = at(i + 1);
+    m[i] = add(sub(mul(sub(b, a), 1 / d0), mul(sub(c, a), 1 / (d0 + d1))), mul(sub(c, b), 1 / d1));
+  }
+  const segs = [];
+  for (let i = 0; i < count; i++) {
+    const a = at(i), b = at(i + 1), L = d[i], ma = m[i], mb = m[(i + 1) % n];
+    let c1, c2;
+    if (ma && mb) { c1 = add(a, mul(ma, L / 3)); c2 = sub(b, mul(mb, L / 3)); }
+    else if (mb) { const q = sub(b, mul(mb, L / 2)); c1 = lerp(a, q, 2 / 3); c2 = lerp(b, q, 2 / 3); }
+    else if (ma) { const q = add(a, mul(ma, L / 2)); c1 = lerp(a, q, 2 / 3); c2 = lerp(b, q, 2 / 3); }
+    else { c1 = lerp(a, b, 1 / 3); c2 = lerp(a, b, 2 / 3); }
+    segs.push([a, c1, c2, b]);
+  }
+  return segs;
+}
+
+// Hobby's spline was the second method here; the user chose Catmull-Rom (2026-11-02), Hobby is in old_history/hobby_spline.js.
+
+// smooth 1 is the Catmull-Rom curve, 0 is the polyline through the same anchors.
+function curve(P, closed, smooth) {
+  if (P.length < 2) return [];
+  const segs = catmullRom(P, closed);
+  return segs.map(([a, c1, c2, b]) => [a, lerp(lerp(a, b, 1 / 3), c1, smooth), lerp(lerp(a, b, 2 / 3), c2, smooth), b]);
+}
+
+// ---- tool state ---------------------------------------------------------------------------
+const MIN_GAP = 3;          // screen px, a second click this close to the last anchor is a double click
+const STICK = 1.35;         // a held snap lets go at radius * STICK so the cursor does not flicker on the rim
+
+const S = {
+  strokes: [],              // { id, pts, closed } oldest first
+  active: null,             // the stroke being drawn, its last anchor is where the rubber band starts
+  cursor: null,             // raw pointer, board px
+  target: null,             // the end the pointer is snapped to, or null
+  alt: false,
+  smooth: 1, snap: true, radius: 16, showAnchors: true,
+  undo: [], redo: [], nextId: 1, touched: false,
+};
+
+const pack = () => JSON.stringify({ strokes: S.strokes, active: S.active && S.active.id });
+function unpack(json) {
+  const o = JSON.parse(json);
+  S.strokes = o.strokes;
+  S.active = S.strokes.find(s => s.id === o.active) || null;
+}
+function checkpoint() { S.undo.push(pack()); S.redo.length = 0; S.touched = true; }
+function step(from, to) {
+  if (!from.length) return;
+  to.push(pack());
+  unpack(from.pop());
+  S.target = null;
+  refresh();
+}
+
+function candidates() {
+  const out = [];
+  for (let i = S.strokes.length - 1; i >= 0; i--) {
+    const s = S.strokes[i];
+    if (s.closed) continue;
+    if (s === S.active) {
+      if (s.pts.length >= 3) out.push({ kind: "close", stroke: s, end: "head", at: s.pts[0] });
+      continue;
+    }
+    const kind = S.active ? "merge" : "resume";
+    out.push({ kind, stroke: s, end: "tail", at: s.pts[s.pts.length - 1] });
+    if (s.pts.length > 1) out.push({ kind, stroke: s, end: "head", at: s.pts[0] });
+  }
+  return out;
+}
+
+function findTarget() {
+  if (!S.cursor || !S.snap || S.alt) return null;
+  const held = S.target;
+  let best = null, bestD = Infinity;
+  for (const c of candidates()) {
+    const same = held && held.stroke.id === c.stroke.id && held.end === c.end;
+    const d = dist(S.cursor, c.at);
+    if (d <= S.radius * (same ? STICK : 1) && d < bestD) { best = c; bestD = d; }
+  }
+  return best;
+}
+
+function interrupt() {
+  if (!S.active) return;
+  S.active = null;
+  refresh();
+}
+
+function resume(t) {
+  if (t.end === "head") t.stroke.pts.reverse();
+  S.active = t.stroke;
+  S.touched = true;
+}
+
+function merge(t) {
+  checkpoint();
+  const tail = t.end === "tail" ? t.stroke.pts.slice().reverse() : t.stroke.pts;
+  S.active.pts = S.active.pts.concat(tail);
+  S.strokes = S.strokes.filter(s => s !== t.stroke);
+  S.active = null;
+}
+
+function leftClick() {
+  S.target = findTarget();
+  const p = S.cursor, t = S.target;
+  if (!S.active) {
+    if (t) { resume(t); return; }
+    checkpoint();
+    const s = { id: S.nextId++, pts: [p], closed: false };
+    S.strokes.push(s);
+    S.active = s;
+    return;
+  }
+  if (t && t.kind === "close") { checkpoint(); S.active.closed = true; S.active = null; return; }
+  if (t && t.kind === "merge") { merge(t); return; }
+  const pts = S.active.pts;
+  if (dist(p, pts[pts.length - 1]) < MIN_GAP) return;
+  checkpoint();
+  pts.push(p);
+}
+
+// What the board shows for the stroke being drawn. It is built the same way the click will
+// build it, so the preview always equals the committed result.
+function preview() {
+  const s = S.active;
+  if (!s || !S.cursor) return null;
+  const t = S.target, bridge = s.pts.length - 1;
+  if (t && t.kind === "close") return { pts: s.pts, closed: true, bridge, hide: null };
+  if (t && t.kind === "merge") {
+    const tail = t.end === "tail" ? t.stroke.pts.slice().reverse() : t.stroke.pts;
+    return { pts: s.pts.concat(tail), closed: false, bridge, hide: t.stroke };
+  }
+  if (dist(S.cursor, s.pts[s.pts.length - 1]) < 1) return null;
+  return { pts: s.pts.concat([S.cursor]), closed: false, bridge, hide: null };
+}
+
+// ---- drawing ------------------------------------------------------------------------------
+const board = document.getElementById("board"), cv = document.getElementById("cv"), g = cv.getContext("2d");
+let queued = false, showRange = 0, rangeTimer = 0;
+
+function requestDraw() {
+  if (queued) return;
+  queued = true;
+  requestAnimationFrame(draw);
+}
+
+function tracePath(segs, closed) {
+  g.beginPath();
+  g.moveTo(segs[0][0].x, segs[0][0].y);
+  for (const [, c1, c2, b] of segs) g.bezierCurveTo(c1.x, c1.y, c2.x, c2.y, b.x, b.y);
+  if (closed) g.closePath();
+}
+
+function square(p, r, fill, line) {
+  g.fillStyle = fill; g.strokeStyle = line; g.lineWidth = 1;
+  g.fillRect(p.x - r, p.y - r, r * 2, r * 2);
+  g.strokeRect(p.x - r + 0.5, p.y - r + 0.5, r * 2 - 1, r * 2 - 1);
+}
+
+function diamond(p, r, fill, line) {
+  g.beginPath();
+  g.moveTo(p.x, p.y - r); g.lineTo(p.x + r, p.y); g.lineTo(p.x, p.y + r); g.lineTo(p.x - r, p.y);
+  g.closePath();
+  g.fillStyle = fill; g.strokeStyle = line; g.lineWidth = 1.2;
+  g.fill(); g.stroke();
+}
+
+function chip(p, text, c) {
+  g.font = '12px "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif';
+  const w = g.measureText(text).width + 12, h = 20;
+  let x = p.x + 16, y = p.y - 30;
+  if (x + w > cv.clientWidth - 4) x = p.x - 16 - w;
+  if (y < 4) y = p.y + 12;
+  g.fillStyle = c.accent;
+  g.beginPath(); g.roundRect(x, y, w, h, 3); g.fill();
+  g.fillStyle = "#ffffff"; g.textBaseline = "middle";
+  g.fillText(text, x + 6, y + h / 2 + 0.5);
+}
+
+function draw() {
+  queued = false;
+  const css = getComputedStyle(document.documentElement);
+  const c = {
+    line: css.getPropertyValue("--text"), surface: css.getPropertyValue("--surface"),
+    dim: css.getPropertyValue("--text-dim"), accent: css.getPropertyValue("--accent"),
+    end: css.getPropertyValue("--end"), endLine: css.getPropertyValue("--end-line"),
+  };
+  const dpr = window.devicePixelRatio || 1;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, cv.clientWidth, cv.clientHeight);
+  g.lineCap = "round"; g.lineJoin = "round";
+
+  const live = preview();
+  for (const s of S.strokes) {
+    if (live && s === live.hide) continue;
+    const isActive = s === S.active;
+    const pts = isActive && live ? live.pts : s.pts;
+    const closed = isActive && live ? live.closed : s.closed;
+    const segs = curve(pts, closed, S.smooth);
+    g.lineWidth = 2.5; g.strokeStyle = c.line;
+    if (segs.length) {
+      if (isActive && live) {
+        const held = segs.filter((_, i) => i !== live.bridge);
+        for (const seg of held) { tracePath([seg], false); g.stroke(); }
+        g.strokeStyle = c.accent;
+        tracePath([segs[live.bridge]], false); g.stroke();
+      } else {
+        tracePath(segs, closed); g.stroke();
+      }
+    }
+    if (S.showAnchors) for (let i = 0; i < pts.length; i++) {
+      const isEnd = !closed && (i === 0 || i === pts.length - 1);
+      if (!isEnd) square(pts[i], 3, c.surface, c.line);
+    }
+    if (!pts.length) continue;
+    if (s.pts.length === 1 && !(isActive && live)) {
+      diamond(s.pts[0], 6, c.end, c.endLine);
+    } else if (!closed) {
+      diamond(pts[0], 6, c.end, c.endLine);
+      diamond(pts[pts.length - 1], 6, c.end, c.endLine);
+    }
+    if (isActive) {
+      const tail = s.pts[s.pts.length - 1];
+      square(tail, 4, c.accent, c.surface);
+    }
+  }
+
+  if (showRange) {
+    g.strokeStyle = c.dim; g.lineWidth = 1; g.setLineDash([3, 3]);
+    for (const k of candidates()) { g.beginPath(); g.arc(k.at.x, k.at.y, S.radius, 0, Math.PI * 2); g.stroke(); }
+    g.setLineDash([]);
+  }
+
+  const t = S.target;
+  if (t && S.cursor) {
+    g.strokeStyle = c.accent; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(S.cursor.x, S.cursor.y); g.lineTo(t.at.x, t.at.y); g.stroke();
+    g.lineWidth = 2;
+    g.beginPath(); g.arc(t.at.x, t.at.y, 11, 0, Math.PI * 2); g.stroke();
+    diamond(t.at, 7, c.end, c.accent);
+    chip(t.at, { resume: "点击续画", merge: "点击接上", close: "点击闭合" }[t.kind], c);
+  }
+}
+
+// ---- status -------------------------------------------------------------------------------
+const pill = document.getElementById("pill"), hint = document.getElementById("hint");
+const undoBtn = document.getElementById("undo"), redoBtn = document.getElementById("redo");
+
+function refresh() {
+  S.target = findTarget();
+  const s = S.active, t = S.target;
+  let label, tip;
+  if (s) {
+    label = `绘制中 · ${s.pts.length} 个锚点`;
+    tip = !t ? "左键继续放锚点，右键中断在最后一个锚点。"
+      : t.kind === "close" ? "左键闭合成环。"
+      : "左键把这条线接到吸附的线端上，两条线合成一条。";
+  } else if (t) {
+    label = "已吸附";
+    tip = "左键从这个线端续画，续上后和原来的线是同一条。";
+  } else {
+    label = "已中断";
+    if (!S.strokes.length) label = "空闲";
+    tip = !S.touched ? "画板上有一条示例线。把光标移到两端的菱形附近试吸附，或在空白处左键开始新线。"
+      : S.strokes.length ? "移到菱形线端吸附续画，或在空白处左键开始新线。"
+      : "左键放下第一个锚点，开始一条新线。";
+  }
+  pill.textContent = label;
+  pill.classList.toggle("on", !!s || !!t);
+  hint.textContent = tip;
+  undoBtn.disabled = !S.undo.length;
+  redoBtn.disabled = !S.redo.length;
+  requestDraw();
+}
+
+// ---- input --------------------------------------------------------------------------------
+function track(e) {
+  const r = cv.getBoundingClientRect();
+  S.cursor = { x: e.clientX - r.left, y: e.clientY - r.top };
+  S.alt = e.altKey;
+}
+
+cv.addEventListener("pointermove", e => { track(e); refresh(); });
+cv.addEventListener("pointerdown", e => {
+  track(e);
+  if (e.button === 0) { leftClick(); refresh(); }
+  else if (e.button === 2) { e.preventDefault(); interrupt(); }
+});
+cv.addEventListener("pointerleave", () => { S.cursor = null; refresh(); });
+cv.addEventListener("contextmenu", e => e.preventDefault());
+
+window.addEventListener("keydown", e => {
+  if (e.key === "Alt") { e.preventDefault(); S.alt = true; refresh(); return; }
+  if (e.key === "Escape") { interrupt(); return; }
+  const mod = e.ctrlKey || e.metaKey, key = e.key.toLowerCase();
+  if (mod && key === "z" && !e.shiftKey) { e.preventDefault(); step(S.undo, S.redo); }
+  else if (mod && (key === "y" || (key === "z" && e.shiftKey))) { e.preventDefault(); step(S.redo, S.undo); }
+});
+window.addEventListener("keyup", e => { if (e.key === "Alt") { S.alt = false; refresh(); } });
+window.addEventListener("blur", () => { S.alt = false; refresh(); });
+
+const $ = id => document.getElementById(id);
+function press(btn, on) { btn.setAttribute("aria-pressed", on ? "true" : "false"); }
+$("smooth").oninput = e => { S.smooth = e.target.value / 100; $("smoothOut").textContent = e.target.value + "%"; refresh(); };
+$("radius").oninput = e => {
+  S.radius = +e.target.value; $("radiusOut").textContent = e.target.value + " px";
+  showRange = 1; clearTimeout(rangeTimer);
+  rangeTimer = setTimeout(() => { showRange = 0; requestDraw(); }, 900);
+  refresh();
+};
+$("snapOn").onclick = () => { S.snap = !S.snap; press($("snapOn"), S.snap); refresh(); };
+$("anchorsOn").onclick = () => { S.showAnchors = !S.showAnchors; press($("anchorsOn"), S.showAnchors); refresh(); };
+$("touchBreak").onclick = interrupt;
+undoBtn.onclick = () => step(S.undo, S.redo);
+redoBtn.onclick = () => step(S.redo, S.undo);
+$("clear").onclick = () => {
+  if (!S.strokes.length) return;
+  checkpoint();
+  S.strokes = []; S.active = null;
+  refresh();
+};
+
+// ---- board size and the example line -------------------------------------------------------
+let seeded = false;
+function fit() {
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(cv.clientWidth * dpr);
+  cv.height = Math.round(cv.clientHeight * dpr);
+  // A hidden frame lays out at zero size, the example line waits for a real board.
+  if (!seeded && cv.clientWidth > 0 && cv.clientHeight > 0) { seeded = true; seed(); refresh(); }
+  requestDraw();
+}
+
+function seed() {
+  const w = cv.clientWidth, h = cv.clientHeight;
+  const pts = [[0.10, 0.70], [0.24, 0.34], [0.40, 0.62], [0.54, 0.30], [0.66, 0.48]];
+  S.strokes.push({ id: S.nextId++, pts: pts.map(([x, y]) => ({ x: Math.round(x * w), y: Math.round(y * h) })), closed: false });
+}
+
+new ResizeObserver(fit).observe(board);
+fit();
+refresh();
+window.curveDemo = { S, curve };
+</script>
