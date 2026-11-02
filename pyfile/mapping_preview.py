@@ -19,6 +19,8 @@ GRID_MIN_SIDE = 33
 AREA_RASTER_STEP = 2.0
 DEPTH_STRIDE = 8
 MIN_UPDATE_INTERVAL = 0.008
+GRID_MAX_POINTS = 2000   # refer grid samples per frame
+GRID_STRIDES = (1, 2, 3, 6)   # the lattice has 6 samples a cell, ends included
 SETTLE_DELAY_MS = 40     # no move for this long: the hand has stopped
 SETTLE_PASSES = 40       # a frame that never settles must not spin forever
 UPDATE_DUTY_FACTOR = 0.5
@@ -432,6 +434,7 @@ def begin(view, overlay_id):
     gen = _SESSION.get("generation", 0) + 1
     if _SESSION.get("active"):
         _clear_field_display(am)
+    _drop_grid(am)
     _SESSION.clear()
     _SESSION.update({
         "active": False,
@@ -929,6 +932,87 @@ def _build_passes(am, session, valid, depth):
     return passes
 
 
+def _grid_lattice_points(am, np, frame):
+    """The refer grid's iso-lines through `frame`, as (lines, samples) arrays."""
+    levels, samples = am._grid_lattice()
+    total = 2 * len(levels) * len(samples)
+    stride = next((s for s in GRID_STRIDES if total / s <= GRID_MAX_POINTS),
+                  GRID_STRIDES[-1])
+    along = np.array(samples[::stride], dtype=np.float64)
+    across = np.array(levels, dtype=np.float64)
+    u = np.concatenate((np.repeat(across, along.size), np.tile(along, across.size)))
+    v = np.concatenate((np.tile(along, across.size), np.repeat(across, along.size)))
+    du = u * np.where(u >= 0.0, frame.h_side[1], frame.h_side[0])
+    dv = v * np.where(v >= 0.0, frame.v_side[1], frame.v_side[0])
+    x, y = frame.hv_batch(du, dv)
+    return (np.asarray(x).reshape(-1, along.size),
+            np.asarray(y).reshape(-1, along.size))
+
+
+def _grid_items(am, np, x, y, keep):
+    """Overlay items for the iso-lines, broken where `keep` is false."""
+    items = []
+    for row in range(x.shape[0]):
+        kept = keep[row]
+        edges = np.flatnonzero(np.diff(np.concatenate(([False], kept, [False]))))
+        for first, last in zip(edges[0::2].tolist(), edges[1::2].tolist()):
+            if last - first < 2:
+                continue
+            items.append({
+                "id": "refer_rect_grid",
+                "points": list(zip(x[row, first:last].tolist(), y[row, first:last].tolist())),
+                "color": am.GRID_COLOR,
+                "width": 1.0,
+                "removable": False,
+            })
+    return items
+
+
+def _update_grid(am, np, mapper, ckey):
+    """The refer grid follows the drag on the frame's mapper, in one batch. An
+    edge at a fold stops at its last valid sample; the release bisects it."""
+    drawn_on = [view for view in ("main", "child")
+                if am.refer_rect_enabled(view)
+                and (view == "main" or _SESSION["view"] == "child")]
+    if not drawn_on:
+        return 0.0
+    t0 = _clock()
+    lattice = _SESSION.setdefault("grid_lattice", {})
+    if lattice.get("key") != ckey:
+        lattice["key"] = ckey
+        lattice["points"] = _grid_lattice_points(am, np, mapper.child_frame)
+        lattice["third"] = None
+    px, py = lattice["points"]
+    pushed = _SESSION.setdefault("grid_items", {})
+    if "child" in drawn_on:
+        pushed["child"] = am._GRID_CACHE["child"] = _grid_items(
+            am, np, px, py, np.isfinite(px) & np.isfinite(py))
+    if "main" in drawn_on:
+        if lattice["third"] is None:
+            lattice["third"] = mapper.third_of_batch(px, py)
+        l_h, l_v, ok = lattice["third"]
+        x, y = mapper.main_of_third_batch(l_h, l_v)
+        keep = np.isfinite(x) & np.isfinite(y)
+        if mapper.can_fold():
+            keep = keep & ok
+        items = _grid_items(am, np, x, y, keep)
+        if items:
+            pushed["main"] = am._GRID_CACHE["main"] = items
+    for view in drawn_on:
+        am._push_overlay(view)
+    return _clock() - t0
+
+
+def _drop_grid(am):
+    """A preview's grid must not outlive it: put back the mapping's own."""
+    stale = [view for view, items in _SESSION.get("grid_items", {}).items()
+             if am._GRID_CACHE.get(view) is items]
+    if stale:
+        am._invalidate_grid_cache()
+        for view in stale:
+            am._push_overlay(view)
+
+
 def _context_valid(am):
     if am._ACTIVE_UNIT.get("id") != _SESSION.get("uid"):
         return False
@@ -1064,6 +1148,8 @@ def _compute_and_push():
         ui.set_field_view("main", spec)
     t_pack = _clock() - t_pack0
 
+    t_grid = _update_grid(am, np, mapper, ckey)
+
     t_end = _clock()
     total = t_end - t_start
     _SESSION["last_finish_time"] = t_end
@@ -1077,6 +1163,7 @@ def _compute_and_push():
         "det2": t_det,
         "depth_table": t_dep,
         "pack_and_upload": t_pack,
+        "grid": t_grid,
         "total": total,
     })
     return True
@@ -1191,6 +1278,7 @@ def end():
     am = _am()
     was_active = bool(_SESSION.get("active"))
     gen = _SESSION.get("generation", 0) + 1
+    _drop_grid(am)
     _SESSION.clear()
     _SESSION.update({
         "active": False,
@@ -1209,6 +1297,9 @@ def cancel(restore_assets=True):
     was_active = bool(_SESSION.get("active"))
     snapshot = _SESSION.get("snapshot")
     gen = _SESSION.get("generation", 0) + 1
+    if was_active and restore_assets and snapshot is not None:
+        _restore_asset_snapshot(am, snapshot)
+    _drop_grid(am)
     _SESSION.clear()
     _SESSION.update({
         "active": False,
@@ -1217,7 +1308,5 @@ def cancel(restore_assets=True):
         "generation": gen,
         "snapshot": None,
     })
-    if was_active and restore_assets and snapshot is not None:
-        _restore_asset_snapshot(am, snapshot)
     if was_active:
         _clear_field_display(am)

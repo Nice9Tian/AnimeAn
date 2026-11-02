@@ -5901,6 +5901,18 @@ def _sever_edge_image(mapper, valid_p, valid_lift, invalid_p):
     return mapper.main_of_third(lift)
 
 
+def _grid_lattice():
+    """The refer grid's normalised iso-line levels, and the samples along each."""
+    divisions = max(2, _grid_divisions())
+    extend = _grid_extend() * (divisions - 1) // 4   # whole cells each way
+    levels = [(i - extend) / (divisions - 1) * 2.0 - 1.0
+              for i in range(divisions + 2 * extend)]
+    count = 6 * (divisions - 1) + 1   # divisions=5 -> 25, the historical density
+    samples = [(i - 6 * extend) / (count - 1) * 2.0 - 1.0
+               for i in range(count + 12 * extend)]
+    return levels, samples
+
+
 def _grid_overlay_items(view_name):
     """Refer-rect grid: the 3x3 anchor lattice (crossing, 4 guide endpoints,
     4 quadrant corners) with quarter-step iso-lines, for ONE board.
@@ -5924,13 +5936,7 @@ def _grid_overlay_items(view_name):
         return cached
 
     items = []
-    divisions = max(2, _grid_divisions())
-    extend = _grid_extend() * (divisions - 1) // 4   # whole cells each way
-    levels = [(i - extend) / (divisions - 1) * 2.0 - 1.0
-              for i in range(divisions + 2 * extend)]
-    count = 6 * (divisions - 1) + 1   # divisions=5 -> 25, the historical density
-    samples = [(i - 6 * extend) / (count - 1) * 2.0 - 1.0
-               for i in range(count + 12 * extend)]
+    levels, samples = _grid_lattice()
 
     # The MAIN board's grid shows the RENDERING mapping when it exists: the
     # child frame's lattice pushed through the full mapper, additional-line
@@ -6328,9 +6334,10 @@ def _guide_drag_event(message):
         line.pop("third", None)
 
     if phase == "move":
-        # The line moves now; the mapping, and the refer grid and tint drawn
-        # from it, wait for the release. Rebuilding them here was a full solve
-        # per mouse move, and the moves queued up behind it.
+        # The line moves now; the mapping and the tint drawn from it wait for
+        # the release, and the preview stands in for them (the refer grid
+        # too). Rebuilding them here was a full solve per mouse move, and the
+        # moves queued up behind it.
         mapping_preview.update()
         _push_overlay(view)
         try:

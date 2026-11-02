@@ -685,6 +685,13 @@ def _build_cold_mapper_from_current_assets():
 # Test Suite
 # ---------------------------------------------------------------------------
 
+def _grid_gap(items, other):
+    """How far the worst point of `items` lies from any point of `other`."""
+    a = np.array([p for item in items for p in item["points"]], dtype=float)
+    b = np.array([p for item in other for p in item["points"]], dtype=float)
+    return max(float(np.min(np.hypot(*(b - p).T))) for p in a)
+
+
 def moves_later(fake):
     """The gate's deferred moves, without the settle passes."""
     return [call for call in fake.ui.call_later_calls if call[0] != mp.SETTLE_DELAY_MS]
@@ -1449,6 +1456,73 @@ class TestMappingPreview(unittest.TestCase):
         armed[1]()
         self.assertEqual(fake.ui.set_field_view_calls[-1], ("main", None))
         self.assertFalse(mp._SESSION.get("active"))
+
+    def _drag_with_grid(self, rig, view, handle, grid=True):
+        _scenes, fake, uid = fresh_rig_world(rig)
+        am._UNIT_META[uid].setdefault("settings", {})["show_grid"] = grid
+        points = am.line_item(view, handle)["points"]
+        grab = points[len(points) // 2]
+        offset = [0.0]
+        mp._clock = lambda: time.perf_counter() + offset[0]
+
+        def send(phase, step=0):
+            offset[0] += 0.06
+            am._guide_drag_event({
+                "view": view, "handle": handle, "phase": phase,
+                "position": {"x": grab[0] + 2.0 * step, "y": grab[1] - 3.0 * step},
+            })
+
+        before = am._grid_overlay_items("main")
+        send("press")
+        for step in range(1, 6):
+            send("move", step)
+        for _ in range(mp.SETTLE_PASSES):
+            if not fake.ui.call_later_calls:
+                break
+            count = len(fake.ui.call_later_calls)
+            fake.ui.call_later_calls[-1][1]()
+            if len(fake.ui.call_later_calls) == count:
+                break
+        return send, before
+
+    def test_19_refer_grid_follows_the_drag(self):
+        """The grid is drawn from the frame's mapper; settled, it sits on the exact one."""
+        cases = (
+            ("B", "main", f"{am.ADDITIONAL_PROPERTY}:1"),
+            ("C", "child", am.H_PROPERTY),
+            ("D", "main", am.H_PROPERTY),
+        )
+        for rig, view, handle in cases:
+            send, before = self._drag_with_grid(rig, view, handle)
+            live = am._GRID_CACHE["main"]
+            self.assertIs(live, mp._SESSION["grid_items"]["main"], rig)
+            self.assertGreater(_grid_gap(live, before), 1.0, f"{rig}: the grid did not move")
+            live_child = am._GRID_CACHE["child"] if view == "child" else None
+
+            am._invalidate_grid_cache()
+            exact = am._grid_overlay_items("main")
+            gap = _grid_gap(live, exact)
+            print(f"[grid] rig {rig} {view}: {gap:.3f} px off the exact grid")
+            self.assertLessEqual(gap, 0.5, rig)
+            if live_child is not None:
+                self.assertLessEqual(_grid_gap(live_child, am._grid_overlay_items("child")), 0.01)
+
+            am._GRID_CACHE["main"] = live
+            send("release", 5)
+            self.assertIsNot(am._GRID_CACHE["main"], live, f"{rig}: the release keeps the exact grid")
+            self.assertNotIn("grid_items", mp._SESSION)
+
+    def test_20_cancel_puts_the_grid_back(self):
+        send, before = self._drag_with_grid("C", "child", am.V_PROPERTY)
+        self.assertGreater(_grid_gap(am._GRID_CACHE["main"], before), 1.0)
+        send("cancel")
+        self.assertLessEqual(_grid_gap(am._grid_overlay_items("main"), before), 1e-6)
+
+    def test_21_no_grid_work_with_the_grid_off(self):
+        send, _before = self._drag_with_grid("C", "child", am.H_PROPERTY, grid=False)
+        self.assertEqual(mp._LAST_TIMINGS["grid"], 0.0)
+        self.assertNotIn("grid_items", mp._SESSION)
+        send("release", 5)
 
     def test_10_mid_drag_invalid_axes_clears_and_recovers(self):
         """When axes stop crossing mid-drag, preview clears; when crossing again, preview recovers."""
