@@ -148,5 +148,57 @@ d_fold = gridsolve.det2(dx_fold, dy_fold, du, dv)
 assert float(np.min(d_fold)) < -1.0, float(np.min(d_fold))
 print("5) det2: exact on affine map (3.15) and detects single-cell fold")
 
+# ---------------------------------------------------------------------------
+# 6) label_regions: 4-connected components and <= 2ms on 129x87
+# ---------------------------------------------------------------------------
+import time
+
+# Empty / all-False / all-True
+lbl_empty, cnt_empty = gridsolve.label_regions(np.zeros((10, 8), dtype=bool))
+assert cnt_empty == 0 and lbl_empty.shape == (10, 8) and not np.any(lbl_empty)
+lbl_full, cnt_full = gridsolve.label_regions(np.ones((10, 8), dtype=bool))
+assert cnt_full == 1 and np.all(lbl_full == 1)
+
+# 4-connectivity (diagonals do not connect) and row wrap-around isolation
+diag_mask = np.array([
+    [1, 0, 1],
+    [1, 0, 0],
+    [0, 1, 1],
+], dtype=bool)
+lbl_diag, cnt_diag = gridsolve.label_regions(diag_mask)
+assert cnt_diag == 3, cnt_diag
+assert lbl_diag[0, 0] == lbl_diag[1, 0] == 1
+assert lbl_diag[0, 2] == 2
+assert lbl_diag[2, 1] == lbl_diag[2, 2] == 3
+assert np.all((lbl_diag > 0) == diag_mask)
+
+# U-shape and nested island merging multiple horizontal runs
+u_mask = np.array([
+    [1, 0, 1, 0, 1],
+    [1, 0, 0, 0, 1],
+    [1, 1, 1, 1, 1],
+], dtype=bool)
+lbl_u, cnt_u = gridsolve.label_regions(u_mask)
+assert cnt_u == 2, cnt_u
+assert lbl_u[0, 0] == lbl_u[0, 4] == lbl_u[2, 2] == 1
+assert lbl_u[0, 2] == 2
+
+# Performance on 129x87 (must be <= 2.0 ms)
+gx_129 = np.linspace(-1.0, 1.0, 129)[:, None]
+gy_87 = np.linspace(-1.0, 1.0, 87)[None, :]
+mask_129x87 = (np.sin(5.0 * gx_129 + 0.7 * gy_87) > 0.0) & (gx_129 ** 2 + gy_87 ** 2 < 0.92)
+gridsolve.label_regions(mask_129x87)  # warmup
+lbl_times = []
+for _ in range(50):
+    t0 = time.perf_counter()
+    lbl_bench, cnt_bench = gridsolve.label_regions(mask_129x87)
+    lbl_times.append((time.perf_counter() - t0) * 1000.0)
+lbl_times.sort()
+med_lbl_ms = lbl_times[len(lbl_times) // 2]
+assert cnt_bench >= 2, cnt_bench
+assert set(np.unique(lbl_bench)) == set(range(0, cnt_bench + 1))
+assert med_lbl_ms <= 2.0, f"label_regions on 129x87 took {med_lbl_ms:.3f} ms (> 2.0 ms)"
+print(f"6) label_regions: 4-connected components ok, 129x87 median={med_lbl_ms:.3f}ms (count={cnt_bench})")
+
 assert "auto_mapping" not in sys.modules
 print("t_gridsolve: ALL OK")

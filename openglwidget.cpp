@@ -249,12 +249,38 @@ void PaintOpenGLWidget::resetHistory(const QString &label)
     emit historyChanged();
 }
 
+void PaintOpenGLWidget::stopOverlayDragMoveTimer()
+{
+    if (m_overlayDragMoveTimer) {
+        m_overlayDragMoveTimer->stop();
+    }
+}
+
+void PaintOpenGLWidget::flushPendingOverlayDragMove()
+{
+    if (m_activeOverlayDrag.isEmpty()) {
+        return;
+    }
+    if (m_overlayDragHookThrottle.isValid()) {
+        const qint64 elapsed = m_overlayDragHookThrottle.elapsed();
+        if (elapsed < kUpdateHookIntervalMs) {
+            m_overlayDragMoveTimer->start(int(kUpdateHookIntervalMs - elapsed));
+            return;
+        }
+    }
+    m_overlayDragHookThrottle.restart();
+    sendPythonHandleMessage(QStringLiteral("move"), m_activeOverlayDrag,
+                            m_pendingOverlayDragPos, m_pendingOverlayDragModifiers);
+    update();
+}
+
 void PaintOpenGLWidget::cancelActiveOverlayDrag()
 {
     // A context change (tool, stroke property, frame) invalidates an
     // in-flight overlay drag transaction: tell the owning tool to restore
     // its persisted baseline. One home for the teardown - the call sites
     // differ only in when they fire, never in how.
+    stopOverlayDragMoveTimer();
     if (m_activeOverlayDrag.isEmpty()) {
         return;
     }
@@ -361,6 +387,7 @@ bool PaintOpenGLWidget::goToHistory(int index)
     // restore just made authoritative. The restore also covers the frame
     // and layer, so they become the notified baselines.
     m_activeOverlayDrag.clear();
+    stopOverlayDragMoveTimer();
     m_pythonNotifiedFrame = m_model.currentFrame();
     m_pythonNotifiedLayer = m_model.currentLayer();
     m_pythonNotifiedLayerId =
@@ -1968,6 +1995,7 @@ void PaintOpenGLWidget::setOverlayItems(const QVector<OverlayItem> &items)
         }
         if (!present) {
             m_activeOverlayDrag.clear();
+            stopOverlayDragMoveTimer();
         }
     }
     update();
@@ -3389,6 +3417,7 @@ bool PaintOpenGLWidget::pressOverlayOrBadge(const QPointF &screenPos,
         return true;
     }
     if (!overlayId.isEmpty()) {
+        stopOverlayDragMoveTimer();
         m_activeOverlayDrag = overlayId;
         // Each drag gets a fresh throttle window so its first "move" is never
         // swallowed by the previous overlay drag's timestamp.
@@ -3661,13 +3690,30 @@ void PaintOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
     if (!m_activeOverlayDrag.isEmpty()) {
         // Throttled like the other pointer-rate hooks: the owning tool
         // re-renders its overlays on every message, which must not run at
-        // mouse rate. The release in mouseReleaseEvent always goes through,
-        // so the final position is never lost to the throttle.
+        // mouse rate. A move swallowed by the throttle arms a single-shot
+        // timer for the end of the window so pausing mid-drag still delivers
+        // the latest position.
         if (!m_overlayDragHookThrottle.isValid()
             || m_overlayDragHookThrottle.elapsed() >= kUpdateHookIntervalMs) {
+            stopOverlayDragMoveTimer();
             m_overlayDragHookThrottle.restart();
             sendPythonHandleMessage(QStringLiteral("move"), m_activeOverlayDrag, m_hoverPos,
                                     event->modifiers());
+        } else {
+            m_pendingOverlayDragPos = m_hoverPos;
+            m_pendingOverlayDragModifiers = event->modifiers();
+            if (!m_overlayDragMoveTimer) {
+                m_overlayDragMoveTimer = new QTimer(this);
+                m_overlayDragMoveTimer->setSingleShot(true);
+                m_overlayDragMoveTimer->setTimerType(Qt::PreciseTimer);
+                connect(m_overlayDragMoveTimer, &QTimer::timeout, this,
+                        [this]() { flushPendingOverlayDragMove(); });
+            }
+            if (!m_overlayDragMoveTimer->isActive()) {
+                const qint64 remaining =
+                    std::max<qint64>(1, kUpdateHookIntervalMs - m_overlayDragHookThrottle.elapsed());
+                m_overlayDragMoveTimer->start(int(remaining));
+            }
         }
         update();
         event->accept();
@@ -3770,6 +3816,7 @@ void PaintOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
     }
 
     if (!m_activeOverlayDrag.isEmpty()) {
+        stopOverlayDragMoveTimer();
         const QString overlayId = m_activeOverlayDrag;
         m_activeOverlayDrag.clear();
         const QPointF docPos = mapToDocument(event->position());

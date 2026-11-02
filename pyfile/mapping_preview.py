@@ -18,9 +18,11 @@ GRID_MAX_SIDE = 129
 GRID_MIN_SIDE = 33
 AREA_RASTER_STEP = 2.0
 DEPTH_STRIDE = 8
-DEPTH_BASE_INTERVAL = 0.200
-DEPTH_BUDGET = 0.030
 MIN_UPDATE_INTERVAL = 0.008
+GRID_MAX_POINTS = 2000   # refer grid samples per frame
+GRID_STRIDES = (1, 2, 3, 6)   # the lattice has 6 samples a cell, ends included
+SETTLE_DELAY_MS = 40     # no move for this long: the hand has stopped
+SETTLE_PASSES = 40       # a frame that never settles must not spin forever
 UPDATE_DUTY_FACTOR = 0.5
 
 _SESSION = {
@@ -426,12 +428,28 @@ def _unit_hide_columns(am, main_scene, uid):
     return hide_cols
 
 
+def _typical_stretch(np, phi_x, phi_y, valid, du, dv):
+    """How much the mapping scales lengths across the strokes, as one number.
+
+    The scope widens strokes in texture space and the field then carries the
+    outline, so the field already applies the stretch. The release draws
+    `width * width_scale` in board space instead; dividing by the typical
+    stretch makes the two agree wherever the stretch is typical."""
+    det = gridsolve.det2(phi_x, phi_y, du, dv)
+    keep = valid & np.isfinite(det)
+    if not np.any(keep):
+        return 1.0
+    stretch = float(np.median(np.sqrt(np.abs(det[keep]))))
+    return stretch if stretch > 1e-6 else 1.0
+
+
 def begin(view, overlay_id):
     """Prepare a live preview session at drag press."""
     am = _am()
     gen = _SESSION.get("generation", 0) + 1
     if _SESSION.get("active"):
         _clear_field_display(am)
+    _drop_grid(am)
     _SESSION.clear()
     _SESSION.update({
         "active": False,
@@ -516,11 +534,13 @@ def begin(view, overlay_id):
             am.MAPPING_AREA_PROPERTY,
         ))
         hide_columns = _unit_hide_columns(am, main_scene, uid)
-        third_cache = {}
-        if _SESSION["view"] != "child":
-            third_cache["key"] = _child_axes_key(child_h, child_v)
-            third_cache["value"] = mapper.third_of_batch(px, py)
-
+        l_h, l_v, ok = mapper.third_of_batch(px, py)
+        phi_x, phi_y = mapper.main_of_third_batch(l_h, l_v)
+        stretch = _typical_stretch(np, phi_x, phi_y, ok if in_child_area is None else ok & in_child_area, du, dv)
+        third_cache = {
+            "key": _child_axes_key(child_h, child_v),
+            "value": (l_h, l_v, ok),
+        }
         snapshot = _take_asset_snapshot(am)
         _SESSION.update({
             "active": True,
@@ -539,7 +559,7 @@ def begin(view, overlay_id):
             "du": du,
             "dv": dv,
             "max_edge": max_edge,
-            "width_scale": float(width_scale),
+            "width_scale": float(width_scale) / stretch,
             "px": px,
             "py": py,
             "in_child_area": in_child_area,
@@ -550,15 +570,39 @@ def begin(view, overlay_id):
             "nearest_ci": nearest_ci,
             "nearest_cj": nearest_cj,
             "coarse_depth": None,
-            "last_depth_time": None,
-            "depth_interval": DEPTH_BASE_INTERVAL,
-            "last_depth_duration": 0.0,
             "last_passes": None,
             "last_finish_time": None,
             "last_duration": 0.0,
             "pending": False,
             "timer_armed": False,
+            "prev_labels": None,
+            "prev_n_front": 0,
+            "prev_n_regions": 0,
+            "prev_region_depths": None,
         })
+        if am._FOLD["split"]:
+            phi_x, phi_y = mapper.main_of_third_batch(l_h, l_v)
+            dx_raw = phi_x - px
+            dy_raw = phi_y - py
+            valid = ok & np.isfinite(dx_raw) & np.isfinite(dy_raw)
+            if in_child_area is not None:
+                valid = valid & in_child_area
+            if main_area_lut is not None:
+                safe_px = np.where(np.isfinite(phi_x), phi_x, 0.0)
+                safe_py = np.where(np.isfinite(phi_y), phi_y, 0.0)
+                valid = valid & _lookup_area_lut(np, main_area_lut, safe_px, safe_py)
+            dx, dy = _fill_invalid_from_neighbors(np, dx_raw, dy_raw, valid, passes=2)
+            det = gridsolve.det2(
+                (px + dx) * float(mapper.fold_reference),
+                py + dy,
+                du,
+                dv,
+            )
+            is_front = det >= 0.0
+            _update_coarse_depth_table(
+                am, np, _SESSION, mapper, l_h, l_v, valid, is_front
+            )
+            _init_region_depths_from_coarse(np, _SESSION, valid, is_front)
     except Exception as error:
         _handle_preview_error(am, error)
 
@@ -625,16 +669,253 @@ def _update_coarse_depth_table(am, np, session, mapper, l_h, l_v, valid, is_fron
 
     dt = _clock() - t0
     session["coarse_depth"] = depths
-    session["last_depth_time"] = _clock()
-    session["last_depth_duration"] = dt
-    if dt > DEPTH_BUDGET:
-        session["depth_interval"] = max(
-            DEPTH_BASE_INTERVAL,
-            min(2.0, dt * (DEPTH_BASE_INTERVAL / DEPTH_BUDGET)),
-        )
-    else:
-        session["depth_interval"] = DEPTH_BASE_INTERVAL
     return dt
+
+
+def _label_front_back_regions(np, valid, is_front):
+    front_mask = valid & is_front
+    back_mask = valid & ~is_front
+    front_labels, n_front = gridsolve.label_regions(front_mask)
+    back_labels, n_back = gridsolve.label_regions(back_mask)
+    if n_back > 0 and n_front > 0:
+        labels = np.where(back_labels > 0, back_labels + n_front, front_labels)
+    elif n_back > 0:
+        labels = back_labels
+    else:
+        labels = front_labels
+    return labels, int(n_front), int(n_front + n_back)
+
+
+def _region_adjacency(np, labels, n_regions):
+    adj4 = np.zeros((n_regions + 1, n_regions + 1), dtype=bool)
+    adj8 = np.zeros((n_regions + 1, n_regions + 1), dtype=bool)
+    if n_regions <= 1:
+        return adj4, adj8
+
+    if labels.shape[0] > 1:
+        a = labels[:-1, :]
+        b = labels[1:, :]
+        m = (a != b) & (a > 0) & (b > 0)
+        if np.any(m):
+            am_idx, bm_idx = a[m], b[m]
+            adj4[am_idx, bm_idx] = True
+            adj4[bm_idx, am_idx] = True
+    if labels.shape[1] > 1:
+        a = labels[:, :-1]
+        b = labels[:, 1:]
+        m = (a != b) & (a > 0) & (b > 0)
+        if np.any(m):
+            am_idx, bm_idx = a[m], b[m]
+            adj4[am_idx, bm_idx] = True
+            adj4[bm_idx, am_idx] = True
+
+    adj8 |= adj4
+    if labels.shape[0] > 1 and labels.shape[1] > 1:
+        for a, b in (
+            (labels[:-1, :-1], labels[1:, 1:]),
+            (labels[:-1, 1:], labels[1:, :-1]),
+        ):
+            m = (a != b) & (a > 0) & (b > 0)
+            if np.any(m):
+                am_idx, bm_idx = a[m], b[m]
+                adj8[am_idx, bm_idx] = True
+                adj8[bm_idx, am_idx] = True
+    return adj4, adj8
+
+
+def _propagate_unassigned_depths(region_depths, adj4, n_front, n_regions, fallback_fn=None):
+    while True:
+        progressed = False
+        for r in range(1, n_regions + 1):
+            if region_depths[r] >= 0:
+                continue
+            nbrs = [
+                int(region_depths[nb])
+                for nb in range(1, n_regions + 1)
+                if adj4[r, nb] and region_depths[nb] >= 0
+            ]
+            if nbrs:
+                want_even = (r <= n_front)
+                d = min(nbrs) + 1
+                if ((d % 2) == 0) != want_even:
+                    d += 1
+                region_depths[r] = d
+                progressed = True
+        if not progressed:
+            break
+
+    for r in range(1, n_regions + 1):
+        want_even = (r <= n_front)
+        if region_depths[r] < 0:
+            d = int(fallback_fn(r)) if fallback_fn is not None else (0 if want_even else 1)
+            if ((d % 2) == 0) != want_even:
+                d += 1
+            region_depths[r] = d
+        elif ((int(region_depths[r]) % 2) == 0) != want_even:
+            region_depths[r] += 1
+
+
+def _init_region_depths_from_coarse(np, session, valid, is_front):
+    c_depth = session["coarse_depth"]
+    nci = session["nearest_ci"]
+    ncj = session["nearest_cj"]
+    depth = c_depth[nci[:, None], ncj[None, :]].copy()
+    mismatch = ((depth % 2) == 0) != is_front
+    depth[mismatch] += 1
+
+    labels, n_front, n_regions = _label_front_back_regions(np, valid, is_front)
+    region_depths = np.full(n_regions + 1, -1, dtype=np.int32)
+    region_depths[0] = 0
+    if n_regions > 0:
+        coarse_i = session["coarse_i"]
+        coarse_j = session["coarse_j"]
+        ci_grid, cj_grid = np.meshgrid(coarse_i, coarse_j, indexing="ij")
+        c_labels = labels[ci_grid, cj_grid]
+        c_valid = valid[ci_grid, cj_grid]
+        for r in range(1, n_regions + 1):
+            want_even = (r <= n_front)
+            cmask = c_valid & (c_labels == r)
+            if np.any(cmask):
+                vals = c_depth[cmask]
+                vals = np.where(((vals % 2) == 0) != want_even, vals + 1, vals)
+                counts = np.bincount(np.maximum(0, vals))
+                d = int(np.argmax(counts))
+                if ((d % 2) == 0) != want_even:
+                    d += 1
+                region_depths[r] = d
+
+        if np.any(region_depths[1:] < 0):
+            adj4, _adj8 = _region_adjacency(np, labels, n_regions)
+
+            def _fallback_fine(r):
+                vals = depth[labels == r]
+                if vals.size > 0:
+                    return int(np.argmax(np.bincount(np.maximum(0, vals))))
+                return 0 if (r <= n_front) else 1
+
+            _propagate_unassigned_depths(region_depths, adj4, n_front, n_regions, _fallback_fine)
+
+    session["prev_labels"] = labels
+    session["prev_n_front"] = n_front
+    session["prev_n_regions"] = n_regions
+    session["prev_region_depths"] = region_depths
+    return region_depths[labels]
+
+
+def _inherit_region_depths(am, np, session, mapper, l_h, l_v, valid, is_front):
+    t0 = _clock()
+    labels, n_front, n_regions = _label_front_back_regions(np, valid, is_front)
+    if n_regions == 0:
+        session["prev_labels"] = labels
+        session["prev_n_front"] = 0
+        session["prev_n_regions"] = 0
+        session["prev_region_depths"] = np.zeros(1, dtype=np.int32)
+        dt = _clock() - t0
+        return np.zeros_like(labels, dtype=np.int32), dt
+
+    prev_labels = session.get("prev_labels")
+    prev_n_front = int(session.get("prev_n_front", 0))
+    prev_n_regions = int(session.get("prev_n_regions", 0))
+    prev_depths = session.get("prev_region_depths")
+
+    adj4, adj8 = _region_adjacency(np, labels, n_regions)
+    region_depths = np.full(n_regions + 1, -1, dtype=np.int32)
+    region_depths[0] = 0
+    best_prev = np.zeros(n_regions + 1, dtype=np.int32)
+    best_prev_ov = np.zeros(n_regions + 1, dtype=np.int32)
+
+    if prev_labels is not None and prev_depths is not None and prev_n_regions > 0:
+        n_cols = prev_n_regions + 1
+        pair_idx = labels.ravel() * n_cols + prev_labels.ravel()
+        overlap = np.bincount(
+            pair_idx, minlength=(n_regions + 1) * n_cols
+        ).reshape(n_regions + 1, n_cols)
+        overlap[0, :] = 0
+        overlap[:, 0] = 0
+        overlap[1:n_front + 1, prev_n_front + 1:] = 0
+        overlap[n_front + 1:, 1:prev_n_front + 1] = 0
+
+        for r in range(1, n_regions + 1):
+            row = overlap[r, 1:]
+            mx = int(np.max(row))
+            if mx > 0:
+                best_prev[r] = int(np.argmax(row)) + 1
+                best_prev_ov[r] = mx
+
+        claimants_of_p = {}
+        for r in range(1, n_regions + 1):
+            p = int(best_prev[r])
+            if p > 0:
+                claimants_of_p.setdefault(p, []).append(r)
+
+        anchor_dist2 = None
+        for p, r_list in claimants_of_p.items():
+            p_depth = int(prev_depths[p])
+            if len(r_list) == 1:
+                region_depths[r_list[0]] = p_depth
+            else:
+                if anchor_dist2 is None:
+                    main_f = mapper.main_frame
+                    anc = am._nearest_arc()
+                    anc = (
+                        min(max(anc[0], -main_f.h_arc), main_f.h_total - main_f.h_arc),
+                        min(max(anc[1], -main_f.v_arc), main_f.v_total - main_f.v_arc),
+                    )
+                    anc_lh, anc_lv = mapper.unscale_arcs(*anc)
+                    warp = getattr(mapper, "warp", None)
+                    if warp is not None:
+                        anc_lh, anc_lv = warp.unapply((anc_lh, anc_lv))
+                    anchor_dist2 = (l_h - anc_lh) ** 2 + (l_v - anc_lv) ** 2
+
+                def _split_rank(r_cand):
+                    rmask = (labels == r_cand)
+                    min_d2 = float(np.min(anchor_dist2[rmask])) if np.any(rmask) else float("inf")
+                    return (round(min_d2, 0), -int(best_prev_ov[r_cand]))
+
+                r_best = min(r_list, key=_split_rank)
+                region_depths[r_best] = p_depth
+                same_sheet = {r_best}
+                changed = True
+                while changed:
+                    changed = False
+                    for r_other in r_list:
+                        if r_other in same_sheet:
+                            continue
+                        if any(adj8[r_other, s] for s in same_sheet):
+                            same_sheet.add(r_other)
+                            region_depths[r_other] = p_depth
+                            changed = True
+                for r_other in r_list:
+                    if r_other in same_sheet:
+                        continue
+                    if int(best_prev_ov[r_other]) <= 4 or not np.any(adj4[r_other, 1:]):
+                        region_depths[r_other] = p_depth
+
+        for p in range(1, prev_n_regions + 1):
+            col = overlap[1:, p]
+            mx = int(np.max(col))
+            if mx > 0:
+                r_win = int(np.argmax(col)) + 1
+                if region_depths[r_win] >= 0 and mx * 2 >= int(np.sum(col)):
+                    p_depth = int(prev_depths[p])
+                    if p_depth < region_depths[r_win]:
+                        region_depths[r_win] = p_depth
+
+    def _fallback_prev(r):
+        p = int(best_prev[r])
+        if p > 0 and prev_depths is not None:
+            return int(prev_depths[p])
+        return 0 if (r <= n_front) else 1
+
+    _propagate_unassigned_depths(region_depths, adj4, n_front, n_regions, _fallback_prev)
+
+    depth = region_depths[labels]
+    session["prev_labels"] = labels
+    session["prev_n_front"] = n_front
+    session["prev_n_regions"] = n_regions
+    session["prev_region_depths"] = region_depths
+    dt = _clock() - t0
+    return depth, dt
 
 
 def _build_passes(am, session, valid, depth):
@@ -666,6 +947,87 @@ def _build_passes(am, session, valid, depth):
                 entry["tint"] = tint
             passes.append(entry)
     return passes
+
+
+def _grid_lattice_points(am, np, frame):
+    """The refer grid's iso-lines through `frame`, as (lines, samples) arrays."""
+    levels, samples = am._grid_lattice()
+    total = 2 * len(levels) * len(samples)
+    stride = next((s for s in GRID_STRIDES if total / s <= GRID_MAX_POINTS),
+                  GRID_STRIDES[-1])
+    along = np.array(samples[::stride], dtype=np.float64)
+    across = np.array(levels, dtype=np.float64)
+    u = np.concatenate((np.repeat(across, along.size), np.tile(along, across.size)))
+    v = np.concatenate((np.tile(along, across.size), np.repeat(across, along.size)))
+    du = u * np.where(u >= 0.0, frame.h_side[1], frame.h_side[0])
+    dv = v * np.where(v >= 0.0, frame.v_side[1], frame.v_side[0])
+    x, y = frame.hv_batch(du, dv)
+    return (np.asarray(x).reshape(-1, along.size),
+            np.asarray(y).reshape(-1, along.size))
+
+
+def _grid_items(am, np, x, y, keep):
+    """Overlay items for the iso-lines, broken where `keep` is false."""
+    items = []
+    for row in range(x.shape[0]):
+        kept = keep[row]
+        edges = np.flatnonzero(np.diff(np.concatenate(([False], kept, [False]))))
+        for first, last in zip(edges[0::2].tolist(), edges[1::2].tolist()):
+            if last - first < 2:
+                continue
+            items.append({
+                "id": "refer_rect_grid",
+                "points": list(zip(x[row, first:last].tolist(), y[row, first:last].tolist())),
+                "color": am.GRID_COLOR,
+                "width": 1.0,
+                "removable": False,
+            })
+    return items
+
+
+def _update_grid(am, np, mapper, ckey):
+    """The refer grid follows the drag on the frame's mapper, in one batch. An
+    edge at a fold stops at its last valid sample; the release bisects it."""
+    drawn_on = [view for view in ("main", "child")
+                if am.refer_rect_enabled(view)
+                and (view == "main" or _SESSION["view"] == "child")]
+    if not drawn_on:
+        return 0.0
+    t0 = _clock()
+    lattice = _SESSION.setdefault("grid_lattice", {})
+    if lattice.get("key") != ckey:
+        lattice["key"] = ckey
+        lattice["points"] = _grid_lattice_points(am, np, mapper.child_frame)
+        lattice["third"] = None
+    px, py = lattice["points"]
+    pushed = _SESSION.setdefault("grid_items", {})
+    if "child" in drawn_on:
+        pushed["child"] = am._GRID_CACHE["child"] = _grid_items(
+            am, np, px, py, np.isfinite(px) & np.isfinite(py))
+    if "main" in drawn_on:
+        if lattice["third"] is None:
+            lattice["third"] = mapper.third_of_batch(px, py)
+        l_h, l_v, ok = lattice["third"]
+        x, y = mapper.main_of_third_batch(l_h, l_v)
+        keep = np.isfinite(x) & np.isfinite(y)
+        if mapper.can_fold():
+            keep = keep & ok
+        items = _grid_items(am, np, x, y, keep)
+        if items:
+            pushed["main"] = am._GRID_CACHE["main"] = items
+    for view in drawn_on:
+        am._push_overlay(view)
+    return _clock() - t0
+
+
+def _drop_grid(am):
+    """A preview's grid must not outlive it: put back the mapping's own."""
+    stale = [view for view, items in _SESSION.get("grid_items", {}).items()
+             if am._GRID_CACHE.get(view) is items]
+    if stale:
+        am._invalidate_grid_cache()
+        for view in stale:
+            am._push_overlay(view)
 
 
 def _context_valid(am):
@@ -760,20 +1122,15 @@ def _compute_and_push():
     t_det = _clock() - t_det0
 
     t_dep = 0.0
-    if am._FOLD["split"]:
-        now_dep = _clock()
-        last_dep = _SESSION["last_depth_time"]
-        if (_SESSION["coarse_depth"] is None
-                or last_dep is None
-                or (now_dep - last_dep) >= _SESSION["depth_interval"]):
-            t_dep = _update_coarse_depth_table(
-                am, np, _SESSION, mapper, l_h, l_v, valid, is_front)
-        c_depth = _SESSION["coarse_depth"]
-        nci = _SESSION["nearest_ci"]
-        ncj = _SESSION["nearest_cj"]
-        depth = c_depth[nci[:, None], ncj[None, :]].copy()
-        mismatch = ((depth % 2) == 0) != is_front
-        depth[mismatch] += 1
+    if am._FOLD["split"] and _SESSION.pop("exact_depth", None):
+        # Inheriting cannot see a crease sweep over the anchor: re-judge once
+        # the hand has stopped.
+        t_dep = _update_coarse_depth_table(am, np, _SESSION, mapper, l_h, l_v, valid, is_front)
+        depth = _init_region_depths_from_coarse(np, _SESSION, valid, is_front)
+    elif am._FOLD["split"]:
+        depth, t_dep = _inherit_region_depths(
+            am, np, _SESSION, mapper, l_h, l_v, valid, is_front
+        )
     else:
         depth = np.zeros((_SESSION["W"], _SESSION["H"]), dtype=np.int32)
 
@@ -808,6 +1165,8 @@ def _compute_and_push():
         ui.set_field_view("main", spec)
     t_pack = _clock() - t_pack0
 
+    t_grid = _update_grid(am, np, mapper, ckey)
+
     t_end = _clock()
     total = t_end - t_start
     _SESSION["last_finish_time"] = t_end
@@ -821,6 +1180,7 @@ def _compute_and_push():
         "det2": t_det,
         "depth_table": t_dep,
         "pack_and_upload": t_pack,
+        "grid": t_grid,
         "total": total,
     })
     return True
@@ -841,12 +1201,54 @@ def _on_timer(gen):
     if not _SESSION.get("pending"):
         return
     _SESSION["pending"] = False
+    _SESSION["warm"]["settling"] = False
     try:
         if _compute_and_push():
             try:
                 am._animean().ui.refresh()
             except Exception:
                 pass
+            _arm_settle(am)
+    except Exception as error:
+        _handle_preview_error(am, error)
+
+
+def _arm_settle(am):
+    """Frames during a drag take shortcuts: the solver budget, inherited layer
+    order, walked nearest stations. Once the hand stops, one pass does it all
+    properly, and solving goes on until it converges. A move takes the token, so
+    this never competes with a moving hand."""
+    warm = _SESSION.get("warm") or {}
+    if not (warm.get("unsettled") or _SESSION.get("needs_final")):
+        return
+    if _SESSION.get("settle_passes", 0) >= SETTLE_PASSES:
+        return
+    token = _SESSION["settle_token"] = _SESSION.get("settle_token", 0) + 1
+    gen = _SESSION["generation"]
+    am._animean().ui.call_later(SETTLE_DELAY_MS, lambda: _on_settle(gen, token))
+
+
+def _on_settle(gen, token):
+    am = _am()
+    if (not _SESSION.get("active")
+            or _SESSION.get("failed")
+            or _SESSION.get("generation") != gen
+            or _SESSION.get("settle_token") != token):
+        return
+    if not _context_valid(am):
+        _SESSION["active"] = False
+        _clear_field_display(am)
+        return
+    _SESSION["settle_passes"] = _SESSION.get("settle_passes", 0) + 1
+    _SESSION["warm"]["settling"] = True
+    _SESSION["exact_depth"], _SESSION["needs_final"] = _SESSION.get("needs_final"), False
+    try:
+        if _compute_and_push():
+            try:
+                am._animean().ui.refresh()
+            except Exception:
+                pass
+            _arm_settle(am)
     except Exception as error:
         _handle_preview_error(am, error)
 
@@ -856,6 +1258,10 @@ def update():
     if not _SESSION.get("active") or _SESSION.get("failed"):
         return
     am = _am()
+    _SESSION["settle_passes"] = 0
+    _SESSION["settle_token"] = _SESSION.get("settle_token", 0) + 1
+    _SESSION["warm"]["settling"] = False
+    _SESSION["needs_final"] = True
     try:
         if not _context_valid(am):
             _SESSION["active"] = False
@@ -879,6 +1285,7 @@ def update():
                 return
         _SESSION["pending"] = False
         _compute_and_push()
+        _arm_settle(am)
     except Exception as error:
         _handle_preview_error(am, error)
 
@@ -888,6 +1295,7 @@ def end():
     am = _am()
     was_active = bool(_SESSION.get("active"))
     gen = _SESSION.get("generation", 0) + 1
+    _drop_grid(am)
     _SESSION.clear()
     _SESSION.update({
         "active": False,
@@ -906,6 +1314,9 @@ def cancel(restore_assets=True):
     was_active = bool(_SESSION.get("active"))
     snapshot = _SESSION.get("snapshot")
     gen = _SESSION.get("generation", 0) + 1
+    if was_active and restore_assets and snapshot is not None:
+        _restore_asset_snapshot(am, snapshot)
+    _drop_grid(am)
     _SESSION.clear()
     _SESSION.update({
         "active": False,
@@ -914,7 +1325,5 @@ def cancel(restore_assets=True):
         "generation": gen,
         "snapshot": None,
     })
-    if was_active and restore_assets and snapshot is not None:
-        _restore_asset_snapshot(am, snapshot)
     if was_active:
         _clear_field_display(am)

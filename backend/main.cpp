@@ -38,8 +38,40 @@ static QString pythonStartupText()
 
 #include <cstdio>
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+
+// A windowless process under sustained load counts as background work: Windows
+// moves it to the efficiency cores, where everything takes twice as long, and it
+// stays there. Measured on an i7-14700KF: a bare Python loop 46 ms before, 88 ms
+// after a few seconds of work, 45 ms with this opt-out. Looked up by name because
+// the call only exists from Windows 8 on.
+static void optOutOfPowerThrottling()
+{
+    struct ThrottlingState {
+        ULONG version;
+        ULONG controlMask;
+        ULONG stateMask;
+    };
+    constexpr int kProcessPowerThrottling = 4;
+    constexpr ULONG kExecutionSpeed = 1;
+    using SetInformation = BOOL(WINAPI *)(HANDLE, int, LPVOID, DWORD);
+    const HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
+    const auto set = kernel ? reinterpret_cast<SetInformation>(reinterpret_cast<void *>(
+                                  GetProcAddress(kernel, "SetProcessInformation")))
+                            : nullptr;
+    if (set) {
+        ThrottlingState state{1, kExecutionSpeed, 0};
+        set(GetCurrentProcess(), kProcessPowerThrottling, &state, sizeof(state));
+    }
+}
+#endif
+
 int main(int argc, char *argv[])
 {
+#ifdef Q_OS_WIN
+    optOutOfPowerThrottling();
+#endif
     if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) {
         qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
     }
