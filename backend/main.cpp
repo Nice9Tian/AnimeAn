@@ -134,17 +134,20 @@ int main(int argc, char *argv[])
         pythonHome = String(ANIMEAN_PYTHON_HOME);
     }
 
+    // The source folders come before the exe folder when they exist: on the
+    // development machine an edited script wins over the copy beside the exe.
+    // A release folder has no source tree and imports its own copies.
     StringList pythonPath;
     if (FileInfo::exists(Dir(String(ANIMEAN_PYFILE_DIR)).filePath(String("hello_world.py")))) {
         pythonPath << String(ANIMEAN_PYFILE_DIR);
     }
-    pythonPath << appDir;
     if (FileInfo::exists(Dir(String(ANIMEAN_PYTHONBIND_DIR)).filePath(String("animemodel.py")))) {
         pythonPath << String(ANIMEAN_PYTHONBIND_DIR);
     }
     if (FileInfo::exists(Dir(String(ANIMEAN_OPENTOONZ_TOOLS_DIR)).filePath(String("toonz_to_dict.py")))) {
         pythonPath << String(ANIMEAN_OPENTOONZ_TOOLS_DIR);
     }
+    pythonPath << appDir;
 
     StringList dllPath;
     dllPath << pythonHome << Dir(pythonHome).filePath(String("DLLs"));
@@ -157,7 +160,10 @@ int main(int argc, char *argv[])
     setWideEnv(L"PYTHONHOME", Dir::toNativeSeparators(pythonHome));
     setWideEnv(L"PYTHONPATH", Dir::toNativeSeparators(pythonPath.join(Latin1Char(';'))));
 
-    py::scoped_interpreter guard;
+    // No working-directory entry at the front of sys.path: started from Explorer
+    // the working directory is the exe folder, and that entry would put the
+    // copies beside the exe ahead of the source folders above.
+    py::scoped_interpreter guard(true, 0, nullptr, false);
 #endif
 
     WsServer ws(token);

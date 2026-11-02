@@ -954,17 +954,19 @@ int main(int argc, char *argv[])
         pythonHome = Dir(appDir).filePath(String(ANIMEAN_PYTHON_DIR_NAME));
     }
 
+    // Same order as backend/main.cpp: the source folders before the copies that
+    // sync_pyfiles.ps1 puts beside the exe, and no working-directory entry.
     StringList pythonPath;
     if (FileInfo::exists(Dir(String(ANIMEAN_PYFILE_DIR)).filePath(String("hello_world.py")))) {
         pythonPath << String(ANIMEAN_PYFILE_DIR);
     }
-    pythonPath << appDir;
     if (FileInfo::exists(Dir(String(ANIMEAN_PYTHONBIND_DIR)).filePath(String("animemodel.py")))) {
         pythonPath << String(ANIMEAN_PYTHONBIND_DIR);
     }
     if (FileInfo::exists(Dir(String(ANIMEAN_OPENTOONZ_TOOLS_DIR)).filePath(String("toonz_to_dict.py")))) {
         pythonPath << String(ANIMEAN_OPENTOONZ_TOOLS_DIR);
     }
+    pythonPath << appDir;
 
     StringList dllPath;
     dllPath << pythonHome << Dir(pythonHome).filePath(String("DLLs"));
@@ -977,7 +979,7 @@ int main(int argc, char *argv[])
     setEnvVar("PYTHONHOME", Dir::toNativeSeparators(pythonHome));
     setEnvVar("PYTHONPATH", Dir::toNativeSeparators(pythonPath.join(Char(u';'))));
 
-    py::scoped_interpreter guard;
+    py::scoped_interpreter guard(true, 0, nullptr, false);
     py::module_::import("animean_python");
 #endif
 

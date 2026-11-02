@@ -153,4 +153,4 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 | `dialog.result` | `{ id, action, value? }`，`action` 是 `button`、`accept`、`cancel`、`closed`、`error` | 一个对话框的回答，转成 Python 的 `dialog` 事件。兜底：`closed`（窗口被关）、`error`（页面出错）或 Python 处理时抛错，C++ 都从 `dialogs` 里删掉这一条并记下 id，Python 之后再发旧栈也带不回来 |
 | `dialog.request` | `{ kind, ... }`，如颜色控件的 `{ kind: "color", hook, name, value, method, menu? }` | 网页请 Python 开一个对话框，转成 `dialog` 事件（`action` 为 `request`）；没有 Python 接时返回错误 |
 
-Qt 版打开时先弹 New Project 对话框。现在由 `pyfile/file_menu.py` 在启动后的第一轮事件循环里开出 Canvas Size（`ui.call_later(0, …)`），它留在 `dialogs` 状态里，网页连上就显示。
+Qt 版打开时先弹 New Project 对话框。现在由 `pyfile/file_menu.py` 在启动后的第一轮事件循环里开出 Canvas Size（`ui.call_later(0, …)`），它留在 `dialogs` 状态里，网页连上就显示，网页重载也不会再问一次。后端那时若已经有打开的工程（`currentFilePath` 不空），不问；问题还挂着时有工程打开了（网页连上之前先 `project.open`），Python 在历史重置后的下一轮事件循环里撤回这个问题，留着那个工程。

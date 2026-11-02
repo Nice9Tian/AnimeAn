@@ -14,7 +14,7 @@
 | `closed_contour.md` | 闭合轮廓：两条轮廓的配对、配对只做一次、由轮廓算出的主画板轴线 | 2026-11-02 |
 | `fold_notes.md` | 折叠气泡：折返点判定、其他折叠的格点判定、常量 | 2026-11-02 |
 | `proxy_rect.md` | 代理矩形：两个矩形的角点对应、损失函数、λ、由纹理轴线带到主画板的轴线和边；未接入界面 | 2026-10-30 |
-| `layer_units.md` | 属性图层与 Auto-Mapping 单元：焦点语义、实时重跑、Advanced Settings、C++ 通用机制 | 2026-08-25 |
+| `layer_units.md` | 属性图层与 Auto-Mapping 单元：焦点语义、实时重跑、Advanced Settings、通用机制 | 2026-08-25 |
 
 不糊合、拓扑裁断、Third 空间、族、约束外轮廓等名词见 `../glossary.md`。
 

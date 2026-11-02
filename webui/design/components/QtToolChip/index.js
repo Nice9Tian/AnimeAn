@@ -1,5 +1,5 @@
-// One tool button of the Tools rail. The glyphs are the same strokes as drawGlyph
-// in childrenpanel/toolspanel.cpp, on a 24x24 sheet, inked with currentColor.
+// One tool button of the Tools rail. The glyphs keep the strokes of the Qt app's
+// tool buttons, on a 24x24 sheet, inked with currentColor.
 const line = 'fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"';
 
 const GLYPHS = {

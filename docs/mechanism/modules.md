@@ -35,7 +35,7 @@ AnimeAn.exe（src-tauri/src/lib.rs）
  3. 读后端 stdout 直到拿到 ANIMEAN_BACKEND_PORT=<端口>，拼出 ws://127.0.0.1:<端口>/?token=<token> 存下
  4. WebView2 加载 webui/index.html；webui/src/main.ts 装配 webui/design/ 场景与 webui/src/ui/app.js 面板工厂
  5. 网页调用 Tauri 命令 backend_endpoint 取回 { url }，连接这个地址
- 6. 后端推送全量初始 state；网页收到第一个 window 状态后弹出 New Project 对话框询问画布尺寸
+ 6. 后端推送全量初始 state，其中 dialogs 里是 Python 启动时开出的 New Project（file_menu.py；后端已经开着工程时不开），网页按它开对话框窗口询问画布尺寸
 ```
 
 ### 2. 后端启动与 Python 装载顺序
@@ -44,9 +44,9 @@ AnimeAn.exe（src-tauri/src/lib.rs）
 AnimeAnBackend.exe（backend/main.cpp）
  1. 解析 --port 与 --token；调 AnimeTheme::mode() 从 %APPDATA%\AnimeAn\settings.json 读取保存的深 / 浅色模式
  2. 定位 Python：PYTHONHOME = exe 旁 python312\，没有则用构建时记下的 tools\python312
-    PYTHONPATH = 源码 pyfile\（存在时最优先）→ exe 目录 → pythonbind\ → opentoonz_tools\
+    PYTHONPATH = 源码 pyfile\ → pythonbind\ → opentoonz_tools\（各自存在时）→ exe 目录
     PATH 前置 python312\ 与 python312\DLLs
- 3. 启动嵌入解释器（py::scoped_interpreter）
+ 3. 启动嵌入解释器（py::scoped_interpreter，不把工作目录放上 sys.path）
  4. 构造 WsServer 与 BackendSession（内含 AnimeanBusiness 及 main / child 两块 PaintOpenGLWidget 画板，注册 ui 回调）
  5. BackendSession::initializePythonStartup()：
     a. 注册 ui 回调；syncEmbeddedPythonState() 往 __main__ 写 main_model、child_model、model、active_view、ui、current 等
@@ -58,7 +58,7 @@ AnimeAnBackend.exe（backend/main.cpp）
  7. WsServer::listen 监听 127.0.0.1，向 stdout 打印 ANIMEAN_BACKEND_PORT=<端口>，进入 EventLoop::instance().exec()
 ```
 
-装载顺序有意义：`toolcontrol`、`python_hooks` 先于一切；`tool_colors` 先于 `palette_box`（后者从前者的缓存取种子）；`window_manager` 与 `fill_tool` 先于 `layer_tool_policy`。要定顺序就把模块加进 `initalize.py` 的 `PYTHON_FILE_MODULES`；没列的不用登记，排在后面按文件名导入（`_` 开头的不导入）。开发机上源码 `pyfile\` 排在 exe 目录之前，所以改脚本不重建也生效；例外是 `initalize.py`、`animemodel.py`、`toonz_to_dict.py`，见 `build_deploy.md`。发布的文件夹没有源码树，从 exe 旁加载。`bind_test()` 会改场景，只能从调试窗手动跑，启动不跑。
+装载顺序有意义：`toolcontrol`、`python_hooks` 先于一切；`tool_colors` 先于 `palette_box`（后者从前者的缓存取种子）；`window_manager` 与 `fill_tool` 先于 `layer_tool_policy`。要定顺序就把模块加进 `initalize.py` 的 `PYTHON_FILE_MODULES`；没列的不用登记，排在后面按文件名导入（`_` 开头的不导入）。开发机上源码的 `pyfile\`、`pythonbind\`、`opentoonz_tools\` 排在 exe 目录之前，`initalize.py` 也先在源码目录里找，所以改脚本不重建也生效，见 `build_deploy.md`。发布的文件夹没有源码树，从 exe 旁加载。`bind_test()` 会改场景，只能从调试窗手动跑，启动不跑。
 
 ## C++ 模块
 
