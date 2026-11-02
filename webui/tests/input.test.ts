@@ -220,6 +220,25 @@ describe("Board Input conversions & event binding", () => {
       dpr: 1,
     });
 
+    // 7. 按住左键时再按右键、再松开左键：浏览器只发 pointermove（button 是变化的那个键），
+    //    转成按下和松开，右键才能在拖动中取消，先松开左键也能结束拖动
+    const chord = (button: number, buttons: number) => listeners.get("pointermove")?.({
+      pointerId: 7, clientX: 130, clientY: 90, button, buttons,
+      shiftKey: false, ctrlKey: false, altKey: false, timeStamp: 1020,
+      getCoalescedEvents: () => [],
+    });
+    const before = messages.length;
+    chord(2, 3);
+    assert.deepEqual(messages.slice(before + 1).map((m: any) => [m.kind, m.button, m.buttons]),
+                     [["press", QT_RIGHT_BUTTON, QT_LEFT_BUTTON | QT_RIGHT_BUTTON]]);
+    const mid = messages.length;
+    chord(0, 2);
+    assert.deepEqual(messages.slice(mid + 1).map((m: any) => [m.kind, m.button, m.buttons]),
+                     [["release", QT_LEFT_BUTTON, QT_RIGHT_BUTTON]]);
+    const plain = messages.length;
+    chord(-1, 2);
+    assert.equal(messages.length, plain + 1);      // a plain move is only a move
+
     handle.destroy();
     assert.equal(listeners.size, 0);
   });

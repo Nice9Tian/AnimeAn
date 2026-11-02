@@ -380,16 +380,13 @@ def _write_records(scene, records):
     script_store.write(scene, STORE_KEY, {"strokes": records} if records else None)
 
 
-def _ends(segs):
-    return [list(segs[0][0])] + [list(c[3]) for c in segs]
-
-
 def _matches_record(cubics, record):
+    """The stroke is exactly the result the record wrote - every control
+    point, so a handle another tool moved (ends kept) is no longer ours."""
     result = record.get("result") or []
-    ends = [cubics[0][0]] + [c[3] for c in cubics]
-    if len(ends) != len(result):
+    if len(cubics) != len(result):
         return False
-    return all(bezier.dist(p, q) <= MATCH_EPS for p, q in zip(ends, result))
+    return all(bezier.dist(p, q) <= MATCH_EPS for a, b in zip(cubics, result) for p, q in zip(a, b))
 
 
 def _rounds_from(record):
@@ -601,15 +598,22 @@ def _finish(view, session, scene):
             line["index"], [_original_object(line)])
         _refresh()
         return
-    records = [r for r in _records(scene) if r is not line["record"]
-               and not (line["record"] and r.get("uid") == line["record"].get("uid"))]
+    uid = (line["record"] or {}).get("uid")
+    records = [r for r in _records(scene) if not (uid and r.get("uid") == uid)]
     if drag["rounds"]:
-        records.append({"uid": (line["record"] or {}).get("uid") or uuid.uuid4().hex,
+        records.append({"uid": uid or uuid.uuid4().hex,
                         "cell": line["cell"], "closed": line["closed"],
                         "base": [[list(p) for p in c] for c in line["base"]],
                         "rounds": {str(j): r for j, r in drag["rounds"].items()},
-                        "result": _ends(drag["result"])})
+                        "result": [[list(p) for p in c] for c in drag["result"]]})
     _write_records(scene, records)
+    # Fill layers that follow this line layer re-trace inside the same entry,
+    # the way they do after a pen stroke (pyfile/fill_tool.py).
+    try:
+        import fill_tool
+        fill_tool.retrace_after_edit(view, line["layer"])
+    except Exception:
+        pass
     _refresh()
     try:
         _animean().ui.history_commit("Round Corner", view)
@@ -779,6 +783,10 @@ def _on_handle(message):
         session["cursor"] = point
         session["target"] = _find_target(session, _cached_lines(session, scene, row)["grips"])
     elif phase == "pick":
+        if session.get("drag") is not None:
+            # A drag whose release never arrived: keep what it made rather
+            # than leave the model changed with no history entry.
+            _finish(view, session, scene)
         session["cursor"] = point
         session["cache"] = None
         target = _find_target(session, _cached_lines(session, scene, row)["grips"])
@@ -818,16 +826,23 @@ def _on_option(message):
 
 
 def _model_changed(*_args):
-    for session in _SESSIONS.values():
+    """Lines changed, or the frame or layer did: the corners are re-read on
+    the next move, and the old marks go now. A drag in progress keeps its own."""
+    for view, session in list(_SESSIONS.items()):
         session["cache"] = None
         session["target"] = None
+        if session.get("drag") is None:
+            _push_overlay(view, session)
 
 
 def _on_history(message):
-    for session in _SESSIONS.values():
+    """Undo or redo replaced the model: any drag is over, and what is shown is
+    re-read on the next move."""
+    for view, session in list(_SESSIONS.items()):
         session["drag"] = None
         session["cache"] = None
         session["target"] = None
+        _push_overlay(view, session)
 
 
 def register_hooks():

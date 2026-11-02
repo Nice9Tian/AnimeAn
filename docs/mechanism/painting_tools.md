@@ -35,8 +35,8 @@
 - 注册：`extra_tools.py` 里 `curve`，属性 `curve_tool`，宿主是 Arrow（Painting 页）。左键是 `pick`，右键是 `context`，光标是 `hover` / `leave`（见 `hook_events.md`）。
 - 平滑：向心 Catmull-Rom（α = 0.5），每段一个三次 Bezier；开放端取进入相邻切向的抛物线。新锚点只改它前面一段。Hobby 样条归档在 `../../old_history/hobby_spline.js`。
 - 笔画：两个锚点起就是当前层里的一条真实笔画，之后原地重写（保留绘制顺序），每个锚点 `history_commit("Curve")` 一次；颜色取 `tool_colors` 里 Pen 的颜色，粗细是 Pen 的 Width（`pen_width` 选项事件和建选项面板时传入的 state）。选项面板不放颜色行：选颜色会让 C++ 武装 Pen。
-- 锚点记在场景 scriptData 键 `curve_tool`：每条线一条记录（uid、所在格的 `(asset_index, frame_id)`、锚点、是否闭合）；记录按几何认笔画——路径正好穿过这些锚点的那一条，不认下标。笔画被擦、切、改过就对不上，悬停时跳过，下次在同一格写线时删掉。悬停不写文档。
-- 撤销：`historyrestore` 后正在画的线按恢复后的记录接着画（Ctrl+Z 收回最后一个锚点）；记录或笔画没了就结束。换帧结束这条线。
+- 锚点记在场景 scriptData 键 `curve_tool`：每条线一条记录（uid、所在格的 `(asset_index, frame_id)`、锚点、是否闭合）；记录按几何认笔画——路径的每个控制点都等于这些锚点算出的曲线的那一条，不认下标。笔画被擦、切、改过（哪怕只动了一个手柄）就对不上，悬停时跳过，下次在同一格写线时删掉。悬停不写文档。续画时保留这条线原来的颜色和粗细；每次写线前确认图层仍可画、还是开始画时那一层（`layer_id_at`），不是就结束这条线。
+- 撤销：`historyrestore` 后正在画的线按恢复后的记录接着画，方向和撤销前一致（Ctrl+Z 收回最后一个锚点）；撤到线还不是笔画时留下第一个锚点；笔画没了就结束。换帧结束这条线。写线后让跟随这一层的填充层重描（`fill_tool.retrace_after_edit`），并进同一条历史。
 - 吸附：`SNAP_PX` = 16 屏幕像素，吸住后放宽到 `STICK` = 1.35 倍；离上一个锚点 `MIN_GAP_PX` = 3 屏幕像素以内的点击不放点；Alt 或 Options 的 Snap 关掉不吸。接线只在同一格里。
 - 显示：全部经 `overlay_stack`（owner `curve_tool`），项都 `removable = False`；预览只画下一次点击会改的一段和新的一段。
 
@@ -47,7 +47,7 @@
 - 圆角：接点 j 记两段弧长 `L1`、`L2`、控制线抓的是哪一端 `s`、拖动时的形状 `k`；两条腿用 `bezier.cubic_segment` 精确切片（共享轮子，不重拟合），切点之间补一段三次，手柄长 k × 切掉长度。两个圆角切同一段时之间留 `GAP` = 0.5 画布像素。
 - 控制线：两个切点的弦，钉在角尖，两端是 角尖 ± 弦 / 2；抓着的一端等于鼠标。直腿闭式解 `端点 − 角尖 = s (L1 e1 + L2 e2) / 2`（e1 = −u1，e2 = u2），弯腿用 Levenberg-Marquardt 在真实的弦上解，拖动时从上一刻接着解；够不到的位置停在最近处。Shift 两边等长。
 - 吸附点：拖动中角尖和起点各是一个停靠点，半径 `SNAP_PX` = 16 屏幕像素；按下时就在范围里的停靠点要先离开一次才生效。吸到起点或新角吸回角尖，松手时笔画按原命令放回、不提交历史。
-- 写回：每次移动 `replace_stroke_with_pieces` 原地换（保留 id、颜色、线宽、线型），松手 `history_commit("Round Corner")` 一次；scriptData 键 `round_corner` 记每条倒过圆角的笔画：所在格、未倒圆角的段、各接点的圆角、结果路径的端点序列（用来认笔画）。认不出的笔画就按它现在的尖角处理。
+- 写回：每次移动 `replace_stroke_with_pieces` 原地换（保留 id、颜色、线宽、线型），松手先让跟随这一层的填充层重描，再 `history_commit("Round Corner")` 一次；scriptData 键 `round_corner` 记每条倒过圆角的笔画：所在格、未倒圆角的段、各接点的圆角、结果路径的全部控制点（用来认笔画）。认不出的笔画（包括被别的工具动过一个手柄的）就按它现在的尖角处理。松手没到达就开始下一次按下时，上一次拖动按松手收尾。
 - 显示：经 `overlay_stack`（owner `round_corner_tool`），只标光标 `NEAR_PX` = 120 屏幕像素以内的角。
 
 ## Repulsion Pad（`repulsion_tool.py`）

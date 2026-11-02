@@ -432,6 +432,8 @@ private:
     void cancelActiveOverlayDrag();
     void stopOverlayDragMoveTimer();
     void flushPendingOverlayDragMove();
+    bool hoverHookWanted() const;
+    void flushPendingHover();
     // Emits "framechange" when the model's frame moved past the last frame
     // Python was told about - regardless of who moved it.
     void notifyFrameChangedIfNeeded();
@@ -623,6 +625,11 @@ private:
     std::unique_ptr<AnimeCore::Timer> m_overlayDragMoveTimer;
     AnimeCore::PointF m_pendingOverlayDragPos;
     AnimeCore::KeyboardModifiers m_pendingOverlayDragModifiers = AnimeCore::NoModifier;
+    // The hover the throttle swallowed last: delivered at the end of the
+    // window, so whatever a tool shows under a pointer that stopped is where
+    // the pointer actually stopped.
+    std::unique_ptr<AnimeCore::Timer> m_hoverHookTimer;
+    AnimeCore::KeyboardModifiers m_pendingHoverModifiers = AnimeCore::NoModifier;
     // The frame Python was last told about via "framechange". The frame lives
     // on the model and can be mutated behind the widget's back (ui.set_current,
     // addFrame, project load), so the notification baseline must be the

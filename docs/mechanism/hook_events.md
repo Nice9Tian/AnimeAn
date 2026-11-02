@@ -6,7 +6,7 @@
 
 | 谁 ↔ 谁 | 方式 |
 |---|---|
-| C++ → Python | **hook 事件**：C++ 组一个 message dict 调 `python_hooks.dispatch`。事件族：绘制交互事件（`update`、`linefinish`、`erasefinish`、`deletefinish`、`fillfinish`、`movefinish`）；前置请求（`fillrequest`、`visibility`，Python 置 `handled` 则 C++ 不做内建行为）；工具面（`handle`：arm / pick / press / move / release / cancel / hover / view / context / leave，带修饰键、缩放、颜色，`pick` 可回 `grab` 认领拖拽；`hover` 发给 Connect、Transfer 和任何已武装的脚本工具，带修饰键；脚本工具武装时右键按下发 `context`（拖动中带拖动的 id），光标离开画板发 `leave`，内建工具照旧不管右键）；界面（`option`、`menu`、`layermenu`、`viewbutton`、`overlayremove`、`overlayaction`、`pad`）；状态（`framechange`、`layerchange`、`onion`、`historyrestore`）；脚本工具（`extra`）。Python 用 `ui.set_hook_events` 推订阅掩码，C++ 对无人订阅的事件早退；`update`、`hover` 与覆盖层拖动的 `move` 按 33ms 节流（覆盖层拖动在窗口结束时补发被跳过的末尾 `move`），`linefinish` 是唯一保证到达的绘制事件 |
+| C++ → Python | **hook 事件**：C++ 组一个 message dict 调 `python_hooks.dispatch`。事件族：绘制交互事件（`update`、`linefinish`、`erasefinish`、`deletefinish`、`fillfinish`、`movefinish`）；前置请求（`fillrequest`、`visibility`，Python 置 `handled` 则 C++ 不做内建行为）；工具面（`handle`：arm / pick / press / move / release / cancel / hover / view / context / leave，带修饰键、缩放、颜色，`pick` 可回 `grab` 认领拖拽；`hover` 发给 Connect、Transfer 和任何已武装的脚本工具，带修饰键；节流吞掉的最后一次 hover 在窗口结束时补发；脚本工具武装时右键按下发 `context`（拖动中带拖动的 id），光标离开画板发 `leave`，内建工具照旧不管右键。按住一个键时再按下或松开另一个键，浏览器只发带 `button` 的 pointermove，网页端 `webui/src/board/input.ts` 把它补成 press / release）；界面（`option`、`menu`、`layermenu`、`viewbutton`、`overlayremove`、`overlayaction`、`pad`）；状态（`framechange`、`layerchange`、`onion`、`historyrestore`）；脚本工具（`extra`）。Python 用 `ui.set_hook_events` 推订阅掩码，C++ 对无人订阅的事件早退；`update`、`hover` 与覆盖层拖动的 `move` 按 33ms 节流（覆盖层拖动在窗口结束时补发被跳过的末尾 `move`），`linefinish` 是唯一保证到达的绘制事件 |
 | Python → C++ | `animean_python` 绑定：模型操作（`SceneModel` / `VectorImage`）、几何（`vectorlogic`）、`ui` 门面（刷新与冻结、覆盖层、绘制颜色、光标、工具锁定、填充绘制模式、历史提交 / 撤销、窗口列表 / 显示 / 选页、位移预览、斥力板回写、绘制参数、主题、订阅掩码、刷新选项面板、打开设置窗） |
 | Python 全局 | `__main__` 里的 `model`、`main_model`、`child_model`、`active_view`、画布尺寸，随选择变化同步。`animean_python.get_scene()` 返回的是信息字典（`sceneName`、`scene`），不是模型对象 |
 | 声明式界面 | 选项面板 JSON（内建工具在 `childrenpanel/tool_controls/*.json` 与 `toolcontrol.options_for_tool`，脚本工具由 `toolcontrol.options_for_extra_tool_json` 生成；控件类型 slider / list / check / button / color / subwindow / settings，`visible_when` 联动）；菜单 `register_menu`（`items` 可为可调用，打开时求值；`host` 指定挂主窗口还是纹理板的菜单栏，同名不同宿主是两个菜单）；设置窗 `register_settings`；视图按钮 `register_view_button`（目前无人注册）；图层右键 `register_menu_provider`（上下文带 `layer_id`、`tag`、`owner_group`、`owner_tag`；条目支持 `settings` / `separator`） |
@@ -31,7 +31,7 @@
 
 - `ui.set_locked_tools(view, tools)`：拒绝一组工具、图标变暗、退回 Arrow；Arrow 永不锁。
 - `ui.set_fill_paint_mode(view, on)`：允许画笔 / 橡皮交互事件落在 Fill 列上，橡皮擦填充区域。
-- 两者都不知道"图层"是什么，谁锁什么由 `pyfile/layer_tool_policy.py` 决定，每次换层整份重推。
+- 两者都不知道"图层"是什么，谁锁什么由 `pyfile/layer_tool_policy.py` 决定，每次换层整份重推。锁表里也可以写脚本工具的名字（`extra_tools.py` 的 `name`）：被锁的脚本工具点不动，已经选中的退回 Arrow（`AnimeanBusiness::refreshToolLockState` 同时查基础工具和脚本工具名）。
 
 ## Python 绑定的 API
 

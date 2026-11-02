@@ -78,7 +78,7 @@ class Scene:
         self.data = ""
 
     def get_structure(self):
-        return {"layers": [dict(l) for l in self.layers]}
+        return {"layers": [dict(l) for l in self.layers], "frame_count": 1}
 
     def image_at(self, row, layer, create=False):
         return self.images.setdefault((row, layer), Image())
@@ -93,6 +93,12 @@ class Scene:
 
     def script_data(self):
         return self.data
+
+    def current_frame(self):
+        return 0
+
+    def layer_id_at(self, layer):
+        return f"layer-{layer}"      # no layer here has tracked fills as children
 
     def set_script_data(self, text):
         self.data = text
@@ -283,6 +289,42 @@ curve("hover", 262, 702)
 assert ct._SESSIONS["main"]["target"] is None
 print("5) undo keeps drawing from the restored line; an erased line is forgotten")
 
+# 5b) Review fixes: undo after resuming from the head keeps drawing from the
+#     head; undoing the second anchor leaves the first placed; a carried-on
+#     line keeps its colour; a handle moved by another tool (anchors kept)
+#     means the line is no longer offered.
+scene = Scene()
+__main__.main_model = scene
+curve("pick", 100, 100)
+curve("pick", 200, 50)
+curve("pick", 300, 100)
+curve("context")
+strokes(scene)[0].color = (200, 0, 0, 255)            # drawn red earlier
+curve("hover", 102, 102)
+curve("pick", 102, 102)                                # resume at the head (100, 100)
+snap = scene.snapshot()
+curve("pick", 40, 160)
+assert strokes(scene)[0].color == (200, 0, 0, 255)
+scene.restore(snap)
+ct._on_history({"event": "historyrestore", "view": "main"})
+assert ct._SESSIONS["main"]["active"]["anchors"][-1] == (100, 100)
+curve("pick", 60, 200)
+assert anchors_of(strokes(scene)[0]) == [(300, 100), (200, 50), (100, 100), (60, 200)]
+curve("context")
+curve("pick", 500, 500)
+snap = scene.snapshot()
+curve("pick", 600, 450)
+scene.restore(snap)
+ct._on_history({"event": "historyrestore", "view": "main"})
+assert ct._SESSIONS["main"]["active"]["anchors"] == [(500, 500)]
+curve("context")
+edited = strokes(scene)[0]
+cmd = next(c for c in edited.commands if c["type"] == "cubic")
+cmd["control1"] = {"x": 150.0, "y": 20.0}
+curve("hover", 62, 202)
+assert ct._SESSIONS["main"]["target"] is None
+print("5b) undo direction, lone first anchor, colour kept, edited lines dropped")
+
 
 # --- Round Corner -------------------------------------------------------------
 
@@ -410,6 +452,20 @@ rnd("context", 400, 330, handle="round:drag")
 assert len(rc.segments_of(strokes(scene)[0].commands)[0]) == 4
 rnd("release", 400, 330, handle="round:drag")
 print("9) regrab, start and tip snaps, right-click cancel")
+
+# 9b) A rounded stroke whose handle another tool moved (ends kept) is not
+#     treated as rounded any more: its fillet cannot be re-adjusted from the
+#     stale record, which would undo that edit.
+rnd("hover", 550, 150)
+rnd("pick", 550, 150)
+for k in range(1, 6):
+    rnd("move", 550 + 6 * k, 150, handle="round:drag")
+rnd("release", 580, 150, handle="round:drag")
+assert 2 in rc._lines(scene, 0)[0]["rounds"]       # the corner at (550, 150)
+fillet_cmd = [c for c in strokes(scene)[0].commands if c["type"] == "cubic"][3]
+fillet_cmd["control1"] = {"x": fillet_cmd["control1"]["x"] + 9.0, "y": fillet_cmd["control1"]["y"]}
+assert rc._lines(scene, 0)[0]["rounds"] == {}
+print("9b) a stroke edited elsewhere is no longer re-adjusted from its record")
 
 # 10) Strokes another tool owns (a property) are never offered.
 guide = polyline([(100, 600), (200, 500), (300, 600)])

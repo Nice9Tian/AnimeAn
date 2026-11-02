@@ -202,37 +202,46 @@ def _cell_key(scene, layer, row):
     return [int(cell.get("asset_index", -1)), int(cell.get("frame_id", -1))]
 
 
-def _stroke_ends(stroke):
-    """The anchor chain a stroke's path runs through: its move point and the
-    end point of every segment, or None for anything that is not one path."""
+def _stroke_cubics(stroke):
+    """The stroke's one path as cubics, or None for anything else. A span
+    the binding reports as a line is its straight cubic (control points on
+    the thirds), which is what two anchors make."""
     commands = stroke.get("commands") or []
     if not commands or commands[0].get("type") != "move":
         return None
-    out = []
+    out, cur = [], None
     for command in commands:
         kind = command.get("type")
-        if kind == "close":
-            continue
         to = command.get("to")
-        if kind == "move" and out:
-            return None   # a second subpath: not a chain this tool made
         if not isinstance(to, dict):
             return None
-        out.append((float(to["x"]), float(to["y"])))
+        end = (float(to["x"]), float(to["y"]))
+        if kind == "move":
+            if cur is not None:
+                return None   # a second subpath: not a line this tool made
+        elif kind == "line":
+            out.append(bezier.line_cubic(cur, end))
+        elif kind == "cubic":
+            c1, c2 = command["control1"], command["control2"]
+            out.append((cur, (float(c1["x"]), float(c1["y"])), (float(c2["x"]), float(c2["y"])), end))
+        else:
+            return None
+        cur = end
     return out
 
 
-def _matches(chain, record):
-    anchors = record["anchors"]
-    expected = list(anchors) + ([anchors[0]] if record.get("closed") else [])
-    if chain is None or len(chain) != len(expected):
+def _matches(cubics, record):
+    """The stroke is exactly the curve the record draws - every control point,
+    so a handle moved by another tool (anchors kept) is no longer ours."""
+    spans = catmull_rom(record["anchors"], bool(record.get("closed")))
+    if cubics is None or len(cubics) != len(spans):
         return False
-    return all(bezier.dist(p, q) <= MATCH_EPS for p, q in zip(chain, expected))
+    return all(bezier.dist(p, q) <= MATCH_EPS for a, b in zip(cubics, spans) for p, q in zip(a, b))
 
 
 def _locate(strokes, record):
     for index, stroke in enumerate(strokes):
-        if _matches(_stroke_ends(stroke), record):
+        if _matches(_stroke_cubics(stroke), record):
             return index
     return None
 
@@ -360,16 +369,35 @@ def _commit(view, label="Curve"):
         pass
 
 
+def _layer_id(scene, layer):
+    try:
+        return scene.layer_id_at(layer)
+    except Exception:
+        return None
+
+
+def _retrace_fills(view, layer):
+    """Fill layers that follow this line layer re-trace inside the same
+    history entry, the way they do after a pen stroke (pyfile/fill_tool.py)."""
+    try:
+        import fill_tool
+        fill_tool.retrace_after_edit(view, layer)
+    except Exception:
+        pass
+
+
 def _write_line(view, scene, active, label="Curve"):
     """Put the active line into the model and its record into scriptData,
-    then commit one history entry. Returns False when the line's stroke is
-    no longer where its record says (the session must end)."""
+    then commit one history entry. Returns False when the line can no longer
+    be written - its layer was locked, hidden or moved, or its stroke is not
+    where its record says - and the session must end."""
     row, layer = active["row"], active["layer"]
+    if not _layer_writable(scene, layer) or _layer_id(scene, layer) != active.get("layer_id"):
+        return False
     anchors = [tuple(p) for p in active["anchors"]]
-    stroke = _make_stroke(anchors, active.get("closed", False), _pen_color(), _STATE["width"])
     image = scene.image_at(row, layer, True)
     if active.get("uid") is None:
-        image.add_stroke_object(stroke)
+        image.add_stroke_object(_make_stroke(anchors, active.get("closed", False), _pen_color(), _STATE["width"]))
         active["uid"] = uuid.uuid4().hex
         active["cell"] = _cell_key(scene, layer, row)
     else:
@@ -378,11 +406,17 @@ def _write_line(view, scene, active, label="Curve"):
         index = _locate(strokes, previous) if previous else None
         if index is None:
             return False
-        image.replace_stroke_with_pieces(index, [stroke])
+        # A line carried on keeps its own colour and width.
+        old = strokes[index]
+        color = old.get("color") or {}
+        rgba = (int(color.get("r", 0)), int(color.get("g", 0)), int(color.get("b", 0)), int(color.get("a", 255)))
+        image.replace_stroke_with_pieces(index, [_make_stroke(anchors, active.get("closed", False), rgba,
+                                                              float(old.get("width", _STATE["width"])))])
     record = {"uid": active["uid"], "cell": active["cell"],
               "anchors": [list(p) for p in anchors], "closed": bool(active.get("closed"))}
     _store_record(scene, record, scene.cell_to_dict(layer, row, False, 4.0)["image"]["strokes"])
     active["written"] = record
+    _retrace_fills(view, layer)
     _commit(view, label)
     return True
 
@@ -397,8 +431,9 @@ def _interrupt(view, session):
 def _start_or_place(view, session, scene, row, layer, point):
     active = session.get("active")
     if active is None:
-        session["active"] = {"layer": layer, "row": row, "anchors": [point],
-                             "closed": False, "uid": None, "cell": None, "written": None}
+        session["active"] = {"layer": layer, "layer_id": _layer_id(scene, layer), "row": row,
+                             "anchors": [point], "closed": False, "uid": None, "cell": None,
+                             "written": None}
         return
     if bezier.dist(point, active["anchors"][-1]) < _px(session, MIN_GAP_PX):
         return
@@ -414,9 +449,9 @@ def _resume(session, scene, target, row):
     anchors = [tuple(p) for p in record["anchors"]]
     if target["end"] == "head":
         anchors.reverse()       # always draw on from the tail; same curve backwards
-    session["active"] = {"layer": target["layer"], "row": row, "anchors": anchors,
-                         "closed": False, "uid": record["uid"], "cell": record["cell"],
-                         "written": record}
+    session["active"] = {"layer": target["layer"], "layer_id": _layer_id(scene, target["layer"]),
+                         "row": row, "anchors": anchors, "closed": False, "uid": record["uid"],
+                         "cell": record["cell"], "written": record}
 
 
 def _merge(view, session, scene, target):
@@ -661,36 +696,50 @@ def _on_option(message):
 
 def _on_history(message):
     """Undo or redo replaced the model. A line being drawn carries on from
-    whatever its record says now (Ctrl+Z took the last anchor back); a line
-    that no longer exists ends the drawing."""
+    whatever its record says now, in the direction it was being drawn (Ctrl+Z
+    took the last anchor back); undoing the second anchor leaves the first one
+    placed, as before the line became a stroke; a line that is gone ends."""
     for view, session in list(_SESSIONS.items()):
-        active = session.get("active")
         session["target"] = None
-        if active is None:
-            continue
-        if active.get("uid") is None:
-            continue    # a lone anchor never touched the model
+        active = session.get("active")
         try:
             scene = _scene_model(view)
-            record = _record_by_uid(scene, active["uid"])
-            strokes = scene.cell_to_dict(active["layer"], active["row"], False, 4.0)["image"]["strokes"]
-            if record is None or record.get("closed") or _locate(strokes, record) is None:
-                session["active"] = None
-            else:
-                anchors = [tuple(p) for p in record["anchors"]]
-                if bezier.dist(anchors[-1], active["anchors"][-1]) > MATCH_EPS \
-                        and bezier.dist(anchors[0], active["anchors"][-1]) <= MATCH_EPS:
-                    anchors.reverse()
-                active.update(anchors=anchors, written=record)
-            _push_overlay(view, session, _lines_in_row(scene, active["row"]))
         except Exception:
-            session["active"] = None
+            continue
+        if active is not None and active.get("uid") is not None:
+            try:
+                record = _record_by_uid(scene, active["uid"])
+                strokes = scene.cell_to_dict(active["layer"], active["row"], False, 4.0)["image"]["strokes"]
+                if record is None:
+                    # The line never existed in the restored state: back to its
+                    # lone first anchor.
+                    active.update(anchors=active["anchors"][:1], uid=None, cell=None, written=None)
+                elif record.get("closed") or _locate(strokes, record) is None:
+                    session["active"] = None
+                else:
+                    anchors = [tuple(p) for p in record["anchors"]]
+                    drawn = [tuple(p) for p in active["anchors"][:len(anchors)]]
+                    backwards = list(reversed(anchors))
+                    if all(bezier.dist(p, q) <= MATCH_EPS for p, q in zip(drawn, backwards)):
+                        anchors = backwards   # it was being drawn on from its head
+                    active.update(anchors=anchors, written=record)
+            except Exception:
+                session["active"] = None
+        row = (session.get("active") or {}).get("row", scene.current_frame())
+        _push_overlay(view, session, _lines_in_row(scene, row))
 
 
 def _on_frame(message):
+    """A new frame: the line in progress ends, and what is shown is this
+    frame's lines."""
+    row = int((message.get("cell") or {}).get("row", 0))
     for view, session in list(_SESSIONS.items()):
         session["active"] = None
         session["target"] = None
+        try:
+            _push_overlay(view, session, _lines_in_row(_scene_model(view), row))
+        except Exception:
+            pass
 
 
 def register_hooks():

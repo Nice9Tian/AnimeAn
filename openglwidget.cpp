@@ -247,6 +247,23 @@ void PaintOpenGLWidget::stopOverlayDragMoveTimer()
     }
 }
 
+bool PaintOpenGLWidget::hoverHookWanted() const
+{
+    return (m_tool == Tool::Connect || m_tool == Tool::Transfer || !m_activePythonTool.isEmpty())
+           && editingAllowed();
+}
+
+void PaintOpenGLWidget::flushPendingHover()
+{
+    // The pointer may have left, pressed or changed tools since: only a
+    // hover that still makes sense is delivered.
+    if (!m_hasHoverPos || !hoverHookWanted()) {
+        return;
+    }
+    m_hoverHookThrottle.restart();
+    sendPythonHandleMessage(String("hover"), String(), m_hoverPos, m_pendingHoverModifiers);
+}
+
 void PaintOpenGLWidget::flushPendingOverlayDragMove()
 {
     if (m_activeOverlayDrag.isEmpty()) {
@@ -983,6 +1000,9 @@ void PaintOpenGLWidget::leaveEvent(Event *event)
     }
     // A script tool that draws something after the pointer (a preview, a
     // snap hint) hears that the pointer is gone, so it can take that down.
+    if (m_hoverHookTimer) {
+        m_hoverHookTimer->stop();
+    }
     if (!m_activePythonTool.isEmpty()) {
         sendPythonHandleMessage(String("leave"), String(), PointF());
     }
@@ -3476,6 +3496,9 @@ void PaintOpenGLWidget::sendOverlayActionMessage(const String &overlayId,
 void PaintOpenGLWidget::mousePressEvent(MouseEvent *event)
 {
     m_lastMouseModifiers = event->modifiers();
+    if (m_hoverHookTimer) {
+        m_hoverHookTimer->stop();   // a press ends the hover; no late one after it
+    }
     if (m_playbackActive || m_swallowNextPress) {
         // While prerendered frames are on screen a click means "stop
         // playing", not "draw into the frame you cannot currently see".
@@ -3693,12 +3716,29 @@ void PaintOpenGLWidget::mouseMoveEvent(MouseEvent *event)
         // tablet rate, and carry the modifier keys so a held key can change
         // what the hover offers. A content-locked board gets no hints -
         // presses are refused there, so advertising targets lies.
-        if ((m_tool == Tool::Connect || m_tool == Tool::Transfer || !m_activePythonTool.isEmpty())
-            && editingAllowed()
-            && (!m_hoverHookThrottle.isValid()
-                || m_hoverHookThrottle.elapsed() >= kUpdateHookIntervalMs)) {
-            m_hoverHookThrottle.restart();
-            sendPythonHandleMessage(String("hover"), String(), m_hoverPos, event->modifiers());
+        if (hoverHookWanted()) {
+            if (!m_hoverHookThrottle.isValid()
+                || m_hoverHookThrottle.elapsed() >= kUpdateHookIntervalMs) {
+                if (m_hoverHookTimer) {
+                    m_hoverHookTimer->stop();
+                }
+                m_hoverHookThrottle.restart();
+                sendPythonHandleMessage(String("hover"), String(), m_hoverPos, event->modifiers());
+            } else {
+                // Swallowed by the throttle: the last position still arrives,
+                // at the end of the window.
+                m_pendingHoverModifiers = event->modifiers();
+                if (!m_hoverHookTimer) {
+                    m_hoverHookTimer = std::make_unique<Timer>();
+                    m_hoverHookTimer->setSingleShot(true);
+                    m_hoverHookTimer->timeout.connect([this]() { flushPendingHover(); });
+                }
+                if (!m_hoverHookTimer->isActive()) {
+                    const std::int64_t remaining =
+                        std::max<std::int64_t>(1, kUpdateHookIntervalMs - m_hoverHookThrottle.elapsed());
+                    m_hoverHookTimer->start(int(remaining));
+                }
+            }
         }
         update();
         PaintBoardBase::mouseMoveEvent(event);

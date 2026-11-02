@@ -383,6 +383,13 @@ def _topology_changed(message):
         _RETRACE_GUARD["depth"] -= 1
 
 
+def retrace_after_edit(view, layer):
+    """For a tool that rewrote strokes of `layer` itself (no linefinish for
+    it): the layer's tracked fills follow, before the tool commits, so they
+    land in the same history entry."""
+    _topology_changed({"view": view, "cell": {"layer": int(layer)}})
+
+
 # --- context menu: cut the link, keep the artwork ---------------------------
 
 def _fill_menu_items(context):
