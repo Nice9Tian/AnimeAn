@@ -1,11 +1,13 @@
 /// <reference types="vite/client" />
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { removeNodeReferences, type Project } from "../vf/src/model.ts";
 import { loadProject, type ProjectIO } from "../vf/src/project.ts";
 import { BackendClient } from "./net.ts";
 import { createPlayer } from "./player.ts";
 import { RelayClient, RelayHost } from "./relay.ts";
 import { createChrome, createStore, DOCK_FOR_WINDOW, panelFactories, syncDocks } from "./ui/app.js";
+import { messageBox } from "./ui/panels2.js";
 import { createPanelWindows, setupSatelliteDock, triggerDockClosed } from "./ui/panelwindows.js";
 import { watchTimelineDock } from "./ui/timeline.js";
 import { raiseBusiness, syncTools, watchToolsScroll } from "./ui/tools.js";
@@ -66,9 +68,25 @@ export function createGlobProjectIO(rawMap: Record<string, string>, prefix = "..
   };
 }
 
+const inShell = (): boolean => Boolean((window as unknown as { __TAURI__?: unknown }).__TAURI__);
+
+// A packaged window is an application window, not a browser tab. Reloading one would
+// also lose track of the panels out in their own windows, so the browser's keys and
+// its right-click menu stay out of it. A browser in development keeps them.
+function keepBrowserOut(): void {
+  const typing = (target: EventTarget | null) =>
+    target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
+  window.addEventListener("contextmenu", (e) => {
+    if (!typing(e.target)) e.preventDefault();
+  });
+  window.addEventListener("keydown", (e) => {
+    const browserKey = e.ctrlKey || e.altKey || /^F\d+$/.test(e.key);
+    if (browserKey && !typing(e.target)) e.preventDefault();
+  });
+}
+
 async function resolveBackendWsUrl(): Promise<string | null> {
-  const w = window as unknown as { __TAURI__?: unknown };
-  if (w.__TAURI__) {
+  if (inShell()) {
     const endpoint = await invoke<{ url?: string } | string>("backend_endpoint");
     if (typeof endpoint === "string") return endpoint;
     if (endpoint && typeof endpoint.url === "string") return endpoint.url;
@@ -103,6 +121,7 @@ export function keepOnlyDock(project: Project, dockId: string): void {
 async function bootstrap(): Promise<void> {
   const appEl = document.getElementById("app");
   if (!appEl) throw new Error("找不到 #app 容器");
+  if (inShell()) keepBrowserOut();
 
   const io = createGlobProjectIO(rawDesignFiles);
   const project = await loadProject(io);
@@ -183,15 +202,25 @@ async function bootstrap(): Promise<void> {
     return;
   }
 
-  const wsUrl = await resolveBackendWsUrl();
-  if (wsUrl) {
-    try {
+  if (inShell()) {
+    void listen("backend-exited", () => {
+      void messageBox({
+        title: "AnimeAn",
+        text: "The drawing engine stopped unexpectedly. Changes since the last save are lost.\nClose AnimeAn and start it again.",
+      });
+    });
+  }
+
+  try {
+    const wsUrl = await resolveBackendWsUrl();
+    if (wsUrl) {
       await client.connect(wsUrl);
       (store as { boards?: { resendSizes(): void } }).boards?.resendSizes();
       (store as { texture?: { announceHome(): void } }).texture?.announceHome();
-    } catch (e) {
-      console.error("连接后端失败:", e);
     }
+  } catch (e) {
+    console.error("连接后端失败:", e);
+    void messageBox({ title: "AnimeAn", text: `The drawing engine could not be started.\n${e}` });
   }
 }
 
