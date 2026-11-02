@@ -674,8 +674,14 @@ try {
     const languageReply = await callBackend("menu.trigger", { id: "script:main:Settings:language.ja", checked: true });
     assert.equal(languageReply.ok, true, `Settings > Language failed: ${languageReply.error}`);
     await waitForState((map) => map.get("py/preferences")?.language === "ja", "the language choice is broadcast");
+    // What no Python flow takes is reported, not silently answered.
     const unknownFile = await callBackend("menu.trigger", { id: "file.nothing" });
-    assert.equal(unknownFile.ok, true, "an unknown File item is Python's to ignore");
+    assert.equal(unknownFile.ok, false, "a File item no flow runs is reported");
+    assert.match(String(unknownFile.error), /Nothing handles the menu item file\.nothing/);
+    const unknownKind = await callBackend("dialog.request", { kind: "nothing" });
+    assert.equal(unknownKind.ok, false, "a request for a kind Python does not open is reported");
+    assert.match(String(unknownKind.error), /Nothing opens a dialog for 'nothing'/);
+    assert.equal(openDialogs().length, 0, "and nothing opened");
 
     // 10. Verify project.saveAs, project.open, file.texture, file.import with explicit paths
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "animean-smoke-"));

@@ -121,7 +121,7 @@ window = animean_python.ui.state("window")
 result = animean_python.ui.call("project.saveAs", {"path": path, "probe": True})
 ```
 
-对话框的回答经 `dialog` 事件回来（`python_hooks.set_hook(fn, dialog=True)`），File 菜单的项经 `menu` 事件（`menu` 为 `file`）。见 `windows_theme.md`「对话框窗口」。
+对话框的回答经 `dialog` 事件回来（`python_hooks.set_hook(fn, dialog=True)`），File 菜单的项经 `menu` 事件（`menu` 为 `file`）。接下的处理器置 `message["handled"] = True`；没人置时，后端丢掉这个回答对应的对话框，或者把这个请求、这个 File 菜单项报成没人处理。见 `windows_theme.md`「对话框窗口」。
 
 脚本修改模型后，如果需要界面立刻更新，调用对应的 `ui.*.refresh()`。长时间同步计算可以用：
 

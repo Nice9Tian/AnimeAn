@@ -546,7 +546,7 @@ test("the canvas size, colour and settings dialogs answer through dialog.result"
     settingsRoot.querySelector(".opt-swatch")!.click();
     assert.deepEqual(calls, [{ method: "dialog.request", params: {
       kind: "color", hook: "axis_color", name: "axis", title: "Axis", value: "#ff102030", row: 1, startColumn: 0, endColumn: 0,
-      method: "settings.option", menu: "line_settings" } }], "a swatch asks Python for the colour dialog");
+      menu: "line_settings" } }], "a swatch asks Python for the colour dialog, and says which window it is in");
     const swatch = settingsRoot.querySelector(".opt-swatch");
     view.update({ layout });
     assert.equal(settingsRoot.querySelector(".opt-swatch"), swatch, "the same layout is not rebuilt");
@@ -889,6 +889,39 @@ test("the main page opens a window per dialog and locks the others, owner first"
   });
 });
 
+test("dialogs that lose the one under them are opened again under the new owner", async () => {
+  await withDom(async ({ ui: { createDialogHost } }) => {
+    const shell = fakeShell();
+    const store = fakeStore();
+    const host = createDialogHost(store, { role: "main", shell, channel: null });
+    const settingsBelow = { id: "d1", kind: "settings", modal: true, title: "Line Display Settings", name: "line_settings", layout: {} };
+    const note = { id: "d3", kind: "message", modal: true, title: "Note", text: "x", buttons: ["OK"] };
+    store.emit("dialogs", [settingsBelow, colorOver, note]);
+    await host.settled();
+    shell.log.length = 0;
+    // The settings page failed: C++ dropped it, the two above it stay.
+    store.emit("dialogs", [colorOver, note]);
+    await host.settled();
+    assert.deepEqual(shell.log, [
+      "enable main", "enable dialog-d1", "enable dialog-d2", "focusable panels",
+      "close dialog-d3", "close dialog-d2",
+      "open dialog-d2 owner=main title=Select Color url=dialog.html?id=d2&owner=main",
+      "open dialog-d3 owner=dialog-d2 title=Note url=dialog.html?id=d3&owner=dialog-d2",
+      "close dialog-d1",
+      "unfocusable panels", "disable dialog-d2", "disable main",
+    ], "Windows would destroy them with their owner, and main would stay locked with nothing on screen");
+
+    shell.log.length = 0;
+    store.emit("dialogs", [colorOver]);
+    await host.settled();
+    assert.deepEqual(shell.log, [
+      "enable main", "enable dialog-d2", "focusable panels",
+      "close dialog-d3",
+      "unfocusable panels", "disable main",
+    ], "the top one going moves nothing");
+  });
+});
+
 test("a native picker is the shell's, a close from Windows is an answer, and a lost backend unlocks", async () => {
   await withDom(async ({ ui: { createDialogHost } }) => {
     const shell = fakeShell(["C:/shots/s01.anproj"]);
@@ -1002,7 +1035,7 @@ test("Settings comes from the backend's menus, and a choice Python broadcasts is
     assert.deepEqual(menuEl.querySelectorAll(".item").map((item) => item.textContent), ["File", "Settings"],
       "the page adds no menu of its own");
     try {
-      stateListeners.get("py/preferences")?.({ renderer: "canvas2d", language: "ja", choice: 1 });
+      stateListeners.get("py/preferences")?.({ renderer: "canvas2d", language: "ja" });
       assert.equal(i18n.language(), "ja", "the language Python broadcast is applied");
     } finally {
       i18n.setLanguage("en");

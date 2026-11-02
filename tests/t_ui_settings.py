@@ -75,11 +75,11 @@ def main():
     report_option("webgl", True)
     choose("renderer.webgl")
     results.append(report("choosing a renderer broadcasts it with the language in force", UI.broadcasts == [
-        ("py/preferences", {"renderer": "webgl", "language": "ja", "choice": 1})]))
+        ("py/preferences", {"renderer": "webgl", "language": "ja"})]))
     results.append(report("the menu waits for the page to report the switch", radios(settings_menu(), "renderer")["renderer.canvas2d"] == (True, True)))
     choose("language.zh-CN")
-    results.append(report("choosing a language broadcasts a new choice", UI.broadcasts[-1] == (
-        "py/preferences", {"renderer": "canvas2d", "language": "zh-CN", "choice": 2})))
+    results.append(report("choosing a language broadcasts it with the renderer in force", UI.broadcasts[-1] == (
+        "py/preferences", {"renderer": "canvas2d", "language": "zh-CN"})))
     count = len(UI.broadcasts)
     choose("language.klingon")
     choose("renderer.webgl", menu="Draw")

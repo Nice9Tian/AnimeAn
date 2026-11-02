@@ -102,8 +102,9 @@ private:
     void openScriptSettings(const String &name, const String &title);
     void emitUiEvent(const String &name, const JsonObject &args = JsonObject());
 
-    // Hands one hook event to python_hooks.dispatch. Returns how many hooks ran,
-    // -1 when one of them raised (the text in *errorOut).
+    // Hands one hook event to python_hooks.dispatch. Returns 1 when a hook set
+    // message["handled"], 0 when none did, -1 when one of them raised (the text
+    // in *errorOut).
     int dispatchPythonEvent(const JsonObject &event, String *errorOut = nullptr);
     bool forwardMenuToPython(const String &menu, const String &item, String *errorOut);
     // The open dialogs are Python's (dialogs.py); these keep the broadcast copy.

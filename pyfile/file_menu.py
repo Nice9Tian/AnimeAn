@@ -232,8 +232,9 @@ def run(item):
 
 
 def _on_menu(message):
-    if message.get("menu") == MENU:
-        run(str(message.get("name") or ""))
+    # An item none of the flows knows is left unhandled, and C++ reports it.
+    if message.get("menu") == MENU and run(str(message.get("name") or "")):
+        message["handled"] = True
 
 
 _STARTUP = {"id": None}

@@ -73,7 +73,7 @@ function settingsDialog(root, spec, call, answer, onTitleDrag) {
   const controls = div("settings-window-controls");
   const panel = createToolOptions(controls, {
     onOption: (option) => call("settings.option", { ...option, menu: spec.name }),
-    onDialog: (request) => call("dialog.request", { ...request, method: "settings.option", menu: spec.name }),
+    onDialog: (request) => call("dialog.request", { ...request, menu: spec.name }),
     onSubWindow: () => null,
   });
   const row = div("qdialog-buttons");

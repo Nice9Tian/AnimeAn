@@ -85,7 +85,7 @@ export function createDialogHost(store, options = {}) {
     store.call("dialog.result", value === undefined ? { id, action } : { id, action, value });
 
   // ---- main: windows, pickers and locks ------------------------------------------
-  const opened = new Map(); // id -> { kind, label?, shade?, view? }
+  const opened = new Map(); // id -> { kind, label?, owner?, shade?, view? }
   const locked = { main: false, owners: new Set(), panels: false };
   const waitingToShow = new Map(); // id -> timer
   let chain = Promise.resolve();
@@ -167,7 +167,7 @@ export function createDialogHost(store, options = {}) {
       return;
     }
     const label = dialogLabel(spec.id);
-    opened.set(spec.id, { kind: spec.kind, label });
+    opened.set(spec.id, { kind: spec.kind, label, owner });
     const url = `dialog.html?id=${encodeURIComponent(spec.id)}&owner=${encodeURIComponent(owner)}`;
     try {
       await shell.openDialogWindow({ label, url, owner, title: t(spec.title ?? "") });
@@ -192,14 +192,28 @@ export function createDialogHost(store, options = {}) {
     entry?.shade?.remove();
   };
 
+  // Windows destroys an owned window together with its owner, so a dialog that
+  // stays while the one under it goes is opened again under its new owner, and
+  // so is every dialog window above it (each is owned by the one below).
+  const movedIn = (next) => {
+    const moved = [];
+    next.forEach((spec, index) => {
+      const entry = opened.get(spec.id);
+      if (entry?.label && (moved.length || entry.owner !== ownerOf(next, index))) moved.push(spec.id);
+    });
+    return moved;
+  };
+
   const realize = async (next) => {
     const removed = [...opened.keys()].filter((id) => !next.some((spec) => spec.id === id)).reverse();
+    const moved = movedIn(next);
     const want = locksFor(next);
     if (shell) {
       // A window destroyed while its owner is disabled hands the focus to
       // another program, so nothing stays locked while anything closes.
-      await unlockAllBut(removed.length ? locksFor([]) : want);
+      await unlockAllBut(removed.length || moved.length ? locksFor([]) : want);
     }
+    for (const id of [...moved].reverse()) await close(id);
     for (const [index, spec] of next.entries()) {
       if (opened.has(spec.id)) opened.get(spec.id).view?.update(spec);
       else await open(spec, ownerOf(next, index));

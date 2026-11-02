@@ -156,14 +156,36 @@ def _deliver(entry, action, value):
         print(f"[dialogs] the answer to '{spec.get('title', spec['kind'])}' failed: {error}")
 
 
+def _settings_layout(name):
+    try:
+        return json.loads(python_hooks.settings_layout_json(name))
+    except Exception as error:
+        print(f"[dialogs] settings '{name}' failed: {error}")
+        return None
+
+
+def _refresh_settings(name):
+    # A colour picked for a settings window comes back from a window of its own,
+    # so that window draws it only once its layout is sent again.
+    entries = [entry for entry in _STACK
+               if entry["spec"]["kind"] == "settings" and entry["spec"].get("name") == name]
+    layout = _settings_layout(name) if entries else None
+    if not layout:
+        return
+    for entry in entries:
+        entry["spec"]["layout"] = layout
+    _publish()
+
+
 def _request_color(message):
     """A colour control was clicked: pick, then send the colour as that control would."""
-    method = message.get("method") or "tool.option"
     params = {
         key: message[key]
         for key in ("hook", "name", "row", "startColumn", "endColumn", "menu")
         if message.get(key) is not None
     }
+    # Which backend method takes the colour is decided here, not by the page.
+    method = "settings.option" if params.get("menu") else "tool.option"
 
     def chosen(text):
         if not text:
@@ -172,37 +194,42 @@ def _request_color(message):
             call(method, {**params, "type": "color", "value": text})
         except Exception as error:
             print(f"[dialogs] sending the colour to '{params.get('hook')}' failed: {error}")
+            return
+        if params.get("menu"):
+            _refresh_settings(params["menu"])
 
     color(message.get("value") or "#ff000000", chosen, title=message.get("title") or "Select Color")
+    return True
 
 
 def _request_settings(message):
     name = str(message.get("name") or "")
-    try:
-        layout = json.loads(python_hooks.settings_layout_json(name))
-    except Exception as error:
-        print(f"[dialogs] settings '{name}' failed: {error}")
-        return
+    layout = _settings_layout(name)
     if not layout:
         print(f"[dialogs] no settings registered for '{name}'")
-        return
+        return False
     settings(name, message.get("title") or name, layout)
+    return True
 
 
 _REQUESTS = {"color": _request_color, "settings": _request_settings}
 
 
 def _on_dialog(message):
+    # message["handled"] tells C++ that something here took the event
+    # (hook_events.md, 回传约定); without it C++ reports the request, or drops
+    # the dialog an answer was for.
     action = message.get("action")
     if action == "request":
         handler = _REQUESTS.get(message.get("kind"))
-        if handler is not None:
-            handler(message)
-        return
-    if action not in ACTIONS:
+        if handler is not None and handler(message):
+            message["handled"] = True
         return
     entry = _find(message.get("id"))
-    if entry is not None:
+    if entry is None:
+        return
+    message["handled"] = True
+    if action in ACTIONS:
         _deliver(entry, action, message.get("value"))
 
 

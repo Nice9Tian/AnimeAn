@@ -177,7 +177,8 @@ animean_python.ui.call(method: str, params: dict | None = None) -> dict
 - `set_dialogs` hands the backend the open dialogs, bottom to top, as a JSON
   array; it broadcasts them as the `dialogs` state and knows none of the kinds.
   A dialog the backend dropped (its window closed, its page failed, or its
-  answer raised) stays dropped even if a later array still lists it.
+  answer raised or was not taken) stays dropped even if a later array still
+  lists it.
 - `broadcast` publishes a state of Python's own for the page; the key must
   start with `py/` (for example `py/preferences`).
 - `state` returns one state as the page receives it (`"window"` for the
@@ -187,6 +188,9 @@ animean_python.ui.call(method: str, params: dict | None = None) -> dict
   `RuntimeError` with the backend's message.
 - Answers come back as the `dialog` hook event (`python_hooks.set_hook(fn,
   dialog=True)`), and the File menu's items as `menu` events with menu `file`.
+  The handler that takes one sets `message["handled"] = True`; when none does,
+  the backend drops the dialog the answer was for, or reports the request or
+  the File item as unhandled.
 
 ## ExtraTool and Hook Development
 

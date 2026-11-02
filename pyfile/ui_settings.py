@@ -19,7 +19,6 @@ RENDERERS = (("webgl", "WebGL"), ("canvas2d", "Canvas 2D"))
 LANGUAGES = (("en", "English"), ("zh-CN", "简体中文"), ("ja", "日本語"))
 
 _STATE = {"renderer": "webgl", "webgl": True}
-_CHOICES = {"count": 0}
 
 
 def renderer():
@@ -48,12 +47,10 @@ def _items():
 
 
 def _publish(preferences):
-    # The count tells the page this is a new choice, not one it applied already.
-    _CHOICES["count"] += 1
     try:
         import animean_python
 
-        animean_python.ui.broadcast("py/preferences", json.dumps({**preferences, "choice": _CHOICES["count"]}))
+        animean_python.ui.broadcast("py/preferences", json.dumps(preferences))
     except Exception as error:
         print(f"[ui_settings] the choice did not reach the page: {error}")
 

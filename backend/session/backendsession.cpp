@@ -3443,13 +3443,17 @@ int BackendSession::dispatchPythonEvent(const JsonObject &event, String *errorOu
         py::object errRedirect = contextlib.attr("redirect_stderr")(buffer);
         outRedirect.attr("__enter__")();
         errRedirect.attr("__enter__")();
-        int count = 0;
+        int handled = 0;
         String error;
         try {
-            count = hooks.attr("dispatch")(message).cast<int>();
+            hooks.attr("dispatch")(message);
+            // A hook that matched may still have done nothing; one that acted
+            // sets message["handled"] (hook_events.md, 回传约定).
+            const py::object flag = message.attr("get")(py::str("handled"), false);
+            handled = PyObject_IsTrue(flag.ptr()) == 1 ? 1 : 0;
         } catch (const py::error_already_set &raised) {
             error = String::fromUtf8(raised.what());
-            count = -1;
+            handled = -1;
         }
         errRedirect.attr("__exit__")(py::none(), py::none(), py::none());
         outRedirect.attr("__exit__")(py::none(), py::none(), py::none());
@@ -3463,7 +3467,7 @@ int BackendSession::dispatchPythonEvent(const JsonObject &event, String *errorOu
                 *errorOut = error;
             }
         }
-        return count;
+        return handled;
     } catch (const py::error_already_set &raised) {
         if (errorOut) {
             *errorOut = String::fromUtf8(raised.what());

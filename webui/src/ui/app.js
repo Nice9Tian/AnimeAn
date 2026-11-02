@@ -452,7 +452,7 @@ export function panelFactories(store, client, { satellite = false } = {}) {
       el.append(tabs.el, body.frame);
       const panel = createToolOptions(body.view, {
         onOption: (option) => call("tool.option", option),
-        onDialog: (request) => call("dialog.request", { ...request, method: "tool.option" }),
+        onDialog: (request) => call("dialog.request", request),
         onBeforeBuild: () => {
           if (placement === "embedded" && hostName === "options") stowFrame();
         },

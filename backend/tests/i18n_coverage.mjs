@@ -91,9 +91,10 @@ function collectChrome() {
   collect(states.get("window"));
   for (const label of states.get("history")?.labels ?? []) seen.add(label);
 }
+// What a user can choose: separators and submenu headers are not items.
 const menuIds = (items, out = []) => {
   for (const item of items ?? []) {
-    if (item.id) out.push(item.id);
+    if (item.id && item.kind !== "separator" && !(item.children ?? []).length) out.push(item.id);
     menuIds(item.children, out);
   }
   return out;

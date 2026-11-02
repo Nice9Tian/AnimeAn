@@ -542,11 +542,55 @@ pub fn center_over(owner_pos: (f64, f64), owner_size: (f64, f64), size: (f64, f6
     (x.round(), y.round())
 }
 
+/// Where a dialog of `size` goes: over the middle of its owner, kept inside
+/// `area`, the work area of the owner's monitor. Frames are (top-left, size) in
+/// logical pixels. A minimized owner (`None`) has no frame on screen (Windows
+/// parks it near -32000), so the dialog goes to the middle of `area` and waits
+/// there for the owner to come back.
+pub fn place_dialog(
+    owner: Option<((f64, f64), (f64, f64))>,
+    area: Option<((f64, f64), (f64, f64))>,
+    size: (f64, f64),
+) -> (f64, f64) {
+    let Some((frame_pos, frame_size)) = owner.or(area) else {
+        return (0.0, 0.0);
+    };
+    let (mut x, mut y) = center_over(frame_pos, frame_size, size);
+    if let Some(((ax, ay), (aw, ah))) = area {
+        // Left and top last: a dialog bigger than the area keeps its title bar on it.
+        x = x.min(ax + aw - size.0).max(ax);
+        y = y.min(ay + ah - size.1).max(ay);
+    }
+    (x.round(), y.round())
+}
+
 fn logical_frame(win: &tauri::WebviewWindow) -> Result<((f64, f64), (f64, f64)), String> {
     let scale = win.scale_factor().map_err(|e| e.to_string())?;
     let pos = win.outer_position().map_err(|e| e.to_string())?.to_logical::<f64>(scale);
     let size = win.outer_size().map_err(|e| e.to_string())?.to_logical::<f64>(scale);
     Ok(((pos.x, pos.y), (size.width, size.height)))
+}
+
+fn dialog_position(owner_win: &tauri::WebviewWindow, size: (f64, f64)) -> Result<(f64, f64), String> {
+    let scale = owner_win.scale_factor().map_err(|e| e.to_string())?;
+    // A minimized window's monitor is the one it was on before it was minimized.
+    let monitor = owner_win
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| owner_win.primary_monitor().ok().flatten());
+    let area = monitor.map(|monitor| {
+        let rect = monitor.work_area();
+        let pos = rect.position.to_logical::<f64>(scale);
+        let size = rect.size.to_logical::<f64>(scale);
+        ((pos.x, pos.y), (size.width, size.height))
+    });
+    let owner = if owner_win.is_minimized().unwrap_or(false) {
+        None
+    } else {
+        Some(logical_frame(owner_win)?)
+    };
+    Ok(place_dialog(owner, area, size))
 }
 
 fn min_size_for_panel(
@@ -722,9 +766,8 @@ async fn open_dialog_window(
     if app.get_webview_window(&label).is_some() {
         return Ok(());
     }
-    let (owner_pos, owner_size) = logical_frame(&owner_win)?;
     let size = (320.0, 200.0);
-    let (x, y) = center_over(owner_pos, owner_size, size);
+    let (x, y) = dialog_position(&owner_win, size)?;
     tauri::WebviewWindowBuilder::new(&app, &label, parse_webview_url(&url)?)
         .title(title)
         .parent(&owner_win)
@@ -758,8 +801,7 @@ async fn show_dialog_window(
     win.set_size(tauri::Size::Logical(tauri::LogicalSize::new(size.0, size.1)))
         .map_err(|e| e.to_string())?;
     if let Some(owner_win) = app.get_webview_window(validate_owner_label(&owner)?) {
-        let (owner_pos, owner_size) = logical_frame(&owner_win)?;
-        let (x, y) = center_over(owner_pos, owner_size, size);
+        let (x, y) = dialog_position(&owner_win, size)?;
         let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
     }
     win.show().map_err(|e| e.to_string())?;
@@ -1078,6 +1120,24 @@ mod tests {
         // Taller than its owner: the dialog keeps the owner's top edge, not above it.
         assert_eq!(center_over((100.0, 50.0), (400.0, 300.0), (300.0, 500.0)), (150.0, 50.0));
         assert_eq!(center_over((0.0, 0.0), (101.0, 101.0), (50.0, 50.0)), (26.0, 26.0));
+    }
+
+    #[test]
+    fn test_place_dialog_stays_on_the_monitor() {
+        let area = Some(((0.0, 0.0), (1920.0, 1040.0)));
+        // Over the middle of a normal owner, as before.
+        assert_eq!(place_dialog(Some(((100.0, 50.0), (1000.0, 800.0))), area, (300.0, 200.0)), (450.0, 350.0));
+        // A minimized owner sits near -32000: the dialog goes to the middle of its monitor.
+        assert_eq!(place_dialog(None, area, (320.0, 200.0)), (800.0, 420.0));
+        // An owner hanging off the right edge: the dialog is pulled back onto the monitor.
+        assert_eq!(place_dialog(Some(((1800.0, 900.0), (400.0, 300.0))), area, (300.0, 200.0)), (1620.0, 840.0));
+        // Bigger than the work area: the top-left corner, so the title bar stays reachable.
+        assert_eq!(place_dialog(Some(((0.0, 0.0), (800.0, 600.0))), area, (2400.0, 1200.0)), (0.0, 0.0));
+        // A second monitor to the left.
+        let left = Some(((-1280.0, 0.0), (1280.0, 984.0)));
+        assert_eq!(place_dialog(None, left, (300.0, 200.0)), (-790.0, 392.0));
+        // No monitor known: the owner alone decides.
+        assert_eq!(place_dialog(Some(((100.0, 50.0), (1000.0, 800.0))), None, (300.0, 200.0)), (450.0, 350.0));
     }
 
     #[test]

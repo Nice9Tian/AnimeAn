@@ -56,7 +56,10 @@ def report(name, ok):
 
 
 def menu(item):
-    python_hooks.dispatch({"event": "menu", "menu": "file", "name": item, "view": "main", "checked": False})
+    """A File item as C++ forwards it; returns the message after the hooks ran."""
+    message = {"event": "menu", "menu": "file", "name": item, "view": "main", "checked": False}
+    python_hooks.dispatch(message)
+    return message
 
 
 def top():
@@ -287,9 +290,14 @@ def names_and_other_menus():
                and name("exportImage", {"childFilePath": ".hidden"}) == ".hidden.png"),
     ]
     reset()
-    python_hooks.dispatch({"event": "menu", "menu": "Draw", "name": "file.open"})
-    results.append(report("another menu's item named like a File item is not ours", UI.published[-1] == [] if UI.published else True))
+    other = {"event": "menu", "menu": "Draw", "name": "file.open"}
+    python_hooks.dispatch(other)
+    results.append(report("another menu's item named like a File item is not ours",
+                          (UI.published[-1] == [] if UI.published else True) and "handled" not in other))
     results.append(report("an unknown File item is left alone", file_menu.run("file.print") is False))
+    results.append(report("and left unhandled, so C++ reports it", "handled" not in menu("file.print")))
+    results.append(report("a File item a flow runs is handled", menu("file.open").get("handled") is True))
+    reset()
     return results
 
 
