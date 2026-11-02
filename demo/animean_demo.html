@@ -289,8 +289,9 @@ section[id] { scroll-margin-top: var(--nav-h); }
 .link-btn:hover::after { transform: translateX(3px); }
 
 /* ---------------------------------------------------------------- hero: the wordmark, and a pen display in use
-   The flag's layers rise out of the screen, a pen resting on it. Everything in the scene is sized in
-   container units (cqw), so the 3D view and the pen keep their proportions at any width. */
+   The screen plays the waving flag; one pane of frosted glass floats above it with the coloured contour,
+   the pen on it. Everything in the scene is sized in container units (cqw), so the 3D view and the pen
+   keep their proportions at any width. */
 .hero { position: relative; min-height: 100vh; min-height: 100svh; padding: calc(var(--nav-h) + 24px) 0 56px; display: grid; align-items: center; overflow: hidden; }
 /* the hero's own light: lit on the right behind the pen display; on the left a near-black mask (pale in the
    light theme) that dissolves into it in square cells (home.js draws the cells). It fades into the page below. */
@@ -312,8 +313,8 @@ section[id] { scroll-margin-top: var(--nav-h); }
 .lede { font-size: 17.5px; line-height: 1.75; color: var(--muted); max-width: 31em; }
 .facts { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px 22px; font: 13px/1.4 var(--mono); color: var(--faint); }
 .facts b { color: var(--fg); font-weight: 600; }
-/* the right half belongs to the picture: a large display at the bottom, its layers rising to the top, each
-   one larger than the one under it, the pen standing on the right */
+/* the right half belongs to the picture: a large display at the bottom, the contour layer above it, the
+   pen standing on the right */
 .hero-visual { position: relative; margin-right: -3vw; }
 .tablet-scene { position: relative; width: 100%; aspect-ratio: 1 / 1.04; container-type: inline-size; }
 .ts-3d { position: absolute; inset: 0; perspective: 175cqw; perspective-origin: 50% 0%; }
@@ -334,13 +335,13 @@ section[id] { scroll-margin-top: var(--nav-h); }
 .tb-edge-r { top: 2cqw; bottom: 2cqw; right: 0; width: 1.3cqw; transform-origin: 100% 50%; transform: rotateY(-90deg); background: linear-gradient(#141517, #2c2e32); }
 .tb-shadow { position: absolute; inset: -1cqw; border-radius: 4cqw; background: rgba(0, 0, 0, .5); filter: blur(2.6cqw); transform: translateZ(-1.4cqw) translate(2.4cqw, 2.4cqw); }
 :root[data-theme="light"] .tb-shadow { background: rgba(20, 26, 36, .32); }
-/* the layers over the drawing board, rising out of the screen */
+/* the contour layer over the drawing board, risen out of the screen */
 .tb-layers { position: absolute; left: 18.73cqw; top: 5.44cqw; width: 34cqw; height: 34cqw; transform-style: preserve-3d; }
 .lay {
   --z: 0; --s: 1; position: absolute; inset: 0;
   transform: translateZ(calc(var(--z) * var(--rise, 1) * 1cqw + var(--bob, 0) * 1cqw)) scale(calc(1 + (var(--s) - 1) * var(--rise, 1)));
 }
-.lay.l1 { --z: 11; --s: 1.04; } .lay.l2 { --z: 22; --s: 1.14; } .lay.l3 { --z: 33; --s: 1.28; }
+.lay.l1 { --z: 21; --s: 1.18; }
 /* each layer is a pane of frosted glass: it blurs and pales whatever lies under it, so the lower a layer
    sits, the softer it looks through the panes above */
 .lay::before, .fl.f1::before, .fl.f2::before {
@@ -349,7 +350,7 @@ section[id] { scroll-margin-top: var(--nav-h); }
   -webkit-backdrop-filter: blur(var(--frost)) saturate(1.2); backdrop-filter: blur(var(--frost)) saturate(1.2);
   box-shadow: inset 0 0 0 1px var(--glass-edge), inset 1px 1px 0 var(--glass-shine), 0 1.6cqw 3.2cqw -1.2cqw var(--glass-shadow);
 }
-.lay::before { --frost: .55cqw; opacity: var(--rise, 1); }
+.lay::before { --frost: .3cqw; opacity: var(--rise, 1); }
 .lay > svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .tb-anchor { position: absolute; width: 1px; height: 1px; }
 .pen { position: absolute; left: 0; top: 0; width: 40cqw; height: auto; overflow: visible; pointer-events: none; }
@@ -1432,7 +1433,7 @@ const PAGE = {
     "hero.title": `<span class="ln">形に沿って、</span><span class="ln">コマごとについてくる模様。</span>`,
     "hero.lede": `AnimeAn は、平らな模様を手描きの線画に貼り付けます。テクスチャボードに模様を一度描き、閉じた輪郭・2 本の軸線・数本の追加線で導けば、Auto Mapping が形に合わせて模様を曲げ、コマからコマへとついていきます。`,
     "frame.eyebrow": `1 コマ`,
-    "frame.title": `どのコマも、3 枚のレイヤー。`,
+    "frame.title": `どのコマも、3&nbsp;枚のレイヤー。`,
     "frame.l1.tag": `線画`,
     "frame.l1.h": `コマごとに手で描く`,
     "frame.l1.p": `ポールと旗の輪郭を、ふつうの 2D アニメーションと同じく 1 コマずつ描きます。アニメーターが毎回描くのはこのレイヤーだけです。`,
