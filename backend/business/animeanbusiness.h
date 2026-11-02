@@ -408,6 +408,7 @@ public:
     Signal<void *> childPaintViewObjectChanged;
     Signal<void *> activePaintViewObjectChanged;
     Signal<> requestSurfaceTextureView;
+    Signal<> requestSurfaceMainView;
     Signal<> requestAutoFitTextureControlView;
     Signal<> requestClearTimelineThumbnails;
 

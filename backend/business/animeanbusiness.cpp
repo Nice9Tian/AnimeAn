@@ -1033,6 +1033,7 @@ bool AnimeanBusiness::loadProjectFrom(const String &fileName, String *errorOut)
     childFilePathChanged(m_childFilePath);
     projectFilePathChanged(m_currentFilePath);
     windowTitleChanged(windowTitle());
+    requestSurfaceMainView();
     setActiveViewName(String("main"));
     syncEmbeddedPythonState();
     refreshToolOptions();
@@ -2444,8 +2445,12 @@ void AnimeanBusiness::applyHistoryRestore(const String &viewName)
         }
     }
 
+    // Chronological undo/redo may land on the board the user is not looking at:
+    // the main board behind the Texture page as much as a parked texture board.
     if (key == String("child")) {
         requestSurfaceTextureView();
+    } else {
+        requestSurfaceMainView();
     }
     setActiveViewName(key);
 

@@ -1117,6 +1117,9 @@ void BackendSession::setupBusinessConnections()
     m_business->requestSurfaceTextureView.connect([this]() {
         surfaceTextureView();
     });
+    m_business->requestSurfaceMainView.connect([this]() {
+        surfaceMainView();
+    });
     m_business->requestAutoFitTextureControlView.connect([this]() {
         autoFitTextureControlView();
     });
