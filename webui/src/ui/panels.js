@@ -196,6 +196,99 @@ export function resolveAssetDrop(raw, view, assetTargetView) {
   return Number.isInteger(idx) && idx >= 0 ? idx : -1;
 }
 
+export function layerDropZone(e, el, row, fromIndex = -1, toIndex = -1) {
+  if (e?.dropZone === "above" || e?.dropZone === "below" || e?.dropZone === "inside") {
+    return !row?.group && e.dropZone === "inside" ? "below" : e.dropZone;
+  }
+  const rect = el?.getBoundingClientRect?.();
+  const hasMetrics = (rect && (rect.height > 0 || rect.top !== 0)) || typeof e?.offsetY === "number";
+  if (!hasMetrics) {
+    if (row?.group) return "inside";
+    return fromIndex >= 0 && toIndex >= 0 && fromIndex < toIndex ? "below" : "above";
+  }
+  const h = (rect && rect.height > 0 ? rect.height : el?.clientHeight) || 24;
+  const y = typeof e?.offsetY === "number"
+    ? e.offsetY
+    : (typeof e?.clientY === "number" && rect ? e.clientY - rect.top : h * 0.5);
+  const ratio = Math.max(0, Math.min(1, y / h));
+  if (row?.group) {
+    if (ratio < 0.25) return "above";
+    if (ratio > 0.75) return "below";
+    return "inside";
+  }
+  return ratio < 0.5 ? "above" : "below";
+}
+
+export function applyLayerDrop(rows, fromIndex, toIndex, zone = "below") {
+  if (!Array.isArray(rows) || fromIndex < 0 || fromIndex >= rows.length) return null;
+  const src = rows[fromIndex];
+  if (!src || src.child) return null;
+
+  const baseDepth = src.depth ?? 0;
+  let blockEnd = fromIndex + 1;
+  while (blockEnd < rows.length && (rows[blockEnd].depth ?? 0) > baseDepth) {
+    blockEnd++;
+  }
+
+  let resolvedTo = toIndex;
+  let resolvedZone = zone;
+  if (resolvedTo >= 0 && resolvedTo < rows.length && rows[resolvedTo]?.child) {
+    const childDepth = rows[resolvedTo].depth ?? 0;
+    while (resolvedTo > 0 && (rows[resolvedTo].child || (rows[resolvedTo].depth ?? 0) >= childDepth)) {
+      resolvedTo--;
+    }
+    resolvedZone = "below";
+  }
+
+  if (resolvedTo >= fromIndex && resolvedTo < blockEnd) return null;
+
+  let insertAt = rows.length;
+  let targetDepth = 0;
+  if (resolvedTo < 0 || resolvedTo >= rows.length) {
+    insertAt = rows.length;
+    targetDepth = 0;
+  } else {
+    const dst = rows[resolvedTo];
+    const dstDepth = dst.depth ?? 0;
+    if (resolvedZone === "inside" && dst.group) {
+      let groupEnd = resolvedTo + 1;
+      while (groupEnd < rows.length && (rows[groupEnd].depth ?? 0) > dstDepth) {
+        groupEnd++;
+      }
+      insertAt = groupEnd;
+      targetDepth = dstDepth + 1;
+    } else if (resolvedZone === "above") {
+      insertAt = resolvedTo;
+      targetDepth = dstDepth;
+    } else {
+      let afterDst = resolvedTo + 1;
+      while (afterDst < rows.length && (rows[afterDst].depth ?? 0) > dstDepth) {
+        afterDst++;
+      }
+      insertAt = afterDst;
+      targetDepth = dstDepth;
+    }
+  }
+
+  const deltaDepth = targetDepth - baseDepth;
+  const movedBlock = rows.slice(fromIndex, blockEnd).map((r) => ({
+    ...r,
+    depth: Math.max(0, (r.depth ?? 0) + deltaDepth),
+  }));
+  const remaining = rows.slice(0, fromIndex).concat(rows.slice(blockEnd));
+  const adjInsert = insertAt > fromIndex ? insertAt - (blockEnd - fromIndex) : insertAt;
+  const nextRows = remaining.slice(0, adjInsert).concat(movedBlock, remaining.slice(adjInsert));
+
+  for (let i = nextRows.length - 1; i >= 0; i--) {
+    if (!nextRows[i].group) continue;
+    const hasContent = i + 1 < nextRows.length && (nextRows[i + 1].depth ?? 0) > (nextRows[i].depth ?? 0);
+    if (!hasContent) nextRows.splice(i, 1);
+  }
+
+  const movedLayer = src.group ? -1 : (src.layer ?? -1);
+  return { rows: nextRows, movedLayer, movedGroupId: src.group ? (src.group_id ?? 0) : 0 };
+}
+
 export function createLayers(root, handlers) {
   const tabs = tabBar(["Main Layers", "Child Layers"], (i) => show(i));
   const pages = ["main", "child"].map((view) => {
@@ -245,8 +338,19 @@ export function createLayers(root, handlers) {
       e.preventDefault();
       handlers.onContext(p.view, null, [], e.clientX, e.clientY);
     });
-    p.tree.addEventListener("dragover", (e) => { acceptAsset(e, p); });
-    p.tree.addEventListener("drop", (e) => { dropAsset(e, p); });
+    p.tree.addEventListener("dragover", (e) => {
+      if (acceptAsset(e, p)) return;
+      if (hasDragType(e.dataTransfer, LAYER_DRAG_MIME)) e.preventDefault();
+    });
+    p.tree.addEventListener("drop", (e) => {
+      if (dropAsset(e, p)) return;
+      if (!hasDragType(e.dataTransfer, LAYER_DRAG_MIME)) return;
+      e.preventDefault();
+      const from = Number(e.dataTransfer.getData(LAYER_DRAG_MIME));
+      const res = applyLayerDrop(p.rows ?? [], from, -1, "below");
+      if (!res) return;
+      handlers.onApplyStructure?.(p.view, res.rows, res.movedLayer);
+    });
   }
   function show(i) {
     tabs.select(i);
@@ -257,6 +361,7 @@ export function createLayers(root, handlers) {
   function paintRows(p, state) {
     p.tree.replaceChildren();
     const rows = state?.rows ?? [];
+    p.rows = rows;
     const sel = selectedRowIndex(rows, state?.selected ?? -1, p.pickedGroup);
     p.current = sel >= 0 ? rows[sel] : null;
     p.pickedGroup = p.current?.group ? p.current.group_id : 0;
@@ -305,8 +410,11 @@ export function createLayers(root, handlers) {
         }
         handlers.onContext(p.view, row, members, e.clientX, e.clientY);
       });
-      r.draggable = true;
-      r.addEventListener("dragstart", (e) => { e.dataTransfer.setData(LAYER_DRAG_MIME, String(index)); });
+      r.draggable = !row.child;
+      r.addEventListener("dragstart", (e) => {
+        if (row.child) { e.preventDefault(); return; }
+        e.dataTransfer.setData(LAYER_DRAG_MIME, String(index));
+      });
       r.addEventListener("dragover", (e) => {
         if (acceptAsset(e, p)) return;
         if (hasDragType(e.dataTransfer, LAYER_DRAG_MIME)) e.preventDefault();
@@ -315,8 +423,17 @@ export function createLayers(root, handlers) {
         if (dropAsset(e, p)) return;
         if (!hasDragType(e.dataTransfer, LAYER_DRAG_MIME)) return;
         e.preventDefault();
+        e.stopPropagation();
         const from = Number(e.dataTransfer.getData(LAYER_DRAG_MIME));
-        if (Number.isFinite(from) && from !== index) handlers.onMove(p.view, rows[from], row);
+        if (!Number.isFinite(from) || from === index) return;
+        const zone = layerDropZone(e, r, row, from, index);
+        const res = applyLayerDrop(rows, from, index, zone);
+        if (!res) return;
+        if (handlers.onApplyStructure) {
+          handlers.onApplyStructure(p.view, res.rows, res.movedLayer);
+        } else {
+          handlers.onMove?.(p.view, rows[from], row);
+        }
       });
       p.tree.append(r);
     });
@@ -359,25 +476,37 @@ export function popupMenu(items, x, y, onTrigger, parent) {
   return m;
 }
 
-export function createMenuBar(root, { onTrigger }) {
+export function createMenuBar(root, { onTrigger, onOpen }) {
   const bar = div("menubar");
   root.append(bar);
   const GAP = 6, PAD = 3;
   let menus = [];
   const measure = document.createElement("canvas").getContext("2d");
   measure.font = '12px "Segoe UI"';
+  function showPopup(item, index, fallbackMenu) {
+    const current = menus.find((m) => (m.id && fallbackMenu.id ? m.id === fallbackMenu.id : m.text === fallbackMenu.text)) ?? menus[index] ?? fallbackMenu;
+    const r = item.getBoundingClientRect?.() ?? { left: 0, bottom: 0 };
+    popupMenu(current?.children ?? [], r.left, r.bottom, onTrigger);
+    bar.querySelectorAll(".item").forEach((n) => n.classList.remove("open"));
+    item.classList.add("open");
+  }
   function paint() {
     bar.replaceChildren();
     let x = GAP;
-    menus.forEach((menu) => {
+    menus.forEach((menu, index) => {
       const item = div("item", menu.text);
       const w = MENU_WIDTH[menu.text] ?? Math.ceil(measure.measureText(menu.text).width) + 2 * PAD;
       item.style.left = `${x}px`; item.style.width = `${w}px`;
       const open = () => {
-        const r = item.getBoundingClientRect();
-        popupMenu(menu.children ?? [], r.left, r.bottom, onTrigger);
-        bar.querySelectorAll(".item").forEach((n) => n.classList.remove("open"));
-        item.classList.add("open");
+        const res = onOpen?.(menu);
+        if (res && typeof res.then === "function") {
+          res.then(() => {
+            const matched = Array.from(bar.querySelectorAll(".item")).find((n) => n.textContent === menu.text) ?? item;
+            showPopup(matched, index, menu);
+          });
+          return;
+        }
+        showPopup(item, index, menu);
       };
       item.addEventListener("click", open);
       item.addEventListener("pointerenter", () => { if (openMenu) open(); });

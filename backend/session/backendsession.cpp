@@ -1028,6 +1028,16 @@ void BackendSession::setupBusinessConnections()
             m_textureAutoFitFrame = m_childBoard->model().currentFrame();
         }
     });
+    m_business->requestClearTimelineThumbnails.connect([this]() {
+        ++m_thumbnailRevision;
+        for (auto it = m_cachedImages.begin(); it != m_cachedImages.end();) {
+            if (it.key().startsWith(String("thumb_"))) {
+                it = m_cachedImages.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    });
     m_business->layersChanged.connect([this](const String &viewName, int) {
         if (viewName == String("child")) {
             markDirty(String("layers/child"));
@@ -1116,6 +1126,9 @@ void BackendSession::registerPythonUiCallbacks()
 
     registerAnimeanUiRefreshCallback([this](bool frame, bool layer, bool asset, bool widget) {
         m_business->syncAllViewAttentionsFromModels();
+        if (frame || layer || widget) {
+            m_business->requestClearTimelineThumbnails();
+        }
         if (frame) {
             markDirty(String("timeline"));
             if (m_childBoard && m_childBoard->model().currentFrame() != m_textureAutoFitFrame) {
@@ -1554,6 +1567,26 @@ JsonObject BackendSession::dispatchCall(const String &method, const JsonObject &
         if (fileName.isEmpty()) {
             return makeError(String("No file path specified for save"));
         }
+        const String targetName = (view == String("child"))
+                                      ? AnimeanBusiness::ensureTextureViewFileExtension(fileName)
+                                      : AnimeanBusiness::ensureProjectFileExtension(fileName);
+        const bool divergentExists = (targetName != fileName && FileInfo::exists(targetName));
+        if (params.value(String("probe")).toBool(false)) {
+            return JsonObject{
+                {String("probe"), true},
+                {String("path"), targetName},
+                {String("fileName"), FileInfo(targetName).fileName()},
+                {String("needsConfirmOverwrite"), divergentExists},
+            };
+        }
+        if (divergentExists && params.contains(String("overwrite")) && !params.value(String("overwrite")).toBool(true)) {
+            return JsonObject{
+                {String("cancelled"), true},
+                {String("needsConfirmOverwrite"), true},
+                {String("path"), targetName},
+                {String("fileName"), FileInfo(targetName).fileName()},
+            };
+        }
         String error;
         const bool ok = (view == String("child"))
                             ? [&]{ AnimeCore::String e; const bool r = m_business->saveTextureViewTo(fileName, &e); error = e; return r; }()
@@ -1576,6 +1609,26 @@ JsonObject BackendSession::dispatchCall(const String &method, const JsonObject &
                                                    .toString(params.value(String("filePath")).toString()));
         if (fileName.isEmpty()) {
             return makeError(String("path is required"));
+        }
+        const String targetName = (view == String("child"))
+                                      ? AnimeanBusiness::ensureTextureViewFileExtension(fileName)
+                                      : AnimeanBusiness::ensureProjectFileExtension(fileName);
+        const bool divergentExists = (targetName != fileName && FileInfo::exists(targetName));
+        if (params.value(String("probe")).toBool(false)) {
+            return JsonObject{
+                {String("probe"), true},
+                {String("path"), targetName},
+                {String("fileName"), FileInfo(targetName).fileName()},
+                {String("needsConfirmOverwrite"), divergentExists},
+            };
+        }
+        if (divergentExists && params.contains(String("overwrite")) && !params.value(String("overwrite")).toBool(true)) {
+            return JsonObject{
+                {String("cancelled"), true},
+                {String("needsConfirmOverwrite"), true},
+                {String("path"), targetName},
+                {String("fileName"), FileInfo(targetName).fileName()},
+            };
         }
         String error;
         const bool ok = (view == String("child"))
@@ -1777,6 +1830,48 @@ JsonObject BackendSession::dispatchCall(const String &method, const JsonObject &
         markDirty(view == String("child") ? String("layers/child")
                                                   : String("layers/main"));
         return JsonObject{{String("groupId"), groupId}, {String("collapsed"), collapsed}};
+    }
+
+    if (method == String("layer.applyStructure")) {
+        const JsonArray rowsArr = params.value(String("rows")).toArray();
+        Vector<AnimeLayerPanelRow> rows;
+        rows.reserve(rowsArr.size());
+        for (const JsonValue &val : rowsArr) {
+            if (!val.isObject()) {
+                continue;
+            }
+            const JsonObject obj = val.toObject();
+            AnimeLayerPanelRow row;
+            row.group = obj.value(String("group")).toBool(false);
+            row.groupId = obj.value(String("groupId"))
+                              .toInt(obj.value(String("group_id")).toInt(0));
+            row.collapsed = obj.value(String("collapsed")).toBool(false);
+            row.layerIndex = obj.value(String("layerIndex"))
+                                 .toInt(obj.value(String("layer"))
+                                            .toInt(obj.value(String("index")).toInt(-1)));
+            row.name = obj.value(String("name")).toString();
+            row.visible = obj.value(String("visible")).toBool(true);
+            row.depth = obj.value(String("depth")).toInt(0);
+            row.child = obj.value(String("child")).toBool(false);
+            row.parent = obj.value(String("parent")).toBool(false);
+            rows.append(row);
+        }
+        int movedColumnId = params.value(String("movedColumnId")).toInt(0);
+        if (movedColumnId <= 0) {
+            const int movedLayer = params.value(String("movedLayer"))
+                                       .toInt(params.value(String("movedIndex")).toInt(-1));
+            if (movedLayer >= 0) {
+                movedColumnId = m_business->modelForView(view).layerIdAt(movedLayer);
+            }
+        }
+        const int landedOn = m_business->applyLayerPanelStructure(view, rows, movedColumnId);
+        markDirty(view == String("child") ? String("layers/child")
+                                                  : String("layers/main"));
+        markDirty(String("timeline"));
+        return JsonObject{
+            {String("landedOn"), landedOn},
+            {String("selected"), m_business->currentLayer(view)},
+        };
     }
 
     if (method == String("tool.select")) {
@@ -2086,7 +2181,22 @@ JsonObject BackendSession::dispatchCall(const String &method, const JsonObject &
 
     if (method == String("view.setActive")) {
         m_business->setActiveViewName(view);
+        const String paintPage = (m_business->activeViewName() == String("child"))
+                                     ? String("texture")
+                                     : String("drawing");
+        for (AnimeanWindowInfo &info : m_windowInfos) {
+            if (info.name == String("paint")) {
+                info.current = paintPage;
+                markDirty(String("windows"));
+                break;
+            }
+        }
         return JsonObject{{String("activeView"), m_business->activeViewName()}};
+    }
+
+    if (method == String("menu.refresh")) {
+        markDirty(String("menus"));
+        return JsonObject{{String("menus"), buildMenusState()}};
     }
 
     if (method == String("menu.trigger")) {
@@ -2248,6 +2358,61 @@ JsonObject BackendSession::dispatchCall(const String &method, const JsonObject &
         };
     }
 
+    if (method == String("timeline.thumbnails")) {
+        const String targetView = params.contains(String("view"))
+                                      ? resolveViewName(params.value(String("view")).toString())
+                                      : m_business->framePanelTargetViewName();
+        const int width = std::max(1, params.value(String("width")).toInt(83));
+        const int height = std::max(1, params.value(String("height")).toInt(62));
+        const int totalFrames = m_business->frameCount(targetView);
+        Vector<int> requestedFrames;
+        if (params.contains(String("frames")) && params.value(String("frames")).isArray()) {
+            for (const JsonValue &v : params.value(String("frames")).toArray()) {
+                const int idx = v.toInt(-1);
+                if (idx >= 0 && idx < totalFrames && !requestedFrames.contains(idx)) {
+                    requestedFrames.append(idx);
+                }
+            }
+        } else {
+            for (int i = 0; i < totalFrames; ++i) {
+                requestedFrames.append(i);
+            }
+        }
+
+        JsonObject thumbnailsObj;
+        JsonArray framesArr;
+        for (int frameIndex : requestedFrames) {
+            const String key = String("thumb_%1_%2_%3x%4_%5")
+                                   .arg(targetView)
+                                   .arg(frameIndex)
+                                   .arg(width)
+                                   .arg(height)
+                                   .arg(static_cast<unsigned long long>(m_thumbnailRevision));
+            if (!m_cachedImages.contains(key)) {
+                const Image rendered = m_business->renderFrameThumbnail(frameIndex, Size(width, height), targetView);
+                if (!rendered.isNull()) {
+                    const Image rgba = (rendered.format() == Image::Format_RGBA8888)
+                                           ? rendered
+                                           : rendered.convertToFormat(Image::Format_RGBA8888);
+                    m_cachedImages.insert(key, rgba);
+                }
+            }
+            if (m_cachedImages.contains(key)) {
+                sendImagePacket(key, m_cachedImages.value(key));
+                thumbnailsObj.insert(String::number(frameIndex), key);
+                framesArr.append(JsonObject{{String("frame"), frameIndex}, {String("key"), key}});
+            }
+        }
+        return JsonObject{
+            {String("view"), targetView},
+            {String("width"), width},
+            {String("height"), height},
+            {String("revision"), static_cast<std::int64_t>(m_thumbnailRevision)},
+            {String("thumbnails"), thumbnailsObj},
+            {String("frames"), framesArr},
+        };
+    }
+
     return makeError(String("Unknown method: %1").arg(method));
 }
 
@@ -2286,12 +2451,15 @@ JsonObject BackendSession::handleFileImportCall(const JsonObject &params)
 
     const String requestedView = params.value(String("view"))
                                       .toString(params.value(String("viewName")).toString());
-    if (isTextureImport || requestedView == String("child")) {
-        surfaceTextureView();
-    }
     const String targetView = (isTextureImport || requestedView == String("child"))
                                    ? String("child")
-                                   : resolveViewName(requestedView.isEmpty() ? String("main") : requestedView);
+                                   : (requestedView.isEmpty()
+                                          ? m_business->framePanelTargetViewName()
+                                          : resolveViewName(requestedView));
+    const bool probe = params.value(String("probe")).toBool(false);
+    if (!probe && targetView == String("child")) {
+        surfaceTextureView();
+    }
     PaintOpenGLWidget *board = boardForView(targetView);
     if (!board) {
         return makeError(String("Board not found"));
@@ -2311,6 +2479,31 @@ JsonObject BackendSession::handleFileImportCall(const JsonObject &params)
         for (const String &fileName : paths) {
             Image image;
             image.load(fileName);
+#ifdef ANIMEAN_WITH_PYTHON
+            if (image.isNull() && Py_IsInitialized()) {
+                try {
+                    py::gil_scoped_acquire acquire;
+                    py::module_ pilImage = py::module_::import("PIL.Image");
+                    py::module_ pilImageOps = py::module_::import("PIL.ImageOps");
+                    py::object opened = pilImage.attr("open")(Dir::toNativeSeparators(fileName).toStdString());
+                    py::object transposed = pilImageOps.attr("exif_transpose")(opened);
+                    py::object rgbaObj = transposed.attr("convert")("RGBA");
+                    const int w = rgbaObj.attr("width").cast<int>();
+                    const int h = rgbaObj.attr("height").cast<int>();
+                    const std::string rawBytes = rgbaObj.attr("tobytes")().cast<std::string>();
+                    opened.attr("close")();
+                    if (w > 0 && h > 0
+                        && rawBytes.size() == static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4) {
+                        image = Image(reinterpret_cast<const unsigned char *>(rawBytes.data()),
+                                      w,
+                                      h,
+                                      w * 4,
+                                      Image::Format_RGBA8888);
+                    }
+                } catch (...) {
+                }
+            }
+#endif
 
             if (image.isNull()) {
                 return makeError(String("Failed to load image:\n%1").arg(fileName));
@@ -2360,6 +2553,22 @@ JsonObject BackendSession::handleFileImportCall(const JsonObject &params)
                                         && (!canvasBounds.contains(sourceBounds)
                                             || !fuzzyCompare(sourceBounds.width(), canvasSize.width())
                                             || !fuzzyCompare(sourceBounds.height(), canvasSize.height()));
+                if (probe) {
+                    return JsonObject{
+                        {String("probe"), true},
+                        {String("kind"), normKind},
+                        {String("view"), targetView},
+                        {String("needsScale"), needsScale},
+                        {String("sourceBounds"), JsonObject{
+                            {String("x"), int(std::lround(sourceBounds.x()))},
+                            {String("y"), int(std::lround(sourceBounds.y()))},
+                            {String("width"), int(std::lround(sourceBounds.width()))},
+                            {String("height"), int(std::lround(sourceBounds.height()))},
+                        }},
+                        {String("canvasWidth"), int(std::lround(canvasSize.width()))},
+                        {String("canvasHeight"), int(std::lround(canvasSize.height()))},
+                    };
+                }
                 if (needsScale && fitToCanvas) {
                     scaleImportedVectorFramesToCanvas(&frames, canvasSize);
                 }
@@ -2425,6 +2634,22 @@ JsonObject BackendSession::handleFileImportCall(const JsonObject &params)
                                     && (!canvasBounds.contains(sourceBounds)
                                         || !fuzzyCompare(sourceBounds.width(), canvasSize.width())
                                         || !fuzzyCompare(sourceBounds.height(), canvasSize.height()));
+            if (probe) {
+                return JsonObject{
+                    {String("probe"), true},
+                    {String("kind"), normKind},
+                    {String("view"), targetView},
+                    {String("needsScale"), needsScale},
+                    {String("sourceBounds"), JsonObject{
+                        {String("x"), int(std::lround(sourceBounds.x()))},
+                        {String("y"), int(std::lround(sourceBounds.y()))},
+                        {String("width"), int(std::lround(sourceBounds.width()))},
+                        {String("height"), int(std::lround(sourceBounds.height()))},
+                    }},
+                    {String("canvasWidth"), int(std::lround(canvasSize.width()))},
+                    {String("canvasHeight"), int(std::lround(canvasSize.height()))},
+                };
+            }
             if (needsScale && fitToCanvas) {
                 scaleImportedVectorFramesToCanvas(&frames, canvasSize);
             }
@@ -2532,6 +2757,25 @@ JsonObject BackendSession::handleFileTextureCall(const JsonObject &params)
         if (fileName.isEmpty()) {
             return makeError(String("path is required"));
         }
+        const String targetName = AnimeanBusiness::ensureTextureViewFileExtension(fileName);
+        const bool divergentExists = (targetName != fileName && FileInfo::exists(targetName));
+        if (params.value(String("probe")).toBool(false)) {
+            return JsonObject{
+                {String("probe"), true},
+                {String("kind"), String("save")},
+                {String("path"), targetName},
+                {String("fileName"), FileInfo(targetName).fileName()},
+                {String("needsConfirmOverwrite"), divergentExists},
+            };
+        }
+        if (divergentExists && params.contains(String("overwrite")) && !params.value(String("overwrite")).toBool(true)) {
+            return JsonObject{
+                {String("cancelled"), true},
+                {String("needsConfirmOverwrite"), true},
+                {String("path"), targetName},
+                {String("fileName"), FileInfo(targetName).fileName()},
+            };
+        }
         String error;
         if (![&]{ AnimeCore::String e; const bool r = m_business->saveTextureViewTo(fileName, &e); error = e; return r; }()) {
             return makeError(error.isEmpty() ? String("Failed to save texture view") : error);
@@ -2548,6 +2792,25 @@ JsonObject BackendSession::handleFileTextureCall(const JsonObject &params)
         || normKind == String("savetextureviewas")) {
         if (fileName.isEmpty()) {
             return makeError(String("path is required"));
+        }
+        const String targetName = AnimeanBusiness::ensureTextureViewFileExtension(fileName);
+        const bool divergentExists = (targetName != fileName && FileInfo::exists(targetName));
+        if (params.value(String("probe")).toBool(false)) {
+            return JsonObject{
+                {String("probe"), true},
+                {String("kind"), String("saveAs")},
+                {String("path"), targetName},
+                {String("fileName"), FileInfo(targetName).fileName()},
+                {String("needsConfirmOverwrite"), divergentExists},
+            };
+        }
+        if (divergentExists && params.contains(String("overwrite")) && !params.value(String("overwrite")).toBool(true)) {
+            return JsonObject{
+                {String("cancelled"), true},
+                {String("needsConfirmOverwrite"), true},
+                {String("path"), targetName},
+                {String("fileName"), FileInfo(targetName).fileName()},
+            };
         }
         String error;
         if (![&]{ AnimeCore::String e; const bool r = m_business->saveTextureViewTo(fileName, &e); error = e; return r; }()) {
@@ -2732,6 +2995,7 @@ bool BackendSession::triggerMenuById(const String &id, const JsonObject &params,
                               ? params.value(String("checked")).toBool()
                               : !m_business->changeableTexture();
         m_business->setChangeableTexture(next);
+        markDirty(String("window"));
         markDirty(String("menus"));
         return true;
     }
@@ -2940,7 +3204,7 @@ void BackendSession::appendPythonDebug(const String &message)
         return;
     }
     m_pythonDebugLog.append(trimmed);
-    while (m_pythonDebugLog.size() > 200) {
+    while (m_pythonDebugLog.size() > 2000) {
         m_pythonDebugLog.removeFirst();
     }
     markDirty(String("window"));
@@ -3089,6 +3353,7 @@ JsonObject BackendSession::buildWindowState() const
         {String("title"), m_business->windowTitle()},
         {String("status"), m_business->statusMessage()},
         {String("activeView"), m_business->activeViewName()},
+        {String("assetView"), m_business->assetPanelTargetViewName()},
         {String("currentFilePath"), m_business->currentFilePath()},
         {String("childFilePath"), m_business->childFilePath()},
         {String("canvasWidth"), mainCanvas.width()},

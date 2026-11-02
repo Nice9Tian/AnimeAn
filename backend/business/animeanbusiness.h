@@ -209,6 +209,9 @@ public:
     AnimeCore::String layerName(int layerIndex, const AnimeCore::String &viewName = AnimeCore::String("main")) const;
     bool isLayerVisible(int layerIndex, const AnimeCore::String &viewName = AnimeCore::String("main")) const;
     AnimeCore::Vector<AnimeLayerPanelRow> layerRowsForView(const AnimeCore::String &viewName = AnimeCore::String("main")) const;
+    int applyLayerPanelStructure(const AnimeCore::String &viewName,
+                                 const AnimeCore::Vector<AnimeLayerPanelRow> &rows,
+                                 int movedColumnId = 0);
     int reorderLayerTree(const AnimeCore::String &viewName,
                          const AnimeCore::Vector<AnimeLayerNode> &capturedTree,
                          int movedColumnId,

@@ -371,25 +371,14 @@ test("Assets 拖到 Layers：自定义类型与图层换序分离，新建素材
     assert.equal(dropChild.defaultPrevented, false);
     assert.equal(store.calls.length, 1);
 
-    // Switch activeView to "child", but changeableTexture is unchecked -> Assets still targets "main"
-    store.set("window", { activeView: "child" });
-    store.set("menus", [
-      {
-        id: "child.setting",
-        children: [{ id: "child.setting.changeableTexture", checked: false }],
-      },
-    ]);
+    // Switch activeView to "child", but assetView is still "main" -> Assets still targets "main"
+    store.set("window", { activeView: "child", assetView: "main" });
     assert.equal(store.assetView, "main");
     childTree.dispatch("drop", { dataTransfer: assetDt });
     assert.equal(store.calls.length, 1);
 
-    // Enable changeableTexture -> Assets now targets "child", drop on Child Layers succeeds
-    store.set("menus", [
-      {
-        id: "child.setting",
-        children: [{ id: "child.setting.changeableTexture", checked: true }],
-      },
-    ]);
+    // Window assetView becomes "child" -> Assets now targets "child", drop on Child Layers succeeds
+    store.set("window", { activeView: "child", assetView: "child" });
     assert.equal(store.assetView, "child");
     const childAssetDt = new FakeDataTransfer();
     const childAssetItems = assetsRoot.querySelector(".qframe-view")!.children;
@@ -400,14 +389,89 @@ test("Assets 拖到 Layers：自定义类型与图层换序分离，新建素材
       params: { view: "child", assetIndex: 0 },
     });
 
-    // Layer reorder drag uses LAYER_DRAG_MIME and triggers layer.move without triggering asset.addLayer
+    // Layer reorder drag uses LAYER_DRAG_MIME and triggers layer.applyStructure without triggering asset.addLayer
     const layerDt = new FakeDataTransfer();
     mainTree.children[0].dispatch("dragstart", { dataTransfer: layerDt });
     assert.equal(layerDt.getData(panels.LAYER_DRAG_MIME), "0");
     mainTree.children[1].dispatch("drop", { dataTransfer: layerDt });
     assert.deepEqual(store.calls.at(-1), {
-      method: "layer.move",
-      params: { view: "main", fromIndex: 1, toIndex: 0 },
+      method: "layer.applyStructure",
+      params: {
+        view: "main",
+        rows: [
+          { group: false, layer: 0, name: "Layer 0", depth: 0, visible: true },
+          { group: false, layer: 1, name: "Layer 1", depth: 0, visible: true },
+        ],
+        movedLayer: 1,
+      },
     });
   });
+});
+
+test("图层拖动：区分行上方、行下方、组里面，支持拖组、拖进拖出组、父层带跟随子层", async () => {
+  const { panels } = await loadModules();
+  const groupRow = { group: true, group_id: 10, name: "Group", depth: 0, collapsed: false };
+  const leafRow = { group: false, layer: 2, name: "Leaf", depth: 0, visible: true };
+  const fakeEl = { clientHeight: 24, getBoundingClientRect: () => ({ top: 0, height: 24 }) };
+
+  assert.equal(panels.layerDropZone({ offsetY: 2 }, fakeEl, groupRow), "above");
+  assert.equal(panels.layerDropZone({ offsetY: 12 }, fakeEl, groupRow), "inside");
+  assert.equal(panels.layerDropZone({ offsetY: 22 }, fakeEl, groupRow), "below");
+  assert.equal(panels.layerDropZone({ offsetY: 4 }, fakeEl, leafRow), "above");
+  assert.equal(panels.layerDropZone({ offsetY: 18 }, fakeEl, leafRow), "below");
+
+  const treeRows = [
+    { group: true, group_id: 10, name: "Grp", depth: 0, collapsed: false },
+    { group: false, layer: 3, name: "InGrp", depth: 1, visible: true },
+    { group: false, layer: 2, name: "Parent", depth: 0, visible: true, parent: true },
+    { group: false, layer: 1, name: "└ Child", depth: 1, visible: true, child: true },
+    { group: false, layer: 0, name: "Base", depth: 0, visible: true },
+  ];
+
+  // 1) Drag Parent (index 2) into Grp (index 0, zone "inside"): Parent + tracked Child move together into Grp
+  const intoGrp = panels.applyLayerDrop(treeRows, 2, 0, "inside");
+  assert.ok(intoGrp);
+  assert.equal(intoGrp.movedLayer, 2);
+  assert.deepEqual(
+    intoGrp.rows.map((r: any) => [r.group ? `G${r.group_id}` : `L${r.layer}`, r.depth]),
+    [
+      ["G10", 0],
+      ["L3", 1],
+      ["L2", 1],
+      ["L1", 2],
+      ["L0", 0],
+    ],
+  );
+
+  // 2) Drag Grp (index 0) below Base (index 4, zone "below"): entire group moves below Base
+  const moveGrp = panels.applyLayerDrop(treeRows, 0, 4, "below");
+  assert.ok(moveGrp);
+  assert.equal(moveGrp.movedLayer, -1);
+  assert.deepEqual(
+    moveGrp.rows.map((r: any) => [r.group ? `G${r.group_id}` : `L${r.layer}`, r.depth]),
+    [
+      ["L2", 0],
+      ["L1", 1],
+      ["L0", 0],
+      ["G10", 0],
+      ["L3", 1],
+    ],
+  );
+
+  // 3) Drag InGrp (index 1) out of Grp below Base (index 4): Grp becomes empty and is pruned
+  const outOfGrp = panels.applyLayerDrop(treeRows, 1, 4, "below");
+  assert.ok(outOfGrp);
+  assert.equal(outOfGrp.movedLayer, 3);
+  assert.deepEqual(
+    outOfGrp.rows.map((r: any) => [r.group ? `G${r.group_id}` : `L${r.layer}`, r.depth]),
+    [
+      ["L2", 0],
+      ["L1", 1],
+      ["L0", 0],
+      ["L3", 0],
+    ],
+  );
+
+  // 4) Tracked child row (index 3) is not draggable on its own
+  assert.equal(panels.applyLayerDrop(treeRows, 3, 0, "above"), null);
 });

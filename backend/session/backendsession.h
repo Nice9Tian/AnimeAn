@@ -147,6 +147,7 @@ private:
     Hash<String, CursorState> m_cursors;
     Hash<String, Image> m_cachedImages;
     Hash<String, std::uint64_t> m_lastBoardFrameId;
+    std::uint64_t m_thumbnailRevision = 1;
 };
 
 #endif // BACKENDSESSION_H

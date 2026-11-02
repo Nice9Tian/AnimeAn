@@ -800,6 +800,133 @@ bool Image::operator!=(const Image &other) const
     return !(*this == other);
 }
 
+static int readJpegExifOrientation(const unsigned char *data, std::size_t size)
+{
+    if (!data || size < 4 || data[0] != 0xFF || data[1] != 0xD8) {
+        return 1;
+    }
+    std::size_t pos = 2;
+    while (pos + 4 <= size) {
+        if (data[pos] != 0xFF) {
+            break;
+        }
+        while (pos < size && data[pos] == 0xFF) {
+            ++pos;
+        }
+        if (pos >= size) {
+            break;
+        }
+        const unsigned char marker = data[pos++];
+        if (marker == 0xD9 || marker == 0xDA || marker == 0x00) {
+            break;
+        }
+        if ((marker >= 0xD0 && marker <= 0xD8) || marker == 0x01) {
+            continue;
+        }
+        if (pos + 2 > size) {
+            break;
+        }
+        const std::size_t segLen = (static_cast<std::size_t>(data[pos]) << 8) | data[pos + 1];
+        if (segLen < 2 || pos + segLen > size) {
+            break;
+        }
+        if (marker == 0xE1 && segLen >= 16) {
+            const unsigned char *payload = data + pos + 2;
+            const std::size_t payloadLen = segLen - 2;
+            if (std::memcmp(payload, "Exif\0\0", 6) == 0) {
+                const unsigned char *tiff = payload + 6;
+                const std::size_t tiffLen = payloadLen - 6;
+                bool littleEndian = false;
+                if (tiffLen >= 8 && tiff[0] == 'I' && tiff[1] == 'I') {
+                    littleEndian = true;
+                } else if (tiffLen >= 8 && tiff[0] == 'M' && tiff[1] == 'M') {
+                    littleEndian = false;
+                } else {
+                    pos += segLen;
+                    continue;
+                }
+                const auto readU16 = [tiff, littleEndian](std::size_t off) -> unsigned int {
+                    return littleEndian
+                               ? (static_cast<unsigned int>(tiff[off]) | (static_cast<unsigned int>(tiff[off + 1]) << 8))
+                               : ((static_cast<unsigned int>(tiff[off]) << 8) | static_cast<unsigned int>(tiff[off + 1]));
+                };
+                const auto readU32 = [tiff, littleEndian](std::size_t off) -> std::size_t {
+                    return littleEndian
+                               ? (static_cast<std::size_t>(tiff[off])
+                                  | (static_cast<std::size_t>(tiff[off + 1]) << 8)
+                                  | (static_cast<std::size_t>(tiff[off + 2]) << 16)
+                                  | (static_cast<std::size_t>(tiff[off + 3]) << 24))
+                               : ((static_cast<std::size_t>(tiff[off]) << 24)
+                                  | (static_cast<std::size_t>(tiff[off + 1]) << 16)
+                                  | (static_cast<std::size_t>(tiff[off + 2]) << 8)
+                                  | static_cast<std::size_t>(tiff[off + 3]));
+                };
+                if (readU16(2) == 0x002Au) {
+                    const std::size_t ifdOffset = readU32(4);
+                    if (ifdOffset + 2 <= tiffLen) {
+                        const unsigned int count = readU16(ifdOffset);
+                        for (unsigned int i = 0; i < count; ++i) {
+                            const std::size_t entry = ifdOffset + 2 + static_cast<std::size_t>(i) * 12;
+                            if (entry + 12 > tiffLen) {
+                                break;
+                            }
+                            if (readU16(entry) == 0x0112u) {
+                                const unsigned int val = readU16(entry + 8);
+                                if (val >= 1u && val <= 8u) {
+                                    return static_cast<int>(val);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        pos += segLen;
+    }
+    return 1;
+}
+
+static Image applyExifOrientation(const Image &src, int orientation)
+{
+    if (src.isNull() || orientation <= 1 || orientation > 8) {
+        return src;
+    }
+    const int w = src.width();
+    const int h = src.height();
+    const bool swapDims = orientation >= 5;
+    const int dstW = swapDims ? h : w;
+    const int dstH = swapDims ? w : h;
+    Image dst(dstW, dstH, Image::Format_RGBA8888);
+    if (dst.isNull()) {
+        return src;
+    }
+    const unsigned char *sBits = src.constBits();
+    unsigned char *dBits = dst.bits();
+    const int sStride = src.bytesPerLine();
+    const int dStride = dst.bytesPerLine();
+    for (int y = 0; y < dstH; ++y) {
+        unsigned char *dRow = dBits + static_cast<std::size_t>(y) * static_cast<std::size_t>(dStride);
+        for (int x = 0; x < dstW; ++x) {
+            int sx = x;
+            int sy = y;
+            switch (orientation) {
+            case 2: sx = w - 1 - x; sy = y; break;
+            case 3: sx = w - 1 - x; sy = h - 1 - y; break;
+            case 4: sx = x; sy = h - 1 - y; break;
+            case 5: sx = y; sy = x; break;
+            case 6: sx = y; sy = h - 1 - x; break;
+            case 7: sx = w - 1 - y; sy = h - 1 - x; break;
+            case 8: sx = w - 1 - y; sy = x; break;
+            default: break;
+            }
+            const unsigned char *sPx = sBits + static_cast<std::size_t>(sy) * static_cast<std::size_t>(sStride)
+                                       + static_cast<std::size_t>(sx) * 4;
+            std::memcpy(dRow + static_cast<std::size_t>(x) * 4, sPx, 4);
+        }
+    }
+    return dst;
+}
+
 static Image decodeImageBytes(const unsigned char *data, std::size_t size)
 {
     if (!data || size == 0
@@ -807,6 +934,7 @@ static Image decodeImageBytes(const unsigned char *data, std::size_t size)
         return Image();
     }
 
+    const int orientation = readJpegExifOrientation(data, size);
     const int len = static_cast<int>(size);
     int w = 0;
     int h = 0;
@@ -826,7 +954,7 @@ static Image decodeImageBytes(const unsigned char *data, std::size_t size)
             }
         }
         stbi_image_free(decoded16);
-        return out;
+        return applyExifOrientation(out, orientation);
     }
 
     stbi_uc *decoded8 = stbi_load_from_memory(data, len, &w, &h, &channels, 4);
@@ -840,7 +968,7 @@ static Image decodeImageBytes(const unsigned char *data, std::size_t size)
                     static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4);
     }
     stbi_image_free(decoded8);
-    return out;
+    return applyExifOrientation(out, orientation);
 }
 
 Image Image::decodePng(const unsigned char *data, std::size_t size) { return hasPngSignature(data, size) ? decodeImageBytes(data, size) : Image(); } Image Image::decodePng(const std::vector<unsigned char> &bytes)

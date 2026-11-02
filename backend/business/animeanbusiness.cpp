@@ -1218,6 +1218,120 @@ Vector<AnimeLayerPanelRow> AnimeanBusiness::layerRowsForView(const String &viewN
     return rows;
 }
 
+int AnimeanBusiness::applyLayerPanelStructure(const String &viewName,
+                                              const Vector<AnimeLayerPanelRow> &rows,
+                                              int movedColumnId)
+{
+    const String key = resolveViewName(viewName);
+    AnimeSceneModel &model = modelForView(key);
+    Set<int> hostedRows;
+
+    const auto parseLevel = [&](const auto &self,
+                                int &idx,
+                                int parentDepth,
+                                bool insideLeaf) -> Vector<AnimeLayerNode> {
+        Vector<AnimeLayerNode> nodes;
+        while (idx < rows.size()) {
+            const AnimeLayerPanelRow &row = rows[idx];
+            if (row.depth <= parentDepth) {
+                break;
+            }
+            ++idx;
+            if (insideLeaf || row.child) {
+                if (!row.group) {
+                    const int childLayerId = model.layerIdAt(row.layerIndex);
+                    if (childLayerId > 0) {
+                        hostedRows.insert(childLayerId);
+                    }
+                }
+                self(self, idx, row.depth, true);
+                continue;
+            }
+            if (row.group) {
+                AnimeLayerNode node;
+                node.groupId = row.groupId;
+                node.name = row.name;
+                node.collapsed = row.collapsed;
+                node.children = self(self, idx, row.depth, false);
+                if (node.isGroup() || node.layerId > 0) {
+                    nodes.append(node);
+                }
+            } else {
+                AnimeLayerNode node;
+                node.layerId = model.layerIdAt(row.layerIndex);
+                self(self, idx, row.depth, true);
+                if (node.layerId > 0) {
+                    nodes.append(node);
+                }
+            }
+        }
+        return nodes;
+    };
+
+    int idx = 0;
+    Vector<AnimeLayerNode> captured = parseLevel(parseLevel, idx, -1, false);
+
+    if (!hostedRows.isEmpty()) {
+        const auto appendToGroup = [&](const auto &self,
+                                       Vector<AnimeLayerNode> &nodes,
+                                       int groupId,
+                                       int layerId) -> bool {
+            for (AnimeLayerNode &node : nodes) {
+                if (!node.isGroup()) {
+                    continue;
+                }
+                if (node.groupId == groupId) {
+                    AnimeLayerNode leaf;
+                    leaf.layerId = layerId;
+                    node.children.append(leaf);
+                    return true;
+                }
+                if (self(self, node.children, groupId, layerId)) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        const auto restoreOriginalGroups = [&](const auto &self,
+                                               const Vector<AnimeLayerNode> &original,
+                                               int parentGroupId) -> void {
+            for (const AnimeLayerNode &node : original) {
+                if (node.isGroup()) {
+                    self(self, node.children, node.groupId);
+                    continue;
+                }
+                if (!hostedRows.contains(node.layerId)) {
+                    continue;
+                }
+                if (parentGroupId <= 0
+                    || !appendToGroup(appendToGroup, captured, parentGroupId, node.layerId)) {
+                    AnimeLayerNode leaf;
+                    leaf.layerId = node.layerId;
+                    captured.append(leaf);
+                }
+            }
+        };
+        restoreOriginalGroups(restoreOriginalGroups, model.layerTree(), 0);
+    }
+
+    Vector<std::pair<int, int>> flatGroupAndLayerRoles;
+    flatGroupAndLayerRoles.reserve(rows.size());
+    for (const AnimeLayerPanelRow &row : rows) {
+        const int groupId = row.group ? row.groupId : 0;
+        const int layerRole = row.group ? -1 : row.layerIndex;
+        flatGroupAndLayerRoles.append({groupId, layerRole});
+    }
+
+    const int landedOn = reorderLayerTree(key, captured, movedColumnId, flatGroupAndLayerRoles);
+    if (AnimePaintViewAdapter *adapter = adapterFor(key)) {
+        if (adapter->requestUpdate) {
+            adapter->requestUpdate();
+        }
+    }
+    return landedOn;
+}
+
 int AnimeanBusiness::reorderLayerTree(const String &viewName,
                                       const Vector<AnimeLayerNode> &capturedTree,
                                       int movedColumnId,
@@ -1431,6 +1545,7 @@ bool AnimeanBusiness::setLayerVisible(int layerIndex, bool visible, const String
             return false;
         }
         model.setLayerVisible(layerIndex, visible);
+        requestClearTimelineThumbnails();
         if (AnimePaintViewAdapter *adapter = adapterFor(key)) {
             if (adapter->requestUpdate) {
                 adapter->requestUpdate();
@@ -2272,6 +2387,7 @@ void AnimeanBusiness::resetHistory(const String &label, const String &viewName)
     if (AnimePaintViewAdapter *adapter = adapterFor(key)) {
         if (adapter->resetHistory) {
             adapter->resetHistory(label);
+            requestClearTimelineThumbnails();
             historyChanged();
             return;
         }
@@ -2297,6 +2413,7 @@ void AnimeanBusiness::handleViewHistoryCommitted(const String &viewName)
         }
         historyForView(otherKey).truncateRedo();
     }
+    requestClearTimelineThumbnails();
     historyChanged();
 }
 

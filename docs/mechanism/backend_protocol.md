@@ -112,7 +112,7 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 
 | 键 | 内容 |
 |---|---|
-| `window` | 标题、状态栏文字 |
+| `window` | 标题、状态栏文字、活动画板 `activeView`、素材面板目标画板 `assetView`、画布尺寸、工程与纹理路径、`pythonDebug` 日志（最多保留 2000 条） |
 | `theme` | `AnimeTheme` 的模式和全部颜色 |
 | `menus` | 菜单栏的完整结构，含 Python 返回的菜单 |
 | `tools` | 工具页、当前工具、被锁定的工具 |
@@ -132,5 +132,13 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 ## 调用
 
 方法名在 `backend/session/backendsession.cpp` 的 `dispatchCall`。图层右键走 `layer.contextMenu`（返回菜单项，含 Python 注册的项）和 `layer.contextAction`。网页发 `input` 时带 `time`（毫秒），后端写进事件时间戳，稳定器要用它。
+
+| 调用 | 参数 | 返回 / 说明 |
+|---|---|---|
+| `menu.refresh` | `{}` | 从 Python 重新生成菜单结构并返回 `{ menus }`，同时标记 `menus` 状态更新 |
+| `layer.applyStructure` | `{ view, rows, movedLayer }` | 按拖动后的树形行序列重排图层与图层组（含父层携带跟随子层），返回 `{ landedOn, selected }` |
+| `timeline.thumbnails` | `{ frames?, width, height, view? }` | 用 `renderFrameThumbnail` 渲染指定帧缩略图并通过 `image` 帧下发，返回 `{ view, width, height, revision, thumbnails, frames }` |
+| `file.import` | `{ kind, paths, view?, probe?, fitToCanvas? }` | 未传 `view` 时按 `framePanelTargetViewName` 选择目标板；矢量导入支持 `probe: true` 先返回 `{ needsScale, sourceBounds, canvasWidth, canvasHeight }` |
+| `project.save`、`project.saveAs`、`file.texture` | `{ path, probe?, overwrite? }` | 支持 `probe: true` 检查后缀补全改写后的目标文件是否已存在，返回 `{ needsConfirmOverwrite, fileName, path }` |
 
 Qt 版打开时先弹 New Project 对话框，网页版同样在收到第一个 `window` 状态后弹出。

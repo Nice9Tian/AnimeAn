@@ -697,3 +697,132 @@ test("Options 的 color 控件与带 state.color 的 button 控件", async () =>
     assert.equal(btn.style.background, expected.background);
   });
 });
+
+test("点开菜单先调 menu.refresh 获取最新勾选状态再显示弹窗", async () => {
+  await withDom(async ({ body, ui: { createStore, createChrome } }) => {
+    const stateListeners = new Map<string, (v: any) => void>();
+    const calls: Array<{ method: string; params: any }> = [];
+    const store = createStore({
+      onState: (k: string, fn: (v: any) => void) => stateListeners.set(k, fn),
+      onImage() {},
+      call: async (method: string, params: any) => {
+        calls.push({ method, params });
+        if (method === "menu.refresh") {
+          return {
+            menus: [
+              {
+                id: "script_menu",
+                text: "Scripts",
+                kind: "submenu",
+                children: [{ id: "script:main:m:item1", text: "Toggle Hook", kind: "check", checked: true }],
+              },
+            ],
+          };
+        }
+        return {};
+      },
+    });
+    const menuEl = new FakeElement("div");
+    const statusEl = new FakeElement("div");
+    body.append(menuEl, statusEl);
+    createChrome(menuEl, statusEl, store);
+
+    stateListeners.get("menus")?.([
+      {
+        id: "script_menu",
+        text: "Scripts",
+        kind: "submenu",
+        children: [{ id: "script:main:m:item1", text: "Toggle Hook", kind: "check", checked: false }],
+      },
+    ]);
+
+    const items = menuEl.querySelectorAll(".item");
+    assert.ok(items.length >= 1);
+    items[0].click();
+    await new Promise((r) => setTimeout(r, 0));
+
+    assert.equal(calls[0]?.method, "menu.refresh");
+    const popup = body.querySelector(".qmenu")!;
+    assert.ok(popup);
+    assert.equal(popup.querySelector(".qmenu-mark")?.textContent, "✓");
+  });
+});
+
+test("矢量导入询问缩放与保存后缀改写同名文件询问覆盖", async () => {
+  await withDom(async ({ body, win, ui: { createStore, createChrome } }) => {
+    let nextPicked: string[] = [];
+    win.__TAURI__ = {
+      core: {
+        invoke: async (cmd: string) => (cmd === "pick_files" ? nextPicked : undefined),
+      },
+    };
+    const stateListeners = new Map<string, (v: any) => void>();
+    const calls: Array<{ method: string; params: any }> = [];
+    let nextProbeNeedsScale = true;
+    let nextNeedsOverwrite = true;
+    const store = createStore({
+      onState: (k: string, fn: (v: any) => void) => stateListeners.set(k, fn),
+      onImage() {},
+      call: async (method: string, params: any) => {
+        calls.push({ method, params });
+        if (method === "file.import" && params.probe) {
+          return {
+            probe: true,
+            needsScale: nextProbeNeedsScale,
+            sourceBounds: { x: 10, y: 20, width: 1920, height: 1080 },
+            canvasWidth: 800,
+            canvasHeight: 600,
+          };
+        }
+        if ((method === "project.saveAs" || method === "file.texture") && params.probe) {
+          return {
+            probe: true,
+            needsConfirmOverwrite: nextNeedsOverwrite,
+            fileName: method === "project.saveAs" ? "demo.anproj" : "tex.textureview",
+            path: method === "project.saveAs" ? "C:/tmp/demo.anproj" : "C:/tmp/tex.textureview",
+          };
+        }
+        return {};
+      },
+    });
+    const menuEl = new FakeElement("div");
+    const statusEl = new FakeElement("div");
+    body.append(menuEl, statusEl);
+    createChrome(menuEl, statusEl, store);
+
+    // 1. 导入矢量线需要缩放，点 Yes -> fitToCanvas: true
+    nextPicked = ["C:/tmp/line.pli"];
+    const importPromise1 = stateListeners.get("event")?.({ name: "menu.action", args: { id: "file.import.opentoonz" } });
+    await new Promise((r) => setTimeout(r, 0));
+    let dlg = body.querySelectorAll(".qdialog").at(-1)!;
+    assert.ok(dlg);
+    assert.equal(dlg.querySelector(".qdialog-caption")?.textContent, "Import OpenToonz Lines");
+    assert.equal(
+      dlg.querySelector(".qdialog-caption-text")?.textContent,
+      "The imported drawing bounds are (10, 20) 1920 x 1080, but the current canvas is 800 x 600.\nFit it to the current canvas?",
+    );
+    dlg.querySelectorAll(".qbutton")[0].click(); // Yes
+    await importPromise1;
+    assert.deepEqual(calls.at(-1), {
+      method: "file.import",
+      params: { kind: "opentoonz", paths: ["C:/tmp/line.pli"], fitToCanvas: true },
+    });
+
+    // 2. 保存工程时后缀补全改写且目标文件已存在，点 No -> 取消不覆盖
+    calls.length = 0;
+    nextPicked = ["C:/tmp/demo"];
+    const savePromise1 = stateListeners.get("event")?.({ name: "dialog.saveProjectAs" });
+    await new Promise((r) => setTimeout(r, 0));
+    dlg = body.querySelectorAll(".qdialog").at(-1)!;
+    assert.ok(dlg);
+    assert.equal(dlg.querySelector(".qdialog-caption")?.textContent, "Save Project As");
+    assert.equal(
+      dlg.querySelector(".qdialog-caption-text")?.textContent,
+      "demo.anproj already exists.\nDo you want to replace it?",
+    );
+    dlg.querySelectorAll(".qbutton")[1].click(); // No
+    await savePromise1;
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].params.probe, true);
+  });
+});
