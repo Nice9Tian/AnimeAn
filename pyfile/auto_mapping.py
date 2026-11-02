@@ -49,6 +49,8 @@ import tempfile
 import time
 
 import bezier
+import mapping_preview
+import gridsolve
 import python_hooks
 import overlay_stack
 import script_store
@@ -1322,6 +1324,235 @@ class _Curve:
                 return (dx / length, dy / length)
         return self.dir_at(arc)
 
+    def _ensure_batch(self):
+        if hasattr(self, "_batch_ready"):
+            return
+        import pydeps
+        np = pydeps.ensure("numpy")
+        if not self.curved:
+            pts = np.asarray(self.points, dtype=float)
+            cum = np.asarray(self.cum, dtype=float)
+            if len(self.points) >= 2:
+                seg_dx = pts[1:, 0] - pts[:-1, 0]
+                seg_dy = pts[1:, 1] - pts[:-1, 1]
+                seg_len = np.hypot(seg_dx, seg_dy)
+                safe_len = np.where(seg_len > 1e-12, seg_len, 1.0)
+                unit_dx = np.where(seg_len > 1e-12, seg_dx / safe_len, 1.0)
+                unit_dy = np.where(seg_len > 1e-12, seg_dy / safe_len, 0.0)
+                fast_ends = bool(seg_len.size and np.all(seg_len > 1e-12))
+                base_x = pts[:-1, 0] - unit_dx * cum[:-1]
+                base_y = pts[:-1, 1] - unit_dy * cum[:-1]
+            else:
+                seg_dx = seg_dy = seg_len = np.zeros(0, dtype=float)
+                unit_dx = unit_dy = base_x = base_y = np.zeros(0, dtype=float)
+                fast_ends = False
+            self._b_pts = pts
+            self._b_cum = cum
+            self._b_seg_dx = seg_dx
+            self._b_seg_dy = seg_dy
+            self._b_seg_len = seg_len
+            self._b_unit_dx = unit_dx
+            self._b_unit_dy = unit_dy
+            self._b_base_x = base_x
+            self._b_base_y = base_y
+            self._b_fast_ends = fast_ends
+        else:
+            cum = np.asarray(self.cum, dtype=float)
+            luts = np.asarray(self.luts, dtype=float)
+            segs = np.asarray(self.segs, dtype=float)
+            self._b_cum = cum
+            self._b_luts = luts
+            self._b_luts_inner = luts[:, 1:_CURVE_LUT]
+            self._b_p0x = segs[:, 0, 0].copy()
+            self._b_p0y = segs[:, 0, 1].copy()
+            self._b_c1x = segs[:, 1, 0].copy()
+            self._b_c1y = segs[:, 1, 1].copy()
+            self._b_c2x = segs[:, 2, 0].copy()
+            self._b_c2y = segs[:, 2, 1].copy()
+            self._b_p3x = segs[:, 3, 0].copy()
+            self._b_p3y = segs[:, 3, 1].copy()
+            cdx = self._b_p3x - self._b_p0x
+            cdy = self._b_p3y - self._b_p0y
+            clen = np.hypot(cdx, cdy)
+            csafe = np.where(clen > 1e-12, clen, 1.0)
+            self._b_chord_ux = np.where(clen > 1e-12, cdx / csafe, 1.0)
+            self._b_chord_uy = np.where(clen > 1e-12, cdy / csafe, 0.0)
+            self._b_dir0 = self._seg_dir(0, 0.0)
+            self._b_dir1 = self._seg_dir(len(self.segs) - 1, 1.0)
+        self._b_sharp = (np.asarray(self.sharp_arcs, dtype=float)
+                         if self.sharp_arcs else None)
+        self._b_np = np
+        self._batch_ready = True
+
+    def _point_flat(self, a):
+        np = self._b_np
+        if not self.curved:
+            M = len(self.points)
+            if M < 2 or self.total <= 0.0:
+                return (np.full_like(a, self.points[0][0]),
+                        np.full_like(a, self.points[0][1]))
+            idx = np.clip(np.searchsorted(self._b_cum, a, side="right") - 1,
+                          0, M - 2)
+            if self._b_fast_ends:
+                return (self._b_base_x[idx] + self._b_unit_dx[idx] * a,
+                        self._b_base_y[idx] + self._b_unit_dy[idx] * a)
+            span = self._b_seg_len[idx]
+            t = np.where(span > 0.0,
+                         (a - self._b_cum[idx]) / np.where(span > 0.0, span, 1.0),
+                         0.0)
+            x = self._b_pts[idx, 0] + self._b_seg_dx[idx] * t
+            y = self._b_pts[idx, 1] + self._b_seg_dy[idx] * t
+            lo = a <= 0.0
+            if np.any(lo):
+                x = np.where(lo, self._b_pts[0, 0] + self._b_unit_dx[0] * a, x)
+                y = np.where(lo, self._b_pts[0, 1] + self._b_unit_dy[0] * a, y)
+            hi = a >= self.total
+            if np.any(hi):
+                extra = a - self.total
+                x = np.where(hi, self._b_pts[-1, 0] + self._b_unit_dx[-1] * extra, x)
+                y = np.where(hi, self._b_pts[-1, 1] + self._b_unit_dy[-1] * extra, y)
+            return x, y
+        K = len(self.segs)
+        idx = np.clip(np.searchsorted(self._b_cum, a, side="right") - 1, 0, K - 1)
+        local = a - self._b_cum[idx]
+        slot = np.sum(local[:, None] >= self._b_luts_inner[idx], axis=1)
+        lut_lo = self._b_luts[idx, slot]
+        lut_hi = self._b_luts[idx, slot + 1]
+        span = lut_hi - lut_lo
+        frac = np.where(span > 0.0,
+                        (local - lut_lo) / np.where(span > 0.0, span, 1.0),
+                        0.0)
+        t = (slot + frac) / _CURVE_LUT
+        mt = 1.0 - t
+        w0 = mt * mt * mt
+        w1 = 3.0 * mt * mt * t
+        w2 = 3.0 * mt * t * t
+        w3 = t * t * t
+        x = (w0 * self._b_p0x[idx] + w1 * self._b_c1x[idx]
+             + w2 * self._b_c2x[idx] + w3 * self._b_p3x[idx])
+        y = (w0 * self._b_p0y[idx] + w1 * self._b_c1y[idx]
+             + w2 * self._b_c2y[idx] + w3 * self._b_p3y[idx])
+        lo = a <= 0.0
+        if np.any(lo):
+            dx0, dy0 = self._b_dir0
+            p0 = self.segs[0][0]
+            x = np.where(lo, p0[0] + dx0 * a, x)
+            y = np.where(lo, p0[1] + dy0 * a, y)
+        hi = a >= self.total
+        if np.any(hi):
+            dx1, dy1 = self._b_dir1
+            p3 = self.segs[-1][3]
+            extra = a - self.total
+            x = np.where(hi, p3[0] + dx1 * extra, x)
+            y = np.where(hi, p3[1] + dy1 * extra, y)
+        return x, y
+
+    def _dir_flat(self, a):
+        np = self._b_np
+        if not self.curved:
+            M = len(self.points)
+            if M < 2 or self.total <= 0.0:
+                return np.ones_like(a), np.zeros_like(a)
+            idx = np.clip(np.searchsorted(self._b_cum, a, side="right") - 1,
+                          0, M - 2)
+            if not self._b_fast_ends:
+                idx = np.where(a <= 0.0, 0, np.where(a >= self.total, M - 2, idx))
+            return self._b_unit_dx[idx], self._b_unit_dy[idx]
+        K = len(self.segs)
+        idx = np.clip(np.searchsorted(self._b_cum, a, side="right") - 1, 0, K - 1)
+        local = a - self._b_cum[idx]
+        slot = np.sum(local[:, None] >= self._b_luts_inner[idx], axis=1)
+        lut_lo = self._b_luts[idx, slot]
+        lut_hi = self._b_luts[idx, slot + 1]
+        span = lut_hi - lut_lo
+        frac = np.where(span > 0.0,
+                        (local - lut_lo) / np.where(span > 0.0, span, 1.0),
+                        0.0)
+        t = (slot + frac) / _CURVE_LUT
+        mt = 1.0 - t
+        c0 = 3.0 * mt * mt
+        c1 = 6.0 * mt * t
+        c2 = 3.0 * t * t
+        dx = (c0 * (self._b_c1x[idx] - self._b_p0x[idx])
+              + c1 * (self._b_c2x[idx] - self._b_c1x[idx])
+              + c2 * (self._b_p3x[idx] - self._b_c2x[idx]))
+        dy = (c0 * (self._b_c1y[idx] - self._b_p0y[idx])
+              + c1 * (self._b_c2y[idx] - self._b_c1y[idx])
+              + c2 * (self._b_p3y[idx] - self._b_c2y[idx]))
+        length = np.hypot(dx, dy)
+        ok = length > 1e-12
+        safe = np.where(ok, length, 1.0)
+        ux = np.where(ok, dx / safe, self._b_chord_ux[idx])
+        uy = np.where(ok, dy / safe, self._b_chord_uy[idx])
+        lo = a <= 0.0
+        if np.any(lo):
+            dx0, dy0 = self._b_dir0
+            ux = np.where(lo, dx0, ux)
+            uy = np.where(lo, dy0, uy)
+        hi = a >= self.total
+        if np.any(hi):
+            dx1, dy1 = self._b_dir1
+            ux = np.where(hi, dx1, ux)
+            uy = np.where(hi, dy1, uy)
+        return ux, uy
+
+    def _tangent_flat(self, a, window=0.0):
+        np = self._b_np
+        if window <= 0.0:
+            return self._dir_flat(a)
+        if not self.curved and len(self.points) < 2:
+            return np.ones_like(a), np.zeros_like(a)
+        lo = a - window
+        hi = a + window
+        if self._b_sharp is not None:
+            sharp = self._b_sharp
+            s_idx = np.searchsorted(sharp, a, side="left")
+            has_prev = s_idx > 0
+            if np.any(has_prev):
+                lo = np.where(has_prev,
+                              np.maximum(lo, sharp[np.maximum(s_idx - 1, 0)]),
+                              lo)
+            has_next = s_idx < len(sharp)
+            if np.any(has_next):
+                hi = np.where(has_next,
+                              np.minimum(hi, sharp[np.minimum(s_idx, len(sharp) - 1)]),
+                              hi)
+        bx, by = self._point_flat(lo)
+        ax_pt, ay_pt = self._point_flat(hi)
+        dx = ax_pt - bx
+        dy = ay_pt - by
+        length = np.hypot(dx, dy)
+        valid = (hi - lo > 1e-9) & (length > 1e-9)
+        safe = np.where(valid, length, 1.0)
+        ux = dx / safe
+        uy = dy / safe
+        if not np.all(valid):
+            dux, duy = self._dir_flat(a)
+            ux = np.where(valid, ux, dux)
+            uy = np.where(valid, uy, duy)
+        return ux, uy
+
+    def point_at_batch(self, arcs):
+        self._ensure_batch()
+        np = self._b_np
+        arr = np.asarray(arcs, dtype=float)
+        x, y = self._point_flat(arr.ravel())
+        return x.reshape(arr.shape), y.reshape(arr.shape)
+
+    def dir_at_batch(self, arcs):
+        self._ensure_batch()
+        np = self._b_np
+        arr = np.asarray(arcs, dtype=float)
+        ux, uy = self._dir_flat(arr.ravel())
+        return ux.reshape(arr.shape), uy.reshape(arr.shape)
+
+    def tangent_at_batch(self, arcs, window=0.0):
+        self._ensure_batch()
+        np = self._b_np
+        arr = np.asarray(arcs, dtype=float)
+        ux, uy = self._tangent_flat(arr.ravel(), window)
+        return ux.reshape(arr.shape), uy.reshape(arr.shape)
+
 
 def _curve_crossing(gh, gv):
     """(point, arc_on_h, arc_on_v) where two CURVE guides cross.
@@ -1537,6 +1768,171 @@ class _Frame:
             l_h, l_v, current, best_error = accepted
             best = (l_h, l_v)
         return best[0], best[1], best_error
+
+    def directions_batch(self, l_h, l_v):
+        self.gh._ensure_batch()
+        self.gv._ensure_batch()
+        np = self.gh._b_np
+        lh = np.asarray(l_h, dtype=float)
+        lv = np.asarray(l_v, dtype=float)
+        shape = np.broadcast_shapes(lh.shape, lv.shape)
+        lhf = np.broadcast_to(lh, shape).ravel()
+        lvf = np.broadcast_to(lv, shape).ravel()
+        thx, thy = self.gh._tangent_flat(self.h_arc + lhf, self.h_window)
+        tvx, tvy = self.gv._tangent_flat(self.v_arc + lvf, self.v_window)
+        return ((thx.reshape(shape), thy.reshape(shape)),
+                (tvx.reshape(shape), tvy.reshape(shape)))
+
+    def hv_batch(self, l_h, l_v):
+        self.gh._ensure_batch()
+        self.gv._ensure_batch()
+        np = self.gh._b_np
+        lh = np.asarray(l_h, dtype=float)
+        lv = np.asarray(l_v, dtype=float)
+        shape = np.broadcast_shapes(lh.shape, lv.shape)
+        lhf = np.broadcast_to(lh, shape).ravel()
+        lvf = np.broadcast_to(lv, shape).ravel()
+        hx, hy = self.gh._point_flat(self.h_arc + lhf)
+        vx, vy = self.gv._point_flat(self.v_arc + lvf)
+        return ((hx + vx - self.origin[0]).reshape(shape),
+                (hy + vy - self.origin[1]).reshape(shape))
+
+    def jacobian_batch(self, l_h, l_v):
+        self.gh._ensure_batch()
+        self.gv._ensure_batch()
+        np = self.gh._b_np
+        lh = np.asarray(l_h, dtype=float)
+        lv = np.asarray(l_v, dtype=float)
+        shape = np.broadcast_shapes(lh.shape, lv.shape)
+        lhf = np.broadcast_to(lh, shape).ravel()
+        lvf = np.broadcast_to(lv, shape).ravel()
+        hx, hy = self.gh._dir_flat(self.h_arc + lhf)
+        vx, vy = self.gv._dir_flat(self.v_arc + lvf)
+        return ((hx.reshape(shape), hy.reshape(shape)),
+                (vx.reshape(shape), vy.reshape(shape)))
+
+    def solve_full_batch(self, px, py, guess_h, guess_v, iterations=24, tol=1e-7):
+        self.gh._ensure_batch()
+        self.gv._ensure_batch()
+        np = self.gh._b_np
+        px_arr = np.asarray(px, dtype=float)
+        py_arr = np.asarray(py, dtype=float)
+        shape = np.broadcast_shapes(px_arr.shape, py_arr.shape)
+        px_f = np.broadcast_to(px_arr, shape).ravel()
+        py_f = np.broadcast_to(py_arr, shape).ravel()
+        lh = np.broadcast_to(np.asarray(guess_h, dtype=float), shape).ravel().copy()
+        lv = np.broadcast_to(np.asarray(guess_v, dtype=float), shape).ravel().copy()
+
+        h_arc = self.h_arc
+        v_arc = self.v_arc
+        ox, oy = self.origin
+        gh = self.gh
+        gv = self.gv
+
+        limit = self.h_total + self.v_total + 1.0
+        hx0, hy0 = gh._point_flat(h_arc + lh)
+        vx0, vy0 = gv._point_flat(v_arc + lv)
+        cx = hx0 + vx0 - ox
+        cy = hy0 + vy0 - oy
+        best_err = np.hypot(cx - px_f, cy - py_f)
+        best_h = lh.copy()
+        best_v = lv.copy()
+
+        idx = np.flatnonzero(best_err > tol)
+        for _ in range(iterations):
+            if idx.size == 0:
+                break
+            lh_i = lh[idx]
+            lv_i = lv[idx]
+            fx = cx[idx] - px_f[idx]
+            fy = cy[idx] - py_f[idx]
+            hx, hy = gh._dir_flat(h_arc + lh_i)
+            vx, vy = gv._dir_flat(v_arc + lv_i)
+            det = hx * vy - hy * vx
+            ok_det = np.abs(det) >= 1e-9
+            if not np.all(ok_det):
+                idx = idx[ok_det]
+                if idx.size == 0:
+                    break
+                lh_i = lh_i[ok_det]
+                lv_i = lv_i[ok_det]
+                fx = fx[ok_det]
+                fy = fy[ok_det]
+                hx, hy = hx[ok_det], hy[ok_det]
+                vx, vy = vx[ok_det], vy[ok_det]
+                det = det[ok_det]
+
+            step_h = (-fx * vy + fy * vx) / det
+            step_v = (-hx * fy + hy * fx) / det
+            scale = np.hypot(step_h, step_v)
+            over = scale > limit
+            if np.any(over):
+                fac = np.where(over, limit / np.where(over, scale, 1.0), 1.0)
+                step_h *= fac
+                step_v *= fac
+
+            th = lh_i + step_h
+            tv = lv_i + step_v
+            thx, thy = gh._point_flat(h_arc + th)
+            tvx, tvy = gv._point_flat(v_arc + tv)
+            tx = thx + tvx - ox
+            ty = thy + tvy - oy
+            err = np.hypot(tx - px_f[idx], ty - py_f[idx])
+            imp = err < best_err[idx]
+            if np.all(imp):
+                lh[idx] = th
+                lv[idx] = tv
+                cx[idx] = tx
+                cy[idx] = ty
+                best_err[idx] = err
+                best_h[idx] = th
+                best_v[idx] = tv
+                idx = idx[err > tol]
+                continue
+
+            accepted_mask = imp.copy()
+            if np.any(imp):
+                acc_g = idx[imp]
+                lh[acc_g] = th[imp]
+                lv[acc_g] = tv[imp]
+                cx[acc_g] = tx[imp]
+                cy[acc_g] = ty[imp]
+                best_err[acc_g] = err[imp]
+                best_h[acc_g] = th[imp]
+                best_v[acc_g] = tv[imp]
+
+            rem = np.flatnonzero(~imp)
+            damping = 0.5
+            for _d in range(11):
+                if rem.size == 0:
+                    break
+                g_idx = idx[rem]
+                th = lh_i[rem] + step_h[rem] * damping
+                tv = lv_i[rem] + step_v[rem] * damping
+                thx, thy = gh._point_flat(h_arc + th)
+                tvx, tvy = gv._point_flat(v_arc + tv)
+                tx = thx + tvx - ox
+                ty = thy + tvy - oy
+                err = np.hypot(tx - px_f[g_idx], ty - py_f[g_idx])
+                imp_sub = err < best_err[g_idx]
+                if np.any(imp_sub):
+                    acc_g = g_idx[imp_sub]
+                    lh[acc_g] = th[imp_sub]
+                    lv[acc_g] = tv[imp_sub]
+                    cx[acc_g] = tx[imp_sub]
+                    cy[acc_g] = ty[imp_sub]
+                    best_err[acc_g] = err[imp_sub]
+                    best_h[acc_g] = th[imp_sub]
+                    best_v[acc_g] = tv[imp_sub]
+                    accepted_mask[rem[imp_sub]] = True
+                rem = rem[~imp_sub]
+                damping *= 0.5
+
+            idx = idx[accepted_mask]
+            if idx.size:
+                idx = idx[best_err[idx] > tol]
+
+        return best_h.reshape(shape), best_v.reshape(shape), best_err.reshape(shape)
 
 
 def _transfer_scales(child_raw, child_total, main_side):
@@ -1803,7 +2199,7 @@ class _FlowFieldWarp:
     GROUND_STILL = 0.1         # a move below this (Third px) is no move
 
     def __init__(self, pairs, falloff="linear", radius_factor=0.5,
-                 frame_window=None, grounds=()):
+                 frame_window=None, grounds=(), warm=None):
         self.falloff = falloff if falloff in ADDITIONAL_FALLOFFS else "linear"
         self.has_faces = False
         self.pairs = []
@@ -1839,7 +2235,7 @@ class _FlowFieldWarp:
             if line is not None:
                 self.grounds.append(line)
         if self.pairs or self.grounds:
-            self._build(frame_window)
+            self._build(frame_window, warm=warm)
 
     # ---------------------------------------------------------------- prep
 
@@ -2016,7 +2412,7 @@ class _FlowFieldWarp:
 
     # --------------------------------------------------------------- build
 
-    def _build(self, frame_window):
+    def _build(self, frame_window, warm=None):
         import pydeps
         np = pydeps.ensure("numpy")
         if np is None:
@@ -2186,47 +2582,61 @@ class _FlowFieldWarp:
         # axis.
         family_of = self._family_of
         fields = []
+        grid_key = (x0, x1, y0, y1, nx, ny, self.falloff)
+        line_cache = warm.get("line_fields") if warm is not None else None
+        new_line_cache = {} if warm is not None else None
         for line in active:
             pts = line["child"]
-            ax = np.array([p[0] for p in pts[:-1]])
-            ay = np.array([p[1] for p in pts[:-1]])
-            bx = np.array([p[0] for p in pts[1:]])
-            by = np.array([p[1] for p in pts[1:]])
-            ex = bx - ax
-            ey = by - ay
-            ee = np.maximum(ex * ex + ey * ey, 1e-12)
-            dxs = px[:, None] - ax[None, :]
-            dys = py[:, None] - ay[None, :]
-            t = np.clip((dxs * ex[None, :] + dys * ey[None, :]) / ee[None, :],
-                        0.0, 1.0)
-            qx = dxs - t * ex[None, :]
-            qy = dys - t * ey[None, :]
-            dist2 = qx * qx + qy * qy
-            seg = np.argmin(dist2, axis=1)
-            fam = family_of(pts)
-            if fam == "h":
-                qmid = 0.5 * (ay + by)
-                s_pt = px
-                s_lo = min(p[0] for p in pts)
-                s_hi = max(p[0] for p in pts)
+            lkey = (grid_key, tuple(pts), line["radius"]) if warm is not None else None
+            cached = line_cache.get(lkey) if line_cache is not None else None
+            if cached is not None:
+                fam, seg, q_line, env = cached
             else:
-                qmid = 0.5 * (ax + bx)
-                s_pt = py
-                s_lo = min(p[1] for p in pts)
-                s_hi = max(p[1] for p in pts)
-            d_out = np.maximum(0.0, np.maximum(s_lo - s_pt, s_pt - s_hi))
-            env = np.clip(1.0 - d_out / line["radius"], 0.0, 1.0)
-            if self.falloff == "quadratic":
-                env = env * env
+                ax = np.array([p[0] for p in pts[:-1]])
+                ay = np.array([p[1] for p in pts[:-1]])
+                bx = np.array([p[0] for p in pts[1:]])
+                by = np.array([p[1] for p in pts[1:]])
+                ex = bx - ax
+                ey = by - ay
+                ee = np.maximum(ex * ex + ey * ey, 1e-12)
+                dxs = px[:, None] - ax[None, :]
+                dys = py[:, None] - ay[None, :]
+                t = np.clip((dxs * ex[None, :] + dys * ey[None, :]) / ee[None, :],
+                            0.0, 1.0)
+                qx = dxs - t * ex[None, :]
+                qy = dys - t * ey[None, :]
+                dist2 = qx * qx + qy * qy
+                seg = np.argmin(dist2, axis=1)
+                fam = family_of(pts)
+                if fam == "h":
+                    qmid = 0.5 * (ay + by)
+                    s_pt = px
+                    s_lo = min(p[0] for p in pts)
+                    s_hi = max(p[0] for p in pts)
+                else:
+                    qmid = 0.5 * (ax + bx)
+                    s_pt = py
+                    s_lo = min(p[1] for p in pts)
+                    s_hi = max(p[1] for p in pts)
+                d_out = np.maximum(0.0, np.maximum(s_lo - s_pt, s_pt - s_hi))
+                env = np.clip(1.0 - d_out / line["radius"], 0.0, 1.0)
+                if self.falloff == "quadratic":
+                    env = env * env
+                q_line = qmid[seg]
+                cached = (fam, seg, q_line, env)
+            if new_line_cache is not None:
+                new_line_cache[lkey] = cached
             fields.append({
                 "fam": fam,
                 "seg": seg,
-                "q_line": qmid[seg],   # the line's LOCAL keyframe position
+                "q_line": q_line,   # the line's LOCAL keyframe position
                 "env": env,
                 "ask": np.array([complex(s[0], s[1]) for s in line["sims"]]),
                 "boost": None,   # filled per round
                 "line": line,
             })
+        if warm is not None:
+            warm["line_fields"] = new_line_cache
 
         # Keyframe interpolation per family and half-plane (flat arrays).
         tiny = 1e-9
@@ -2237,19 +2647,11 @@ class _FlowFieldWarp:
             for line in grounds for c, m in zip(line["child"], line["main"]))
         constrain = (bool(_ADDITIONAL.get("constrain_outline", True))
                      and not ground_moved)
+        fam_cache = warm.setdefault("fam_weights", {}) if warm is not None else None
         for fam, q_pt in (("h", py), ("v", px)):
             group = [f for f in fields if f["fam"] == fam]
             if not group:
                 continue
-            qp = np.abs(q_pt)
-            sp = np.sign(q_pt)
-            # Under CONSTRAIN OUTLINE a pinned window edge is the
-            # family's outermost KEYFRAME (an undrawn iso-line held at
-            # identity): weights ramp down to 0 there instead of pressing
-            # full-strength against the Dirichlet cage (which diluted the
-            # whole outward band and could fold beside the edge).  A
-            # RELEASED side contributes no edge keyframe - influence is
-            # held outward and the nearest line shapes that edge.
             if fam == "h":
                 edge_pos = v_hi if (constrain and t_top == 0.0) else None
                 edge_neg = -v_lo if (constrain and t_bottom == 0.0) else None
@@ -2258,6 +2660,20 @@ class _FlowFieldWarp:
                 edge_pos = h_hi if (constrain and t_right == 0.0) else None
                 edge_neg = -h_lo if (constrain and t_left == 0.0) else None
                 o_pt, o_cell = py, dv
+            if fam_cache is not None:
+                fam_key = (
+                    grid_key, edge_pos, edge_neg,
+                    tuple((tuple(f["line"]["child"]), f["line"]["radius"],
+                           f["line"]["index"]) for f in group))
+                cached_fam = fam_cache.get(fam)
+                if cached_fam is not None and cached_fam[0] == fam_key:
+                    _, w_list, fam_notes = cached_fam
+                    for f, w_arr in zip(group, w_list):
+                        f["w"] = w_arr
+                    self.notes.extend(fam_notes)
+                    continue
+            qp = np.abs(q_pt)
+            sp = np.sign(q_pt)
             # Numerical relief beside the ORTHOGONAL axis: its straddling
             # rows/cols are hard Dirichlet (always in the axis's normal
             # component, which a crossing does not release), and a
@@ -2269,6 +2685,7 @@ class _FlowFieldWarp:
             o_t = np.clip(np.abs(o_pt) / (4.0 * o_cell), 0.0, 1.0)
             relief = o_t * o_t * (3.0 - 2.0 * o_t)
             cell = dv if fam == "h" else du   # cell size along q
+            fam_notes = []
             for f in group:
                 same = (np.sign(f["q_line"]) * sp) > 0.0
                 q_k = np.abs(f["q_line"])
@@ -2337,7 +2754,7 @@ class _FlowFieldWarp:
                 f["w"] = w.reshape(X.shape)
                 # Silently ineffective lines are unacceptable: say so.
                 if float(np.max(f["w"])) < self.VOICE_MIN:
-                    self.notes.append(
+                    fam_notes.append(
                         f"additional line {f['line']['index'] + 1} has "
                         "(nearly) no influence - it lies on its own "
                         "family's axis or its extent fades before any "
@@ -2349,11 +2766,14 @@ class _FlowFieldWarp:
                     med_q = sorted(abs(v) for v in pts_q)[len(pts_q) // 2]
                     one_side = min(pts_q) >= 0.0 or max(pts_q) <= 0.0
                     if one_side and med_q < 4.0 * cell:
-                        self.notes.append(
+                        fam_notes.append(
                             f"additional line {f['line']['index'] + 1} "
                             "hugs its own family's axis inside the "
                             "numerical boundary layer - the axis may not "
                             "move, so its influence is strongly damped")
+            self.notes.extend(fam_notes)
+            if fam_cache is not None:
+                fam_cache[fam] = (fam_key, [f["w"] for f in group], fam_notes)
 
         # Ambient: the tent's own FULL gradient (the cross-axis damping
         # makes it non-separable, so the off-diagonals are no longer
@@ -2533,19 +2953,20 @@ class _FlowFieldWarp:
             np.add.at(out, ground["nodes"], ground["weights"] * values[:, None])
             return out.reshape(X.shape)
 
-        # Jacobi preconditioner, ground lines only: their stiff terms are
-        # hundreds of times the grid's, and scaling by the diagonal puts both
-        # on one footing (build time drops about threefold). Without ground
-        # lines the iteration is bit-identical.
+        # Jacobi preconditioner: on the cold path, ground lines only (their
+        # stiff terms are hundreds of times the grid's, and without ground
+        # lines the iteration stays bit-identical). On the warm path, always
+        # enabled.
         jacobi = None
-        if ground is not None:
+        if ground is not None or warm is not None:
             jacobi = np.zeros_like(X)
             jacobi[1:-1, :] += (om_e[1:, :] + om_e[:-1, :]) / (du * du)
             jacobi[:, 1:-1] += (om_n[:, 1:] + om_n[:, :-1]) / (dv * dv)
-            jacobi += ground["kappa"]
-            on_nodes = np.zeros(X.size)
-            np.add.at(on_nodes, ground["nodes"], ground["weights"] ** 2)
-            jacobi += ground["anchor"] * on_nodes.reshape(X.shape)
+            if ground is not None:
+                jacobi += ground["kappa"]
+                on_nodes = np.zeros(X.size)
+                np.add.at(on_nodes, ground["nodes"], ground["weights"] ** 2)
+                jacobi += ground["anchor"] * on_nodes.reshape(X.shape)
             jacobi = np.maximum(jacobi, 1e-30)
 
         def weighted_div_lap(n_x, n_y, base):
@@ -2591,7 +3012,17 @@ class _FlowFieldWarp:
             out[:, 1:-1] -= (flux_y[:, 1:] - flux_y[:, :-1]) / dv
             return out
 
-        def solve(rhs, pin_val, mask, component=0):
+        solves_cache = None
+        scale_xy = (1.0, 1.0)
+        if warm is not None:
+            if warm.get("shape") != X.shape:
+                warm["shape"] = X.shape
+                warm["deltas"] = {}
+                warm["solves"] = {}
+            solves_cache = warm.setdefault("solves", {})
+            scale_xy = warm.get("_scale", (1.0, 1.0))
+
+        def solve(rhs, pin_val, mask, component=0, round_key=0):
             # apply_A is MINUS div(omega grad) (SPD), so the equation
             # div(omega grad D) = rhs with D = pin_val on the pinned nodes
             # becomes, for E = D - pin_val (E = 0 there),
@@ -2607,25 +3038,41 @@ class _FlowFieldWarp:
                     ground["goal"][component] - anchored(pin_val))
             R[1:-1, 1:-1] = interior[1:-1, 1:-1]
             R[mask] = 0.0
-            E = np.zeros_like(rhs)
-            Z = R if jacobi is None else R / jacobi
-            P = Z.copy()
-            rs = float(np.sum(R * Z))
-            if rs <= 0.0:
-                return E + pin_val
-            rs0 = rs
-            for _ in range(self.CG_MAX_ITER):
-                AP = apply_A(P, mask)
-                denom = float(np.sum(P * AP)) or 1e-30
-                alpha = rs / denom
-                E += alpha * P
-                R -= alpha * AP
-                Z = R if jacobi is None else R / jacobi
-                rs_new = float(np.sum(R * Z))
-                if rs_new <= self.CG_TOL * rs0:
-                    break
-                P = Z + (rs_new / rs) * P
-                rs = rs_new
+            x0_solve = None
+            cur_tol = self.CG_TOL
+            cur_step_tol = None
+            cur_max_iter = self.CG_MAX_ITER
+            if solves_cache is not None:
+                prev_e = solves_cache.get((round_key, component))
+                if prev_e is not None and prev_e.shape == rhs.shape:
+                    x0_solve = prev_e.copy()
+                    x0_solve[0, :] = x0_solve[-1, :] = 0.0
+                    x0_solve[:, 0] = x0_solve[:, -1] = 0.0
+                    x0_solve[mask] = 0.0
+                    delta_e = warm.setdefault("deltas", {}).get((round_key, component))
+                    if delta_e is not None and delta_e.shape == rhs.shape:
+                        d_e = delta_e.copy()
+                        d_e[0, :] = d_e[-1, :] = 0.0
+                        d_e[:, 0] = d_e[:, -1] = 0.0
+                        d_e[mask] = 0.0
+                        ad = apply_A(d_e, mask)
+                        dad = float(np.sum(d_e * ad))
+                        if dad > 1e-24:
+                            r0_tmp = R - apply_A(x0_solve, mask)
+                            beta = float(np.sum(d_e * r0_tmp)) / dad
+                            if -4.0 <= beta <= 4.0:
+                                x0_solve = x0_solve + beta * d_e
+                    cur_step_tol = 0.0012 / max(scale_xy[component], 1e-6)
+                    cur_max_iter = 80
+            E, _ = gridsolve.pcg(
+                lambda P: apply_A(P, mask), R, x0=x0_solve, precond=jacobi,
+                tol=cur_tol, max_iter=cur_max_iter, step_tol=cur_step_tol)
+            if solves_cache is not None:
+                prev_e = solves_cache.get((round_key, component))
+                warm.setdefault("deltas", {})[(round_key, component)] = (
+                    (E - prev_e) if (prev_e is not None and prev_e.shape == E.shape) else None
+                )
+                solves_cache[(round_key, component)] = E
             return E + pin_val
 
         def numerators(boosted):
@@ -2652,12 +3099,12 @@ class _FlowFieldWarp:
                     n11 += w2 * sa
             return n00, n01, n10, n11
 
-        def assemble_and_solve():
+        def assemble_and_solve(round_key=0):
             n00, n01, n10, n11 = numerators(boosted=True)
             ux = ub_x + solve(weighted_div_lap(n00, n01, ub_x), pin_x,
-                              pinned_x, 0)
+                              pinned_x, 0, round_key)
             uy = ub_y + solve(weighted_div_lap(n10, n11, ub_y), pin_y,
-                              pinned_y, 1)
+                              pinned_y, 1, round_key)
             return ux, uy
 
         def bilinear_np(table, sx, sy):
@@ -2686,7 +3133,8 @@ class _FlowFieldWarp:
         g01m = (n01r + w_amb_y * amb_xy) / total_y
         g10m = (n10r + w_amb_x * amb_yx) / total_x
         g11m = (n11r + w_amb_y * amb_yy) / total_y
-        ux, uy = assemble_and_solve()
+        ux, uy = assemble_and_solve(0)
+        ux0, uy0 = ux, uy
         for _round in range(self.BOOST_ROUNDS):
             duxx = np.gradient(ux, du, axis=0)
             duxy = np.gradient(ux, dv, axis=1)
@@ -2733,39 +3181,12 @@ class _FlowFieldWarp:
                                   + (1.0 - station_guard) * current)
             if worst < 0.02:
                 break
-            ux, uy = assemble_and_solve()
+            ux, uy = assemble_and_solve(_round + 1)
 
         def det_of(sol_x, sol_y):
             """Per-node orientation as the MINIMUM over every one-sided
-            stencil (all four left/right x down/up combinations). Central
-            differences average the two adjacent cells and cannot see a
-            fold confined to one cell row - the review reproduced a field
-            whose node dets certified injectivity while apply() measurably
-            folded (probe steps moving backwards, 12.8 px inverse error,
-            and the fidelity retreat never firing because it reads the
-            same array)."""
-            sxx = (sol_x[1:, :] - sol_x[:-1, :]) / du
-            sxy = (sol_x[:, 1:] - sol_x[:, :-1]) / dv
-            syx = (sol_y[1:, :] - sol_y[:-1, :]) / du
-            syy = (sol_y[:, 1:] - sol_y[:, :-1]) / dv
-
-            def sided(edge, axis):
-                if axis == 0:
-                    return (np.concatenate([edge[:1, :], edge], axis=0),
-                            np.concatenate([edge, edge[-1:, :]], axis=0))
-                return (np.concatenate([edge[:, :1], edge], axis=1),
-                        np.concatenate([edge, edge[:, -1:]], axis=1))
-
-            xx_l, xx_r = sided(sxx, 0)
-            yx_l, yx_r = sided(syx, 0)
-            xy_d, xy_u = sided(sxy, 1)
-            yy_d, yy_u = sided(syy, 1)
-            best = None
-            for xx, yx in ((xx_l, yx_l), (xx_r, yx_r)):
-                for xy, yy in ((xy_d, yy_d), (xy_u, yy_u)):
-                    det = xx * yy - xy * yx
-                    best = det if best is None else np.minimum(best, det)
-            return best
+            stencil (all four left/right x down/up combinations)."""
+            return gridsolve.det2(sol_x, sol_y, du, dv)
 
         # FIDELITY RETREAT: compliance never at the price of a fold the
         # unboosted compromise did not have. The pure blend is injective
@@ -2785,7 +3206,10 @@ class _FlowFieldWarp:
                     if float(np.max(np.abs(field["boost"]
                                            - field["ask"]))) < 1e-6:
                         field["boost"] = None
-            ux, uy = assemble_and_solve()
+            if warm is not None:
+                ux, uy = 0.5 * (ux0 + ux), 0.5 * (uy0 + uy)
+            else:
+                ux, uy = assemble_and_solve(("retreat", retreat))
             det = det_of(ux, uy)
             retreat += 1
         # FULL retreat must actually be reached: three halvings still
@@ -2797,7 +3221,10 @@ class _FlowFieldWarp:
                 and any(field["boost"] is not None for field in fields):
             for field in fields:
                 field["boost"] = None
-            ux, uy = assemble_and_solve()
+            if warm is not None:
+                ux, uy = ux0, uy0
+            else:
+                ux, uy = assemble_and_solve("full_retreat")
             det = det_of(ux, uy)
 
         # Orientation bookkeeping: per-node det of grad U, marched by
@@ -2813,10 +3240,16 @@ class _FlowFieldWarp:
             self.notes.append(
                 "ground lines fold the mapping: they cross their own parallel "
                 "axis, or ask for more than the ground between them can give")
+        ux_list = ux.tolist()
+        uy_list = uy.tolist()
+        det_list = None if self._all_positive else det.tolist()
         self._grid = {
             "x0": x0, "y0": y0, "du": du, "dv": dv, "nx": nx, "ny": ny,
-            "ux": ux.tolist(), "uy": uy.tolist(),
-            "det": None if self._all_positive else det.tolist(),
+            "ux": ux_list, "uy": uy_list,
+            "det": det_list,
+            "_ux_np": ux, "_uy_np": uy,
+            "_det_np": None if self._all_positive else det,
+            "_ux_src": ux_list, "_uy_src": uy_list, "_det_src": det_list,
         }
 
     def _pin_grounds(self, np, X, Y, gx, gy, on_v, on_h, ub_x, ub_y,
@@ -3162,6 +3595,120 @@ class _FlowFieldWarp:
         # reading as a second fold.
         return 1 if value >= -self.DET_FOLD_TOL else -1
 
+    def _tent_axis_np(self, np, values, side_neg, side_pos):
+        out = np.zeros_like(values)
+        for is_pos, side in ((True, side_pos), (False, side_neg)):
+            t, b, f0, f1, dead = side
+            if t == 0.0:
+                continue
+            mask = (values >= 0.0) if is_pos else (values < 0.0)
+            if not np.any(mask):
+                continue
+            v = np.abs(values[mask])
+            disp = np.zeros_like(v)
+            m_rise = (v > dead) & (v <= b)
+            if np.any(m_rise):
+                disp[m_rise] = t * ((v[m_rise] - dead) / (b - dead)) ** self.STRETCH_ALPHA
+            m_hold = (v > b) & (v <= f0)
+            if np.any(m_hold):
+                disp[m_hold] = t
+            m_fade = (v > f0) & (v < f1)
+            if np.any(m_fade):
+                s = (v[m_fade] - f0) / (f1 - f0)
+                disp[m_fade] = t * (1.0 - s * s * (3.0 - 2.0 * s))
+            out[mask] = disp if is_pos else -disp
+        return out
+
+    def _tent_apply_flat(self, np, xf, yf):
+        tent = self._tent
+        tx, ty = tent["x"], tent["y"]
+        sx = np.clip((np.abs(xf) - tent["px"]) / tent["zx"], 0.0, 1.0)
+        sx = sx * sx * (3.0 - 2.0 * sx)
+        sy = np.clip((np.abs(yf) - tent["py"]) / tent["zy"], 0.0, 1.0)
+        sy = sy * sy * (3.0 - 2.0 * sy)
+        return (xf + self._tent_axis_np(np, xf, tx[0], tx[1]) * sy,
+                yf + self._tent_axis_np(np, yf, ty[0], ty[1]) * sx)
+
+    def apply_batch(self, x, y):
+        import pydeps
+        np = pydeps.ensure("numpy")
+        x_arr = np.asarray(x, dtype=float)
+        y_arr = np.asarray(y, dtype=float)
+        shape = np.broadcast_shapes(x_arr.shape, y_arr.shape)
+        if self._grid is None:
+            return (np.broadcast_to(x_arr, shape).copy(),
+                    np.broadcast_to(y_arr, shape).copy())
+        grid = self._grid
+        ux = grid.get("_ux_np")
+        if ux is None or grid.get("_ux_src") is not grid["ux"]:
+            ux = np.asarray(grid["ux"], dtype=float)
+            grid["_ux_np"] = ux
+            grid["_ux_src"] = grid["ux"]
+        uy = grid.get("_uy_np")
+        if uy is None or grid.get("_uy_src") is not grid["uy"]:
+            uy = np.asarray(grid["uy"], dtype=float)
+            grid["_uy_np"] = uy
+            grid["_uy_src"] = grid["uy"]
+        xf = np.broadcast_to(x_arr, shape).ravel()
+        yf = np.broadcast_to(y_arr, shape).ravel()
+        nx, ny = grid["nx"], grid["ny"]
+        fx = (xf - grid["x0"]) / grid["du"]
+        fy = (yf - grid["y0"]) / grid["dv"]
+        inside = (fx >= 0.0) & (fy >= 0.0) & (fx < nx) & (fy < ny)
+        fxs = np.where(inside, fx, 0.0)
+        fys = np.where(inside, fy, 0.0)
+        i = np.minimum(fxs.astype(int), nx - 1)
+        j = np.minimum(fys.astype(int), ny - 1)
+        tx = fxs - i
+        ty = fys - j
+        bx = ((1.0 - tx) * ((1.0 - ty) * ux[i, j] + ty * ux[i, j + 1])
+              + tx * ((1.0 - ty) * ux[i + 1, j] + ty * ux[i + 1, j + 1]))
+        by = ((1.0 - tx) * ((1.0 - ty) * uy[i, j] + ty * uy[i, j + 1])
+              + tx * ((1.0 - ty) * uy[i + 1, j] + ty * uy[i + 1, j + 1]))
+        edge = np.minimum(np.minimum(fx, fy), np.minimum(nx - fx, ny - fy)) / 3.0
+        need_tent = (~inside) | (edge < 1.0)
+        if np.any(need_tent):
+            t_idx = np.flatnonzero(need_tent)
+            tx_t, ty_t = self._tent_apply_flat(np, xf[t_idx], yf[t_idx])
+            e_sub = np.clip(edge[t_idx], 0.0, 1.0)
+            s = np.where(inside[t_idx], e_sub * e_sub * (3.0 - 2.0 * e_sub), 0.0)
+            bx[t_idx] = tx_t + (bx[t_idx] - tx_t) * s
+            by[t_idx] = ty_t + (by[t_idx] - ty_t) * s
+        return bx.reshape(shape), by.reshape(shape)
+
+    def det_sign_batch(self, x, y):
+        import pydeps
+        np = pydeps.ensure("numpy")
+        x_arr = np.asarray(x, dtype=float)
+        y_arr = np.asarray(y, dtype=float)
+        shape = np.broadcast_shapes(x_arr.shape, y_arr.shape)
+        if self._grid is None or self._all_positive:
+            return np.ones(shape, dtype=int)
+        grid = self._grid
+        det = grid.get("_det_np")
+        if det is None or grid.get("_det_src") is not grid["det"]:
+            det = np.asarray(grid["det"], dtype=float)
+            grid["_det_np"] = det
+            grid["_det_src"] = grid["det"]
+        xf = np.broadcast_to(x_arr, shape).ravel()
+        yf = np.broadcast_to(y_arr, shape).ravel()
+        nx, ny = grid["nx"], grid["ny"]
+        fx = (xf - grid["x0"]) / grid["du"]
+        fy = (yf - grid["y0"]) / grid["dv"]
+        inside = (fx >= 0.0) & (fy >= 0.0) & (fx < nx) & (fy < ny)
+        out = np.ones(xf.size, dtype=int)
+        if np.any(inside):
+            fxi = fx[inside]
+            fyi = fy[inside]
+            i = np.minimum(fxi.astype(int), nx - 1)
+            j = np.minimum(fyi.astype(int), ny - 1)
+            tx = fxi - i
+            ty = fyi - j
+            val = ((1.0 - tx) * ((1.0 - ty) * det[i, j] + ty * det[i, j + 1])
+                   + tx * ((1.0 - ty) * det[i + 1, j] + ty * det[i + 1, j + 1]))
+            out[inside] = np.where(val >= -self.DET_FOLD_TOL, 1, -1)
+        return out.reshape(shape)
+
     def face_at(self, third):
         return 0
 
@@ -3247,7 +3794,7 @@ class _FlowFieldWarp:
 
 
 def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None,
-                 additional_pairs=None, ground_pairs=None):
+                 additional_pairs=None, ground_pairs=None, warm=None):
     """Build point mapper from the child frame to the main frame.
 
     Each guide spec is a bare point list (polyline guide - chord arithmetic,
@@ -3524,6 +4071,17 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
     # the warp-free mapper.
     warp = None
     additional_notes = []
+    lift_cache = None
+    frame_key = None
+    if warm is not None:
+        lift_cache = warm.setdefault("lifted_pairs", {})
+        frame_key = (
+            tuple(child.h), tuple(child.v), child.gh.curved, child.gv.curved,
+            tuple(main.h), tuple(main.v), main.gh.curved, main.gv.curved,
+        )
+        if warm.get("_frame_key") != frame_key:
+            warm["_frame_key"] = frame_key
+            lift_cache.clear()
 
     def lifted_pairs(pairs, noun):
         """(child Third, main Third, line index) per usable pair."""
@@ -3535,10 +4093,23 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
             main_points = [tuple(p) for p in main_item.get("points") or []]
             if len(child_points) < 2 or len(main_points) < 2:
                 continue
-            child_third = [tuple(t) for t in child_item.get("third") or []]
+            raw_c_third = [tuple(t) for t in child_item.get("third") or []]
+            raw_m_third = [tuple(t) for t in main_item.get("third") or []]
+            pkey = None
+            if lift_cache is not None:
+                pkey = (noun, line_index, tuple(child_points), tuple(raw_c_third),
+                        tuple(main_points), tuple(raw_m_third))
+                cached_pair = lift_cache.get(pkey)
+                if cached_pair is not None:
+                    c_th, m_th, p_notes = cached_pair
+                    additional_notes.extend(p_notes)
+                    if c_th is not None:
+                        thirds.append((c_th, m_th, line_index))
+                    continue
+            child_third = raw_c_third
             if len(child_third) != len(child_points):
                 child_third = [coords(p) for p in child_points]
-            main_third = [tuple(t) for t in main_item.get("third") or []]
+            main_third = raw_m_third
             if len(main_third) != len(main_points):
                 main_third = [unscale_arcs(*main_coords(p)) for p in main_points]
             # BRANCH-CONTINUITY CLIP: a line drawn across a fold edge of
@@ -3547,33 +4118,45 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
             # Keep the window (canvas arc fractions, jump-proof and
             # commensurate across the two boards) where BOTH sides are
             # continuous; drop the rest, loudly.
+            p_notes = []
             windows = [_branch_window(child_points, child_third),
                        _branch_window(main_points, main_third)]
             if any(w is None for w in windows):
-                additional_notes.append(
+                p_notes.append(
                     f"{noun} {line_index + 1} has no continuous "
                     "Third lift (it crosses a fold edge of its frame) - "
                     "it cannot shape the mapping and was skipped")
+                additional_notes.extend(p_notes)
+                if pkey is not None:
+                    lift_cache[pkey] = (None, None, p_notes)
                 continue
             f_lo = max(w[0] for w in windows)
             f_hi = min(w[1] for w in windows)
             if f_lo > 1e-9 or f_hi < 1.0 - 1e-9:
                 if f_hi - f_lo < 1e-6:
-                    additional_notes.append(
+                    p_notes.append(
                         f"{noun} {line_index + 1} crosses fold "
                         "edges everywhere - it was skipped")
+                    additional_notes.extend(p_notes)
+                    if pkey is not None:
+                        lift_cache[pkey] = (None, None, p_notes)
                     continue
                 child_third = _slice_third_by_canvas_fraction(
                     child_points, child_third, f_lo, f_hi)
                 main_third = _slice_third_by_canvas_fraction(
                     main_points, main_third, f_lo, f_hi)
-                additional_notes.append(
+                p_notes.append(
                     f"{noun} {line_index + 1} crosses a fold edge "
                     f"of its frame; only its longest continuous stretch "
                     f"({100.0 * (f_hi - f_lo):.0f}% of the drawn length) "
                     "shapes the mapping")
+            additional_notes.extend(p_notes)
             if len(child_third) < 2 or len(main_third) < 2:
+                if pkey is not None:
+                    lift_cache[pkey] = (None, None, p_notes)
                 continue
+            if pkey is not None:
+                lift_cache[pkey] = (child_third, main_third, p_notes)
             thirds.append((child_third, main_third, line_index))
         return thirds
 
@@ -3601,15 +4184,65 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
             grounds.append((child_third, child_third if item.get("same_third") else main_third,
                             index, bool(item.get("closed"))))
         if thirds or grounds:
+            if warm is not None:
+                warm["_scale"] = (max(h_scale_neg, h_scale_pos, 1.0),
+                                  max(v_scale_neg, v_scale_pos, 1.0))
             candidate = _FlowFieldWarp(
                 thirds, _ADDITIONAL["falloff"],
                 _ADDITIONAL["radius_factor"],
                 frame_window=((-child.h_arc, child.h_total - child.h_arc),
                               (-child.v_arc, child.v_total - child.v_arc)),
-                grounds=grounds)
+                grounds=grounds, warm=warm)
             warp = candidate if candidate.pairs or candidate.grounds else None
             if warp is not None:
                 additional_notes.extend(warp.notes)
+
+    def third_of_batch(px, py, seed=None):
+        """Vectorized Third-space lift plus validity verdict: (l_h, l_v, ok)."""
+        import pydeps
+        np = pydeps.ensure("numpy")
+        px_arr = np.asarray(px, dtype=float)
+        py_arr = np.asarray(py, dtype=float)
+        if seed is not None:
+            if isinstance(seed, tuple) and len(seed) == 2:
+                sh, sv = seed
+            else:
+                s_arr = np.asarray(seed, dtype=float)
+                sh, sv = s_arr[..., 0], s_arr[..., 1]
+            l_h, l_v, res = child.solve_full_batch(px_arr, py_arr, sh, sv)
+        else:
+            dx = px_arr - child.origin[0]
+            dy = py_arr - child.origin[1]
+            gh = (dx * ev[1] - dy * ev[0]) / det * 0.5 * child_h_chord
+            gv = (eh[0] * dy - eh[1] * dx) / det * 0.5 * child_v_chord
+            l_h, l_v, res = child.solve_full_batch(px_arr, py_arr, gh, gv)
+            if not can_fold():
+                retry = res > _SEVER_RESIDUAL
+                if np.any(retry):
+                    rlh, rlv, rres = child.solve_full_batch(
+                        px_arr[retry], py_arr[retry], l_h[retry], l_v[retry])
+                    l_h = l_h.copy()
+                    l_v = l_v.copy()
+                    res = res.copy()
+                    l_h[retry] = rlh
+                    l_v[retry] = rlv
+                    res[retry] = rres
+        (thx, thy), (tvx, tvy) = child.directions_batch(l_h, l_v)
+        cell = thx * tvy - thy * tvx
+        ok = (res <= _SEVER_RESIDUAL) & (cell * child_hand > 0.0)
+        return l_h, l_v, ok
+
+    def main_of_third_batch(l_h, l_v):
+        """Vectorized forward projection Third -> Main for array inputs."""
+        import pydeps
+        np = pydeps.ensure("numpy")
+        lh = np.asarray(l_h, dtype=float)
+        lv = np.asarray(l_v, dtype=float)
+        if warp is not None:
+            lh, lv = warp.apply_batch(lh, lv)
+        sh = np.where(lh >= 0.0, h_scale_pos, h_scale_neg)
+        sv = np.where(lv >= 0.0, v_scale_pos, v_scale_neg)
+        return main.hv_batch(lh * sh, lv * sv)
 
     def main_of_third(third):
         """Forward projection Third -> Main: warp, per-side scale, rebuild.
@@ -3664,7 +4297,9 @@ def build_mapper(child_h_spec, child_v_spec, main_h_spec, main_v_spec, info=None
 
     map_point.coords = coords
     map_point.third_of = third_of
+    map_point.third_of_batch = third_of_batch
     map_point.main_of_third = main_of_third
+    map_point.main_of_third_batch = main_of_third_batch
     map_point.can_fold = can_fold
     map_point.main_coords = main_coords
     map_point.scale_arcs = scale_arcs
@@ -5540,6 +6175,7 @@ def _guide_drag_event(message):
         _GUIDE_DRAG[view] = {"id": overlay_id, "origin": point,
                              "points": [(float(x), float(y)) for x, y in points],
                              "item": dict(item), "moved": False}
+        mapping_preview.begin(view, overlay_id)
         return
 
     if phase == "cancel":
@@ -5549,13 +6185,17 @@ def _guide_drag_event(message):
         # this, the uncommitted placement would silently become the position
         # the next mapping run uses.
         drag = _GUIDE_DRAG.pop(view, None)
-        if drag is None or drag["id"] != overlay_id or not drag["moved"]:
+        if drag is None or drag["id"] != overlay_id:
+            return
+        if not drag["moved"]:
+            mapping_preview.cancel()
             return
         item = assets.get(overlay_id) if is_guide else (
             _additional_line_by_overlay_id(view, overlay_id)[1])
         if item is not None:
             item.clear()
             item.update(drag["item"])
+        mapping_preview.cancel()
         _invalidate_grid_cache()
         _push_overlay(view)
         try:
@@ -5578,6 +6218,7 @@ def _guide_drag_event(message):
         if phase == "release":
             _GUIDE_DRAG.pop(view, None)
             _push_overlay(view)
+            mapping_preview.end()
         return
     moved = [(x + delta[0], y + delta[1]) for x, y in drag["points"]]
 
@@ -5605,6 +6246,7 @@ def _guide_drag_event(message):
         # The line moves now; the mapping, and the refer grid and tint drawn
         # from it, wait for the release. Rebuilding them here was a full solve
         # per mouse move, and the moves queued up behind it.
+        mapping_preview.update()
         _push_overlay(view)
         try:
             _animean().ui.refresh()
@@ -5637,6 +6279,7 @@ def _guide_drag_event(message):
     # Editing an axis rebuilt the refer grid above; with unit focus the
     # mapping itself follows, no manual click.
     _maybe_auto_run()
+    mapping_preview.end()
 
 
 def _additional_line_by_overlay_id(view, overlay_id):
@@ -9593,6 +10236,7 @@ def replace_line_points(view_name, overlay_id, points, settled, stations=None):
     item.pop("source", None)
     if not settled:
         _push_overlay(view_name)
+        mapping_preview.update()
         try:
             _animean().ui.refresh()
         except Exception:
@@ -9715,12 +10359,12 @@ def _line_mark_items(view_name):
     return items
 
 
-def _ground_pairs():
+def _ground_pairs(main_axes=None, paired=None):
     """The (child, main) ground pairs: lines the user ticked 地线."""
     child_assets, main_assets = _assets_for("child"), _assets_for("main")
     pairs = []
     for prop in GUIDE_PROPERTIES:
-        child_item, main_item = child_assets.get(prop), main_assets.get(prop)
+        child_item, main_item = child_assets.get(prop), (main_axes or main_assets).get(prop)
         if child_item and main_item and (child_item.get(GROUND_FLAG) or main_item.get(GROUND_FLAG)):
             # The frame already takes this axis onto its partner: the pin is
             # "stay where the frame puts you", whatever else lets the axis go.
@@ -9735,7 +10379,7 @@ def _ground_pairs():
         if main_item and (child_item.get(GROUND_FLAG) or main_item.get(GROUND_FLAG)):
             pairs.append(({"points": child_item["points"]}, {"points": main_item["points"]}))
     if line_is_ground(PROXY_PROPERTY):
-        paired = proxy_pairing()
+        paired = proxy_pairing() if paired is None else paired
         if paired is not None:
             child, main = paired["child"], paired["main"]
             pairs.append(({"points": child + child[:1], "closed": True},
@@ -9997,6 +10641,7 @@ def _history_restored(cell, stroke, message):
     # Same reasoning for an in-flight guide/additional-line drag: the restore
     # replaced the assets the gesture was mutating.
     _GUIDE_DRAG.pop(message.get("view") or "main", None)
+    mapping_preview.cancel(restore_assets=False)
     if (message.get("view") or "main") == "main":
         _HORIZON_DRAG.pop("main", None)
     _load_assets(message.get("view") or "main")

@@ -16,7 +16,11 @@
 #include <QPainterPath>
 #include <QPoint>
 #include <QRect>
+#include <QCoreApplication>
+#include <QDebug>
 #include <QSet>
+#include <QTimer>
+#include <memory>
 
 #include <cmath>
 #include <algorithm>
@@ -47,6 +51,9 @@ std::function<void(const QString &view, const QString &name)> g_uiCursorCallback
 std::function<void(const QString &view, bool on)> g_uiFillPaintModeCallback;
 std::function<void(const QString &view, const QStringList &tools)> g_uiLockedToolsCallback;
 std::function<void(const QString &op, const QString &view, const QString &label)> g_uiHistoryCallback;
+std::function<void(const QString &key, int width, int height, const QByteArray &data)> g_uiFieldCallback;
+std::function<void(const QString &view, const AnimeanFieldViewSpec &spec)> g_uiFieldViewCallback;
+std::function<bool(const QString &view)> g_uiFieldDisplaySupportedCallback;
 
 // Event subscription mask pushed by python_hooks (ui.set_hook_events).
 bool g_hookEventMaskValid = false;
@@ -1141,6 +1148,44 @@ void clearAnimeanUiHistoryCallback()
     g_uiHistoryCallback = nullptr;
 }
 
+void registerAnimeanUiFieldCallback(
+    std::function<void(const QString &key, int width, int height, const QByteArray &data)> callback)
+{
+    g_uiFieldCallback = std::move(callback);
+}
+
+void clearAnimeanUiFieldCallback()
+{
+    g_uiFieldCallback = nullptr;
+}
+
+void registerAnimeanUiFieldViewCallback(
+    std::function<void(const QString &view, const AnimeanFieldViewSpec &spec)> callback)
+{
+    g_uiFieldViewCallback = std::move(callback);
+}
+
+void clearAnimeanUiFieldViewCallback()
+{
+    g_uiFieldViewCallback = nullptr;
+}
+
+void registerAnimeanUiFieldDisplaySupportedCallback(
+    std::function<bool(const QString &view)> callback)
+{
+    g_uiFieldDisplaySupportedCallback = std::move(callback);
+}
+
+void clearAnimeanUiFieldDisplaySupportedCallback()
+{
+    g_uiFieldDisplaySupportedCallback = nullptr;
+}
+
+AnimeSceneModel *animeanUiSceneForViewName(const QString &view)
+{
+    return sceneForViewName(view);
+}
+
 void bindAnimeanPythonModule(py::module_ &m)
 {
     m.doc() = "Python bindings for AnimeAn scene, layer, frame, and vector image models.";
@@ -1366,6 +1411,175 @@ void bindAnimeanPythonModule(py::module_ &m)
                g_hookEventMaskValid = true;
            },
            py::arg("events"));
+    ui.def("set_field",
+           [](const std::string &key, int width, int height, py::bytes data) {
+               char *buffer = nullptr;
+               py::ssize_t length = 0;
+               if (PyBytes_AsStringAndSize(data.ptr(), &buffer, &length) != 0) {
+                   throw py::error_already_set();
+               }
+               const qint64 expected = (width > 0 && height > 0)
+                                           ? qint64(width) * qint64(height) * 16LL
+                                           : -1LL;
+               if (width <= 0 || height <= 0 || qint64(length) != expected) {
+                   throw py::value_error("set_field data length must equal width * height * 16.");
+               }
+               if (!g_uiFieldCallback) {
+                   return;
+               }
+               g_uiFieldCallback(QString::fromStdString(key),
+                                 width,
+                                 height,
+                                 QByteArray(buffer, int(length)));
+           },
+           py::arg("key"),
+           py::arg("width"),
+           py::arg("height"),
+           py::arg("data"));
+    ui.def("set_field_view",
+           [](const std::string &view, py::object specObj) {
+               if (specObj.is_none()) {
+                   if (g_uiFieldViewCallback) {
+                       AnimeanFieldViewSpec emptySpec;
+                       emptySpec.active = false;
+                       g_uiFieldViewCallback(QString::fromStdString(view), emptySpec);
+                   }
+                   return;
+               }
+               if (!py::isinstance<py::dict>(specObj)) {
+                   throw py::type_error("set_field_view spec must be a dict or None.");
+               }
+               py::dict data = py::reinterpret_borrow<py::dict>(specObj);
+               AnimeanFieldViewSpec spec;
+               spec.active = true;
+               if (hasKey(data, "field")) {
+                   spec.fieldKey = QString::fromStdString(data["field"].cast<std::string>());
+               } else if (hasKey(data, "field_key")) {
+                   spec.fieldKey = QString::fromStdString(data["field_key"].cast<std::string>());
+               }
+               if (hasKey(data, "rect")) {
+                   const AnimeCore::RectF r = objectToRectF(data["rect"], "spec.rect");
+                   spec.rect = QRectF(r.x(), r.y(), r.width(), r.height());
+               }
+               if (hasKey(data, "max_edge")) {
+                   spec.maxEdge = objectToQreal(data["max_edge"], "spec.max_edge");
+               }
+               if (hasKey(data, "source_view")) {
+                   spec.sourceView = QString::fromStdString(data["source_view"].cast<std::string>());
+               }
+               if (hasKey(data, "columns")) {
+                   py::sequence cols = data["columns"].cast<py::sequence>();
+                   for (py::handle col : cols) {
+                       spec.columns.append(col.cast<int>());
+                   }
+               }
+               if (hasKey(data, "frame")) {
+                   spec.frame = data["frame"].cast<int>();
+               }
+               if (hasKey(data, "width_scale")) {
+                   spec.widthScale = objectToQreal(data["width_scale"], "spec.width_scale");
+               }
+               if (hasKey(data, "passes")) {
+                   py::sequence passSeq = data["passes"].cast<py::sequence>();
+                   for (py::handle item : passSeq) {
+                       if (!py::isinstance<py::dict>(item)) {
+                           throw py::type_error("spec.passes items must be dicts.");
+                       }
+                       py::dict passDict = py::reinterpret_borrow<py::dict>(item);
+                       AnimeanFieldPass pass;
+                       if (hasKey(passDict, "tag")) {
+                           py::sequence tagSeq = passDict["tag"].cast<py::sequence>();
+                           if (tagSeq.size() < 2) {
+                               throw py::value_error("spec.passes[].tag must have 2 elements (lo, hi).");
+                           }
+                           pass.tagLo = objectToQreal(tagSeq[0], "pass.tag[0]");
+                           pass.tagHi = objectToQreal(tagSeq[1], "pass.tag[1]");
+                       }
+                       if (hasKey(passDict, "opacity")) {
+                           pass.opacity = objectToQreal(passDict["opacity"], "pass.opacity");
+                       }
+                       if (hasKey(passDict, "tint") && !passDict["tint"].is_none()) {
+                           const AnimeCore::Color tint = objectToColor(passDict["tint"], "pass.tint");
+                           pass.tintR = tint.red();
+                           pass.tintG = tint.green();
+                           pass.tintB = tint.blue();
+                           pass.tintA = tint.alpha();
+                       }
+                       spec.passes.append(pass);
+                   }
+               }
+               if (hasKey(data, "hide_columns") && !data["hide_columns"].is_none()) {
+                   py::sequence hideSeq = data["hide_columns"].cast<py::sequence>();
+                   for (py::handle col : hideSeq) {
+                       spec.hideColumns.append(col.cast<int>());
+                   }
+               }
+               if (hasKey(data, "skip_properties") && !data["skip_properties"].is_none()) {
+                   py::sequence skipSeq = data["skip_properties"].cast<py::sequence>();
+                   for (py::handle prop : skipSeq) {
+                       spec.skipProperties.append(QString::fromStdString(py::str(prop).cast<std::string>()));
+                   }
+               }
+               if (g_uiFieldViewCallback) {
+                   g_uiFieldViewCallback(QString::fromStdString(view), spec);
+               }
+           },
+           py::arg("view"),
+           py::arg("spec") = py::none());
+    ui.def("field_display_supported",
+           [](const std::string &view) {
+               if (!g_uiFieldDisplaySupportedCallback) {
+                   return false;
+               }
+               return g_uiFieldDisplaySupportedCallback(QString::fromStdString(view));
+           },
+           py::arg("view") = "main");
+    ui.def("call_later",
+           [](int ms, py::function callable) {
+               auto holder = std::shared_ptr<py::function>(
+                   new py::function(std::move(callable)),
+                   [](py::function *ptr) {
+                       if (!ptr) {
+                           return;
+                       }
+                       if (Py_IsInitialized()) {
+                           py::gil_scoped_acquire acquire;
+                           delete ptr;
+                       } else {
+                           ptr->release();
+                           delete ptr;
+                       }
+                   });
+               auto invoke = [holder = std::move(holder)]() mutable {
+                   if (!Py_IsInitialized() || !holder) {
+                       return;
+                   }
+                   try {
+                       py::gil_scoped_acquire acquire;
+                       py::function callback = std::move(*holder);
+                       holder.reset();
+                       if (callback) {
+                           callback();
+                       }
+                   } catch (py::error_already_set &error) {
+                       qWarning().noquote()
+                           << QStringLiteral("[python call_later] %1").arg(QString::fromUtf8(error.what()));
+                   } catch (const std::exception &error) {
+                       qWarning().noquote()
+                           << QStringLiteral("[python call_later] %1").arg(QString::fromUtf8(error.what()));
+                   } catch (...) {
+                       qWarning().noquote() << QStringLiteral("[python call_later] unknown error");
+                   }
+               };
+               const int delayMs = std::max(0, ms);
+               if (QCoreApplication *app = QCoreApplication::instance()) {
+                   QTimer::singleShot(delayMs, app, std::move(invoke));
+               } else {
+                   QTimer::singleShot(delayMs, std::move(invoke));
+               }
+           },
+           py::arg("ms"),
+           py::arg("callable"));
     ui.def("displace_begin",
            [](const std::string &view, int row, int layerIndex, py::sequence entries,
               double scaleX, double scaleY) {

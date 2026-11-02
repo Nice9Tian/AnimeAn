@@ -9,6 +9,7 @@
 
 #include <charconv>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 namespace {
@@ -22,6 +23,58 @@ quint64 fnv1a64(const void *data, size_t len, quint64 seed = 1469598103934665603
         h *= 1099511628211ULL;
     }
     return h;
+}
+
+void appendUint64(QByteArray &out, quint64 val)
+{
+    char buf[32];
+    auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), val);
+    if (ec == std::errc()) {
+        out.append(buf, int(ptr - buf));
+    } else {
+        out.append('0');
+    }
+}
+
+void appendJsonString(QByteArray &out, const QString &str)
+{
+    const QByteArray utf8 = str.toUtf8();
+    out.append('"');
+    for (unsigned char c : utf8) {
+        switch (c) {
+        case '"':
+            out.append("\\\"");
+            break;
+        case '\\':
+            out.append("\\\\");
+            break;
+        case '\b':
+            out.append("\\b");
+            break;
+        case '\f':
+            out.append("\\f");
+            break;
+        case '\n':
+            out.append("\\n");
+            break;
+        case '\r':
+            out.append("\\r");
+            break;
+        case '\t':
+            out.append("\\t");
+            break;
+        default:
+            if (c < 0x20) {
+                char hex[7];
+                std::snprintf(hex, sizeof(hex), "\\u%04x", unsigned(c));
+                out.append(hex, 6);
+            } else {
+                out.append(char(c));
+            }
+            break;
+        }
+    }
+    out.append('"');
 }
 
 void appendInt(QByteArray &out, int val)
@@ -878,6 +931,72 @@ void RecordingPaintEngine::drawTiledPixmap(const QRectF &r, const QPixmap &pixma
         return;
     }
     drawImage(r, pixmap.toImage(), QRectF(0.0, 0.0, pixmap.width(), pixmap.height()));
+}
+
+void RecordingPaintEngine::beginFieldScope(const QString &key,
+                                           quint64 version,
+                                           const QRectF &rect,
+                                           double maxEdge,
+                                           const QVector<FieldScopePass> &passes)
+{
+    syncCommonState();
+
+    QByteArray out;
+    out.reserve(96 + passes.size() * 24);
+    out.append("[\"F\",");
+    appendJsonString(out, key);
+    out.append(',');
+    appendUint64(out, version);
+    out.append(',');
+    appendDouble(out, rect.x());
+    out.append(',');
+    appendDouble(out, rect.y());
+    out.append(',');
+    appendDouble(out, rect.width());
+    out.append(',');
+    appendDouble(out, rect.height());
+    out.append(',');
+    appendDouble(out, maxEdge);
+    out.append(",[");
+    for (int i = 0; i < passes.size(); ++i) {
+        if (i > 0) {
+            out.append(',');
+        }
+        out.append('[');
+        appendDouble(out, passes[i].tagLo);
+        out.append(',');
+        appendDouble(out, passes[i].tagHi);
+        out.append(',');
+        appendDouble(out, passes[i].opacity);
+        out.append(',');
+        appendInt(out, passes[i].tintR);
+        out.append(',');
+        appendInt(out, passes[i].tintG);
+        out.append(',');
+        appendInt(out, passes[i].tintB);
+        out.append(',');
+        appendInt(out, passes[i].tintA);
+        out.append(']');
+    }
+    out.append("]]");
+    appendOp(std::move(out));
+
+    m_hasEmittedPen = false;
+    m_emittedPenBytes.clear();
+    m_hasEmittedBrush = false;
+    m_emittedBrushBytes.clear();
+    m_emittedOpacity = -1.0;
+}
+
+void RecordingPaintEngine::endFieldScope()
+{
+    appendOp(QByteArrayLiteral("[\"f\"]"));
+
+    m_hasEmittedPen = false;
+    m_emittedPenBytes.clear();
+    m_hasEmittedBrush = false;
+    m_emittedBrushBytes.clear();
+    m_emittedOpacity = -1.0;
 }
 
 void RecordingPaintEngine::drawTextItem(const QPointF &p, const QTextItem &textItem)

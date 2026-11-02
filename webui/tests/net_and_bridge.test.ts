@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { loadProjectFiles } from "../vf/src/loader.ts";
 import { Runtime } from "../vf/src/runtime.ts";
 import { attachBridge } from "../src/bridge.ts";
-import { BackendClient, type BoardMessage, type ImageMeta, type WebSocketLike } from "../src/net.ts";
+import { BackendClient, type BoardMessage, type FieldMeta, type ImageMeta, type WebSocketLike } from "../src/net.ts";
 
 class MockWebSocket implements WebSocketLike {
   binaryType = "arraybuffer";
@@ -262,5 +262,58 @@ objects:
     assert.equal(runtime.getState("layer.visible"), false);
 
     bridge.dispose();
+  });
+
+  it("pairs field text frame with binary frame, handles unaligned offset, and isolates from image meta", async () => {
+    let mockWs!: MockWebSocket;
+    const client = new BackendClient({
+      createWebSocket: () => {
+        mockWs = new MockWebSocket();
+        mockWs.readyState = 1;
+        return mockWs;
+      },
+    });
+
+    await client.connect("ws://127.0.0.1:9999");
+
+    const fields: Array<{ meta: FieldMeta; data: Float32Array }> = [];
+    const images: Array<{ meta: ImageMeta; data: Uint8Array }> = [];
+    const unsubField = client.onField((meta, data) => fields.push({ meta, data }));
+    const unsubImg = client.onImage((meta, data) => images.push({ meta, data }));
+
+    // 1. Non-4-byte-aligned binary buffer (offset = 1, 2x1 RGBA32F = 8 floats = 32 bytes)
+    const rawBuf = new ArrayBuffer(36);
+    const alignedFloats = new Float32Array([1.5, -2.5, 1, 0, 3.25, 4.75, 0, 0]);
+    new Uint8Array(rawBuf, 1, 32).set(new Uint8Array(alignedFloats.buffer));
+    const unalignedView = new Uint8Array(rawBuf, 1, 32);
+
+    mockWs.receiveText({ t: "field", key: "fld_0", w: 2, h: 1, version: 3, bytes: 32 });
+    mockWs.receiveBinary(unalignedView);
+
+    assert.equal(fields.length, 1);
+    assert.equal(fields[0].meta.key, "fld_0");
+    assert.equal(fields[0].meta.version, 3);
+    assert.deepEqual(Array.from(fields[0].data), Array.from(alignedFloats));
+    assert.equal(images.length, 0);
+
+    // 2. Interleaved field meta replaced by image meta (and vice versa) must not cross-pair
+    mockWs.receiveText({ t: "field", key: "fld_stale", w: 1, h: 1, version: 1, bytes: 16 });
+    mockWs.receiveText({ t: "image", key: "img_ok", w: 1, h: 1, fmt: "rgba8888", bytes: 4 });
+    mockWs.receiveBinary(new Uint8Array([10, 20, 30, 255]));
+    assert.equal(fields.length, 1);
+    assert.equal(images.length, 1);
+    assert.equal(images[0].meta.key, "img_ok");
+
+    mockWs.receiveText({ t: "image", key: "img_stale", w: 1, h: 1, fmt: "rgba8888", bytes: 4 });
+    mockWs.receiveText({ t: "field", key: "fld_ok", w: 1, h: 1, version: 2, bytes: 16 });
+    const f2 = new Float32Array([5, 6, 1, 0]);
+    mockWs.receiveBinary(f2.buffer);
+    assert.equal(images.length, 1);
+    assert.equal(fields.length, 2);
+    assert.equal(fields[1].meta.key, "fld_ok");
+    assert.deepEqual(Array.from(fields[1].data), [5, 6, 1, 0]);
+
+    unsubField();
+    unsubImg();
   });
 });

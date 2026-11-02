@@ -309,6 +309,7 @@ function createBoards(host, client, store) {
     Object.assign(slot, { canvas, renderer, input: attachBoardInput(canvas, { view: slot.view, client }) });
     if (hadFocus) canvas.focus({ preventScroll: true });
     paintCursor(slot);
+    client?.call?.("board.capabilities", { view: slot.view, fieldDisplay: started === "webgl" })?.catch(() => {});
     return started;
   };
   const paintCursor = (slot) => {
@@ -318,7 +319,11 @@ function createBoards(host, client, store) {
   const boards = {
     current: "main",
     rendererKind: savedRendererKind(),
-    resendSizes: () => Object.values(slots).forEach((slot) => slot.input.resend?.()),
+    resendSizes: () =>
+      Object.values(slots).forEach((slot) => {
+        slot.input.resend?.();
+        client?.call?.("board.capabilities", { view: slot.view, fieldDisplay: boards.rendererKind === "webgl" })?.catch(() => {});
+      }),
     show(view) {
       boards.current = view;
       slots.main.canvas.style.visibility = view === "main" ? "visible" : "hidden";

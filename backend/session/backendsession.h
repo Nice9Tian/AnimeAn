@@ -1,6 +1,7 @@
 #ifndef BACKENDSESSION_H
 #define BACKENDSESSION_H
 
+#include <QByteArray>
 #include <QCursor>
 #include <QHash>
 #include <QImage>
@@ -51,6 +52,14 @@ private:
         double scale = 1.0;
     };
 
+    struct FieldEntry {
+        int w = 0;
+        int h = 0;
+        quint64 version = 0;
+        QByteArray data;
+        bool pending = false;
+    };
+
     void bindPaintViewToBusiness(const QString &viewName, PaintOpenGLWidget *paintView);
     void setupBoardSinks(const QString &viewName, PaintOpenGLWidget *paintView);
     void setupBusinessConnections();
@@ -84,6 +93,8 @@ private:
     void handleImageSink(const QString &key, const QImage &rgba);
     void handleCursorSink(const QString &viewName, const QCursor &cursor);
     void sendImagePacket(const QString &key, const QImage &rgba);
+    void sendFieldPacket(const QString &key, const FieldEntry &entry);
+    void flushPendingFieldsForBoard(const PaintOpenGLWidget *board);
 
     void setPythonUiFrozen(bool frozen);
     void appendPythonDebug(const QString &message);
@@ -146,6 +157,9 @@ private:
     QHash<QString, CursorState> m_cursors;
     QHash<QString, QImage> m_cachedImages;
     QHash<QString, quint64> m_lastBoardFrameId;
+    quint64 m_nextFieldVersion = 1;
+    QHash<QString, FieldEntry> m_fields;
+    QHash<QString, bool> m_fieldDisplaySupported;
 };
 
 #endif // BACKENDSESSION_H
