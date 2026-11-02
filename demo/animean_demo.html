@@ -1,0 +1,1185 @@
+<title>AnimeAn Demo</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;600;700&display=swap">
+<style>
+/* Layout: a fixed 1280x800 replica of the AnimeAn window, scaled to the page width,
+   driven by one scrubbable timeline; chapters and captions sit under it.
+   The page commits to the app's own dark look, so it has one theme. */
+:root {
+  --bg: #0e0f10;
+  --fg: #e9eaee;
+  --muted: #9a9ca3;
+  --rule: #2a2c2f;
+  --panel: #17181a;
+  --accent: #3d8ec9;
+  --h: #0000ff;
+  --v: #00e000;
+  --pink: #ff69b4;
+  --grid: rgba(255, 140, 0, .62);
+  --sans: "IBM Plex Sans", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --ui: "Segoe UI", "IBM Plex Sans", "Microsoft YaHei", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  color-scheme: dark;
+}
+[hidden] { display: none !important; }
+html, body { background: var(--bg); color: var(--fg); }
+body {
+  font-family: var(--sans);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 20px 32px;
+}
+.page { max-width: 1280px; margin: 0 auto; display: grid; gap: 14px; }
+header.top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; }
+header.top h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: .01em; text-wrap: balance; }
+header.top h1 b { color: var(--accent); font-weight: 700; }
+header.top p { margin: 0; color: var(--muted); font-size: 14px; min-width: 0; }
+
+/* ---------- stage ---------- */
+.frame { position: relative; width: 100%; border-radius: 6px; overflow: hidden; background: #000;
+  box-shadow: 0 0 0 1px var(--rule), 0 18px 50px rgba(0,0,0,.5); }
+#stage { position: absolute; left: 0; top: 0; width: 1280px; height: 800px; transform-origin: 0 0; overflow: hidden; }
+
+/* ---------- app replica ---------- */
+#app {
+  --mb: #1d1f20; --dh: #141516; --db: #1d1f20; --chip: #2a2c2e; --chipOn: #3d8ec9; --chipFg: #b4b6bc;
+  --chipOnFg: #fff; --tab: #2a2c2e; --tabSel: #34566f; --tx: #f5f5f8; --tx2: #b4b6bc; --list: #232526;
+  --canvas: #1d1f20; --line: #2c2f31; --btnBd: #3a3d40; --tipBg: #141516;
+  position: absolute; inset: 0; background: var(--mb); color: var(--tx); font: 12px/1.3 var(--ui);
+  transition: background-color .35s, color .35s;
+}
+#app.light {
+  --mb: #f5f5f6; --dh: #dfe0e3; --db: #f5f5f6; --chip: #fbfbfc; --chipOn: #a6d0ee; --chipFg: #4a4c51;
+  --chipOnFg: #1d1f20; --tab: #fbfbfc; --tabSel: #a6d0ee; --tx: #1d1f20; --tx2: #6b6d72; --list: #ffffff;
+  --canvas: #e6e7e9; --line: #d3d4d7; --btnBd: #c4c6ca; --tipBg: #ffffff;
+}
+#app * { box-sizing: border-box; }
+.menubar { position: absolute; left: 0; top: 0; right: 0; height: 20px; display: flex; gap: 2px; padding-left: 4px; background: var(--mb); }
+.menubar span { padding: 3px 7px; border-radius: 3px; }
+.menubar span.open { background: var(--chipOn); color: var(--chipOnFg); }
+.dock { position: absolute; background: var(--db); display: flex; flex-direction: column; overflow: hidden;
+  transition: background-color .35s; }
+.dock.float { box-shadow: 0 14px 40px rgba(0,0,0,.55), 0 0 0 1px var(--btnBd); z-index: 5; border-radius: 3px; }
+.dh { flex: none; height: 18px; display: flex; align-items: center; background: var(--dh); padding-left: 4px; }
+.dh .t { flex: 1; }
+.dh i { width: 18px; height: 14px; font-style: normal; color: var(--tx2); font-size: 10px; text-align: center; opacity: .8; }
+.grp { display: flex; align-items: center; gap: 4px; color: var(--tx2); padding: 4px 6px 2px; }
+.grp::before { content: "▾"; font-size: 10px; }
+.chips { display: grid; grid-template-columns: 40px 40px; gap: 8px; padding: 4px 8px 8px; }
+.chip { width: 40px; height: 40px; border-radius: 8px; background: var(--chip); color: var(--chipFg); display: grid; place-items: center;
+  transition: background-color .15s, color .15s; }
+.chip svg { width: 24px; height: 24px; }
+.chip.on { background: var(--chipOn); color: var(--chipOnFg); }
+.tabs { flex: none; display: flex; gap: 2px; padding: 0 4px; height: 22px; align-items: flex-end; background: var(--mb); }
+.tab { padding: 3px 10px; background: var(--tab); color: var(--tx2); border-radius: 2px 2px 0 0; }
+.tab.sel { background: var(--tabSel); color: var(--tx); }
+#app.light .tab.sel { color: #1d1f20; }
+.canvasArea { flex: 1; position: relative; background: var(--canvas); transition: background-color .35s; }
+.canvasArea > svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.opt { padding: 8px 10px; display: grid; gap: 8px; align-content: start; }
+.swRow { display: flex; gap: 10px; align-items: center; }
+.sw { width: 36px; height: 36px; border-radius: 2px; background: #000; box-shadow: 0 0 0 1px var(--btnBd); }
+.swRow b { display: block; font-size: 12px; }
+.swRow small { color: var(--tx2); font-size: 9px; }
+.seg { display: grid; grid-template-columns: repeat(4, 1fr); box-shadow: 0 0 0 1px var(--btnBd); border-radius: 2px; overflow: hidden; }
+.seg span { text-align: center; font-size: 9px; font-weight: 700; padding: 5px 0; color: var(--tx2); }
+.seg span.sel { background: var(--chip); color: var(--tx); }
+.slider { display: grid; gap: 4px; justify-items: center; }
+.slider .rail { width: 100%; height: 4px; border-radius: 2px; background: var(--chip); position: relative; }
+.slider .rail::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: var(--v, 50%); background: var(--tabSel); border-radius: 2px; }
+.slider .rail::after { content: ""; position: absolute; top: -5px; left: calc(var(--v, 50%) - 7px); width: 14px; height: 14px; border-radius: 50%; background: #3d4043; }
+#app.light .slider .rail::after { background: #c7c9cd; }
+.chk { display: flex; gap: 6px; align-items: center; }
+.chk::before { content: ""; width: 11px; height: 11px; border-radius: 2px; box-shadow: 0 0 0 1px var(--btnBd); background: var(--list); }
+.chk.on::before { background: var(--accent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 6.2 5 8.5 9.6 3.4' fill='none' stroke='white' stroke-width='1.8'/%3E%3C/svg%3E") center/100%; box-shadow: none; }
+.ltabs { display: flex; gap: 2px; padding: 0 4px; }
+.ltabs span { padding: 4px 10px; background: var(--tab); color: var(--tx2); }
+.ltabs span.sel { background: var(--tabSel); color: var(--tx); }
+.list { flex: 1; margin: 0 6px; background: var(--list); padding: 4px 0; overflow: hidden; }
+.row { display: flex; align-items: center; gap: 6px; padding: 3px 8px; white-space: nowrap; }
+.row.sel { background: var(--tabSel); }
+.row .eye { width: 10px; height: 10px; border-radius: 2px; background: var(--accent); flex: none; }
+.row.sub { padding-left: 30px; color: var(--tx2); }
+.row.sub.sel { color: var(--tx); }
+.lbtns { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 6px; }
+.lbtns span { text-align: center; padding: 4px 0; box-shadow: 0 0 0 1px var(--btnBd); border-radius: 2px; }
+.tlbar { flex: none; height: 34px; display: flex; align-items: center; gap: 14px; padding: 0 10px; color: var(--tx2); font-size: 10px; font-weight: 700; }
+.tlbar .grow { flex: 1; }
+.tlbar .tg { opacity: .45; }
+.tlbar .num { color: var(--tx); font-weight: 400; font-size: 11px; }
+.frames { flex: 1; display: flex; gap: 14px; padding: 2px 2px 8px; }
+.cell { position: relative; width: 196px; background: #fff; border-radius: 2px; overflow: hidden; box-shadow: 0 0 0 1px var(--btnBd); }
+.cell.sel { box-shadow: 0 0 0 2px var(--accent); }
+.cell svg { width: 100%; height: 100%; }
+#tlPlay.on { color: var(--accent); }
+.cell em { position: absolute; left: 6px; top: 6px; font: 700 9px/1 var(--ui); font-style: normal; color: #fff; background: #1d1f20; padding: 2px 4px; border-radius: 2px; }
+.cell.sel em { background: var(--accent); }
+.status { position: absolute; left: 0; right: 0; bottom: 0; height: 20px; padding: 3px 6px; background: var(--mb); color: var(--tx); }
+.droppv { position: absolute; background: rgba(61,142,201,.22); box-shadow: inset 0 0 0 2px var(--accent); z-index: 4; border-radius: 2px; }
+.menu { position: absolute; z-index: 8; background: var(--db); box-shadow: 0 8px 24px rgba(0,0,0,.4), 0 0 0 1px var(--btnBd); padding: 4px 0; min-width: 120px; }
+.menu div { padding: 4px 14px 4px 22px; position: relative; }
+.menu div.ck::before { content: "✓"; position: absolute; left: 8px; }
+.menu div.hov { background: var(--chipOn); color: var(--chipOnFg); }
+#texWin { position: absolute; left: 118px; top: 58px; width: 330px; height: 474px; z-index: 6; }
+#texWin .tmenu { flex: none; display: flex; gap: 12px; padding: 2px 8px; height: 18px; background: var(--db); }
+#texWin .tbody { flex: 1; position: relative; background: #fff; }
+#texWin .tbody svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+/* ---------- overlays inside the stage ---------- */
+.tip { position: absolute; z-index: 9; background: var(--tipBg, #141516); color: var(--tx, #f5f5f8); padding: 7px 10px; border-radius: 4px;
+  box-shadow: 0 8px 22px rgba(0,0,0,.45), 0 0 0 1px var(--btnBd, #3a3d40); display: grid; gap: 2px; max-width: 280px; font: 12px/1.35 var(--ui); }
+.tip b { font-size: 12px; }
+.tip span { color: var(--tx2, #b4b6bc); }
+.hl { position: absolute; z-index: 9; border-radius: 4px; box-shadow: 0 0 0 2px #ffd166, 0 0 0 9999px rgba(0,0,0,.45); pointer-events: none; }
+.hl span { position: absolute; left: 0; top: 0; background: #ffd166; color: #1a1300; padding: 5px 10px; border-radius: 3px;
+  font: 600 14px/1.2 var(--sans); white-space: nowrap; }
+.callout { position: absolute; z-index: 9; background: rgba(20,21,22,.92); color: #fff; padding: 6px 10px; border-radius: 4px; font: 600 13px/1.3 var(--sans);
+  box-shadow: 0 0 0 1px rgba(255,255,255,.12); white-space: nowrap; transform: translate(-50%, 0); }
+#cursor { position: absolute; left: 0; top: 0; z-index: 20; width: 22px; height: 26px; pointer-events: none; will-change: transform; }
+#cursor .ring { position: absolute; left: -11px; top: -11px; width: 22px; height: 22px; border-radius: 50%; border: 2px solid #ffd166; opacity: 0; transform: scale(.4); transition: opacity .12s, transform .12s; }
+#cursor.down .ring { opacity: 1; transform: scale(1); }
+#cursor .eraser { position: absolute; left: -14px; top: -14px; width: 28px; height: 28px; border-radius: 50%; border: 1.5px solid #333; background: rgba(255,255,255,.35); display: none; }
+#cursor.erase .eraser { display: block; }
+#overlay { position: absolute; inset: 0; z-index: 30; display: grid; place-items: center; text-align: center; background: rgba(10,11,12,.86);
+  pointer-events: none; }
+#overlay .t1 { font: 700 76px/1 var(--sans); letter-spacing: .01em; color: #fff; }
+#overlay .t1 b { color: var(--accent); }
+#overlay .t2 { margin-top: 18px; font: 400 22px/1.5 var(--sans); color: #c9cbd1; }
+#overlay .t3 { margin-top: 26px; display: flex; gap: 12px; justify-content: center; }
+#overlay .t3 span { font: 600 15px/1 var(--sans); padding: 9px 14px; border-radius: 3px; background: #1f2224; box-shadow: inset 0 0 0 1px #34383b; color: #e9eaee; }
+
+/* ---------- controls ---------- */
+.controls { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; }
+.play { width: 40px; height: 40px; border-radius: 50%; border: 0; background: var(--accent); color: #fff; display: grid; place-items: center; cursor: pointer; }
+.play:focus-visible, .chap:focus-visible { outline: 2px solid #ffd166; outline-offset: 2px; }
+.play svg { width: 16px; height: 16px; }
+.chaps { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; min-width: 0; }
+.chap { position: relative; border: 0; background: var(--panel); color: var(--muted); text-align: left; padding: 8px 10px 12px; border-radius: 4px; cursor: pointer;
+  font: 600 13px/1.25 var(--sans); overflow: hidden; min-width: 0; }
+.chap small { display: block; font: 400 11px/1 var(--mono); color: #6f7279; margin-bottom: 4px; }
+.chap .bar { position: absolute; left: 0; bottom: 0; height: 3px; width: 0; background: var(--accent); }
+.chap.cur { color: var(--fg); background: #1e2023; }
+.time { font: 400 13px/1 var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.caption { display: grid; gap: 4px; background: var(--panel); border-radius: 4px; padding: 12px 14px; min-height: 66px; }
+.caption .k { font: 600 12px/1 var(--mono); color: var(--accent); letter-spacing: .06em; text-transform: uppercase; }
+.caption .c { font-size: 16px; line-height: 1.5; max-width: 70ch; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; color: var(--muted); font-size: 13px; }
+.legend i { display: inline-block; width: 18px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+@media (max-width: 720px) {
+  .chaps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .controls { grid-template-columns: auto 1fr; }
+  .time { grid-column: 1 / -1; }
+  .caption .c { font-size: 15px; }
+}
+</style>
+
+<div class="page">
+  <header class="top">
+    <h1><b>AnimeAn</b> Demo</h1>
+    <p>The interface and free layout, the painting tools, and three ways to Auto Map a pattern: H/V axes and Additional Lines on the sample “A”, and contours on a teapot flag waving frame by frame.</p>
+  </header>
+
+  <div class="frame" id="frame">
+    <div id="stage">
+      <div id="app">
+        <div class="menubar" id="menubar"><span>File</span><span>Edit</span><span>Auto Mapping</span><span>Draw</span><span>Arrow</span><span id="mTheme">Theme</span><span>Windows</span><span>Settings</span></div>
+
+        <div class="dock" id="dTools">
+          <div class="dh"><span class="t">Tools</span><i>⧉</i><i>✕</i></div>
+          <div class="grp">Painting</div>
+          <div class="chips" id="chipsPaint"></div>
+          <div class="grp">Mapping</div>
+          <div class="chips" id="chipsMap"></div>
+        </div>
+
+        <div class="dock" id="dCentral">
+          <div class="tabs"><span class="tab sel">Drawing</span><span class="tab">Texture</span></div>
+          <div class="canvasArea">
+            <svg id="board" viewBox="0 0 920 538" preserveAspectRatio="xMidYMid meet">
+              <defs>
+                <mask id="eraseMask" maskUnits="userSpaceOnUse" x="0" y="0" width="920" height="538">
+                  <rect x="0" y="0" width="920" height="538" fill="#fff"/>
+                  <g id="eraseDots" fill="#000"></g>
+                </mask>
+                <clipPath id="floodClip"><circle id="floodCircle" cx="700" cy="235" r="0"/></clipPath>
+                <clipPath id="paperClip"><rect x="30" y="27" width="860" height="484"/></clipPath>
+              </defs>
+              <rect x="30" y="27" width="860" height="484" fill="#fff"/>
+              <g id="boardLive" clip-path="url(#paperClip)">
+                <g id="gPaint">
+                  <g id="paintAll">
+                    <path id="pFill" fill="#ffb3c7" clip-path="url(#floodClip)"/>
+                    <path id="pS1" fill="none" stroke="#000" stroke-width="5" stroke-linecap="round" mask="url(#eraseMask)"/>
+                    <path id="pS2" fill="none" stroke="#000" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path id="pS3" fill="none" stroke="#000" stroke-width="5" stroke-linecap="round"/>
+                    <path id="pCon" fill="none" stroke="#000" stroke-width="5" stroke-linecap="round"/>
+                    <g id="pAnchors"></g>
+                    <circle id="conA" r="7" fill="none" stroke="#ff7828" stroke-width="3"/>
+                    <circle id="conB" r="7" fill="none" stroke="#3caa5a" stroke-width="3"/>
+                    <g id="pBox">
+                      <rect id="pBoxRect" fill="none" stroke="#3c82f0" stroke-width="1.5" stroke-dasharray="6 4"/>
+                      <g id="pBoxGrips" fill="#fff" stroke="#3c82f0" stroke-width="1.5"></g>
+                    </g>
+                  </g>
+                </g>
+                <g id="gFlag">
+                  <g id="fPole"></g>
+                  <path id="fOnion" fill="none" stroke="#b3392f" stroke-width="1.5" stroke-opacity=".45" stroke-linejoin="round"/>
+                  <g id="fCloth">
+                    <path id="fBg" fill="#dfeeff"/>
+                    <path id="fGrid" fill="none" stroke="rgba(255,140,0,.55)" stroke-width="1"/>
+                    <path id="fRed" fill="#c8463d" stroke="#000" stroke-width="1.6" stroke-linejoin="round"/>
+                    <path id="fDark" fill="#7d2a24" stroke="#000" stroke-width="1.6" stroke-linejoin="round"/>
+                    <path id="fBand" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+                  </g>
+                </g>
+                <g id="gMap">
+                  <path id="mGrid" fill="none" stroke="rgba(255,140,0,.62)" stroke-width="1"/>
+                  <path id="mA" fill="#008000" fill-rule="evenodd" stroke="#000" stroke-width="1.7" stroke-linejoin="round"/>
+                </g>
+                <g id="gAuto">
+                  <path id="aH" fill="none" stroke="#0000ff" stroke-width="2.5" stroke-linecap="round"/>
+                  <path id="aV" fill="none" stroke="#00e000" stroke-width="2.5" stroke-linecap="round"/>
+                </g>
+                <g id="gAxes">
+                  <path id="mH" fill="none" stroke="#0000ff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path id="mV" fill="none" stroke="#00e000" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path id="mHa" fill="#0000ff"/>
+                  <path id="mVa" fill="#00e000"/>
+                  <circle id="mO" r="4" fill="#fff" stroke="#000" stroke-width="1.5"/>
+                </g>
+                <g id="gCont">
+                  <path id="cOrange" fill="none" stroke="#d66028" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+                  <g id="cRainbow" stroke-width="3.5" stroke-linecap="round"></g>
+                  <g id="cDots" fill="#e62d2d" stroke="#fff" stroke-width="1.5"></g>
+                </g>
+                <g id="gAdd">
+                  <g id="arrows">
+                    <path id="arrS" fill="none" stroke="#3a3d44" stroke-width="1.3" stroke-linecap="round"/>
+                    <path id="arrH" fill="#3a3d44"/>
+                  </g>
+                  <path id="addM" fill="none" stroke="#ff69b4" stroke-width="2.5" stroke-linecap="round"/>
+                </g>
+              </g>
+            </svg>
+          </div>
+        </div>
+
+        <div class="dock" id="dOptions">
+          <div class="dh"><span class="t">Tool Options</span><i>⧉</i><i>✕</i></div>
+          <div class="ltabs" style="padding-top:2px"><span class="sel">Options</span></div>
+          <div class="opt" id="optPaint">
+            <div class="swRow"><div class="sw"></div><div><b>#000000</b><small>R 0&nbsp;&nbsp; G 0&nbsp;&nbsp; B 0&nbsp;&nbsp; A 255</small></div></div>
+            <div class="seg"><span class="sel">BOX</span><span>CIRCLE</span><span>HSV</span><span>RGB</span></div>
+            <div class="swRow"><div class="sw" style="width:16px;height:16px"></div><div class="sw" style="width:16px;height:16px;background:#ffb3c7"></div><div class="sw" style="width:16px;height:16px;background:#fff"></div></div>
+            <div class="slider"><span>Stabilizer: 50</span><div class="rail" style="--v:50%"></div></div>
+            <div class="slider"><span>Width: 5</span><div class="rail" style="--v:12%"></div></div>
+          </div>
+          <div class="opt" id="optMap">
+            <div class="chk on">Front/Back Split</div>
+            <div class="chk on">Crease Line</div>
+            <div class="chk">Bezier Bridge</div>
+            <div class="chk on">Refer Rect</div>
+            <div class="slider"><span>Stabilizer: 50</span><div class="rail" style="--v:50%"></div></div>
+            <div class="slider"><span>Width: 5</span><div class="rail" style="--v:12%"></div></div>
+          </div>
+        </div>
+
+        <div class="dock" id="dLayers">
+          <div class="dh"><span class="t">Layers</span><i>⧉</i><i>✕</i></div>
+          <div class="ltabs" style="padding-top:2px"><span class="sel">Main Layers</span><span>Child Layers</span></div>
+          <div class="list" id="layList"></div>
+          <div class="lbtns"><span>Add Layer</span><span>Remove Layer</span></div>
+        </div>
+
+        <div class="dock" id="dTimeline">
+          <div class="dh"><span class="t">Timeline</span><i>⧉</i><i>✕</i></div>
+          <div class="tlbar">
+            <span>+</span><span>⧉</span><span>✕</span><span class="grow"></span>
+            <span class="tg">LINE</span><span class="tg">FILL</span><span class="tg">AM LAYER</span><span class="tg">GUIDE LINE</span>
+            <span>⏮</span><span>⏸</span><span id="tlPlay">▶</span><span>⏭</span><span>1s×2</span><span class="num" id="tlNum">001</span><span class="grow"></span>
+          </div>
+          <div class="frames" id="frames"></div>
+        </div>
+
+        <div class="status" id="status">Canvas: 1280 x 720 px</div>
+
+        <div class="dock float" id="texWin">
+          <div class="dh"><span class="t">Texture</span><i>⧉</i><i>✕</i></div>
+          <div class="tmenu"><span>File</span><span>Setting</span><span>View</span></div>
+          <div class="tbody">
+            <svg id="tex" viewBox="150 -60 1050 1330" preserveAspectRatio="xMidYMid meet">
+              <path id="tA" fill="#008000" fill-rule="evenodd" stroke="#000" stroke-width="5" stroke-linejoin="round"/>
+              <g id="tTea">
+                <path id="tTeaBg" fill="#dfeeff"/>
+                <path id="tTeaRed" fill="#c8463d" stroke="#000" stroke-width="5" stroke-linejoin="round"/>
+                <path id="tTeaDark" fill="#7d2a24" stroke="#000" stroke-width="5" stroke-linejoin="round"/>
+                <path id="tTeaBand" fill="none" stroke="#fff" stroke-width="10" stroke-linecap="round"/>
+                <path id="tTeaH" fill="none" stroke="#0000ff" stroke-width="2.4" vector-effect="non-scaling-stroke"/>
+                <path id="tTeaV" fill="none" stroke="#00e000" stroke-width="2.4" vector-effect="non-scaling-stroke"/>
+              </g>
+              <path id="tH" fill="none" stroke="#0000ff" stroke-width="2.4" vector-effect="non-scaling-stroke" stroke-linecap="round"/>
+              <path id="tV" fill="none" stroke="#00e000" stroke-width="2.4" vector-effect="non-scaling-stroke" stroke-linecap="round"/>
+              <path id="tHa" fill="#0000ff"/>
+              <path id="tVa" fill="#00e000"/>
+              <path id="tCOrange" fill="none" stroke="#d66028" stroke-width="2.6" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round"/>
+              <g id="tCRainbow" stroke-width="3" stroke-linecap="round"></g>
+              <g id="tCDots" fill="#e62d2d" stroke="#fff" stroke-width="5"></g>
+              <path id="tAdd" fill="none" stroke="#ff69b4" stroke-width="2.4" vector-effect="non-scaling-stroke" stroke-linecap="round"/>
+            </svg>
+          </div>
+        </div>
+
+        <div class="droppv" id="droppv" hidden></div>
+        <div class="menu" id="menu" hidden><div id="miDark" class="ck">Dark</div><div id="miLight">Light</div></div>
+      </div>
+
+      <div class="tip" id="tip" hidden><b></b><span></span></div>
+      <div class="hl" id="hl" hidden><span></span></div>
+      <div class="callout" id="callout" hidden></div>
+      <div id="cursor"><div class="ring"></div><div class="eraser"></div>
+        <svg width="22" height="26" viewBox="0 0 22 26"><path d="M2 2 L2 20 L6.6 15.8 L9.6 23 L12.8 21.6 L9.9 14.6 L16 14.6 Z" fill="#fff" stroke="#000" stroke-width="1.4" stroke-linejoin="round"/></svg>
+      </div>
+      <div id="overlay" hidden><div><div class="t1" id="ovT1"></div><div class="t2" id="ovT2"></div><div class="t3" id="ovT3"></div></div></div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button class="play" id="play" type="button" aria-label="Pause"><svg viewBox="0 0 16 16" id="playIcon"></svg></button>
+    <div class="chaps" id="chaps"></div>
+    <div class="time" id="time">00:00 / 00:00</div>
+  </div>
+
+  <div class="caption" aria-live="polite"><div class="k" id="capK"></div><div class="c" id="capC"></div></div>
+
+  <div class="legend">
+    <span><i style="background:var(--h)"></i>H axis (H Center Line)</span>
+    <span><i style="background:var(--v)"></i>V axis (V Center Line)</span>
+    <span><i style="background:var(--pink)"></i>Additional Line</span>
+    <span><i style="background:linear-gradient(90deg,#f33,#fc3,#3c6,#39f,#c3f)"></i>Paired contour (Free Out Line)</span>
+    <span><i style="background:var(--grid)"></i>Reference grid (Refer Rect)</span>
+  </div>
+</div>
+
+<script>
+(() => {
+"use strict";
+// ---------------------------------------------------------------- helpers
+const $ = id => document.getElementById(id);
+const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+const ease = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+const seg = (t, a, b) => clamp((t - a) / (b - a));
+const E = (t, a, b) => ease(seg(t, a, b));
+const lerp = (a, b, p) => a + (b - a) * p;
+const lerpPt = (A, B, p) => [lerp(A[0], B[0], p), lerp(A[1], B[1], p)];
+const lerpRect = (A, B, p) => A.map((v, i) => lerp(v, B[i], p));
+const fx = n => n.toFixed(1);
+const NS = "http://www.w3.org/2000/svg";
+const svgEl = (tag, attrs, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); parent && parent.appendChild(e); return e; };
+
+function bez(P, u) {
+  const v = 1 - u, a = v * v * v, b = 3 * v * v * u, c = 3 * v * u * u, d = u * u * u;
+  return [a * P[0][0] + b * P[1][0] + c * P[2][0] + d * P[3][0], a * P[0][1] + b * P[1][1] + c * P[2][1] + d * P[3][1]];
+}
+function arcTable(P, n = 64) {
+  const pts = [], cum = [0];
+  for (let i = 0; i <= n; i++) pts.push(bez(P, i / n));
+  for (let i = 1; i <= n; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  return { pts, cum, len: cum[n] };
+}
+// point at a fraction of the arc length; past the ends it runs on along the end tangent
+function atFrac(T, f) {
+  const n = T.pts.length - 1;
+  if (f <= 0) { const a = T.pts[0], b = T.pts[1], l = T.cum[1] || 1, d = f * T.len; return [a[0] + (b[0] - a[0]) / l * d, a[1] + (b[1] - a[1]) / l * d]; }
+  if (f >= 1) { const a = T.pts[n - 1], b = T.pts[n], l = (T.cum[n] - T.cum[n - 1]) || 1, d = (f - 1) * T.len; return [b[0] + (b[0] - a[0]) / l * d, b[1] + (b[1] - a[1]) / l * d]; }
+  const L = f * T.len; let lo = 0, hi = n;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (T.cum[m] < L) lo = m; else hi = m; }
+  const p = (L - T.cum[lo]) / ((T.cum[hi] - T.cum[lo]) || 1);
+  return lerpPt(T.pts[lo], T.pts[hi], p);
+}
+function densify(poly, step, closed) {
+  const out = [], n = poly.length, m = closed ? n : n - 1;
+  for (let i = 0; i < m; i++) {
+    const a = poly[i], b = poly[(i + 1) % n], k = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / step));
+    for (let j = 0; j < k; j++) out.push(lerpPt(a, b, j / k));
+  }
+  if (!closed) out.push(poly[n - 1]);
+  return out;
+}
+const dPoly = (pts, close) => pts.length ? "M" + pts.map(p => fx(p[0]) + " " + fx(p[1])).join("L") + (close ? "Z" : "") : "";
+// partial polyline: the first fraction f of the points, for "being drawn"
+function partial(pts, f) {
+  if (f <= 0) return [];
+  const x = f * (pts.length - 1), i = Math.floor(x), out = pts.slice(0, i + 1);
+  if (i < pts.length - 1) out.push(lerpPt(pts[i], pts[i + 1], x - i));
+  return out;
+}
+const lastPt = a => a[a.length - 1];
+function arrowHead(pts, size) {
+  if (pts.length < 2) return "";
+  const b = lastPt(pts), a = pts[Math.max(0, pts.length - 4)];
+  const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1, ux = dx / l, uy = dy / l;
+  const tip = [b[0] + ux * size * .9, b[1] + uy * size * .9];
+  const l1 = [b[0] - uy * size * .55, b[1] + ux * size * .55], r1 = [b[0] + uy * size * .55, b[1] - ux * size * .55];
+  return dPoly([tip, l1, r1], true);
+}
+
+// ---------------------------------------------------------------- the sample texture
+// test_document/texture.textureview: the block "A" (outline + #008000 fill) and its
+// H axis (vertical, drawn bottom to top) and V axis (horizontal, drawn left to right).
+const A_OUTER = [[518.6, 84.4], [800.7, 84.4], [1034.1, 1113], [893.9, 1113], [805.1, 666.7], [521, 666.7], [441.6, 1113], [319, 1113]];
+const A_HOLE = [[594.9, 221.1], [716.5, 221.1], [780.2, 541.5], [539.8, 541.5]];
+const TEX_H = [[649.03, 1150.49], [649.03, 39.65]];
+const TEX_V = [[255.96, 630.47], [1073.84, 630.47]];
+const TO = [649.03, 630.47];
+const HUP = 630.47 - 39.65, HDN = 1150.49 - 630.47, VR = 1073.84 - 649.03, VL = 649.03 - 255.96;
+const A_PTS = [densify(A_OUTER, 9, true), densify(A_HOLE, 9, true)];
+const GRID_S = [], GRID_T = [];
+for (let s = -HDN; s <= HUP + 1; s += (HUP + HDN) / 15) GRID_S.push(s);
+for (let t = -VL; t <= VR + 1; t += (VR + VL) / 12) GRID_T.push(t);
+const texOf = (s, t) => [TO[0] + t, TO[1] - s];
+const GRID_LINES = [
+  ...GRID_S.map(s => densify([texOf(s, -VL), texOf(s, VR)], 18, false)),
+  ...GRID_T.map(t => densify([texOf(-HDN, t), texOf(HUP, t)], 18, false)),
+];
+
+// ---------------------------------------------------------------- H/V axis Auto Mapping
+// P(s,t) = H'(s) + V'(t) - O', s and t measured as arc length from the crossing,
+// each half of a main-board axis matched end to end with the texture's half.
+const O1 = [640, 285];
+const AX0 = { hu: [O1, [640, 230], [642, 170], [646, 112]], hd: [O1, [640, 340], [638, 400], [636, 441]],
+              vr: [O1, [680, 285], [725, 287], [768, 290]], vl: [O1, [600, 285], [560, 287], [522, 290]] };
+const AX1 = { ...AX0, hu: [O1, [638, 235], [672, 170], [700, 125]] };
+const AX2 = { ...AX1, vr: [O1, [686, 284], [736, 300], [776, 342]] };
+const lerpAx = (A, B, p) => { const o = {}; for (const k in A) o[k] = A[k].map((q, i) => lerpPt(q, B[k][i], p)); return o; };
+function makeHV(ax) {
+  const T = { hu: arcTable(ax.hu), hd: arcTable(ax.hd), vr: arcTable(ax.vr), vl: arcTable(ax.vl) }, O = ax.hu[0];
+  const f = (tx, ty) => {
+    const s = TO[1] - ty, t = tx - TO[0];
+    const h = s >= 0 ? atFrac(T.hu, s / HUP) : atFrac(T.hd, -s / HDN);
+    const v = t >= 0 ? atFrac(T.vr, t / VR) : atFrac(T.vl, -t / VL);
+    return [h[0] + v[0] - O[0], h[1] + v[1] - O[1]];
+  };
+  f.T = T;
+  return f;
+}
+function axisPts(ax) {
+  const T = { hu: arcTable(ax.hu, 40), hd: arcTable(ax.hd, 40), vr: arcTable(ax.vr, 40), vl: arcTable(ax.vl, 40) };
+  return { h: [...T.hd.pts.slice().reverse(), ...T.hu.pts.slice(1)], v: [...T.vl.pts.slice().reverse(), ...T.vr.pts.slice(1)] };
+}
+const mapPolys = (polys, f) => polys.map(p => p.map(q => f(q[0], q[1])));
+const dPolys = (polys, close) => polys.map(p => dPoly(p, close)).join("");
+
+// ---------------------------------------------------------------- contour (Free Out Line): the flag
+// A teapot drawn on the texture board, closed in by a rectangular contour (the flag cloth).
+// Each main-board frame gets its own drawn flag outline; the same 72 contour points in the
+// same order, so equal index = same pattern point. The inside follows by mean value coordinates.
+function samplePath(d, step) {
+  const tok = d.match(/[MLCZ]|-?\d+(\.\d+)?/g), polys = []; let cur = null, i = 0, at = [0, 0];
+  const num = () => +tok[i++];
+  while (i < tok.length) {
+    const c = tok[i++];
+    if (c === "M") { at = [num(), num()]; cur = [at]; polys.push(cur); }
+    else if (c === "L") { const b = [num(), num()]; cur.push(...densify([at, b], step, false).slice(1)); at = b; }
+    else if (c === "C") {
+      const P4 = [at, [num(), num()], [num(), num()], [num(), num()]];
+      const k = Math.max(4, Math.ceil(arcTable(P4, 12).len / step));
+      for (let j = 1; j <= k; j++) cur.push(bez(P4, j / k));
+      at = P4[3];
+    }
+  }
+  return polys;
+}
+const TEA = {
+  red: ["M455 610 C455 500 560 455 675 455 C790 455 895 500 895 610 C895 720 820 790 760 800 L590 800 C530 790 455 720 455 610 Z",
+        "M548 466 C565 405 785 405 802 466 Z",
+        "M888 650 C950 630 958 525 1032 472 L1052 488 C1000 545 992 660 892 712 Z",
+        "M466 548 C335 528 325 752 486 748 L484 716 C372 716 380 580 462 582 Z"],
+  dark: ["M595 800 L755 800 L740 832 L610 832 Z",
+         "M651 392 C651 379 662 368 675 368 C688 368 699 379 699 392 C699 405 688 416 675 416 C662 416 651 405 651 392 Z"],
+  band: ["M462 640 C540 612 610 672 675 642 C740 612 810 672 888 640", "M540 468 L810 468"],
+};
+const TEA_PTS = {}; for (const k in TEA) TEA_PTS[k] = TEA[k].flatMap(d => samplePath(d, 10));
+const FLAG_R = [240, 300, 1130, 880];           // the flag cloth on the texture board
+const FLAG_H = [[685, 860], [685, 320]], FLAG_V = [[260, 600], [1110, 600]];
+const SIDES = [22, 14, 22, 14], NC = 72, CORNERS = [0, 22, 36, 58];
+// walk the cloth's edge from the top-left corner, clockwise, in unit coordinates
+const UV_EDGE = [];
+for (let i = 0; i < SIDES[0]; i++) UV_EDGE.push([i / SIDES[0], 0]);
+for (let i = 0; i < SIDES[1]; i++) UV_EDGE.push([1, i / SIDES[1]]);
+for (let i = 0; i < SIDES[2]; i++) UV_EDGE.push([1 - i / SIDES[2], 1]);
+for (let i = 0; i < SIDES[3]; i++) UV_EDGE.push([0, 1 - i / SIDES[3]]);
+const TEX_C = UV_EDGE.map(([u, v]) => [lerp(FLAG_R[0], FLAG_R[2], u), lerp(FLAG_R[1], FLAG_R[3], v)]);
+// one frame of the waving flag, as the animator would draw its outline
+const POLE_X = 522, FLAG_FRAMES = 6;
+function flagPt(u, v, ph) {
+  const w = 2 * Math.PI * (1.1 * u - ph);
+  return [POLE_X + 6 + u * 300 - 10 * u * (1 - Math.cos(w)), 135 + v * 175 + u * 26 * Math.sin(w) + 16 * u * u];
+}
+const flagContour = k => UV_EDGE.map(([u, v]) => flagPt(u, v, k / FLAG_FRAMES));
+function mvcWeights(p, poly) {
+  const n = poly.length, d = [], r = [], tn = [], w = new Float32Array(n);
+  for (let i = 0; i < n; i++) { const dx = poly[i][0] - p[0], dy = poly[i][1] - p[1]; d.push([dx, dy]); r.push(Math.hypot(dx, dy) || 1e-6); }
+  for (let i = 0; i < n; i++) { const a = d[i], b = d[(i + 1) % n], cr = a[0] * b[1] - a[1] * b[0], dt = a[0] * b[0] + a[1] * b[1]; tn.push(cr / (r[i] * r[(i + 1) % n] + dt || 1e-9)); }
+  let sum = 0;
+  for (let i = 0; i < n; i++) { w[i] = (tn[(i + n - 1) % n] + tn[i]) / r[i]; sum += w[i]; }
+  for (let i = 0; i < n; i++) w[i] /= sum;
+  return w;
+}
+let MVC = null;
+function mvcPrep() {
+  if (MVC) return MVC;
+  const grid = [];
+  for (let i = 1; i < 10; i++) { const x = lerp(FLAG_R[0], FLAG_R[2], i / 10); grid.push(densify([[x, FLAG_R[1] + 4], [x, FLAG_R[3] - 4]], 16, false)); }
+  for (let i = 1; i < 7; i++) { const y = lerp(FLAG_R[1], FLAG_R[3], i / 7); grid.push(densify([[FLAG_R[0] + 4, y], [FLAG_R[2] - 4, y]], 16, false)); }
+  const sets = { ...TEA_PTS, grid, h: [densify(FLAG_H, 14, false)], v: [densify(FLAG_V, 14, false)] };
+  MVC = {};
+  for (const k in sets) MVC[k] = sets[k].map(line => line.map(p => mvcWeights(p, TEX_C)));
+  return MVC;
+}
+const mvcMap = (W, poly) => W.map(line => line.map(w => { let x = 0, y = 0; for (let i = 0; i < w.length; i++) { x += w[i] * poly[i][0]; y += w[i] * poly[i][1]; } return [x, y]; }));
+// mapped paths of one flag frame, computed once
+const FRAME_CACHE = [];
+function flagFrame(k) {
+  if (FRAME_CACHE[k]) return FRAME_CACHE[k];
+  const W = mvcPrep(), C = flagContour(k);
+  const m = key => mvcMap(W[key], C);
+  return FRAME_CACHE[k] = { C, bg: dPoly(C, true), red: dPolys(m("red"), true), dark: dPolys(m("dark"), true), band: dPolys(m("band"), false),
+    grid: dPolys(m("grid"), false), h: dPolys(m("h"), false), v: dPolys(m("v"), false) };
+}
+const POLE = `<line x1="${POLE_X}" y1="112" x2="${POLE_X}" y2="505" stroke="#000" stroke-width="6" stroke-linecap="round"/><circle cx="${POLE_X}" cy="108" r="8" fill="#000"/>`;
+function frameSvg(k) {
+  const F = flagFrame(k);
+  return POLE + `<path d="${F.bg}" fill="#dfeeff" stroke="#000" stroke-width="3" stroke-linejoin="round"/><path d="${F.red}" fill="#c8463d" stroke="#000" stroke-width="1.6"/>`
+    + `<path d="${F.dark}" fill="#7d2a24" stroke="#000" stroke-width="1.6"/><path d="${F.band}" fill="none" stroke="#fff" stroke-width="3"/>`;
+}
+
+// ---------------------------------------------------------------- additional line flow
+// Four lines: two in the family parallel to V (they bend the iso-s rows), two parallel to H
+// (they bend the iso-t columns). The families do not interact. Each line's bend is carried
+// into the field with a weight that rises linearly from the pinned axis to the line.
+const ADD = [
+  { tex: [[300, 330], [1060, 330]] },    // above V: drag both ends up
+  { tex: [[330, 960], [1040, 960]] },    // below V: drag the right end down
+  { tex: [[949, 1110], [949, 150]] },    // right of H: drag the top end out
+  { tex: [[349, 1110], [349, 150]] },    // left of H: drag the top end out
+];
+ADD.forEach(l => { l.pts = densify(l.tex, 14, false); });
+const S_TOP = TO[1] - 330, S_BOT = TO[1] - 960, T_R = 949 - TO[0], T_L = 349 - TO[0];
+function flowWarp(f, k) {
+  const sq = (a, b) => Math.pow(a / b, 2);
+  return (tx, ty) => {
+    const p = f(tx, ty), s = TO[1] - ty, t = tx - TO[0];
+    let dx = 0, dy = 0;
+    if (s >= 0) dy -= clamp(s / S_TOP) * (t >= 0 ? k.a1r * sq(t, 1060 - TO[0]) : k.a1l * sq(t, 300 - TO[0]));
+    else if (t > 0) dy += clamp(s / S_BOT) * k.b2 * sq(t, 1040 - TO[0]);
+    if (s > 0) { if (t >= 0) dx += clamp(t / T_R) * k.c3 * sq(s, TO[1] - 150); else dx -= clamp(t / T_L) * k.c4 * sq(s, TO[1] - 150); }
+    return [p[0] + dx, p[1] + dy];
+  };
+}
+
+// ---------------------------------------------------------------- app chrome
+const GLYPH_LINE = 'fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"';
+const GLYPHS = {
+  arrow: `<g ${GLYPH_LINE} transform="translate(0.8 0.5)"><path d="M5.5 3 L5.5 18 L9.8 14 L12.4 20.5 L14.9 19.4 L12.3 13 L17.6 13 Z"/></g>`,
+  pen: `<g ${GLYPH_LINE}><path d="M3 21 L4.8 16.2 L16.2 4.8 L19.2 7.8 L7.8 19.2 Z"/><line x1="14.4" y1="6.6" x2="17.4" y2="9.6"/></g>`,
+  eraser: `<g ${GLYPH_LINE}><g transform="rotate(-40 12 11)"><rect x="4.5" y="7.5" width="15" height="7"/><line x1="11" y1="7.5" x2="11" y2="14.5"/></g><line x1="4" y1="21" x2="20" y2="21"/></g>`,
+  fill: `<g transform="rotate(-35 12 12)"><path ${GLYPH_LINE} d="M7.7 8.1 C8.4 4.4 15.6 4.4 16.3 8.1"/><path fill="currentColor" d="M7.3 13.2 L16.7 13.2 L15.9 18.4 A1.7 1.7 0 0 1 14.2 19.9 L9.8 19.9 A1.7 1.7 0 0 1 8.1 18.4 Z"/><line ${GLYPH_LINE} x1="5.2" y1="8.6" x2="18.8" y2="8.6"/><path ${GLYPH_LINE} d="M6.6 8.6 L8.1 18.4 A1.7 1.7 0 0 0 9.8 19.9 L14.2 19.9 A1.7 1.7 0 0 0 15.9 18.4 L17.4 8.6"/></g>`,
+  transfer: `<defs><mask id="transfer-hole" maskUnits="userSpaceOnUse" x="-2" y="-2" width="28" height="28"><rect x="-2" y="-2" width="28" height="28" fill="white"/><circle cx="16.8" cy="16.8" r="8.1" fill="black"/></mask></defs><g mask="url(#transfer-hole)"><rect x="4.5" y="4.5" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="1.5 1.5" stroke-dashoffset="2.25"/><g fill="currentColor"><rect x="3.2" y="3.2" width="2.6" height="2.6"/><rect x="18.2" y="3.2" width="2.6" height="2.6"/><rect x="3.2" y="18.2" width="2.6" height="2.6"/></g></g><g ${GLYPH_LINE}><line x1="16.8" y1="13.9" x2="16.8" y2="19.7"/><line x1="13.9" y1="16.8" x2="19.7" y2="16.8"/></g><g fill="currentColor"><polygon points="16.8,10.4 19.1,13.9 14.5,13.9"/><polygon points="16.8,23.2 14.5,19.7 19.1,19.7"/><polygon points="10.4,16.8 13.9,14.5 13.9,19.1"/><polygon points="23.2,16.8 19.7,14.5 19.7,19.1"/></g>`,
+  connect: `<path fill="currentColor" stroke="currentColor" stroke-width=".6" stroke-linejoin="round" d="M15.8 6.9 L15.4 8.2 L14.7 9.4 L13.6 10.5 L12.4 11.5 L11 12.4 L9.6 13.3 L8.6 11.6 L7 15.8 L10.8 15.4 L9.8 13.7 L11.3 13 L12.9 12.4 L14.4 11.6 L15.8 10.5 L17.1 9.2 L17.9 7.5 Z"/><circle cx="6.8" cy="19.9" r="1.9" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="17.2" cy="4.7" r="1.9" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="17.2" cy="4.7" r="0.85" fill="currentColor"/>`,
+  h_center_line: `<g ${GLYPH_LINE}><path d="M2.8 12 L21 12"/><path d="M17.6 9.1 L21 12 L17.6 14.9"/><path stroke-width="1.2" stroke-dasharray="1.3 2.7" d="M16.8 3.2 C16.8 10.4 7.2 13.6 7.2 20.8"/></g>`,
+  v_center_line: `<g ${GLYPH_LINE}><path d="M12 2.8 L12 21"/><path d="M9.1 17.6 L12 21 L14.9 17.6"/><path stroke-width="1.2" stroke-dasharray="1.3 2.7" d="M3.2 16.8 C10.4 16.8 13.6 7.2 20.8 7.2"/></g>`,
+  mapping_area: `<g ${GLYPH_LINE}><path d="M3.7 5.2 L13.5 3.3 L20.9 9.5 L17.5 20.7 L9.5 15.8 L3.1 15.4 Z"/><path stroke-width="1.2" d="M3.5 8.9 L8 4.4 M3.2 14.3 L13.9 3.6 M6.9 15.6 L16.6 5.9 M11 16.7 L19.4 8.3 M14.1 18.6 L19.9 12.9"/></g>`,
+  additional_line: `<g ${GLYPH_LINE}><path stroke-width="1" stroke-dasharray="1.4 2.85" d="M2.8 3.5 H21.2 M2.8 12 H21.2 M2.8 20.5 H21.2 M3.5 2.8 V21.2 M12 2.8 V21.2 M20.5 2.8 V21.2"/><path d="M3.5 20.5 A8.5 17 0 0 1 20.5 20.5"/></g><g fill="currentColor"><circle cx="3.5" cy="20.5" r="1.6"/><circle cx="20.5" cy="20.5" r="1.6"/></g>`,
+  free_out_line: `<path ${GLYPH_LINE} d="M7.2 4.6 C11.2 2.4 17.2 3.2 19.6 7.2 C21.8 11 18.6 13.2 18.2 16.4 C17.8 19.8 12.8 21.8 9.4 19.6 C6.4 17.6 7.4 14.8 5.2 12.6 C2.8 10.2 4 6.4 7.2 4.6 Z"/><circle cx="7.2" cy="4.6" r="1.8" fill="currentColor"/>`,
+  choice_line: `<path ${GLYPH_LINE} d="M2.8 13.6 C6 8.6 8 9.4 11 10 C14 10.6 17.4 9 21.2 4.6"/><g fill="currentColor"><circle cx="2.8" cy="13.6" r="1.6"/><circle cx="21.2" cy="4.6" r="1.6"/></g><path ${GLYPH_LINE} stroke-width="1.3" d="M11 10 L11 19.6 L13.6 17.2 L15.2 21.2 L16.8 20.5 L15.2 16.6 L18.4 16.6 Z"/>`,
+  deform_line: `<g ${GLYPH_LINE}><path stroke-width="1.2" stroke-dasharray="1.3 2.7" d="M2.8 18.4 H21.2"/><path d="M2.8 18.4 C8 18.4 8.4 8.6 12 8.6 C15.6 8.6 16 18.4 21.2 18.4"/><path d="M12 15 L12 3.4"/><path d="M9.2 6.2 L12 3.2 L14.8 6.2"/></g>`,
+  auto_mapping: `<g ${GLYPH_LINE}><path d="M5.4 3.2 L17 3.2 L13.8 12.7 L2.2 12.7 Z"/><path d="M5.8 11.1 L10.6 4.9 L11.3 11.1 M7.6 8.7 L11.1 8.7"/><path d="M4.4 14.1 L2.2 20.7 L13.8 20.7 L16 14.1"/><path fill="currentColor" stroke="currentColor" stroke-width=".6" stroke-linejoin="round" d="M18.8 3.2 L19 5 L19.1 6.7 L19.3 8.5 L19.5 10.2 L19.6 12 L19.8 13.7 L17.6 13.7 L20 17.7 L22.4 13.7 L20.2 13.7 L20.4 12 L20.5 10.2 L20.7 8.5 L20.9 6.7 L21 5 L21.2 3.2 Z"/><path stroke-width="1.2" d="M8.3 14.1 L6.1 20.7 M12.2 14.1 L9.9 20.7 M3.4 17.3 L15 17.3"/></g>`,
+};
+const TOOLS = {
+  arrow: ["Arrow", "Select and drag strokes or fills; edit anchors"],
+  pen: ["Pen", "Draw a stroke, fitted to a curve on pen-up"],
+  eraser: ["Eraser", "Erase an area, a whole line, or up to the next crossing"],
+  fill: ["Fill", "Click inside a closed area to fill it"],
+  transfer: ["Transfer", "Scale, stretch, move and rotate the current layer"],
+  connect: ["Connect", "Join two endpoints with a new stroke"],
+  h_center_line: ["H Center Line", "Draw the H axis (blue), one on each board"],
+  v_center_line: ["V Center Line", "Draw the V axis (green), crossing the H axis"],
+  mapping_area: ["Mapping Area", "Click a closed shape to limit what Auto Mapping covers"],
+  additional_line: ["Additional Line", "A pink guide that steers how the texture flows"],
+  free_out_line: ["Free Out Line", "A closed contour on each board; the pattern follows it"],
+  choice_line: ["Choice Line", "Pick a line and make it a ground line"],
+  deform_line: ["Deform", "Drag a line to reshape it; pairing is kept"],
+  auto_mapping: ["Auto Mapping", "Run Auto Mapping by hand"],
+};
+const PAINT = ["arrow", "pen", "eraser", "fill", "transfer", "connect"];
+const MAPT = ["h_center_line", "v_center_line", "mapping_area", "additional_line", "free_out_line", "choice_line", "deform_line", "auto_mapping"];
+const chipEls = {};
+for (const [list, host] of [[PAINT, $("chipsPaint")], [MAPT, $("chipsMap")]])
+  for (const k of list) { const c = document.createElement("div"); c.className = "chip"; c.innerHTML = `<svg viewBox="0 0 24 24">${GLYPHS[k]}</svg>`; host.appendChild(c); chipEls[k] = c; }
+
+const LAYERS = {
+  paint: [["Layer 1", "sel"]],
+  map: [["▾ Auto-Mapping 1", ""], ["front", "sub sel"], ["back", "sub"], ["crease", "sub"], ["Layer 1", ""]],
+};
+function setLayers(mode) {
+  const host = $("layList");
+  if (host.dataset.mode === mode) return;
+  host.dataset.mode = mode;
+  host.innerHTML = LAYERS[mode].map(([n, c]) => `<div class="row ${c}">${c.includes("sub") ? "" : '<span class="eye"></span>'}${n}</div>`).join("");
+}
+
+// board groups
+const B = { paint: $("gPaint"), flag: $("gFlag"), map: $("gMap"), axes: $("gAxes"), auto: $("gAuto"), cont: $("gCont"), add: $("gAdd") };
+const board = $("board"), tex = $("tex"), stage = $("stage");
+
+// texture board, static parts
+$("tA").setAttribute("d", dPoly(A_OUTER, true) + dPoly(A_HOLE, true));
+$("tTeaBg").setAttribute("d", dPoly(TEX_C, true));
+$("tTeaRed").setAttribute("d", dPolys(TEA_PTS.red, true));
+$("tTeaDark").setAttribute("d", dPolys(TEA_PTS.dark, true));
+$("tTeaBand").setAttribute("d", dPolys(TEA_PTS.band, false));
+$("tTeaH").setAttribute("d", dPoly(FLAG_H)); $("tTeaV").setAttribute("d", dPoly(FLAG_V));
+$("fPole").innerHTML = POLE;
+const texRain = [], mainRain = [], texDots = [], mainDots = [];
+for (let i = 0; i < NC; i++) {
+  const col = `hsl(${i * 5},85%,50%)`;
+  texRain.push(svgEl("line", { stroke: col, "vector-effect": "non-scaling-stroke" }, $("tCRainbow")));
+  mainRain.push(svgEl("line", { stroke: col }, $("cRainbow")));
+}
+for (const i of CORNERS) { texDots.push(svgEl("circle", { r: 16 }, $("tCDots"))); mainDots.push(svgEl("circle", { r: 5 }, $("cDots"))); }
+TEX_C.forEach((p, i) => { const q = TEX_C[(i + 1) % NC]; texRain[i].setAttribute("x1", p[0]); texRain[i].setAttribute("y1", p[1]); texRain[i].setAttribute("x2", q[0]); texRain[i].setAttribute("y2", q[1]); });
+CORNERS.forEach((ci, k) => { texDots[k].setAttribute("cx", TEX_C[ci][0]); texDots[k].setAttribute("cy", TEX_C[ci][1]); });
+const CELLS = [];
+for (let j = 0; j < FLAG_FRAMES; j++) {
+  const el = document.createElement("div"); el.className = "cell";
+  const sv = svgEl("svg", { viewBox: "30 27 860 484", preserveAspectRatio: "xMidYMid slice" }, el);
+  const use = svgEl("use", { href: "#boardLive" }, sv), fr = svgEl("g", {}, sv);
+  const em = document.createElement("em"); em.textContent = j + 1; el.appendChild(em);
+  $("frames").appendChild(el); CELLS.push({ el, use, fr });
+}
+// flow arrows: a grid in texture space, each pointing along its row (+t) through the warped field
+const ARROW_S = [], ARROW_T = [];
+for (let i = 0; i < 11; i++) ARROW_S.push(lerp(-HDN + 50, HUP - 40, i / 10));
+for (let i = 0; i < 10; i++) ARROW_T.push(lerp(-VL + 40, VR - 40, i / 9));
+// They stream: each arrow slides two cells along its row, growing in and shrinking out.
+// Alternate columns run half a cycle apart, so a row is never empty; rows are staggered.
+const ARROW_DT = (ARROW_T[1] - ARROW_T[0]);
+function arrowField(f, time) {
+  let shafts = "", heads = "";
+  ARROW_S.forEach((s, row) => {
+    ARROW_T.forEach((t0, col) => {
+      const frac = (time * .5 + row * .37 + (col % 2) * .5) % 1, sz = Math.sin(Math.PI * frac);
+      if (sz < .08) return;
+      const t = t0 + (frac - .5) * 2 * ARROW_DT;
+      const p = f(TO[0] + t, TO[1] - s), a = f(TO[0] + t - 8, TO[1] - s), b = f(TO[0] + t + 8, TO[1] - s);
+      const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1, ux = dx / l, uy = dy / l;
+      const q0 = [p[0] - ux * 8 * sz, p[1] - uy * 8 * sz], q1 = [p[0] + ux * 5 * sz, p[1] + uy * 5 * sz], tip = [p[0] + ux * 10 * sz, p[1] + uy * 10 * sz];
+      shafts += `M${fx(q0[0])} ${fx(q0[1])}L${fx(q1[0])} ${fx(q1[1])}`;
+      heads += dPoly([tip, [q1[0] - uy * 3.4 * sz, q1[1] + ux * 3.4 * sz], [q1[0] + uy * 3.4 * sz, q1[1] - ux * 3.4 * sz]], true);
+    });
+  });
+  $("arrS").setAttribute("d", shafts); $("arrH").setAttribute("d", heads);
+}
+
+// ---------------------------------------------------------------- layouts
+const L0 = { tools: [0, 20, 104, 560], central: [104, 20, 920, 560], options: [1024, 20, 256, 290], layers: [1024, 310, 256, 270], timeline: [0, 580, 1280, 200] };
+const LF = { ...L0, options: [1024, 20, 256, 560], layers: [560, 250, 270, 300] };
+const LL = { ...L0, layers: [104, 20, 230, 560], central: [334, 20, 690, 560], options: [1024, 20, 256, 560] };
+const lerpLayout = (A, Bb, p) => { const o = {}; for (const k in A) o[k] = lerpRect(A[k], Bb[k], p); return o; };
+const DOCKS = { tools: $("dTools"), central: $("dCentral"), options: $("dOptions"), layers: $("dLayers"), timeline: $("dTimeline") };
+
+// ---------------------------------------------------------------- stage geometry
+let SCALE = 1;
+function toStage(svg, x, y) {
+  const m = svg.getScreenCTM(); if (!m) return [0, 0];
+  const r = stage.getBoundingClientRect();
+  return [(m.a * x + m.c * y + m.e - r.left) / SCALE, (m.b * x + m.d * y + m.f - r.top) / SCALE];
+}
+function elBox(el) { const r = el.getBoundingClientRect(), s = stage.getBoundingClientRect(); return [(r.left - s.left) / SCALE, (r.top - s.top) / SCALE, r.width / SCALE, r.height / SCALE]; }
+const elCenter = el => { const b = elBox(el); return [b[0] + b[2] / 2, b[1] + b[3] / 2]; };
+const onBoard = (x, y) => () => toStage(board, x, y);
+const onTex = (x, y) => () => toStage(tex, x, y);
+const chipAt = k => () => { const c = elCenter(chipEls[k]); return [c[0] + 4, c[1] + 6]; };
+// eased travel between key points; a key's point may be a function (resolved after layout)
+const P = p => typeof p === "function" ? p() : p;
+function travel(lt, keys) {
+  return () => {
+    if (lt <= keys[0][0]) return P(keys[0][1]);
+    for (let i = 0; i < keys.length - 1; i++) { const a = keys[i], b = keys[i + 1]; if (lt <= b[0]) return lerpPt(P(a[1]), P(b[1]), ease(seg(lt, a[0], b[0]))); }
+    return P(keys[keys.length - 1][1]);
+  };
+}
+
+// ---------------------------------------------------------------- shared drawing
+const SHIFTED = ["map", "axes", "auto", "cont", "add"];
+function shiftMapping(dx, dy) { for (const k of SHIFTED) B[k].setAttribute("transform", dx || dy ? `translate(${fx(dx)} ${fx(dy)})` : ""); }
+function hideBoard() { for (const k in B) B[k].style.opacity = 0; shiftMapping(0, 0); }
+// the opening scenes have no texture window, so the mapped A sits in the middle of the paper
+let centreShift = null;
+function drawHVCentred() {
+  drawHV(AX2);
+  if (!centreShift) { const b = B.map.getBBox(); if (b.width) centreShift = [460 - (b.x + b.width / 2), 269 - (b.y + b.height / 2)]; }
+  if (centreShift) shiftMapping(...centreShift);
+}
+function drawHV(ax, o = {}) {
+  const f0 = makeHV(ax), f = o.warp ? o.warp(f0) : f0;
+  $("mA").setAttribute("d", dPolys(mapPolys(A_PTS, f), true));
+  $("mGrid").setAttribute("d", dPolys(mapPolys(GRID_LINES, f), false));
+  B.map.style.opacity = o.map ?? 1;
+  const ap = axisPts(ax), hr = o.h ?? 1, vr = o.v ?? 1, hp = partial(ap.h, hr), vp = partial(ap.v, vr);
+  $("mH").setAttribute("d", dPoly(hp)); $("mV").setAttribute("d", dPoly(vp));
+  $("mHa").setAttribute("d", hr >= 1 ? arrowHead(ap.h, 9) : ""); $("mVa").setAttribute("d", vr >= 1 ? arrowHead(ap.v, 9) : "");
+  $("mO").setAttribute("cx", O1[0]); $("mO").setAttribute("cy", O1[1]); $("mO").style.opacity = hr >= 1 && vr >= 1 ? 1 : 0;
+  B.axes.style.opacity = o.axes ?? 1;
+  return { f, ap, hEnd: lastPt(hp.length ? hp : ap.h), vEnd: lastPt(vp.length ? vp : ap.v) };
+}
+function texAxes(h, v) {
+  const hp = partial(densify(TEX_H, 20, false), h), vp = partial(densify(TEX_V, 20, false), v);
+  $("tH").setAttribute("d", dPoly(hp)); $("tV").setAttribute("d", dPoly(vp));
+  $("tHa").setAttribute("d", h >= 1 ? arrowHead(densify(TEX_H, 20, false), 30) : "");
+  $("tVa").setAttribute("d", v >= 1 ? arrowHead(densify(TEX_V, 20, false), 30) : "");
+  return { hEnd: hp.length ? lastPt(hp) : TEX_H[0], vEnd: vp.length ? lastPt(vp) : TEX_V[0] };
+}
+function texExtras(o) {
+  $("tCOrange").setAttribute("d", o.cont ? dPoly(o.cont, o.closed) : "");
+  $("tCOrange").style.opacity = o.orange ?? 1;
+  $("tCRainbow").style.opacity = o.rain ?? 0;
+  $("tCDots").style.opacity = o.rain ?? 0;
+  $("tAdd").setAttribute("d", o.add || "");
+}
+function setRainbow(C) {
+  C.forEach((p, i) => { const q = C[(i + 1) % NC], l = mainRain[i]; l.setAttribute("x1", fx(p[0])); l.setAttribute("y1", fx(p[1])); l.setAttribute("x2", fx(q[0])); l.setAttribute("y2", fx(q[1])); });
+  CORNERS.forEach((ci, k) => { mainDots[k].setAttribute("cx", fx(C[ci][0])); mainDots[k].setAttribute("cy", fx(C[ci][1])); });
+}
+// show flag frame k on the board (cloth, pattern, auto axes, paired contour)
+function showFlag(k, o = {}) {
+  const F = flagFrame(k);
+  for (const id of ["Bg", "Grid", "Red", "Dark", "Band"]) $("f" + id).setAttribute("d", F[id.toLowerCase()]);
+  $("fCloth").style.opacity = o.cloth ?? 1;
+  $("aH").setAttribute("d", F.h); $("aV").setAttribute("d", F.v); B.auto.style.opacity = o.axes ?? o.cloth ?? 1;
+  setRainbow(F.C);
+  $("cOrange").style.opacity = 0; $("cRainbow").style.opacity = o.rain ?? 1; $("cDots").style.opacity = o.rain ?? 1;
+  B.cont.style.opacity = 1;
+}
+
+// ---------------------------------------------------------------- scenes
+// Each scene is a pure function of its local time, so the timeline can be scrubbed.
+function sUI(lt, st) {
+  st.layers = "map"; st.opts = "map"; st.tool = "auto_mapping";
+  drawHVCentred();
+  st.overlay = lt < 2.6 ? { o: 1 - seg(lt, 2.0, 2.6), t1: "<b>Anime</b>An", t2: "A 2D line-art animation tool for animators, built around Auto Mapping", t3: [] } : null;
+  const parts = [
+    [2.6, () => elBox(DOCKS.tools), "Tools · painting and mapping"],
+    [3.8, () => elBox($("dCentral")), "Drawing · the main board, line art frame by frame"],
+    [5.0, () => elBox(DOCKS.options), "Tool Options · settings of the current tool"],
+    [6.2, () => elBox(DOCKS.layers), "Layers · main board and texture board layers"],
+    [7.4, () => elBox(DOCKS.timeline), "Timeline · frames, holds, onion skin, playback"],
+  ];
+  for (let i = parts.length - 1; i >= 0; i--) if (lt >= parts[i][0]) { if (lt < 8.6) st.hl = { box: parts[i][1], label: parts[i][2] }; break; }
+  st.cap = lt < 2.6 ? "AnimeAn now runs on a web interface: menus, panels and boards in one window." : "Tools on the left, the Drawing board in the middle (the Texture tab enlarges the texture board), options and layers on the right, the timeline below.";
+  st.cur = travel(lt, [[2.4, [640, 420]], [3.4, [52, 300]], [4.4, [560, 300]], [5.6, [1150, 160]], [6.8, [1150, 450]], [8.0, [640, 690]], [9, [700, 560]]]);
+}
+
+function sLayout(lt, st) {
+  st.layers = "map"; st.opts = "map"; st.tool = "auto_mapping";
+  drawHVCentred();
+  const hdr = d => () => { const b = elBox(d); return [b[0] + 40, b[1] + 9]; };
+  let L = L0, float = false;
+  if (lt < 1.0) L = L0;
+  else if (lt < 2.4) { L = lerpLayout(L0, LF, E(lt, 1.0, 2.4)); float = true; }
+  else if (lt < 3.0) { L = LF; float = true; }
+  else if (lt < 4.6) {
+    const LM = { ...LF, layers: [150, 120, 220, 300] };
+    L = lt < 4.1 ? lerpLayout(LF, LM, E(lt, 3.0, 4.0)) : lerpLayout(LM, LL, E(lt, 4.1, 4.6));
+    float = lt < 4.5;
+    if (lt > 3.4 && lt < 4.3) st.drop = LL.layers;
+  }
+  else if (lt < 9.4) L = LL;
+  else L = lerpLayout(LL, L0, E(lt, 9.6, 10.6));
+  st.layout = L; st.float = float;
+  // theme menu
+  if (lt >= 5.6 && lt < 6.3) st.menu = { light: false, hov: lt > 6.0 ? "light" : null };
+  if (lt >= 6.3 && lt < 8.5) st.light = true;
+  if (lt >= 7.9 && lt < 8.5) st.menu = { light: true, hov: lt > 8.2 ? "dark" : null };
+  const theme = () => { const c = elCenter($("mTheme")); return [c[0] + 2, c[1] + 4]; };
+  const miL = () => { const c = elCenter($("miLight")); return [c[0] - 20, c[1] + 3]; };
+  const miD = () => { const c = elCenter($("miDark")); return [c[0] - 20, c[1] + 3]; };
+  st.cur = travel(lt, [[0.2, [700, 560]], [0.9, hdr(DOCKS.layers)], [1.0, hdr(DOCKS.layers)], [2.4, hdr(DOCKS.layers)], [2.9, hdr(DOCKS.layers)], [4.1, hdr(DOCKS.layers)],
+    [5.0, hdr(DOCKS.layers)], [5.6, theme], [6.1, miL], [7.4, miL], [7.9, theme], [8.4, miD], [9.0, [240, 50]], [9.5, hdr(DOCKS.layers)], [10.6, hdr(DOCKS.layers)], [11, [700, 560]]]);
+  st.down = (lt > 1.0 && lt < 2.4) || (lt > 2.95 && lt < 4.45) || (lt > 9.55 && lt < 10.6) || (lt > 5.55 && lt < 5.7) || (lt > 6.2 && lt < 6.35) || (lt > 7.85 && lt < 8.0) || (lt > 8.4 && lt < 8.55);
+  st.cap = lt < 3.0 ? "Panels can float: drag the Layers title bar into the middle of the window." :
+    lt < 5.4 ? "Drop it on the left edge to dock it; the board makes room. Every panel can float and dock like this." :
+    lt < 9.4 ? "The Theme menu switches between Dark and Light; the paper stays white in both." : "Drag it back to the right to restore the layout.";
+}
+
+const S1 = $("pS1"), S2 = $("pS2"), S3 = $("pS3"), PCON = $("pCon");
+const S2D = "M620 230 C 620 190, 660 168, 700 168 C 748 168, 780 195, 780 230 C 780 268, 745 292, 700 292 C 655 292, 620 268, 620 230 Z";
+const S3D = "M600 410 C 640 386, 700 440, 790 412";
+S2.setAttribute("d", S2D); S3.setAttribute("d", S3D); $("pFill").setAttribute("d", S2D);
+const anchors = [];
+for (let i = 0; i < 3; i++) anchors.push(svgEl("rect", { width: 9, height: 9, fill: "#fff", stroke: "#3c82f0", "stroke-width": 1.5 }, $("pAnchors")));
+const s1d = my => `M150 360 C 220 262, 300 262, 362 ${fx(my)} S 482 420, 560 330`;
+const eraseCircles = [];
+for (let i = 0; i < 12; i++) eraseCircles.push(svgEl("circle", { r: 15 }, $("eraseDots")));
+const grips = [];
+for (let i = 0; i < 5; i++) grips.push(svgEl(i < 4 ? "rect" : "circle", i < 4 ? { width: 8, height: 8 } : { r: 5 }, $("pBoxGrips")));
+function reveal(el, f) { const L = el.getTotalLength(); el.style.strokeDasharray = `${L} ${L}`; el.style.strokeDashoffset = L * (1 - clamp(f)); }
+const ptOn = (el, f) => { const p = el.getPointAtLength(el.getTotalLength() * clamp(f)); return [p.x, p.y]; };
+
+function sTools(lt, st) {
+  st.layers = "paint"; st.opts = "paint";
+  hideBoard(); B.paint.style.opacity = 1;
+  const my = 330 - 62 * E(lt, 4.9, 5.8);
+  S1.setAttribute("d", s1d(my));
+  reveal(S1, seg(lt, 1.0, 2.4)); reveal(S2, seg(lt, 2.5, 3.3)); reveal(S3, seg(lt, 3.35, 3.85));
+  // arrow: anchors
+  const showA = lt > 4.4 && lt < 6.0;
+  [[150, 360], [362, my], [560, 330]].forEach((p, i) => { anchors[i].setAttribute("x", p[0] - 4.5); anchors[i].setAttribute("y", p[1] - 4.5); anchors[i].style.opacity = showA ? 1 : 0; });
+  // eraser: the tail of S1
+  const eT = seg(lt, 6.4, 7.4);
+  eraseCircles.forEach((c, i) => { const f = 1 - i / 11 * .2; const p = ptOn(S1, f); c.setAttribute("cx", p[0]); c.setAttribute("cy", p[1]); c.setAttribute("r", eT > 0 && eT * 12 >= i ? 15 : 0); });
+  // connect: S1's new end to S3's start
+  const a = ptOn(S1, .76), b = [600, 410];
+  PCON.setAttribute("d", `M${fx(a[0])} ${fx(a[1])} C ${fx(a[0] + 30)} ${fx(a[1] + 26)}, ${b[0] - 40} ${b[1] + 6}, ${b[0]} ${b[1]}`);
+  reveal(PCON, seg(lt, 8.95, 9.4));
+  $("conA").setAttribute("cx", a[0]); $("conA").setAttribute("cy", a[1]); $("conA").style.opacity = lt > 8.1 && lt < 9.6 ? 1 : 0;
+  $("conB").setAttribute("cx", b[0]); $("conB").setAttribute("cy", b[1]); $("conB").style.opacity = lt > 8.9 && lt < 9.6 ? 1 : 0;
+  // fill
+  $("floodCircle").setAttribute("r", 115 * E(lt, 10.25, 11.0));
+  // transfer: the whole layer
+  const showBox = lt > 11.6 && lt < 13.2, rot = -8 * E(lt, 12.0, 12.9), cx = 470, cy = 300;
+  $("paintAll").setAttribute("transform", `rotate(${fx(rot)} ${cx} ${cy})`);
+  $("pBox").style.opacity = showBox ? 1 : 0;
+  const bx = [130, 150, 680, 300];
+  $("pBoxRect").setAttribute("x", bx[0]); $("pBoxRect").setAttribute("y", bx[1]); $("pBoxRect").setAttribute("width", bx[2]); $("pBoxRect").setAttribute("height", bx[3]);
+  [[bx[0], bx[1]], [bx[0] + bx[2], bx[1]], [bx[0], bx[1] + bx[3]], [bx[0] + bx[2], bx[1] + bx[3]]].forEach((p, i) => { grips[i].setAttribute("x", p[0] - 4); grips[i].setAttribute("y", p[1] - 4); });
+  grips[4].setAttribute("cx", bx[0] + bx[2] / 2); grips[4].setAttribute("cy", bx[1] - 22);
+  const rotHandle = () => { const r = rot * Math.PI / 180, dx = bx[0] + bx[2] / 2 - cx, dy = bx[1] - 22 - cy; return toStage(board, cx + dx * Math.cos(r) - dy * Math.sin(r), cy + dx * Math.sin(r) + dy * Math.cos(r)); };
+
+  // which tool, tooltip, caption, cursor
+  const steps = [[0.6, "pen"], [3.9, "arrow"], [6.0, "eraser"], [7.6, "connect"], [9.7, "fill"], [11.2, "transfer"], [13.4, null]];
+  let tool = null, since = 0;
+  for (const [t, k] of steps) if (lt >= t) { tool = k; since = t; }
+  st.tool = tool || "arrow";
+  if (tool && lt - since < 1.0) st.tip = tool;
+  st.cap = {
+    pen: "Pen: draw a stroke; on pen-up it is fitted to lines and cubic Béziers.",
+    arrow: "Arrow: click a stroke to show its anchors, then drag an anchor to reshape it.",
+    eraser: "Eraser: AreaMode rubs out part of a stroke.",
+    connect: "Connect: click two endpoints and a stroke joins them.",
+    fill: "Fill: click inside a closed area to fill it; the fill follows the line art.",
+    transfer: "Transfer: a box to scale, stretch, move and rotate the current layer.",
+  }[tool] || "The Painting group draws line art; the Mapping group draws Auto Mapping guides.";
+  if (lt < 0.6) st.cap = "The Tools panel has two groups: Painting for line art, Mapping for Auto Mapping guides.";
+  if (lt >= 13.4) {
+    const i = Math.min(MAPT.length - 1, Math.floor((lt - 13.4) / 0.68));
+    st.tool = MAPT[i]; st.tip = MAPT[i];
+    st.cap = "The Mapping group: H / V Center Line, Mapping Area, Additional Line, Free Out Line, Choice Line, Deform, Auto Mapping.";
+    st.cur = chipAt(MAPT[i]);
+    if (lt - 13.4 - i * 0.68 < 0.25 && i > 0) st.cur = travel(lt - 13.4 - i * 0.68, [[0, chipAt(MAPT[i - 1])], [0.25, chipAt(MAPT[i])]]);
+    return;
+  }
+  const fol = (el, a0, a1) => () => toStage(board, ...ptOn(el, seg(lt, a0, a1)));
+  st.cur = travel(lt, [[0, [640, 420]], [0.6, chipAt("pen")], [1.0, onBoard(150, 360)]]);
+  if (lt >= 1.0 && lt < 2.4) { st.cur = fol(S1, 1.0, 2.4); st.down = true; }
+  else if (lt >= 2.4 && lt < 2.5) st.cur = travel(lt, [[2.4, onBoard(560, 330)], [2.5, onBoard(620, 230)]]);
+  else if (lt >= 2.5 && lt < 3.3) { st.cur = fol(S2, 2.5, 3.3); st.down = true; }
+  else if (lt >= 3.3 && lt < 3.35) st.cur = onBoard(600, 410);
+  else if (lt >= 3.35 && lt < 3.85) { st.cur = fol(S3, 3.35, 3.85); st.down = true; }
+  else if (lt >= 3.85 && lt < 6.0) { st.cur = travel(lt, [[3.85, onBoard(790, 412)], [4.1, chipAt("arrow")], [4.35, onBoard(300, 282)], [4.6, onBoard(362, 330)], [4.9, onBoard(362, 330)], [5.8, onBoard(362, 268)]]); st.down = (lt > 4.33 && lt < 4.45) || (lt > 4.9 && lt < 5.8); }
+  else if (lt >= 6.0 && lt < 7.6) { st.cur = travel(lt, [[6.0, onBoard(362, 268)], [6.2, chipAt("eraser")], [6.4, () => toStage(board, ...ptOn(S1, 1))], [7.4, () => toStage(board, ...ptOn(S1, .8))]]); st.mode = lt > 6.3 ? "erase" : ""; st.down = lt > 6.4 && lt < 7.4; }
+  else if (lt >= 7.6 && lt < 9.7) { st.cur = travel(lt, [[7.6, () => toStage(board, ...ptOn(S1, .8))], [7.8, chipAt("connect")], [8.1, onBoard(a[0], a[1])], [8.9, onBoard(b[0], b[1])], [9.6, onBoard(b[0], b[1])]]); st.down = (lt > 8.05 && lt < 8.18) || (lt > 8.85 && lt < 8.98); }
+  else if (lt >= 9.7 && lt < 11.2) { st.cur = travel(lt, [[9.7, onBoard(b[0], b[1])], [9.9, chipAt("fill")], [10.2, onBoard(700, 235)]]); st.down = lt > 10.2 && lt < 10.35; }
+  else { st.cur = travel(lt, [[11.2, onBoard(700, 235)], [11.4, chipAt("transfer")], [11.9, rotHandle], [13.0, rotHandle], [13.4, chipAt("h_center_line")]]); st.down = lt > 12.0 && lt < 12.9; }
+}
+
+function sHV(lt, st) {
+  st.layers = "map"; st.opts = "map"; st.tex = E(lt, 0, .7);
+  hideBoard();
+  const th = seg(lt, 1.4, 2.6), tv = seg(lt, 3.0, 4.2), mh = seg(lt, 4.6, 6.0), mv = seg(lt, 6.3, 7.6);
+  const te = texAxes(th, tv); texExtras({});
+  let ax = AX0;
+  if (lt > 8.6) ax = lerpAx(AX0, AX1, E(lt, 8.6, 10.8));
+  if (lt > 11.2) ax = lerpAx(AX1, AX2, E(lt, 11.2, 13.2));
+  const r = drawHV(ax, { h: mh, v: mv, map: E(lt, 7.6, 8.4), axes: lt > 4.6 ? 1 : 0 });
+  const steps = [[0.9, "h_center_line"], [2.7, "v_center_line"], [4.3, "h_center_line"], [6.0, "v_center_line"], [8.0, "deform_line"]];
+  let tool = "arrow", since = 0;
+  for (const [t, k] of steps) if (lt >= t) { tool = k; since = t; }
+  st.tool = lt >= 8.0 ? "arrow" : tool;
+  if (lt >= 0.9 && lt < 8.0 && lt - since < .7) st.tip = tool;
+  const hEnd = () => toStage(board, ...lastPt(axisPts(ax).h)), vEnd = () => toStage(board, ...lastPt(axisPts(ax).v));
+  if (lt < 1.4) st.cur = travel(lt, [[0.4, [640, 420]], [0.9, chipAt("h_center_line")], [1.4, onTex(...TEX_H[0])]]);
+  else if (lt < 2.6) { st.cur = onTex(...te.hEnd); st.down = true; }
+  else if (lt < 3.0) st.cur = travel(lt, [[2.6, onTex(...TEX_H[1])], [2.75, chipAt("v_center_line")], [3.0, onTex(...TEX_V[0])]]);
+  else if (lt < 4.2) { st.cur = onTex(...te.vEnd); st.down = true; }
+  else if (lt < 4.6) st.cur = travel(lt, [[4.2, onTex(...TEX_V[1])], [4.35, chipAt("h_center_line")], [4.6, onBoard(...axisPts(AX0).h[0])]]);
+  else if (lt < 6.0) { st.cur = onBoard(...r.hEnd); st.down = true; }
+  else if (lt < 6.3) st.cur = travel(lt, [[6.0, onBoard(...r.hEnd)], [6.1, chipAt("v_center_line")], [6.3, onBoard(...axisPts(AX0).v[0])]]);
+  else if (lt < 7.6) { st.cur = onBoard(...r.vEnd); st.down = true; }
+  else if (lt < 11.2) { st.cur = travel(lt, [[7.6, onBoard(...r.vEnd)], [8.0, chipAt("arrow")], [8.5, hEnd]]); if (lt > 8.5) st.cur = hEnd; st.down = lt > 8.6 && lt < 10.8; }
+  else { st.cur = lt < 11.6 ? travel(lt, [[11.2, hEnd], [11.6, vEnd]]) : vEnd; st.down = lt > 11.6 && lt < 13.2; }
+  st.cap = lt < 1.0 ? "Windows ▸ Texture View floats the texture board; on the left is the “A” from the sample project." :
+    lt < 4.3 ? "On the texture board, draw one axis with H Center Line and one with V Center Line, crossing each other: they set up the pattern’s coordinates." :
+    lt < 7.6 ? "Draw a pair of H / V axes on the main board too, at any position, length and curve; ends match ends and the crossing matches the crossing." :
+    lt < 8.6 ? "As soon as both axes exist the unit re-renders: the pattern is laid along the axes by arc length. Orange is the reference grid." :
+    "Drag an axis end and the pattern bends with it. Straight axes give an exact affine copy; curved axes bend the pattern.";
+  if (lt > 7.6) st.callouts = [{ at: onBoard(O1[0] - 34, O1[1] + 8), text: "O" }];
+}
+
+// the flag: frame k's outline is drawn in [t0, t0 + .8] and re-rendered right after
+const FLAG_T0 = k => k === 0 ? 3.1 : 5.9 + (k - 1) * 1.2;
+const FLAG_DRAW = k => k === 0 ? 1.7 : .8;
+const FLAG_PLAY = 12.5;
+function sContour(lt, st) {
+  st.layers = "map"; st.opts = "map"; st.tex = 1; st.teaO = E(lt, 0, .6);
+  st.texRect = [118, 58, 440, 340]; st.texView = "200 250 970 670";
+  hideBoard(); texAxes(0, 0);
+  B.flag.style.opacity = 1; $("fPole").style.opacity = E(lt, .2, .8);
+  $("fCloth").style.opacity = 0; $("fOnion").setAttribute("d", "");
+  const tOrder = [...TEX_C, TEX_C[0]];
+  const tf = seg(lt, 1.3, 3.0), pair = E(lt, 4.9, 5.7);
+  texExtras({ cont: partial(tOrder, tf), closed: tf >= 1, orange: 1 - pair, rain: pair });
+
+  // which frame is on the board, and is it being drawn
+  let k = 0, drawing = 0, done = pair > 0 ? 1 : 0;
+  for (let j = 1; j < FLAG_FRAMES; j++) if (lt >= FLAG_T0(j)) { k = j; done = j; }
+  const t0 = FLAG_T0(k), df = seg(lt, k === 0 ? t0 : t0 + .15, (k === 0 ? t0 : t0 + .15) + FLAG_DRAW(k));
+  if (k > 0 && lt < t0 + .15 + FLAG_DRAW(k)) drawing = 1;
+  if (k === 0 && pair <= 0) drawing = 1;
+  if (k > 0 && !drawing) done = k + 1;
+  const playing = lt >= FLAG_PLAY;
+  if (playing) { k = Math.floor((lt - FLAG_PLAY) * 10) % FLAG_FRAMES; done = FLAG_FRAMES; drawing = 0; }
+  const C = flagContour(k), mOrder = [...C, C[0]];
+  if (drawing) {
+    B.cont.style.opacity = df > 0 ? 1 : 0;
+    $("cOrange").setAttribute("d", dPoly(partial(mOrder, df), df >= 1)); $("cOrange").style.opacity = 1;
+    $("cRainbow").style.opacity = 0; $("cDots").style.opacity = 0;
+    if (k > 0) { const P0 = flagFrame(k - 1); $("fOnion").setAttribute("d", dPoly(P0.C, true) + P0.red + P0.dark); }
+  } else if (k === 0 && !playing) {
+    showFlag(0, { cloth: pair, rain: pair });
+    $("cOrange").setAttribute("d", dPoly(C, true)); $("cOrange").style.opacity = 1 - pair;
+  } else showFlag(k, { cloth: playing ? 1 : E(lt, t0 + .15 + FLAG_DRAW(k), t0 + .15 + FLAG_DRAW(k) + .2) });
+
+  // timeline: a cell per frame, filled once the frame is mapped
+  st.cells = Math.max(2, playing ? FLAG_FRAMES : k + 1);
+  st.cellSel = k; st.tlNum = k + 1; st.tlPlay = playing;
+  st.cellMode = [];
+  for (let j = 0; j < st.cells; j++) st.cellMode.push(j < done && !(j === k && drawing) ? j : j === k ? "live" : "blank");
+
+  st.tool = lt < 1.0 ? "arrow" : playing ? "arrow" : "free_out_line";
+  if (lt > 1.0 && lt < 1.8) st.tip = "free_out_line";
+  const onC = (pts, f) => () => toStage(board, ...lastPt(partial(pts, Math.max(f, .001))));
+  if (lt < 1.3) st.cur = travel(lt, [[0.3, [700, 560]], [0.9, chipAt("free_out_line")], [1.3, onTex(...TEX_C[0])]]);
+  else if (lt < 3.0) { st.cur = onTex(...lastPt(partial(tOrder, Math.max(tf, .001)))); st.down = true; }
+  else if (lt < 3.1) st.cur = travel(lt, [[3.0, onTex(...TEX_C[0])], [3.1, onBoard(...C[0])]]);
+  else if (playing || lt > FLAG_T0(FLAG_FRAMES - 1) + 1.1) {
+    const play = () => { const c = elCenter($("tlPlay")); return [c[0] + 2, c[1] + 4]; };
+    st.cur = travel(lt, [[FLAG_T0(FLAG_FRAMES - 1) + 1.1, onBoard(...flagContour(FLAG_FRAMES - 1)[0])], [FLAG_PLAY - .1, play], [FLAG_PLAY + 1, play], [FLAG_PLAY + 2, [900, 470]]]);
+    st.down = lt > FLAG_PLAY - .15 && lt < FLAG_PLAY + .05;
+  } else if (drawing) { st.cur = onC(mOrder, df); st.down = df > 0 && df < 1; }
+  else st.cur = travel(lt, [[t0 + .95, onBoard(...C[0])], [FLAG_T0(k + 1) + .15, onBoard(...flagContour(k + 1)[0])]]);
+
+  st.cap = lt < 1.3 ? "Method two: contours. The texture board holds a teapot pattern with its H / V axes. Pick Free Out Line." :
+    lt < 3.05 ? "Draw a closed contour around the pattern: this is the flag cloth. On release the end joins back to the start." :
+    lt < 4.9 ? "Frame 1: on the main board, draw the outline of the cloth as it waves. The pole is this frame’s line art." :
+    lt < 5.9 ? "The two contours pair up: the same colour marks the same pattern point, red dots are the paired corners. The teapot lands on the cloth and the axes are generated from the contour." :
+    lt < FLAG_PLAY - .4 ? `Frame ${k + 1}: draw only this frame’s cloth outline and the teapot is mapped onto it. The faint red lines are the previous frame’s onion skin.` :
+    "Play: every frame has its own mapping, so the teapot waves with the flag.";
+}
+
+// additional lines: each is drawn straight on the Drawing board in [a, b]; on pen-up the unit
+// re-renders (the bend eases in) and the texture board gets the matching straight line.
+const FLOW_EV = [
+  { a: 1.3, b: 2.8, keys: { a1r: 80, a1l: 66 } },
+  { a: 4.2, b: 5.4, keys: { b2: 30 } },
+  { a: 6.8, b: 8.0, keys: { c3: 50 } },
+  { a: 9.4, b: 10.6, keys: { c4: 46 } },
+];
+const FLOW_APPLY = .7;
+function sFlow(lt, st) {
+  st.layers = "map"; st.opts = "map"; st.tex = 1;
+  hideBoard();
+  texAxes(1, 1);
+  // field as of now: a line counts once its pen is up
+  const k = { a1r: 0, a1l: 0, b2: 0, c3: 0, c4: 0 };
+  FLOW_EV.forEach(e => { const p = E(lt, e.b, e.b + FLOW_APPLY); for (const n in e.keys) k[n] = e.keys[n] * p; });
+  const r = drawHV(AX2, { warp: f => flowWarp(f, k), map: E(lt, .1, .7), axes: E(lt, .1, .7) });
+  // the stroke being drawn already has its final shape: the field with that line fully applied
+  const f0 = makeHV(AX2);
+  const drawnPts = FLOW_EV.map((e, i) => {
+    const kk = { ...k }; for (const n in e.keys) kk[n] = e.keys[n];
+    const g = flowWarp(f0, kk);
+    return ADD[i].pts.map(p => g(p[0], p[1]));
+  });
+  let texD = "", mainD = "";
+  FLOW_EV.forEach((e, i) => {
+    mainD += dPoly(partial(lt < e.b + FLOW_APPLY ? drawnPts[i] : ADD[i].pts.map(p => r.f(p[0], p[1])), seg(lt, e.a, e.b)));
+    texD += dPoly(partial(ADD[i].pts, seg(lt, e.b, e.b + .5)));
+  });
+  texExtras({ add: texD });
+  $("addM").setAttribute("d", mainD);
+  B.add.style.opacity = lt > .9 ? 1 : 0;
+  // the flow field as arrows; they turn as each line bends the field
+  arrowField(r.f, lt);
+  $("arrows").style.opacity = .85 * E(lt, .9, 1.5);
+  st.tool = lt < 1.0 ? "arrow" : "additional_line";
+  if (lt > 1.0 && lt < 1.8) st.tip = "additional_line";
+
+  // cursor: drawing on the board during an event, eased travel between events
+  const startOf = i => onBoard(...drawnPts[i][0]);
+  const endOf = i => onBoard(...lastPt(drawnPts[i]));
+  const evI = FLOW_EV.findIndex(e => lt < e.b);
+  if (evI === 0 && lt < FLOW_EV[0].a) st.cur = travel(lt, [[0.3, [700, 560]], [0.9, chipAt("additional_line")], [FLOW_EV[0].a, startOf(0)]]);
+  else if (evI < 0) st.cur = travel(lt, [[FLOW_EV[3].b, endOf(3)], [FLOW_EV[3].b + 1.2, [880, 470]]]);
+  else {
+    const e = FLOW_EV[evI];
+    if (lt >= e.a) { st.cur = onBoard(...lastPt(partial(drawnPts[evI], Math.max(seg(lt, e.a, e.b), .001)))); st.down = true; }
+    else st.cur = travel(lt, [[FLOW_EV[evI - 1].b + .2, endOf(evI - 1)], [e.a, startOf(evI)]]);
+  }
+  st.cap = lt < 1.3 ? "Method three: Additional Lines. On a finished mapping, tell Auto Mapping where the texture should flow." :
+    lt < 3.6 ? "Pick Additional Line and draw a pink curve straight on the Drawing board: it is the grid line you want. Lift the pen and the texture flows along it." :
+    lt < 4.2 ? "The texture board gets the matching straight line by itself; nothing has to be drawn there first." :
+    lt < 6.8 ? "Draw another below the V axis: each line shapes its own side, and the V axis stays pinned." :
+    lt < 11.4 ? "Upright lines belong to the other family: curve them outward and the pattern opens up. The two families never affect each other." :
+    "More lines give a finer flow field; the H / V axes never change shape.";
+  if (lt > 15.5) st.overlay = { o: E(lt, 15.5, 16.3) * (1 - seg(lt, 19.6, 20)), t1: "<b>Anime</b>An", t2: "Patterns that follow the form, frame by frame", t3: ["H / V axes", "Free Out Line contours", "Additional Line flow"] };
+}
+
+const SCENES = [
+  { name: "Interface", dur: 9, render: sUI },
+  { name: "Free layout", dur: 11, render: sLayout },
+  { name: "Tools", dur: 19, render: sTools },
+  { name: "H/V axes", dur: 16, render: sHV },
+  { name: "Contour flag", dur: 18, render: sContour },
+  { name: "Line flow", dur: 20, render: sFlow },
+];
+let acc = 0;
+for (const s of SCENES) { s.start = acc; acc += s.dur; }
+const TOTAL = acc;
+
+// ---------------------------------------------------------------- apply a frame
+const capK = $("capK"), capC = $("capC"), tipEl = $("tip"), hlEl = $("hl"), cursorEl = $("cursor"), ovEl = $("overlay"), calloutEl = $("callout");
+let lastCap = "", lastTip = "", lastOv = "";
+function render(T) {
+  const idx = SCENES.findIndex(s => T < s.start + s.dur), sc = SCENES[idx < 0 ? SCENES.length - 1 : idx];
+  const lt = T - sc.start;
+  const st = { layout: L0, float: false, light: false, tool: null, tip: null, hl: null, menu: null, drop: null, cur: null, down: false, mode: "",
+    cap: "", tex: 0, layers: "map", opts: "map", overlay: null, callouts: null,
+    teaO: 0, texRect: [118, 58, 330, 474], texView: "150 -60 1050 1330", cells: 2, cellSel: 0, cellMode: ["live", "blank"], tlNum: 1, tlPlay: false };
+  hideBoard();
+  texAxes(1, 1); texExtras({});
+  sc.render(lt, st);
+
+  // chrome
+  const app = $("app");
+  app.classList.toggle("light", st.light);
+  for (const k in DOCKS) { const [x, y, w, h] = st.layout[k], d = DOCKS[k].style; d.left = x + "px"; d.top = y + "px"; d.width = w + "px"; d.height = h + "px"; }
+  DOCKS.layers.classList.toggle("float", st.float);
+  for (const k in chipEls) chipEls[k].classList.toggle("on", k === st.tool);
+  setLayers(st.layers);
+  $("optPaint").hidden = st.opts !== "paint"; $("optMap").hidden = st.opts !== "map";
+  const tw = $("texWin");
+  tw.style.opacity = st.tex; tw.style.visibility = st.tex > 0 ? "visible" : "hidden"; tw.style.transform = `scale(${fx(.94 + .06 * st.tex)})`;
+  Object.assign(tw.style, { left: st.texRect[0] + "px", top: st.texRect[1] + "px", width: st.texRect[2] + "px", height: st.texRect[3] + "px" });
+  if (tex.getAttribute("viewBox") !== st.texView) tex.setAttribute("viewBox", st.texView);
+  $("tA").style.opacity = 1 - st.teaO; $("tTea").style.opacity = st.teaO;
+  // timeline cells: the live board, a finished flag frame, or blank
+  CELLS.forEach((c, j) => {
+    c.el.hidden = j >= st.cells; c.el.classList.toggle("sel", j === st.cellSel);
+    const m = st.cellMode[j] ?? "blank";
+    c.use.style.display = m === "live" ? "" : "none";
+    const key = typeof m === "number" ? String(m) : "";
+    if (c.fr.dataset.k !== key) { c.fr.innerHTML = key ? frameSvg(m) : ""; c.fr.dataset.k = key; }
+  });
+  $("tlNum").textContent = String(st.tlNum).padStart(3, "0");
+  $("tlPlay").classList.toggle("on", st.tlPlay);
+  const dp = $("droppv");
+  if (st.drop) { dp.hidden = false; Object.assign(dp.style, { left: st.drop[0] + "px", top: st.drop[1] + "px", width: st.drop[2] + "px", height: st.drop[3] + "px" }); } else dp.hidden = true;
+  const menu = $("menu");
+  if (st.menu) {
+    const b = elBox($("mTheme")); menu.hidden = false; menu.style.left = b[0] + "px"; menu.style.top = b[1] + b[3] + "px";
+    $("mTheme").classList.add("open");
+    $("miDark").className = (st.menu.light ? "" : "ck") + (st.menu.hov === "dark" ? " hov" : "");
+    $("miLight").className = (st.menu.light ? "ck" : "") + (st.menu.hov === "light" ? " hov" : "");
+  } else { menu.hidden = true; $("mTheme").classList.remove("open"); }
+
+  // tooltip next to the chip
+  if (st.tip) {
+    if (lastTip !== st.tip) { tipEl.querySelector("b").textContent = TOOLS[st.tip][0]; tipEl.querySelector("span").textContent = TOOLS[st.tip][1]; lastTip = st.tip; }
+    const b = elBox(chipEls[st.tip]); tipEl.hidden = false; tipEl.style.left = b[0] + b[2] + 10 + "px"; tipEl.style.top = b[1] + "px";
+  } else { tipEl.hidden = true; lastTip = ""; }
+
+  // highlight
+  if (st.hl) {
+    const b = st.hl.box(), lab = hlEl.firstChild;
+    hlEl.hidden = false; Object.assign(hlEl.style, { left: b[0] + 3 + "px", top: b[1] + 3 + "px", width: b[2] - 6 + "px", height: b[3] - 6 + "px" });
+    lab.textContent = st.hl.label;
+    // centred on the box, but kept inside the stage when the box is narrow or near an edge
+    const w = lab.offsetWidth, h = lab.offsetHeight;
+    const x = clamp(b[0] + b[2] / 2 - w / 2, 8, 1280 - 8 - w), y = clamp(b[1] + b[3] / 2 - h / 2, 8, 800 - 8 - h);
+    lab.style.left = x - b[0] - 3 + "px"; lab.style.top = y - b[1] - 3 + "px";
+  } else hlEl.hidden = true;
+
+  if (st.callouts) { const c = st.callouts[0], p = P(c.at); calloutEl.hidden = false; calloutEl.textContent = c.text; calloutEl.style.left = p[0] + "px"; calloutEl.style.top = p[1] + "px"; }
+  else calloutEl.hidden = true;
+
+  // cursor
+  const cp = st.cur ? P(st.cur) : [-40, -40];
+  cursorEl.style.transform = `translate(${fx(cp[0])}px, ${fx(cp[1])}px)`;
+  cursorEl.classList.toggle("down", !!st.down);
+  cursorEl.classList.toggle("erase", st.mode === "erase");
+
+  // overlay
+  if (st.overlay && st.overlay.o > 0.01) {
+    const key = st.overlay.t1 + st.overlay.t2;
+    if (key !== lastOv) { $("ovT1").innerHTML = st.overlay.t1; $("ovT2").textContent = st.overlay.t2; $("ovT3").innerHTML = st.overlay.t3.map(x => `<span>${x}</span>`).join(""); lastOv = key; }
+    ovEl.hidden = false; ovEl.style.opacity = st.overlay.o;
+  } else ovEl.hidden = true;
+
+  // captions and chapter bars
+  const capKey = sc.name + "|" + st.cap;
+  if (capKey !== lastCap) { capK.textContent = `${SCENES.indexOf(sc) + 1} / ${SCENES.length} · ${sc.name}`; capC.textContent = st.cap; lastCap = capKey; }
+  SCENES.forEach((s, i) => { s.btn.classList.toggle("cur", s === sc); s.bar.style.width = (clamp((T - s.start) / s.dur) * 100).toFixed(2) + "%"; });
+  $("time").textContent = `${mmss(T)} / ${mmss(TOTAL)}`;
+}
+const mmss = t => `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
+
+// ---------------------------------------------------------------- controls
+const chapsEl = $("chaps");
+SCENES.forEach((s, i) => {
+  const b = document.createElement("button"); b.type = "button"; b.className = "chap"; b.id = "chap" + i;
+  b.innerHTML = `<small>${mmss(s.start)}</small>${s.name}<span class="bar"></span>`;
+  b.addEventListener("click", e => { const r = b.getBoundingClientRect(); const f = clamp((e.clientX - r.left) / r.width); seek(s.start + (e.detail ? f * s.dur * .98 : 0)); });
+  chapsEl.appendChild(b); s.btn = b; s.bar = b.querySelector(".bar");
+});
+let T = 0, playing = true, last = null;
+const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+if (reduce) { playing = false; T = SCENES[3].start + 14; }
+function setPlayIcon() {
+  $("playIcon").innerHTML = playing ? '<rect x="3" y="2" width="3.6" height="12" fill="currentColor"/><rect x="9.4" y="2" width="3.6" height="12" fill="currentColor"/>' : '<path d="M4 2 L14 8 L4 14 Z" fill="currentColor"/>';
+  $("play").setAttribute("aria-label", playing ? "Pause" : "Play");
+}
+function seek(t) { T = (t + TOTAL) % TOTAL; render(T); }
+$("play").addEventListener("click", () => { playing = !playing; last = null; setPlayIcon(); });
+document.addEventListener("keydown", e => {
+  if (e.target.closest && e.target.closest("input,textarea")) return;
+  if (e.code === "Space") { e.preventDefault(); playing = !playing; last = null; setPlayIcon(); }
+  if (e.code === "ArrowRight") seek(T + 3);
+  if (e.code === "ArrowLeft") seek(T - 3);
+});
+function fit() {
+  const w = $("frame").clientWidth; SCALE = w / 1280;
+  stage.style.transform = `scale(${SCALE})`; $("frame").style.height = 800 * SCALE + "px";
+  render(T);
+}
+window.addEventListener("resize", fit);
+function tick(now) {
+  if (playing) { if (last != null) T = (T + Math.min(.1, (now - last) / 1000)) % TOTAL; last = now; render(T); }
+  requestAnimationFrame(tick);
+}
+setPlayIcon(); fit(); requestAnimationFrame(tick);
+})();
+</script>
