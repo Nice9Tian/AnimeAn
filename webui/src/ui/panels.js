@@ -547,5 +547,14 @@ export function createMenuBar(root, { onTrigger, onOpen }) {
       x += w + GAP;
     });
   }
-  return { update(next) { menus = next ?? []; paint(); } };
+  return {
+    update(next) {
+      const nextMenus = next ?? [];
+      // A new element under the pointer fires pointerenter, which reopens the menu,
+      // which refreshes it again: the bar is rebuilt only when its titles change.
+      const sameTitles = nextMenus.length === menus.length && nextMenus.every((m, i) => m.text === menus[i].text);
+      menus = nextMenus;
+      if (!sameTitles) paint();
+    },
+  };
 }
