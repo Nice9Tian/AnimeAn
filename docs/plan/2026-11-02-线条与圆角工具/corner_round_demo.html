@@ -1,0 +1,694 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>圆角工具试验台</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: one screen, options row on top, the board fills the rest, status line under it.
+   Colours are AnimeAn's own theme table (webui/src/ui/qt.css); --accent is for the current focus only.
+   Corners use Connect's hint vocabulary: amber diamond = corner, amber circle = rounded corner. */
+:root {
+  --window: #f5f5f6; --surface: #ffffff; --surface-alt: #e8e8ea;
+  --text: #1d1f20; --text-dim: #6b6d72; --divider: #bcbdc0;
+  --accent: #3d8ec9; --accent-2: #a6d0ee; --on-accent-2: #1d1f20; --accent-2-line: #5f9ecd;
+  --btn-border: #afafb0; --btn-top: #fdfdfd; --btn-bottom: #e8e8e8;
+  --end: #e6a817; --end-line: #8a6200;
+  --font: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --window: #1d1f20; --surface: #232526; --surface-alt: #2a2c2e;
+  --text: #f5f5f8; --text-dim: #b4b6bc; --divider: #575a5c;
+  --accent: #3d8ec9; --accent-2: #34566f; --on-accent-2: #f5f5f8; --accent-2-line: #7aa7c7;
+  --btn-border: #151617; --btn-top: #3d3f41; --btn-bottom: #343637;
+  --end: #ffc846; --end-line: #6d5311;
+  color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --window: #1d1f20; --surface: #232526; --surface-alt: #2a2c2e;
+  --text: #f5f5f8; --text-dim: #b4b6bc; --divider: #575a5c;
+  --accent: #3d8ec9; --accent-2: #34566f; --on-accent-2: #f5f5f8; --accent-2-line: #7aa7c7;
+  --btn-border: #151617; --btn-top: #3d3f41; --btn-bottom: #343637;
+  --end: #ffc846; --end-line: #6d5311;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body {
+  display: flex; flex-direction: column; gap: 10px; box-sizing: border-box; margin: 0;
+  padding-block: 12px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  background: var(--window); color: var(--text);
+  font: 13px/18px var(--font); user-select: none; -webkit-user-select: none;
+}
+.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+h1 { margin: 0; font-size: 15px; line-height: 24px; font-weight: 600; white-space: nowrap; }
+.group { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.group > .name { color: var(--text-dim); white-space: nowrap; }
+.spacer { flex: 1 1 0; }
+button {
+  font: inherit; color: var(--text); height: 26px; padding: 0 10px; box-sizing: border-box; cursor: pointer;
+  border: 1px solid var(--btn-border); border-radius: 3px;
+  background: linear-gradient(var(--btn-top), var(--btn-bottom)); white-space: nowrap;
+}
+button:hover:not(:disabled) { border-color: var(--accent-2-line); }
+button:disabled { color: var(--text-dim); cursor: default; }
+button[aria-pressed="true"] { background: var(--accent-2); color: var(--on-accent-2); border-color: var(--accent-2-line); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.seg { display: flex; }
+.seg button { border-radius: 0; margin-left: -1px; }
+.seg button:first-child { border-radius: 3px 0 0 3px; margin-left: 0; }
+.seg button:last-child { border-radius: 0 3px 3px 0; }
+input[type="range"] { width: 96px; accent-color: var(--accent-2-line); margin: 0; }
+output { min-width: 3.2em; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+#board {
+  flex: 1 1 0; min-height: 240px; position: relative; overflow: hidden;
+  background: var(--surface); border: 1px solid var(--divider);
+}
+#board canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
+.status { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; min-height: 22px; }
+.pill {
+  padding: 1px 8px; border-radius: 3px; white-space: nowrap; font-size: 12px;
+  background: var(--surface-alt); color: var(--text); font-variant-numeric: tabular-nums;
+}
+.pill.on { background: var(--accent-2); color: var(--on-accent-2); }
+#hint { min-width: 0; flex: 1 1 14em; }
+.legend { color: var(--text-dim); font-size: 12px; white-space: nowrap; }
+@media (hover: none) { .legend { display: none; } }
+kbd { font: inherit; padding: 0 4px; border: 1px solid var(--divider); border-radius: 3px; background: var(--surface); }
+</style>
+
+<div class="bar">
+  <h1>圆角工具试验台</h1>
+  <div class="seg" role="group" aria-label="工具">
+    <button id="tRound" type="button" aria-pressed="true">圆角</button>
+    <button id="tPoly" type="button" aria-pressed="false" title="画几条带尖角的折线来试圆角">折线</button>
+  </div>
+  <label class="group" title="圆角两端的手柄长度占切掉长度的比例：小偏尖，0.55 接近圆弧，大偏方"><span class="name">圆角形状</span><input id="kappa" type="range" min="20" max="90" value="55"><output id="kappaOut">0.55</output></label>
+  <label class="group"><span class="name">吸附半径</span><input id="radius" type="range" min="6" max="48" value="16"><output id="radiusOut">16 px</output></label>
+  <button id="ghostOn" type="button" aria-pressed="false">对比原线</button>
+  <span class="spacer"></span>
+  <div class="group">
+    <button id="undo" type="button">撤销</button>
+    <button id="redo" type="button">重做</button>
+    <button id="sharpen" type="button">恢复全部尖角</button>
+    <button id="clear" type="button">清空</button>
+  </div>
+</div>
+
+<div id="board"><canvas id="cv" aria-label="画板：在尖角上按下拖动倒圆角"></canvas></div>
+
+<div class="status">
+  <span id="pill" class="pill">圆角</span>
+  <span id="hint"></span>
+  <span class="legend"><kbd>拖动</kbd> 拉出控制线　<kbd>Shift</kbd> 两边等长　<kbd>右键</kbd> 取消拖动　<kbd>Ctrl+Z</kbd> 撤销</span>
+</div>
+
+<script>
+"use strict";
+// ---- vectors and cubic Bezier segments [p0, c1, c2, p3] -------------------------------------
+const sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y });
+const add = (a, b) => ({ x: a.x + b.x, y: a.y + b.y });
+const mul = (a, k) => ({ x: a.x * k, y: a.y * k });
+const dot = (a, b) => a.x * b.x + a.y * b.y;
+const cross = (a, b) => a.x * b.y - a.y * b.x;
+const len = a => Math.hypot(a.x, a.y);
+const dist = (a, b) => len(sub(a, b));
+const lerp = (a, b, t) => add(a, mul(sub(b, a), t));
+const unit = a => { const l = len(a); return l > 1e-9 ? mul(a, 1 / l) : null; };
+
+const CORNER_DEG = 15;      // a tangent break above this is a corner the tool snaps to
+const GAP = 0.5;            // board px kept between two fillets that cut the same segment
+const SAMPLES = 48;         // arc-length table per segment
+const STICK = 1.35;         // a held snap lets go at radius * STICK
+const DRAG_START = 2;       // screen px the press must travel before it changes anything
+const MIN_GAP = 3;          // screen px, a polyline click this close to the last point is a double click
+
+function point(s, t) {
+  const k = 1 - t;
+  return {
+    x: k * k * k * s[0].x + 3 * k * k * t * s[1].x + 3 * k * t * t * s[2].x + t * t * t * s[3].x,
+    y: k * k * k * s[0].y + 3 * k * k * t * s[1].y + 3 * k * t * t * s[2].y + t * t * t * s[3].y,
+  };
+}
+
+// de Casteljau: one split never changes the drawn shape.
+function split(s, t) {
+  const [a, b, c, d] = s;
+  const ab = lerp(a, b, t), bc = lerp(b, c, t), cd = lerp(c, d, t);
+  const abc = lerp(ab, bc, t), bcd = lerp(bc, cd, t), m = lerp(abc, bcd, t);
+  return [[a, ab, abc, m], [m, bcd, cd, d]];
+}
+
+function piece(s, t0, t1) {
+  let out = s;
+  if (t1 < 1) out = split(out, t1)[0];
+  if (t0 > 0) out = split(out, t0 / t1)[1];
+  return out;
+}
+
+function lengths(s) {
+  const acc = [0];
+  let prev = s[0];
+  for (let i = 1; i <= SAMPLES; i++) { const p = point(s, i / SAMPLES); acc.push(acc[i - 1] + dist(prev, p)); prev = p; }
+  return acc;
+}
+
+function tAt(acc, L) {
+  if (L <= 0) return 0;
+  const total = acc[acc.length - 1];
+  if (L >= total) return 1;
+  let i = 1;
+  while (acc[i] < L) i++;
+  return (i - 1 + (L - acc[i - 1]) / (acc[i] - acc[i - 1])) / SAMPLES;
+}
+
+const startDir = s => unit(sub(s[1], s[0])) || unit(sub(s[2], s[0])) || unit(sub(s[3], s[0])) || { x: 1, y: 0 };
+const endDir = s => unit(sub(s[3], s[2])) || unit(sub(s[3], s[1])) || unit(sub(s[3], s[0])) || { x: 1, y: 0 };
+
+// Direction of travel at t; the same direction de Casteljau gives the end of a slice cut at t.
+function dirAt(s, t) {
+  const k = 1 - t;
+  const d = add(add(mul(sub(s[1], s[0]), 3 * k * k), mul(sub(s[2], s[1]), 6 * k * t)), mul(sub(s[3], s[2]), 3 * t * t));
+  return unit(d) || (t < 0.5 ? startDir(s) : endDir(s));
+}
+const line = (a, b) => [a, lerp(a, b, 1 / 3), lerp(a, b, 2 / 3), b];
+
+// ---- corners and fillets --------------------------------------------------------------------
+// A stroke keeps its drawn segments and a fillet per rounded joint: rounds[j] = { L1, L2 } is how far
+// along the incoming and outgoing segment (arc length, board px) the fillet starts and ends.
+// Joint j joins segment j to segment j + 1 at the corner V = segs[j][3].
+const S = {
+  strokes: [], tool: "round", kappa: 0.55, radius: 16, ghost: false,
+  cursor: null, target: null, drag: null, shift: false,
+  poly: null, pending: null,   // polyline being drawn: the stroke once it has a segment, or its first point
+  undo: [], redo: [], nextId: 1, touched: false,
+};
+
+function view(s) {
+  const n = s.segs.length, joints = s.closed ? n : n - 1;
+  const acc = s.segs.map(lengths), total = acc.map(a => a[a.length - 1]);
+  const prevJoint = i => (i > 0 ? i - 1 : (s.closed ? n - 1 : -1));
+  const headCut = i => { const r = s.rounds[prevJoint(i)]; return r ? r.L2 : 0; };
+  const tailCut = i => { const r = i < joints ? s.rounds[i] : null; return r ? r.L1 : 0; };
+  const trimmed = s.segs.map((seg, i) => {
+    const c0 = headCut(i), c1 = tailCut(i);
+    if (!c0 && !c1) return seg;
+    return piece(seg, tAt(acc[i], c0), tAt(acc[i], total[i] - c1));
+  });
+  const segs = [], corners = [];
+  for (let i = 0; i < n; i++) {
+    segs.push(trimmed[i]);
+    if (i >= joints) continue;
+    const next = (i + 1) % n, a = s.segs[i], b = s.segs[next];
+    const d1 = endDir(a), d2 = startDir(b), r = s.rounds[i];
+    const turn = Math.acos(Math.max(-1, Math.min(1, dot(d1, d2)))) * 180 / Math.PI;
+    if (turn <= CORNER_DEG && !r) continue;
+    const c = {
+      stroke: s, joint: i, V: a[3], u1: mul(d1, -1), u2: d2, rounded: !!r,
+      seg1: a, acc1: acc[i], seg2: b, acc2: acc[next],
+      avail1: total[i] - headCut(i) - GAP,
+      avail2: total[next] - tailCut(next) - GAP,
+    };
+    const fillet = r ? filletAt(c, r.L1, r.L2) : null;
+    if (fillet) segs.push(fillet);
+    c.top = fillet ? point(fillet, 0.5) : a[3];
+    c.cuts = fillet ? [fillet[0], fillet[3]] : null;
+    if (fillet) {
+      const half = mul(sub(c.cuts[1], c.cuts[0]), 0.5);
+      c.knobs = [{ s: 1, at: add(c.V, half) }, { s: -1, at: sub(c.V, half) }];
+    }
+    corners.push(c);
+  }
+  return { segs, corners };
+}
+
+// The fillet that starts L1 back along the incoming segment and ends L2 along the outgoing one,
+// tangent to both legs; each handle is kappa times its leg's cut length.
+function filletAt(c, L1, L2) {
+  const t1 = tAt(c.acc1, c.acc1[SAMPLES] - L1), t2 = tAt(c.acc2, L2);
+  const p1 = point(c.seg1, t1), p2 = point(c.seg2, t2);
+  return [p1, add(p1, mul(dirAt(c.seg1, t1), S.kappa * L1)), sub(p2, mul(dirAt(c.seg2, t2), S.kappa * L2)), p2];
+}
+
+const cutIn = (c, L1) => point(c.seg1, tAt(c.acc1, c.acc1[SAMPLES] - L1));
+const cutOut = (c, L2) => point(c.seg2, tAt(c.acc2, L2));
+
+// The control line (user 2026-11-02): pulling from the corner draws out a line; its length sets how wide
+// the rounding is and its angle sets the tangent at the rounding's top, which decides how much each side
+// gives. The line is the chord between the two cut points, pinned at the corner tip: its ends are
+// V +- half chord, and on straight legs it is parallel to the tangent at the rounding's top.
+// Pinned at the tip, not at the top: the top sinks as the rounding grows, and a line riding on it made
+// the held end either leave the pointer or swing the rounding hard to one side (tried 2026-11-02).
+// The end the user holds sits on the pointer: knob(L1, L2, s) = m, solved for the two leg lengths.
+const knob = (c, L1, L2, s) => add(c.V, mul(sub(cutOut(c, L2), cutIn(c, L1)), s / 2));
+
+// Straight legs have a closed form: with e1 = -u1, e2 = u2, knob - V = s * (L1 e1 + L2 e2) / 2.
+// The line has no direction: m on either side of the corner works, s says which end is held. A pointer
+// outside what the two legs allow leans the rounding fully onto the nearer leg. Curved legs start from
+// the closed form, and from warm (the legs a moment ago) while dragging, whichever ends closer.
+function legsFor(c, m, warm) {
+  const D = sub(m, c.V);
+  if (len(D) < 1e-9) return { L1: 0, L2: 0, s: 1 };
+  const e1 = mul(c.u1, -1), e2 = c.u2, det = cross(e1, e2);
+  const weights = () => [0.5, 0.5];
+  const clamp1 = v => Math.min(Math.max(0, v), c.avail1), clamp2 = v => Math.min(Math.max(0, v), c.avail2);
+  let s, L1, L2;
+  if (S.shift || Math.abs(det) < 0.05) {
+    const pick = [1, -1].map(sg => {
+      const [p1, p2] = weights(sg), w = mul(add(mul(e1, p1), mul(e2, p2)), sg);
+      return { sg, L: dot(D, w) / dot(w, w) };
+    }).sort((x, y) => y.L - x.L)[0];
+    s = pick.sg;
+    let L = Math.min(clamp1(pick.L), clamp2(pick.L));
+    for (let i = 0; i < 8; i++) {
+      const f = knob(c, L, L, s), dF = mul(sub(knob(c, L + 0.5, L + 0.5, s), f), 2), dd = dot(dF, dF);
+      if (dd < 1e-12) break;
+      const stepL = dot(sub(m, f), dF) / dd;
+      L = Math.min(clamp1(L + stepL), clamp2(L + stepL));
+      if (Math.abs(stepL) < 0.05) break;
+    }
+    return { L1: L, L2: L, s };
+  }
+  let a = cross(D, e2) / det, b = cross(e1, D) / det;
+  if (a >= 0 && b >= 0) s = 1;
+  else if (a <= 0 && b <= 0) { a = -a; b = -b; s = -1; }
+  else {
+    const t1 = dot(D, e1), t2 = dot(D, e2);
+    if (Math.abs(t1) >= Math.abs(t2)) { a = Math.abs(t1); b = 0; s = t1 < 0 ? -1 : 1; }
+    else { a = 0; b = Math.abs(t2); s = t2 < 0 ? -1 : 1; }
+  }
+  const [p1, p2] = weights(s);
+  let best = refine(c, m, s, clamp1(a / p1), clamp2(b / p2));
+  if (warm && warm.s === s) {
+    const w = refine(c, m, s, clamp1(warm.L1), clamp2(warm.L2));
+    if (w.err < best.err) best = w;
+  }
+  return { L1: best.L1, L2: best.L2, s };
+}
+
+// Levenberg-Marquardt on |knob - m|. Where the legs curve away the pointer can be out of reach; then
+// the knob stops at the closest point it can reach instead of wandering.
+function refine(c, m, s, L1, L2) {
+  const clamp1 = v => Math.min(Math.max(0, v), c.avail1), clamp2 = v => Math.min(Math.max(0, v), c.avail2);
+  let f = knob(c, L1, L2, s), err = len(sub(f, m)), lambda = 1e-3;
+  for (let i = 0; i < 30 && err >= 0.05; i++) {
+    const F = sub(f, m);
+    const j1 = mul(sub(knob(c, L1 + 0.5, L2, s), f), 2), j2 = mul(sub(knob(c, L1, L2 + 0.5, s), f), 2);
+    const a11 = dot(j1, j1) + lambda, a12 = dot(j1, j2), a22 = dot(j2, j2) + lambda;
+    const g1 = dot(j1, F), g2 = dot(j2, F), det = a11 * a22 - a12 * a12;
+    if (Math.abs(det) < 1e-12) break;
+    const n1 = clamp1(L1 - (a22 * g1 - a12 * g2) / det), n2 = clamp2(L2 - (a11 * g2 - a12 * g1) / det);
+    const nf = knob(c, n1, n2, s), ne = len(sub(nf, m));
+    if (ne < err) {
+      const gain = err - ne;
+      L1 = n1; L2 = n2; f = nf; err = ne; lambda /= 3;
+      if (gain < 1e-4) break;
+    } else {
+      lambda *= 4;
+      if (lambda > 1e6) break;
+    }
+  }
+  return { L1, L2, err };
+}
+
+// ---- history --------------------------------------------------------------------------------
+const pack = () => JSON.stringify(S.strokes);
+function checkpoint() { S.undo.push(pack()); S.redo.length = 0; S.touched = true; }
+function step(from, to) {
+  if (!from.length) return;
+  to.push(pack());
+  S.strokes = JSON.parse(from.pop());
+  S.drag = null; S.poly = null; S.pending = null; S.target = null;
+  refresh();
+}
+
+// ---- tools ----------------------------------------------------------------------------------
+// What the pointer can grab: a sharp corner at its tip (s 0), a rounded one by either end of its
+// control line (s +-1).
+function grips(views) {
+  const out = [];
+  for (let i = views.length - 1; i >= 0; i--) for (const c of views[i].corners) {
+    if (c.knobs) for (const kn of c.knobs) out.push({ ...c, at: kn.at, s: kn.s });
+    else out.push({ ...c, at: c.V, s: 0 });
+  }
+  return out;
+}
+
+function findTarget() {
+  if (!S.cursor || S.tool !== "round" || S.drag) return null;
+  const held = S.target;
+  let best = null, bestD = Infinity;
+  for (const c of grips(S.strokes.map(view))) {
+    const same = held && held.stroke.id === c.stroke.id && held.joint === c.joint && held.s === c.s;
+    const d = dist(S.cursor, c.at);
+    if (d <= S.radius * (same ? STICK : 1) && d < bestD) { best = c; bestD = d; }
+  }
+  return best;
+}
+
+function beginDrag() {
+  const c = S.target;
+  if (!c) return;
+  // The grabbed point keeps its offset from the pointer, so pressing never makes the line jump.
+  const r = c.stroke.rounds[c.joint];
+  S.drag = { corner: c, grab: c.at, down: S.cursor, before: pack(), moved: false, start: r ? { ...r } : null, snap: null };
+  // Two stops the held end snaps to (user 2026-11-02): the tip, where the line is 0 long and the corner
+  // is sharp again, and where this drag started, which gives the rounding back as it was. A stop the
+  // pointer starts inside only arms once the pointer has left it, so small adjustments stay free.
+  armStops(S.drag);
+}
+
+function armStops(d) {
+  d.stops = [{ kind: "tip", at: d.corner.V }];
+  if (d.start) d.stops.push({ kind: "start", at: d.grab });
+  for (const st of d.stops) st.armed = dist(st.at, d.grab) > S.radius;
+}
+
+function moveDrag() {
+  const d = S.drag;
+  if (!d.moved && dist(S.cursor, d.down) < DRAG_START) return;
+  if (!d.moved) { d.moved = true; S.undo.push(d.before); S.redo.length = 0; S.touched = true; }
+  const m = add(d.grab, sub(S.cursor, d.down));
+  const rounds = d.corner.stroke.rounds;
+  d.snap = null;
+  for (const st of d.stops) {
+    const near = dist(m, st.at) <= S.radius;
+    if (!near) { st.armed = true; continue; }
+    if (st.armed && (!d.snap || dist(m, st.at) < dist(m, d.snap.at))) d.snap = st;
+  }
+  if (d.snap && d.snap.kind === "tip") { delete rounds[d.corner.joint]; return; }
+  if (d.snap) { rounds[d.corner.joint] = { ...d.start }; return; }
+  const legs = legsFor(d.corner, m, rounds[d.corner.joint]);
+  if (legs.L1 < GAP && legs.L2 < GAP) delete rounds[d.corner.joint];
+  else rounds[d.corner.joint] = legs;
+}
+
+function endDrag(cancel) {
+  const d = S.drag;
+  if (!d) return;
+  S.drag = null;
+  if (cancel && d.moved) { S.strokes = JSON.parse(d.before); S.undo.pop(); }
+  else if (d.moved && d.snap && (d.snap.kind === "start" || !d.start)) S.undo.pop();   // ended where it began
+  refresh();
+}
+
+function polyClick() {
+  const p = S.cursor;
+  if (!S.poly && !S.pending) { S.pending = p; return; }
+  if (S.pending) {
+    if (dist(p, S.pending) < MIN_GAP) return;
+    checkpoint();
+    S.poly = { id: S.nextId++, segs: [line(S.pending, p)], closed: false, rounds: {} };
+    S.strokes.push(S.poly);
+    S.pending = null;
+    return;
+  }
+  const last = S.poly.segs[S.poly.segs.length - 1][3];
+  if (dist(p, last) < MIN_GAP) return;
+  checkpoint();
+  S.poly.segs.push(line(last, p));
+}
+
+function polyEnd() { S.poly = null; S.pending = null; refresh(); }
+
+function setTool(t) {
+  if (S.drag) endDrag(true);
+  polyEnd();
+  S.tool = t;
+  press($("tRound"), t === "round"); press($("tPoly"), t === "poly");
+  refresh();
+}
+
+// ---- drawing --------------------------------------------------------------------------------
+const board = document.getElementById("board"), cv = document.getElementById("cv"), g = cv.getContext("2d");
+let queued = false, showRange = 0, rangeTimer = 0;
+
+function requestDraw() {
+  if (queued) return;
+  queued = true;
+  requestAnimationFrame(draw);
+}
+
+function trace(segs, closed) {
+  g.beginPath();
+  g.moveTo(segs[0][0].x, segs[0][0].y);
+  for (const [, c1, c2, b] of segs) g.bezierCurveTo(c1.x, c1.y, c2.x, c2.y, b.x, b.y);
+  if (closed) g.closePath();
+}
+
+function diamond(p, r, fill, ink) {
+  g.beginPath();
+  g.moveTo(p.x, p.y - r); g.lineTo(p.x + r, p.y); g.lineTo(p.x, p.y + r); g.lineTo(p.x - r, p.y);
+  g.closePath();
+  g.fillStyle = fill; g.strokeStyle = ink; g.lineWidth = 1.2;
+  g.fill(); g.stroke();
+}
+
+function dotMark(p, r, fill, ink) {
+  g.beginPath(); g.arc(p.x, p.y, r, 0, Math.PI * 2);
+  g.fillStyle = fill; g.strokeStyle = ink; g.lineWidth = 1.2;
+  g.fill(); g.stroke();
+}
+
+// side -1 puts the label left of p; it flips when it would leave the board.
+function chip(p, text, c, side = 1) {
+  g.font = '12px "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif';
+  const w = g.measureText(text).width + 12, h = 20;
+  let x = side > 0 ? p.x + 16 : p.x - 16 - w, y = p.y - 30;
+  if (x + w > cv.clientWidth - 4) x = p.x - 16 - w;
+  if (x < 4) x = p.x + 16;
+  if (y < 4) y = p.y + 12;
+  g.fillStyle = c.accent;
+  g.beginPath(); g.roundRect(x, y, w, h, 3); g.fill();
+  g.fillStyle = "#ffffff"; g.textBaseline = "middle";
+  g.fillText(text, x + 6, y + h / 2 + 0.5);
+}
+
+// The control line through the corner tip, as wide as the rounding. Live (hovered or dragged) it is
+// drawn in the focus colour with the held end filled; at rest it is a quiet line with hollow ends.
+// Returns where a label goes: past the free end, so it never covers the held one.
+function controlLine(k, s, c, live) {
+  const half = mul(sub(k.cuts[1], k.cuts[0]), 0.5 * (s || 1));
+  const near = add(k.V, half), far = sub(k.V, half);
+  g.strokeStyle = live ? c.accent : c.dim; g.lineWidth = live ? 1.5 : 1;
+  g.beginPath(); g.moveTo(far.x, far.y); g.lineTo(near.x, near.y); g.stroke();
+  dotMark(far, 3, c.surface, live ? c.accent : c.dim);
+  if (live) dotMark(near, 4.5, c.accent, c.surface); else dotMark(near, 3, c.surface, c.dim);
+  return { at: far, side: far.x < near.x ? -1 : 1 };
+}
+
+function draw() {
+  queued = false;
+  const css = getComputedStyle(document.documentElement);
+  const c = {
+    line: css.getPropertyValue("--text"), surface: css.getPropertyValue("--surface"),
+    dim: css.getPropertyValue("--text-dim"), accent: css.getPropertyValue("--accent"),
+    end: css.getPropertyValue("--end"), endLine: css.getPropertyValue("--end-line"),
+  };
+  const dpr = window.devicePixelRatio || 1;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, cv.clientWidth, cv.clientHeight);
+  g.lineCap = "round"; g.lineJoin = "round";
+
+  const views = S.strokes.map(view);
+  if (S.ghost) {
+    g.strokeStyle = c.dim; g.lineWidth = 1; g.setLineDash([4, 4]);
+    for (const s of S.strokes) { trace(s.segs, s.closed); g.stroke(); }
+    g.setLineDash([]);
+  }
+  g.strokeStyle = c.line; g.lineWidth = 2.5;
+  views.forEach((v, i) => { trace(v.segs, S.strokes[i].closed); g.stroke(); });
+
+  const d = S.drag;
+  if (d) {
+    const live = views[S.strokes.indexOf(d.corner.stroke)].corners.find(k => k.joint === d.corner.joint);
+    if (live && live.cuts) {
+      g.strokeStyle = c.dim; g.lineWidth = 1; g.setLineDash([4, 4]);
+      g.beginPath(); g.moveTo(live.cuts[0].x, live.cuts[0].y); g.lineTo(live.V.x, live.V.y); g.lineTo(live.cuts[1].x, live.cuts[1].y); g.stroke();
+      g.setLineDash([]);
+      for (const p of live.cuts) { g.fillStyle = c.accent; g.fillRect(p.x - 3, p.y - 3, 6, 6); }
+    }
+    const r = d.corner.stroke.rounds[d.corner.joint];
+    const label = live && r ? controlLine(live, r.s, c, true) : { at: d.corner.V, side: 1 };
+    for (const st of d.stops) {
+      if (st === d.snap) continue;
+      if (st.kind === "tip") diamond(st.at, 5, c.surface, c.dim); else dotMark(st.at, 4, c.surface, c.dim);
+    }
+    if (d.snap) {
+      g.strokeStyle = c.accent; g.lineWidth = 2;
+      g.beginPath(); g.arc(d.snap.at.x, d.snap.at.y, 11, 0, Math.PI * 2); g.stroke();
+      if (d.snap.kind === "tip") diamond(d.snap.at, 6.5, c.end, c.accent); else dotMark(d.snap.at, 4.5, c.accent, c.surface);
+      chip(d.snap.at, d.snap.kind === "tip" ? "恢复尖角" : "回到原样", c);
+    } else {
+      chip(label.at, r ? `${Math.round(r.L1)} / ${Math.round(r.L2)} px` : "尖角", c, label.side);
+    }
+  }
+
+  const t = S.target;
+  const isLive = k => (d && d.corner.stroke === k.stroke && d.corner.joint === k.joint)
+    || (t && !d && t.stroke === k.stroke && t.joint === k.joint);
+  if (S.tool === "round") {
+    for (const v of views) for (const k of v.corners) {
+      if (isLive(k)) continue;
+      if (k.rounded) { controlLine(k, 1, c, false); dotMark(k.top, 3, c.end, c.endLine); }
+      else diamond(k.V, 5, c.end, c.endLine);
+    }
+  }
+
+  if (showRange) {
+    g.strokeStyle = c.dim; g.lineWidth = 1; g.setLineDash([3, 3]);
+    for (const k of grips(views)) { g.beginPath(); g.arc(k.at.x, k.at.y, S.radius, 0, Math.PI * 2); g.stroke(); }
+    g.setLineDash([]);
+  }
+
+  if (t && S.cursor && !d) {
+    const label = t.s ? controlLine(t, t.s, c, true) : { at: t.at, side: 1 };
+    if (t.s) dotMark(t.top, 3, c.end, c.endLine);
+    g.strokeStyle = c.accent; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(S.cursor.x, S.cursor.y); g.lineTo(t.at.x, t.at.y); g.stroke();
+    g.lineWidth = 2;
+    g.beginPath(); g.arc(t.at.x, t.at.y, 11, 0, Math.PI * 2); g.stroke();
+    if (!t.s) diamond(t.at, 6.5, c.end, c.accent);
+    chip(label.at, t.s ? "拖动这一端调整圆角" : "拖动拉出控制线", c, label.side);
+  }
+
+  if (S.tool === "poly") {
+    const last = S.pending || (S.poly && S.poly.segs[S.poly.segs.length - 1][3]);
+    if (last) {
+      if (S.pending) dotMark(last, 3, c.accent, c.surface);
+      if (S.cursor) {
+        g.strokeStyle = c.accent; g.lineWidth = 2;
+        g.beginPath(); g.moveTo(last.x, last.y); g.lineTo(S.cursor.x, S.cursor.y); g.stroke();
+      }
+    }
+  }
+}
+
+// ---- status ---------------------------------------------------------------------------------
+const $ = id => document.getElementById(id);
+const pill = $("pill"), hint = $("hint"), undoBtn = $("undo"), redoBtn = $("redo");
+
+function refresh() {
+  S.target = findTarget();
+  let label, tip, on = false;
+  if (S.tool === "poly") {
+    const n = S.poly ? S.poly.segs.length + 1 : (S.pending ? 1 : 0);
+    label = n ? `折线 · ${n} 个点` : "折线";
+    on = n > 0;
+    tip = n ? "左键继续放点，右键结束这条折线。" : "左键放点画折线，折出来的尖角可以切到圆角工具去倒圆角。";
+  } else if (S.drag) {
+    label = "拖动中"; on = true;
+    tip = "控制线拉得越长，圆角越宽越平滑；上下转动它，圆角就偏向一边。拉回角尖会吸住、恢复尖角；拉回起点会吸住、回到原样。按住 Shift 两边等长，右键或 Esc 取消。";
+  } else if (S.target) {
+    label = "已吸附"; on = true;
+    tip = S.target.s ? "按下拖动控制线的这一端，端点跟着鼠标走。" : "按下沿着想要的切线方向往外拉，拉出控制线。";
+  } else {
+    label = "圆角";
+    tip = S.touched ? "把光标移到菱形尖角或控制线的端点附近，会吸附过去。"
+      : "画板上有几条示例线。把光标移到琥珀色菱形（尖角）附近吸附，按下沿着想要的切线方向往外拉。";
+  }
+  pill.textContent = label;
+  pill.classList.toggle("on", on);
+  hint.textContent = tip;
+  undoBtn.disabled = !S.undo.length;
+  redoBtn.disabled = !S.redo.length;
+  $("sharpen").disabled = !S.strokes.some(s => Object.keys(s.rounds).length);
+  requestDraw();
+}
+
+// ---- input ----------------------------------------------------------------------------------
+function track(e) {
+  const r = cv.getBoundingClientRect();
+  S.cursor = { x: e.clientX - r.left, y: e.clientY - r.top };
+  S.shift = e.shiftKey;
+}
+
+cv.addEventListener("pointermove", e => {
+  track(e);
+  if (S.drag) moveDrag();
+  refresh();
+});
+cv.addEventListener("pointerdown", e => {
+  track(e);
+  if (e.button === 2) {
+    e.preventDefault();
+    if (S.drag) endDrag(true);
+    else if (S.tool === "poly") polyEnd();
+    return;
+  }
+  if (e.button !== 0) return;
+  if (S.tool === "poly") { polyClick(); refresh(); return; }
+  S.target = findTarget();
+  if (!S.target) return;
+  beginDrag();
+  try { cv.setPointerCapture(e.pointerId); } catch (_) { /* a pointer the browser no longer tracks */ }
+  refresh();
+});
+cv.addEventListener("pointerup", e => { if (e.button === 0 && S.drag) { track(e); endDrag(false); } });
+cv.addEventListener("pointercancel", () => endDrag(true));
+cv.addEventListener("pointerleave", () => { if (!S.drag) { S.cursor = null; refresh(); } });
+cv.addEventListener("contextmenu", e => e.preventDefault());
+
+window.addEventListener("keydown", e => {
+  if (e.key === "Shift" && S.drag) { S.shift = true; moveDrag(); refresh(); return; }
+  if (e.key === "Escape") { if (S.drag) endDrag(true); else polyEnd(); return; }
+  const mod = e.ctrlKey || e.metaKey, key = e.key.toLowerCase();
+  if (mod && key === "z" && !e.shiftKey) { e.preventDefault(); if (!S.drag) step(S.undo, S.redo); }
+  else if (mod && (key === "y" || (key === "z" && e.shiftKey))) { e.preventDefault(); if (!S.drag) step(S.redo, S.undo); }
+});
+window.addEventListener("keyup", e => { if (e.key === "Shift" && S.drag) { S.shift = false; moveDrag(); refresh(); } });
+
+function press(btn, on) { btn.setAttribute("aria-pressed", on ? "true" : "false"); }
+$("tRound").onclick = () => setTool("round");
+$("tPoly").onclick = () => setTool("poly");
+$("kappa").oninput = e => { S.kappa = e.target.value / 100; $("kappaOut").textContent = S.kappa.toFixed(2); refresh(); };
+$("radius").oninput = e => {
+  S.radius = +e.target.value; $("radiusOut").textContent = e.target.value + " px";
+  showRange = 1; clearTimeout(rangeTimer);
+  rangeTimer = setTimeout(() => { showRange = 0; requestDraw(); }, 900);
+  refresh();
+};
+$("ghostOn").onclick = () => { S.ghost = !S.ghost; press($("ghostOn"), S.ghost); refresh(); };
+undoBtn.onclick = () => step(S.undo, S.redo);
+redoBtn.onclick = () => step(S.redo, S.undo);
+$("sharpen").onclick = () => { checkpoint(); for (const s of S.strokes) s.rounds = {}; refresh(); };
+$("clear").onclick = () => {
+  if (!S.strokes.length) return;
+  checkpoint();
+  S.strokes = []; S.poly = null; S.pending = null;
+  refresh();
+};
+
+// ---- board size and the example lines ---------------------------------------------------------
+let seeded = false;
+function fit() {
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(cv.clientWidth * dpr);
+  cv.height = Math.round(cv.clientHeight * dpr);
+  // A hidden frame lays out at zero size, the examples wait for a real board.
+  if (!seeded && cv.clientWidth > 0 && cv.clientHeight > 0) { seeded = true; seed(); refresh(); }
+  requestDraw();
+}
+
+function seed() {
+  const w = cv.clientWidth, h = cv.clientHeight;
+  const P = (x, y) => ({ x: Math.round(x * w), y: Math.round(y * h) });
+  const polyline = pts => pts.slice(1).map((p, i) => line(pts[i], p));
+  const keep = (segs, closed) => S.strokes.push({ id: S.nextId++, segs, closed, rounds: {} });
+  // zig-zag: three straight corners
+  keep(polyline([P(0.06, 0.40), P(0.17, 0.14), P(0.28, 0.40), P(0.39, 0.14), P(0.50, 0.40)]), false);
+  // triangle: a closed shape, its seam is a corner too
+  const A = P(0.62, 0.12), B = P(0.92, 0.22), C = P(0.70, 0.46);
+  keep([line(A, B), line(B, C), line(C, A)], true);
+  // leaf: two arcs meeting at sharp tips, the legs are curves
+  const L0 = P(0.10, 0.70), L1 = P(0.44, 0.86);
+  keep([[L0, P(0.18, 0.52), P(0.38, 0.62), L1], [L1, P(0.34, 0.98), P(0.14, 0.90), L0]], true);
+  // hook: an arc that turns sharply into a straight line
+  const H0 = P(0.56, 0.90), H1 = P(0.70, 0.60), H2 = P(0.94, 0.80);
+  keep([[H0, P(0.54, 0.74), P(0.60, 0.62), H1], line(H1, H2)], false);
+}
+
+new ResizeObserver(fit).observe(board);
+fit();
+refresh();
+window.cornerDemo = { S, view, legsFor, point };
+</script>

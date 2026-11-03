@@ -401,6 +401,34 @@
         "tip": "Close the gap between two open endpoints — poly, curve, smooth"
       }
     },
+    "toolCurve": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "curve",
+        "tipTitle": "Curve",
+        "tip": "Click to place anchors; the line runs smoothly through them. Right click ends it, click an end to go on."
+      }
+    },
+    "toolRoundCorner": {
+      "type": "QtToolChip",
+      "width": 44,
+      "height": 44,
+      "size": {
+        "horizontal": "fixed",
+        "vertical": "fixed"
+      },
+      "props": {
+        "glyph": "round_corner",
+        "tipTitle": "Round Corner",
+        "tip": "Drag a sharp corner: the longer the line you pull out, the rounder; turn it to lean. Back to the tip: sharp again."
+      }
+    },
     "toolHCenterLine": {
       "type": "QtToolChip",
       "width": 44,
@@ -543,7 +571,9 @@
         "toolEraser",
         "toolFill",
         "toolTransfer",
-        "toolConnect"
+        "toolConnect",
+        "toolCurve",
+        "toolRoundCorner"
       ]
     },
     "mappingHeader": {

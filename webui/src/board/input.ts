@@ -181,9 +181,35 @@ export function attachBoardInput(
     emitMoveSamples(e as PointerEvent);
   };
 
+  // A second button pressed or released while another is held comes as a
+  // pointermove with `button` set (a chorded change): there is no
+  // pointerdown / pointerup for it. Reported as the press or release it is,
+  // so a right click during a left drag reaches the board, and a left button
+  // released while the right one is still down ends the drag.
+  const emitChordedButton = (e: PointerEvent) => {
+    if (typeof e.button !== "number" || e.button < 0) return;
+    const button = domButtonToQt(e.button);
+    const buttons = domButtonsToQt(e.buttons);
+    const { x, y } = localCoords(e);
+    emit({
+      t: "input",
+      view,
+      kind: buttons & button ? "press" : "release",
+      x,
+      y,
+      button,
+      buttons,
+      modifiers: domModifiersToQt(e),
+      pressure: eventPressure(e, buttons & button ? 0.5 : 0),
+      time: eventTime(e),
+    });
+  };
+
+  // The button change goes first: the moves this event carries are already
+  // reported with the new button state.
   const onPointerMove = (e: PointerEvent) => {
-    if (rawUpdateActive) return;
-    emitMoveSamples(e);
+    emitChordedButton(e);
+    if (!rawUpdateActive) emitMoveSamples(e);
   };
 
   const onPointerUpOrCancel = (e: PointerEvent) => {

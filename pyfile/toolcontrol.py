@@ -432,6 +432,34 @@ def options_for_extra_tool(tool, state=None):
                 "end_column": 2,
             }, *_refer_rect_controls(1)[0]],
         }
+    if tool == "curve":
+        # The curve draws with the pen's colour and width; the width hook is
+        # the pen's own. No colour row: a colour pick arms the Pen (C++
+        # selectColor), which would drop the curve mid-line. Snap is the pull
+        # toward the ends of curve lines (Alt suspends it per click).
+        import curve_tool
+        curve_tool.remember_width(state)
+        controls = [_slider("pen_width", "Width", "pen_width", 1, 50,
+                            int(state.get("pen_width", 5)), 0),
+                    {
+                        "name": "curve_snap",
+                        "type": "check",
+                        "title": "Snap",
+                        "hook": "curve_snap",
+                        "value": "on" if curve_tool.options_state()["snap"] else "off",
+                        "row": 1,
+                        "start_column": 0,
+                        "end_column": 2,
+                    }]
+        return {"row_spacing": 8, "column_spacing": 6, "controls": controls}
+    if tool == "round_corner":
+        # How full the rounding is: the handle length as a share of the cut
+        # (0.55 is close to a circular arc). Applies to the next drag; a
+        # rounding keeps the shape it was made with.
+        import round_corner_tool
+        return {"row_spacing": 8, "column_spacing": 6, "controls": [
+            _slider("round_shape", "Shape", "round_shape", 20, 90,
+                    int(round(round_corner_tool.options_state()["kappa"] * 100)), 0)]}
     if tool == "deform_line":
         import line_tools
         return {

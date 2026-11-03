@@ -48,10 +48,11 @@ UNIT_TAG = "automapping"
 # re-derives it. Fill is deliberately NOT here - a bucket click on a child is
 # pointless rather than destructive, and locking it trapped the user on the
 # layer their own fill had just selected.
-CHILD_FILL_LOCKS = ("pen", "eraser", "connect", "transfer")
+CHILD_FILL_LOCKS = ("pen", "eraser", "connect", "transfer", "curve", "round_corner")
 # An independent fill layer keeps the pen and eraser (remapped below) and the
-# fill tool; connect has no open endpoints to join on a layer with no strokes.
-INDEPENDENT_FILL_LOCKS = ("connect",)
+# fill tool; connect has no open endpoints to join on a layer with no strokes,
+# and the curve and round-corner tools have no strokes to draw or round there.
+INDEPENDENT_FILL_LOCKS = ("connect", "curve", "round_corner")
 
 # Document px between the samples taken along a pen stroke. Coarser skips a
 # thin region the line passed through; finer only costs repeated traces that

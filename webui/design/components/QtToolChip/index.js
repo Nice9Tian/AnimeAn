@@ -18,6 +18,13 @@ const GLYPHS = {
   connect: `<path fill="currentColor" stroke="currentColor" stroke-width=".6" stroke-linejoin="round" d="M15.8 6.9 L15.4 8.2 L14.7 9.4 L13.6 10.5 L12.4 11.5 L11 12.4 L9.6 13.3 L8.6 11.6 L7 15.8 L10.8 15.4 L9.8 13.7 L11.3 13 L12.9 12.4 L14.4 11.6 L15.8 10.5 L17.1 9.2 L17.9 7.5 Z"/>`
     + `<circle cx="6.8" cy="19.9" r="1.9" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="17.2" cy="4.7" r="1.9" fill="none" stroke="currentColor" stroke-width="1.2"/>`
     + `<circle cx="17.2" cy="4.7" r="0.85" fill="currentColor"/>`,
+  // Curve and Round Corner: chosen by the user 2026-11-02, sources in
+  // docs/plan/2026-11-02-线条与圆角工具/curve_icon.svg and round_corner_icon.svg.
+  curve: `<path ${line} d="M3.73 15.38 C5.19 10.63 6.81 8.17 8.6 8 C10.54 7.82 12.99 15.74 15 15.6 C16.82 15.47 18.54 13.14 20.15 8.61"/>`
+    + `<g fill="currentColor"><rect x="7.2" y="6.6" width="2.8" height="2.8"/><rect x="13.6" y="14.2" width="2.8" height="2.8"/></g>`
+    + `<g fill="none" stroke="currentColor" stroke-width="1.2"><rect x="1.7" y="16.7" width="2.6" height="2.6"/><rect x="19.7" y="4.7" width="2.6" height="2.6"/></g>`,
+  round_corner: `<g ${line}><path d="M7 21 L7 16 C7 11.05 11.05 7 16 7 L21 7"/><path stroke-width="1.2" d="M2.5 11.5 L11.5 2.5"/></g>`
+    + `<circle cx="2.5" cy="11.5" r="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="11.5" cy="2.5" r="1.6" fill="currentColor"/>`,
   h_center_line: `<g ${line}><path d="M2.8 12 L21 12"/><path d="M17.6 9.1 L21 12 L17.6 14.9"/>`
     + `<path stroke-width="1.2" stroke-dasharray="1.3 2.7" d="M16.8 3.2 C16.8 10.4 7.2 13.6 7.2 20.8"/></g>`,
   v_center_line: `<g ${line}><path d="M12 2.8 L12 21"/><path d="M9.1 17.6 L12 21 L14.9 17.6"/>`

@@ -14,6 +14,8 @@
 | 填充 | fill | Tools ▸ Painting；Layers 右键 | `fill.md` |
 | 变形 | transfer | Tools ▸ Painting | `transfer.md` |
 | 连接 | connect | Tools ▸ Painting | `connect.md` |
+| 曲线（草稿待拍板） | curve | Tools ▸ Painting | `curve.md` |
+| 圆角（草稿待拍板） | round_corner | Tools ▸ Painting | `round_corner.md` |
 | 斥力板 | repulsion_pad | Windows ▸ Repulsion Pad | `repulsion_pad.md` |
 | 中轴线（H / V Center Line） | center_line | Tools ▸ Mapping | `center_line.md` |
 | Mapping Area | mapping_area | Tools ▸ Mapping | `mapping_area.md` |

@@ -247,6 +247,23 @@ void PaintOpenGLWidget::stopOverlayDragMoveTimer()
     }
 }
 
+bool PaintOpenGLWidget::hoverHookWanted() const
+{
+    return (m_tool == Tool::Connect || m_tool == Tool::Transfer || !m_activePythonTool.isEmpty())
+           && editingAllowed();
+}
+
+void PaintOpenGLWidget::flushPendingHover()
+{
+    // The pointer may have left, pressed or changed tools since: only a
+    // hover that still makes sense is delivered.
+    if (!m_hasHoverPos || !hoverHookWanted()) {
+        return;
+    }
+    m_hoverHookThrottle.restart();
+    sendPythonHandleMessage(String("hover"), String(), m_hoverPos, m_pendingHoverModifiers);
+}
+
 void PaintOpenGLWidget::flushPendingOverlayDragMove()
 {
     if (m_activeOverlayDrag.isEmpty()) {
@@ -806,8 +823,11 @@ void PaintOpenGLWidget::wheelEvent(WheelEvent *event)
     // threshold in SCREEN space), so a zoom while handles are up re-asks
     // Python which handles survive at the new magnification. Connect's
     // button offsets are screen-sized too, so its handles re-place as well.
-    if ((m_tool == Tool::Arrow || m_tool == Tool::Connect)
-        && !m_editHandles.isEmpty() && m_activeHandleDrag.isEmpty()) {
+    // An armed script tool hears every zoom: what it draws for the pointer
+    // is sized in screen pixels.
+    if (m_activeHandleDrag.isEmpty()
+        && (((m_tool == Tool::Arrow || m_tool == Tool::Connect) && !m_editHandles.isEmpty())
+            || !m_activePythonTool.isEmpty())) {
         sendPythonHandleMessage(String("view"), String(), docAnchor);
     }
     event->accept();
@@ -980,6 +1000,14 @@ void PaintOpenGLWidget::leaveEvent(Event *event)
     if (m_hasHoverPos) {
         m_hasHoverPos = false;
         update();
+    }
+    // A script tool that draws something after the pointer (a preview, a
+    // snap hint) hears that the pointer is gone, so it can take that down.
+    if (m_hoverHookTimer) {
+        m_hoverHookTimer->stop();
+    }
+    if (!m_activePythonTool.isEmpty()) {
+        sendPythonHandleMessage(String("leave"), String(), PointF());
     }
     PaintBoardBase::leaveEvent(event);
 }
@@ -3471,6 +3499,9 @@ void PaintOpenGLWidget::sendOverlayActionMessage(const String &overlayId,
 void PaintOpenGLWidget::mousePressEvent(MouseEvent *event)
 {
     m_lastMouseModifiers = event->modifiers();
+    if (m_hoverHookTimer) {
+        m_hoverHookTimer->stop();   // a press ends the hover; no late one after it
+    }
     if (m_playbackActive || m_swallowNextPress) {
         // While prerendered frames are on screen a click means "stop
         // playing", not "draw into the frame you cannot currently see".
@@ -3485,6 +3516,19 @@ void PaintOpenGLWidget::mousePressEvent(MouseEvent *event)
     if (event->button() == MiddleButton) {
         m_panning = true;
         m_lastPanPos = event->position();
+        event->accept();
+        return;
+    }
+
+    // The secondary button belongs to a script tool when one is armed: C++
+    // only reports it (phase "context", with the drag in progress as the
+    // handle, if any) and what it means - ending a gesture, cancelling a drag
+    // - is the tool's business. Built-in tools keep ignoring it.
+    if (event->button() == RightButton && !m_activePythonTool.isEmpty()) {
+        if (editingAllowed()) {
+            sendPythonHandleMessage(String("context"), m_activeHandleDrag,
+                                    mapToDocument(event->position()), event->modifiers());
+        }
         event->accept();
         return;
     }
@@ -3669,14 +3713,35 @@ void PaintOpenGLWidget::mouseMoveEvent(MouseEvent *event)
         // Connect snaps on HOVER: Python needs the cursor to show which
         // vertex a click would take. Transfer reads the same phase to name
         // the pointer for the region under it (a grip, the body, the rotate
-        // ring outside a corner). Both are throttled so a fast mouse does not
-        // run the interpreter at tablet rate. A content-locked board gets no
-        // hints - presses are refused there, so advertising targets lies.
-        if ((m_tool == Tool::Connect || m_tool == Tool::Transfer) && editingAllowed()
-            && (!m_hoverHookThrottle.isValid()
-                || m_hoverHookThrottle.elapsed() >= kUpdateHookIntervalMs)) {
-            m_hoverHookThrottle.restart();
-            sendPythonHandleMessage(String("hover"), String(), m_hoverPos);
+        // ring outside a corner). Any armed script tool hears it too: what
+        // follows the pointer between clicks is its own business. All of them
+        // are throttled so a fast mouse does not run the interpreter at
+        // tablet rate, and carry the modifier keys so a held key can change
+        // what the hover offers. A content-locked board gets no hints -
+        // presses are refused there, so advertising targets lies.
+        if (hoverHookWanted()) {
+            if (!m_hoverHookThrottle.isValid()
+                || m_hoverHookThrottle.elapsed() >= kUpdateHookIntervalMs) {
+                if (m_hoverHookTimer) {
+                    m_hoverHookTimer->stop();
+                }
+                m_hoverHookThrottle.restart();
+                sendPythonHandleMessage(String("hover"), String(), m_hoverPos, event->modifiers());
+            } else {
+                // Swallowed by the throttle: the last position still arrives,
+                // at the end of the window.
+                m_pendingHoverModifiers = event->modifiers();
+                if (!m_hoverHookTimer) {
+                    m_hoverHookTimer = std::make_unique<Timer>();
+                    m_hoverHookTimer->setSingleShot(true);
+                    m_hoverHookTimer->timeout.connect([this]() { flushPendingHover(); });
+                }
+                if (!m_hoverHookTimer->isActive()) {
+                    const std::int64_t remaining =
+                        std::max<std::int64_t>(1, kUpdateHookIntervalMs - m_hoverHookThrottle.elapsed());
+                    m_hoverHookTimer->start(int(remaining));
+                }
+            }
         }
         update();
         PaintBoardBase::mouseMoveEvent(event);

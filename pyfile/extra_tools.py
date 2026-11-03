@@ -10,6 +10,26 @@ def extra_tools():
     # tool is part of, and an omitted page means "mapping".
     return [
         {
+            # Click anchors, the tool smooths between them (pyfile/curve_tool.py).
+            # Its canvas gestures are the Arrow's: clicks arrive as picks, the
+            # right button as "context", the pointer as "hover".
+            "name": "curve",
+            "title": "Curve",
+            "property": "curve_tool",
+            "handler": "curve_tool.activate",
+            "base_tool": "arrow",
+            "page": "painting",
+        },
+        {
+            # Drag a sharp corner into a rounding (pyfile/round_corner_tool.py).
+            "name": "round_corner",
+            "title": "Round Corner",
+            "property": "round_corner_tool",
+            "handler": "round_corner_tool.activate",
+            "base_tool": "arrow",
+            "page": "painting",
+        },
+        {
             "name": "h_center_line",
             "title": "H Center Line",
             "property": auto_mapping.H_PROPERTY,

@@ -13,6 +13,8 @@ state:
       fill: { type: boolean, initial: false, owner: business }
       transfer: { type: boolean, initial: false, owner: business }
       connect: { type: boolean, initial: false, owner: business }
+      curve: { type: boolean, initial: false, owner: business }
+      round_corner: { type: boolean, initial: false, owner: business }
       h_center_line: { type: boolean, initial: false, owner: business }
       v_center_line: { type: boolean, initial: false, owner: business }
       mapping_area: { type: boolean, initial: false, owner: business }
@@ -25,7 +27,7 @@ conditions:
   paintingArmed:
     type: symbol
     text: 选中的工具在 Painting 组
-    expr: tools.armed == 'arrow' or tools.armed == 'pen' or tools.armed == 'eraser' or tools.armed == 'fill' or tools.armed == 'transfer' or tools.armed == 'connect'
+    expr: tools.armed == 'arrow' or tools.armed == 'pen' or tools.armed == 'eraser' or tools.armed == 'fill' or tools.armed == 'transfer' or tools.armed == 'connect' or tools.armed == 'curve' or tools.armed == 'round_corner'
   mappingArmed:
     type: symbol
     text: 选中的工具在 Mapping 组
@@ -159,6 +161,26 @@ objects:
             name: toolSelect
             args:
               tool: "'connect'"
+  toolCurve:
+    props:
+      armed: tools.armed == 'curve' and not tools.locked.curve
+      enabled: not tools.locked.curve
+    events:
+      click:
+        - emit:
+            name: toolSelectExtra
+            args:
+              name: "'curve'"
+  toolRoundCorner:
+    props:
+      armed: tools.armed == 'round_corner' and not tools.locked.round_corner
+      enabled: not tools.locked.round_corner
+    events:
+      click:
+        - emit:
+            name: toolSelectExtra
+            args:
+              name: "'round_corner'"
   toolHCenterLine:
     props:
       armed: tools.armed == 'h_center_line' and not tools.locked.h_center_line

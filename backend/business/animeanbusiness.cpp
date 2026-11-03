@@ -1907,7 +1907,12 @@ void AnimeanBusiness::applyLockedTools(const String &viewName, const StringList 
 void AnimeanBusiness::refreshToolLockState()
 {
     toolLockStateChanged();
-    if (isToolLocked(currentTool())) {
+    // A script tool rides on a base tool (often the Arrow, which never
+    // locks), so its own name has to be checked too: a lock that only greys
+    // the button while the tool stays armed would still let it edit.
+    const bool extraLocked = !m_activeExtraTool.isEmpty()
+        && m_lockedToolsByView.value(m_activeViewName).contains(m_activeExtraTool.toLower());
+    if (isToolLocked(currentTool()) || extraLocked) {
         applyTool(int(Tool::Arrow), true);
     }
 }
@@ -1955,6 +1960,10 @@ void AnimeanBusiness::selectTool(int tool)
 
 void AnimeanBusiness::selectExtraTool(const AnimeExtraToolDefinition &tool)
 {
+    if (m_lockedToolsByView.value(m_activeViewName).contains(tool.name.toLower())) {
+        toolChanged(currentTool(), m_activeExtraTool);
+        return;
+    }
     static const Hash<String, Tool> baseTools = {
         {String("fill"), Tool::Fill},
         {String("arrow"), Tool::Arrow},
