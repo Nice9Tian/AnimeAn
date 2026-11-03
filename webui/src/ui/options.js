@@ -1,6 +1,8 @@
 // The tool options panel: builds the grid Python describes, the same control
 // set as childrenpanel/tooloptpanel.cpp. onOption receives
-// { hook, name, type, value, row, startColumn, endColumn }.
+// { hook, name, type, value, row, startColumn, endColumn }. A colour swatch
+// opens no dialog of its own: onDialog asks Python for one (dialogs.py), and the
+// colour comes back as that control's option.
 import { label as labelled } from "../i18n/index.js";
 import { colorButtonColors, colorDarker, colorLighter, colorLightness, createPalette, parseColor, toHexArgb, toHexRgb } from "./palette.js";
 export { colorButtonColors, colorButtonColors as colorButtonStyle, colorDarker, colorDarker as darker, colorLighter, colorLighter as lighter, colorLightness, colorLightness as lightness };
@@ -130,66 +132,27 @@ function button(control, send) {
   return b;
 }
 
-function openColorDialog(initial, onAccept) {
-  const shade = div("qdialog-shade");
-  const dialog = div("qdialog newcolor-dialog");
-  const inner = createPalette(() => {}, { pickersOnly: true });
-  const row = div("qdialog-buttons");
-  Object.assign(row.style, { display: "flex", justifyContent: "flex-end", gap: "6px" });
-  const ok = document.createElement("button");
-  ok.type = "button";
-  ok.className = "qbutton qdefault";
-  labelled(ok, "OK");
-  const cancel = document.createElement("button");
-  cancel.type = "button";
-  cancel.className = "qbutton";
-  labelled(cancel, "Cancel");
-  const close = () => shade.remove();
-  const accept = () => {
-    const chosen = { ...inner.color() };
-    close();
-    onAccept(chosen);
-  };
-  ok.addEventListener("click", accept);
-  cancel.addEventListener("click", close);
-  shade.addEventListener("pointerdown", (e) => { if (e.target === shade) close(); });
-  dialog.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); accept(); }
-    if (e.key === "Escape") { e.preventDefault(); close(); }
-  });
-  row.append(ok, cancel);
-  dialog.append(inner.el, row);
-  shade.append(dialog);
-  document.body.append(shade);
-  inner.update({ value: toHexArgb(initial), swatches: [] });
-}
-
-function color(control, send) {
+function color(control, ask) {
   const wrap = div("opt-color");
   if (control.title) wrap.append(labelled(div("opt-title-inline"), control.title));
-  let current = parseColor(control.value);
+  const current = parseColor(control.value);
   const swatch = document.createElement("button");
   swatch.type = "button";
   swatch.className = "opt-swatch";
-  const paintSwatch = (c) => {
-    const rgb = toHexRgb(c);
-    swatch.style.background = rgb;
-    swatch.style.backgroundColor = rgb;
-    swatch.title = toHexArgb(c);
-  };
-  paintSwatch(current);
-  swatch.addEventListener("click", () => {
-    openColorDialog(current, (chosen) => {
-      current = chosen;
-      paintSwatch(current);
-      send("color", toHexArgb(current));
-    });
-  });
+  const rgb = toHexRgb(current);
+  swatch.style.background = rgb;
+  swatch.style.backgroundColor = rgb;
+  swatch.title = toHexArgb(current);
+  swatch.addEventListener("click", () => ask(toHexArgb(current)));
   wrap.append(swatch);
   return wrap;
 }
 
-export function createToolOptions(root, { onOption, onNewColor, onSubWindow, onBeforeBuild = undefined, onAfterBuild = undefined }) {
+/**
+ * @param {any} root
+ * @param {{ onOption: Function, onDialog?: Function, onSubWindow: Function, onBeforeBuild?: Function, onAfterBuild?: Function }} handlers
+ */
+export function createToolOptions(root, { onOption, onDialog, onSubWindow, onBeforeBuild = undefined, onAfterBuild = undefined }) {
   const grid = div("opt-grid");
   root.append(grid);
   let visibility = [];
@@ -225,18 +188,24 @@ export function createToolOptions(root, { onOption, onNewColor, onSubWindow, onB
         if (control.name) { values.set(control.name, String(value)); applyVisibility(); }
         onOption({ hook: control.hook ?? control.name, name: control.name, type, value, row, startColumn: start, endColumn: end });
       };
+      const askColor = (value) => onDialog?.({
+        kind: "color", hook: control.hook ?? control.name, name: control.name, title: control.title, value,
+        row, startColumn: start, endColumn: end,
+      });
+      const box = (value) => onOption({ hook: "palette_box", name: control.name, type: "palette", value, row, startColumn: start, endColumn: end });
       let el = null;
       switch (control.type) {
         case "button": el = button(control, send); break;
         case "list": el = list(control, send); break;
         case "slider": el = slider(control, send); break;
         case "check": case "checkbox": el = check(control, send); break;
-        case "color": el = color(control, send); break;
+        case "color": el = color(control, askColor); break;
         case "palette": {
+          // The + asks palette_box for New Color, starting on the colour shown.
           const palette = createPalette((kind, value) => {
             if (kind === "color") send("palette", value);
-            else if (kind === "box") onOption({ hook: "palette_box", name: control.name, type: "palette", value, row, startColumn: start, endColumn: end });
-            else if (kind === "newColor") onNewColor(palette);
+            else if (kind === "box") box(value);
+            else if (kind === "newColor") box(`new:${toHexArgb(value)}`);
           });
           el = palette.el;
           queueMicrotask(() => palette.update(control));

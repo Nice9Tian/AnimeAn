@@ -69,7 +69,6 @@ private:
     void initWindowInfos();
     void loadTimelineSettings();
     void saveTimelineSettings() const;
-    void captureScriptMenuNames();
     void loadProtectedPropertiesForChild();
     void surfaceTextureView();
     void surfaceMainView();
@@ -100,7 +99,27 @@ private:
     JsonObject handleFileTextureCall(const JsonObject &params);
     bool triggerMenuById(const String &id, const JsonObject &params, String *errorOut);
     void openScriptSettings(const String &name, const String &title);
-    void emitUiEvent(const String &name, const JsonObject &args = JsonObject());
+    // replay: kept as the `event` state a page that connects later is sent
+    // first. A transient one (board.effect) passes false.
+    void emitUiEvent(const String &name, const JsonObject &args = JsonObject(), bool replay = true);
+
+    // Hands one hook event to python_hooks.dispatch. Returns 1 when a hook set
+    // message["handled"], 0 when none did, -1 when one of them raised (the text
+    // in *errorOut).
+    int dispatchPythonEvent(const JsonObject &event, String *errorOut = nullptr);
+
+    // A menu item Python declared with its own id ("file.open", "windows.timeline"):
+    // which bar and menu declared it, and the name its "menu" event carries.
+    struct MenuRoute {
+        String host;
+        String menu;
+        String name;
+    };
+    bool findMenuRoute(const String &id, MenuRoute *out) const;
+    bool forwardMenuToPython(const MenuRoute &route, const JsonObject &params, String *errorOut);
+    // The open dialogs are Python's (dialogs.py); these keep the broadcast copy.
+    void setDialogsFromPython(const String &json);
+    void dropDialog(const String &id);
 
     void handleFrameSink(const String &viewName, const BoardFrame &frame);
     void handleImageSink(const String &view, const String &key, const AnimeCore::Image &rgba);
@@ -124,10 +143,23 @@ private:
     JsonObject buildThemeState() const;
     JsonArray buildMenusState() const;
     JsonArray buildTextureMenusState() const;
+    JsonObject buildTextureSettingsState() const;
     JsonArray buildTextureViewButtonsState() const;
+    // One bar being built: the menus Python declares (python_hooks.menus_json,
+    // fetched once per host, in Python's order) and the routes the bar's items
+    // with their own ids leave behind.
+    struct MenuBuild {
+        Hash<String, JsonArray> menus;
+        Hash<String, MenuRoute> routes;
+    };
+    JsonArray buildMenuBar(const String &host) const;
+    JsonArray pythonMenus(const String &host, MenuBuild *build) const;
+    JsonObject pythonMenu(const String &host, const String &name, MenuBuild *build) const;
     JsonArray buildScriptMenuItems(const String &host,
                                     const String &menuName,
-                                    const JsonArray &items) const;
+                                    const JsonArray &items,
+                                    MenuBuild *build,
+                                    int depth) const;
     JsonObject buildToolsState() const;
     JsonObject buildToolOptionsState() const;
     JsonObject buildDrawColorState() const;
@@ -163,14 +195,23 @@ private:
     TextureViewSlot m_textureViewCentral;
     TextureViewSlot m_textureViewControl;
 
-    Vector<std::pair<String, String>> m_mainScriptMenus;
-    Vector<std::pair<String, String>> m_childScriptMenus;
+    // Learnt while the bars are built, per bar and replaced when that bar is
+    // built again: a trigger of one of these ids goes back to the Python menu
+    // that declared it (the main bar's first when both bars have the id).
+    mutable Hash<String, Hash<String, MenuRoute>> m_menuRoutes;
 
     PointF m_forcePadValue{0.0, 0.0};
     Hash<String, PointF> m_padValues;
 
     JsonObject m_lastEvent;
     StringList m_pythonDebugLog;
+
+    // The "dialogs" state. A dialog dropped because its window closed or failed
+    // stays dropped: its id is remembered, so a stale stack cannot bring it back.
+    JsonArray m_dialogs;
+    Set<String> m_droppedDialogIds;
+    // States Python broadcasts for the page (ui.broadcast), keyed "py/<name>".
+    Hash<String, JsonValue> m_pythonStates;
 
     Hash<String, CursorState> m_cursors;
     Hash<String, Image> m_cachedImages;

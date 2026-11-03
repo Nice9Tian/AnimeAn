@@ -76,7 +76,11 @@ function sourceStrings() {
   for (const name of readdirSync(join(ROOT, "pyfile"))) {
     if (!name.endsWith(".py") || name === "three_vendor.py" || name === "ui_language.py") continue;
     const text = read(`pyfile/${name}`);
-    for (const pattern of [/history_commit\(\s*"([^"]+)"/g, /"title":\s*"([^"]+)"/g, /_slider\("\w+",\s*"([^"]+)"/g]) {
+    const patterns = [/history_commit\(\s*"([^"]+)"/g, /"title":\s*"([^"]+)"/g, /_slider\("\w+",\s*"([^"]+)"/g];
+    // The menu bar's own menus: _item("id", "Title") and _submenu("id", "Title"),
+    // and the (name, "Title") pairs of the Theme and Background radios.
+    if (name === "app_menus.py") patterns.push(/\b_(?:item|submenu)\(f?"[^"]*",\s*"([^"]+)"/g, /\(\s*"[a-z]+",\s*"([A-Z][^"]*)"\s*\)/g);
+    for (const pattern of patterns) {
       for (const found of scan(text, pattern)) out.add(found);
     }
   }

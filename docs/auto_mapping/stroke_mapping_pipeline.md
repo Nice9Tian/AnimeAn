@@ -71,7 +71,7 @@ flowchart TD
 
 ### 三条路线逐段对照
 
-| 步骤 | `polyline` | `spline`（默认） | `bezier` |
+| 步骤 | `polyline` | `spline` | `bezier`（默认） |
 |---|---|---|---|
 | 入口 | `_stroke_polylines` | `_stroke_polylines` | `_commands_to_subpaths` |
 | 预重采样 | `_densify(4.0)` | `_densify(4.0)` | **无** |
@@ -426,7 +426,7 @@ return AnimeVectorLogic::makeStrokeFromPath(objectToPath(commands),
 |---|---|---|---|
 | `POLY_STEP` | `4.0` | 84 | C++ 展平步长 + `_densify` 步长 + 折叠探针密度 |
 | `CURVE_MODES` | `("polyline","spline","bezier")` | 102 | 可选模式 |
-| `_CURVE_MODE` | `{"value": "spline"}` | 103 | **默认 spline** |
+| `_CURVE_MODE` | `{"value": DEFAULT_CURVE_MODE}`，`DEFAULT_CURVE_MODE = "bezier"` | 103 | **默认 bezier**（2026-08-17 `fcb45b2` 起，之前是 spline） |
 | `_CURVE_TOL` | `0.4` px | 106 | **主拟合残差上限**，spline 与 bezier 共用 |
 | `_SPLINE_MAX_DEPTH` | `8` | 107 | 折线细分深度上限 |
 | `_BEZIER_MAX_DEPTH` | `6` | 108 | 源三次曲线二分深度上限 |

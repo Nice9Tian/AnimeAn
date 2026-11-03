@@ -10,6 +10,10 @@ BOOTSTRAP_MODULES = ("animean_python", "animemodel")
 PYTHON_FILE_MODULES = (
     "toolcontrol",
     "python_hooks",
+    # Right after python_hooks: File, Edit, Theme and Windows are its menus, and
+    # a module that fails to import further down must not take them (and with
+    # them Windows > Python Debug, where the error is) off the bar.
+    "app_menus",
     # Imported early: it owns the per-tool drawing colour, and a tool armed
     # before it loads would record nothing.
     "tool_colors",

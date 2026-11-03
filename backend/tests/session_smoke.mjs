@@ -260,6 +260,8 @@ try {
         "viewport/child",
         "freeze",
         "pad",
+        "dialogs",
+        "textureSettings",
     ];
 
     await waitForState(
@@ -288,11 +290,13 @@ try {
         );
     }
 
-    // 2. Check menus are strictly ["File", "Edit", "Auto Mapping", "Draw", "Theme", "Windows"] in exact order
+    // 2. Check the menu bar in exact order. Menus registered while initalize.py
+    // runs count too (Arrow, user-workflow.md step 3); Settings is Python's and
+    // sits after Windows.
     const menus = stateMap.get("menus");
     assert(Array.isArray(menus), "menus state should be an array");
     const menuTitles = menus.map((m) => String(m.text ?? "").replace(/&/g, ""));
-    const expectedMenus = ["File", "Edit", "Auto Mapping", "Draw", "Theme", "Windows"];
+    const expectedMenus = ["File", "Edit", "Auto Mapping", "Draw", "Arrow", "Theme", "Windows", "Settings"];
     assert.deepEqual(
         menuTitles,
         expectedMenus,
@@ -592,22 +596,137 @@ try {
         `viewport/main.h.value === ${nextHValue}`
     );
 
-    // 9. Two consecutive menu.trigger calls (file.open, file.saveAs) -> receive two event messages
-    const eventsBeforeCount = receivedEvents.length;
-    const openPromise = callBackend("menu.trigger", { id: "file.open" });
-    const saveAsPromise = callBackend("menu.trigger", { id: "file.saveAs" });
-    const [openReply, saveAsReply] = await Promise.all([openPromise, saveAsPromise]);
-    assert.equal(openReply.ok, true, `menu.trigger file.open failed: ${openReply.error}`);
-    assert.equal(saveAsReply.ok, true, `menu.trigger file.saveAs failed: ${saveAsReply.error}`);
+    // 9. Dialogs are Python's (dialogs.py). Startup asks the canvas size, File
+    // items put pickers up, answers go back through dialog.result, and C++
+    // drops a dialog whose window closed or whose answer Python could not take.
+    const openDialogs = () => stateMap.get("dialogs") ?? [];
+    const waitDialogs = (predicate, desc) => waitForState((map) => predicate(map.get("dialogs") ?? []), desc);
+    const runPython = async (command) => {
+        const reply = await callBackend("python.run", { command });
+        assert.equal(reply.ok, true, `python.run failed: ${reply.error}`);
+        return reply;
+    };
+    await waitDialogs((list) => list.some((d) => d.kind === "canvasSize"), "the canvas size asked at startup");
+    const startupDialog = openDialogs().find((d) => d.kind === "canvasSize");
+    assert.equal(startupDialog.modal, true, "the startup canvas size is modal");
+    assert.equal(startupDialog.title, "New Project");
+    assert.equal(startupDialog.width, stateMap.get("window").canvasWidth, "it asks on the current canvas");
+    const cancelReply = await callBackend("dialog.result", { id: startupDialog.id, action: "cancel" });
+    assert.equal(cancelReply.ok, true, `dialog.result cancel failed: ${cancelReply.error}`);
+    await waitDialogs((list) => list.length === 0, "Cancel closes the startup canvas size");
 
-    await waitForState(
-        () => receivedEvents.length >= eventsBeforeCount + 2,
-        "two event messages from consecutive menu.trigger calls"
-    );
-    const twoEvents = receivedEvents.slice(eventsBeforeCount, eventsBeforeCount + 2);
-    assert.equal(twoEvents.length, 2, "Expected two distinct event state messages");
-    assert.equal(twoEvents[0].name, "dialog.openProject");
-    assert.equal(twoEvents[1].name, "dialog.saveProjectAs");
+    const openReply = await callBackend("menu.trigger", { id: "file.open" });
+    assert.equal(openReply.ok, true, `menu.trigger file.open failed: ${openReply.error}`);
+    await waitDialogs((list) => list.some((d) => d.kind === "file" && d.title === "Open Project"), "File > Open... puts a picker up");
+    const openDialog = openDialogs().find((d) => d.title === "Open Project");
+    assert.equal(openDialog.mode, "open");
+    assert.deepEqual(openDialog.filters, [{ name: "AnimeAn Projects", extensions: ["anproj"] }]);
+    await callBackend("dialog.result", { id: openDialog.id, action: "cancel", value: [] });
+    await waitDialogs((list) => list.length === 0, "a cancelled picker closes");
+
+    // A window closed from Windows: C++ drops it at once, and Python hears of it.
+    await runPython("import dialogs; dialogs.message('Note', 'Closed from Windows')");
+    await waitDialogs((list) => list.length === 1 && list[0].kind === "message", "a message dialog");
+    const closedId = openDialogs()[0].id;
+    await callBackend("dialog.result", { id: closedId, action: "closed" });
+    await waitDialogs((list) => list.length === 0, "closing the window drops the dialog");
+    const stackAfterClose = await runPython("import dialogs; print(len(dialogs.stack()))");
+    assert.equal(String(stackAfterClose.result?.output ?? "").trim(), "0", "Python dropped it too");
+
+    // An answer Python cannot take: C++ drops the dialog, and a stale stack
+    // sent later cannot bring it back.
+    const saveAsReply = await callBackend("menu.trigger", { id: "file.saveAs" });
+    assert.equal(saveAsReply.ok, true, `menu.trigger file.saveAs failed: ${saveAsReply.error}`);
+    await waitDialogs((list) => list.some((d) => d.title === "Save Project As"), "File > Save As... puts a picker up");
+    const saveAsDialog = openDialogs().find((d) => d.title === "Save Project As");
+    await runPython("import dialogs; dialogs._kept_deliver = dialogs._deliver; dialogs._deliver = lambda *a: (_ for _ in ()).throw(RuntimeError('broken answer'))");
+    const brokenReply = await callBackend("dialog.result", { id: saveAsDialog.id, action: "accept", value: ["C:/x.anproj"] });
+    assert.equal(brokenReply.ok, false, "a failing answer is reported");
+    assert.match(String(brokenReply.error), /broken answer/);
+    await waitDialogs((list) => list.length === 0, "a failing answer still drops the dialog");
+    await runPython("import dialogs; dialogs._publish()");
+    await runPython("import dialogs; dialogs._deliver = dialogs._kept_deliver; dialogs._STACK.clear(); dialogs._publish()");
+    assert.equal(openDialogs().length, 0, "the stale stack did not bring the dropped dialog back");
+
+    // A script's settings window is opened by Python from the menu item's name.
+    const settingsReply = await callBackend("menu.trigger", { id: "settings:draw_settings", title: "Draw Setting" });
+    assert.equal(settingsReply.ok, true, `menu.trigger settings: failed: ${settingsReply.error}`);
+    await waitDialogs((list) => list.some((d) => d.kind === "settings" && d.name === "draw_settings"), "the Draw settings window");
+    const settingsDialog = openDialogs().find((d) => d.kind === "settings");
+    assert(Array.isArray(settingsDialog.layout?.controls) && settingsDialog.layout.controls.length > 0, "it carries its layout");
+    await callBackend("dialog.result", { id: settingsDialog.id, action: "cancel" });
+    await waitDialogs((list) => list.length === 0, "the settings window closes");
+
+    // A colour control asks Python for the colour dialog; the answer reaches the pen.
+    const colorRequest = await callBackend("dialog.request", { kind: "color", hook: "color", name: "palette", value: "#ff336699" });
+    assert.equal(colorRequest.ok, true, `dialog.request color failed: ${colorRequest.error}`);
+    await waitDialogs((list) => list.some((d) => d.kind === "color" && d.value === "#ff336699"), "the colour dialog on the control's colour");
+    const colorDialog = openDialogs().find((d) => d.kind === "color");
+    await callBackend("dialog.result", { id: colorDialog.id, action: "accept", value: "#ff123456" });
+    await waitForState((map) => map.get("drawColor")?.rgba === "#ff123456", "the chosen colour reaches the pen");
+    // Both states are marked in the same step and the backend sends them in no set order.
+    await waitDialogs((list) => list.length === 0, "the colour dialog closed");
+
+    // Settings is a Python menu at the end of the bar; a choice is broadcast for the page.
+    const menusNow = stateMap.get("menus") ?? [];
+    const settingsMenu = menusNow.at(-1);
+    assert.equal(settingsMenu?.text, "Settings", "Settings is the last menu");
+    assert.equal(menusNow.at(-2)?.text, "Windows", "right after Windows");
+    assert.deepEqual(settingsMenu.children.map((c) => c.text), ["Board Renderer", "Language"]);
+    const languageReply = await callBackend("menu.trigger", { id: "script:main:Settings:language.ja", checked: true });
+    assert.equal(languageReply.ok, true, `Settings > Language failed: ${languageReply.error}`);
+    await waitForState((map) => map.get("py/preferences")?.language === "ja", "the language choice is broadcast");
+    // What no Python menu declares is reported, not silently answered.
+    const unknownFile = await callBackend("menu.trigger", { id: "file.nothing" });
+    assert.equal(unknownFile.ok, false, "an id no menu declares is reported");
+    assert.match(String(unknownFile.error), /Unknown menu id: file\.nothing/);
+
+    // The bar's own menus are Python's too (app_menus.py), with the ids they always had;
+    // a choice goes back to Python, which calls a generic method.
+    const itemIds = (items) => (items ?? []).flatMap((item) => [item.id, ...itemIds(item.children)]);
+    const findItem = (items, id) => {
+        for (const item of items ?? []) {
+            if (item.id === id) return item;
+            const inner = findItem(item.children, id);
+            if (inner) return inner;
+        }
+        return null;
+    };
+    assert.deepEqual([menusNow[0]?.id, menusNow[1]?.id, menusNow.at(-3)?.id, menusNow.at(-2)?.id], ["file", "edit", "theme", "windows"]);
+    const fileIds = itemIds(menusNow[0]?.children);
+    for (const id of ["file.new", "file.open", "file.saveAs", "file.import.csp", "file.texture.exportImage", "child.setting.changeableTimeline", "child.setting.background.black"]) {
+        assert(fileIds.includes(id), `File keeps ${id}`);
+    }
+    assert.equal(findItem(menusNow, "file.save")?.shortcut, "Ctrl+S", "shortcuts are kept");
+    assert.deepEqual((stateMap.get("textureMenus") ?? []).map((m) => m.id).slice(0, 2), ["file.texture", "child.setting"]);
+    const themeBefore = stateMap.get("theme")?.mode;
+    const themeOther = themeBefore === "dark" ? "light" : "dark";
+    const themeReply = await callBackend("menu.trigger", { id: `theme.${themeOther}`, checked: true });
+    assert.equal(themeReply.ok, true, `Theme > ${themeOther} failed: ${themeReply.error}`);
+    await waitForState((map) => map.get("theme")?.mode === themeOther && findItem(map.get("menus"), `theme.${themeOther}`)?.checked === true, "Theme switches and its radio follows");
+    await callBackend("menu.trigger", { id: `theme.${themeBefore}`, checked: true });
+    await waitForState((map) => map.get("theme")?.mode === themeBefore, "and back");
+    const debugBefore = Boolean(stateMap.get("windows")?.python_debug?.visible);
+    await callBackend("menu.trigger", { id: "windows.python_debug", checked: !debugBefore });
+    await waitForState((map) => map.get("windows")?.python_debug?.visible === !debugBefore && findItem(map.get("menus"), "windows.python_debug")?.checked === !debugBefore, "Windows ticks a window");
+    await callBackend("windows.setVisible", { name: "python_debug" });
+    await waitForState((map) => map.get("windows")?.python_debug?.visible === debugBefore, "windows.setVisible without visible toggles it back");
+    assert.equal((await callBackend("windows.setVisible", { name: "nothing" })).ok, false, "an unknown window is reported");
+    const timelineBefore = Boolean(stateMap.get("windows")?.timeline?.visible);
+    await callBackend("windows.setVisible", { name: "timeline", visible: !timelineBefore });
+    await waitForState((map) => map.get("windows")?.timeline?.visible === !timelineBefore && map.get("timeline")?.visible === !timelineBefore
+        && findItem(map.get("menus"), "windows.timeline")?.checked === !timelineBefore, "windows.setVisible shows or hides the Timeline");
+    await callBackend("menu.trigger", { id: "windows.timeline" });
+    await waitForState((map) => map.get("windows")?.timeline?.visible === timelineBefore, "Windows > Timeline with no checked toggles it back");
+    assert.deepEqual(findItem(menusNow, "edit.redo")?.extraShortcuts, ["Ctrl+Shift+Z"], "Redo's second key comes with the menu");
+    await callBackend("menu.trigger", { id: "child.setting.background.black", checked: true });
+    await waitForState((map) => map.get("textureSettings")?.background === "black" && findItem(map.get("textureMenus"), "child.setting.background.black")?.checked === true, "Setting > Background on the texture board");
+    await callBackend("menu.trigger", { id: "child.setting.background.white", checked: true });
+    await waitForState((map) => map.get("textureSettings")?.background === "white", "and back to white");
+    const unknownKind = await callBackend("dialog.request", { kind: "nothing" });
+    assert.equal(unknownKind.ok, false, "a request for a kind Python does not open is reported");
+    assert.match(String(unknownKind.error), /Nothing opens a dialog for 'nothing'/);
+    assert.equal(openDialogs().length, 0, "and nothing opened");
 
     // 10. Verify project.saveAs, project.open, file.texture, file.import with explicit paths
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "animean-smoke-"));

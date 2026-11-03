@@ -11,10 +11,12 @@
 - 一个主画板（中央区 Drawing 页）和一块纹理板；纹理板是无限画布，可在中央 Texture 页、子控件框、停车位三处之间搬迁，任一时刻只在一处。现有。机制（三级）：`mechanism/windows_theme.md`。
 - 视口滚轮缩放、中键平移、滚动条联动，两块板都有。现有。机制（三级）：`mechanism/modules.md`。
 - 面板都是带页签的父窗，Windows 菜单开关；浮动的无边框窗口可拉四边改大小。现有。〔裁 2026-11-02〕Tauri 版里浮动面板是独立窗口，有三处不跨窗口：纹理子控件框留在主窗口内浮动，拖回主窗口不自动停靠（用标题栏按钮或双击恢复），Assets 拖到 Layers 不跨窗口。原因和解法见 `long_time_work/2026-11-02-Tauri迁移收尾.md`。机制（三级）：`mechanism/windows_theme.md`。
+- 对话框是独立窗口，弹出时在 AnimeAn 所有窗口之上（不盖住别的软件）；对话框开着时，其它 AnimeAn 窗口不能操作，点它们会把对话框提到最前。现有（2026-11-03 拍板，计划见 `plan/2026-11-03-对话框窗口.md`）。机制（三级）：`mechanism/windows_theme.md`。
 - Tools 面板把 Painting、Mapping 两组工具放在一起，每组可以单独折叠，折叠状态下次启动沿用；工具换到折叠的组时自动展开，收起的组里有选中的工具时标题亮蓝点。现有。机制（三级）：`mechanism/windows_theme.md`。
 - Tools 面板放不下全部工具时可以滚动：底部出现向下箭头，滚动后顶部出现向上箭头，滚轮也能滚；放得下时不显示箭头。现有。机制（三级）：`mechanism/windows_theme.md`。
 - 鼠标停在工具按钮上显示工具名和一句说明。现有。机制（三级）：`mechanism/windows_theme.md`。
 - 时间轴帧条放不下时出现和其它面板一样的滚动条，手柄可以拖；手动滚开后，只有当前帧变了才跟回去，按住手柄时不跟。收起帧条时高度让给画板，展开时回到收起前的高度；同一停靠区还开着别的面板时不缩。现有。
+- 面板停靠、浮出、叠页签、并排、开关时，其余面板和画板滑到新位置，不是一下跳过去；拖窗口边、拖分隔条改大小时不滑，跟手。打开软件后第一次操作之前不滑；系统设了减少动态效果时不滑。现有。机制（三级）：`mechanism/windows_theme.md`。
 - Tools 面板拖宽拖窄时，工具按钮大小不变，按整列增减：一列、两列、三列……N 列；停靠时面板宽度吸附到整列，不留半列空白。现有。机制（三级）：`mechanism/windows_theme.md`。
 - 深 / 浅主题，下次启动沿用；画纸恒白；画布外的填充色跟着画纸深浅走，白纸周围不用接近全黑的颜色。现有。
 - 画板渲染器在 Settings ▸ Board Renderer 里切换 WebGL 或 Canvas 2D，切换时画面不丢，下次启动沿用；缺省 WebGL，显卡不支持时用 Canvas 2D。现有。机制（三级）：`mechanism/backend_protocol.md`。
@@ -34,6 +36,7 @@
 - **Connect**：两点之间生成连接笔画，Auto Snap 吸端点拐角顶点，PolyMode / CurveMode / SmoothMode，接受 / 删除按钮或 Auto Accept。现有。机制（三级）：`mechanism/painting_tools.md`。
 - **Curve**（草稿待拍板）：点击放锚点，锚点之间自动连成平滑曲线；右键在最后一个锚点结束；吸附结束了的曲线两端接着画，画线中吸到别的曲线端点接成一条、吸到自己起点闭合；每个锚点一条历史记录。现有（issue #100）。机制（三级）：`mechanism/painting_tools.md`。
 - **Round Corner**（草稿待拍板）：吸附线上的尖角，按住拉出一条控制线，线长决定圆角多平滑，线的角度决定偏向哪边；拉回角尖恢复尖角，拉回起点回到原样；倒过的圆角能再调。现有（issue #100）。机制（三级）：`mechanism/painting_tools.md`。
+- 结果落下时的短动画：Fill 的颜色从点下的位置铺开到区域边缘；Connect 的新线从第一点画向第二点；画完 H / V 轴线或 Free Out Line 后，Auto Mapping 的新结果淡入。拖动时的实时重算不播。动画期间一按下画板或滚轮就立刻结束；系统设了减少动态效果时不播。现有。机制（三级）：`mechanism/painting_tools.md`。
 - **Repulsion Pad**：手柄把当前帧重叠或贴近的线推开，实时预览，拓扑不变，锁定层不动。现有。机制（三级）：`mechanism/painting_tools.md`。
 - 图层决定工具：Auto-Mapping 单元里的层展开 Mapping 组；跟随线稿的填充层锁 Pen / Eraser / Connect / Transfer / Curve / Round Corner，只留 Arrow 和 Fill；独立填充层锁 Connect / Curve / Round Corner（Curve、Round Corner 两项草稿待拍板）。现有。机制（三级）：`mechanism/fill_layers.md`。
 - 图层锁定：模型里有锁，现在只有 Transfer、Curve、Round Corner 尊重它（后两个草稿待拍板）、面板没有开关。规划：Layers 面板加锁定开关，锁定的层所有工具都不改。

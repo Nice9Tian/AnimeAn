@@ -36,6 +36,7 @@ not trustworthy across a history restore.
 import math
 
 import bezier
+import board_effects
 import python_hooks
 import viewscale
 
@@ -426,6 +427,13 @@ def _pick_style(scene, frame, pick):
 
 def _build_stroke(scene, frame, a_pick, b_pick):
     """The connection as a stroke object, matching the bridged line's look."""
+    commands, flat, color, width = _stroke_parts(scene, frame, a_pick, b_pick)
+    return _animean().vectorlogic.make_stroke_object_from_path(
+        commands, flat, color, width, 0)
+
+
+def _stroke_parts(scene, frame, a_pick, b_pick):
+    """(path commands, flattened points, color, width) of the connection."""
     a = a_pick["point"]
     b = b_pick["point"]
     style = _pick_style(scene, frame, a_pick) or _pick_style(scene, frame, b_pick)
@@ -451,8 +459,7 @@ def _build_stroke(scene, frame, a_pick, b_pick):
                      "to": {"x": cub[3][0], "y": cub[3][1]}}]
         samples = max(2, min(64, int(math.ceil(bezier.hull_length(cub) / POLY_STEP))))
         flat = [bezier.eval_cubic(cub, k / samples) for k in range(samples + 1)]
-    return _animean().vectorlogic.make_stroke_object_from_path(
-        commands, flat, color, width, 0)
+    return commands, flat, color, width
 
 
 # --- handle display ----------------------------------------------------------
@@ -614,8 +621,13 @@ def _create_connection(view, session, scene, frame, layer, second):
     _finalize(view, session)
     try:
         image = scene.image_at(frame, layer, True)
-        stroke = _build_stroke(scene, frame, first, second)
+        commands, flat, color, width = _stroke_parts(scene, frame, first, second)
+        stroke = _animean().vectorlogic.make_stroke_object_from_path(
+            commands, flat, color, width, 0)
         index = len(scene.cell_to_dict(layer, frame, True, POLY_STEP)["image"]["strokes"])
+        # The new line draws itself from the first point to the second.
+        # Asked before it is added, so the page still shows the board without it.
+        board_effects.stroke_draw(view, commands, width)
         image.add_stroke_object(stroke)
         session.pop("snap_cache", None)
         _commit("Connect Lines", view)
