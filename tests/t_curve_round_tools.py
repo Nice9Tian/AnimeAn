@@ -476,4 +476,23 @@ rnd("hover", 200, 500)
 assert rc._SESSIONS["main"]["target"] is None
 print("10) other tools' lines are left alone")
 
+# 11) A pen stroke's legs are several smoothly joined segments: the rounding
+#     cuts across them, not only into the one segment at the corner, and the
+#     result stays G1 everywhere and passes through the held end exactly.
+def chopped(a, b, parts):
+    pts = [(a[0] + (b[0] - a[0]) * k / parts, a[1] + (b[1] - a[1]) * k / parts) for k in range(parts + 1)]
+    return [bezier.line_cubic(p, q) for p, q in zip(pts, pts[1:])]
+pen_like = chopped((0, 300), (150, 100), 6) + chopped((150, 100), (300, 300), 6)   # legs of 6 short segments
+view = rc.rounded(pen_like, False, {})
+assert list(view["corners"]) == [5]
+c = view["corners"][5]
+assert c["avail1"] > 200 and c["avail2"] > 200            # the whole leg, not one 41 px segment
+legs = rc.legs_for(c, (230.0, 100.0))
+assert legs["L1"] > 60 and legs["L2"] > 60
+assert bezier.dist(rc._knob(c, legs["L1"], legs["L2"], legs["s"]), (230.0, 100.0)) < 0.05
+segs = rc.rounded(pen_like, False, {5: dict(legs, k=0.55)})["segs"]
+assert g1(segs) > 1 - 1e-6 and len(segs) < len(pen_like) + 1
+assert bezier.dist(segs[0][0], (0, 300)) < 1e-9 and bezier.dist(segs[-1][3], (300, 300)) < 1e-9
+print("11) legs run from corner to corner across several segments")
+
 print("t_curve_round_tools: all passed")
