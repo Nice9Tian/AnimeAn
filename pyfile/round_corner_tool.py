@@ -11,7 +11,9 @@ click during the drag cancels it. The behaviour was settled in a browser demo
 with the user, see docs/plan/2026-11-02-线条与圆角工具/.
 
 MODEL - a fillet at joint j is two arc lengths: it starts L1 back along the
-incoming segment and ends L2 along the outgoing one. The legs are cut with
+incoming leg and ends L2 along the outgoing one, a leg being the line from
+this corner to the next corner (or the end), however many smoothly joined
+segments that is - a pen stroke's legs usually are several. The legs are cut with
 de Casteljau (pyfile/bezier.py, the shared wheel - never refit), and a cubic
 joins the cuts, tangent to both legs, each handle kappa times its cut length.
 The control line is the chord between the two cuts, pinned at the corner tip:
@@ -203,27 +205,80 @@ def corner_joints(cubics, closed):
 
 # --- the rounded line --------------------------------------------------------
 
-def _corner(cubics, closed, rounds, j, accs, totals):
-    n = len(cubics)
-    joints = n if closed else n - 1
-    prev_joint = lambda i: i - 1 if i > 0 else (n - 1 if closed else -1)
-    head_cut = lambda i: (rounds.get(prev_joint(i)) or {}).get("L2", 0.0)
-    tail_cut = lambda i: (rounds.get(i) or {}).get("L1", 0.0) if i < joints else 0.0
-    nxt = (j + 1) % n
-    a, b = cubics[j], cubics[nxt]
-    return {
-        "joint": j, "V": a[3], "u1": _mul(_end_dir(a), -1.0), "u2": _start_dir(b),
-        "seg1": a, "acc1": accs[j], "seg2": b, "acc2": accs[nxt],
-        "avail1": totals[j] - head_cut(j) - GAP, "avail2": totals[nxt] - tail_cut(nxt) - GAP,
-    }
+class _Leg:
+    """The stretch of line between two corners (or a corner and an end),
+    measured along its length. A fillet cuts into it from either end, across
+    as many of its segments as the cut needs - a pen stroke's leg is usually
+    several short segments joined smoothly."""
+
+    def __init__(self, segs):
+        self.segs = list(segs)
+        self.accs = [_lengths(c) for c in self.segs]
+        self.starts, total = [], 0.0
+        for acc in self.accs:
+            self.starts.append(total)
+            total += acc[-1]
+        self.total = total
+
+    def _locate(self, s):
+        s = min(max(s, 0.0), self.total)
+        for i in range(len(self.segs)):
+            if s <= self.starts[i] + self.accs[i][-1] or i == len(self.segs) - 1:
+                return i, _t_at(self.accs[i], s - self.starts[i])
+
+    def point(self, s):
+        i, t = self._locate(s)
+        return bezier.eval_cubic(self.segs[i], t)
+
+    def direction(self, s):
+        i, t = self._locate(s)
+        return _dir_at(self.segs[i], t)
+
+    def piece(self, s0, s1):
+        """The cubics covering [s0, s1] along the leg, cut exactly with the
+        shared wheel (pyfile/bezier.py); whole segments pass unchanged."""
+        if s1 - s0 <= EPS:
+            return []
+        out = []
+        for i, cub in enumerate(self.segs):
+            a, b = self.starts[i], self.starts[i] + self.accs[i][-1]
+            if b <= s0 or a >= s1:
+                continue
+            t0 = _t_at(self.accs[i], s0 - a) if s0 > a else 0.0
+            t1 = _t_at(self.accs[i], s1 - a) if s1 < b else 1.0
+            out.append(cub if (t0 <= 0.0 and t1 >= 1.0) else tuple(bezier.cubic_segment(cub, t0, t1)))
+        return out
+
+
+def _runs(n, closed, joints):
+    """The line split at the corner joints: [segment indices] per run, and for
+    each joint the run that ends there and the run that starts after it."""
+    if closed:
+        runs, ends_at, starts_after = [], {}, {}
+        for r, j in enumerate(joints):
+            k = joints[(r + 1) % len(joints)]
+            idx, i = [], (j + 1) % n
+            while True:
+                idx.append(i)
+                if i == k:
+                    break
+                i = (i + 1) % n
+            runs.append(idx)
+            starts_after[j] = r
+            ends_at[k] = r
+        return runs, ends_at, starts_after
+    bounds = [-1] + list(joints) + [n - 1]
+    runs = [list(range(bounds[r] + 1, bounds[r + 1] + 1)) for r in range(len(bounds) - 1)]
+    ends_at = {j: r for r, j in enumerate(joints)}
+    starts_after = {j: r + 1 for r, j in enumerate(joints)}
+    return runs, ends_at, starts_after
 
 
 def fillet_at(c, L1, L2, kappa):
-    t1 = _t_at(c["acc1"], c["acc1"][-1] - L1)
-    t2 = _t_at(c["acc2"], L2)
-    p1, p2 = bezier.eval_cubic(c["seg1"], t1), bezier.eval_cubic(c["seg2"], t2)
-    return (p1, _add(p1, _mul(_dir_at(c["seg1"], t1), kappa * L1)),
-            _sub(p2, _mul(_dir_at(c["seg2"], t2), kappa * L2)), p2)
+    s1 = c["leg1"].total - L1
+    p1, p2 = c["leg1"].point(s1), c["leg2"].point(L2)
+    return (p1, _add(p1, _mul(c["leg1"].direction(s1), kappa * L1)),
+            _sub(p2, _mul(c["leg2"].direction(L2), kappa * L2)), p2)
 
 
 def rounded(cubics, closed, rounds):
@@ -231,41 +286,49 @@ def rounded(cubics, closed, rounds):
     corner}} - corners carry the tip, the leg directions, how much each leg
     can give, and for a rounded one its top, cuts and control-line ends."""
     n = len(cubics)
-    joints = n if closed else n - 1
-    accs = [_lengths(c) for c in cubics]
-    totals = [a[-1] for a in accs]
-    prev_joint = lambda i: i - 1 if i > 0 else (n - 1 if closed else -1)
-    trimmed = []
-    for i, cub in enumerate(cubics):
-        c0 = (rounds.get(prev_joint(i)) or {}).get("L2", 0.0)
-        c1 = (rounds.get(i) or {}).get("L1", 0.0) if i < joints else 0.0
-        if c0 <= 0.0 and c1 <= 0.0:
-            trimmed.append(cub)
+    joints = sorted(set(corner_joints(cubics, closed)) | set(rounds))
+    if not joints:
+        return {"segs": list(cubics), "corners": {}}
+    runs, ends_at, starts_after = _runs(n, closed, joints)
+    legs = [_Leg([cubics[i] for i in run]) for run in runs]
+    joint_at_start = {r: j for j, r in starts_after.items()}
+    joint_at_end = {r: j for j, r in ends_at.items()}
+    head = lambda r: (rounds.get(joint_at_start.get(r)) or {}).get("L2", 0.0)
+    tail = lambda r: (rounds.get(joint_at_end.get(r)) or {}).get("L1", 0.0)
+
+    corners = {}
+    for j in joints:
+        rin, rout = ends_at[j], starts_after[j]
+        leg1, leg2 = legs[rin], legs[rout]
+        if rin == rout:
+            # One corner on a closed line: both legs are the whole loop.
+            avail1 = avail2 = (leg1.total - GAP) / 2.0
         else:
-            # The shared wheel cuts the leg exactly (pyfile/bezier.py).
-            trimmed.append(tuple(bezier.cubic_segment(cub, _t_at(accs[i], c0), _t_at(accs[i], totals[i] - c1))))
-    segs, corners = [], {}
-    wanted = set(corner_joints(cubics, closed)) | set(rounds)
-    for i in range(n):
-        segs.append(trimmed[i])
-        if i >= joints or i not in wanted:
+            avail1, avail2 = leg1.total - head(rin) - GAP, leg2.total - tail(rout) - GAP
+        corners[j] = {"joint": j, "V": leg1.segs[-1][3],
+                      "u1": _mul(_end_dir(leg1.segs[-1]), -1.0), "u2": _start_dir(leg2.segs[0]),
+                      "leg1": leg1, "leg2": leg2, "avail1": avail1, "avail2": avail2}
+
+    segs = []
+    for r, leg in enumerate(legs):
+        segs.extend(leg.piece(head(r), leg.total - tail(r)))
+        j = joint_at_end.get(r)
+        if j is None:
             continue
-        c = _corner(cubics, closed, rounds, i, accs, totals)
-        r = rounds.get(i)
-        if r:
-            fillet = fillet_at(c, r["L1"], r["L2"], r.get("k", _STATE["kappa"]))
+        rr = rounds.get(j)
+        if rr:
+            c = corners[j]
+            fillet = fillet_at(c, rr["L1"], rr["L2"], rr.get("k", _STATE["kappa"]))
             segs.append(fillet)
             c["top"] = bezier.eval_cubic(fillet, 0.5)
             c["cuts"] = (fillet[0], fillet[3])
             half = _mul(_sub(fillet[3], fillet[0]), 0.5)
             c["knobs"] = ((1, _add(c["V"], half)), (-1, _sub(c["V"], half)))
-        corners[i] = c
     return {"segs": segs, "corners": corners}
 
 
 def _knob(c, L1, L2, s):
-    p1 = bezier.eval_cubic(c["seg1"], _t_at(c["acc1"], c["acc1"][-1] - L1))
-    p2 = bezier.eval_cubic(c["seg2"], _t_at(c["acc2"], L2))
+    p1, p2 = c["leg1"].point(c["leg1"].total - L1), c["leg2"].point(L2)
     return _add(c["V"], _mul(_sub(p2, p1), s / 2.0))
 
 
