@@ -295,6 +295,25 @@ def _same_function(a, b):
     ) == getattr(b, "__qualname__", None)
 
 
+# Hooks on one event run in ORDER: lower first, ties in the order they were
+# registered (the rule register_menu uses for the menu bar). Nearly every hook
+# is an observer and takes the default.
+DEFAULT_HOOK_ORDER = 50
+# For a hook that takes the finished stroke back OUT of the model. A guide
+# tool draws through the pen, so its line lands in the current layer as an
+# ordinary stroke until the tool's capture moves it into the tool's own store;
+# the other hooks on that linefinish read "the artwork changed" off the model,
+# so the capture has to run before all of them. Without an order a hook runs
+# wherever its last registration left it: set_hook re-appends, and tool
+# modules register again every time they are armed.
+CAPTURE_HOOK_ORDER = 10
+
+
+def _hook_order(hook):
+    order = hook.get("order")
+    return order if isinstance(order, (int, float)) and not isinstance(order, bool) else DEFAULT_HOOK_ORDER
+
+
 def set_hook(
     function,
     *,
@@ -322,7 +341,17 @@ def set_hook(
     dialog=False,
     tool=None,
     property=None,
+    order=None,
 ):
+    """Register `function` for the events switched on.
+
+    `tool` / `property` narrow it to messages that carry that value. `order`
+    places it among the hooks of the same event (lower runs first, default
+    DEFAULT_HOOK_ORDER, ties keep the order of registration); registering a
+    function again replaces its entry and puts it last among its own order.
+    Only a hook that changes what the later ones will read needs an order -
+    see CAPTURE_HOOK_ORDER.
+    """
     resolved = _resolve_function(function)
     flags = {
         "update": update,
@@ -361,14 +390,21 @@ def set_hook(
         return resolved
 
     del_hook(resolved)
-    _HOOKS.append(
-        {
-            "function": resolved,
-            "events": events,
-            "tool": tool,
-            "property": property,
-        }
-    )
+    entry = {
+        "function": resolved,
+        "events": events,
+        "tool": tool,
+        "property": property,
+        "order": _hook_order({"order": order}),
+    }
+    # _HOOKS stays sorted by order, so dispatch is a plain walk: the entry goes
+    # in front of the first hook that runs later than it.
+    position = len(_HOOKS)
+    for index, hook in enumerate(_HOOKS):
+        if _hook_order(hook) > entry["order"]:
+            position = index
+            break
+    _HOOKS.insert(position, entry)
     _push_subscriptions()
     return resolved
 

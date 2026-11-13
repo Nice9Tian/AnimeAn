@@ -206,6 +206,8 @@ def activate_example_tool(name="example_tool", property_value="example_tool"):
 
 注意：选择 ExtraTool 时，C++ 会先发一次 `extra` 事件，再调用 handler 注册 hook。因此 handler 里注册的 hook 通常应该监听后续 `linefinish` 或 `update`，不要依赖捕获同一次点击产生的 `extra` 事件。
 
+工具画完的线先作为普通笔画落在当前层。如果你的 hook 要把这条线从图层里拿走（引导线一类，线只是手势、不是画稿），登记时加 `order=python_hooks.CAPTURE_HOOK_ORDER`，让它排在同一个 `linefinish` 的其他 hook 之前；否则填充重算等观察者会先把这条线当成画稿读一遍。见 `hook_events.md`「钩子的先后」。
+
 ## Hook 消息
 
 常见消息字段：

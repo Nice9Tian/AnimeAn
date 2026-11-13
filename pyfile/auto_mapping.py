@@ -12190,7 +12190,15 @@ def _line_display_changed(message):
 
 
 def register_hooks():
-    python_hooks.set_hook(_capture_mapping_item, linefinish=True, tool="extra")
+    # The capture runs BEFORE every other linefinish hook, however often this
+    # is called (every tool arming and every tools_json re-registers): the
+    # line a guide tool draws sits in the current layer as an ordinary stroke
+    # until _capture_mapping_item takes it out, and nothing may read the layer
+    # as artwork in between. fill_tool re-traced the layer's tracked fills
+    # against the axis and left them cut in half; layer_tool_policy turned an
+    # axis drawn on an independent fill layer into region fills.
+    python_hooks.set_hook(_capture_mapping_item, linefinish=True, tool="extra",
+                          order=python_hooks.CAPTURE_HOOK_ORDER)
     python_hooks.set_hook(_overlay_removed, overlayremove=True)
     python_hooks.set_hook(_history_restored, historyrestore=True)
     python_hooks.set_hook(_auto_mapping_button, extra=True, tool=AUTO_MAPPING2_TOOL)

@@ -32,6 +32,13 @@
 - `message["grab"] = "<id>"`：`pick` 阶段认领拖拽，C++ 把这次按下变成该 id 下的拖动。
 - 交互事件 hook 在 C++ 提交历史之前运行，脚本的改动并入同一条记录。
 
+## 钩子的先后
+
+- 同一个事件上的钩子按 `order` 从小到大运行，同值按登记先后。`python_hooks.set_hook(..., order=)` 给出，缺省是 `DEFAULT_HOOK_ORDER`（50）。同一个函数再登记一次，排到同值的最后；工具模块每次被选中、每次 `extra_tools.tools_json()` 都会重新登记，所以没写 `order` 的钩子之间谁先谁后不是约定，不能依赖。
+- 把刚画完的这一笔从模型里拿走的钩子用 `CAPTURE_HOOK_ORDER`（10），排在所有观察者之前。Mapping 组里借画笔画线的工具（H / V Center Line、Mapping Area、Additional Line、Free Out Line）画完的线先作为普通笔画落在当前层，`linefinish` 时由 `auto_mapping._capture_mapping_item` 移出图层、存进引导线。同一个 `linefinish` 上的其他钩子（`fill_tool` 的跟随重算、`layer_tool_policy` 的区域刷转换、各工具的缓存失效）读到的图层里已经没有这条线。
+- 捕获之后的钩子收到的仍是原来的消息：`stroke.index` 指的那一笔已经不在；主画板上没有单元焦点时画引导线会新建单元，它的层插在最前，`cell.layer` 这时差一位。读这两个值的钩子要经得起：`layer_tool_policy` 越界即返回，`fill_tool` 只是把没变的区域再算一遍。
+- 捕获排在观察者之后时出过两个错（2026-11-13 修）：跟随线稿的填充把轴线当成边界重算，被切成两半，轴线移走后也不再算回来；当前层是独立填充层时，区域刷把轴线当成画笔的笔迹转成了填充，轴线没有生成。回归：`tests/t_guide_capture_order.py`。
+
 ## 覆盖层显示列表
 
 - Python 各工具通过 `overlay_stack.set_items(view, owner, items)` 合成一张列表交给 `ui.set_overlay`，按 owner 排序拼接；C++ 渲染在所有图层之上，从后往前命中。
