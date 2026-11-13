@@ -7,7 +7,8 @@ Covers:
        disagreement confined within 1 grid cell of a fold/seam boundary;
      - main_of_third_batch vs scalar main_of_third: coordinate diff <= 0.05 px;
      - warp.apply_batch / warp.det_sign_batch vs scalar apply / det_sign;
-     - timing on 129x129: third_of_batch <= 15 ms, main_of_third_batch <= 3 ms.
+     - vectorization invariants on 129x129: single-pass batch calls with zero
+       scalar fallbacks (wall-clock ms budgets live in bench_drag_cost.py).
   2. Curved guides carrying cubic Bezier `commands` (_Curve.curved == True),
      both unfoldable and foldable (including sharp corners and explicit seeds).
   3. Folded flow-field warp (_all_positive == False) and out-of-grid tent
@@ -89,22 +90,69 @@ class BatchMapTests(unittest.TestCase):
                 ground_pairs=am._ground_pairs(),
             )
 
-            # Warm up once
-            lh_b, lv_b, ok_b = mp.third_of_batch(px, py)
-            mx_b, my_b = mp.main_of_third_batch(lh_b, lv_b)
+            # Warm up once so _ensure_batch caches are populated
+            mp.third_of_batch(px, py)
+            mp.main_of_third_batch(px, py)
 
-            # Measure median over 7 runs
-            t_third = []
-            t_main = []
-            for _ in range(7):
+            # Verify single-pass vectorized batch execution (zero scalar calls)
+            counts = {
+                "solve_batch": 0, "dirs_batch": 0, "hv_batch": 0, "warp_batch": 0,
+                "point_flat": 0, "scalar": 0,
+            }
+            saved = []
+
+            def wrap(obj, attr, bucket):
+                orig = getattr(obj, attr)
+                saved.append((obj, attr, orig))
+
+                def wrapped(*a, **kw):
+                    counts[bucket] += 1
+                    return orig(*a, **kw)
+
+                setattr(obj, attr, wrapped)
+
+            wrap(mp.child_frame, "solve_full_batch", "solve_batch")
+            wrap(mp.child_frame, "directions_batch", "dirs_batch")
+            wrap(mp.child_frame, "solve_full", "scalar")
+            wrap(mp.child_frame, "directions", "scalar")
+            wrap(mp.main_frame, "hv_batch", "hv_batch")
+            wrap(mp.main_frame, "hv", "scalar")
+            for fr in (mp.child_frame, mp.main_frame):
+                for g in (fr.gh, fr.gv):
+                    wrap(g, "_point_flat", "point_flat")
+                    wrap(g, "point_at", "scalar")
+                    wrap(g, "dir_at", "scalar")
+            if mp.warp is not None:
+                wrap(mp.warp, "apply_batch", "warp_batch")
+                wrap(mp.warp, "apply", "scalar")
+
+            try:
                 t0 = time.perf_counter()
                 lh_b, lv_b, ok_b = mp.third_of_batch(px, py)
-                t_third.append((time.perf_counter() - t0) * 1000.0)
+                ms_third = (time.perf_counter() - t0) * 1000.0
+                third_counts = dict(counts)
+                for k in counts:
+                    counts[k] = 0
                 t0 = time.perf_counter()
                 mx_b, my_b = mp.main_of_third_batch(lh_b, lv_b)
-                t_main.append((time.perf_counter() - t0) * 1000.0)
-            med_third = sorted(t_third)[len(t_third) // 2]
-            med_main = sorted(t_main)[len(t_main) // 2]
+                ms_main = (time.perf_counter() - t0) * 1000.0
+                main_counts = dict(counts)
+            finally:
+                for obj, attr, orig in reversed(saved):
+                    setattr(obj, attr, orig)
+
+            max_solve_batches = 1 if mp.can_fold() else 2
+            self.assertGreaterEqual(third_counts["solve_batch"], 1)
+            self.assertLessEqual(third_counts["solve_batch"], max_solve_batches)
+            self.assertEqual(third_counts["dirs_batch"], 1)
+            self.assertEqual(third_counts["scalar"], 0)
+            self.assertLess(third_counts["point_flat"], 600)
+
+            self.assertEqual(main_counts["hv_batch"], 1)
+            self.assertEqual(main_counts["point_flat"], 2)
+            self.assertEqual(main_counts["scalar"], 0)
+            if mp.warp is not None:
+                self.assertEqual(main_counts["warp_batch"], 1)
 
             # Pointwise scalar reference
             lh_s = np.empty(len(pts_129), dtype=float)
@@ -143,14 +191,6 @@ class BatchMapTests(unittest.TestCase):
             )
             self.assertLessEqual(third_diff, 0.05)
             self.assertLessEqual(main_diff, 0.05)
-            self.assertLessEqual(
-                med_third, 15.0,
-                f"Rig {rig}: third_of_batch {med_third:.2f} ms > 15 ms",
-            )
-            self.assertLessEqual(
-                med_main, 3.0,
-                f"Rig {rig}: main_of_third_batch {med_main:.2f} ms > 3 ms",
-            )
 
             if mp.warp is not None:
                 wx_b, wy_b = mp.warp.apply_batch(lh_b, lv_b)
@@ -168,9 +208,9 @@ class BatchMapTests(unittest.TestCase):
                 self.assertTrue(np.array_equal(ds_b, ds_s))
 
             print(
-                f"1) Rig {rig} 129x129: third_of_batch={med_third:.2f} ms "
-                f"(diff {third_diff:.2e} px, ok_diff={ok_mismatches}), "
-                f"main_of_third_batch={med_main:.2f} ms (diff {main_diff:.2e} px)"
+                f"1) Rig {rig} 129x129: third_of_batch={ms_third:.2f} ms "
+                f"(point_flat={third_counts['point_flat']}, diff {third_diff:.2e} px, ok_diff={ok_mismatches}), "
+                f"main_of_third_batch={ms_main:.2f} ms (diff {main_diff:.2e} px)"
             )
 
     def test_2_curved_commands_and_foldable_frame(self):

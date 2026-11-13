@@ -57,7 +57,7 @@ issue #46 第 1 步实测：一次 CG 迭代 numpy 约 60µs。放 GPU 要读回
 
 后端启动时关闭 Windows 的执行速度限制（`backend/main.cpp` 的 `optOutOfPowerThrottling`）。没有窗口的进程满载几秒后会被当成后台工作挪到效率核，一切都慢一倍，而且不会自己回来。i7-14700KF 上实测：纯 Python 循环 46ms，满载后 88ms，关闭限制后 45ms。
 
-测量也要注意这一点：同一进程跑几秒之后，绝对毫秒数可能翻倍，和代码无关。`tests/t_warm_solve.py` 的计时断言因此用比值。
+测量也要注意这一点：同一进程跑几秒之后，绝对毫秒数可能翻倍；机器核被占满时，连两个墙钟时间的比值也会因调度时间片切割而失真。因此功能回归（`tests/t_*.py`）不绑毫秒上限，只断言保证帧预算成立的结构不变量（`WARM_MAX_ITER` 步数上限与热启动迭代次数比、`third_of_batch` 与 `_Frame` 缓存复用、Mapping Area 预光栅化查表、拖动中只继承层序而不重跑 `_prepare_fold_context` 或粗网格深度表、向量化批调用零标量回退）；真实墙钟帧预算（中位 33ms、折叠装置最大 45ms）归口到同样关闭了执行速度限制的专用基准 `tests/bench_drag_cost.py`。
 
 ## 节流
 
@@ -73,6 +73,6 @@ issue #46 第 1 步实测：一次 CG 迭代 numpy 约 60µs。放 GPU 要读回
 | 网页 | `npm test`（`webui/tests/field_view.test.ts`） |
 | 真实 WebGL | vite 下打开 `/tests/field_compare.html`，标题以 PASS 开头。mock GL 查不出着色器链接失败，改着色器必跑 |
 | 后端 | `backend/tests/session_smoke.mjs`、`board_headless_test` |
-| 基准 | `py tests/bench_drag_cost.py --rig A|B|C|D [--warm]` |
+| 基准 | `py tests/bench_drag_cost.py --all --warm`、`py tests/bench_drag_cost.py --preview --all` |
 
 基准里拖动每步不到 1 像素，比真手慢得多，帧预算是否够用要看每帧 3 到 10 像素的情况。

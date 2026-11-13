@@ -11,6 +11,8 @@ import random
 import sys
 import types
 
+import numpy as np
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "pyfile"))
 sys.modules.setdefault("animean_python", types.ModuleType("animean_python"))
@@ -47,17 +49,20 @@ def straight(horizontal):
 
 def deviation(mp, cub, outs):
     """Max distance from the true warped curve to the emitted cubics."""
-    dense = [am._cubic_point(o, k / 64) for o in outs for k in range(65)]
-    segs = list(zip(dense, dense[1:]))
-
-    def to_seg(p, a, b):
-        vx, vy = b[0] - a[0], b[1] - a[1]
-        n = vx * vx + vy * vy
-        t = 0.0 if n < 1e-12 else max(0.0, min(1.0, ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / n))
-        return math.hypot(p[0] - a[0] - t * vx, p[1] - a[1] - t * vy)
-
-    return max(min(to_seg(mp(am._cubic_point(cub, k / 160)), a, b) for a, b in segs)
-               for k in range(161))
+    dense = np.asarray([am._cubic_point(o, k / 64) for o in outs for k in range(65)], dtype=np.float64)
+    a = dense[:-1]
+    v = dense[1:] - a
+    nn = np.einsum("ij,ij->i", v, v)
+    safe_nn = np.where(nn < 1e-12, 1.0, nn)
+    pts = np.asarray([mp(am._cubic_point(cub, k / 160)) for k in range(161)], dtype=np.float64)
+    dp = pts[:, None, :] - a[None, :, :]
+    t = np.where(
+        nn[None, :] < 1e-12,
+        0.0,
+        np.clip(np.einsum("psk,sk->ps", dp, v) / safe_nn[None, :], 0.0, 1.0),
+    )
+    diff = dp - t[:, :, None] * v[None, :, :]
+    return float(np.sqrt(np.max(np.min(np.einsum("psk,psk->ps", diff, diff), axis=1))))
 
 
 # 1) A straight line across a two-segment arch: the arch's joint is a knot,

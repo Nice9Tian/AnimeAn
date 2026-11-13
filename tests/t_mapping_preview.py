@@ -12,8 +12,9 @@ Tests:
 5. Zero history_commit and zero scene model writes during drag moves.
 6. Throttling gate: moves closer than 8 ms to the last frame schedule call_later, and
    firing the callback flushes the latest position.
-7. Single-step update latency: dragging an additional line on Rigs B and C has median
-   cost <= 33 ms.
+7. Single-step frame-budget invariants: dragging an additional line on Rigs B and C, or the
+   folded axis on Rig D, stays on warm-capped PCG, cached child/Third state, pre-rasterized
+   area LUTs, and inherited region depths without cold solves or exact depth recomputes.
 """
 import copy
 import math
@@ -41,6 +42,7 @@ _init_mod.ui = types.SimpleNamespace(
     set_hook_events=lambda *a, **k: None,
 )
 import auto_mapping as am  # noqa: E402
+import gridsolve  # noqa: E402
 import line_tools as lt  # noqa: E402
 import mapping_preview as mp  # noqa: E402
 
@@ -1127,59 +1129,92 @@ class TestMappingPreview(unittest.TestCase):
         mp.end()
 
     def test_0_single_update_cost_rigs_B_and_C(self):
-        """Median single-step update cost dragging an additional line on Rigs B and C is <= 33 ms."""
+        """Dragging an additional line on Rigs B and C keeps H/V _Frames and child Third lift
+        cached and caps every PCG solve at WARM_MAX_ITER (no cold solves)."""
+        warm_cap = am._FlowFieldWarp.WARM_MAX_ITER
+        orig_pcg = gridsolve.pcg
+        orig_frame = am._Frame
+
         for rig_name in ("B", "C"):
             _scenes, fake, _uid = fresh_rig_world(rig_name)
-            clock_val = [0.0]
-
-            # Use real perf_counter plus a virtual offset so the throttle gate never skips
-            # while _compute_and_push still measures real wall-clock deltas!
             offset = [0.0]
             mp._clock = lambda: time.perf_counter() + offset[0]
 
+            pcg_calls = []
+            frames_built = [0]
+
+            def spy_pcg(*args, **kwargs):
+                sol, iters = orig_pcg(*args, **kwargs)
+                pcg_calls.append((kwargs.get("max_iter"), iters))
+                return sol, iters
+
+            class SpyFrame(orig_frame):
+                def __init__(self, *args, **kwargs):
+                    frames_built[0] += 1
+                    super().__init__(*args, **kwargs)
+
             handle = f"{am.ADDITIONAL_PROPERTY}:1"
-            am._guide_drag_event({
-                "view": "main", "handle": handle, "phase": "press",
-                "position": {"x": 0.0, "y": 72.0},
-            })
-
-            step_durations_ms = []
-            sub_timings = []
-            for step in range(1, 16):
-                offset[0] += 0.060  # advance past throttle gate (>8ms) while keeping depth low-freq
-                t0 = time.perf_counter()
+            gridsolve.pcg = spy_pcg
+            am._Frame = SpyFrame
+            try:
                 am._guide_drag_event({
-                    "view": "main", "handle": handle, "phase": "move",
-                    "position": {"x": step * 0.35, "y": 72.0 + step * 0.25},
+                    "view": "main", "handle": handle, "phase": "press",
+                    "position": {"x": 0.0, "y": 72.0},
                 })
-                dt_ms = (time.perf_counter() - t0) * 1000.0
-                step_durations_ms.append(dt_ms)
-                sub_timings.append(mp.last_timings())
+                cached_third = mp._SESSION["third_cache"].get("value")
+                self.assertIsNotNone(cached_third)
+                frames_built[0] = 0
 
+                step_durations_ms = []
+                step_pcg_iters = []
+                seen_caps = set()
+                max_single_call_iters = 0
+                for step in range(1, 16):
+                    offset[0] += 0.060  # advance past throttle gate (>8ms)
+                    pcg_calls.clear()
+                    t0 = time.perf_counter()
+                    am._guide_drag_event({
+                        "view": "main", "handle": handle, "phase": "move",
+                        "position": {"x": step * 0.35, "y": 72.0 + step * 0.25},
+                    })
+                    dt_ms = (time.perf_counter() - t0) * 1000.0
+                    step_durations_ms.append(dt_ms)
+                    step_pcg_iters.append(sum(it for _, it in pcg_calls))
+                    seen_caps.update(cap for cap, _ in pcg_calls)
+                    max_single_call_iters = max(
+                        max_single_call_iters,
+                        max((it for _, it in pcg_calls), default=0),
+                    )
+                    self.assertIs(
+                        mp._SESSION["third_cache"].get("value"), cached_third,
+                        f"Rig {rig_name} step {step}: third_of_batch recomputed during main drag",
+                    )
+                    if step == 1:
+                        # At most 1 overlay guide frame on step 1, then 0 for all remaining moves.
+                        self.assertLessEqual(frames_built[0], 1)
+                        frames_built[0] = 0
+            finally:
+                gridsolve.pcg = orig_pcg
+                am._Frame = orig_frame
+
+            self.assertEqual(len(fake.ui.set_field_calls), 15)
+            self.assertEqual(frames_built[0], 0, f"Rig {rig_name}: H/V _Frame rebuilt on steps 2..15")
+            self.assertEqual(seen_caps, {warm_cap}, f"Rig {rig_name}: unexpected PCG max_iter caps {seen_caps}")
+            self.assertLessEqual(max_single_call_iters, warm_cap)
+            med_iters = statistics.median(step_pcg_iters)
+            max_iters = max(step_pcg_iters)
+            self.assertLessEqual(med_iters, 2 * warm_cap)
+            self.assertLessEqual(max_iters, 4 * warm_cap)
             median_ms = statistics.median(step_durations_ms)
-            med_sub = {
-                k: statistics.median([st.get(k, 0.0) * 1000.0 for st in sub_timings])
-                for k in ("build_mapper", "third_of_batch", "main_of_third_batch",
-                          "det2", "depth_table", "pack_and_upload", "total")
-            }
-            depth_runs_ms = [st["depth_table"] * 1000.0 for st in sub_timings if st.get("depth_table", 0.0) > 0.0]
             print(
-                f"[timing] Rig {rig_name} (15 steps): median={median_ms:.2f}ms "
-                f"(build_mapper={med_sub['build_mapper']:.2f}ms, "
-                f"third_of_batch={med_sub['third_of_batch']:.2f}ms, "
-                f"main_of_third_batch={med_sub['main_of_third_batch']:.2f}ms, "
-                f"det2={med_sub['det2']:.2f}ms, "
-                f"pack_and_upload={med_sub['pack_and_upload']:.2f}ms, "
-                f"depth_table_when_run={statistics.median(depth_runs_ms) if depth_runs_ms else 0.0:.2f}ms)"
-            )
-            self.assertLessEqual(
-                median_ms, 33.0,
-                f"Rig {rig_name}: median update cost {median_ms:.2f} ms exceeds 33 ms budget",
+                f"[budget] Rig {rig_name} (15 steps): pcg_iters median={med_iters:.0f} max={max_iters} "
+                f"(cap={warm_cap}), frames_rebuilt_steps_2_15=0, clock_median={median_ms:.2f}ms"
             )
             mp.end()
 
-    def test_8_mapping_area_400_vertices_under_2ms(self):
-        """A 400-vertex main Mapping Area on a 129x129 grid takes <= 2 ms per frame."""
+    def test_8_mapping_area_400_vertices_pre_rasterized_lut(self):
+        """A 400-vertex main Mapping Area rasterizes its LUT once on press and uses O(1)
+        grid lookup (no polygon rasterization) on every move frame."""
         square_strokes = [
             _stroke_dict([(-200.0, -200.0), (200.0, -200.0),
                           (200.0, 200.0), (-200.0, 200.0),
@@ -1199,28 +1234,45 @@ class TestMappingPreview(unittest.TestCase):
         ]
         am._assets_for("main")[am.MAPPING_AREA_PROPERTY] = {"polygons": [poly400]}
 
+        orig_rasterize = mp._rasterize_area_lut
+        orig_lookup = mp._lookup_area_lut
+        rasterize_calls = [0]
+        lookup_calls = [0]
+
+        def spy_rasterize(*args, **kwargs):
+            rasterize_calls[0] += 1
+            return orig_rasterize(*args, **kwargs)
+
+        def spy_lookup(*args, **kwargs):
+            lookup_calls[0] += 1
+            return orig_lookup(*args, **kwargs)
+
         offset = [0.0]
         mp._clock = lambda: time.perf_counter() + offset[0]
-        am._guide_drag_event({
-            "view": "main", "handle": am.H_PROPERTY, "phase": "press",
-            "position": {"x": 0.0, "y": 0.0},
-        })
-        self.assertEqual((mp._SESSION["W"], mp._SESSION["H"]), (129, 129))
-
-        area_ms_list = []
-        for step in range(1, 8):
-            offset[0] += 0.050
+        mp._rasterize_area_lut = spy_rasterize
+        mp._lookup_area_lut = spy_lookup
+        try:
             am._guide_drag_event({
-                "view": "main", "handle": am.H_PROPERTY, "phase": "move",
-                "position": {"x": step * 1.5, "y": step * 1.0},
+                "view": "main", "handle": am.H_PROPERTY, "phase": "press",
+                "position": {"x": 0.0, "y": 0.0},
             })
-            area_ms_list.append(mp.last_timings().get("main_area", 0.0) * 1000.0)
+            self.assertEqual((mp._SESSION["W"], mp._SESSION["H"]), (129, 129))
+            self.assertEqual(rasterize_calls[0], 1, "main Mapping Area LUT should rasterize once on press")
+            rasterize_calls[0] = 0
+            lookup_calls[0] = 0
 
-        med_area_ms = statistics.median(area_ms_list)
-        self.assertLessEqual(
-            med_area_ms, 2.0,
-            f"400-vertex main_area lookup on 129x129 took {med_area_ms:.3f} ms (> 2.0 ms)",
-        )
+            for step in range(1, 8):
+                offset[0] += 0.050
+                am._guide_drag_event({
+                    "view": "main", "handle": am.H_PROPERTY, "phase": "move",
+                    "position": {"x": step * 1.5, "y": step * 1.0},
+                })
+        finally:
+            mp._rasterize_area_lut = orig_rasterize
+            mp._lookup_area_lut = orig_lookup
+
+        self.assertEqual(rasterize_calls[0], 0, "move frames must not re-rasterize Mapping Area polygons")
+        self.assertEqual(lookup_calls[0], 7, "each move frame should perform one LUT lookup")
         _key, W, H, _rect, arr = _decode_last_field(fake.ui)
         # Center is inside the 120px-radius polygon; corners (-200, -200) are outside
         self.assertGreater(float(arr[H // 2, W // 2, 2]), 0.0)
@@ -1930,32 +1982,68 @@ class TestMappingPreview(unittest.TestCase):
         finally:
             am._prepare_fold_context = orig_prepare
 
-    def test_15_rig_D_40_steps_latency_max_under_45ms(self):
-        """Rig D continuous 40-step drag has max single-step update <= 45 ms and median <= 33 ms."""
+    def test_15_rig_D_40_steps_no_cold_solve_or_exact_depth(self):
+        """Across a 40-step drag on folded Rig D, no move frame triggers _prepare_fold_context,
+        exact _update_coarse_depth_table, child _Frame rebuilds, third_of_batch recomputes,
+        or uncapped cold PCG solves."""
         _scenes, fake, _uid = fresh_rig_world("D")
         offset = [0.0]
         mp._clock = lambda: time.perf_counter() + offset[0]
 
+        warm_cap = am._FlowFieldWarp.WARM_MAX_ITER
         orig_prepare = am._prepare_fold_context
+        orig_coarse = mp._update_coarse_depth_table
+        orig_inherit = mp._inherit_region_depths
+        orig_pcg = gridsolve.pcg
         drag_prepare_calls = [0]
+        coarse_depth_calls = [0]
+        inherit_depth_calls = [0]
+        pcg_calls = []
 
         def spy_prepare(*args, **kwargs):
             drag_prepare_calls[0] += 1
             return orig_prepare(*args, **kwargs)
 
+        def spy_coarse(*args, **kwargs):
+            coarse_depth_calls[0] += 1
+            return orig_coarse(*args, **kwargs)
+
+        def spy_inherit(*args, **kwargs):
+            inherit_depth_calls[0] += 1
+            return orig_inherit(*args, **kwargs)
+
+        def spy_pcg(*args, **kwargs):
+            sol, iters = orig_pcg(*args, **kwargs)
+            pcg_calls.append((kwargs.get("max_iter"), iters))
+            return sol, iters
+
         am._prepare_fold_context = spy_prepare
+        mp._update_coarse_depth_table = spy_coarse
+        mp._inherit_region_depths = spy_inherit
+        gridsolve.pcg = spy_pcg
         try:
             am._guide_drag_event({
                 "view": "main", "handle": am.H_PROPERTY, "phase": "press",
                 "position": {"x": 640.0, "y": 360.0},
             })
             self.assertEqual(drag_prepare_calls[0], 1)
+            self.assertEqual(coarse_depth_calls[0], 1)
             drag_prepare_calls[0] = 0
+            coarse_depth_calls[0] = 0
+            inherit_depth_calls[0] = 0
+
+            cached_third = mp._SESSION["third_cache"].get("value")
+            cached_child_frame = mp._SESSION["warm"]["frames"].get("child")[1]
+            self.assertIsNotNone(cached_third)
+            self.assertIsNotNone(cached_child_frame)
 
             step_durations_ms = []
-            depth_durations_ms = []
+            step_pcg_iters = []
+            seen_caps = set()
+            max_single_call_iters = 0
             for step in range(1, 41):
                 offset[0] += 0.060  # advance past throttle gate every step
+                pcg_calls.clear()
                 t0 = time.perf_counter()
                 am._guide_drag_event({
                     "view": "main", "handle": am.H_PROPERTY, "phase": "move",
@@ -1963,28 +2051,39 @@ class TestMappingPreview(unittest.TestCase):
                 })
                 dt_ms = (time.perf_counter() - t0) * 1000.0
                 step_durations_ms.append(dt_ms)
-                depth_durations_ms.append(mp.last_timings().get("depth_table", 0.0) * 1000.0)
+                step_pcg_iters.append(sum(it for _, it in pcg_calls))
+                seen_caps.update(cap for cap, _ in pcg_calls)
+                max_single_call_iters = max(
+                    max_single_call_iters,
+                    max((it for _, it in pcg_calls), default=0),
+                )
+                self.assertIs(mp._SESSION["third_cache"].get("value"), cached_third)
+                self.assertIs(mp._SESSION["warm"]["frames"].get("child")[1], cached_child_frame)
 
             self.assertEqual(len(fake.ui.set_field_calls), 40)
             self.assertEqual(drag_prepare_calls[0], 0)
+            self.assertEqual(coarse_depth_calls[0], 0)
+            self.assertEqual(inherit_depth_calls[0], 40)
+            self.assertEqual(seen_caps, {warm_cap})
+            self.assertLessEqual(max_single_call_iters, warm_cap)
+            med_iters = statistics.median(step_pcg_iters)
+            max_iters = max(step_pcg_iters)
+            self.assertLessEqual(med_iters, 4 * warm_cap)
+            self.assertLessEqual(max_iters, 8 * warm_cap)
+
             max_ms = max(step_durations_ms)
             median_ms = statistics.median(step_durations_ms)
-            med_depth_ms = statistics.median(depth_durations_ms)
             print(
-                f"[timing] Rig D (40 steps): median={median_ms:.2f}ms, "
-                f"max={max_ms:.2f}ms, depth_inherit_median={med_depth_ms:.2f}ms"
-            )
-            self.assertLessEqual(
-                max_ms, 45.0,
-                f"Rig D 40-step max update cost {max_ms:.2f} ms exceeds 45 ms limit",
-            )
-            self.assertLessEqual(
-                median_ms, 33.0,
-                f"Rig D 40-step median update cost {median_ms:.2f} ms exceeds 33 ms budget",
+                f"[budget] Rig D (40 steps): pcg_iters median={med_iters:.0f} max={max_iters} "
+                f"(cap={warm_cap}), exact_depth=0, inherited_depth=40, "
+                f"clock median={median_ms:.2f}ms max={max_ms:.2f}ms"
             )
             mp.end()
         finally:
             am._prepare_fold_context = orig_prepare
+            mp._update_coarse_depth_table = orig_coarse
+            mp._inherit_region_depths = orig_inherit
+            gridsolve.pcg = orig_pcg
 
 
 if __name__ == "__main__":

@@ -7,7 +7,8 @@ Covers:
   2. Continuous drag (>= 16 steps) with warm={} on Rigs B and C:
      - max flow-field difference on grid nodes vs cold exact solve at the
        same step <= 0.5 canvas px;
-     - warm build_mapper frames at least 5x faster than cold, timed alone.
+     - warm build_mapper frames use >= 10x fewer PCG iterations than cold and
+       stay capped at WARM_MAX_ITER.
   3. A cached answer of the wrong size is dropped and the frame restarts
      cleanly.
   4. Per-line field cache reuses unchanged lines and recomputes moved lines.
@@ -139,87 +140,113 @@ class WarmSolveTests(unittest.TestCase):
 
     def test_2_warm_drag_accuracy_and_speed_rigs_b_and_c(self):
         steps = 20
-        for rig in ("B", "C", "D"):
-            step_drag = bdc._make_rig(rig)
-            cx0, cy0 = (640.0, 360.0) if rig == "D" else (0.0, 0.0)
-            sample_pts = bdc._make_uniform_grids(cx0, cy0)[33][::9]
-            warm = {}
-            times_ms = []
-            cold_ms = []
-            max_errs_px = []
-            max_mapper_errs_px = []
+        warm_cap = am._FlowFieldWarp.WARM_MAX_ITER
+        orig_pcg = gridsolve.pcg
+        pcg_log = []
 
-            for s in range(steps):
-                step_drag(s)
-                bdc._clear_step_caches()
-                t0 = time.perf_counter()
-                mp_cold = _build_current(warm=None)
-                cold_ms.append((time.perf_counter() - t0) * 1000.0)
-                ux_cold = np.asarray(mp_cold.warp._grid["ux"], dtype=float)
-                uy_cold = np.asarray(mp_cold.warp._grid["uy"], dtype=float)
-                sx = max(mp_cold.h_scales[0], mp_cold.h_scales[1], 1.0)
-                sy = max(mp_cold.v_scales[0], mp_cold.v_scales[1], 1.0)
+        def spy_pcg(*args, **kwargs):
+            sol, iters = orig_pcg(*args, **kwargs)
+            pcg_log.append((kwargs.get("max_iter"), iters))
+            return sol, iters
 
-                bdc._clear_step_caches()
-                t0 = time.perf_counter()
-                mp_warm = _build_current(warm=warm)
-                dt_ms = (time.perf_counter() - t0) * 1000.0
+        gridsolve.pcg = spy_pcg
+        try:
+            for rig in ("B", "C", "D"):
+                step_drag = bdc._make_rig(rig)
+                cx0, cy0 = (640.0, 360.0) if rig == "D" else (0.0, 0.0)
+                sample_pts = bdc._make_uniform_grids(cx0, cy0)[33][::9]
+                warm = {}
+                times_ms = []
+                cold_ms = []
+                cold_iters = []
+                max_errs_px = []
+                max_mapper_errs_px = []
 
-                ux_warm = np.asarray(mp_warm.warp._grid["ux"], dtype=float)
-                uy_warm = np.asarray(mp_warm.warp._grid["uy"], dtype=float)
-                err_px = float(np.max(np.hypot(
-                    (ux_warm - ux_cold) * sx,
-                    (uy_warm - uy_cold) * sy,
-                )))
-                m_err = 0.0
-                for pt in sample_pts:
-                    qw = mp_warm(pt)
-                    qc = mp_cold(pt)
-                    if qw is not None and qc is not None:
-                        d = float(np.hypot(qw[0] - qc[0], qw[1] - qc[1]))
-                        if d > m_err:
-                            m_err = d
-                if s > 0:
-                    times_ms.append(dt_ms)
-                    max_errs_px.append(err_px)
-                    max_mapper_errs_px.append(m_err)
+                for s in range(steps):
+                    step_drag(s)
+                    bdc._clear_step_caches()
+                    pcg_log.clear()
+                    t0 = time.perf_counter()
+                    mp_cold = _build_current(warm=None)
+                    cold_ms.append((time.perf_counter() - t0) * 1000.0)
+                    if s > 0:
+                        cold_iters.append(sum(it for _, it in pcg_log))
+                    ux_cold = np.asarray(mp_cold.warp._grid["ux"], dtype=float)
+                    uy_cold = np.asarray(mp_cold.warp._grid["uy"], dtype=float)
+                    sx = max(mp_cold.h_scales[0], mp_cold.h_scales[1], 1.0)
+                    sy = max(mp_cold.v_scales[0], mp_cold.v_scales[1], 1.0)
 
-            med_ms = sorted(times_ms)[len(times_ms) // 2]
-            worst_err = max(max_errs_px)
-            worst_m_err = max(max_mapper_errs_px)
-            print(
-                f"2) Rig {rig} ({steps - 1} warm drag steps): "
-                f"median={med_ms:.2f} ms, max_err={worst_err:.4f} px, "
-                f"max_mapper_err={worst_m_err:.4f} px (<=0.5 px)"
-            )
-            self.assertLessEqual(
-                worst_err, 0.5,
-                f"Rig {rig}: warm flow field drifted {worst_err:.4f} px > 0.5 px",
-            )
-            self.assertLessEqual(
-                worst_m_err, 0.5,
-                f"Rig {rig}: warm mapper(p) drifted {worst_m_err:.4f} px > 0.5 px",
-            )
+                    bdc._clear_step_caches()
+                    pcg_log.clear()
+                    t0 = time.perf_counter()
+                    mp_warm = _build_current(warm=warm)
+                    dt_ms = (time.perf_counter() - t0) * 1000.0
 
-            # Timed alone, as a drag runs: no cold solve between frames and
-            # no cache clearing, neither of which a preview frame pays for.
-            warm = {}
-            pure_ms = []
-            for s in range(steps, steps + 12):
-                step_drag(s)
-                t0 = time.perf_counter()
-                _build_current(warm=warm)
-                pure_ms.append((time.perf_counter() - t0) * 1000.0)
-            pure_med = sorted(pure_ms[1:])[len(pure_ms[1:]) // 2]
-            cold_med = sorted(cold_ms)[len(cold_ms) // 2]
-            print(f"2) Rig {rig} warm frames alone: median={pure_med:.2f} ms, "
-                  f"cold {cold_med:.2f} ms")
-            # A ratio, not milliseconds: a process under load here gets moved to
-            # a core half as fast (a bare Python loop doubles too), mid-suite.
-            self.assertLessEqual(
-                pure_med * 5.0, cold_med,
-                f"Rig {rig}: warm {pure_med:.2f} ms is not 5x faster than cold {cold_med:.2f} ms",
-            )
+                    ux_warm = np.asarray(mp_warm.warp._grid["ux"], dtype=float)
+                    uy_warm = np.asarray(mp_warm.warp._grid["uy"], dtype=float)
+                    err_px = float(np.max(np.hypot(
+                        (ux_warm - ux_cold) * sx,
+                        (uy_warm - uy_cold) * sy,
+                    )))
+                    m_err = 0.0
+                    for pt in sample_pts:
+                        qw = mp_warm(pt)
+                        qc = mp_cold(pt)
+                        if qw is not None and qc is not None:
+                            d = float(np.hypot(qw[0] - qc[0], qw[1] - qc[1]))
+                            if d > m_err:
+                                m_err = d
+                    if s > 0:
+                        times_ms.append(dt_ms)
+                        max_errs_px.append(err_px)
+                        max_mapper_errs_px.append(m_err)
+
+                med_ms = sorted(times_ms)[len(times_ms) // 2]
+                worst_err = max(max_errs_px)
+                worst_m_err = max(max_mapper_errs_px)
+                print(
+                    f"2) Rig {rig} ({steps - 1} warm drag steps): "
+                    f"median={med_ms:.2f} ms, max_err={worst_err:.4f} px, "
+                    f"max_mapper_err={worst_m_err:.4f} px (<=0.5 px)"
+                )
+                self.assertLessEqual(
+                    worst_err, 0.5,
+                    f"Rig {rig}: warm flow field drifted {worst_err:.4f} px > 0.5 px",
+                )
+                self.assertLessEqual(
+                    worst_m_err, 0.5,
+                    f"Rig {rig}: warm mapper(p) drifted {worst_m_err:.4f} px > 0.5 px",
+                )
+
+                # Standalone warm drag: no cold solve or cache clearing between frames.
+                warm = {}
+                pure_ms = []
+                pure_iters = []
+                seen_caps = set()
+                for s in range(steps, steps + 12):
+                    step_drag(s)
+                    pcg_log.clear()
+                    t0 = time.perf_counter()
+                    _build_current(warm=warm)
+                    pure_ms.append((time.perf_counter() - t0) * 1000.0)
+                    if s > steps:
+                        pure_iters.append(sum(it for _, it in pcg_log))
+                        seen_caps.update(cap for cap, _ in pcg_log)
+                pure_med = sorted(pure_ms[1:])[len(pure_ms[1:]) // 2]
+                cold_med = sorted(cold_ms)[len(cold_ms) // 2]
+                pure_med_iters = sorted(pure_iters)[len(pure_iters) // 2]
+                cold_med_iters = sorted(cold_iters)[len(cold_iters) // 2]
+                print(
+                    f"2) Rig {rig} warm frames alone: median={pure_med_iters} PCG iters vs "
+                    f"cold {cold_med_iters} ({pure_med:.2f} ms vs {cold_med:.2f} ms)"
+                )
+                self.assertEqual(seen_caps, {warm_cap})
+                self.assertLessEqual(
+                    pure_med_iters * 10, cold_med_iters,
+                    f"Rig {rig}: warm {pure_med_iters} PCG iters is not >=10x fewer than cold {cold_med_iters}",
+                )
+        finally:
+            gridsolve.pcg = orig_pcg
 
     def test_5_a_frame_over_budget_says_so_and_settles_on_the_same_geometry(self):
         """A jump outruns the step cap; solving on unchanged lines then converges."""
