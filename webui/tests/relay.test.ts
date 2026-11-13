@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ImageMeta } from "../src/net.ts";
-import { cacheRelayImage, RelayClient, RelayHost, type RelayChannelLike } from "../src/relay.ts";
+import { cacheRelayImage, RelayClient, RelayHost, relayChannelName, runTag, withRunTag, type RelayChannelLike } from "../src/relay.ts";
 
 
 class FakeChannelEndpoint implements RelayChannelLike {
@@ -450,6 +450,62 @@ async function withFakeDom<T>(fn: (env: { body: FakeElement; win: any }) => Prom
   }
 }
 
+test("这次运行的名字：不变、只用安全字符，打开的页面带上它", () => {
+  const tag = runTag();
+  assert.equal(runTag(), tag, "one name per load");
+  assert.match(tag, /^[A-Za-z0-9_-]{1,64}$/);
+  assert.equal(relayChannelName("abc"), "animean.relay.abc");
+  assert.equal(withRunTag("dialog.html?id=d1&owner=main", "abc"), "dialog.html?id=d1&owner=main&relay=abc");
+  assert.equal(withRunTag("index.html", "abc"), "index.html?relay=abc");
+  assert.equal(withRunTag("index.html"), `index.html?relay=${tag}`);
+});
+
+test("不给名字的中转用这次运行的频道：主窗口页和页面里临时开的 RelayClient 能接上", async () => {
+  const backend = createMockBackendClient();
+  backend.setCallHandler(async (method) => method);
+  const host = new RelayHost(backend);
+  const client = new RelayClient();
+  try {
+    await client.connect();
+    assert.equal(await client.call("project.saveAs", {}), "project.saveAs");
+  } finally {
+    client.close();
+    host.close();
+  }
+});
+
+test("两个 AnimeAn 各用自己这次运行的频道：调用只到自己的后端，另一个关掉时的 bye 不影响这边", async () => {
+  // Real BroadcastChannels: both copies of AnimeAn share one WebView2 profile.
+  const backendA = createMockBackendClient();
+  const backendB = createMockBackendClient();
+  const seen: string[] = [];
+  backendA.setCallHandler(async (method) => {
+    seen.push(`A ${method}`);
+    return "A";
+  });
+  backendB.setCallHandler(async (method) => {
+    seen.push(`B ${method}`);
+    return "B";
+  });
+  const hostA = new RelayHost(backendA, relayChannelName("runA"));
+  const hostB = new RelayHost(backendB, relayChannelName("runB"));
+  const panelA = new RelayClient(relayChannelName("runA"));
+  try {
+    await panelA.connect();
+    assert.equal(await panelA.call("layer.select", {}), "A");
+    assert.deepEqual(seen, ["A layer.select"], "the other copy's backend never hears the call");
+
+    hostB.close(); // the other copy closes and says bye
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(panelA.connected, true, "this copy's panel still has its main window");
+    assert.equal(await panelA.call("layer.select", {}), "A");
+  } finally {
+    panelA.close();
+    hostA.close();
+    hostB.close();
+  }
+});
+
 test("RelayClient clientId 唯一性：同一假总线上两个 RelayClient 调用 id 相同，回复不串", async () => {
   const bus = new FakeBroadcastBus();
   const backend = createMockBackendClient();
@@ -805,7 +861,7 @@ test("panelwindows 与 syncDocks：WINDOW_FOR_DOCK 反推、缺省窗口视为�
       cmd: "open_panel_window",
       args: {
         label: "panel-assetsDock",
-        url: "index.html?only=assetsDock&satellite=1",
+        url: `index.html?only=assetsDock&satellite=1&relay=${runTag()}`,
         x: 120 + 30,
         y: 80 + 40,
         width: 250,

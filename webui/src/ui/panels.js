@@ -498,19 +498,74 @@ let openMenu = null;
 let openTitle = null;
 let titleClosedByPress = null;
 let menuRequest = 0;
+// Set when the page loses the focus, cleared by a press or the focus coming back:
+// a menu still on its way then does not open in a page nobody is using.
+let pageBlurred = false;
 function closeMenus() {
   if (openMenu) { openMenu.remove(); openMenu = null; }
   openTitle?.classList.remove("open");
   openTitle = null;
+  reportMenuArea();
 }
+
+// Where the open menu is, for whoever must keep it uncovered: in the shell, the
+// AnimeAn windows above this page's own leave these boxes open (set_menu_area).
+// Boxes are [x, y, width, height] in device pixels from the page's top-left, the
+// menu and its submenus; none when it closes. Reported once per task, and only
+// when they change.
+let menuAreaListener = null;
+let reportedArea = "[]";
+let areaQueued = false;
+export function onMenuArea(fn) {
+  menuAreaListener = fn;
+  reportedArea = "[]";
+}
+function reportMenuArea() {
+  if (!menuAreaListener || areaQueued) return;
+  areaQueued = true;
+  queueMicrotask(() => {
+    areaQueued = false;
+    const boxes = openMenu
+      ? [openMenu, ...openMenu.querySelectorAll(".qmenu")].map((el) => {
+        const r = el.getBoundingClientRect();
+        const ratio = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+        return [r.left * ratio, r.top * ratio, r.width * ratio, r.height * ratio];
+      })
+      : [];
+    const text = JSON.stringify(boxes);
+    if (text === reportedArea) return;
+    reportedArea = text;
+    menuAreaListener?.(boxes);
+  });
+}
+
+// Closes the open menu and drops one still on its way, as a press elsewhere does.
+export function closePopupMenus() {
+  menuRequest++;
+  closeMenus();
+}
+
+// The holes for a menu are cut at its place on the screen: a page that loses the
+// focus (a press in another window, AnimeAn's or not, never reaches it) closes
+// its menu, and opens none until it is pressed or focused again.
+export function pageFocusChanged(focused) {
+  pageBlurred = !focused;
+  if (!focused) closePopupMenus();
+}
+
 if (typeof window !== "undefined") {
   window.addEventListener("pointerdown", (e) => {
+    pageBlurred = false;
     titleClosedByPress = null;
     if (e.target.closest?.(".qmenu")) return;
     menuRequest++;
     titleClosedByPress = openTitle;
     closeMenus();
   }, true);
+  window.addEventListener("blur", () => pageFocusChanged(false));
+  window.addEventListener("focus", () => pageFocusChanged(true));
+  // The boxes were measured for the old size.
+  window.addEventListener("resize", () => { if (openMenu) closePopupMenus(); });
 }
 
 // A menu that has to wait for a reply: true while no press or newer menu got there first.
@@ -536,14 +591,19 @@ export function popupMenu(items, x, y, onTrigger, parent) {
         const r = row.getBoundingClientRect(), base = m.getBoundingClientRect();
         const sub = popupMenu(item.children ?? [], r.right - base.left - 2, r.top - base.top, onTrigger, m);
         sub.style.position = "absolute";
+        reportMenuArea();
       });
     } else if (item.enabled !== false) {
-      row.addEventListener("pointerenter", () => { for (const s of m.querySelectorAll(":scope > .qmenu")) s.remove(); });
+      row.addEventListener("pointerenter", () => {
+        for (const s of m.querySelectorAll(":scope > .qmenu")) s.remove();
+        reportMenuArea();
+      });
       row.addEventListener("click", () => { closeMenus(); onTrigger(item); });
     }
     m.append(row);
   }
   m.style.left = `${x}px`; m.style.top = `${y}px`;
+  if (!parent && pageBlurred) return m;
   (parent ?? document.body).append(m);
   if (!parent) {
     closeMenus();
@@ -553,6 +613,7 @@ export function popupMenu(items, x, y, onTrigger, parent) {
     const box = m.getBoundingClientRect?.();
     if (box && view?.innerWidth && box.right > view.innerWidth) m.style.left = `${Math.max(0, view.innerWidth - box.width)}px`;
     if (box && view?.innerHeight && box.bottom > view.innerHeight) m.style.top = `${Math.max(0, view.innerHeight - box.height)}px`;
+    reportMenuArea();
   }
   return m;
 }
@@ -567,7 +628,8 @@ export function createMenuBar(root, { onTrigger, onOpen }) {
   function showPopup(item, index, fallbackMenu) {
     const current = menus.find((m) => (m.id && fallbackMenu.id ? m.id === fallbackMenu.id : m.text === fallbackMenu.text)) ?? menus[index] ?? fallbackMenu;
     const r = item.getBoundingClientRect?.() ?? { left: 0, bottom: 0 };
-    popupMenu(current?.children ?? [], r.left, r.bottom, onTrigger);
+    // Refused while the page has no focus: the title must not look open.
+    if (popupMenu(current?.children ?? [], r.left, r.bottom, onTrigger) !== openMenu) return;
     item.classList.add("open");
     openTitle = item;
   }

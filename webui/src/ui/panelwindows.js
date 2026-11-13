@@ -1,4 +1,5 @@
 import { tip } from "../i18n/index.js";
+import { withRunTag } from "../relay.ts";
 import { DOCK_FOR_WINDOW } from "./app.js";
 
 export const WINDOW_FOR_DOCK = {
@@ -167,7 +168,7 @@ export function createPanelWindows(runtime, store, options = {}) {
     const { screenX, screenY } = closed ? { screenX: 0, screenY: 0 } : getScreenOffset();
     const { minWidth, minHeight } = minSizeForDock(dockId, runtime);
     const label = `panel-${dockId}`;
-    const url = `index.html?only=${encodeURIComponent(dockId)}&satellite=1`;
+    const url = withRunTag(`index.html?only=${encodeURIComponent(dockId)}&satellite=1`);
     closingByHost.delete(dockId);
     openWindows.add(dockId);
     void invokeTauri("open_panel_window", {

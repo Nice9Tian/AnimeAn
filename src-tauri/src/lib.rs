@@ -1,4 +1,5 @@
 use std::collections::hash_map::RandomState;
+use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -842,8 +843,35 @@ fn set_panels_focusable(app: tauri::AppHandle, focusable: bool) -> Result<(), St
     Ok(())
 }
 
+/// One top-level window of this process, for `modal_target`.
+#[derive(Debug, Clone, Copy)]
+pub struct TopWindow {
+    pub id: isize,
+    /// The end of its owner chain (itself when it has no owner).
+    pub root_owner: isize,
+    pub shown: bool,
+    pub enabled: bool,
+    pub panel: bool,
+    /// A helper popup that never takes the input itself: a tooltip, a picker's
+    /// suggestion list (topmost, tool or not activatable).
+    pub helper: bool,
+}
+
+/// What holds the input for `main` while a modal dialog or a native picker is
+/// up: the topmost shown, enabled window owned by `main` at any depth, panel
+/// windows and helper popups aside. `windows` runs topmost first. The owner of a modal one is
+/// disabled, so a dialog under another or under a picker is never picked.
+pub fn modal_target(main: isize, windows: &[TopWindow]) -> Option<isize> {
+    windows
+        .iter()
+        .find(|w| w.id != main && !w.panel && !w.helper && w.shown && w.enabled && w.root_owner == main)
+        .map(|w| w.id)
+}
+
 /// Gives the input to whatever holds it for the main window: the dialog on top,
-/// or a native picker. Windows keeps that as the main window's last active popup.
+/// or a native picker. Not simply the main window's last active popup: a real
+/// click on a panel window lets WebView2 focus it although it cannot be
+/// activated, the panel becomes that popup and stays above the dialog.
 #[tauri::command]
 fn focus_modal(app: tauri::AppHandle) -> Result<(), String> {
     let main_win = app
@@ -851,19 +879,205 @@ fn focus_modal(app: tauri::AppHandle) -> Result<(), String> {
         .ok_or_else(|| "Main window 'main' not found".to_string())?;
     #[cfg(windows)]
     {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GetLastActivePopup, SetForegroundWindow};
-        let hwnd = main_win.hwnd().map_err(|e| e.to_string())?;
-        unsafe {
-            let popup = GetLastActivePopup(hwnd.0 as _);
-            if !popup.is_null() {
-                SetForegroundWindow(popup);
-            }
+        use windows_sys::Win32::Foundation::HWND;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetAncestor, GetLastActivePopup, GetWindowLongPtrW, GetWindowThreadProcessId, IsWindowVisible,
+            SetForegroundWindow, GA_ROOTOWNER, GWL_EXSTYLE, GWL_STYLE, WS_DISABLED, WS_EX_NOACTIVATE,
+            WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+        };
+        let main = main_win.hwnd().map_err(|e| e.to_string())?.0 as HWND;
+        let panels: std::collections::HashSet<isize> = app
+            .webview_windows()
+            .into_iter()
+            .filter(|(label, _)| label.starts_with("panel-"))
+            .filter_map(|(_, win)| win.hwnd().ok().map(|h| h.0 as isize))
+            .collect();
+        let pid = std::process::id();
+        let windows: Vec<TopWindow> = windows_in_z_order()
+            .into_iter()
+            .filter(|&h| {
+                let mut owner_pid = 0u32;
+                unsafe { GetWindowThreadProcessId(h, &mut owner_pid) };
+                owner_pid == pid
+            })
+            .map(|h| unsafe {
+                TopWindow {
+                    id: h as isize,
+                    root_owner: GetAncestor(h, GA_ROOTOWNER) as isize,
+                    shown: IsWindowVisible(h) != 0,
+                    enabled: (GetWindowLongPtrW(h, GWL_STYLE) as u32 & WS_DISABLED) == 0,
+                    panel: panels.contains(&(h as isize)),
+                    helper: (GetWindowLongPtrW(h, GWL_EXSTYLE) as u32 & (WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)) != 0,
+                }
+            })
+            .collect();
+        let target = modal_target(main as isize, &windows).or_else(|| {
+            // Nothing shown yet (a dialog page still loading): what Windows would pick.
+            let popup = unsafe { GetLastActivePopup(main) } as isize;
+            (popup != 0 && popup != main as isize && !panels.contains(&popup)).then_some(popup)
+        });
+        if let Some(hwnd) = target {
+            unsafe { SetForegroundWindow(hwnd as HWND) };
         }
         Ok(())
     }
     #[cfg(not(windows))]
     {
         main_win.set_focus().map_err(|e| e.to_string())
+    }
+}
+
+// ---- menus over other windows --------------------------------------------------
+// A menu is drawn in the page that opened it. While it shows, the AnimeAn windows
+// above that page's window (the floating panels over the main window) leave the
+// menu's rectangles open, so the menu is seen and takes the clicks.
+
+/// The parts of `menus` (screen rectangles: left, top, right, bottom) that fall on
+/// a window at `window`, in that window's own coordinates.
+pub fn menu_holes(window: [i32; 4], menus: &[[i32; 4]]) -> Vec<[i32; 4]> {
+    menus
+        .iter()
+        .filter_map(|m| {
+            let (l, t) = (m[0].max(window[0]), m[1].max(window[1]));
+            let (r, b) = (m[2].min(window[2]), m[3].min(window[3]));
+            (l < r && t < b).then(|| [l - window[0], t - window[1], r - window[0], b - window[1]])
+        })
+        .collect()
+}
+
+/// `boxes` ([x, y, width, height] in device pixels from the top-left of a client
+/// area at `client`: left, top, right, bottom on the screen) as screen rectangles,
+/// cut to that client area: what lies beyond it is not drawn, so it must not be
+/// cut out of the windows around it either.
+pub fn menu_rects(client: [i32; 4], boxes: &[[f64; 4]]) -> Vec<[i32; 4]> {
+    boxes
+        .iter()
+        .filter_map(|[x, y, w, h]| {
+            let l = (client[0] + x.floor() as i32).max(client[0]);
+            let t = (client[1] + y.floor() as i32).max(client[1]);
+            let r = (client[0] + (x + w).ceil() as i32).min(client[2]);
+            let b = (client[1] + (y + h).ceil() as i32).min(client[3]);
+            (l < r && t < b).then_some([l, t, r, b])
+        })
+        .collect()
+}
+
+/// The windows that have a hole now, each with the window whose menu made it:
+/// only those are restored when that menu closes or its window goes.
+fn holed_windows() -> &'static Mutex<HashMap<String, String>> {
+    static HOLED: std::sync::OnceLock<Mutex<HashMap<String, String>>> = std::sync::OnceLock::new();
+    HOLED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Top-level windows, topmost first.
+#[cfg(windows)]
+fn windows_in_z_order() -> Vec<windows_sys::Win32::Foundation::HWND> {
+    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::EnumWindows;
+    unsafe extern "system" fn collect(hwnd: HWND, list: LPARAM) -> BOOL {
+        (*(list as *mut Vec<HWND>)).push(hwnd);
+        1
+    }
+    let mut all: Vec<HWND> = Vec::new();
+    unsafe { EnumWindows(Some(collect), &mut all as *mut Vec<HWND> as LPARAM) };
+    all
+}
+
+/// Restores the windows the menus of window `source` cut holes in, and forgets
+/// `source` itself: its menu cannot report any more once it has gone.
+fn release_menu_holes(app: &tauri::AppHandle, source: &str) {
+    let Ok(mut holed) = holed_windows().lock() else { return };
+    holed.remove(source);
+    let made: Vec<String> = holed
+        .iter()
+        .filter(|(_, by)| by.as_str() == source)
+        .map(|(win, _)| win.clone())
+        .collect();
+    for label in made {
+        holed.remove(&label);
+        #[cfg(windows)]
+        if let Some(Ok(handle)) = app.get_webview_window(&label).map(|w| w.hwnd()) {
+            unsafe { windows_sys::Win32::Graphics::Gdi::SetWindowRgn(handle.0 as _, std::ptr::null_mut(), 1) };
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = app;
+}
+
+/// `rects` are the boxes of the menu open in the page of window `label`:
+/// [x, y, width, height] in device pixels from the top-left of its client area.
+/// An empty list closes the holes that menu made.
+#[tauri::command]
+fn set_menu_area(app: tauri::AppHandle, label: String, rects: Vec<[f64; 4]>) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{HWND, RECT};
+        use windows_sys::Win32::Graphics::Gdi::{CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, RGN_DIFF};
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
+        let owner = app
+            .get_webview_window(&label)
+            .ok_or_else(|| format!("Window '{label}' not found"))?;
+        let origin = owner.inner_position().map_err(|e| e.to_string())?;
+        let size = owner.inner_size().map_err(|e| e.to_string())?;
+        let client = [origin.x, origin.y, origin.x + size.width as i32, origin.y + size.height as i32];
+        let menus = menu_rects(client, &rects);
+        // Only what lies above the menu's window covers it.
+        let owner_hwnd = owner.hwnd().map_err(|e| e.to_string())?.0 as HWND;
+        let order = windows_in_z_order();
+        let above: std::collections::HashSet<isize> = if order.contains(&owner_hwnd) {
+            order.iter().take_while(|&&h| h != owner_hwnd).map(|&h| h as isize).collect()
+        } else {
+            Default::default()
+        };
+        let mut holed = holed_windows().lock().map_err(|e| e.to_string())?;
+        for (other, win) in app.webview_windows() {
+            if other == label {
+                continue;
+            }
+            let Ok(handle) = win.hwnd() else { continue };
+            let hwnd = handle.0 as HWND;
+            let mut frame = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+            let holes = if !menus.is_empty()
+                && above.contains(&(hwnd as isize))
+                && unsafe { GetWindowRect(hwnd, &mut frame) } != 0
+            {
+                menu_holes([frame.left, frame.top, frame.right, frame.bottom], &menus)
+            } else {
+                Vec::new()
+            };
+            if holes.is_empty() {
+                if holed.get(&other) == Some(&label) {
+                    holed.remove(&other);
+                    unsafe { SetWindowRgn(hwnd, std::ptr::null_mut(), 1) };
+                }
+                continue;
+            }
+            unsafe {
+                let region = CreateRectRgn(0, 0, frame.right - frame.left, frame.bottom - frame.top);
+                if region.is_null() {
+                    continue;
+                }
+                for [l, t, r, b] in holes {
+                    let hole = CreateRectRgn(l, t, r, b);
+                    if !hole.is_null() {
+                        CombineRgn(region, region, hole, RGN_DIFF);
+                        DeleteObject(hole);
+                    }
+                }
+                // On success the window owns the region; on failure it is still ours.
+                if SetWindowRgn(hwnd, region, 1) == 0 {
+                    DeleteObject(region);
+                    continue;
+                }
+            }
+            holed.insert(other, label.clone());
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, label, rects);
+        Ok(())
     }
 }
 
@@ -981,6 +1195,10 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(move |window, event| {
+            // A window that goes cannot close its menu any more.
+            if let WindowEvent::Destroyed = event {
+                release_menu_holes(window.app_handle(), window.label());
+            }
             // Only a close request tells the user closing a panel from Windows taking
             // it down with the main window, which must not count as hiding it.
             if window.label().starts_with("panel-") {
@@ -1026,6 +1244,7 @@ pub fn run() {
             set_window_enabled,
             set_panels_focusable,
             focus_modal,
+            set_menu_area,
         ])
         .build(context)
         .expect("error while building AnimeAn Tauri shell");
@@ -1120,6 +1339,62 @@ mod tests {
         // Taller than its owner: the dialog keeps the owner's top edge, not above it.
         assert_eq!(center_over((100.0, 50.0), (400.0, 300.0), (300.0, 500.0)), (150.0, 50.0));
         assert_eq!(center_over((0.0, 0.0), (101.0, 101.0), (50.0, 50.0)), (26.0, 26.0));
+    }
+
+    #[test]
+    fn test_menu_holes() {
+        // A panel at (100, 50)-(300, 250) over a menu at (250, 100)-(400, 180): the
+        // overlap, in the panel's own coordinates.
+        let panel = [100, 50, 300, 250];
+        assert_eq!(menu_holes(panel, &[[250, 100, 400, 180]]), vec![[150, 50, 200, 130]]);
+        // A menu and its submenu; only the part on the panel counts.
+        assert_eq!(
+            menu_holes(panel, &[[120, 60, 200, 120], [200, 80, 320, 140]]),
+            vec![[20, 10, 100, 70], [100, 30, 200, 90]]
+        );
+        // Beside the panel, or touching its edge only: no hole.
+        assert!(menu_holes(panel, &[[300, 60, 400, 120]]).is_empty());
+        assert!(menu_holes(panel, &[[0, 0, 100, 50]]).is_empty());
+        assert!(menu_holes(panel, &[]).is_empty());
+    }
+
+    #[test]
+    fn test_menu_rects() {
+        // A client area at (100, 50)-(900, 650) on the screen.
+        let client = [100, 50, 900, 650];
+        // Device pixels from the client's top-left, rounded outwards.
+        assert_eq!(menu_rects(client, &[[10.4, 20.6, 100.0, 50.2]]), vec![[110, 70, 211, 121]]);
+        // A submenu running past the right edge is cut there; one wholly outside is dropped.
+        assert_eq!(menu_rects(client, &[[750.0, 100.0, 200.0, 80.0]]), vec![[850, 150, 900, 230]]);
+        assert_eq!(menu_rects(client, &[[780.0, 0.0, 40.0, 40.0], [0.0, 600.0, 10.0, 0.0]]), vec![[880, 50, 900, 90]]);
+        assert!(menu_rects(client, &[[800.0, 0.0, 40.0, 40.0]]).is_empty());
+        assert!(menu_rects(client, &[]).is_empty());
+    }
+
+    #[test]
+    fn test_modal_target() {
+        let main = 1;
+        let win = |id, root_owner, shown, enabled, panel| TopWindow { id, root_owner, shown, enabled, panel, helper: false };
+        // A clicked panel has risen above the dialog: the dialog still holds the input.
+        let panel_on_top = [win(5, main, true, true, true), win(7, main, true, true, false), win(main, main, true, false, false)];
+        assert_eq!(modal_target(main, &panel_on_top), Some(7));
+        // A dialog over a dialog: the lower one is disabled, the upper one is picked.
+        let nested = [win(8, main, true, true, false), win(7, main, true, false, false), win(main, main, true, false, false)];
+        assert_eq!(modal_target(main, &nested), Some(8));
+        // A native picker over a dialog page; a hidden window and another program's tree are ignored.
+        let picker = [
+            win(9, 42, true, true, false),
+            win(4, main, false, true, false),
+            win(6, main, true, true, false),
+            win(7, main, true, true, false),
+            win(main, main, true, false, false),
+        ];
+        assert_eq!(modal_target(main, &picker), Some(6));
+        // The picker's suggestion list or a tooltip sits above the picker: the picker is picked.
+        let dropdown = TopWindow { helper: true, ..win(10, main, true, true, false) };
+        assert_eq!(modal_target(main, &[dropdown, win(6, main, true, true, false), win(main, main, true, false, false)]), Some(6));
+        // Nothing shown yet: no target, the caller falls back.
+        assert_eq!(modal_target(main, &[win(5, main, true, true, true), win(main, main, true, false, false)]), None);
     }
 
     #[test]

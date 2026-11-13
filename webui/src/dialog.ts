@@ -4,9 +4,9 @@
 // "dialogs" state says; this page decides nothing.
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { RelayClient } from "./relay.ts";
+import { RelayClient, relayChannelName } from "./relay.ts";
 import { createStore } from "./ui/app.js";
-import { createDialogHost, DIALOG_CHANNEL, dialogLabel } from "./ui/dialoghost.js";
+import { createDialogHost, dialogChannelName, dialogLabel } from "./ui/dialoghost.js";
 import { renderDialog } from "./ui/dialogwindow.js";
 import "./ui/qt.css";
 import "./ui/qt3.css";
@@ -26,7 +26,7 @@ window.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.altKey || /^F\d+$/.test(e.key)) && !typing) e.preventDefault();
 });
 
-const client = new RelayClient();
+const client = new RelayClient(relayChannelName());
 const store = createStore(client);
 const failed = (error: unknown) =>
   store.call("dialog.result", { id, action: "error", value: String((error as Error)?.message ?? error) });
@@ -60,7 +60,7 @@ store.on("dialogs", (list: Array<{ id: string }> | undefined) => {
       width: Math.ceil(box?.width ?? 320),
       height: Math.ceil(box?.height ?? 200),
     }).then(() => {
-      new BroadcastChannel(DIALOG_CHANNEL).postMessage({ type: "shown", id });
+      new BroadcastChannel(dialogChannelName()).postMessage({ type: "shown", id });
       (view?.el as HTMLElement | null)?.focus?.({ preventScroll: true });
     }, failed);
   });

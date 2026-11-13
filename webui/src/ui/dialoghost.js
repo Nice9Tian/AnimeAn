@@ -13,10 +13,15 @@
 // brings the dialog forward. Without the shell (a plain browser) the dialogs
 // are drawn over the main page instead and pickers answer Cancel.
 import { t } from "../i18n/index.js";
+import { runTag, withRunTag } from "../relay.ts";
 import { renderDialog } from "./dialogwindow.js";
 
-// Dialog pages say here that they are on screen.
+// Dialog pages say here that they are on screen; one channel per AnimeAn run
+// (see runTag in relay.ts), or another copy's dialog of the same id would answer.
 export const DIALOG_CHANNEL = "animean.dialog";
+export function dialogChannelName(tag = runTag()) {
+  return `${DIALOG_CHANNEL}.${tag}`;
+}
 // Long enough for a cold WebView2 to load its first dialog page at startup.
 const SHOW_TIMEOUT_MS = 30000;
 const SWALLOWED = ["keydown", "keyup", "pointermove", "pointerup", "mousedown", "mousemove", "mouseup", "click", "dblclick", "contextmenu", "wheel"];
@@ -168,7 +173,7 @@ export function createDialogHost(store, options = {}) {
     }
     const label = dialogLabel(spec.id);
     opened.set(spec.id, { kind: spec.kind, label, owner });
-    const url = `dialog.html?id=${encodeURIComponent(spec.id)}&owner=${encodeURIComponent(owner)}`;
+    const url = withRunTag(`dialog.html?id=${encodeURIComponent(spec.id)}&owner=${encodeURIComponent(owner)}`);
     try {
       await shell.openDialogWindow({ label, url, owner, title: t(spec.title ?? "") });
     } catch (error) {
@@ -225,7 +230,7 @@ export function createDialogHost(store, options = {}) {
   if (role === "main") {
     const channel = options.channel !== undefined
       ? options.channel
-      : typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(DIALOG_CHANNEL) : null;
+      : typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(dialogChannelName()) : null;
     channel?.unref?.(); // Node's keeps a test run alive; browsers have no unref.
     channel?.addEventListener?.("message", (event) => {
       const message = event?.data ?? event;
