@@ -2,6 +2,50 @@ import type { BoardMessage, ImageMeta, InputMessage } from "./net.ts";
 
 export const DEFAULT_RELAY_CHANNEL = "animean.relay";
 
+// The windows of one AnimeAn run talk on channels named after that run. Two
+// copies of AnimeAn on the same WebView2 profile share BroadcastChannel names,
+// and must not hear each other: one copy's calls would reach both backends, and
+// a closing copy's "bye" would cut the other's panels and dialogs off. The main
+// page names the run, keeps the name across a reload of its window, and hands it
+// to the windows it opens in their URL (`relay=`).
+const RUN_PARAM = "relay";
+const RUN_KEY = "animean.run";
+const RUN_TAG = /^[A-Za-z0-9_-]{1,64}$/;
+let currentRun: string | null = null;
+
+export function runTag(): string {
+  if (currentRun) return currentRun;
+  const fromUrl = typeof location !== "undefined" ? new URLSearchParams(location.search).get(RUN_PARAM) : null;
+  if (fromUrl && RUN_TAG.test(fromUrl)) return (currentRun = fromUrl);
+  let kept: string | null = null;
+  try {
+    kept = sessionStorage.getItem(RUN_KEY);
+  } catch {
+    // No storage (tests, a locked-down page): a fresh name for this load.
+  }
+  currentRun = kept && RUN_TAG.test(kept)
+    ? kept
+    : typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+  try {
+    sessionStorage.setItem(RUN_KEY, currentRun);
+  } catch {
+    // As above.
+  }
+  return currentRun;
+}
+
+/** The relay channel of this run. */
+export function relayChannelName(tag = runTag()): string {
+  return `${DEFAULT_RELAY_CHANNEL}.${tag}`;
+}
+
+/** `url` (a page of this app) with this run's name, for a window opened from here. */
+export function withRunTag(url: string, tag = runTag()): string {
+  return `${url}${url.includes("?") ? "&" : "?"}${RUN_PARAM}=${encodeURIComponent(tag)}`;
+}
+
 export interface RelayChannelLike {
   postMessage(message: unknown): void;
   close?(): void;

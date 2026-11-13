@@ -11,6 +11,7 @@ import {
 } from "../src/ui/palette.js";
 import { createToolOptions } from "../src/ui/options.js";
 import { askForMenu, createCentral, isUnboundedViewport, trackPress } from "../src/ui/panels.js";
+import { runTag } from "../src/relay.ts";
 
 class FakeClassList {
   set = new Set<string>();
@@ -814,6 +815,29 @@ test("打开的菜单把占的矩形报给外壳：打开、子菜单展开收�
   });
 });
 
+test("页面失焦时关掉菜单，还在等回复的菜单不再打开；回到焦点后照常", async () => {
+  await withDom(async ({ body }) => {
+    const { askForMenu, closePopupMenus, pageFocusChanged, popupMenu } = await import("../src/ui/panels.js");
+    const items = [{ id: "a", text: "A" }];
+    try {
+      popupMenu(items, 0, 0, () => {});
+      assert.ok(body.querySelector(".qmenu"));
+      const wanted = askForMenu();
+      pageFocusChanged(false);
+      assert.equal(body.querySelector(".qmenu"), null, "losing the focus closes the menu");
+      assert.equal(wanted(), false, "a menu still waiting for its reply is dropped");
+      popupMenu(items, 0, 0, () => {});
+      assert.equal(body.querySelector(".qmenu"), null, "and none opens while the page has no focus");
+      pageFocusChanged(true);
+      popupMenu(items, 0, 0, () => {});
+      assert.ok(body.querySelector(".qmenu"), "back in focus, menus open again");
+    } finally {
+      pageFocusChanged(true);
+      closePopupMenus();
+    }
+  });
+});
+
 test("点开菜单先调 menu.refresh 获取最新勾选状态再显示弹窗", async () => {
   await withDom(async ({ body, ui: { createStore, createChrome } }) => {
     const stateListeners = new Map<string, (v: any) => void>();
@@ -910,7 +934,7 @@ test("the main page opens a window per dialog and locks the others, owner first"
     store.emit("dialogs", [sizeDialog]);
     await host.settled();
     assert.deepEqual(shell.log, [
-      "open dialog-d1 owner=main title=New Project url=dialog.html?id=d1&owner=main",
+      `open dialog-d1 owner=main title=New Project url=dialog.html?id=d1&owner=main&relay=${runTag()}`,
       "unfocusable panels",
       "disable main",
     ]);
@@ -920,7 +944,7 @@ test("the main page opens a window per dialog and locks the others, owner first"
     store.emit("dialogs", [sizeDialog, colorOver]);
     await host.settled();
     assert.deepEqual(shell.log, [
-      "open dialog-d2 owner=dialog-d1 title=Select Color url=dialog.html?id=d2&owner=dialog-d1",
+      `open dialog-d2 owner=dialog-d1 title=Select Color url=dialog.html?id=d2&owner=dialog-d1&relay=${runTag()}`,
       "disable dialog-d1",
     ], "a dialog over a dialog is owned by it, and the one below is locked");
 
@@ -957,8 +981,8 @@ test("dialogs that lose the one under them are opened again under the new owner"
     assert.deepEqual(shell.log, [
       "enable main", "enable dialog-d1", "enable dialog-d2", "focusable panels",
       "close dialog-d3", "close dialog-d2",
-      "open dialog-d2 owner=main title=Select Color url=dialog.html?id=d2&owner=main",
-      "open dialog-d3 owner=dialog-d2 title=Note url=dialog.html?id=d3&owner=dialog-d2",
+      `open dialog-d2 owner=main title=Select Color url=dialog.html?id=d2&owner=main&relay=${runTag()}`,
+      `open dialog-d3 owner=dialog-d2 title=Note url=dialog.html?id=d3&owner=dialog-d2&relay=${runTag()}`,
       "close dialog-d1",
       "unfocusable panels", "disable dialog-d2", "disable main",
     ], "Windows would destroy them with their owner, and main would stay locked with nothing on screen");

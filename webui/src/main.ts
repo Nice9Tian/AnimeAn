@@ -7,7 +7,7 @@ import { removeNodeReferences, type ComponentCreate, type Project } from "../vf/
 import { loadProject, type ProjectIO } from "../vf/src/project.ts";
 import { BackendClient } from "./net.ts";
 import { createPlayer } from "./player.ts";
-import { RelayClient, RelayHost } from "./relay.ts";
+import { RelayClient, RelayHost, relayChannelName } from "./relay.ts";
 import { createChrome, createStore, DOCK_FOR_WINDOW, panelFactories, syncDocks } from "./ui/app.js";
 import { messageBox } from "./ui/panels2.js";
 import { createPanelWindows, setupSatelliteDock, triggerDockClosed } from "./ui/panelwindows.js";
@@ -170,8 +170,8 @@ async function bootstrap(): Promise<void> {
     appEl.style.bottom = "0";
   }
 
-  const client = isSatellite ? new RelayClient() : new BackendClient();
-  const relayHost = !isSatellite && typeof BroadcastChannel !== "undefined" ? new RelayHost(client) : null;
+  const client = isSatellite ? new RelayClient(relayChannelName()) : new BackendClient();
+  const relayHost = !isSatellite && typeof BroadcastChannel !== "undefined" ? new RelayHost(client, relayChannelName()) : null;
   const store = createStore(client);
   const factories = panelFactories(store, client, { satellite: isSatellite });
   for (const [type, create] of Object.entries(factories)) {
