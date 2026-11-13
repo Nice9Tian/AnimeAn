@@ -42,6 +42,6 @@
 
 4. **`webui/vf/src/dock.ts`、`runtime.ts`（并排面板之间的分隔条按屏幕像素拖动，2026-11-13；上游 `app/src/dock.ts` 有同样的问题，还没改）**
    - 起因：按比例分配的并排方向上（左右区上下并排、顶部底部左右并排），排列描述里各组的 `size` 是份额，合计归一到设计稿窗口下的跨度，隐藏的组也占一份；屏幕上是把实际的跨度只在可见的组之间分。`dockResizeSplit` 却把拖动处理传来的屏幕像素直接当成份额去夹，窗口不是设计稿的大小、或者区里有隐藏的组时，拖一个像素分隔条就跳到头。
-   - `computeDockWindowLayout` 给这类分隔条的矩形带上 `shown`（各可见组在屏幕上的像素，类型 `DockSplitShown`）；`syncDockSplittersDom` 经 `onResizeSplit` 的第五个参数原样传出；`Runtime.dockResizeSplit` 和 `dockResizeSplit` 各多一个可选参数 `shown`。给了 `shown` 时，在屏幕像素里改分隔条两边的两个可见组，再折回份额（可见组的份额合计不变，隐藏的组不动）；不给时和上游一样。
-   - `normalizeDockLayout` 对按比例分配的组不再把 `size` 取整：份额要留小数，否则窗口比设计稿大时分隔条只能几个像素几个像素地走。沿停靠区厚度方向并排的组是像素，仍取整。
+   - `computeDockWindowLayout` 给这类分隔条的矩形带上 `shown`（各可见组在屏幕上的像素，类型 `DockSplitShown`）；`syncDockSplittersDom` 经 `onResizeSplit` 的第五个参数原样传出；`Runtime.dockResizeSplit` 和 `dockResizeSplit` 各多一个可选参数 `shown`。给了 `shown` 时，在屏幕像素里改分隔条两边的两个可见组，再折回份额（可见组的份额合计不变，隐藏的组不动）；`shown` 和排列对不上（按下以后排列变了）时布局不动。不给 `shown` 时 `dockResizeSplit` 自己的算法和上游一样。
+   - `normalizeDockLayout` 把按比例分配的组的 `size` 当份额对待，两处和上游不同。读入时不取整：份额要留小数，否则窗口比设计稿大时分隔条只能几个像素几个像素地走。合计和设计稿下的跨度对不上时（顶部或底部停靠区变了、组增减了）整体按比例缩放（`scaleGroupAxisSizes`），不取整也不夹最小值；上游用 `distributeGroupAxisSizes`，会把每一份夹到至少 48 或 60。最小尺寸是屏幕像素的事，排版时才管：在份额里夹，拖到最小的面板（窗口比设计稿大时份额不到 48）会在别处的布局变动时跳开，隐藏的组的份额也被挤掉。沿停靠区厚度方向并排的组是像素，两处都和上游一样。
    - 回归测试在 `webui/tests/dock_split_drag.test.ts`。

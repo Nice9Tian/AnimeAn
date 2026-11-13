@@ -376,7 +376,11 @@ export function normalizeDockLayout(scene: Scene, winNode: SceneNode | undefined
           const activeDock = (activeId ? scene.nodes[activeId] : undefined) ?? ({ type: "Dock", width: 240, height: 280 } as SceneNode);
           return { group, activeDock };
         });
-        const distributed = distributeGroupAxisSizes(refSpan, groupEntries, orient);
+        // 按比例分配时尺寸只是份额：整体缩放到这个跨度，不取整，也不夹最小值。最小尺寸是屏幕上的事，排版时才管；
+        // 在这里夹，拖到最小的面板（窗口比设计稿大时份额不到 48）会在别处的布局变动时跳开，隐藏的组的份额也被挤掉
+        const distributed = isPerpendicularSplit
+          ? scaleGroupAxisSizes(refSpan, groupEntries, orient)
+          : distributeGroupAxisSizes(refSpan, groupEntries, orient);
         for (let gi = 0; gi < areaSpec.groups.length; gi++) {
           areaSpec.groups[gi].size = distributed[gi];
         }
@@ -726,7 +730,7 @@ function resizeShownSplit(
   shown: DockSplitShown[],
 ): boolean {
   const at = shown.findIndex((s) => s.groupIndex === groupIndex);
-  if (at < 0 || at + 1 >= shown.length) return false;
+  if (!Number.isFinite(size) || at < 0 || at + 1 >= shown.length) return false;
   if (shown.some((s) => !groups[s.groupIndex] || !(s.size > 0))) return false;
   const minEach = orient === "horizontal" ? 60 : 48;
   const pixels = shown.map((s) => s.size);
@@ -771,9 +775,9 @@ export function dockResizeSplit(
       const activeDock = (activeId ? scene.nodes[activeId] : undefined) ?? ({ type: "Dock", width: 240, height: 280 } as SceneNode);
       return { group, activeDock };
     });
-    if (resizeShownSplit(entries, orient, groupIndex, size, shown)) {
-      return normalizeDockLayout(scene, { ...winNode, type: "Window", width: winNode?.width ?? 1280, height: winNode?.height ?? 800, dockLayout: settled });
-    }
+    // 对不上（按下以后排列变了）时布局不动：这时的 size 是屏幕像素，不能落到下面当份额用
+    if (!resizeShownSplit(entries, orient, groupIndex, size, shown)) return settled;
+    return normalizeDockLayout(scene, { ...winNode, type: "Window", width: winNode?.width ?? 1280, height: winNode?.height ?? 800, dockLayout: settled });
   }
   if (groups.length === 1 || groupIndex === groups.length - 1) {
     groups[groupIndex].size = Math.max(minEach, Math.round(size));
@@ -806,6 +810,18 @@ function groupAxisSize(
   return axis === "horizontal" ? prefWidth(activeDock) : prefHeight(activeDock);
 }
 
+/** 把各组在并排方向上的份额按原来的比例缩放到合计 totalSpan：不取整，不设下限。 */
+function scaleGroupAxisSizes(
+  totalSpan: number,
+  groups: Array<{ group: DockGroupSpec; activeDock: SceneNode }>,
+  axis: "horizontal" | "vertical",
+): number[] {
+  const raw = groups.map((entry) => groupAxisSize(entry, axis));
+  const sum = raw.reduce((a, b) => a + b, 0) || 1;
+  return raw.map((size) => (size * totalSpan) / sum);
+}
+
+/** 把 totalSpan 像素按各组的尺寸分给它们：取整，每组不小于最小尺寸，最后一组拿剩下的。 */
 function distributeGroupAxisSizes(
   totalSpan: number,
   groups: Array<{ group: DockGroupSpec; activeDock: SceneNode }>,

@@ -273,6 +273,73 @@ test("拖完以后改窗口大小、再打开关着的面板，各块的比例�
   assert.ok(Math.abs(stage.box("assetsDock").height - assetsBefore) <= 1, `Assets 原来 ${assetsBefore}，现在 ${stage.box("assetsDock").height}`);
 });
 
+// 份额只是比例，最小尺寸是屏幕上的事。把份额当像素去夹最小值、去取整，面板就会在别处的布局变动时跳开。
+test("把面板拖到最小以后改别处的布局，它留在原地，关着的面板占的比例也不变", async () => {
+  for (const height of [1157, 2117]) {
+    const stage = await openStage(1920, height);
+    const right = () => stage.runtime.getDockLayout().areas.right;
+    const ratios = () => {
+      const sizes = right().groups.map((g) => g.size!);
+      const sum = sizes.reduce((a, b) => a + b, 0);
+      return Object.fromEntries(right().groups.map((g, i) => [g.tabs[0], sizes[i] / sum]));
+    };
+    const near = (a: Record<string, number>, b: Record<string, number>, what: string) => {
+      for (const id of Object.keys(b)) assert.ok(Math.abs((a[id] ?? 0) - b[id]) < 1e-9, `${what}：${id} 的比例从 ${b[id]} 变成 ${a[id]}`);
+    };
+    const at = `舞台高 ${height}`;
+
+    stage.drag("toolOptionsDock", down(-5000));
+    assert.equal(stage.box("toolOptionsDock").height, 48, at);
+    const layers = stage.box("layersDock").height;
+    const before = ratios();
+
+    // 底部停靠区拖高 50 再拖回来：Tool Options 一直是最小高度，回来后一切照旧。
+    stage.runtime.dockResizeArea("bottom", 250);
+    assert.equal(stage.box("toolOptionsDock").height, 48, `${at}：底部变高后`);
+    assert.equal(stage.box("layersDock").height, layers - 50, `${at}：底部变高后`);
+    near(ratios(), before, `${at}：底部变高后`);
+    stage.runtime.dockResizeArea("bottom", 200);
+    assert.deepEqual([stage.box("toolOptionsDock").height, stage.box("layersDock").height], [48, layers], `${at}：底部回到原来的高度`);
+    near(ratios(), before, `${at}：底部回到原来的高度`);
+
+    // 关着的 History 浮出去再放回来：开着的两块不动，其余面板之间的比例不变。
+    stage.runtime.dockFloat("historyDock");
+    assert.deepEqual([stage.box("toolOptionsDock").height, stage.box("layersDock").height], [48, layers], `${at}：History 浮出后`);
+    const rest = 1 - before.historyDock;
+    near(ratios(), Object.fromEntries(Object.entries(before).filter(([id]) => id !== "historyDock").map(([id, r]) => [id, r / rest])), `${at}：History 浮出后`);
+    stage.runtime.dockRestore("historyDock");
+    assert.deepEqual([stage.box("toolOptionsDock").height, stage.box("layersDock").height], [48, layers], `${at}：History 放回后`);
+  }
+});
+
+test("拖到中间位置以后把底部停靠区拖高再拖回来，分隔条回到原来的像素", async () => {
+  const stage = await openStage(1920, 1157);
+  stage.drag("toolOptionsDock", down(37));
+  const was = [stage.box("toolOptionsDock").height, stage.box("layersDock").height];
+  assert.deepEqual(was, [504, 453]);
+  stage.runtime.dockResizeArea("bottom", 250);
+  // 中间少了 50 像素，两块按比例分：504 : 453。
+  assert.deepEqual([stage.box("toolOptionsDock").height, stage.box("layersDock").height], [478, 429]);
+  stage.runtime.dockResizeArea("bottom", 200);
+  assert.deepEqual([stage.box("toolOptionsDock").height, stage.box("layersDock").height], was);
+});
+
+test("屏幕上的尺寸和排列对不上时不动布局，不把屏幕像素当份额用", async () => {
+  const stage = await openStage(1920, 1157);
+  const { scene } = stage.project;
+  const layout = stage.runtime.getDockLayout();
+  const sizes = (l: typeof layout) => l.areas.right.groups.map((g) => g.size);
+  // 按下以后排列变了：第 9 组不存在；分隔条后面没有可见的组；拖动量不是数。
+  for (const [shown, size] of [
+    [[{ groupIndex: 0, size: 467 }, { groupIndex: 9, size: 490 }], 468],
+    [[{ groupIndex: 1, size: 490 }], 468],
+    [[{ groupIndex: 0, size: 467 }, { groupIndex: 1, size: 490 }], Number.NaN],
+  ] as const) {
+    const next = dockResizeSplit(layout, scene, scene.nodes[scene.root], "right", 0, size, [...shown]);
+    assert.deepEqual(sizes(next), sizes(layout), JSON.stringify(shown));
+  }
+});
+
 test("随机的窗口大小、开关面板和拖动：分隔条始终跟着鼠标走到该到的位置，别的面板不动", async () => {
   let seed = 20261113;
   const random = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32;
@@ -280,10 +347,37 @@ test("随机的窗口大小、开关面板和拖动：分隔条始终跟着鼠�
   const extra = ["assetsDock", "historyDock", "forcePadDock", "pythonDebugDock"];
   const everything = [...AT_START, ...extra];
   const stage = await openStage(1920, 1157);
-  let dragged = 0, cramped = 0;
+  // 右边每块面板占这个区全部份额的几分之几，关着的也算。
+  const ratios = (without = "") => {
+    const groups = stage.runtime.getDockLayout().areas.right.groups.filter((g) => g.tabs[0] !== without);
+    const sum = groups.reduce((acc, g) => acc + g.size!, 0);
+    return groups.map((g) => [g.tabs[0], g.size! / sum] as const);
+  };
+  const sameRatios = (now: ReturnType<typeof ratios>, was: ReturnType<typeof ratios>, what: string) => {
+    const before = new Map(was);
+    assert.equal(now.length, was.length, what);
+    for (const [id, ratio] of now) assert.ok(Math.abs(ratio - before.get(id)!) < 1e-9, `${what}：${id} 的比例从 ${before.get(id)} 变成 ${ratio}`);
+  };
+  let dragged = 0, cramped = 0, elsewhere = 0;
   for (let round = 0; round < 400; round++) {
     if (pick(3) === 0) stage.resize(700 + pick(2400), 380 + pick(1900));
     if (pick(2) === 0) stage.show(extra[pick(extra.length)], pick(2) === 0);
+    // 别处的布局变动不改右边各块之间的比例：底部停靠区变高变矮，一块面板浮出去再放回来。
+    if (pick(4) === 0) {
+      const was = ratios();
+      stage.runtime.dockResizeArea("bottom", 120 + pick(260));
+      sameRatios(ratios(), was, `第 ${round} 轮：底部停靠区改了高度`);
+      elsewhere++;
+    }
+    if (pick(8) === 0) {
+      const id = extra[pick(3)];
+      const was = ratios(id);
+      stage.runtime.dockFloat(id);
+      sameRatios(ratios(), was, `第 ${round} 轮：${id} 浮出`);
+      stage.runtime.dockRestore(id);
+      sameRatios(ratios(id), was, `第 ${round} 轮：${id} 放回`);
+      elsewhere++;
+    }
     const splits = stage.splits();
     if (!splits.length) continue;
     const split = splits[pick(splits.length)];
@@ -310,7 +404,7 @@ test("随机的窗口大小、开关面板和拖动：分隔条始终跟着鼠�
     assert.deepEqual(stage.boxes(everything.filter((id) => id !== split.before && id !== split.after)), others, `${at}：别的面板不动`);
     dragged++;
   }
-  assert.ok(dragged > 200 && cramped > 0, `要两种情况都测到：放得下 ${dragged} 次，放不下 ${cramped} 次`);
+  assert.ok(dragged > 200 && cramped > 0 && elsewhere > 50, `几种情况都要测到：放得下 ${dragged} 次，放不下 ${cramped} 次，别处变动 ${elsewhere} 次`);
 });
 
 test("不给屏幕上的尺寸时，dockResizeSplit 照旧按设计稿的像素算", async () => {
