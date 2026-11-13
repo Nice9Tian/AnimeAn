@@ -1179,10 +1179,6 @@ def _pick(view, pos, zoom, message):
                     "chain": None, "chain0": None, "drag_target": None,
                     "fill_refs": None, "vertex": None})
     _SESSIONS[view] = session
-    # Re-registering moves this hook to the END of the dispatch order, AFTER
-    # auto_mapping's historyrestore hook (which re-pushes the overlay and
-    # would otherwise clobber the tangent arms we re-draw on restore).
-    python_hooks.set_hook(_history_restored, historyrestore=True)
     _rebuild(view, session, zoom)
     if _STATE["mode"] == "default":
         # Claim the gesture: this press becomes a drag, so click-and-move grabs
@@ -1681,7 +1677,10 @@ def _option_changed(message):
 
 python_hooks.set_hook(_handle_event, handle=True)
 python_hooks.set_hook(_option_changed, option=True, tool="arrow")
-python_hooks.set_hook(_history_restored, historyrestore=True)
+# Runs AFTER auto_mapping._history_restored (default order 50), even when a
+# mapping tool has re-registered auto_mapping's hooks since import.
+python_hooks.set_hook(_history_restored, historyrestore=True,
+                      order=python_hooks.DEFAULT_HOOK_ORDER + 10)
 # The outline colour is a menu-bar setting, registered at import so it exists
 # in a fresh session before the Arrow has ever been armed.
 python_hooks.register_menu({

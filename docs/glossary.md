@@ -40,7 +40,7 @@
 
 | 中文名 | 英文名 / 项目标识 | 状态 | 说明 |
 |---|---|---|---|
-| 父窗 | `ui.windows` 名 `tools`、`tool_options`、`layers`、`assets`、`history`、`repulsion_pad`、`python_debug` | 现有 | 带页签的停靠窗；Python 按名字寻址、选页。 |
+| 父窗 | `ui.windows` 名 `tools`、`tool_options`、`layers`、`assets`、`history`、`python_debug` | 现有 | 带页签的停靠窗；Python 按名字寻址、选页。 |
 | 页 | page / `painting`、`mapping`、`main`、`child`、`drawing`、`texture` | 现有 | 父窗或中央区里的一页。不要译成 Pagination。 |
 | 中央区 | CentralPaintArea / `paint` | 现有 | Drawing 与 Texture 两页，不是停靠窗。 |
 | 子控件框 | SubControlFrame / `texture_view` | 现有 | 可嵌进面板或浮动的框；纹理板的三个家之一。 |
@@ -76,7 +76,7 @@
 | 曲线工具 | Curve / `curve`、`pyfile/curve_tool.py` | 现有（草稿待拍板） | 点击放锚点，锚点之间用向心 Catmull-Rom 连成平滑曲线；右键结束，吸端点续画、接线、闭合。 |
 | 圆角工具 | Round Corner / `round_corner`、`pyfile/round_corner_tool.py` | 现有（草稿待拍板） | 吸附尖角，拉出控制线把尖角变成圆角。 |
 | 控制线 | control line（圆角工具） | 现有 | 圆角两个切点之间的弦，钉在角尖；线长决定圆角宽度，角度决定偏向。 |
-| 斥力板 | Repulsion Pad / `ForcePadPanel`、`repulsion_tool.py` | 现有 | 手柄把重叠的线推开；拓扑不变。 |
+| 斥力板 | Repulsion Pad / `archive_feature/repulsion_pad/` | 归档 | 手柄把重叠的线推开；拓扑不变。引导线与基线失效的取舍未定，已随功能归档。 |
 | 调色板 | palette / `PaletteControl`、`palette_box.py`、`tool_colors.py` | 现有 | 已存色块 + 色轮 + HSV + RGB；色块随文档保存，每个工具记自己的颜色。 |
 
 ## 5. Auto Mapping

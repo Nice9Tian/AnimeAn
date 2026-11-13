@@ -10,7 +10,7 @@
 | `*.textureview`（JSON） | 单个场景（纹理板） | 跨工程复用图案 |
 | `Settings`（`%APPDATA%\AnimeAn\settings.json`，`ANIMEAN_SETTINGS_DIR` 可覆盖） | 主题模式（`theme/mode`）；时间轴的停靠区、浮动、折叠与可见（`timeline/*`） | 机器级 JSON 文件 |
 | 系统临时目录 | To 3D 导出的 HTML 查看器 | 每次导出一个新文件 |
-| 会话内存 | 历史快照、播放缓存、单元焦点、斥力板基线 | 不落盘 |
+| 会话内存 | 历史快照、播放缓存、单元焦点 | 不落盘 |
 | `test_document/` | 样例：`A.pli`、`bigA.clip`、`texture.textureview`；`短袖女生.anproj`（23 帧）、`和服女生.anproj`（9 帧）：从 `动作图制作9-25.psd` 导出的动作线稿，主画板 1280×720，纹理板是配色方案 | 入库 |
 
 除 `%APPDATA%\AnimeAn\settings.json` 外程序不落盘（`Settings` 只出现在 `theme.cpp` 与 `backend/session/backendsession.cpp`；网页的渲染器偏好 `animean.boardRenderer`、Tools 分组的折叠状态 `animean.toolGroups` 和界面语言 `animean.language` 存 WebView2 的 `localStorage`）。

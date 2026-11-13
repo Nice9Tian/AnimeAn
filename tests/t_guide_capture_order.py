@@ -91,6 +91,7 @@ import extra_tools  # noqa: E402
 import auto_mapping as am  # noqa: E402
 import fill_tool as ft  # noqa: E402
 import layer_tool_policy as ltp  # noqa: E402
+import edit_tool as et  # noqa: E402
 
 
 def _point(value):
@@ -335,9 +336,16 @@ def draw(scene, view, layer, points, prop="", tool="pen"):
     return message
 
 
-def linefinish_order(prop):
-    """The hooks a guide's linefinish reaches, in the order dispatch calls them."""
-    message = {"event": "linefinish", "tool": "extra", "property": prop}
+def linefinish_order(prop, tool="extra"):
+    """The hooks a linefinish reaches, in the order dispatch calls them."""
+    message = {"event": "linefinish", "tool": tool, "property": prop}
+    return [hook["function"] for hook in python_hooks._HOOKS
+            if python_hooks._matches(hook, message)]
+
+
+def historyrestore_order():
+    """The hooks a historyrestore reaches, in dispatch order."""
+    message = {"event": "historyrestore", "view": "main"}
     return [hook["function"] for hook in python_hooks._HOOKS
             if python_hooks._matches(hook, message)]
 
@@ -349,27 +357,45 @@ GRID_LINE = [(80.0, 100.0), (420.0, 100.0)]
 
 # 1) THE ORDER, as the app registers it. The tools list is built (C++ asks for
 #    it at startup and that registers the capture), then tools are armed, and
-#    other modules register again whenever they like. Through all of it the
-#    capture is the FIRST hook a guide's linefinish reaches.
+#    other modules register again whenever they like. Through all of it:
+#    - on a guide's linefinish (tool="extra"), auto_mapping's capture is first
+#      and the pen-only region brush is not matched at all;
+#    - on a native pen linefinish (tool="pen"), layer_tool_policy's region
+#      brush runs ahead of default-order observers like fill_tool;
+#    - on historyrestore, edit_tool runs AFTER auto_mapping even when mapping
+#      tools re-register auto_mapping's hooks.
 fresh_world()
 extra_tools.tools_json()
 for prop in GUIDES:
     order = linefinish_order(prop)
     assert order[0] is am._capture_mapping_item, \
         f"{prop}: the capture runs after {order[0].__module__}.{order[0].__qualname__}"
-    assert ft._topology_changed in order and ltp._stroke_finished in order
+    assert ft._topology_changed in order
+    assert ltp._stroke_finished not in order, \
+        "region brush matched a non-pen guide stroke"
+pen_order = linefinish_order("", tool="pen")
+assert pen_order[0] is ltp._stroke_finished, pen_order
+assert pen_order.index(ltp._stroke_finished) < pen_order.index(ft._topology_changed)
+restore_order = historyrestore_order()
+assert restore_order.index(am._history_restored) < restore_order.index(et._history_restored)
 for arm in (am.activate_center_line_tool, am.activate_mapping_area_tool,
             am.activate_additional_line_tool, am.activate_proxy_contour_tool):
     arm()
     ft.register_hooks()        # an observer registering again goes last...
-    ltp.register_hooks()
+    ltp.register_hooks()       # ...while capture-ordered hooks stay ahead
     order = linefinish_order(am.H_PROPERTY)
     assert order[0] is am._capture_mapping_item, "re-arming moved the capture"
-    assert order.index(ft._topology_changed) < order.index(ltp._stroke_finished), \
-        "observers no longer keep their order of registration"
-    extra_tools.tools_json()   # ...and so does the capture, among its own order
+    assert ltp._stroke_finished not in order
+    pen_order = linefinish_order("", tool="pen")
+    assert pen_order[0] is ltp._stroke_finished, \
+        "re-registering observers moved the region brush behind them"
+    assert pen_order.index(ltp._stroke_finished) < pen_order.index(ft._topology_changed)
+    extra_tools.tools_json()   # re-registers auto_mapping._history_restored at default 50
     assert linefinish_order(am.H_PROPERTY)[0] is am._capture_mapping_item
-print("1) the capture is the first linefinish hook, however often tools re-register")
+    restore_order = historyrestore_order()
+    assert restore_order.index(am._history_restored) < restore_order.index(et._history_restored), \
+        "re-arming a mapping tool moved auto_mapping._history_restored after edit_tool._history_restored"
+print("1) capture hooks and edit_tool's restore hook keep their explicit order across re-registrations")
 
 # 2) set_hook's order: lower first, ties in the order of registration, a
 #    function registered again goes last among ITS order, and hooks without an
@@ -540,10 +566,34 @@ assert main.image(brush_layer).fills == [], \
 assert main.properties(brush_layer) == []
 assert ("Region Fill", "main") not in ui.commits
 assert not message.get("cancel_history")
-# The region brush itself is untouched: a pen stroke there still paints.
-brushed = draw(main, "main", brush_layer, [(120.0, 150.0), (180.0, 150.0)])
+# The region brush itself is untouched: a pen stroke there still paints, runs
+# ahead of default-order observers, and marks message["captured"] = True once
+# the brush stroke is removed from the fill layer (while leaving ordinary line
+# strokes on vector layers uncaptured).
+observer_seen = []
+
+
+def _brush_observer(message):
+    layer_idx = message["cell"]["layer"]
+    observer_seen.append((
+        bool(message.get("captured")),
+        len(main.image(layer_idx).strokes),
+    ))
+
+
+try:
+    python_hooks.set_hook(_brush_observer, linefinish=True)
+    brushed = draw(main, "main", brush_layer, [(120.0, 150.0), (180.0, 150.0)])
+    normal_line = draw(main, "main", line, [(90.0, 110.0), (190.0, 110.0)])
+finally:
+    python_hooks._HOOKS[:] = [h for h in python_hooks._HOOKS
+                              if h["function"] is not _brush_observer]
 assert main.image(brush_layer).fills, "the pen stopped painting regions on a fill layer"
-assert main.properties(brush_layer) == [] and brushed.get("cancel_history")
+assert main.properties(brush_layer) == []
+assert brushed.get("captured") is True and brushed.get("cancel_history") is True
+assert not normal_line.get("captured"), "ordinary vector-layer stroke was marked captured"
+assert observer_seen == [(True, 0), (False, 5)], \
+    f"default-order observer saw wrong (captured, stroke_count): {observer_seen}"
 assert ("Region Fill", "main") in ui.commits
 # And a captured message is never read as a brush stroke, whatever its indices
 # name by then: here they name a stroke that IS on the fill layer.

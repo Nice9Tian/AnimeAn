@@ -831,11 +831,6 @@ void BackendSession::initWindowInfos()
            false,
            {String("history")},
            String("history"));
-    addWin(String("repulsion_pad"),
-           String("Repulsion Pad"),
-           false,
-           {String("repulsion_pad")},
-           String("repulsion_pad"));
     addWin(String("python_debug"),
            String("Python Debug"),
            false,

@@ -630,47 +630,6 @@ export function buildScenarios(ctx) {
     },
 
     {
-      name: "repulsion_pad",
-      steps: [
-        callStep("new_project", "project.new", { width: 800, height: 600 }),
-        callStep("select_pen", "tool.select", { tool: "Pen" }),
-        callStep("set_smooth_0", "draw.setSmooth", { value: 0 }),
-        strokeStep("draw_stroke_1", "main", [
-          [180, 220],
-          [260, 210],
-          [340, 225],
-        ]),
-        strokeStep("draw_stroke_2_nearby", "main", [
-          [180, 228],
-          [260, 218],
-          [340, 232],
-        ]),
-        callStep("pad_press", "pad.event", {
-          pad: "force_pad",
-          phase: "press",
-          x: 0.25,
-          y: -0.15,
-        }),
-        callStep("pad_move", "pad.event", {
-          pad: "force_pad",
-          phase: "move",
-          x: 0.65,
-          y: -0.45,
-        }),
-        callStep("pad_release", "pad.event", {
-          pad: "force_pad",
-          phase: "release",
-          x: 0.65,
-          y: -0.45,
-        }),
-        strokeStep("draw_new_stroke_recenters_pad", "main", [
-          [180, 320],
-          [280, 320],
-        ]),
-      ],
-    },
-
-    {
       name: "history_and_alternating_views",
       steps: [
         callStep("new_project", "project.new", { width: 800, height: 600 }),

@@ -15,5 +15,5 @@
 | `build_deploy.md` | 构建脚本、脚本同步、测试基线、分支与部署、依赖 wheel | 初稿（同上） |
 | `python_binding.md`、`python_binding_zh.md` | Python 绑定 API（英文参考 / 中文说明，中文的「双画板与工具」一节已按现行界面改写） | 2026-09-28 从根目录移入 |
 | `stroke_fitting.md` | 画笔采样、稳定器、拟合预算、实时增量拟合、轴向吸附、按住画直线、擦除与切断 | 初稿（2026-09-28） |
-| `painting_tools.md` | Arrow 编辑模式、Transfer、Connect、Repulsion Pad、每工具颜色与调色板 | 初稿（2026-09-28） |
+| `painting_tools.md` | Arrow 编辑模式、Transfer、Connect、Curve、Round Corner、画板动画、每工具颜色与调色板 | 初稿（2026-09-28） |
 | `fill_layers.md` | 填充策略、跟随线稿的填充层、图层决定工具（锁定、区域刷）、可见性与图层锁定 | 初稿（2026-09-28） |

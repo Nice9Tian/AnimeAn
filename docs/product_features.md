@@ -37,7 +37,6 @@
 - **Curve**（草稿待拍板）：点击放锚点，锚点之间自动连成平滑曲线；右键在最后一个锚点结束；吸附结束了的曲线两端接着画，画线中吸到别的曲线端点接成一条、吸到自己起点闭合；每个锚点一条历史记录。现有（issue #100）。机制（三级）：`mechanism/painting_tools.md`。
 - **Round Corner**（草稿待拍板）：吸附线上的尖角，按住拉出一条控制线，线长决定圆角多平滑，线的角度决定偏向哪边；拉回角尖恢复尖角，拉回起点回到原样；倒过的圆角能再调。现有（issue #100）。机制（三级）：`mechanism/painting_tools.md`。
 - 结果落下时的短动画：Fill 的颜色从点下的位置铺开到区域边缘；Connect 的新线从第一点画向第二点；画完 H / V 轴线或 Free Out Line 后，Auto Mapping 的新结果淡入。拖动时的实时重算不播。动画期间一按下画板或滚轮就立刻结束；系统设了减少动态效果时不播。现有。机制（三级）：`mechanism/painting_tools.md`。
-- **Repulsion Pad**：手柄把当前帧重叠或贴近的线推开，实时预览，拓扑不变，锁定层不动。现有。机制（三级）：`mechanism/painting_tools.md`。
 - 图层决定工具：Auto-Mapping 单元里的层展开 Mapping 组；跟随线稿的填充层锁 Pen / Eraser / Connect / Transfer / Curve / Round Corner，只留 Arrow 和 Fill；独立填充层锁 Connect / Curve / Round Corner（Curve、Round Corner 两项草稿待拍板）。现有。机制（三级）：`mechanism/fill_layers.md`。
 - 图层锁定：模型里有锁，现在只有 Transfer、Curve、Round Corner 尊重它（后两个草稿待拍板）、面板没有开关。规划：Layers 面板加锁定开关，锁定的层所有工具都不改。
 

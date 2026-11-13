@@ -18,8 +18,7 @@
         "toolOptionsDock",
         "layersDock",
         "assetsDock",
-        "historyDock",
-        "forcePadDock"
+        "historyDock"
       ],
       "dockLayout": {
         "areas": {
@@ -66,35 +65,28 @@
                   "toolOptionsDock"
                 ],
                 "active": "toolOptionsDock",
-                "size": 126
+                "size": 168
               },
               {
                 "tabs": [
                   "layersDock"
                 ],
                 "active": "layersDock",
-                "size": 132
+                "size": 176
               },
               {
                 "tabs": [
                   "assetsDock"
                 ],
                 "active": "assetsDock",
-                "size": 84
+                "size": 94
               },
               {
                 "tabs": [
                   "historyDock"
                 ],
                 "active": "historyDock",
-                "size": 84
-              },
-              {
-                "tabs": [
-                  "forcePadDock"
-                ],
-                "active": "forcePadDock",
-                "size": 106
+                "size": 94
               }
             ]
           }
@@ -108,7 +100,6 @@
         "layersDock",
         "assetsDock",
         "historyDock",
-        "forcePadDock",
         "pythonDebugDock",
         "timelineDock"
       ]
@@ -228,31 +219,6 @@
       "type": "QtHistory",
       "width": 284,
       "height": 222,
-      "size": {
-        "horizontal": "expanding",
-        "vertical": "expanding"
-      }
-    },
-    "forcePadDock": {
-      "type": "Dock",
-      "dockArea": "right",
-      "width": 284,
-      "height": 300,
-      "headerHeight": 18,
-      "title": "Repulsion Pad",
-      "layout": {
-        "kind": "vbox",
-        "padding": 0,
-        "gap": 0
-      },
-      "children": [
-        "forcePadPanel"
-      ]
-    },
-    "forcePadPanel": {
-      "type": "QtForcePad",
-      "width": 284,
-      "height": 282,
       "size": {
         "horizontal": "expanding",
         "vertical": "expanding"

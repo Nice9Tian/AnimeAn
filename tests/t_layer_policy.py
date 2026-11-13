@@ -301,6 +301,7 @@ assert all(f["all"] and f["source"] == -1 for f in image.fills), \
     "a fill layer's regions must be bounded by ALL visible layers"
 assert scene.removed == [(0, target, 0)], "the stroke was not removed"
 assert image.strokes == [], "a stroke survived on a fill layer"
+assert message["captured"] is True, "converted brush stroke was not marked captured"
 assert message["cancel_history"] is True, "the gesture's own history entry was not vetoed"
 assert UI.commits == [("Region Fill", "main")], UI.commits
 assert all(call[3] == -1 for call in scene.trace_calls), "a sample was traced against one column"
@@ -360,6 +361,7 @@ message = {"event": "linefinish", "view": "main", "tool": "pen", "base_tool": "p
 ltp._stroke_finished(message["cell"], message["stroke"], message)
 assert image.fills == [], "an open-area stroke produced a region"
 assert scene.removed == [(0, target, 0)], "the stroke survived a zero-region pass"
+assert message["captured"] is True
 assert message["cancel_history"] is True
 assert UI.commits == [], "a zero-region pass pushed a history entry"
 
@@ -376,7 +378,8 @@ message = {"event": "linefinish", "view": "main", "cell": {"row": 0, "layer": li
            "stroke": {"index": 0}, "property": ""}
 ltp._stroke_finished(message["cell"], message["stroke"], message)
 assert scene.removed == [] and image.fills == []
-assert "cancel_history" not in message, "an ordinary stroke was vetoed"
+assert "captured" not in message and "cancel_history" not in message, \
+    "an ordinary stroke was captured or vetoed"
 
 scene = fresh_world()
 line = scene.add_layer()
@@ -436,7 +439,10 @@ assert ltp._sample_points([(4.0, 4.0)], 6.0) == [(4.0, 4.0)]
 assert any(h["function"] is ltp._layer_changed
            and h["events"] == {"layerchange", "historyrestore"}
            for h in python_hooks._HOOKS)
-assert any(h["function"] is ltp._stroke_finished and h["events"] == {"linefinish"}
+assert any(h["function"] is ltp._stroke_finished
+           and h["events"] == {"linefinish"}
+           and h["tool"] == "pen"
+           and h["order"] == python_hooks.CAPTURE_HOOK_ORDER
            for h in python_hooks._HOOKS)
 
 # 16) UNDO: historyrestore carries no layer, so the verdict is re-read off the

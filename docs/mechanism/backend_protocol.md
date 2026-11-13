@@ -152,7 +152,7 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 | `windows` | 面板的显示状态和当前页（`paint` 的当前页按焦点算，见 `windows_theme.md`）、时间轴的停靠状态、纹理子控件框是否可见（`textureSubControlVisible`）、纹理板的脚本按钮行（`textureViewButtons`） |
 | `cursor/main`、`cursor/child` | 光标：形状名，或者图片 `key` 加热点和 `scale`。位图是屏幕像素，`w`、`h` 也是；热点是逻辑像素，`scale` 是位图每个逻辑像素的像素数，网页用 `image-set` 声明 |
 | `freeze` | Python 冻结界面的开关 |
-| `pad` | Repulsion Pad 的值 |
+| `pad` | 二维手柄状态（原 Repulsion Pad 用，已归档在 `../../archive_feature/repulsion_pad/README.md`） |
 | `viewport/main`、`viewport/child` | 滚动条：`h`、`v` 各含 `min`、`max`、`page`、`value`、`enabled`，由 `BackendSession::buildViewportState` 计算 |
 | `dialogs` | 开着的对话框，从下到上，是 `pyfile/dialogs.py` 经 `ui.set_dialogs` 交来的数组，C++ 不认识其中的种类。每项有 `id`、`kind`（`message`、`canvasSize`、`color`、`settings`、`file`）、`modal`、`title` 和该种类的字段，见 `windows_theme.md`「对话框窗口」 |
 | `py/<名字>` | Python 自己的状态（`ui.broadcast`），如 `py/preferences`。前缀把它和上面的键隔开 |

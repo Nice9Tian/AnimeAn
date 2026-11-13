@@ -21,7 +21,7 @@
 | **测试** | `tests/t_*.py`、`tests/test_legacy_suites.py`、`tests/*_tests.cpp`、`tests/core/*`、`backend/board/tests/*`、`backend/platform/tests/*`、`backend/net/tests/*`、`backend/tests/session_smoke.mjs`、`backend/tests/golden/*`、`webui/tests/*` | Python 引擎的无 GUI 回归；C++ 模型 / 文件 / 拟合 / 画板 / 平台 ctest 与 `AnimeCore` 差分测试；后端会话冒烟与新旧录制对比；网页渲染器、输入与面板单测 | — |
 | **构建与同步** | `CMakeLists.txt`、`backend/CMakeLists.txt`、`algorithm/core/CMakeLists.txt`、`build_scripts/agent_build.ps1`、`build_scripts/package_tauri.ps1`、`build_scripts/toolchain_location.ps1`、`sync_pyfiles.ps1`、`setup_python_pybind11.bat` | 配置、编译 `AnimeAnBackend`、构建网页与 Tauri 外壳并打包 `dist\AnimeAn\`、脚本同步、首次环境准备 | — |
 
-机制 / 策略成对：`ui.set_overlay` ↔ `overlay_stack`；handle 事件 ↔ `edit_tool` / `transfer_tool` / `connect_tool`；`fillrequest` ↔ `fill_tool`；`visibility` ↔ `visibility_tool`；`ui.set_locked_tools` / `ui.set_fill_paint_mode` ↔ `layer_tool_policy`；`ui.windows` ↔ `window_manager`；调色板控件 ↔ `palette_box` / `tool_colors`；斥力板 ↔ `repulsion_tool`。
+机制 / 策略成对：`ui.set_overlay` ↔ `overlay_stack`；handle 事件 ↔ `edit_tool` / `transfer_tool` / `connect_tool`；`fillrequest` ↔ `fill_tool`；`visibility` ↔ `visibility_tool`；`ui.set_locked_tools` / `ui.set_fill_paint_mode` ↔ `layer_tool_policy`；`ui.windows` ↔ `window_manager`；调色板控件 ↔ `palette_box` / `tool_colors`。
 
 ## 启动链
 
@@ -110,7 +110,6 @@ AnimeAnBackend.exe（backend/main.cpp）
 | `pyfile/fill_tool.py` | 填充策略：落在哪层、范围升级、重复点击、跟随线稿层、To Independent Layer |
 | `pyfile/layer_tool_policy.py` | 当前层决定 Tools 页与锁定的工具、填充层上的区域刷 |
 | `pyfile/visibility_tool.py` | 图层可见性开关的策略 |
-| `pyfile/repulsion_tool.py` | 斥力板：基线场、临时内部层预览、拓扑保持的施加 |
 | `pyfile/proxy_rect.py` | 代理矩形的角点对应，算出主画板轴线和边；未接入界面，规格（一级）：`../auto_mapping/proxy_rect.md` |
 | `pyfile/proxy_shape.py` | 自由闭合轮廓的配对和主画板自动轴线（纯函数），算法与常量是提案，见 issue #9 |
 | `pyfile/line_tools.py` | Choice Line 和 Deform：选中轴线、附加线、轮廓线，勾选地线，沿线局部拖动变形 |

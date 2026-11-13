@@ -31,7 +31,7 @@ PYTHON_FILE_MODULES = (
     "auto_mapping",
     # The Fukusato MLS workflow (fukusato_mapping / _mesh / _workflow and
     # crease_line_tool) is archived in old_history/fukusato/ - not loaded.
-    "repulsion_tool",
+    # Repulsion Pad (repulsion_tool) is archived in archive_feature/repulsion_pad/ - not loaded.
     "fill_tool",
     # After window_manager (it asks for the Tools page by name) and after
     # fill_tool, whose parenting decides what a fill layer's kind is.
@@ -44,6 +44,15 @@ PYTHON_FILE_MODULES = (
 )
 
 
+_ARCHIVED_MODULES = (
+    "fukusato_mapping",
+    "fukusato_mesh",
+    "fukusato_workflow",
+    "crease_line_tool",
+    "repulsion_tool",
+)
+
+
 def _discover_python_file_modules() -> list[str]:
     current_file = Path(__file__).resolve()
     project_roots = {
@@ -53,7 +62,7 @@ def _discover_python_file_modules() -> list[str]:
     }
 
     discovered: list[str] = []
-    seen = set(BOOTSTRAP_MODULES)
+    seen = set(BOOTSTRAP_MODULES) | set(_ARCHIVED_MODULES)
     for search_path in sys.path:
         if not search_path:
             continue

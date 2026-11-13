@@ -6,7 +6,7 @@ name the shell does not know is a quiet no-op on purpose - a tool that asks
 for a window a future layout dropped must not take the run down with it.
 
 Window names: "paint", "tools", "tool_options", "layers", "assets", "history",
-"repulsion_pad", "python_debug". The timeline is NOT one of them: it is a dock
+"python_debug". The timeline is NOT one of them: it is a dock
 window, but not a PARENT window - it has no pages to address, so ui.windows
 does not list it.
 

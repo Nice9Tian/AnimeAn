@@ -5,7 +5,7 @@
 ## 窗口层级
 
 - 场景 `webui/design/ui/scene.json` 里是 `停靠窗 → 顶部页签（一页也显示页签）→ 页`。`DOCK_FOR_WINDOW` 把后端的窗口名对到停靠窗，Windows 菜单（Python 的 `pyfile/app_menus.py`）和面板的关闭按钮都改后端的窗口表（`windows.setVisible`）。
-- Python 按名字寻址：`paint`（中央区，页 `drawing` / `texture`）、`tools`（`painting` / `mapping`）、`tool_options`、`layers`（`main` / `child`）、`assets`、`history`、`repulsion_pad`、`python_debug`。`ui.windows.list / show / select / current` 是机制，`window_manager.py` 是策略；不认识的名字静默忽略。
+- Python 按名字寻址：`paint`（中央区，页 `drawing` / `texture`）、`tools`（`painting` / `mapping`）、`tool_options`、`layers`（`main` / `child`）、`assets`、`history`、`python_debug`。`ui.windows.list / show / select / current` 是机制，`window_manager.py` 是策略；不认识的名字静默忽略。
 - 中央区不是停靠窗：`show()` 对它是空操作；选它的 `texture` 页会把纹理板从子控件里拿走，选 `drawing` 还回去。
 - `paint` 的当前页按焦点算：焦点在主画板上是 `drawing`，在纹理板上是 `texture`，纹理板在 Texture 页还是子控件框里都一样；焦点不在任何一块板上时，算最后拿到焦点的那块。这块板就是活动板，后端从活动板推出这一页，不另存，所以它不一定是中央区正显示的页。中央区显示哪一页，后端看纹理板的家：`texture.setHome` 报 `central` 就是 Texture 页。
 - 时间轴是停靠窗但不是父窗（没有页），`ui.windows` 不列它；它的播放条就是标题栏，停在底边是横条，停在左右是竖条加细标题。

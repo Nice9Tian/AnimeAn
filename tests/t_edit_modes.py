@@ -394,4 +394,37 @@ event("cancel")
 assert et._SESSIONS == {} and UI.handles["main"] == []
 print("12) historyrestore revalidates by identity; cancel clears")
 
+
+# 13) explicit hook order keeps edit_tool._history_restored AFTER default-order
+#     restore hooks (such as auto_mapping._history_restored), even when those
+#     default-order hooks re-register AFTER an object was picked.
+import python_hooks  # noqa: E402
+
+scene = world("debug")
+event("pick", 30.0, 80.0)
+restore_trace = []
+
+
+def _default_restore_observer(message):
+    restore_trace.append("default")
+
+
+try:
+    # Registered AFTER pick (the way auto_mapping.register_hooks() runs when a
+    # mapping tool is armed); without an explicit order on edit_tool, this used
+    # to flip the order and run after edit_tool._history_restored.
+    python_hooks.set_hook(_default_restore_observer, historyrestore=True)
+    orig_revalidate = et._revalidate
+    et._revalidate = lambda view, session: (restore_trace.append("edit_tool") or orig_revalidate(view, session))
+    try:
+        python_hooks.dispatch({"event": "historyrestore", "view": "main"})
+    finally:
+        et._revalidate = orig_revalidate
+finally:
+    python_hooks._HOOKS[:] = [h for h in python_hooks._HOOKS
+                              if h["function"] is not _default_restore_observer]
+assert restore_trace == ["default", "edit_tool"], \
+    f"edit_tool._history_restored did not run after default-order restore hooks: {restore_trace}"
+print("13) edit_tool._history_restored stays ordered after default-order restore hooks")
+
 print("t_edit_modes: ALL OK")

@@ -10,7 +10,7 @@ import { label, language, onLanguage, setLanguage, t } from "../i18n/index.js";
 import { createDialogHost } from "./dialoghost.js";
 import { askForMenu, closePopupMenus, createCentral, createLayers, createMenuBar, onMenuArea, popupMenu, scrollArea, tabBar } from "./panels.js";
 import { createToolOptions } from "./options.js";
-import { createAssets, createForcePad, createHistory, createPythonDebug, createSubControlFrame, createTexturePanel } from "./panels2.js";
+import { createAssets, createHistory, createPythonDebug, createSubControlFrame, createTexturePanel } from "./panels2.js";
 import { createTimeline } from "./timeline.js";
 
 export function isAllowedWhenFrozen(target, pythonDebugEl) {
@@ -80,7 +80,6 @@ export const DOCK_FOR_WINDOW = {
   layers: "layersDock",
   assets: "assetsDock",
   history: "historyDock",
-  repulsion_pad: "forcePadDock",
   python_debug: "pythonDebugDock",
 };
 
@@ -539,12 +538,6 @@ export function panelFactories(store, client, { satellite = false } = {}) {
     QtHistory(el) {
       const panel = createHistory(el, { onSelect: (row) => call("history.goTo", { row }) });
       on("history", (value) => panel.update({ labels: value?.labels ?? [], current: value?.currentIndex ?? -1 }));
-    },
-
-    QtForcePad(el) {
-      const send = (phase) => (x, y) => call("pad.event", { pad: "force_pad", phase, x, y });
-      const panel = createForcePad(el, { onPress: send("press"), onMove: send("move"), onRelease: send("release") });
-      on("pad", (value) => panel.update({ value: { x: value?.x ?? 0, y: value?.y ?? 0 } }));
     },
 
     QtPythonDebug(el) {
