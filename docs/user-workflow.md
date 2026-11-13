@@ -15,7 +15,7 @@
 
 - **中央区**是两页：**Drawing** 是主画板，始终存在、随窗口放大；**Texture** 页在用户要把纹理板放大看时使用。
 - **面板窗**（Windows 菜单可开关）：**Tools**（Painting / Mapping 两组，可折叠）、**Options**（当前工具的选项）、**Layers**（Main Layers / Child Layers 两页，分别对应主画板和纹理板）、**Assets**、**History**、**Repulsion Pad**（默认隐藏）、**Python Debug**、时间轴。面板带页签，一页也显示页签（Tools 除外，它用分组）；可拖出浮动，浮动的无边框窗口能拉四边改大小。
-- **菜单栏**：**File**（Canvas Size…、Open…、Save、Save As…、Import ▸ Raster… / OpenToonz Lines… / Clip Studio Paint…、Texture ▸ 纹理板的同组命令）、**Edit**（Undo、Redo）、**Draw**（Draw Setting…）、**Arrow**（Outline Display Settings…）、**Auto Mapping**（见第 7 步）、**Theme**（Dark / Light）、**Windows**（Texture View 和各面板的显示开关）、**Settings**（Board Renderer：WebGL / Canvas 2D；Language：English / 简体中文 / 日本語）。Draw、Arrow、Auto Mapping 三个菜单由脚本提供。
+- **菜单栏**：**File**（Canvas Size…、Open…、Save、Save As…、Import ▸ Raster… / OpenToonz Lines… / Clip Studio Paint…、Texture ▸ 纹理板的同组命令）、**Edit**（Undo、Redo）、**Draw**（Draw Setting…）、**Arrow**（Outline Display Settings…）、**Auto Mapping**（见第 7 步）、**Theme**（Dark / Light）、**Windows**（Texture View 和各面板的显示开关）、**Settings**（Board Renderer：WebGL / Canvas 2D；Language：English / 简体中文 / 日本語）。
 - 主题选 Dark 或 Light 后记住，下次启动沿用；画纸在两种主题下都是白的。
 
 ## 3. 画线稿（Tools ▸ Painting）
