@@ -38,6 +38,23 @@ if (-not $destinations) {
 }
 
 $updated = 0
+# A module deleted or archived in the source folders must go from the
+# deployments too: initalize.py imports every .py beside the exe, so a leftover
+# copy keeps running (Repulsion Pad's did after it was archived).
+$sourceNames = @($sources | ForEach-Object { $_.Name })
+foreach ($dest in $destinations) {
+    Get-ChildItem -LiteralPath $dest -Filter "*.py" -File |
+        Where-Object { $_.Extension -eq ".py" -and $sourceNames -notcontains $_.Name } |
+        ForEach-Object {
+            try {
+                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop
+                Write-Host ("removed: {0} from {1} (no longer in the sources)" -f $_.Name, $dest)
+                $updated++
+            } catch {
+                Write-Host ("FAILED:  removing {0} from {1}  ({2})" -f $_.Name, $dest, $_.Exception.Message)
+            }
+        }
+}
 foreach ($dest in $destinations) {
     foreach ($src in $sources) {
         $target = Join-Path $dest $src.Name
