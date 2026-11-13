@@ -8,7 +8,7 @@ import { BoardEffects } from "../board/effects.ts";
 import { fitFrame } from "../board/fit.ts";
 import { label, language, onLanguage, setLanguage, t } from "../i18n/index.js";
 import { createDialogHost } from "./dialoghost.js";
-import { askForMenu, createCentral, createLayers, createMenuBar, popupMenu, scrollArea, tabBar } from "./panels.js";
+import { askForMenu, createCentral, createLayers, createMenuBar, onMenuArea, popupMenu, scrollArea, tabBar } from "./panels.js";
 import { createToolOptions } from "./options.js";
 import { createAssets, createForcePad, createHistory, createPythonDebug, createSubControlFrame, createTexturePanel } from "./panels2.js";
 import { createTimeline } from "./timeline.js";
@@ -939,6 +939,13 @@ export function createChrome(menuEl, statusEl, store, options = {}) {
     role: isSatellite ? "satellite" : "main",
     shell: options.shell,
   });
+  // A menu drawn in this page stays visible over the floating panels: the shell
+  // leaves its boxes open in the AnimeAn windows above this one.
+  const tauri = typeof window !== "undefined" ? window.__TAURI__ : undefined;
+  const windowLabel = tauri?.window?.getCurrentWindow?.()?.label;
+  if (typeof tauri?.core?.invoke === "function" && windowLabel) {
+    onMenuArea((rects) => void Promise.resolve(tauri.core.invoke("set_menu_area", { label: windowLabel, rects })).catch(() => {}));
+  }
   const text = document.createElement("div");
   text.className = "status-text";
   const grip = document.createElement("div");

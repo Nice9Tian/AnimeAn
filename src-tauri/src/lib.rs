@@ -867,6 +867,104 @@ fn focus_modal(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
+// ---- menus over other windows --------------------------------------------------
+// A menu is drawn in the page that opened it. While it shows, the AnimeAn windows
+// above that page's window (the floating panels over the main window) leave the
+// menu's rectangles open, so the menu is seen and takes the clicks.
+
+/// The parts of `menus` (screen rectangles: left, top, right, bottom) that fall on
+/// a window at `window`, in that window's own coordinates.
+pub fn menu_holes(window: [i32; 4], menus: &[[i32; 4]]) -> Vec<[i32; 4]> {
+    menus
+        .iter()
+        .filter_map(|m| {
+            let (l, t) = (m[0].max(window[0]), m[1].max(window[1]));
+            let (r, b) = (m[2].min(window[2]), m[3].min(window[3]));
+            (l < r && t < b).then(|| [l - window[0], t - window[1], r - window[0], b - window[1]])
+        })
+        .collect()
+}
+
+/// The windows that have a hole now: only they are restored when the menu closes.
+fn holed_windows() -> &'static Mutex<std::collections::HashSet<String>> {
+    static HOLED: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    HOLED.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+/// `rects` are the menu's boxes in the page of window `label`: client coordinates
+/// in logical pixels, [x, y, width, height]. An empty list closes every hole.
+#[tauri::command]
+fn set_menu_area(app: tauri::AppHandle, label: String, rects: Vec<[f64; 4]>) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::RECT;
+        use windows_sys::Win32::Graphics::Gdi::{CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, RGN_DIFF};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindow, GetWindowRect, GW_HWNDPREV};
+        let owner = app
+            .get_webview_window(&label)
+            .ok_or_else(|| format!("Window '{label}' not found"))?;
+        let scale = owner.scale_factor().map_err(|e| e.to_string())?;
+        let origin = owner.inner_position().map_err(|e| e.to_string())?;
+        let menus: Vec<[i32; 4]> = rects
+            .iter()
+            .map(|[x, y, w, h]| {
+                [
+                    origin.x + (x * scale).floor() as i32,
+                    origin.y + (y * scale).floor() as i32,
+                    origin.x + ((x + w) * scale).ceil() as i32,
+                    origin.y + ((y + h) * scale).ceil() as i32,
+                ]
+            })
+            .collect();
+        // Only what lies above the menu's window covers it.
+        let mut above = std::collections::HashSet::new();
+        unsafe {
+            let mut h = GetWindow(owner.hwnd().map_err(|e| e.to_string())?.0 as _, GW_HWNDPREV);
+            while !h.is_null() {
+                above.insert(h as isize);
+                h = GetWindow(h, GW_HWNDPREV);
+            }
+        }
+        let mut holed = holed_windows().lock().map_err(|e| e.to_string())?;
+        for (other, win) in app.webview_windows() {
+            if other == label {
+                continue;
+            }
+            let Ok(handle) = win.hwnd() else { continue };
+            let hwnd = handle.0 as _;
+            let mut frame = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+            let holes = if above.contains(&(hwnd as isize)) && unsafe { GetWindowRect(hwnd, &mut frame) } != 0 {
+                menu_holes([frame.left, frame.top, frame.right, frame.bottom], &menus)
+            } else {
+                Vec::new()
+            };
+            if holes.is_empty() {
+                if holed.remove(&other) {
+                    unsafe { SetWindowRgn(hwnd, std::ptr::null_mut(), 1) };
+                }
+                continue;
+            }
+            unsafe {
+                let region = CreateRectRgn(0, 0, frame.right - frame.left, frame.bottom - frame.top);
+                for [l, t, r, b] in holes {
+                    let hole = CreateRectRgn(l, t, r, b);
+                    CombineRgn(region, region, hole, RGN_DIFF);
+                    DeleteObject(hole);
+                }
+                // The window owns the region from here on.
+                SetWindowRgn(hwnd, region, 1);
+            }
+            holed.insert(other);
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, label, rects);
+        Ok(())
+    }
+}
+
 fn file_path_to_string(fp: tauri_plugin_dialog::FilePath) -> String {
     match fp {
         tauri_plugin_dialog::FilePath::Path(p) => p.to_string_lossy().into_owned(),
@@ -1026,6 +1124,7 @@ pub fn run() {
             set_window_enabled,
             set_panels_focusable,
             focus_modal,
+            set_menu_area,
         ])
         .build(context)
         .expect("error while building AnimeAn Tauri shell");
@@ -1120,6 +1219,23 @@ mod tests {
         // Taller than its owner: the dialog keeps the owner's top edge, not above it.
         assert_eq!(center_over((100.0, 50.0), (400.0, 300.0), (300.0, 500.0)), (150.0, 50.0));
         assert_eq!(center_over((0.0, 0.0), (101.0, 101.0), (50.0, 50.0)), (26.0, 26.0));
+    }
+
+    #[test]
+    fn test_menu_holes() {
+        // A panel at (100, 50)-(300, 250) over a menu at (250, 100)-(400, 180): the
+        // overlap, in the panel's own coordinates.
+        let panel = [100, 50, 300, 250];
+        assert_eq!(menu_holes(panel, &[[250, 100, 400, 180]]), vec![[150, 50, 200, 130]]);
+        // A menu and its submenu; only the part on the panel counts.
+        assert_eq!(
+            menu_holes(panel, &[[120, 60, 200, 120], [200, 80, 320, 140]]),
+            vec![[20, 10, 100, 70], [100, 30, 200, 90]]
+        );
+        // Beside the panel, or touching its edge only: no hole.
+        assert!(menu_holes(panel, &[[300, 60, 400, 120]]).is_empty());
+        assert!(menu_holes(panel, &[[0, 0, 100, 50]]).is_empty());
+        assert!(menu_holes(panel, &[]).is_empty());
     }
 
     #[test]

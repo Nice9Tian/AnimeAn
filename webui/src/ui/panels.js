@@ -502,7 +502,38 @@ function closeMenus() {
   if (openMenu) { openMenu.remove(); openMenu = null; }
   openTitle?.classList.remove("open");
   openTitle = null;
+  reportMenuArea();
 }
+
+// Where the open menu is, for whoever must keep it uncovered: in the shell, the
+// AnimeAn windows above this page's own leave these boxes open (set_menu_area).
+// Boxes are [x, y, width, height] in client pixels, the menu and its submenus;
+// none when it closes. Reported once per task, and only when they change.
+let menuAreaListener = null;
+let reportedArea = "[]";
+let areaQueued = false;
+export function onMenuArea(fn) {
+  menuAreaListener = fn;
+  reportedArea = "[]";
+}
+function reportMenuArea() {
+  if (!menuAreaListener || areaQueued) return;
+  areaQueued = true;
+  queueMicrotask(() => {
+    areaQueued = false;
+    const boxes = openMenu
+      ? [openMenu, ...openMenu.querySelectorAll(".qmenu")].map((el) => {
+        const r = el.getBoundingClientRect();
+        return [r.left, r.top, r.width, r.height];
+      })
+      : [];
+    const text = JSON.stringify(boxes);
+    if (text === reportedArea) return;
+    reportedArea = text;
+    menuAreaListener?.(boxes);
+  });
+}
+
 if (typeof window !== "undefined") {
   window.addEventListener("pointerdown", (e) => {
     titleClosedByPress = null;
@@ -511,6 +542,13 @@ if (typeof window !== "undefined") {
     titleClosedByPress = openTitle;
     closeMenus();
   }, true);
+  // A press in another window, AnimeAn's or not, never reaches this page: losing
+  // the focus closes the menu instead, as a system menu does.
+  window.addEventListener("blur", () => {
+    if (!openMenu) return;
+    menuRequest++;
+    closeMenus();
+  });
 }
 
 // A menu that has to wait for a reply: true while no press or newer menu got there first.
@@ -536,9 +574,13 @@ export function popupMenu(items, x, y, onTrigger, parent) {
         const r = row.getBoundingClientRect(), base = m.getBoundingClientRect();
         const sub = popupMenu(item.children ?? [], r.right - base.left - 2, r.top - base.top, onTrigger, m);
         sub.style.position = "absolute";
+        reportMenuArea();
       });
     } else if (item.enabled !== false) {
-      row.addEventListener("pointerenter", () => { for (const s of m.querySelectorAll(":scope > .qmenu")) s.remove(); });
+      row.addEventListener("pointerenter", () => {
+        for (const s of m.querySelectorAll(":scope > .qmenu")) s.remove();
+        reportMenuArea();
+      });
       row.addEventListener("click", () => { closeMenus(); onTrigger(item); });
     }
     m.append(row);
@@ -553,6 +595,7 @@ export function popupMenu(items, x, y, onTrigger, parent) {
     const box = m.getBoundingClientRect?.();
     if (box && view?.innerWidth && box.right > view.innerWidth) m.style.left = `${Math.max(0, view.innerWidth - box.width)}px`;
     if (box && view?.innerHeight && box.bottom > view.innerHeight) m.style.top = `${Math.max(0, view.innerHeight - box.height)}px`;
+    reportMenuArea();
   }
   return m;
 }

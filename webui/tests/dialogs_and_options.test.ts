@@ -176,6 +176,10 @@ class FakeElement {
     return this.querySelectorAll(selector)[0] ?? null;
   }
   querySelectorAll(selector: string): FakeElement[] {
+    if (selector.startsWith(":scope > ")) {
+      const rest = selector.slice(":scope > ".length);
+      return this.children.filter((c) => c.matches(rest));
+    }
     const out: FakeElement[] = [];
     const visit = (el: FakeElement) => {
       for (const c of el.children) {
@@ -759,6 +763,54 @@ test("菜单标题没变就不重建菜单栏：鼠标下换了元素会再次�
     assert.equal(root.querySelectorAll(".item")[0], items[0]);
     bar.update([{ id: "file", text: "File", children: [] }]);
     assert.equal(root.querySelectorAll(".item").length, 1);
+  });
+});
+
+test("打开的菜单把占的矩形报给外壳：打开、子菜单展开收起、关闭各报一次，没变不报", async () => {
+  await withDom(async ({ body }) => {
+    const { onMenuArea, popupMenu } = await import("../src/ui/panels.js");
+    const reports: number[][][] = [];
+    const settle = () => new Promise((r) => setTimeout(r, 0));
+    onMenuArea((rects: number[][]) => reports.push(rects));
+    try {
+      const picked: string[] = [];
+      popupMenu(
+        [
+          { id: "a", text: "A" },
+          { id: "s", text: "Sub", kind: "submenu", children: [{ id: "b", text: "B" }] },
+        ],
+        10,
+        20,
+        (item: { id: string }) => picked.push(item.id),
+      );
+      await settle();
+      assert.equal(reports.length, 1, "opening reports once, not once per step");
+      assert.equal(reports[0].length, 1);
+      assert.deepEqual(reports[0][0], [0, 0, 296, 200], "[x, y, width, height] in client pixels");
+
+      const [rowA, rowSub] = body.querySelectorAll(".qmenu-item");
+      rowSub.dispatchEvent({ type: "pointerenter" });
+      await settle();
+      assert.equal(reports.length, 2);
+      assert.equal(reports[1].length, 2, "the submenu is reported with its menu");
+
+      rowSub.dispatchEvent({ type: "pointerenter" });
+      await settle();
+      assert.equal(reports.length, 2, "the same boxes are not reported again");
+
+      rowA.dispatchEvent({ type: "pointerenter" });
+      await settle();
+      assert.equal(reports.length, 3);
+      assert.equal(reports[2].length, 1, "leaving the submenu row closes it");
+
+      rowA.click();
+      await settle();
+      assert.deepEqual(picked, ["a"]);
+      assert.equal(body.querySelector(".qmenu"), null);
+      assert.deepEqual(reports.at(-1), [], "closing reports no boxes");
+    } finally {
+      onMenuArea(null);
+    }
   });
 });
 
