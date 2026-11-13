@@ -431,6 +431,7 @@ try {
         await quiet();
         assert.equal((await strokes(a)).length, counted + 2, "A second button pressed in a dropped drag must be dropped with it");
         stroke(b, [[100, 300], [130, 320], [160, 300]]);
+        await quiet();
         assert.equal((await strokes(a)).length, counted + 3, "B's next stroke must land");
         pass("6b. Wheel turns and second buttons do not end a dropped drag");
     }
