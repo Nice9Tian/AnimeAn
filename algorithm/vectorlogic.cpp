@@ -403,6 +403,10 @@ struct FitParams {
     double lineTolerance = 1.2;   // px; max chord deviation of a "straight" run
     double fitTolerance = 1.2;    // px; max Bezier fit error before splitting
     double inflectionNoise = 0.08; // min |normalized turn| to trust a sign
+    // px; arc looked at beside a corner candidate (see kCornerConcentration).
+    // Set per stroke by the fit entry points. 0 looks at nothing, and then
+    // every candidate over the angle threshold is a corner.
+    double cornerRing = 0.0;
     // Live baking only: the straight-vs-curved decision is NOT valid on a
     // short slice (over a 24 px chunk the sagitta of any gentle curve is
     // under lineTolerance, and whole curves froze as chord chains). The
@@ -516,6 +520,67 @@ double shortStrokeStrideWindow(double strideWindow, double arc, double pixelScal
 {
     const double thresholdShare = (cornerAngleDeg / 360.0) * 0.6;
     return std::min(strideWindow, std::max(2.0 * pixelScale, arc * thresholdShare));
+}
+
+// A corner is a turn that is CONCENTRATED, not just a large one. The
+// stride-window reading cannot tell the two apart: over a window w a smooth
+// arc of radius r reads w / r, so any bend tighter than w / threshold
+// crosses the corner threshold on curvature alone. The cap above covers a
+// stroke that is one small round shape as a whole; it does nothing for a
+// tight bend that is only PART of a stroke - the loop of a 6, the bowls of a
+// 2, a 3 or a 5 written small - and no corner-slider position helps either,
+// because the threshold and the window move together.
+//
+// What does tell them apart is WHERE the turn sits. A corner the hand made
+// lands on one captured sample or is shared by two neighbours - never more,
+// however the samples happen to fall. A bend keeps turning the same way on
+// the samples beside them. So a candidate over the angle threshold is a
+// round BEND, and no corner, when both of these hold:
+//
+//   1. The turn is not concentrated. Take the two neighbouring samples
+//      around the candidate that carry the most turn (the core), add what
+//      the stroke turns the SAME way within a short ring of arc on either
+//      side; the core's share of that sum is the concentration.
+//   2. The stroke goes on turning. Walk outward from the core on both
+//      sides, adding each sample's same-way turn, until the turning pauses
+//      (two samples in a row well under the core's own rate) or the reach
+//      runs out. That sum is what follows on.
+//
+// Turning the OTHER way beside the core (the cusp of a 3, a zigzag) counts
+// for neither: it makes the candidate more of a corner, not less.
+//
+// Either test alone misreads something drawn on purpose, which is why it
+// takes both. Measured on pen input through the stabilizer and on a recorded
+// hand (digits about 25 x 35 screen px):
+//   - corners keep 0.72 or more of the turn in the core and 39 degrees or
+//     less follow on; round bends keep 0.59 or less and 54 degrees or more
+//     follow on;
+//   - a right angle drawn at steady speed comes out of the stabilizer
+//     rounded and keeps only 0.62 - 0.64 in its core, but nothing follows on
+//     (about 33 degrees): test 2 keeps it a corner;
+//   - a hairpin 4 to 6 px across has 50 - 60 degrees following on but keeps
+//     0.65 - 0.72 in its core: test 1 keeps its tip sharp. From about 8 px
+//     across (0.58) it is a round turn.
+//
+// The ring is a screen-px budget like the window, and like the window it is
+// capped by the stroke's own arc: on a small square a ring that outgrew the
+// sides would reach the NEXT corner and read two real corners as one bend.
+// A tenth of the arc is 0.4 of a square's side. The cap is a plain share of
+// the arc, not a multiple of the window, so it does not move with the corner
+// slider. A ring shorter than the sample spacing sees nothing and every
+// candidate passes, so sparse and tiny captures keep the behaviour they had.
+// The walk of test 2 needs no such cap: a straight side between two corners
+// is a pause, and the walk stops there.
+constexpr double kCornerRingPx = 5.0;         // screen px of arc beside the core
+constexpr double kCornerRingArcShare = 0.1;   // ...and at most this share of the stroke
+constexpr double kCornerConcentration = 0.62; // a bend keeps less than this in its core
+constexpr double kBendReachPx = 16.0;         // screen px the walk may go on each side
+constexpr double kBendPauseShare = 0.3;       // of the core's per-sample turn: below it is a pause
+constexpr double kBendFollowOnDeg = 50.0;     // a bend goes on turning by at least this much
+
+double shortStrokeCornerRing(double arc, double pixelScale)
+{
+    return std::min(kCornerRingPx * pixelScale, arc * kCornerRingArcShare);
 }
 
 Vector<PointF> dedupePoints(const Vector<PointF> &points)
@@ -1053,6 +1118,92 @@ void fitPiece(const Vector<PointF> &piece, const FitParams &params, Path &path,
 
 namespace {
 
+// Signed turn of the polyline at each interior sample (radians).
+Vector<double> exteriorAngles(const Vector<PointF> &pts)
+{
+    Vector<double> out(pts.size(), 0.0);
+    for (int i = 1; i + 1 < pts.size(); ++i) {
+        const PointF in = pts[i] - pts[i - 1];
+        const PointF next = pts[i + 1] - pts[i];
+        out[i] = std::atan2(crossZ(in, next), dotP(in, next));
+    }
+    return out;
+}
+
+// Whether corner candidate `i` is a round bend rather than a corner - see the
+// note at kCornerConcentration. `sign` is the direction of the candidate's
+// turn (+1 / -1); `ring` and `reach` are document px.
+bool isRoundBend(const Vector<double> &arc, const Vector<double> &exterior,
+                 int i, double sign, double ring, double reach)
+{
+    const int n = exterior.size();
+    const auto at = [&](int j) { return (j > 0 && j + 1 < n) ? sign * exterior[j] : 0.0; };
+
+    // The core is the neighbouring pair holding the most turn, so the answer
+    // is the same whether the corner fell on a sample or between two.
+    const double before = at(i - 1) + at(i);
+    const double after = at(i) + at(i + 1);
+    const int first = after >= before ? i : i - 1; // the core is first, first + 1
+    const double core = std::max(before, after);
+    if (core <= 1e-9) {
+        return false; // nothing to judge by: the angle threshold alone decides
+    }
+
+    // 1. Concentration. A sample counts in full while it lies inside the
+    // ring and fades out over one sample spacing at its edge: a hard edge
+    // would let the answer jump with where the samples happen to fall.
+    const auto weight = [ring](double distance, double spacing) {
+        const double w = (ring + spacing * 0.5 - distance) / std::max(spacing, 1e-9);
+        return std::max(0.0, std::min(1.0, w));
+    };
+    double sideBefore = 0.0;
+    for (int j = first - 1; j > 0; --j) {
+        const double w = weight(arc[first] - arc[j], arc[j + 1] - arc[j]);
+        if (w <= 0.0) {
+            break;
+        }
+        sideBefore += w * at(j);
+    }
+    double sideAfter = 0.0;
+    for (int j = first + 2; j + 1 < n; ++j) {
+        const double w = weight(arc[j] - arc[first + 1], arc[j] - arc[j - 1]);
+        if (w <= 0.0) {
+            break;
+        }
+        sideAfter += w * at(j);
+    }
+    const double concentration =
+        core / (core + std::max(0.0, sideBefore) + std::max(0.0, sideAfter));
+    if (concentration >= kCornerConcentration) {
+        return false;
+    }
+
+    // 2. What follows on. The best running sum, so a stretch that turns back
+    // a little before turning on does not end the bend, and one that turns
+    // back for good does not count against it.
+    const double pause = kBendPauseShare * core * 0.5;
+    const auto followOn = [&](int from, int step, int edge) {
+        double sum = 0.0;
+        double best = 0.0;
+        int quiet = 0;
+        for (int j = from; j > 0 && j + 1 < n; j += step) {
+            if (std::abs(arc[j] - arc[edge]) > reach) {
+                break;
+            }
+            const double turn = at(j);
+            quiet = turn < pause ? quiet + 1 : 0;
+            if (quiet >= 2) {
+                break;
+            }
+            sum += turn;
+            best = std::max(best, sum);
+        }
+        return best;
+    };
+    const double follows = followOn(first - 1, -1, first) + followOn(first + 2, 1, first + 1);
+    return follows >= kBendFollowOnDeg * (kTwoPi * 0.5) / 180.0;
+}
+
 // The corner-detect + per-piece fitting pipeline over one deduped run,
 // APPENDED to `path` (whose current position must be the run's first
 // sample). Boundary tangents can be forced so the live fitter's frozen
@@ -1090,6 +1241,9 @@ void fitRun(const Vector<PointF> &deduped, const FitParams &params, Path &path,
     const Vector<double> turn = turnAngles(light, arc, cornerWindow);
     const int n = light.size();
     const double cornerThreshold = params.cornerAngleDeg * (kTwoPi * 0.5) / 180.0;
+    const Vector<double> exterior = exteriorAngles(light);
+    const double cornerRing = params.cornerRing;
+    const double bendReach = kBendReachPx * params.pixelScale;
 
     Vector<int> corners;
     corners.append(0);
@@ -1110,7 +1264,9 @@ void fitRun(const Vector<PointF> &deduped, const FitParams &params, Path &path,
                 break;
             }
         }
-        if (localMax && arc[i] - arc[corners.last()] > cornerWindow * 0.5) {
+        // Large and a local peak is not enough: a tight smooth bend is both.
+        if (localMax && arc[i] - arc[corners.last()] > cornerWindow * 0.5
+            && !isRoundBend(arc, exterior, i, turn[i] >= 0.0 ? 1.0 : -1.0, cornerRing, bendReach)) {
             corners.append(i);
         }
     }
@@ -1153,6 +1309,7 @@ Path AnimeVectorLogic::fitStrokePath(const Vector<PointF> &points,
         shortStrokeFitTolerance(params.fitTolerance, rawArc, params.pixelScale);
     params.strideWindow = shortStrokeStrideWindow(params.strideWindow, rawArc,
                                                   params.pixelScale, params.cornerAngleDeg);
+    params.cornerRing = shortStrokeCornerRing(rawArc, params.pixelScale);
     fitRun(deduped, params, path);
     return path;
 }
@@ -1328,6 +1485,9 @@ Path AnimeVectorLogic::liveFitStrokePath(AnimeLiveFitState &state,
     // offline fitStrokePath would do with the same points.
     params.strideWindow = shortStrokeStrideWindow(params.strideWindow, arc.last(),
                                                   params.pixelScale, params.cornerAngleDeg);
+    // The ring's cap stops binding at 50 screen px of arc, well before the
+    // first bake, so the frozen prefix never sees it change either.
+    params.cornerRing = shortStrokeCornerRing(arc.last(), params.pixelScale);
 
     while (arc.last() - arc[state.frozenSamples] > kFreezeMargin + kFreezeChunk) {
         // The bake boundary is nudged to the FLATTEST sample of its window,
