@@ -325,6 +325,7 @@ def _convert_stroke(scene, view, row, layer, index, message):
     # behind would be ink nothing can ever erase with the eraser (which on
     # this layer removes regions).
     scene.remove_stroke(row, layer, index)
+    message["captured"] = True
     message["cancel_history"] = True
     animean = _animean()
     animean.ui.refresh()
@@ -344,9 +345,11 @@ def _stroke_finished(cell, stroke, message):
     out of the undo stack.
     """
     if message.get("captured"):
-        # A guide tool's line: its capture has taken it out of the layer, so
+        # Another capture ran first and took the stroke out of the layer, so
         # there is no brush stroke here, and stroke.index / cell.layer no
         # longer say where one would be (python_hooks.CAPTURE_HOOK_ORDER).
+        # Guide tools never get here (they carry tool="extra"); this guards
+        # any other capture ordered ahead of the brush.
         return
     if _CONVERT_GUARD["depth"]:
         return
@@ -377,7 +380,11 @@ def _stroke_finished(cell, stroke, message):
 
 def register_hooks():
     python_hooks.set_hook(_layer_changed, layerchange=True, historyrestore=True)
-    python_hooks.set_hook(_stroke_finished, linefinish=True)
+    # Like auto_mapping's guide capture, the region brush removes the finished
+    # stroke from the layer, so it runs ahead of default-order observers and
+    # only on native pen strokes (guide tools carry tool="extra").
+    python_hooks.set_hook(_stroke_finished, linefinish=True, tool="pen",
+                          order=python_hooks.CAPTURE_HOOK_ORDER)
 
 
 register_hooks()

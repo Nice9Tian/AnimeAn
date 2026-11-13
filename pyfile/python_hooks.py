@@ -303,7 +303,9 @@ DEFAULT_HOOK_ORDER = 50
 # tool draws through the pen, so its line lands in the current layer as an
 # ordinary stroke until the tool's capture moves it into the tool's own store;
 # the other hooks on that linefinish read "the artwork changed" off the model,
-# so the capture has to run before all of them. Without an order a hook runs
+# so the capture has to run before all of them. The region brush on an
+# independent fill layer (layer_tool_policy) is the other capture: it turns
+# the pen stroke into fills and removes it. Without an order a hook runs
 # wherever its last registration left it: set_hook re-appends, and tool
 # modules register again every time they are armed.
 #

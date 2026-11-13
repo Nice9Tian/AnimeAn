@@ -26,7 +26,7 @@
 
 ## archive/ 已归档
 
-被一级吸收的原始设计稿。目前为空，说明见 `archive/README.md`；代码层面的归档在 `../old_history/`。
+被一级吸收的原始设计稿。目前为空，说明见 `archive/README.md`；代码层面的归档在 `../old_history/` 与 `../archive_feature/`（归档的功能模块，如斥力板）。
 
 ## 检查
 

@@ -14,7 +14,7 @@
 ## 2. 认识工作区
 
 - **中央区**是两页：**Drawing** 是主画板，始终存在、随窗口放大；**Texture** 页在用户要把纹理板放大看时使用。
-- **面板窗**（Windows 菜单可开关）：**Tools**（Painting / Mapping 两组，可折叠）、**Options**（当前工具的选项）、**Layers**（Main Layers / Child Layers 两页，分别对应主画板和纹理板）、**Assets**、**History**、**Repulsion Pad**（默认隐藏）、**Python Debug**、时间轴。面板带页签，一页也显示页签（Tools 除外，它用分组）；可拖出浮动，浮动的无边框窗口能拉四边改大小。
+- **面板窗**（Windows 菜单可开关）：**Tools**（Painting / Mapping 两组，可折叠）、**Options**（当前工具的选项）、**Layers**（Main Layers / Child Layers 两页，分别对应主画板和纹理板）、**Assets**、**History**、**Python Debug**、时间轴。面板带页签，一页也显示页签（Tools 除外，它用分组）；可拖出浮动，浮动的无边框窗口能拉四边改大小。
 - **菜单栏**：**File**（Canvas Size…、Open…、Save、Save As…、Import ▸ Raster… / OpenToonz Lines… / Clip Studio Paint…、Texture ▸ 纹理板的同组命令）、**Edit**（Undo、Redo）、**Draw**（Draw Setting…）、**Arrow**（Outline Display Settings…）、**Auto Mapping**（见第 7 步）、**Theme**（Dark / Light）、**Windows**（Texture View 和各面板的显示开关）、**Settings**（Board Renderer：WebGL / Canvas 2D；Language：English / 简体中文 / 日本語）。
 - 主题选 Dark 或 Light 后记住，下次启动沿用；画纸在两种主题下都是白的。
 
@@ -30,7 +30,6 @@ Painting 组一排图标，选中后 Options 面板换成该工具的选项。�
 | **Fill** | 封闭区域里点一下填色；自动建跟随线稿的填充层 | `tools_user_workflow/fill.md` |
 | **Transfer** | 当前层内容的缩放、拉伸、平移、旋转框 | `tools_user_workflow/transfer.md` |
 | **Connect** | 两个端点之间生成一条连接笔画 | `tools_user_workflow/connect.md` |
-| **Repulsion Pad**（Windows 菜单） | 用手柄把重叠或贴太近的线推开 | `tools_user_workflow/repulsion_pad.md` |
 
 **Draw ▸ Draw Setting…** 是画笔的文档级偏好：Stabilizer（和面板上的同一个值）、Simplify、Corner。调色板（已存色块、色轮、HSV、RGB）在 Pen 和 Fill 的 Options 里，色块随文档保存，每个工具记住自己上次的颜色。
 
@@ -101,7 +100,7 @@ Mapping 组的按钮：**H Center Line**、**V Center Line**、**Mapping Area**�
 
 ## 11. 各工具的详细用法
 
-每个工具一页，固定四节（在哪、怎么用、会看到什么、边界），索引在 `tools_user_workflow/README.md`。Painting 组：`arrow`、`pen`、`eraser`、`fill`、`transfer`、`connect`；面板窗：`repulsion_pad`；Mapping 组：`center_line`、`mapping_area`、`additional_line`、`free_out_line`、`choice_line`、`deform_line`、`auto_mapping`；Auto Mapping 菜单：`horizon_line`、`to_3d`。
+每个工具一页，固定四节（在哪、怎么用、会看到什么、边界），索引在 `tools_user_workflow/README.md`。Painting 组：`arrow`、`pen`、`eraser`、`fill`、`transfer`、`connect`；Mapping 组：`center_line`、`mapping_area`、`additional_line`、`free_out_line`、`choice_line`、`deform_line`、`auto_mapping`；Auto Mapping 菜单：`horizon_line`、`to_3d`。
 
 ## 待核
 

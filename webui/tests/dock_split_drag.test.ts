@@ -25,9 +25,9 @@ const io: ProjectIO = {
     (await fs.readdir(path.join(DESIGN, rel), { withFileTypes: true }).catch(() => [])).map((e) => ({ name: e.name, isDir: e.isDirectory() })),
 };
 
-// 软件刚打开时开着的面板：右边只有 Tool Options 和 Layers，Assets、History、Repulsion Pad 关着。
+// 软件刚打开时开着的面板：右边只有 Tool Options 和 Layers，Assets、History 关着。
 const AT_START = ["toolsDock", "toolOptionsDock", "layersDock", "timelineDock"];
-const RIGHT = ["toolOptionsDock", "layersDock", "assetsDock", "historyDock", "forcePadDock"];
+const RIGHT = ["toolOptionsDock", "layersDock", "assetsDock", "historyDock"];
 
 interface Bar {
   rect: DockSplitterRect;
@@ -220,8 +220,8 @@ test("拖过头时停在面板的最小高度，鼠标回来就接着跟手", as
 });
 
 test("右边开着更多面板时，只有分隔条两边的两块变，中间关着的面板不碍事", async () => {
-  // 五块全开：拖 Layers 和 Assets 之间。
-  const all = await openStage(1920, 1157, [...AT_START, "assetsDock", "historyDock", "forcePadDock"]);
+  // 四块全开：拖 Layers 和 Assets 之间。
+  const all = await openStage(1920, 1157, [...AT_START, "assetsDock", "historyDock"]);
   let before = all.boxes(RIGHT);
   assert.deepEqual(all.drag("layersDock", down(3, 17)), down(3, 17));
   assert.deepEqual(all.boxes(RIGHT), {
@@ -231,7 +231,7 @@ test("右边开着更多面板时，只有分隔条两边的两块变，中间�
   });
 
   // Assets 关着：Layers 后面的分隔条那一边是 History。
-  const gap = await openStage(1920, 900, [...AT_START, "historyDock", "forcePadDock"]);
+  const gap = await openStage(1920, 900, [...AT_START, "historyDock"]);
   before = gap.boxes(RIGHT);
   assert.deepEqual(gap.drag("layersDock", down(-1, -2, -31)), down(-1, -2, -31));
   assert.deepEqual(gap.boxes(RIGHT), {
@@ -344,7 +344,7 @@ test("随机的窗口大小、开关面板和拖动：分隔条始终跟着鼠�
   let seed = 20261113;
   const random = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32;
   const pick = (n: number) => Math.floor(random() * n);
-  const extra = ["assetsDock", "historyDock", "forcePadDock", "pythonDebugDock"];
+  const extra = ["assetsDock", "historyDock", "pythonDebugDock"];
   const everything = [...AT_START, ...extra];
   const stage = await openStage(1920, 1157);
   // 右边每块面板占这个区全部份额的几分之几，关着的也算。
@@ -370,7 +370,7 @@ test("随机的窗口大小、开关面板和拖动：分隔条始终跟着鼠�
       elsewhere++;
     }
     if (pick(8) === 0) {
-      const id = extra[pick(3)];
+      const id = extra[pick(2)];
       const was = ratios(id);
       stage.runtime.dockFloat(id);
       sameRatios(ratios(), was, `第 ${round} 轮：${id} 浮出`);
@@ -408,8 +408,8 @@ test("随机的窗口大小、开关面板和拖动：分隔条始终跟着鼠�
 });
 
 test("不给屏幕上的尺寸时，dockResizeSplit 照旧按设计稿的像素算", async () => {
-  const stage = await openStage(1920, 1157, [...AT_START, "assetsDock", "historyDock", "forcePadDock"]);
+  const stage = await openStage(1920, 1157, [...AT_START, "assetsDock", "historyDock"]);
   const { scene } = stage.project;
   const next = dockResizeSplit(stage.runtime.getDockLayout(), scene, scene.nodes[scene.root], "right", 0, 150);
-  assert.deepEqual(next.areas.right.groups.map((g) => g.size), [150, 108, 84, 84, 106]);
+  assert.deepEqual(next.areas.right.groups.map((g) => g.size), [150, 194, 94, 94]);
 });
