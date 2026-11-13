@@ -442,3 +442,96 @@ test("时间轴只为屏幕上的关键帧要缩略图，保持帧和滚出去�
     Object.assign(globalThis, had);
   }
 });
+
+// 帧条 300 × 114 CSS 像素，尺寸始终不变，只有设备像素比在变：窗口拖到缩放比例不同的显示器，
+// 或 DevTools 仿真设备（那时浏览器不发 resize，也不重算媒体查询，页面只能自己读像素比）。
+test("设备像素比变了、CSS 尺寸没变：帧条的后备缓冲跟着重设，并按新比例重画", async () => {
+  const { createTimeline } = await loadTimeline();
+  const had = {
+    document: globalThis.document,
+    window: globalThis.window,
+    ResizeObserver: globalThis.ResizeObserver,
+    MutationObserver: globalThis.MutationObserver,
+    Path2D: globalThis.Path2D,
+    getComputedStyle: globalThis.getComputedStyle,
+  };
+  const canvases: any[] = [];
+  // 每次重画的第一步是 setTransform：记下当时的缩放和后备缓冲。
+  const paints: Array<{ scale: number; buffer: [number, number] }> = [];
+  const ticks: Array<() => void> = [];
+  const win = {
+    addEventListener() {},
+    removeEventListener() {},
+    devicePixelRatio: 1,
+    setInterval(fn: () => void) { ticks.push(fn); return ticks.length; },
+  };
+  Object.assign(globalThis, {
+    document: {
+      createElement: (tag: string) => {
+        const el = fakeElement(tag);
+        if (tag === "canvas") {
+          // 图标的蒙版也是 canvas 画的，它要量字和取像素。
+          const tools = {
+            measureText: (text: string) => ({ width: text.length * 6 }),
+            createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }),
+          };
+          const drawing = new Proxy(tools, {
+            get: (target: any, name: string) => {
+              if (name === "setTransform") return (scale: number) => { paints.push({ scale, buffer: [el.width, el.height] }); };
+              return name in target ? target[name] : () => {};
+            },
+            set: (target: any, name: string, value) => { target[name] = value; return true; },
+          });
+          el.getContext = () => drawing;
+          canvases.push(el);
+        } else {
+          Object.defineProperty(el, "clientWidth", { get: () => 300, configurable: true });
+          Object.defineProperty(el, "clientHeight", { get: () => 114, configurable: true });
+        }
+        return el;
+      },
+      documentElement: fakeElement("html"),
+      activeElement: null,
+    },
+    window: win,
+    ResizeObserver: class { observe() {} },
+    MutationObserver: class { observe() {} },
+    Path2D: class {},
+    getComputedStyle: () => ({ getPropertyValue: () => "#000" }),
+  });
+  try {
+    const state = { frames: [{ index: 0 }, { index: 1 }, { index: 2 }], current: 0 };
+    const panel = createTimeline(fakeElement("div"));
+    panel.update(state);
+    const canvas = canvases.find((c) => c.className === "tl-canvas");
+    assert.deepEqual([canvas.width, canvas.height], [300, 114]);
+    assert.deepEqual(paints.at(-1), { scale: 1, buffer: [300, 114] });
+
+    // 没有任何事件，只是后端又报了一次状态：这次重画不能拿新比例画进旧缓冲。
+    win.devicePixelRatio = 2;
+    panel.update(state);
+    assert.deepEqual([canvas.width, canvas.height], [600, 228], "2 倍时缓冲应是 600 × 228");
+    assert.deepEqual(paints.at(-1), { scale: 2, buffer: [600, 228] });
+
+    // 什么都没发生：帧条自己发现像素比变了，重设缓冲并重画。
+    win.devicePixelRatio = 1.5;
+    const before = paints.length;
+    assert.ok(ticks.length > 0, "帧条要自己留意像素比");
+    for (const tick of ticks) tick();
+    assert.deepEqual([canvas.width, canvas.height], [450, 171], "1.5 倍时缓冲应是 450 × 171");
+    assert.ok(paints.length > before, "像素比变了要重画");
+    assert.deepEqual(paints.at(-1), { scale: 1.5, buffer: [450, 171] });
+
+    // 像素比没变时不重画，也不重设缓冲（重设会清空画面）。
+    const settled = paints.length;
+    for (const tick of ticks) tick();
+    assert.equal(paints.length, settled);
+
+    // 从头到尾，每一次重画用的缩放都对得上当时的缓冲：对不上就是裁切（比例变大）或重影（比例变小）。
+    for (const paint of paints) {
+      assert.deepEqual(paint.buffer, [Math.round(300 * paint.scale), Math.round(114 * paint.scale)]);
+    }
+  } finally {
+    Object.assign(globalThis, had);
+  }
+});

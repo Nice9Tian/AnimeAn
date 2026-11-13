@@ -303,6 +303,24 @@ export function onThemeChange(repaint) {
   new MutationObserver(repaint).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 }
 
+// The other thing a painted surface has to be told. Its backing store is its CSS size
+// times the device pixel ratio, and the ratio can change while the CSS size stays:
+// the window moves to a monitor with another scale, the display scale or the zoom
+// changes, DevTools emulates a device. No ResizeObserver fires then, and under
+// DevTools emulation no resize event or resolution media query does either
+// (Chromium 157), so the ratio is read on the window's own timer.
+const kPixelRatioPollMs = 250;
+export function onPixelRatioChange(changed) {
+  const view = window;
+  let known = view.devicePixelRatio || 1;
+  view.setInterval?.(() => {
+    const ratio = view.devicePixelRatio || 1;
+    if (ratio === known) return;
+    known = ratio;
+    changed();
+  }, kPixelRatioPollMs);
+}
+
 // ---- QToolTip -------------------------------------------------------------------
 // The stylesheet rule from theme.cpp, after Qt's wake-up delay. text(event)
 // is asked at show time because the strip's tip depends on where the pointer is.
@@ -930,16 +948,20 @@ function createStrip(trigger) {
 
   // Read synchronously as well as on resize: the first update has to know the
   // viewport, or the playhead would not be scrolled into it.
+  // dpr and the backing store change here and only together: paint() scales by dpr,
+  // so a buffer left at the old ratio crops the strip (ratio up) or keeps stale
+  // pixels beside it (ratio down).
   function measure() {
-    const nextWidth = el.clientWidth, nextHeight = el.clientHeight;
-    dpr = window.devicePixelRatio || 1;
-    if (nextWidth === width && nextHeight === height) return;
-    width = nextWidth; height = nextHeight;
+    const nextWidth = el.clientWidth, nextHeight = el.clientHeight, nextDpr = window.devicePixelRatio || 1;
+    if (nextWidth === width && nextHeight === height && nextDpr === dpr) return;
+    width = nextWidth; height = nextHeight; dpr = nextDpr;
     canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr);
     canvas.style.width = `${width}px`; canvas.style.height = `${height}px`;
   }
   new ResizeObserver(() => { measure(); relayout(); paint(); }).observe(el);
   onThemeChange(paint);
+  // The layout is in CSS pixels and stays; only the buffer and the picture follow.
+  onPixelRatioChange(() => { measure(); paint(); });
 
   return {
     el,

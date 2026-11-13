@@ -1,6 +1,6 @@
 # 窗口与主题（windows_theme）
 
-三级机制。从属于 `../architecture.md`，与它冲突时以它为准。代码：`webui/design/ui/scene.json`、`webui/src/player.ts`、`webui/src/ui/app.js`（`DOCK_FOR_WINDOW`、`updateTextureHome`）、`webui/src/ui/panels2.js`、`webui/src/ui/panelwindows.js`、`webui/src/relay.ts`、`webui/src/ui/dialoghost.js`、`webui/src/ui/dialogwindow.js`、`webui/src/dialog.ts`、`src-tauri/src/lib.rs`、`backend/session/backendsession.*`（窗口表、视口槽位、`dialogs` 状态）、`theme.*`、`pyfile/window_manager.py`、`pyfile/dialogs.py`。2026-09-28 从架构文档下沉。
+三级机制。从属于 `../architecture.md`，与它冲突时以它为准。代码：`webui/design/ui/scene.json`、`webui/src/player.ts`、`webui/src/ui/app.js`（`DOCK_FOR_WINDOW`、`updateTextureHome`）、`webui/src/ui/panels2.js`、`webui/src/ui/timeline.js`、`webui/src/ui/panelwindows.js`、`webui/src/relay.ts`、`webui/src/ui/dialoghost.js`、`webui/src/ui/dialogwindow.js`、`webui/src/dialog.ts`、`src-tauri/src/lib.rs`、`backend/session/backendsession.*`（窗口表、视口槽位、`dialogs` 状态）、`theme.*`、`pyfile/window_manager.py`、`pyfile/dialogs.py`。2026-09-28 从架构文档下沉。
 
 ## 窗口层级
 
@@ -17,6 +17,12 @@
 - `webui/src/dock_glide.ts`，在 `webui/src/player.ts` 的 `applyViews` 里调用；`webui/vf/` 的副本不动。
 - 什么时候滑：停靠布局的「形状」变了才滑。形状是 `dockShapeKey`：每个停靠区每组里有哪些**可见**面板、区内多组时的并排方向、哪些浮动（按集合比，`dockFloat` 移动浮动面板时会把它挪到列表末尾），不含尺寸、当前页签和浮动位置。所以停靠、浮出（含 Tauri 里浮成独立窗口，主窗口里那块变成不可见）、叠页签、并排、上下改左右、Windows 菜单开关会滑；拖分隔条、改窗口大小、切页签、拖着或拉着浮动面板走不滑。页面第一次收到按下或按键之前不滑，后端在启动时开的面板直接出现；`prefers-reduced-motion` 时不滑。
 - 怎么滑：新布局先整份写上，再让每个顶层面板（舞台的直接子元素，含中央区）从旧框动画到新框（Web Animations 动 `left / top / width / height`，240 ms，`cubic-bezier(0.2, 0.7, 0.2, 1)`）。旧框读计算样式，所以滑到一半又变时从当前位置接着滑：旧的那段用 `Glide.stop()` 当场结束并还原样式（浏览器的 `cancel` 事件要稍后才到，不能等它，否则新一段会把钉住的尺寸当原样存下）。滑到一半目标又变了却没有新形状（改窗口大小、拖分隔条）、或者面板被隐藏，也当场结束。面板里的内容一开始就按最终尺寸排好，滑动时外框 `overflow: hidden` 裁住；里面的 canvas 钉在最终的像素尺寸，画板只给后端发一次 resize，也不会被拉伸。新出现的面板直接出现，消失的直接消失。
+
+## 帧条与设备像素比（网页界面）
+
+- 时间轴的帧条是一块 canvas（`webui/src/ui/timeline.js` 的 `createStrip`），后备缓冲是 CSS 尺寸乘设备像素比。像素比和缓冲只在 `measure()` 里一起改：`paint()` 按这个像素比缩放，两者错开时，比例变大会把画面裁掉，变小会在旁边留下旧画面。
+- CSS 尺寸不变时像素比也会变：窗口拖到缩放比例不同的显示器、改系统或页面的缩放、DevTools 仿真设备。这时 `ResizeObserver` 不触发；DevTools 仿真下浏览器连 `resize` 事件和分辨率媒体查询的 `change` 都不发（2026-11-13 在 Edge 157 上实测）。所以 `onPixelRatioChange` 用窗口的定时器每 250 ms 读一次 `devicePixelRatio`，变了就重设缓冲并重画；版面按 CSS 像素算，不用重排。
+- 还没接这个钩子的：主画板的 canvas 要等后端的下一帧才换到新像素比；播放条上按 1 倍做成位图的小图标不会重做。
 
 ## 对话框窗口
 
