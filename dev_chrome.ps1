@@ -2,7 +2,7 @@ param(
     [ValidateSet("start", "status", "stop", "print-config")]
     [string]$Action = "start",
     [int]$Port = 3432,
-    [string]$Token = "animean-dev",
+    [string]$Token = "",
     [int]$FrontendPort = 1430,
     [string]$BackendExe = "",
     [switch]$NoVite,
@@ -25,7 +25,10 @@ if (-not (Test-Path $cliScript)) {
 $argsList = @($cliScript, $Action, "--repo-root", $PSScriptRoot)
 
 if ($Action -eq "start") {
-    $argsList += @("--port", "$Port", "--token", $Token, "--frontend-port", "$FrontendPort")
+    $argsList += @("--port", "$Port", "--frontend-port", "$FrontendPort")
+    if ($Token) {
+        $argsList += @("--token", $Token)
+    }
     if ($BackendExe) {
         $argsList += @("--backend-exe", $BackendExe)
     }

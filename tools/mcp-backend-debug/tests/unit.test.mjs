@@ -20,7 +20,7 @@ import { createMcpHandler } from "../src/mcp_protocol.mjs";
 import { encodeRgbaToPng } from "../src/png.mjs";
 import { ToolRegistry } from "../src/registry.mjs";
 import { createDefaultRegistry } from "../src/tools/index.mjs";
-import { startHttpTransport } from "../src/transport_http.mjs";
+import { isLoopbackHost, startHttpTransport } from "../src/transport_http.mjs";
 import { createStdioTransport } from "../src/transport_stdio.mjs";
 
 test("encodeRgbaToPng emits valid PNG signature, IHDR, IDAT, and IEND", () => {
@@ -389,7 +389,34 @@ test("startHttpTransport serves /health and /mcp JSON-RPC over localhost", async
       body: "{not-json",
     });
     assert.equal(badRes.status, 400);
+
+    // A browser sends Origin on a page's cross-site POST and on the preflight:
+    // both are refused and no CORS header lets the page read anything.
+    const listBody = JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/list" });
+    const fromPage = await fetch(server.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "https://evil.example" },
+      body: listBody,
+    });
+    assert.equal(fromPage.status, 403);
+    assert.equal(fromPage.headers.get("access-control-allow-origin"), null);
+    const preflight = await fetch(server.url, {
+      method: "OPTIONS",
+      headers: { Origin: "http://localhost:5173", "Access-Control-Request-Method": "POST" },
+    });
+    assert.equal(preflight.status, 403);
+    assert.equal(preflight.headers.get("access-control-allow-origin"), null);
   } finally {
     await server.close();
   }
+});
+
+test("isLoopbackHost accepts loopback Host headers only (DNS rebinding guard)", () => {
+  assert.equal(isLoopbackHost("127.0.0.1:19440"), true);
+  assert.equal(isLoopbackHost("localhost:19440"), true);
+  assert.equal(isLoopbackHost("[::1]:19440"), true);
+  assert.equal(isLoopbackHost("LOCALHOST"), true);
+  assert.equal(isLoopbackHost("evil.example:19440"), false);
+  assert.equal(isLoopbackHost("127.0.0.1.evil.example"), false);
+  assert.equal(isLoopbackHost(undefined), false);
 });

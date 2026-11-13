@@ -1,5 +1,7 @@
 import { withBackendClient } from "./helpers.mjs";
 
+const PAGE_ONLY_METHODS = new Set(["board.capabilities", "texture.setHome"]);
+
 export const actionTools = [
   {
     name: "eval_python",
@@ -57,6 +59,11 @@ export const actionTools = [
     async handler(args, context) {
       if (!args.method || !String(args.method).trim()) {
         throw new Error("'method' is required");
+      }
+      // These describe the calling page: from the observer they would take the
+      // board away from Chrome or switch its field display off.
+      if (PAGE_ONLY_METHODS.has(String(args.method).trim())) {
+        throw new Error(`'${args.method}' belongs to the browser page; the debug observer never sends it`);
       }
       return withBackendClient(context, {}, async (client) => {
         const result = await client.call(String(args.method), args.params || {});

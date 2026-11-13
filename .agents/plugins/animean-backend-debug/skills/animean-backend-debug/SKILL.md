@@ -14,7 +14,7 @@ Use the `animean_backend_debug` MCP tools when the user is testing AnimeAn in Go
   .\dev_chrome.ps1
   ```
 - Or start/reuse the session via MCP tool `backend_launch_dev` (`openBrowser: true` if Chrome should be opened).
-- Always check connection health first with `backend_status` (auto-discovers `<gitCommonDir>/animean_dev_session.json`, `.scratch/dev_session.json`, `ANIMEAN_WS_URL`, or default port `3432`).
+- Always check connection health first with `backend_status` (auto-discovers `ANIMEAN_BACKEND_WS_URL`, `.scratch/dev_backend_session.json`, `<gitCommonDir>/animean_dev_backend_session.json`, or default port `3432`).
 - Use `backend_connect` only when overriding or reconnecting to a specific `wsUrl`.
 
 ## 2. Post-Drawing Bug Triage (User Says "Something Just Broke")
@@ -44,7 +44,7 @@ Use the `animean_backend_debug` MCP tools when the user is testing AnimeAn in Go
 ## Safety Rules
 
 - **Never call `eval_python` while the user holds the stylus/mouse button down**: `BackendSession` finishes an active pen stroke on `python.run`. Wait until the user finishes the stroke or stop tracing safely first.
-- **Do not inject `input`, `texture.setHome`, or `board.capabilities`** through `call_backend_rpc`: the MCP client intentionally stays a passive observer so Chrome retains `m_presenter` board dimensions and WebGL2 `fieldDisplay` support.
+- **Do not inject `input`, `texture.setHome`, or `board.capabilities`** (`call_backend_rpc` refuses the last two): the MCP client intentionally stays a passive observer so Chrome retains `m_presenter` board dimensions and WebGL2 `fieldDisplay` support.
 - Print ready-to-paste configs for Codex CLI, Claude Desktop, Gemini CLI, Cursor, or Streamable HTTP `--http 19440` with:
   ```bash
   node tools/mcp-backend-debug/cli.mjs print-config

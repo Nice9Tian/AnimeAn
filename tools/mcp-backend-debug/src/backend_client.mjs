@@ -6,6 +6,17 @@ import { getToolkitPaths, resolveBackendEndpoint } from "./discovery.mjs";
 const MAX_RECENT_EVENTS = 100;
 const OP_NAMES = ["T", "P", "B", "G", "O", "M", "K", "R", "S", "I", "H", "F", "f"];
 
+// BackendSession starts the boards at these sizes; any other size means a
+// browser page has presented (sent its resize).
+const STARTUP_BOARD_SIZE = { main: [800, 600], child: [400, 400] };
+
+/** @param {{ view?: string, w?: number, h?: number } | undefined} frame */
+function isBrowserSizedFrame(frame) {
+  if (!frame || !(frame.w > 0)) return false;
+  const start = STARTUP_BOARD_SIZE[frame.view];
+  return Boolean(start) && (frame.w !== start[0] || frame.h !== start[1]);
+}
+
 async function toBuffer(data) {
   if (Buffer.isBuffer(data)) return data;
   if (data instanceof ArrayBuffer) return Buffer.from(data);
@@ -63,11 +74,10 @@ export class BackendDebugClient {
   }
 
   isBrowserSized() {
-    const main = this.boardFrames.get("main");
-    const child = this.boardFrames.get("child");
-    const mainSized = Boolean(main && main.w > 0 && (main.w !== 800 || main.h !== 600));
-    const childSized = Boolean(child && child.w > 0 && (child.w !== 400 || child.h !== 400));
-    return mainSized || childSized;
+    for (const frame of this.boardFrames.values()) {
+      if (isBrowserSizedFrame(frame)) return true;
+    }
+    return false;
   }
 
   resetSessionCache() {
@@ -321,8 +331,13 @@ export class BackendDebugClient {
     }
 
     if (msg.t === "board") {
-      // Immediately ACK so multi-client frame delivery never stalls or hits backpressure limits.
-      if (ws.readyState === WebSocket.OPEN) {
+      // The backend sends the next frame as soon as ANY page acks the last one
+      // (docs/mechanism/backend_protocol.md, 帧的节流). An observer that acks at
+      // once would pace the frames for Chrome and pile them up there while the
+      // user draws, so it acks only while no browser has sized a board. Alone,
+      // every call also unblocks the boards (handleCallMessage), so the cached
+      // frame is at most one redraw behind.
+      if (!isBrowserSizedFrame(msg) && !this.isBrowserSized() && ws.readyState === WebSocket.OPEN) {
         try {
           ws.send(JSON.stringify({ t: "ack", view: msg.view, frame: msg.frame }));
         } catch {

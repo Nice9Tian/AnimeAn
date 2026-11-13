@@ -1,11 +1,11 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import {
   buildBackendEnv,
   clearSessionMetadata,
   DEFAULT_DEV_PORT,
-  DEFAULT_DEV_TOKEN,
   DEFAULT_FRONTEND_PORT,
   getToolkitPaths,
   isPidAlive,
@@ -30,6 +30,68 @@ function resolveViteRoot(repoRoot) {
     return mainWebui;
   }
   return worktreeWebui;
+}
+
+/**
+ * A backend left running from a packaged `dist\AnimeAn` folder locks files
+ * that `agent_build.ps1` has to replace, so the next rebuild fails. A packaged
+ * backend is therefore mirrored into the worktree's `.scratch` and run from
+ * there; it still loads the `pyfile\` of the checkout it was built from.
+ * Build-tree executables run in place.
+ * @param {string} exePath
+ * @param {string} scratchDir
+ * @returns {{ exePath: string, copiedFrom: string | null, copyWarning: string | null }}
+ */
+function stageBackendExecutable(exePath, scratchDir) {
+  const exeDir = path.dirname(exePath);
+  const isPackaged =
+    path.basename(exeDir).toLowerCase() === "animean" &&
+    path.basename(path.dirname(exeDir)).toLowerCase() === "dist";
+  if (!isPackaged) {
+    return { exePath, copiedFrom: null, copyWarning: null };
+  }
+  const targetDir = path.join(scratchDir, "dev_backend_dist", "AnimeAn");
+  const targetExe = path.join(targetDir, path.basename(exePath));
+  fs.mkdirSync(targetDir, { recursive: true });
+  let copyError = null;
+  if (process.platform === "win32") {
+    // Only changed files are copied; /R:1 /W:1 so a locked file fails fast.
+    const res = spawnSync(
+      "robocopy",
+      [exeDir, targetDir, "/MIR", "/R:1", "/W:1", "/NFL", "/NDL", "/NJH", "/NJS", "/NP"],
+      { encoding: "utf-8", windowsHide: true }
+    );
+    // robocopy exit codes 0-7 mean success; 8 and above mean some copy failed.
+    if (res.error || res.status === null || res.status >= 8) {
+      copyError = (res.error && res.error.message) || (res.stdout || "").trim().slice(-1000) || `exit ${res.status}`;
+    }
+  } else {
+    try {
+      fs.cpSync(exeDir, targetDir, { recursive: true, force: true });
+    } catch (err) {
+      copyError = err instanceof Error ? err.message : String(err);
+    }
+  }
+  if (copyError) {
+    if (!fs.existsSync(targetExe)) {
+      throw new Error(`Could not copy ${exeDir} to ${targetDir}: ${copyError}`);
+    }
+    // Usually an older backend still runs from the copy and holds its files.
+    return {
+      exePath: targetExe,
+      copiedFrom: exeDir,
+      copyWarning: `Copy of ${exeDir} is incomplete (${copyError}); running the existing copy.`,
+    };
+  }
+  return { exePath: targetExe, copiedFrom: exeDir, copyWarning: null };
+}
+
+function tokenFromWsUrl(wsUrl) {
+  try {
+    return new URL(wsUrl).searchParams.get("token");
+  } catch {
+    return null;
+  }
 }
 
 async function waitForBackendPort(child, logPath, timeoutMs = 15000) {
@@ -105,7 +167,10 @@ export function openInChrome(url) {
 export async function startDevEnvironment(options = {}) {
   const paths = getToolkitPaths(options.repoRoot);
   const requestedPort = options.port !== undefined ? Number(options.port) : DEFAULT_DEV_PORT;
-  const token = String(options.token || DEFAULT_DEV_TOKEN);
+  // A fresh random token per launch: the backend accepts any http://localhost
+  // page origin and python.run executes code, so a well-known token would let
+  // any local web page in.
+  let token = String(options.token || randomBytes(16).toString("hex"));
   const frontendPort = options.frontendPort !== undefined ? Number(options.frontendPort) : DEFAULT_FRONTEND_PORT;
   const startVite = options.startVite !== false;
   const openBrowser = Boolean(options.openBrowser);
@@ -121,6 +186,8 @@ export async function startDevEnvironment(options = {}) {
   let wsUrl = null;
   let backendExe = null;
   let backendReused = false;
+  let backendSourceDir = null;
+  let backendCopyWarning = null;
 
   if (existing && isPidAlive(existing.backendPid)) {
     try {
@@ -131,6 +198,7 @@ export async function startDevEnvironment(options = {}) {
         backendPort = existingPort;
         wsUrl = existing.wsUrl;
         backendExe = existing.backendExe || null;
+        token = existing.token || tokenFromWsUrl(existing.wsUrl) || token;
         backendReused = true;
       }
     } catch {
@@ -150,6 +218,10 @@ export async function startDevEnvironment(options = {}) {
     }
 
     fs.mkdirSync(paths.scratchDir, { recursive: true });
+    const staged = stageBackendExecutable(backendExe, paths.scratchDir);
+    backendExe = staged.exePath;
+    backendSourceDir = staged.copiedFrom;
+    backendCopyWarning = staged.copyWarning;
     const backendLogPath = path.join(paths.scratchDir, "backend_dev.log");
     const logFd = fs.openSync(backendLogPath, "w");
 
@@ -234,6 +306,8 @@ export async function startDevEnvironment(options = {}) {
 
   return {
     ...meta,
+    ...(backendSourceDir ? { backendCopiedFrom: backendSourceDir } : {}),
+    ...(backendCopyWarning ? { backendCopyWarning } : {}),
     backendReused,
     viteReused,
     viteReady,

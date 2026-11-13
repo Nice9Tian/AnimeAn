@@ -114,10 +114,9 @@ export const snapshotTools = [
           type: "boolean",
           description: "Include full stroke Bezier commands in exported cells (default: true).",
         },
-        saveAnprojPath: {
-          type: "string",
-          description: "Optional path to also save a native .anproj file via project.saveAs (must be explicitly provided).",
-        },
+        // No .anproj option: the only save call, project.saveAs, makes the
+        // saved file the project's own path, so the user's next Save would go
+        // to the bundle instead of their file.
       },
     },
     async handler(args, context) {
@@ -132,15 +131,6 @@ export const snapshotTools = [
           stateSnapshot[k] = v;
         }
 
-        let anprojResult = null;
-        if (args.saveAnprojPath) {
-          anprojResult = await client.call("project.saveAs", {
-            path: path.resolve(args.saveAnprojPath),
-            view: "main",
-            overwrite: true,
-          });
-        }
-
         const bundle = {
           schemaVersion: 1,
           label: args.label || null,
@@ -152,7 +142,6 @@ export const snapshotTools = [
           },
           recentEvents: client.recentEvents.slice(),
           state: stateSnapshot,
-          ...(anprojResult ? { anprojSaved: anprojResult } : {}),
         };
 
         const safeLabel = String(args.label || "repro")
@@ -173,7 +162,6 @@ export const snapshotTools = [
           mainNonEmptyCells: probeDump.views?.main?.nonEmptyCells?.length ?? 0,
           childNonEmptyCells: probeDump.views?.child?.nonEmptyCells?.length ?? 0,
           hookTraceEvents: probeDump.hookTrace?.events?.length ?? 0,
-          ...(anprojResult ? { anprojSaved: anprojResult } : {}),
         };
       });
     },

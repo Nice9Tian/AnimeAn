@@ -85,7 +85,7 @@ export const connectionTools = [
         },
         token: {
           type: "string",
-          description: "Backend auth token (default: 'animean-dev').",
+          description: "Backend auth token (default: a fresh random token per launch, recorded in the session file).",
         },
         frontendPort: {
           type: "number",

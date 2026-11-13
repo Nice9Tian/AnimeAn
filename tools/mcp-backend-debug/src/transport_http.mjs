@@ -1,5 +1,14 @@
 import http from "node:http";
 
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
+/** @param {string|undefined} hostHeader */
+export function isLoopbackHost(hostHeader) {
+  if (!hostHeader) return false;
+  const host = String(hostHeader).trim().toLowerCase().replace(/:\d+$/, "");
+  return LOOPBACK_HOSTS.has(host);
+}
+
 /**
  * Start a minimal Streamable HTTP MCP transport bound to 127.0.0.1:<port>.
  *
@@ -16,13 +25,13 @@ export async function startHttpTransport({
   const server = http.createServer(async (req, res) => {
     const urlPath = (req.url || "/").split("?")[0];
 
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Mcp-Session-Id");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-
-    if (req.method === "OPTIONS") {
-      res.writeHead(204);
-      res.end();
+    // `eval_python` runs code in the backend, so no web page may reach this
+    // server: no CORS headers (MCP clients are not browsers), requests a
+    // browser makes on a page's behalf carry an Origin and are refused, and a
+    // Host other than loopback (DNS rebinding) is refused too.
+    if (req.headers.origin !== undefined || !isLoopbackHost(req.headers.host)) {
+      res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ error: "Forbidden: browser origins and non-loopback hosts are not accepted" }));
       return;
     }
 

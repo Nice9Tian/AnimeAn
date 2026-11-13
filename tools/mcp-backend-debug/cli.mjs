@@ -4,7 +4,6 @@ import { pathToFileURL } from "node:url";
 import { BackendDebugClient } from "./src/backend_client.mjs";
 import {
   DEFAULT_DEV_PORT,
-  DEFAULT_DEV_TOKEN,
   DEFAULT_FRONTEND_PORT,
   findRepoRoot,
   getToolkitPaths,
@@ -28,7 +27,7 @@ function printHelp() {
       "",
       "Options for 'start':",
       `  --port <n>            Backend WebSocket port (default: ${DEFAULT_DEV_PORT}; 0 for ephemeral)`,
-      `  --token <s>           Backend token (default: ${DEFAULT_DEV_TOKEN})`,
+      "  --token <s>           Backend token (default: a fresh random token per launch)",
       `  --frontend-port <n>   Vite dev port (default: ${DEFAULT_FRONTEND_PORT})`,
       "  --backend-exe <path>  Explicit path to AnimeAnBackend.exe",
       "  --no-vite             Start backend only without starting Vite",

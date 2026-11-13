@@ -26,7 +26,7 @@
 
 因此 `tools/mcp-backend-debug/src/backend_client.mjs` 遵守三条硬约束：
 
-1. **绝不主动发送** `input`（含 `resize`）、`texture.setHome` 或 `board.capabilities`；对 `board` 帧立即回 `ack`，不阻塞后续帧队列。
+1. **绝不主动发送** `input`（含 `resize`）、`texture.setHome` 或 `board.capabilities`（`call_backend_rpc` 拒绝后两个方法）。`board` 帧只在还没有浏览器定过画板尺寸时回 `ack`：后端只要任何一页确认就发下一帧（`backend_protocol.md`「帧的节流」），观察端一直立即确认就会替 Chrome 定节奏，Chrome 画得慢时帧在它那里越积越多；只有观察端一个连接时，每次调用都会先解开画板，缓存的帧最多落后一次重画。
 2. **Pre-browser 主动让出呈现权**：`BackendSession` 初始化 `main` 为 `800x600`、`child` 为 `400x400`。若调试端在 Chrome 尚未连入（画板仍为初始默认尺寸且 `trace_hooks` 未激活）时做了一次巡检，`withBackendClient` 会在调用结束后调用 `releaseIfNoBrowserPresenter()` 断开连接，确保随后打开 Chrome 时 Chrome 立即拿到 `m_presenter`。
 3. **`eval_python` 提示**：`BackendSession` 收到 `python.run` 会结束一次尚未松笔的拖拽；因此仅在用户静止查看状态时调用 `eval_python`，实时跟笔调试改用 `trace_hooks` 事先埋点、事后读取。
 
@@ -48,16 +48,18 @@
 服务端点按以下优先级解析：
 
 1. 显式参数 `--ws` / 工具参数 `wsUrl` / 环境变量 `ANIMEAN_BACKEND_WS_URL`
-2. `<gitCommonDir>/animean_dev_backend_session.json`（校验 `isPidAlive(backendPid)`）
-3. `.scratch/dev_backend_session.json`（校验 `isPidAlive(backendPid)`）
-4. 默认 `ws://127.0.0.1:3432/?token=animean-dev`
+2. 本 worktree 的 `.scratch/dev_backend_session.json`（校验 `isPidAlive(backendPid)`）
+3. `<gitCommonDir>/animean_dev_backend_session.json`：任一 worktree 最近一次启动写的（校验 `isPidAlive(backendPid)`）
+4. 默认 `ws://127.0.0.1:3432/?token=animean-dev`：只连得上手动用这个令牌启动的后端
+
+启动器每次新起后端都生成随机令牌（`-Token` / `--token` 可指定），写进会话文件：后端接受任何 `http://localhost:<端口>` 页面来源，`python.run` 能执行代码，固定的公开令牌等于给本机所有本地网页开门。找到的后端在打包好的 `dist\AnimeAn` 里时，先用 robocopy 镜像到 `.scratch/dev_backend_dist/` 再从那里运行：长时间运行的后端会锁住 `agent_build.ps1` 要替换的文件；副本照样加载编译它的那份源码的 `pyfile\`。
 
 若当前在未单独 `npm install` 的 git worktree 中启动，启动器会自动复用主仓库的 `webui/node_modules` 启动 Vite；且 Chrome URL 使用 `http://localhost:<frontendPort>/?ws=...` 以满足 `WsServer::isOriginAllowed` 校验。
 
 ### 4. 跨 Agent 传输协议与扩展性
 
 - **Stdio 双帧兼容（`src/transport_stdio.mjs`）**：自动识别 NDJSON（Claude Code、Codex CLI、Cursor 等主流客户端）与 `Content-Length` 字节头帧格式，并用同一格式回包（支持 UTF-8 多字节切片与非首行 `Content-Length` 头）。
-- **Streamable HTTP（`src/transport_http.mjs`）**：传入 `--http [port]`（默认 `19440`）启动 `POST /mcp` 与 `GET /health`，便于 HTTP 类 Agent 或多客户端共享同一服务。
+- **Streamable HTTP（`src/transport_http.mjs`）**：传入 `--http [port]`（默认 `19440`）启动 `POST /mcp` 与 `GET /health`，便于 HTTP 类 Agent 或多客户端共享同一服务。不发 CORS 头，带 `Origin` 头或 `Host` 不是本机回环地址的请求一律 403：浏览器替网页发的请求都带 `Origin`，这样任何网页都碰不到 `eval_python`，也挡住 DNS 重绑定。
 - **插件与配置文件**：仓库根 `.mcp.json`、`tools/mcp-backend-debug/cli.mjs print-config`（导出 Antigravity / Codex CLI / Claude Desktop / Gemini CLI 配置），以及 `.agents/plugins/animean-backend-debug/`（内置与 `cwd` 无关的 ESM 引导配置与工作流说明 [SKILL](../../.agents/plugins/animean-backend-debug/skills/animean-backend-debug/SKILL.md)）。
 
 ---
@@ -77,7 +79,7 @@
 | `scene.mjs` | `inspect_automapping` | 检查 Auto Mapping 的 `scriptData`、引导线笔画、overlay 栈与 `fieldDisplaySupported` |
 | `trace.mjs` | `trace_hooks` | 启停/读取/清空 `python_hooks.dispatch` 环形追踪缓冲（`durationMs`、异常、命中数） |
 | `snapshot.mjs` | `render_frame_png` | 调 `timeline.thumbnails` 离屏渲染并编码为 PNG，可选内联返回图像内容块 |
-| `snapshot.mjs` | `export_repro_bundle` | 导出含双视图、非空格几何、`scriptData`、trace 与 draw-list 的自包含 JSON 复现包 |
+| `snapshot.mjs` | `export_repro_bundle` | 导出含双视图、非空格几何、`scriptData`、trace 与 draw-list 的自包含 JSON 复现包；不另存 `.anproj`：唯一的保存调用 `project.saveAs` 会把工程的当前路径改成复现文件，用户下次 Save 就存错地方 |
 | `action.mjs` | `eval_python` | 在嵌入 Python 中执行表达式或语句 |
 | `action.mjs` | `call_backend_rpc` | 直接调用 `BackendSession` RPC 方法（如 `history.undo`、`tool.select`、`layer.select`） |
 
