@@ -498,6 +498,9 @@ let openMenu = null;
 let openTitle = null;
 let titleClosedByPress = null;
 let menuRequest = 0;
+// Set when the page loses the focus, cleared by a press or the focus coming back:
+// a menu still on its way then does not open in a page nobody is using.
+let pageBlurred = false;
 function closeMenus() {
   if (openMenu) { openMenu.remove(); openMenu = null; }
   openTitle?.classList.remove("open");
@@ -507,8 +510,9 @@ function closeMenus() {
 
 // Where the open menu is, for whoever must keep it uncovered: in the shell, the
 // AnimeAn windows above this page's own leave these boxes open (set_menu_area).
-// Boxes are [x, y, width, height] in client pixels, the menu and its submenus;
-// none when it closes. Reported once per task, and only when they change.
+// Boxes are [x, y, width, height] in device pixels from the page's top-left, the
+// menu and its submenus; none when it closes. Reported once per task, and only
+// when they change.
 let menuAreaListener = null;
 let reportedArea = "[]";
 let areaQueued = false;
@@ -524,7 +528,8 @@ function reportMenuArea() {
     const boxes = openMenu
       ? [openMenu, ...openMenu.querySelectorAll(".qmenu")].map((el) => {
         const r = el.getBoundingClientRect();
-        return [r.left, r.top, r.width, r.height];
+        const ratio = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+        return [r.left * ratio, r.top * ratio, r.width * ratio, r.height * ratio];
       })
       : [];
     const text = JSON.stringify(boxes);
@@ -534,21 +539,33 @@ function reportMenuArea() {
   });
 }
 
+// Closes the open menu and drops one still on its way, as a press elsewhere does.
+export function closePopupMenus() {
+  menuRequest++;
+  closeMenus();
+}
+
+// The holes for a menu are cut at its place on the screen: a page that loses the
+// focus (a press in another window, AnimeAn's or not, never reaches it) closes
+// its menu, and opens none until it is pressed or focused again.
+export function pageFocusChanged(focused) {
+  pageBlurred = !focused;
+  if (!focused) closePopupMenus();
+}
+
 if (typeof window !== "undefined") {
   window.addEventListener("pointerdown", (e) => {
+    pageBlurred = false;
     titleClosedByPress = null;
     if (e.target.closest?.(".qmenu")) return;
     menuRequest++;
     titleClosedByPress = openTitle;
     closeMenus();
   }, true);
-  // A press in another window, AnimeAn's or not, never reaches this page: losing
-  // the focus closes the menu instead, as a system menu does.
-  window.addEventListener("blur", () => {
-    if (!openMenu) return;
-    menuRequest++;
-    closeMenus();
-  });
+  window.addEventListener("blur", () => pageFocusChanged(false));
+  window.addEventListener("focus", () => pageFocusChanged(true));
+  // The boxes were measured for the old size.
+  window.addEventListener("resize", () => { if (openMenu) closePopupMenus(); });
 }
 
 // A menu that has to wait for a reply: true while no press or newer menu got there first.
@@ -586,6 +603,7 @@ export function popupMenu(items, x, y, onTrigger, parent) {
     m.append(row);
   }
   m.style.left = `${x}px`; m.style.top = `${y}px`;
+  if (!parent && pageBlurred) return m;
   (parent ?? document.body).append(m);
   if (!parent) {
     closeMenus();
