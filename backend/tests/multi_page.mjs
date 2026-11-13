@@ -224,8 +224,12 @@ const STROKES =
     "(lambda s: print(__import__('json').dumps([[round(b['x'], 2), round(b['y'], 2), round(b['width'], 2), round(b['height'], 2)] for b in (x['bounds'] for x in s)])))" +
     "(main_model.cell_to_dict(main_model.current_layer(), main_model.current_frame(), False)['image']['strokes'])";
 // The bounds of every stroke on the current cell of the main board.
+// A call lets a board frame that was waiting go out, so the pages are let
+// settle before anything is compared.
 async function strokes(page) {
-    return JSON.parse(await page.python(STROKES));
+    const bounds = JSON.parse(await page.python(STROKES));
+    await quiet();
+    return bounds;
 }
 
 const samePicture = (a, b, view = "main") => JSON.stringify(a.ops[view]) === JSON.stringify(b.ops[view]);
@@ -310,7 +314,6 @@ try {
         assert.equal(a.frames.main.frame, b.frames.main.frame, "Both pages must be at the same frame");
         pass("4. A stroke drawn on one page is on the other page too");
     }
-    const reference = (await strokes(a)).at(-1);
 
     // 5. Until its gesture is over, the other page does not take the board's size.
     {
@@ -364,6 +367,10 @@ try {
 
     // 6. While one page holds a button down, the other pages' pointers are ignored.
     {
+        // The same stroke with nobody else about, in the view it is drawn in
+        // below (handing the board over moves the view, see 5b).
+        stroke(a, [[300, 250], [320, 262], [350, 280]]);
+        const reference = (await strokes(a)).at(-1);
         const count = (await strokes(a)).length;
         stroke(a, [[300, 250], [320, 262]], { release: false });
         await a.sync();
