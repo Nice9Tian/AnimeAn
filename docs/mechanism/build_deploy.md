@@ -20,7 +20,7 @@
   cmake -S . -B build\wt-check -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_MAKE_PROGRAM=C:\Qt\Tools\mingw1310_64\bin\mingw32-make.exe -DCMAKE_C_COMPILER=C:\Qt\Tools\mingw1310_64\bin\gcc.exe -DCMAKE_CXX_COMPILER=C:\Qt\Tools\mingw1310_64\bin\g++.exe
   cmake --build build\wt-check --target AnimeAnBackend --parallel 10
   ```
-- **只改 Python 时**跑 `sync_pyfiles.ps1`：把 `pyfile\*.py`、`pythonbind\animemodel.py`、`opentoonz_tools\toonz_to_dict.py` 与 `pywheels\` 按哈希同步到 `build\` 和 `dist\` 下每个含 `AnimeAnBackend.exe` 的目录（后端读自己旁边的副本；只有旧 `AnimeAn.exe` 的 Qt 时代构建目录不动），并提示比 C++ 源码旧的后端。`build_scripts/package_tauri.ps1` 按通配复制 `pyfile\*.py`，新模块不用登记；`backend/CMakeLists.txt` 只复制 Python 的 DLL。
+- **只改 Python 时**跑 `sync_pyfiles.ps1`：把 `pyfile\*.py`、`pythonbind\animemodel.py`、`opentoonz_tools\toonz_to_dict.py` 与 `pywheels\` 按哈希同步到 `build\` 和 `dist\` 下每个含 `AnimeAnBackend.exe` 的目录（后端读自己旁边的副本；只有旧 `AnimeAn.exe` 的 Qt 时代构建目录不动），并提示比 C++ 源码旧的后端。`build_scripts/package_tauri.ps1` 按通配复制 `pyfile\*.py`，新模块不用登记；两者复制前都先删掉 exe 旁边不在这份来源里的 `.py`（源码里删掉或归档的模块，比如 `archive_feature/` 里的），因为 `initalize.py` 会装载 exe 旁边的每个 `.py`；解压新包覆盖旧文件夹的情况由 `initalize.py` 的 `_ARCHIVED_MODULES` 兜底。`backend/CMakeLists.txt` 只复制 Python 的 DLL。
 - 脚本副本只放在 `dist\AnimeAn\` 的根目录（`AnimeAn.exe` 旁），不另放子目录副本。开发机上源码的 `pyfile\`、`pythonbind\`、`opentoonz_tools\` 在 `PYTHONPATH` 里排在 exe 目录之前，解释器也不把工作目录放上 `sys.path`（从资源管理器启动时工作目录就是 exe 目录）；`initalize.py` 同样先在源码目录里找（只写文件名时依次是源码目录、exe 旁、工作目录）。所以改脚本重开就生效，不用同步。发布文件夹没有源码树，从 exe 旁加载；同步脚本是为了让要发出去的 `dist` 带上新脚本。
 
 ## 测试

@@ -276,11 +276,24 @@ foreach ($pyDll in @("python312.dll", "python3.dll", "vcruntime140.dll", "vcrunt
 Write-Host "[6/6] Copying Python scripts, bindings, wheels, and tool controls from repository..."
 
 $pyfileSrcDir = Join-Path $repoRoot "pyfile"
+$pyExtras = @("pythonbind\animemodel.py", "opentoonz_tools\toonz_to_dict.py")
+
+# 源码里删掉或归档的模块也要从 <appDir> 删掉：打包是覆盖在旧 dist 上做的，
+# initalize.py 又会装载 <appDir> 根目录下的每个 .py，留下的旧副本会照常运行。
+$shippedPy = @(Get-ChildItem -LiteralPath $pyfileSrcDir -Filter "*.py" -File | ForEach-Object { $_.Name })
+$shippedPy += $pyExtras | ForEach-Object { Split-Path -Leaf $_ }
+Get-ChildItem -LiteralPath $distDir -Filter "*.py" -File |
+    Where-Object { $_.Extension -eq ".py" -and $shippedPy -notcontains $_.Name } |
+    ForEach-Object {
+        Remove-Item -LiteralPath $_.FullName -Force
+        Write-Host "  removed stale script: $($_.Name)"
+    }
+
 Get-ChildItem -LiteralPath $pyfileSrcDir -Filter "*.py" -File | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $distDir $_.Name) -Force
 }
 
-foreach ($extra in @("pythonbind\animemodel.py", "opentoonz_tools\toonz_to_dict.py")) {
+foreach ($extra in $pyExtras) {
     $extraSrc = Join-Path $repoRoot $extra
     if (Test-Path -LiteralPath $extraSrc -PathType Leaf) {
         Copy-Item -LiteralPath $extraSrc -Destination (Join-Path $distDir (Split-Path -Leaf $extraSrc)) -Force
