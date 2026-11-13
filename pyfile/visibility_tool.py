@@ -18,7 +18,7 @@ import python_hooks
 
 
 def _scene_model(view_name):
-    """Resolve a view's SceneModel (same lookup repulsion_tool uses)."""
+    """Resolve a view's SceneModel (same lookup edit_tool uses)."""
     import __main__
 
     model = getattr(__main__, f"{view_name}_model", None)

@@ -345,9 +345,11 @@ def _stroke_finished(cell, stroke, message):
     out of the undo stack.
     """
     if message.get("captured"):
-        # A guide tool's line: its capture has taken it out of the layer, so
+        # Another capture ran first and took the stroke out of the layer, so
         # there is no brush stroke here, and stroke.index / cell.layer no
         # longer say where one would be (python_hooks.CAPTURE_HOOK_ORDER).
+        # Guide tools never get here (they carry tool="extra"); this guards
+        # any other capture ordered ahead of the brush.
         return
     if _CONVERT_GUARD["depth"]:
         return

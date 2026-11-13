@@ -5610,7 +5610,7 @@ def _occlusion_overlay_items():
 def overlay_items(view_name):
     """This view's mapping overlay items (guides + arrows + area + grid).
 
-    Public so other tools (e.g. repulsion_tool's drag preview) can COMPOSE
+    Public so other tools (e.g. a drag preview) can COMPOSE
     their own items with the mapping display instead of clobbering it -
     ui.set_overlay replaces a view's whole item list.
 

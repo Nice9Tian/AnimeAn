@@ -129,7 +129,7 @@ def _scene_model(view_name):
     """The scene model registered under this view's canonical name.
 
     get_scene() takes NO argument and returns [{"scene", "sceneName", ...}]
-    info dicts - repulsion_tool's docstring records shipping this exact
+    info dicts - the archived repulsion_tool's docstring records shipping this exact
     mistake once already; the review caught it here before it shipped twice.
     """
     import __main__

@@ -53,7 +53,7 @@ def _animean():
 
 
 def _scene_model(view_name):
-    """Resolve a view's SceneModel (same lookup repulsion_tool uses)."""
+    """Resolve a view's SceneModel (same lookup edit_tool uses)."""
     import __main__
 
     model = getattr(__main__, f"{view_name}_model", None)
@@ -115,7 +115,7 @@ def _same_color(info_color, color):
 
 
 def _dispatch_fillfinish(message, cell):
-    """Let observers (repulsion baseline, etc.) see the fill regardless of
+    """Let observers (tool caches, etc.) see the fill regardless of
     whether the Python policy or the C++ fallback performed it. `cell` must
     describe where the fill LANDED (the C++ path reads the model after
     fillAt, so its fillfinish points at the target fill layer). Returns True
@@ -390,7 +390,8 @@ def _topology_changed(message):
     restore-triggered pass must not push an entry on top of the restore.
     """
     if message.get("captured"):
-        # A guide tool's line, already taken out of the layer by its capture
+        # A guide tool's line, or a region-brush stroke turned into fills,
+        # already taken out of the layer by its capture
         # (python_hooks.CAPTURE_HOOK_ORDER): no line art changed, so nothing
         # follows. And cell.layer cannot be trusted here - the capture may
         # have made a unit layer, and the index then names the layer that
