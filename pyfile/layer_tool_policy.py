@@ -343,6 +343,11 @@ def _stroke_finished(cell, stroke, message):
     the fitted geometry is readable, and cancel_history keeps the round trip
     out of the undo stack.
     """
+    if message.get("captured"):
+        # A guide tool's line: its capture has taken it out of the layer, so
+        # there is no brush stroke here, and stroke.index / cell.layer no
+        # longer say where one would be (python_hooks.CAPTURE_HOOK_ORDER).
+        return
     if _CONVERT_GUARD["depth"]:
         return
     if (message.get("view") or "") != VIEW:

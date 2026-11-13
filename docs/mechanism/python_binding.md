@@ -273,7 +273,11 @@ hook runs. A hook that takes it back out of the layer (a guide tool: the line
 was a gesture, not artwork) registers with
 `order=python_hooks.CAPTURE_HOOK_ORDER`, so it runs before the other hooks on
 the same `linefinish`; otherwise observers such as the tracked-fill re-trace
-read the line as artwork first. See `hook_events.md`, "钩子的先后".
+read the line as artwork first. Once the stroke is out, it sets
+`message["captured"] = True`: the hooks behind it still receive the original
+`stroke.index` and `cell.layer`, which no longer name the stroke or, after a
+layer was created, the layer, and the fill re-trace and the region brush leave
+a captured message alone. See `hook_events.md`, "钩子的先后".
 
 Hook messages contain:
 
