@@ -365,23 +365,58 @@ assert cross_candidates < 50, cross_candidates
 assert far_candidates == 0, far_candidates
 assert spiral_candidates <= 2 * n, spiral_candidates
 
-start = time.perf_counter()
-frame = am._Frame(big_h, big_v)
-assert not frame.can_fold()
-assert frame.solve_full((1.0, 2.0), 0.0, 0.0)[2] <= 1e-9
-best = time.perf_counter() - start
+# The production paths (_Frame, _polyline_intersection, _polylines_cross) must still go through the trees: count
+# their exact segment tests. Going back to the double loop makes these millions and fails here, as the old
+# wall-clock limits did.
+_orig_seg = am._segment_intersection
+_orig_box_pairs = pb.box_pairs
+_seg_tests = [0]
+_tree_walks = [0]
 
-start = time.perf_counter()
-am._Frame(big_h, far_v)
-far = time.perf_counter() - start
 
-start = time.perf_counter()
-am._polyline_intersection(spiral, spiral_opp)
-wound = time.perf_counter() - start
-assert not am._polylines_cross(spiral, spiral_opp)
+def _counting_seg(*args):
+    _seg_tests[0] += 1
+    return _orig_seg(*args)
+
+
+def _counting_box_pairs(*args):
+    _tree_walks[0] += 1
+    return _orig_box_pairs(*args)
+
+
+def _exact_tests(fn):
+    """fn's result and how many exact segment tests it ran; fn must walk the box trees."""
+    _seg_tests[0] = _tree_walks[0] = 0
+    am._segment_intersection, pb.box_pairs = _counting_seg, _counting_box_pairs
+    try:
+        start = time.perf_counter()
+        out = fn()
+        spent = time.perf_counter() - start
+    finally:
+        am._segment_intersection, pb.box_pairs = _orig_seg, _orig_box_pairs
+    assert _tree_walks[0] >= 1, "the crossing no longer walks polyline_boxes.box_pairs"
+    return out, _seg_tests[0], spent
+
+
+def _cross_frame():
+    frame = am._Frame(big_h, big_v)
+    assert not frame.can_fold()
+    assert frame.solve_full((1.0, 2.0), 0.0, 0.0)[2] <= 1e-9
+    return frame
+
+
+_, cross_tests, best = _exact_tests(_cross_frame)
+_, far_tests, far = _exact_tests(lambda: am._Frame(big_h, far_v))
+_, wound_tests, wound = _exact_tests(lambda: am._polyline_intersection(spiral, spiral_opp))
+wound_cross, wound_cross_tests, _ = _exact_tests(lambda: am._polylines_cross(spiral, spiral_opp))
+assert not wound_cross
+assert cross_tests <= 2 * max(cross_candidates, 1), cross_tests
+assert far_tests == 0, far_tests
+assert wound_tests <= 2 * n and wound_cross_tests <= 2 * n, (wound_tests, wound_cross_tests)
 print(
-    "5) 3000 x 3000 pruning: candidates cross=%d, apart=%d, spirals=%d / %d "
-    "(%.1f ms, %.1f ms, %.1f ms)"
-    % (cross_candidates, far_candidates, spiral_candidates, n * n, best * 1e3, far * 1e3, wound * 1e3)
+    "5) 3000 x 3000 pruning: candidates cross=%d, apart=%d, spirals=%d / %d; exact segment tests in _Frame %d, "
+    "apart %d, spirals %d (%.1f ms, %.1f ms, %.1f ms)"
+    % (cross_candidates, far_candidates, spiral_candidates, n * n, cross_tests, far_tests, wound_tests,
+       best * 1e3, far * 1e3, wound * 1e3)
 )
 print("t_frame_build: ok")

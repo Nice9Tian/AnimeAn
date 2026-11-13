@@ -1053,25 +1053,39 @@ def _print_report(results):
 
 def opt_out_of_power_throttling():
     """Match backend/main.cpp optOutOfPowerThrottling() so windowless benchmark
-    subprocesses on Windows are not demoted to efficiency cores mid-run."""
+    subprocesses on Windows are not demoted to efficiency cores mid-run.
+    Returns True when the opt-out took effect; says so on stderr when it did not,
+    because the timings that follow can then double."""
     if sys.platform != "win32":
-        return
-    try:
-        class _ThrottlingState(ctypes.Structure):
-            _fields_ = [
-                ("version", ctypes.c_ulong),
-                ("controlMask", ctypes.c_ulong),
-                ("stateMask", ctypes.c_ulong),
-            ]
+        return False
+    from ctypes import wintypes
 
+    class _ThrottlingState(ctypes.Structure):
+        _fields_ = [
+            ("version", wintypes.ULONG),
+            ("controlMask", wintypes.ULONG),
+            ("stateMask", wintypes.ULONG),
+        ]
+
+    try:
         k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        set_info = getattr(k32, "SetProcessInformation", None)
-        if set_info is None:
-            return
-        state = _ThrottlingState(1, 1, 0)  # PROCESS_POWER_THROTTLING_EXECUTION_SPEED off
-        set_info(k32.GetCurrentProcess(), 4, ctypes.byref(state), ctypes.sizeof(state))
-    except OSError:
-        pass
+        set_info = k32.SetProcessInformation
+    except (OSError, AttributeError):
+        print("bench_drag_cost: SetProcessInformation unavailable, timings may run on efficiency cores",
+              file=sys.stderr)
+        return False
+    # Typed on purpose: untyped, the -1 pseudo handle goes out as a 32-bit int and
+    # the call fails with ERROR_INVALID_HANDLE.
+    k32.GetCurrentProcess.argtypes = []
+    k32.GetCurrentProcess.restype = wintypes.HANDLE
+    set_info.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    set_info.restype = wintypes.BOOL
+    state = _ThrottlingState(1, 1, 0)  # PROCESS_POWER_THROTTLING_EXECUTION_SPEED off
+    if not set_info(k32.GetCurrentProcess(), 4, ctypes.byref(state), ctypes.sizeof(state)):  # ProcessPowerThrottling
+        print(f"bench_drag_cost: power-throttling opt-out failed (error {ctypes.get_last_error()}), "
+              "timings may run on efficiency cores", file=sys.stderr)
+        return False
+    return True
 
 
 def run_preview_benchmark(rig_name, steps=40):

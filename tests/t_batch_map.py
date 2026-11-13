@@ -91,8 +91,8 @@ class BatchMapTests(unittest.TestCase):
             )
 
             # Warm up once so _ensure_batch caches are populated
-            mp.third_of_batch(px, py)
-            mp.main_of_third_batch(px, py)
+            lh_w, lv_w, _ok_w = mp.third_of_batch(px, py)
+            mp.main_of_third_batch(lh_w, lv_w)
 
             # Verify single-pass vectorized batch execution (zero scalar calls)
             counts = {
