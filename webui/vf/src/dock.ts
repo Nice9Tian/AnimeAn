@@ -23,7 +23,11 @@ export interface DockGroupSpec {
   tabs: string[];
   /** 当前激活显示的页签面板 ID */
   active?: string;
-  /** 在并排（split）方向上的像素尺寸（拖动并排分隔条时更新） */
+  /**
+   * 在并排（split）方向上的尺寸（拖动并排分隔条时更新）。
+   * 沿停靠区厚度方向并排时是像素。按比例分配时（并排方向是停靠区的默认方向）是份额：合计归一到设计稿窗口下的跨度，
+   * 屏幕上只在可见的组之间按它分，所以可以是小数。
+   */
   size?: number;
 }
 
@@ -51,6 +55,12 @@ export interface DockLayoutSpec {
   floating?: DockFloatingSpec[];
 }
 
+/** 一个可见的并排组此刻在屏幕上沿并排方向占多少像素。 */
+export interface DockSplitShown {
+  groupIndex: number;
+  size: number;
+}
+
 export interface DockSplitterRect {
   kind: "area" | "split";
   area: DockArea;
@@ -61,6 +71,11 @@ export interface DockSplitterRect {
   width: number;
   height: number;
   currentSize: number;
+  /**
+   * 只有按比例分配的并排分隔条带：这个停靠区里每个可见组在屏幕上占的像素，按排列顺序。
+   * 拖动量是屏幕像素，dockResizeSplit 靠它换算成排列描述里的份额。
+   */
+  shown?: DockSplitShown[];
 }
 
 export interface ComputedDockWindowLayout {
@@ -281,6 +296,8 @@ export function normalizeDockLayout(scene: Scene, winNode: SceneNode | undefined
       if (rawArea.splitOrientation === "horizontal" || rawArea.splitOrientation === "vertical") {
         areas[area].splitOrientation = rawArea.splitOrientation;
       }
+      // 按比例分配时组的尺寸是份额，小数照留：取整后窗口比设计稿大时，分隔条只能几个像素几个像素地走
+      const proportional = (areas[area].splitOrientation ?? defaultSplitOrientation(area)) === defaultSplitOrientation(area);
       for (const rawGroup of rawArea.groups ?? []) {
         const tabs: string[] = [];
         for (const tid of rawGroup.tabs ?? []) {
@@ -293,7 +310,7 @@ export function normalizeDockLayout(scene: Scene, winNode: SceneNode | undefined
         const active = rawGroup.active && tabs.includes(rawGroup.active) ? rawGroup.active : tabs[0];
         const group: DockGroupSpec = { tabs, active };
         if (typeof rawGroup.size === "number" && Number.isFinite(rawGroup.size) && rawGroup.size > 0) {
-          group.size = Math.round(rawGroup.size);
+          group.size = proportional ? rawGroup.size : Math.round(rawGroup.size);
         }
         areas[area].groups.push(group);
       }
@@ -359,7 +376,11 @@ export function normalizeDockLayout(scene: Scene, winNode: SceneNode | undefined
           const activeDock = (activeId ? scene.nodes[activeId] : undefined) ?? ({ type: "Dock", width: 240, height: 280 } as SceneNode);
           return { group, activeDock };
         });
-        const distributed = distributeGroupAxisSizes(refSpan, groupEntries, orient);
+        // 按比例分配时尺寸只是份额：整体缩放到这个跨度，不取整，也不夹最小值。最小尺寸是屏幕上的事，排版时才管；
+        // 在这里夹，拖到最小的面板（窗口比设计稿大时份额不到 48）会在别处的布局变动时跳开，隐藏的组的份额也被挤掉
+        const distributed = isPerpendicularSplit
+          ? scaleGroupAxisSizes(refSpan, groupEntries, orient)
+          : distributeGroupAxisSizes(refSpan, groupEntries, orient);
         for (let gi = 0; gi < areaSpec.groups.length; gi++) {
           areaSpec.groups[gi].size = distributed[gi];
         }
@@ -694,7 +715,41 @@ function computeReferenceAreaSplitSpan(
   return Math.max(80, midH - topH - bottomH);
 }
 
-/** 拖动同一停靠区内并排组之间的分隔条，仅在相邻的第 groupIndex 与第 groupIndex+1 组之间重新分配尺寸，保持其余组不变。 */
+/**
+ * 按屏幕上的像素调整一条按比例分配的并排分隔条，改 groups 里的尺寸。
+ * 排列描述里各组的尺寸是份额：合计是设计稿窗口下的跨度，隐藏的组也占一份；屏幕上是把实际的跨度只在可见的组之间按份额分。
+ * 拖动量是屏幕像素，直接拿去和份额比会错位：窗口不是设计稿的大小、或者区里有隐藏的组时，拖一个像素就跳出一大截。
+ * 所以先在屏幕像素里改分隔条两边的两个可见组，再把每个可见组折回份额：可见组的份额合计不变，隐藏的组不动，
+ * 排版出来的每一组正好是这里算的像素数。shown 和 groups 对不上、或者分隔条后面没有可见组时不改，返回 false。
+ */
+function resizeShownSplit(
+  groups: Array<{ group: DockGroupSpec; activeDock: SceneNode }>,
+  orient: DockSplitOrientation,
+  groupIndex: number,
+  size: number,
+  shown: DockSplitShown[],
+): boolean {
+  const at = shown.findIndex((s) => s.groupIndex === groupIndex);
+  if (!Number.isFinite(size) || at < 0 || at + 1 >= shown.length) return false;
+  if (shown.some((s) => !groups[s.groupIndex] || !(s.size > 0))) return false;
+  const minEach = orient === "horizontal" ? 60 : 48;
+  const pixels = shown.map((s) => s.size);
+  const pair = Math.max(minEach * 2, pixels[at] + pixels[at + 1]);
+  pixels[at] = Math.max(minEach, Math.min(pair - minEach, Math.round(size)));
+  pixels[at + 1] = pair - pixels[at];
+  const share = shown.reduce((acc, s) => acc + groupAxisSize(groups[s.groupIndex], orient), 0);
+  const span = pixels.reduce((acc, px) => acc + px, 0);
+  shown.forEach((s, i) => {
+    groups[s.groupIndex].group.size = (pixels[i] * share) / span;
+  });
+  return true;
+}
+
+/**
+ * 拖动同一停靠区内并排组之间的分隔条，仅在分隔条两边的两组之间重新分配尺寸，保持其余组不变。
+ * size 是第 groupIndex 组要变成的尺寸。给了 shown（屏幕上各可见组的像素，分隔条矩形上带着）时，size 是屏幕像素，
+ * 另一边是它后面的可见组；没给时 size 按设计稿窗口下的跨度算，另一边是第 groupIndex+1 组。
+ */
 export function dockResizeSplit(
   layout: DockLayoutSpec,
   scene: Scene,
@@ -702,6 +757,7 @@ export function dockResizeSplit(
   area: DockArea,
   groupIndex: number,
   size: number,
+  shown?: DockSplitShown[],
 ): DockLayoutSpec {
   const next = cloneDockLayout(layout);
   const areaSpec = next.areas[area];
@@ -711,6 +767,18 @@ export function dockResizeSplit(
   }
   const orient = areaSpec.splitOrientation ?? defaultSplitOrientation(area);
   const minEach = orient === "horizontal" ? 60 : 48;
+  if (shown && orient === defaultSplitOrientation(area)) {
+    // 先归一化：shown 里的 groupIndex 是归一化后的排列里的位置，各组也都有了尺寸
+    const settled = normalizeDockLayout(scene, { ...winNode, type: "Window", width: winNode?.width ?? 1280, height: winNode?.height ?? 800, dockLayout: next });
+    const entries = settled.areas[area].groups.map((group) => {
+      const activeId = group.active && group.tabs.includes(group.active) ? group.active : group.tabs[0];
+      const activeDock = (activeId ? scene.nodes[activeId] : undefined) ?? ({ type: "Dock", width: 240, height: 280 } as SceneNode);
+      return { group, activeDock };
+    });
+    // 对不上（按下以后排列变了）时布局不动：这时的 size 是屏幕像素，不能落到下面当份额用
+    if (!resizeShownSplit(entries, orient, groupIndex, size, shown)) return settled;
+    return normalizeDockLayout(scene, { ...winNode, type: "Window", width: winNode?.width ?? 1280, height: winNode?.height ?? 800, dockLayout: settled });
+  }
   if (groups.length === 1 || groupIndex === groups.length - 1) {
     groups[groupIndex].size = Math.max(minEach, Math.round(size));
     return normalizeDockLayout(scene, { ...winNode, type: "Window", width: winNode?.width ?? 1280, height: winNode?.height ?? 800, dockLayout: next });
@@ -733,6 +801,27 @@ export function dockResizeSplit(
   return normalizeDockLayout(scene, { ...winNode, type: "Window", width: winNode?.width ?? 1280, height: winNode?.height ?? 800, dockLayout: next });
 }
 
+/** 一组在并排方向上的尺寸：写了用写的，没写用当前面板自己的首选尺寸。 */
+function groupAxisSize(
+  { group, activeDock }: { group: DockGroupSpec; activeDock: SceneNode },
+  axis: "horizontal" | "vertical",
+): number {
+  if (group.size !== undefined && group.size > 0) return group.size;
+  return axis === "horizontal" ? prefWidth(activeDock) : prefHeight(activeDock);
+}
+
+/** 把各组在并排方向上的份额按原来的比例缩放到合计 totalSpan：不取整，不设下限。 */
+function scaleGroupAxisSizes(
+  totalSpan: number,
+  groups: Array<{ group: DockGroupSpec; activeDock: SceneNode }>,
+  axis: "horizontal" | "vertical",
+): number[] {
+  const raw = groups.map((entry) => groupAxisSize(entry, axis));
+  const sum = raw.reduce((a, b) => a + b, 0) || 1;
+  return raw.map((size) => (size * totalSpan) / sum);
+}
+
+/** 把 totalSpan 像素按各组的尺寸分给它们：取整，每组不小于最小尺寸，最后一组拿剩下的。 */
 function distributeGroupAxisSizes(
   totalSpan: number,
   groups: Array<{ group: DockGroupSpec; activeDock: SceneNode }>,
@@ -742,10 +831,7 @@ function distributeGroupAxisSizes(
   if (n === 0) return [];
   if (n === 1) return [Math.max(0, totalSpan)];
   const minEach = axis === "horizontal" ? 60 : 48;
-  const rawSizes = groups.map(({ group, activeDock }) => {
-    if (group.size !== undefined && group.size > 0) return group.size;
-    return axis === "horizontal" ? prefWidth(activeDock) : prefHeight(activeDock);
-  });
+  const rawSizes = groups.map((entry) => groupAxisSize(entry, axis));
 
   const sumRaw = rawSizes.reduce((a, b) => a + b, 0) || 1;
   const out: number[] = [];
@@ -868,6 +954,10 @@ export function computeDockWindowLayout(
     }
   };
 
+  // 按比例分配的并排分隔条带上各可见组在屏幕上的像素，拖动时 dockResizeSplit 用它换算
+  const shownOf = (groups: VisibleDockGroup[], sizes: number[]): DockSplitShown[] =>
+    groups.map((g, idx) => ({ groupIndex: g.groupIndex, size: sizes[idx] }));
+
   // 顶部、底部的高度：横向并排时共用一个厚度；竖向并排时各组独立，厚度是各组之和。
   // 只有换行布局的面板按内容下限撑高，其他面板完全跟随停靠排列。
   const resolveEdgeHeights = (area: "top" | "bottom", groups: VisibleDockGroup[]): EdgeHeights => {
@@ -907,6 +997,7 @@ export function computeDockWindowLayout(
   if (topEdge) {
     if (topEdge.orient === "horizontal") {
       topH = topEdge.heights[0];
+      const shown = shownOf(topGroups, topEdge.widths);
       let curX = 0;
       topGroups.forEach((g, idx) => {
         const gw = topEdge.widths[idx];
@@ -923,6 +1014,7 @@ export function computeDockWindowLayout(
             width: 6,
             height: topH,
             currentSize: gw,
+            shown,
           });
         }
       });
@@ -966,6 +1058,7 @@ export function computeDockWindowLayout(
     if (bottomEdge.orient === "horizontal") {
       bottomH = bottomEdge.heights[0];
       const bY = midY + midH - bottomH;
+      const shown = shownOf(bottomGroups, bottomEdge.widths);
       let curX = 0;
       bottomGroups.forEach((g, idx) => {
         const gw = bottomEdge.widths[idx];
@@ -982,6 +1075,7 @@ export function computeDockWindowLayout(
             width: 6,
             height: bottomH,
             currentSize: gw,
+            shown,
           });
         }
       });
@@ -1052,6 +1146,7 @@ export function computeDockWindowLayout(
     if (orient === "vertical") {
       leftW = leftWidths[0];
       const heights = distributeGroupAxisSizes(centerH, leftGroups, "vertical");
+      const shown = shownOf(leftGroups, heights);
       let curY = centerY;
       leftGroups.forEach((g, idx) => {
         const gh = heights[idx];
@@ -1068,6 +1163,7 @@ export function computeDockWindowLayout(
             width: leftW,
             height: 6,
             currentSize: gh,
+            shown,
           });
         }
       });
@@ -1111,6 +1207,7 @@ export function computeDockWindowLayout(
       rightW = rightWidths[0];
       const rX = W - rightW;
       const heights = distributeGroupAxisSizes(centerH, rightGroups, "vertical");
+      const shown = shownOf(rightGroups, heights);
       let curY = centerY;
       rightGroups.forEach((g, idx) => {
         const gh = heights[idx];
@@ -1127,6 +1224,7 @@ export function computeDockWindowLayout(
             width: rightW,
             height: 6,
             currentSize: gh,
+            shown,
           });
         }
       });
@@ -1247,7 +1345,8 @@ export interface DockPreviewCallbacks {
   onRestore: (dockId: string) => void;
   onClose: (dockId: string) => void;
   onResizeArea: (area: DockArea, size: number, commit?: boolean) => void;
-  onResizeSplit: (area: DockArea, groupIndex: number, size: number, commit?: boolean) => void;
+  /** size 是屏幕像素；shown 是按下时分隔条矩形上带的各可见组像素，原样交给 dockResizeSplit。 */
+  onResizeSplit: (area: DockArea, groupIndex: number, size: number, commit?: boolean, shown?: DockSplitShown[]) => void;
 }
 
 /**
@@ -1540,7 +1639,7 @@ export function syncDockSplittersDom(
         } else if (sp.kind === "split" && sp.groupIndex !== undefined) {
           const delta = sp.orientation === "vertical" ? dx : dy;
           latestSize = startSize + delta;
-          callbacks.onResizeSplit(sp.area, sp.groupIndex, latestSize, false);
+          callbacks.onResizeSplit(sp.area, sp.groupIndex, latestSize, false, sp.shown);
         }
       };
       const onUp = () => {
@@ -1550,7 +1649,7 @@ export function syncDockSplittersDom(
           if (sp.kind === "area") {
             callbacks.onResizeArea(sp.area, latestSize, true);
           } else if (sp.kind === "split" && sp.groupIndex !== undefined) {
-            callbacks.onResizeSplit(sp.area, sp.groupIndex, latestSize, true);
+            callbacks.onResizeSplit(sp.area, sp.groupIndex, latestSize, true, sp.shown);
           }
         }
       };

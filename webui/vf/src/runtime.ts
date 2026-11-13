@@ -16,6 +16,7 @@ import {
   type DockFloatRect,
   type DockLayoutSpec,
   type DockSplitOrientation,
+  type DockSplitShown,
   dockFindLocation,
 } from "./dock.ts";
 import { evalExpr, parseAssignment, parseExpr, type Expr, type Value } from "./expr.ts";
@@ -612,9 +613,16 @@ export class Runtime {
     this.notifyChanged();
   }
 
-  dockResizeSplit(area: DockArea, groupIndex: number, size: number, winId = this.project.scene.root): void {
+  /** shown：屏幕上各可见组的像素（分隔条矩形上带着）。给了，size 就按屏幕像素算，见 dock.ts 的 dockResizeSplit。 */
+  dockResizeSplit(
+    area: DockArea,
+    groupIndex: number,
+    size: number,
+    winId = this.project.scene.root,
+    shown?: DockSplitShown[],
+  ): void {
     const cur = this.getDockLayout(winId);
-    const next = dockResizeSplit(cur, this.project.scene, this.project.scene.nodes[winId], area, groupIndex, size);
+    const next = dockResizeSplit(cur, this.project.scene, this.project.scene.nodes[winId], area, groupIndex, size, shown);
     this.dockLayouts.set(winId, next);
     this.layoutDirty = true;
     this.releaseDockedPointerStates();
