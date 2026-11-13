@@ -149,7 +149,7 @@ assert float(np.min(d_fold)) < -1.0, float(np.min(d_fold))
 print("5) det2: exact on affine map (3.15) and detects single-cell fold")
 
 # ---------------------------------------------------------------------------
-# 6) label_regions: 4-connected components and <= 2ms on 129x87
+# 6) label_regions: 4-connected components and exact BFS partition on 129x87
 # ---------------------------------------------------------------------------
 import time
 
@@ -183,22 +183,36 @@ assert cnt_u == 2, cnt_u
 assert lbl_u[0, 0] == lbl_u[0, 4] == lbl_u[2, 2] == 1
 assert lbl_u[0, 2] == 2
 
-# Performance on 129x87 (must be <= 2.0 ms)
+
+def _ref_label_4(mask):
+    h, w = mask.shape
+    out = np.zeros((h, w), dtype=np.int32)
+    nxt = 0
+    for r in range(h):
+        for c in range(w):
+            if mask[r, c] and out[r, c] == 0:
+                nxt += 1
+                stack = [(r, c)]
+                out[r, c] = nxt
+                while stack:
+                    rr, cc = stack.pop()
+                    for nr, nc in ((rr - 1, cc), (rr + 1, cc), (rr, cc - 1), (rr, cc + 1)):
+                        if 0 <= nr < h and 0 <= nc < w and mask[nr, nc] and out[nr, nc] == 0:
+                            out[nr, nc] = nxt
+                            stack.append((nr, nc))
+    return out, nxt
+
+
 gx_129 = np.linspace(-1.0, 1.0, 129)[:, None]
 gy_87 = np.linspace(-1.0, 1.0, 87)[None, :]
 mask_129x87 = (np.sin(5.0 * gx_129 + 0.7 * gy_87) > 0.0) & (gx_129 ** 2 + gy_87 ** 2 < 0.92)
-gridsolve.label_regions(mask_129x87)  # warmup
-lbl_times = []
-for _ in range(50):
-    t0 = time.perf_counter()
-    lbl_bench, cnt_bench = gridsolve.label_regions(mask_129x87)
-    lbl_times.append((time.perf_counter() - t0) * 1000.0)
-lbl_times.sort()
-med_lbl_ms = lbl_times[len(lbl_times) // 2]
-assert cnt_bench >= 2, cnt_bench
-assert set(np.unique(lbl_bench)) == set(range(0, cnt_bench + 1))
-assert med_lbl_ms <= 2.0, f"label_regions on 129x87 took {med_lbl_ms:.3f} ms (> 2.0 ms)"
-print(f"6) label_regions: 4-connected components ok, 129x87 median={med_lbl_ms:.3f}ms (count={cnt_bench})")
+t0 = time.perf_counter()
+lbl_bench, cnt_bench = gridsolve.label_regions(mask_129x87)
+lbl_ms = (time.perf_counter() - t0) * 1000.0
+lbl_ref, cnt_ref = _ref_label_4(mask_129x87)
+assert cnt_bench == cnt_ref and cnt_bench >= 2, (cnt_bench, cnt_ref)
+assert np.array_equal(lbl_bench, lbl_ref)
+print(f"6) label_regions: exact 4-connected match on 129x87 (count={cnt_bench}, {lbl_ms:.3f}ms)")
 
 assert "auto_mapping" not in sys.modules
 print("t_gridsolve: ALL OK")

@@ -38,6 +38,12 @@
 
 `t_*.py` 把 `pyfile` 加进 `sys.path`，用 `types.ModuleType` 造一个 `animean_python` 桩，直接 `import auto_mapping`：纯几何函数和 `build_mapper` 不需要 GUI。系统 PATH 上的 `python` 是无效的 Store 存根，用 `py` 启动器或 `dist\AnimeAn\python312\python.exe`。
 
+### 负载敏感性与环境故障诊断
+
+- **回归与基准分离。** 功能回归（`tests/t_*.py`）禁止用墙钟毫秒数断言性能：无窗口 Python 子进程跑几秒后会被 Windows EcoQoS 迁到能效核慢约两倍，核超额占用时调度抢占还会扭曲墙钟比值。`t_*.py` 只断言保证复杂度的确定性结构不变量（PCG 迭代上限与热冷迭代比、缓存复用、向量化批调用次数、包围盒树剪枝候选数，以及建架时实际做了几次精确线段求交）；毫秒级帧预算统一在开启了 `opt_out_of_power_throttling()` 的 `tests/bench_drag_cost.py`（`--warm` / `--preview`）中测量。`t_bezier_knots.py` 原本因测试内纯 Python 双重循环占 99.5% 耗时（50～100 秒），已向量化 `deviation()` 降至约 1 秒。`opt_out_of_power_throttling()` 关闭失败时在 stderr 上说明，此时的毫秒数可能翻倍。
+- **套件以 `3221225477`（`0xC0000005`）退出。** 这是 Python 解释器原生崩溃，不是断言失败；`test_legacy_suites.py` 以 `-X faulthandler` 启动子进程并在报错中标明（不自动重跑掩盖崩溃）。2026-11-13 在开发机（i7-14700KF）上排查确认：`t_bezier_knots.py` 658 轮完整运行结果逐位一致，崩溃转储落在 `python312.dll` 内部寄存器保存/恢复错乱；逐核绑核实验显示只钉 8 个性能核（约 5.37 GHz）时 5 次崩溃全部落在逻辑处理器 4（第 5 个性能核），其余 7 个性能核 165 轮零崩溃，20 核全满（约 5.2 GHz）253 轮零崩溃——属开发机第 5 颗性能核高睿频硬件不稳定（重跑或用亲和性掩码 `FFFEF` 避开该核即可）。
+- **套件以 `MemoryError` 退出。** 多见于后台泄漏大量无头浏览器耗尽系统可提交内存（Commit），清理泄漏进程后重跑。
+
 ## 依赖
 
 - 嵌入运行时是完整的 python312（含 site-packages 与 pip）。`pywheels\` 存钉版本的 wheel（cp312 / win_amd64）与 `requirements.txt`；`pydeps.ensure("模块")` 首次缺库时 `pip --no-index --find-links pywheels` 离线安装，无匹配 wheel 才走网络，全失败返回 None。

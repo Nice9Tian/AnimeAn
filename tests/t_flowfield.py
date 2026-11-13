@@ -198,14 +198,28 @@ print(f"8) falloff shapes ramp ({effects['ramp']['quadratic']:.1f} < "
       f"({effects['env']['quadratic']:.1f} < {effects['env']['linear']:.1f} "
       "px)")
 
-# 9) BUILD COST: the whole solve must stay interactive (guide drags
-#    rebuild the mapper).
+# 9) BUILD CONVERGENCE: PCG converges well inside the 1500-iteration ceiling.
+import gridsolve
 import time
-t0 = time.perf_counter()
-build([(line_asset(bow2), line_asset(chord2))])
-ms = (time.perf_counter() - t0) * 1000.0
-assert ms < 2000.0, ms
-print(f"9) mapper with a flow line builds in {ms:.0f} ms")
+_orig_pcg_9 = gridsolve.pcg
+_pcg_iters_9 = []
+
+
+def _spy_pcg_9(*a, **kw):
+    sol, it = _orig_pcg_9(*a, **kw)
+    _pcg_iters_9.append(it)
+    return sol, it
+
+
+gridsolve.pcg = _spy_pcg_9
+try:
+    t0 = time.perf_counter()
+    build([(line_asset(bow2), line_asset(chord2))])
+    ms = (time.perf_counter() - t0) * 1000.0
+finally:
+    gridsolve.pcg = _orig_pcg_9
+assert _pcg_iters_9 and max(_pcg_iters_9) < 1500, _pcg_iters_9
+print(f"9) mapper with a flow line converges in {sum(_pcg_iters_9)} CG iters ({ms:.0f} ms)")
 
 # --- Review fixes (2026-08-25, round 2) ------------------------------------
 

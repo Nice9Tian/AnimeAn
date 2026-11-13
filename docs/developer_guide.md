@@ -97,6 +97,7 @@
 | 项 | 命令 | 什么时候必跑 |
 |---|---|---|
 | Python 回归（无 GUI） | `py -m unittest discover -s tests`（`test_legacy_suites.py` 把 `t_*.py` 逐个当子测试跑）；单跑 `py tests\t_<名>.py` | 改到 `pyfile/` |
+| 预览帧预算 | `py tests\bench_drag_cost.py --preview --all`（约 3 秒；毫秒预算只在这里测，`t_*.py` 不测毫秒，见 `mechanism/build_deploy.md`）；改到求解或批量取值时再跑 `--all --warm` | 改到 `pyfile/mapping_preview.py`、`pyfile/auto_mapping.py`、`pyfile/gridsolve.py` |
 | C++ 单测 | 配置时 `BUILD_TESTING` 开着，`ctest` 跑 `projectio_roundtrip`、`animemodel_asset_gc`、`strokefit_zoom_invariance`、`board_headless_test`、`textpath_tests`、`platform_tests`；配置时传入 Qt6 路径才会加上和真实 Qt 比较的 `core_*`，见 `mechanism/build_deploy.md` | 改到 `algorithm/`、`projectio.*`、`backend/board/`、`backend/platform/` |
 | 编译检查 | `cmake --build build\wt-check --target AnimeAnBackend --parallel 10`（新 worktree 先 `git submodule update --init --depth 1`） | 改到 C++，合并前 |
 | 后端会话冒烟 | `node backend/tests/session_smoke.mjs <AnimeAnBackend.exe>` | 改到 `backend/`、`openglwidget.*` |
