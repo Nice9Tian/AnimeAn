@@ -122,6 +122,7 @@ private:
     void setPresenter(PageId page);
     void applyPresentation(PageId page);
     void applyBoardSize(const String &view, const BoardSizeRequest &size);
+    void applyPresentedBoardSize(const String &view, const BoardSizeRequest &size);
     void applyTextureHome(const String &home, int subControl);
     void refreshFieldDisplaySupport();
     void releasePointerOfDepartedPage(PageId page);

@@ -314,6 +314,17 @@ try {
 
     // 5. Until its gesture is over, the other page does not take the board's size.
     {
+        // The texture board's view, read back: in the middle of the board, which
+        // document point, and at what zoom.
+        const textureView = async (page, size) => {
+            const reply = await page.call("texture.setHome", { home: "central" });
+            assert.equal(reply.ok, true, `texture.setHome failed: ${reply.error}`);
+            const { zoom, panX, panY } = reply.result;
+            return { zoom, centre: [(size / 2 - panX) / zoom, (size / 2 - panY) / zoom] };
+        };
+        const near = (got, want, what) => assert(Math.abs(got - want) < 1e-6 * Math.max(1, Math.abs(want)), `${what}: ${got} vs ${want}`);
+        const view0 = await textureView(a, 400);
+
         b.input("main", "press", { x: 100, y: 100, button: 1, buttons: 1, modifiers: 0, time: (clock += 8) });
         b.input("main", "move", { x: 140, y: 130, button: 0, buttons: 1, modifiers: 0, time: (clock += 8) });
         await quiet();
@@ -328,6 +339,14 @@ try {
         assert(samePicture(a, b), "Both pages must hold the same picture after B drew");
         pass("5. The page that last finished a gesture presents, and only once the gesture is over");
 
+        // B's texture board is 300 x 300 where A's was 400 x 400: one shape, so B
+        // sees what it saw while it showed A's frame scaled to fit.
+        const view1 = await textureView(b, 300);
+        near(view1.zoom, view0.zoom * 0.75, "the zoom follows the size");
+        near(view1.centre[0], view0.centre[0], "the middle stays where it was (x)");
+        near(view1.centre[1], view0.centre[1], "the middle stays where it was (y)");
+        pass("5b. Handed to a page of another size, the board keeps its middle and scales with the window");
+
         a.input("main", "wheel", { x: 400, y: 300, dx: 0, dy: 120, modifiers: 0 });
         await quiet();
         assert.deepEqual([a.frames.main.w, a.frames.main.h], [800, 600], "A wheel turn on A makes A present again");
@@ -335,6 +354,12 @@ try {
         await quiet();
         assert(samePicture(a, b), "Both pages must hold the same picture after the zoom");
         pass("5a. A wheel turn counts as a gesture");
+
+        const view2 = await textureView(a, 400);
+        near(view2.zoom, view0.zoom, "handed back, the zoom is what it was");
+        near(view2.centre[0], view0.centre[0], "handed back, the middle is where it was (x)");
+        near(view2.centre[1], view0.centre[1], "handed back, the middle is where it was (y)");
+        pass("5c. Handed back, the board is where it was");
     }
 
     // 6. While one page holds a button down, the other pages' pointers are ignored.

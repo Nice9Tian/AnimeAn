@@ -1677,8 +1677,43 @@ void BackendSession::applyPresentation(PageId page)
             && board->devicePixelRatioF() == size.dpr) {
             continue;
         }
-        applyBoardSize(view, size);
+        applyPresentedBoardSize(view, size);
     }
+}
+
+// The board changes hands to a page of another size. Kept as it was, the view
+// would stay pinned at the top left corner, and the page taking over - which
+// was showing the frame scaled to fit - would see everything jump by the
+// ratio of the two sizes (about 3x between a side pane and a full window).
+// Instead the document point in the middle stays in the middle, and the zoom
+// moves by the square root of the area ratio, so either window has as much of
+// the document in view. Two pages of one shape see exactly what they saw, and
+// handing the board back and forth comes back to the same view: the factors
+// of a round trip multiply to 1.
+void BackendSession::applyPresentedBoardSize(const String &view, const BoardSizeRequest &size)
+{
+    PaintOpenGLWidget *board = boardForView(view);
+    if (!board) {
+        return;
+    }
+    const int oldW = board->width();
+    const int oldH = board->height();
+    const double oldZoom = board->zoom();
+    const PointF centre = AnimeViewScale::toDocument(PointF(oldW * 0.5, oldH * 0.5), oldZoom, board->panOffset());
+    applyBoardSize(view, size);
+    if (oldW <= 0 || oldH <= 0 || size.w <= 0 || size.h <= 0) {
+        return;
+    }
+    if (view == String("child") && m_textureHome == String("control")) {
+        return; // In the sub-control frame it fits itself to its content.
+    }
+    const double factor = std::sqrt((double(size.w) * double(size.h)) / (double(oldW) * double(oldH)));
+    const PointF middle(size.w * 0.5, size.h * 0.5);
+    // Set twice: the board clamps the zoom, and the pan has to be worked out
+    // with the zoom it actually took.
+    board->setViewTransform(oldZoom * factor, board->panOffset());
+    const double zoom = board->zoom();
+    board->setViewTransform(zoom, middle - AnimeViewScale::toScreen(centre, zoom, PointF()));
 }
 
 void BackendSession::applyBoardSize(const String &view, const BoardSizeRequest &size)
