@@ -44,6 +44,7 @@
 | 术语和界面文案 | `glossary.md` |
 | 新增或修改界面文字、界面语言 | `mechanism/i18n.md`（新文字要进 `zh-CN.json`、`ja.json`） |
 | 无人值守的长时间工作 | `long_time_work/README.md`（阶段权限、〔裁〕、任务记录） |
+| Chrome 联调与后端实时调试 MCP | `mechanism/mcp_backend_debug.md` |
 
 ## 规则
 
@@ -108,6 +109,7 @@
 | 脚本同步 | `powershell -ExecutionPolicy Bypass -File sync_pyfiles.ps1` | 每次改 `.py` 而不重建 |
 | 真机验证 | 在 `dist\AnimeAn\AnimeAn.exe` 里按 `tools_user_workflow/` 的步骤手测 | 改到用户看得见的行为 |
 | 界面语言覆盖 | `node backend/tests/i18n_coverage.mjs <AnimeAnBackend.exe>` | 改到 C++ 或 Python 发给界面的文字（菜单、选项、设置窗、状态栏） |
+| 后端调试 MCP | `node --test tools/mcp-backend-debug/tests/unit.test.mjs` 与 `node --test tools/mcp-backend-debug/tests/integration.test.mjs` | 改到 `tools/mcp-backend-debug/` |
 | 文档链接 | `py build_scripts\check_doc_links.py`（反引号里的 `.md` 路径都要存在） | 改到 `docs/` 或根目录的 README / AGENTS / CLAUDE |
 
 ## 提交与发布
