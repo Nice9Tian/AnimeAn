@@ -29,15 +29,17 @@
 
 - `message["handled"] = True`：我接管了，C++ 不做内建行为。会改模型的处理器必须在**第一次改动之前**置它——C++ 把 Python 异常吞成调试文本，"处理器中途崩了"和"没人处理"分不开，兜底会在半改的模型上再跑一遍。`dialog` 事件和带 `id` 的菜单项也按它算：C++ 看的是有没有处理器置了它，不是有几个处理器收到（`dialogs.py`、`app_menus.py` 收到每一个），没人置就报错或丢掉那个对话框，见 `windows_theme.md`「对话框窗口」。
 - `message["cancel_history"] = True`：这一步不要提交历史（例如引导线捕获失败、笔画已被移除）。
+- `message["captured"] = True`：这一笔已经被我从图层里拿走（引导线捕获置它，收下和拒绝都置）。排在后面的钩子怎么对待它，见「钩子的先后」。
 - `message["grab"] = "<id>"`：`pick` 阶段认领拖拽，C++ 把这次按下变成该 id 下的拖动。
 - 交互事件 hook 在 C++ 提交历史之前运行，脚本的改动并入同一条记录。
 
 ## 钩子的先后
 
-- 同一个事件上的钩子按 `order` 从小到大运行，同值按登记先后。`python_hooks.set_hook(..., order=)` 给出，缺省是 `DEFAULT_HOOK_ORDER`（50）。同一个函数再登记一次，排到同值的最后；工具模块每次被选中、每次 `extra_tools.tools_json()` 都会重新登记，所以没写 `order` 的钩子之间谁先谁后不是约定，不能依赖。
-- 把刚画完的这一笔从模型里拿走的钩子用 `CAPTURE_HOOK_ORDER`（10），排在所有观察者之前。Mapping 组里借画笔画线的工具（H / V Center Line、Mapping Area、Additional Line、Free Out Line）画完的线先作为普通笔画落在当前层，`linefinish` 时由 `auto_mapping._capture_mapping_item` 移出图层、存进引导线。同一个 `linefinish` 上的其他钩子（`fill_tool` 的跟随重算、`layer_tool_policy` 的区域刷转换、各工具的缓存失效）读到的图层里已经没有这条线。
-- 捕获之后的钩子收到的仍是原来的消息：`stroke.index` 指的那一笔已经不在；主画板上没有单元焦点时画引导线会新建单元，它的层插在最前，`cell.layer` 这时差一位。读这两个值的钩子要经得起：`layer_tool_policy` 越界即返回，`fill_tool` 只是把没变的区域再算一遍。
-- 捕获排在观察者之后时出过两个错（2026-11-13 修）：跟随线稿的填充把轴线当成边界重算，被切成两半，轴线移走后也不再算回来；当前层是独立填充层时，区域刷把轴线当成画笔的笔迹转成了填充，轴线没有生成。回归：`tests/t_guide_capture_order.py`。
+- 同一个事件上的钩子按 `order` 从小到大运行，同值按登记先后。`python_hooks.set_hook(..., order=)` 给出，缺省是 `DEFAULT_HOOK_ORDER`（50），不是数的值（布尔、NaN）也按缺省算。同一个函数再登记一次，排到同值的最后；工具模块每次被选中、每次 `extra_tools.tools_json()` 都会重新登记，所以没写 `order` 的钩子之间谁先谁后会变，只在两次重新登记之间成立。`edit_tool` 的 `historyrestore` 钩子就是这样用的：每次选中对象时再登记一次，排到 `auto_mapping` 的之后。要一直成立的先后写 `order`。
+- 把刚画完的这一笔从模型里拿走的钩子用 `CAPTURE_HOOK_ORDER`（10），排在所有观察者之前，并置 `message["captured"] = True`。Mapping 组里借画笔画线的工具（H / V Center Line、Mapping Area、Additional Line、Free Out Line）画完的线先作为普通笔画落在当前层，`linefinish` 时由 `auto_mapping._capture_mapping_item` 移出图层、存进引导线。同一个 `linefinish` 上的其他钩子读到的图层里已经没有这条线。
+- 捕获之后的钩子照常运行，但消息没有跟着变：`stroke.index` 指的那一笔已经不在；主画板上没有单元焦点时画引导线会新建单元，它的层插在最前，`cell.layer` 这时指的是原来排在上一位的那一层。把这两个值读成「这一层刚加了这一笔」的钩子，见到 `captured` 就返回：`fill_tool` 的跟随重算（引导线不是线稿改动，哪一层的填充都不为它重算）和 `layer_tool_policy` 的区域刷。只丢缓存的钩子不看它：`connect_tool`、`round_corner_tool`；`repulsion_tool` 仍把引导线手势算作画板改动，斥力板的基线照旧失效。
+- `layer_tool_policy` 的区域刷也把笔迹拿走（转成填充后删掉），但没有写 `order`。排在它前面的观察者对独立填充层上的笔迹都不做事：`fill_tool` 找不到跟随它的子层，`auto_mapping._pattern_changed` 只管纹理板，区域刷只在主画板。以后新加会读填充层笔迹的观察者，要先给区域刷排序。
+- 出过的错（都在 2026-11-13）。捕获排在观察者之后时：跟随线稿的填充把轴线当成边界重算，被切成两半，轴线移走后也不再算回来；当前层是独立填充层时，区域刷把轴线当成画笔的笔迹转成了填充，轴线没有生成。捕获排到前面、还没有 `captured` 时（交叉审核查出）：重算拿着差一位的 `cell.layer` 重算了旁观层的填充，那一层有过期的全图层范围区域时看得见；被拒绝的引导线手势也重算填充，却没有历史记录。回归：`tests/t_guide_capture_order.py`。
 
 ## 覆盖层显示列表
 

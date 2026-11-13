@@ -14,7 +14,7 @@
 
 - 机制是 `parentLayerId`（稳定列 id，`normalizeLayerTree` 校验），本身不带行为；含义全在 Python：何时设、何时尊重、何时可解除。
 - 重算：`TOPOLOGY_EVENTS = (linefinish, erasefinish, deletefinish, historyrestore)` 之后，按每个区域存的种子和它自己存的范围重新追踪；`deletefinish` 同时覆盖 Cut Line 与 Delete Line，`historyrestore` 覆盖撤销、重做与打开文件。种子的范围缓存按 scope 分别算。
-- 引导线工具画的线不算线稿改动。H / V Center Line 等工具的线画完时还是当前层里的一条普通笔画，由捕获钩子移出图层；捕获排在重算之前（`hook_events.md`「钩子的先后」），所以重算时边界里没有这条线，先填色后画轴线与先画轴线后填色结果相同。捕获不能改成排在重算之后再补算一遍：轴线横跨一个开口时会让开口暂时闭合，那一次重算会把「种子解析不出区域就保留原样」留下来的区域改写掉，补算时开口又开了，改不回来。
+- 引导线工具画的线不算线稿改动，哪一层的填充都不为它重算。H / V Center Line 等工具的线画完时还是当前层里的一条普通笔画，由捕获钩子移出图层并在消息上置 `captured`；捕获排在重算之前（`hook_events.md`「钩子的先后」），重算见到 `captured` 直接返回，所以先填色后画轴线与先画轴线后填色结果相同，手势被拒绝时也一样。只靠先后不够：捕获新建单元时图层下标后移，消息里的 `cell.layer` 会指到别的层。捕获也不能改成排在重算之后再补算一遍：轴线横跨一个开口时会让开口暂时闭合，那一次重算会把「种子解析不出区域就保留原样」留下来的区域改写掉，补算时开口又开了，改不回来。
 - 面板上显示为线稿层的子项，只是显示，绝不写进分组树。
 - 右键 **To Independent Layer** 清掉 `parentLayerId`，提交一条历史，再重新评估工具策略。
 
@@ -34,7 +34,7 @@
 | 跟随线稿的填充层 | Painting | Pen、Eraser、Connect、Transfer | 内容由父层拓扑派生，手改会被下次重算覆盖；Arrow 留着能看，Fill 留着（填充交互事件只是升级自己的范围） |
 | 独立填充层 | Painting | Connect | `ui.set_fill_paint_mode` 打开：Pen 画完的笔迹经 `linefinish` 否决转成经过的每个封闭区域的填充，Eraser 原生擦填充区域 |
 
-- 区域刷只转画笔自己的笔迹。引导线工具的线在转换之前已被捕获移出图层，在独立填充层上画轴线得到的是轴线，不刷出填充（`hook_events.md`「钩子的先后」）。
+- 区域刷不转引导线工具的线：它在转换之前已被捕获移出图层，消息带 `captured`，区域刷直接返回。在独立填充层上画轴线得到的是轴线，不刷出填充（`hook_events.md`「钩子的先后」）。
 - C++ 的两个开关不知道图层是什么：`ui.set_locked_tools(view, tools)` 拒绝一组工具、图标变暗、退回 Arrow（Arrow 永不锁，是逃生口；切换到被锁工具在芯片和主窗口两处都被拒）；`ui.set_fill_paint_mode(view, on)` 放行 Fill 列上的画笔 / 橡皮交互事件。锁定按活动板生效，活动板切换时重读那块板的锁定集。
 - 主画板才有单元焦点；纹理板的图层焦点不影响单元。
 
@@ -50,4 +50,4 @@
 
 ## 测试
 
-- `tests/t_fill_children.py`（跟随填充层：拓扑跟踪、嵌套显示、重算）、`tests/t_layer_policy.py`（页切换、锁定、区域刷）、`tests/t_unit_bake.py`（单元烘焙成线稿层加填充层）、`tests/t_guide_capture_order.py`（先填色后画引导线填充保持完整，独立填充层上画轴线不刷填充）。
+- `tests/t_fill_children.py`（跟随填充层：拓扑跟踪、嵌套显示、重算）、`tests/t_layer_policy.py`（页切换、锁定、区域刷）、`tests/t_unit_bake.py`（单元烘焙成线稿层加填充层）、`tests/t_guide_capture_order.py`（先填色后画引导线填充保持完整，在别的层上画轴线不重算旁观层的填充，独立填充层上画轴线不刷填充）。

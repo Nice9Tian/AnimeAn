@@ -10625,6 +10625,14 @@ def _capture_mapping_item(cell, stroke, message):
         print(f"[auto_mapping] curve capture unavailable ({error}); "
               "keeping the flattened guide.")
     scene.remove_stroke(row, layer, index)
+    # Said on the message, for the hooks behind this one: to them it still
+    # reads "a stroke was just added at stroke.index of cell.layer". It was a
+    # guide and it is gone - accepted or refused below, no line art changed -
+    # and the unit made next shifts every main-board index, so cell.layer may
+    # name a bystander. fill_tool re-traced that bystander's fills, and a
+    # refused gesture re-traced fills with no history entry to hold the change
+    # (python_hooks.CAPTURE_HOOK_ORDER).
+    message["captured"] = True
 
     if _ACTIVE_UNIT["id"] is None:
         # Units are the default for new work: a guide drawn with no unit

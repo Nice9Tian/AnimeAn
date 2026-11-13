@@ -306,12 +306,23 @@ DEFAULT_HOOK_ORDER = 50
 # so the capture has to run before all of them. Without an order a hook runs
 # wherever its last registration left it: set_hook re-appends, and tool
 # modules register again every time they are armed.
+#
+# The capture also says so ON THE MESSAGE: message["captured"] = True. The
+# hooks behind it still run - a cache has every reason to drop itself - but
+# what the message tells them is no longer true: stroke.index names a stroke
+# that is gone, and cell.layer may name ANOTHER layer, because a capture that
+# makes a layer shifts the indices. A hook that reads the two as "this stroke
+# was just added to that layer" returns on a captured message.
 CAPTURE_HOOK_ORDER = 10
 
 
 def _hook_order(hook):
     order = hook.get("order")
-    return order if isinstance(order, (int, float)) and not isinstance(order, bool) else DEFAULT_HOOK_ORDER
+    if isinstance(order, bool) or not isinstance(order, (int, float)):
+        return DEFAULT_HOOK_ORDER  # none given; True would sort as 1
+    if order != order:
+        return DEFAULT_HOOK_ORDER  # NaN compares false with everything: unsortable
+    return order
 
 
 def set_hook(
