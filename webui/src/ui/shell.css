@@ -35,6 +35,9 @@ html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background:
 .board-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; outline: 0; }
 /* A tool's short animation (webui/src/board/effects.ts) lies over the board and never takes the pointer. */
 .board-effects { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
+/* The board follows another page (webui/src/board/fit.ts): its frame is that page's
+   size, shown whole and scaled to fit instead of being stretched over this element. */
+.board-canvas.board-mirror, .board-effects.board-mirror { object-fit: contain; }
 
 /* Fusion's main window keeps an 8px separator between the central widget and
    the docks; here the central panel carries it. */

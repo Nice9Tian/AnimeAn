@@ -23,6 +23,7 @@ const files = [
   "texture_panel.test.ts",
   "relay.test.ts",
   "board_effects.test.ts",
+  "board_fit.test.ts",
   "dock_glide.test.ts",
   "dock_split_drag.test.ts",
 ];
