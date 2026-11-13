@@ -268,6 +268,13 @@ def activate_example_tool(name="example_tool", property_value="example_tool"):
     print(f"{name} tool activated with property={property_value}")
 ```
 
+The finished line is an ordinary stroke in the current layer by the time the
+hook runs. A hook that takes it back out of the layer (a guide tool: the line
+was a gesture, not artwork) registers with
+`order=python_hooks.CAPTURE_HOOK_ORDER`, so it runs before the other hooks on
+the same `linefinish`; otherwise observers such as the tracked-fill re-trace
+read the line as artwork first. See `hook_events.md`, "钩子的先后".
+
 Hook messages contain:
 
 ```python
