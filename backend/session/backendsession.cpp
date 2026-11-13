@@ -1546,7 +1546,10 @@ String BackendSession::resolveViewName(const String &viewName) const
 void BackendSession::onClientConnected(PageId page)
 {
     m_pages.insert(page, PageState());
-    if (m_presenter == 0 || !m_pages.contains(m_presenter)) {
+    // The first page presents. So does one that comes while nobody presents
+    // (the presenter has just left), unless a page holds the pointer: then
+    // that page takes over when it lets go.
+    if ((m_presenter == 0 || !m_pages.contains(m_presenter)) && m_pointerPage == 0) {
         m_presenter = page;
     }
     const bool othersConnected = m_ws && m_ws->clientCount() > 1;
@@ -1602,24 +1605,36 @@ void BackendSession::onClientDisconnected(PageId page)
     if (m_presenter != page) {
         return;
     }
-    // The page that last worked on a board takes over; the one connected
-    // longest when none has.
+    // No page presents until another takes over. Not here and now: this can
+    // be reached from inside a send to every page, or from inside a board's
+    // own frame, and taking over resizes the boards and can send at once.
     m_presenter = 0;
+    Timer::singleShot(0, [this]() { takeOverPresentation(); });
+}
+
+// The page that last worked on a board takes over; the one connected longest
+// when none has. Not while a page holds the pointer: the boards would change
+// size under its pen, and its release makes it the presenter anyway.
+void BackendSession::takeOverPresentation()
+{
+    if (m_presenter != 0 || m_pointerPage != 0 || !m_ws) {
+        return;
+    }
+    PageId next = 0;
     std::uint64_t latest = 0;
-    if (m_ws) {
-        for (const WsServer::ClientId candidate : m_ws->clients()) {
-            const auto it = m_pages.constFind(candidate);
-            if (it == m_pages.constEnd()) {
-                continue;
-            }
-            if (m_presenter == 0 || it->lastActive > latest) {
-                m_presenter = candidate;
-                latest = it->lastActive;
-            }
+    for (const WsServer::ClientId candidate : m_ws->clients()) {
+        const auto it = m_pages.constFind(candidate);
+        if (it == m_pages.constEnd()) {
+            continue;
+        }
+        if (next == 0 || it->lastActive > latest) {
+            next = candidate;
+            latest = it->lastActive;
         }
     }
-    if (m_presenter != 0) {
-        applyPresentation(m_presenter);
+    if (next != 0) {
+        m_presenter = next;
+        applyPresentation(next);
     }
 }
 
@@ -1648,6 +1663,8 @@ void BackendSession::releasePointerOfDepartedPage(PageId page)
                                AnimeCore::NoModifier,
                                m_pointerTime);
         }
+        // If it was the presenter as well, the takeover waited for this.
+        takeOverPresentation();
     });
 }
 
@@ -1664,9 +1681,14 @@ void BackendSession::applyPresentation(PageId page)
 {
     // A copy: resizing a board can come back into the session.
     const PageState state = m_pages.value(page);
+    const String homeBefore = m_textureHome;
     if (!state.textureHome.isEmpty()) {
         applyTextureHome(state.textureHome, state.textureSubControl);
     }
+    // A texture board that moved to another home has just been given the view
+    // it had there, at the size it had there: scaling that view again from
+    // the size of the home it left would be wrong.
+    const bool textureMoved = m_textureHome != homeBefore;
     for (const String &view : {String("main"), String("child")}) {
         const BoardSizeRequest size = state.boardSizes.value(view);
         const PaintOpenGLWidget *board = boardForView(view);
@@ -1677,7 +1699,11 @@ void BackendSession::applyPresentation(PageId page)
             && board->devicePixelRatioF() == size.dpr) {
             continue;
         }
-        applyPresentedBoardSize(view, size);
+        if (view == String("child") && textureMoved) {
+            applyBoardSize(view, size);
+        } else {
+            applyPresentedBoardSize(view, size);
+        }
     }
 }
 
@@ -1884,19 +1910,24 @@ void BackendSession::handleInputMessage(const JsonObject &msg)
         }
         return;
     }
-    if (knownPage && pageState->swallowedPress.contains(view)) {
-        if (kind == String("release")) {
-            if (buttonsDown == 0) {
+    // Only what the pointer itself reports ends that drag: a wheel, focus or
+    // enter message says nothing about the buttons.
+    const bool pointerKind = kind == String("press") || kind == String("move") || kind == String("release")
+                             || kind == String("doubleClick") || kind == String("dblclick");
+    if (knownPage && pointerKind && pageState->swallowedPress.contains(view)) {
+        const bool saysButtons = msg.contains(String("buttons"));
+        const bool nothingHeld = saysButtons && buttonsDown == 0;
+        const int pressedNow = msg.value(String("button")).toInt(0);
+        // A press with no other button held starts a new drag; a second button
+        // pressed during the dropped drag is part of it.
+        const bool freshPress = kind == String("press") && (!saysButtons || (buttonsDown & ~pressedNow) == 0);
+        if (freshPress || (kind == String("move") && nothingHeld)) {
+            pageState->swallowedPress.remove(view);
+        } else {
+            if (kind == String("release") && nothingHeld) {
                 pageState->swallowedPress.remove(view);
             }
             return;
-        }
-        if (kind == String("move") && buttonsDown != 0) {
-            return;
-        }
-        if (kind == String("press") || buttonsDown == 0) {
-            // A new press, or the pointer seen with no button down: that drag is over.
-            pageState->swallowedPress.remove(view);
         }
     }
     const auto holdPointer = [&](int button) {

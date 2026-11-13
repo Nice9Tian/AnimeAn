@@ -120,6 +120,7 @@ private:
     // last finished a gesture on a board, so the page being worked in is shown
     // at its own size and the others show the same frame scaled to fit.
     void setPresenter(PageId page);
+    void takeOverPresentation();
     void applyPresentation(PageId page);
     void applyBoardSize(const String &view, const BoardSizeRequest &size);
     void applyPresentedBoardSize(const String &view, const BoardSizeRequest &size);

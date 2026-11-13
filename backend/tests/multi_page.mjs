@@ -403,6 +403,36 @@ try {
         assert.equal((await strokes(a)).length, count + 3, "B's next stroke must land");
         assert(samePicture(a, b), "Both pages must hold the same picture after the mixed input");
         pass("6a. The rest of an ignored drag is ignored, and the next one counts again");
+
+        // A wheel turn says nothing about the buttons: it does not end a dropped drag.
+        const counted = (await strokes(a)).length;
+        stroke(a, [[300, 250], [320, 262]], { release: false });
+        await a.sync();
+        b.input("main", "press", { x: 60, y: 60, button: 1, buttons: 1, modifiers: 0, time: (clock += 8) });
+        await b.sync();
+        a.input("main", "release", { x: 320, y: 262, button: 1, buttons: 0, modifiers: 0, time: (clock += 8) });
+        await a.sync();
+        b.input("main", "wheel", { x: 200, y: 200, dx: 0, dy: 0, modifiers: 0 });
+        b.input("main", "move", { x: 400, y: 300, button: 0, buttons: 1, modifiers: 0, time: (clock += 8) });
+        b.input("main", "release", { x: 400, y: 300, button: 1, buttons: 0, modifiers: 0, time: (clock += 8) });
+        await quiet();
+        assert.equal((await strokes(a)).length, counted + 1, "A wheel turn in the middle of a dropped drag must not let the rest of it through");
+        // A second button pressed during a dropped drag is part of that drag.
+        stroke(a, [[300, 250], [320, 262]], { release: false });
+        await a.sync();
+        b.input("main", "press", { x: 60, y: 60, button: 1, buttons: 1, modifiers: 0, time: (clock += 8) });
+        await b.sync();
+        a.input("main", "release", { x: 320, y: 262, button: 1, buttons: 0, modifiers: 0, time: (clock += 8) });
+        await a.sync();
+        b.input("main", "press", { x: 80, y: 80, button: 2, buttons: 3, modifiers: 0, time: (clock += 8) });
+        b.input("main", "move", { x: 400, y: 300, button: 0, buttons: 3, modifiers: 0, time: (clock += 8) });
+        b.input("main", "release", { x: 400, y: 300, button: 2, buttons: 1, modifiers: 0, time: (clock += 8) });
+        b.input("main", "release", { x: 400, y: 300, button: 1, buttons: 0, modifiers: 0, time: (clock += 8) });
+        await quiet();
+        assert.equal((await strokes(a)).length, counted + 2, "A second button pressed in a dropped drag must be dropped with it");
+        stroke(b, [[100, 300], [130, 320], [160, 300]]);
+        assert.equal((await strokes(a)).length, counted + 3, "B's next stroke must land");
+        pass("6b. Wheel turns and second buttons do not end a dropped drag");
     }
 
     // 7. Frames keep coming when one page stops acknowledging them.
@@ -435,6 +465,17 @@ try {
         const again = await a.call("texture.setHome", { home: "central" });
         assert.equal(again.result.home, "control", "The texture board's home follows the presenting page");
         pass("8. The texture board's home follows the presenting page");
+
+        // Back to A, and to the place A keeps it: the view A had there, not
+        // that view scaled again from the size of the other place.
+        stroke(a, [[500, 100], [520, 110]]);
+        await quiet();
+        const back = await a.call("texture.setHome", { home: "central" });
+        assert.equal(back.result.home, "central");
+        assert.equal(back.result.zoom, fromA.result.zoom, "The texture board comes back at the zoom it had");
+        assert.equal(back.result.panX, fromA.result.panX);
+        assert.equal(back.result.panY, fromA.result.panY);
+        pass("8a. Handed back to a page that keeps the texture board elsewhere, it comes back as it was");
     }
 
     // 9. Field display is on only when every page that reported can draw it.
@@ -500,6 +541,27 @@ try {
             "A page that left no longer counts for field display",
         );
         pass("11. A page that leaves mid-stroke has its stroke finished; the rest carry on at their own size");
+    }
+
+    // 11a. The presenting page leaves while another holds the pointer: the
+    // boards keep their size until that page lets go.
+    {
+        const e = await new Page("E", port).open();
+        e.resize("main", 700, 500);
+        await until(() => REQUIRED_STATES.every((key) => e.states.has(key)), "E's states");
+        stroke(e, [[200, 200], [240, 230]]); // E presents
+        await quiet();
+        assert.deepEqual([b.frames.main.w, b.frames.main.h], [700, 500], "E presents");
+        b.input("main", "press", { x: 100, y: 100, button: 1, buttons: 1, modifiers: 0, time: (clock += 8) });
+        b.input("main", "move", { x: 140, y: 120, button: 0, buttons: 1, modifiers: 0, time: (clock += 8) });
+        await b.sync();
+        await e.close();
+        await quiet();
+        assert.deepEqual([b.frames.main.w, b.frames.main.h], [700, 500], "The board must not change size under B's pen when the presenter leaves");
+        b.input("main", "release", { x: 140, y: 120, button: 1, buttons: 0, modifiers: 0, time: (clock += 8) });
+        await quiet();
+        assert.deepEqual([b.frames.main.w, b.frames.main.h], [500, 400], "Once B lets go, B presents");
+        pass("11a. A presenter that leaves mid-gesture of another page hands over when that gesture ends");
     }
 
     // 12. A page comes back alone: as with a single page before.

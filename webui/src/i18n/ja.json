@@ -348,6 +348,7 @@
   "Texture view destination is missing.": "テクスチャビューの保存先がありません。",
   "The drawing engine could not be started.\n{0}": "描画エンジンを起動できませんでした。\n{0}",
   "The drawing engine stopped unexpectedly. Changes since the last save are lost.\nClose AnimeAn and start it again.": "描画エンジンが予期せず停止しました。最後に保存してからの変更は失われました。\nAnimeAn を閉じて、もう一度起動してください。",
+  "The connection to the drawing engine was lost.\nReload this page to connect again.": "描画エンジンとの接続が切れました。\nこのページを再読み込みして接続し直してください。",
   "The file does not contain scene data.": "ファイルにシーンのデータがありません。",
   "The imported drawing bounds are ({0}, {1}) {2} x {3}, but the current canvas is {4} x {5}.\nFit it to the current canvas?": "読み込んだ絵の範囲は ({0}, {1}) {2} x {3} ですが、現在のキャンバスは {4} x {5} です。\n現在のキャンバスに合わせますか？",
   "The project file does not contain scene data.": "プロジェクトファイルにシーンのデータがありません。",

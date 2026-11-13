@@ -772,11 +772,16 @@ function createBoards(mainHost, childHost, client, store) {
       slot.input.destroy();
     }
     slot.effects.stop();
+    slot.fitWatch?.disconnect();
     Object.assign(slot, {
       canvas,
       renderer,
       input: attachBoardInput(canvas, { view: slot.view, client, getFrameSize: () => slot.renderer?.frameSize?.() ?? null }),
+      // The element can change size without a frame coming: on a page that
+      // is not the one being worked in, its size is only stored.
+      fitWatch: typeof ResizeObserver === "function" ? new ResizeObserver(() => fitBoard(slot)) : null,
     });
+    slot.fitWatch?.observe(canvas);
     fitBoard(slot);
     if (hadFocus) canvas.focus({ preventScroll: true });
     paintCursor(slot);
