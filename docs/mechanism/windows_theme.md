@@ -46,6 +46,16 @@
 - 模态：有模态对话框时，主窗口页禁用它的所有者（主窗口或下面的对话框，`set_window_enabled`）。这是 Windows 自己的模态：点被禁用的所有者，系统把它最后激活的弹出窗口提到最前。独立面板窗口（外壳里所有 `panel-*` 窗口）设为不能激活（`set_panels_focusable`），点它们不会升到对话框上面。每一页在模态对话框之下都盖一层 `.modal-blocker` 吞掉输入，按下时调 `focus_modal`，把输入交给主窗口最后激活的弹出窗口（系统选择框也算）。系统选择框自己禁用主窗口，外壳不另外禁用。有窗口要关时先全部解锁、关完再按状态锁上，否则 Windows 会把焦点交给别的程序；用户关窗也走状态：外壳拦下关闭请求，发 `dialog-close-requested` 给主窗口页，等状态更新了才真正关。
 - 没有外壳时（普通浏览器里开发），对话框画在主窗口页面上，选择框直接回答 Cancel。
 
+## 菜单在浮出的面板之上
+
+计划见 `../plan/2026-11-14-菜单不被面板挡住.md`。
+
+- 菜单都画在打开它的那一页里（`webui/src/ui/panels.js` 的 `popupMenu`：菜单栏、图层右键、后端发来的 `contextMenu`），子菜单嵌在同一个 `.qmenu` 里。独立面板窗口归主窗口所有，总在主窗口之上，所以主窗口页里的菜单会被浮出的面板盖住。
+- 菜单打开、子菜单展开或收起、菜单关闭时，`panels.js` 量出所有 `.qmenu` 的矩形（客户区逻辑像素，`[x, y, 宽, 高]`），经 `onMenuArea` 报出去：同一轮只报一次，没变不报，关了报空列表。有外壳时 `app.js` 把它连同本窗口的 label 交给外壳的 `set_menu_area`。
+- 外壳（`src-tauri/src/lib.rs`）把矩形换成屏幕坐标，沿 z 序往上找叠在这个窗口之上的本程序窗口，和矩形相交的设一个挖掉这些矩形的窗口区域（`SetWindowRgn`）。菜单从洞里露出来，鼠标在洞里也落到菜单所在的窗口上。不再相交的和菜单关了的，只还原外壳自己挖过洞的窗口。洞开着时这些窗口没有 Windows 11 的圆角和阴影。
+- 洞按屏幕坐标挖，不跟着窗口走，所以页面失去焦点就关菜单（`panels.js` 的 `blur`）：点别的窗口或别的程序都会关。2026-11-14 真机实测，按住标题栏拖主窗口时菜单也关了，没有留下洞。
+- 没有外壳时不报。
+
 ## Tools 面板（网页界面）
 
 - `toolsDock` 下是 `toolsScrollUp`、`toolsScroll`、`toolsScrollDown`；`toolsScroll` 下直接是 `paintingHeader`、`paintingBody`、`mappingHeader`、`mappingBody`，没有分组容器：VBox 只对 `Flow` 子节点按内容算高度，嵌套容器折叠后不会收缩。定义在 `webui/design/ui/scene.json`。

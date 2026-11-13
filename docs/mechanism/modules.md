@@ -6,7 +6,7 @@
 
 | 角色 | 位置 | 管什么 | 不管什么 |
 |---|---|---|---|
-| **桌面外壳** | `src-tauri/src/lib.rs`、`src-tauri/src/main.rs` | 拉起并监管 `AnimeAnBackend.exe`（Windows Job Object 随父进程退出）、打开 WebView2 窗口、向网页提供后端连接地址（`backend_endpoint`）、窗口标题、独立面板窗口（`open_panel_window` / `close_panel_window`）、原生文件选择对话框（`pick_files`） | 界面布局、业务状态、工具语义 |
+| **桌面外壳** | `src-tauri/src/lib.rs`、`src-tauri/src/main.rs` | 拉起并监管 `AnimeAnBackend.exe`（Windows Job Object 随父进程退出）、打开 WebView2 窗口、向网页提供后端连接地址（`backend_endpoint`）、窗口标题、独立面板窗口（`open_panel_window` / `close_panel_window`）、给叠在菜单上面的本程序窗口挖洞（`set_menu_area`）、原生文件选择对话框（`pick_files`） | 界面布局、业务状态、工具语义 |
 | **网页界面** | `webui/src/main.ts`、`webui/src/dialog.ts`（对话框窗口的页，`dialog.html`）、`webui/src/player.ts`、`webui/src/net.ts`、`webui/src/ui/*.js`、`webui/src/board/*.ts`、`webui/vf/`、`webui/design/` | 停靠窗与页签（`webui/vf/` 运行层 + `webui/design/` 场景）、菜单栏、工具栏、声明式选项面板、图层树、资产表、历史表、时间轴、纹理面板与三处归属槽位、调色板控件、斥力板、按声明画对话框（`dialogwindow.js`）并按 `dialogs` 状态开关对话框窗口（`dialoghost.js`）、画板渲染（WebGL2 `glrenderer.ts` / Canvas 2D `renderer.ts`）与输入采集（`input.ts`） | 工具语义、几何算法、模型存储、弹什么对话框 |
 | **后端进程与会话** | `backend/main.cpp`、`backend/session/backendsession.*`、`backend/business/animeanbusiness.*`、`backend/platform/*`、`backend/net/wsserver.*`、`theme.*`、`selectionattention.*` | 嵌入 Python 解释器、WebSocket 协议与脏状态推送（`BackendSession`）、不依赖界面的业务编排（`AnimeanBusiness`：主 / 子画板模型与历史、工具与选项 JSON、图层树重排、帧与时间轴、播放驱动、缩略图渲染、导入导出、历史的全局排序）、颜色角色与主题（`AnimeTheme`）、帧 / 层 / 资产的选择约束（`SelectionAttention`）、事件循环与定时器（`EventLoop`、`Timer`） | 工具语义、界面排版 |
 | **画板** | `openglwidget.*`、`boardbase.h`、`backend/board/*` | 渲染场景与覆盖层（经 `BoardSurface` + `RecordingDevice` 录制成绘制指令表）、视图变换（缩放 / 平移）、交互事件路由（`Tool` 枚举）、控制手柄 / 覆盖层 / 视图按钮机制、hook 事件派发、历史提交、播放缓存、轴向吸附与拟合调用、文字转路径（`textpath.*`） | 任何工具"意味着什么" |
