@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "animean_backend_debug": {
+      "command": "node",
+      "args": [
+        "--input-type=module",
+        "-e",
+        "import fs from 'node:fs'; import path from 'node:path'; import { pathToFileURL } from 'node:url'; const c = ['./tools/mcp-backend-debug/mcp_server.mjs', '../../../tools/mcp-backend-debug/mcp_server.mjs'].find((p) => fs.existsSync(p)); if (!c) { console.error('Cannot locate tools/mcp-backend-debug/mcp_server.mjs from cwd=' + process.cwd()); process.exit(1); } const m = await import(pathToFileURL(path.resolve(c)).href); await m.runServer();"
+      ]
+    }
+  }
+}

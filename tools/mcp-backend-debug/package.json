@@ -1,0 +1,11 @@
+{
+  "name": "animean-backend-debug-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Decoupled cross-agent MCP server and dev launcher for live AnimeAnBackend inspection.",
+  "bin": {
+    "animean-backend-mcp": "./mcp_server.mjs",
+    "animean-dev": "./cli.mjs"
+  }
+}

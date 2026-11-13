@@ -17,3 +17,4 @@
 | `stroke_fitting.md` | 画笔采样、稳定器、拟合预算、实时增量拟合、轴向吸附、按住画直线、擦除与切断 | 初稿（2026-09-28） |
 | `painting_tools.md` | Arrow 编辑模式、Transfer、Connect、Curve、Round Corner、画板动画、每工具颜色与调色板 | 初稿（2026-09-28） |
 | `fill_layers.md` | 填充策略、跟随线稿的填充层、图层决定工具（锁定、区域刷）、可见性与图层锁定 | 初稿（2026-09-28） |
+| `mcp_backend_debug.md` | Chrome 联调启动器、跨 Agent 后端实时调试 MCP（被动多端旁路、Python 探针 IPC、14 个工具与扩展方式） | 初稿（2026-11-14） |

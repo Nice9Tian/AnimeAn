@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "animean_backend_debug": {
+      "command": "node",
+      "args": [
+        "tools/mcp-backend-debug/mcp_server.mjs"
+      ]
+    }
+  }
+}
