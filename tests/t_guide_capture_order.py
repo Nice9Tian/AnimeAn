@@ -17,6 +17,14 @@ The same order had a second face: on an independent fill layer the pen is a
 region brush (layer_tool_policy), and its conversion took an axis for a brush
 stroke - regions were painted in the guide's colour and no axis was made.
 
+Running first is half of it. The hooks behind the capture still get the
+ORIGINAL message, and by then cell.layer can name another layer: a guide drawn
+outside any unit makes one, whose layer goes in at the front. With the order
+alone the re-trace ran for that bystander layer, and for refused gestures too
+(a change with no history entry). So the capture also sets
+message["captured"], and the re-trace and the region brush leave such a
+message alone: a guide re-traces nothing, on any layer (cross-check, same day).
+
 Real modules, real registration, real dispatch; only the scene and the ui are
 fakes. Creating a unit for a guide drawn outside one is t_units' business.
 """
@@ -172,7 +180,16 @@ class FakeScene:
         self._next_id += 1
         self.images[column["id"]] = FakeImage()
         if front:
+            # What _create_mapped_layer does around move_layer(index, 0): every
+            # layer moves down one, and the fill regions bounded by one column
+            # (remap_fill_source_layers_after_move) and the selection follow.
             self.columns.insert(0, column)
+            for image in self.images.values():
+                for fill in image.fills:
+                    if fill["source"] >= 0:
+                        fill["source"] += 1
+            if self._layer >= 0:
+                self._layer += 1
             return 0
         self.columns.append(column)
         return len(self.columns) - 1
@@ -394,6 +411,16 @@ try:
     calls.clear()
     python_hooks.dispatch({"event": "pad"})
     assert calls == ["b", "a", "early", "late"], calls
+    # Nor is a NaN: it compares false with everything, so it would sit
+    # wherever it fell and every hook registered after it would be placed
+    # against a table that is no longer sorted.
+    python_hooks.set_hook(_plain_b, pad=True, order=float("nan"))
+    python_hooks.set_hook(_early, pad=True, order=python_hooks.CAPTURE_HOOK_ORDER)
+    orders = [hook["order"] for hook in python_hooks._HOOKS if "pad" in hook["events"]]
+    assert orders == sorted(orders) and all(order == order for order in orders), orders
+    calls.clear()
+    python_hooks.dispatch({"event": "pad"})
+    assert calls == ["early", "a", "b", "late"], calls
 finally:
     for function in (_early, _plain_a, _plain_b, _late):
         python_hooks.del_hook(function)
@@ -423,8 +450,9 @@ for prop, points in ((am.H_PROPERTY, H_LINE), (am.V_PROPERTY, V_LINE)):
     child.trace_walls.clear()
     message = draw(child, "child", line, points, prop, tool="extra")
     assert region["path"] == whole, f"the fill was re-traced against the {prop}: {region['path']}"
-    assert all(prop not in walls for walls in child.trace_walls), \
-        f"a trace saw the {prop} stroke as a wall: {child.trace_walls}"
+    assert message.get("captured"), "the capture did not say the stroke is gone"
+    assert child.trace_walls == [], \
+        f"a guide is no line-art change, yet fills were traced: {child.trace_walls}"
     assert child.properties(line) == ["", "", "", ""], "the guide stroke stayed in the layer"
     assert am._assets_for("child")[prop]["points"] == points, "the guide was not installed"
     assert not message.get("cancel_history"), "the guide's own commit was vetoed"
@@ -450,12 +478,16 @@ for prop, points in ((am.ADDITIONAL_PROPERTY, [(120.0, 120.0), (180.0, 190.0)]),
                      (am.PROXY_PROPERTY, [(90.0, 90.0), (310.0, 90.0), (310.0, 310.0), (90.0, 310.0)]),
                      (am.MAPPING_AREA_PROPERTY, [(150.0, 150.0)])):
     child.trace_walls.clear()
-    draw(child, "child", line, points, prop, tool="extra")
+    message = draw(child, "child", line, points, prop, tool="extra")
     assert region["path"] == whole, f"{prop}: the fill changed to {region['path']}"
-    assert all(prop not in walls for walls in child.trace_walls), \
-        f"a trace saw the {prop} stroke as a wall: {child.trace_walls}"
+    assert message.get("captured") and child.trace_walls == [], \
+        f"{prop}: fills were traced for a guide gesture: {child.trace_walls}"
     assert child.properties(line) == ["", "", "", ""], f"the {prop} stroke stayed in the layer"
-print("4) additional line, contour and area click: out of the layer before any trace")
+# The area click found no region here and was REFUSED: its commit is vetoed,
+# so a trace in its wake would have changed fills with no history entry to
+# hold the change. Refused or accepted, the stroke is gone and nothing follows.
+assert prop == am.MAPPING_AREA_PROPERTY and message.get("cancel_history")
+print("4) additional line, contour and area click: out of the layer, nothing traced")
 
 # 5) WHAT A SECOND TRACE COULD NOT HAVE MENDED. A shape was filled while it
 #    was closed, then opened again (the closing line erased): its seed no
@@ -485,7 +517,7 @@ assert region["path"] == kept, "an open seed must keep its region"
 child.trace_walls.clear()
 draw(child, "child", line, H_LINE, am.H_PROPERTY, tool="extra")
 assert region["path"] == kept, f"the axis closed the open shape: {region['path']}"
-assert all(am.H_PROPERTY not in walls for walls in child.trace_walls)
+assert child.trace_walls == []
 print("5) an axis across an open shape does not re-close and overwrite its fill")
 
 # 6) MAIN BOARD, an independent fill layer is current. There the pen is a
@@ -513,23 +545,44 @@ brushed = draw(main, "main", brush_layer, [(120.0, 150.0), (180.0, 150.0)])
 assert main.image(brush_layer).fills, "the pen stopped painting regions on a fill layer"
 assert main.properties(brush_layer) == [] and brushed.get("cancel_history")
 assert ("Region Fill", "main") in ui.commits
+# And a captured message is never read as a brush stroke, whatever its indices
+# name by then: here they name a stroke that IS on the fill layer.
+stray = main.add_stroke(brush_layer, [(120.0, 150.0), (180.0, 150.0)])
+painted = len(main.image(brush_layer).fills)
+ltp._stroke_finished({"row": 0, "layer": brush_layer}, {"index": stray},
+                     {"event": "linefinish", "view": "main", "captured": True})
+assert main.properties(brush_layer) == [""], "a captured message was converted as a brush stroke"
+assert len(main.image(brush_layer).fills) == painted
 print("6) on an independent fill layer an axis is an axis; the pen still paints regions")
 
-# 7) THE OBSERVERS RUN AFTER THE CAPTURE'S OWN SIDE EFFECTS. A guide drawn on
-#    the main board outside any unit makes a unit, whose layer goes in at the
-#    front: every index in the message is then one short. The hooks behind
-#    the capture are handed that message and must come through it - the
-#    tracked fill untouched, nothing traced against the guide, no error.
+# 7) THE CAPTURE MOVES LAYERS, AND THE MESSAGE DOES NOT FOLLOW. A guide drawn
+#    on the main board outside any unit makes one, whose layer goes in at the
+#    front: cell.layer in the message then names the layer that used to sit
+#    one above. Here that is line layer A, a bystander: the axis is drawn on
+#    B. A's tracked fill layer holds an all-layers region that a line on B
+#    (not its parent) has since crossed - out of date by design, and none of
+#    an axis's business. Found by cross-check on the real backend: the
+#    re-trace ran for A and cut that region along B's line.
 scenes, ui = fresh_world()
 main = scenes["main"]
-line = main.add_layer()
-main.set_current_layer(line)
+layer_a = main.add_layer()
+layer_b = main.add_layer()
+id_a, id_b = main.layer_id_at(layer_a), main.layer_id_at(layer_b)
+main.set_current_layer(layer_a)
 for _ in range(4):
-    draw(main, "main", line, GRID_LINE)
-fill_click("main", (150.0, 150.0))
-fill_id = next(c["id"] for c in main.columns if c["type"] == "fill")
-region = main.images[fill_id].fills[0]
-whole = list(region["path"])
+    draw(main, "main", layer_a, GRID_LINE, "a")
+fill_click("main", (150.0, 150.0))                     # Current: follows A
+fill_layer = main.layer_index_for_id(
+    next(c["id"] for c in main.columns if c["type"] == "fill"))
+assert main.columns[fill_layer]["parent"] == id_a
+main.set_current_layer(fill_layer)
+fill_click("main", (250.0, 150.0))                     # on the fill layer: All
+current_region, all_region = main.image(fill_layer).fills
+assert (current_region["all"], all_region["all"]) == (False, True)
+main.set_current_layer(layer_b)
+draw(main, "main", layer_b, GRID_LINE, "b")            # B is nobody's parent
+assert "b" not in all_region["path"], "this test needs a region that is out of date"
+as_drawn = [list(current_region["path"]), list(all_region["path"])]
 
 
 def _unit_layer_goes_in_front(*args, **kwargs):
@@ -538,12 +591,22 @@ def _unit_layer_goes_in_front(*args, **kwargs):
 
 am._create_unit = _unit_layer_goes_in_front
 main.trace_walls.clear()
-draw(main, "main", line, H_LINE, am.H_PROPERTY, tool="extra")
-assert len(main.columns) == 3 and main.columns[0]["type"] == "vector"
-assert region["path"] == whole, f"the fill changed to {region['path']}"
-assert all(am.H_PROPERTY not in walls for walls in main.trace_walls)
-assert am.H_PROPERTY not in main.properties(main.layer_index_for_id(main.layer_id_at(1)))
+message = draw(main, "main", layer_b, H_LINE, am.H_PROPERTY, tool="extra")
+assert len(main.columns) == 4 and main.columns[0]["type"] == "vector"
+assert main.layer_id_at(message["cell"]["layer"]) == id_a, \
+    "the message was meant to name the bystander by now: this test would prove nothing"
+assert message.get("captured") and not message.get("cancel_history")
+assert main.trace_walls == [], f"the axis re-traced a bystander's fills: {main.trace_walls}"
+assert [current_region["path"], all_region["path"]] == as_drawn
+assert am.H_PROPERTY not in main.properties(main.layer_index_for_id(id_b))
 assert am._assets_for("main")[am.H_PROPERTY]["points"] == H_LINE
-print("7) a capture that shifts the layer indices leaves the hooks behind it harmless")
+print("7) an axis on another layer re-traces nobody's fills, though the indices moved")
+
+# 7b) ...and A's fills still follow A, at its new index: a pen line there
+#     re-traces both regions, each against its own scope.
+draw(main, "main", main.layer_index_for_id(id_a), GRID_LINE, "a")
+assert current_region["path"] == ["region bounded by", "a", "a", "a", "a", "a"], current_region["path"]
+assert all_region["path"] == ["region bounded by", "a", "a", "a", "a", "a", "b"], all_region["path"]
+print("7b) the fills still follow their own line layer after the move")
 
 print("t_guide_capture_order: ok")

@@ -389,6 +389,14 @@ def _topology_changed(message):
     the stroke and the re-traced fills land in one history entry - and a
     restore-triggered pass must not push an entry on top of the restore.
     """
+    if message.get("captured"):
+        # A guide tool's line, already taken out of the layer by its capture
+        # (python_hooks.CAPTURE_HOOK_ORDER): no line art changed, so nothing
+        # follows. And cell.layer cannot be trusted here - the capture may
+        # have made a unit layer, and the index then names the layer that
+        # used to sit one above, whose fills are none of this gesture's
+        # business.
+        return
     if _RETRACE_GUARD["depth"]:
         return
     view = message.get("view") or "main"
