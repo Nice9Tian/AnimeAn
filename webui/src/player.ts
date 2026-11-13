@@ -937,7 +937,8 @@ export function createPlayer(
     onRestore: (did) => { if (hooks.onDockFloatRequest) { hooks.onDockFloatRequest(did); return; } runtime.dockRestore(did); hooks.onDockChanged?.(did); },
     onClose: (did) => { runtime.dockSetVisible(did, false); hooks.onDockClosed?.(did); },
     onResizeArea: (area, size) => runtime.dockResizeArea(area, size),
-    onResizeSplit: (area, idx, size) => runtime.dockResizeSplit(area, idx, size),
+    // The drag is in screen pixels; `shown` is what the groups measured on screen at the press.
+    onResizeSplit: (area, idx, size, _commit, shown) => runtime.dockResizeSplit(area, idx, size, undefined, shown),
   };
 
   // dock.ts writes its button tips in one language; the player owns what shows.
