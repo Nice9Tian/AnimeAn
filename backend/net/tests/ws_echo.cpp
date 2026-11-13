@@ -51,12 +51,25 @@ int main(int argc, char *argv[])
         }
     }
 
+    // A message goes back to the client that sent it. One that starts with
+    // "all:" goes to every client, and the text "clients?" is answered with
+    // how many are connected.
     WsServer server(AnimeCore::String::fromUtf8(token));
-    server.textReceived.connect([&server](const std::string &data) {
-        server.sendText(data);
+    server.textReceived.connect([&server](WsServer::ClientId client, const std::string &data) {
+        if (data == "clients?") {
+            server.sendText(client, "clients:" + std::to_string(server.clientCount()));
+        } else if (data.rfind("all:", 0) == 0) {
+            server.sendText(data);
+        } else {
+            server.sendText(client, data);
+        }
     });
-    server.binaryReceived.connect([&server](const std::string &data) {
-        server.sendBinary(data);
+    server.binaryReceived.connect([&server](WsServer::ClientId client, const std::string &data) {
+        if (data.rfind("all:", 0) == 0) {
+            server.sendBinary(data);
+        } else {
+            server.sendBinary(client, data);
+        }
     });
 
     if (!server.listen(requestedPort)) {

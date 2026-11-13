@@ -5,6 +5,7 @@ import { GlBoardRenderer } from "../board/glrenderer.ts";
 import { attachBoardInput } from "../board/input.ts";
 import { cursorCss } from "../board/cursor.ts";
 import { BoardEffects } from "../board/effects.ts";
+import { fitFrame } from "../board/fit.ts";
 import { label, language, onLanguage, setLanguage, t } from "../i18n/index.js";
 import { createDialogHost } from "./dialoghost.js";
 import { askForMenu, createCentral, createLayers, createMenuBar, popupMenu, scrollArea, tabBar } from "./panels.js";
@@ -745,11 +746,22 @@ function createBoards(mainHost, childHost, client, store) {
     main: { view: "main", host: mainHost },
     child: { view: "child", host: childHost ?? mainHost },
   };
+  // A frame that is not this element's own size comes from the board following
+  // another page (board/fit.ts): it is shown whole, scaled to fit (shell.css).
+  const fitBoard = (slot) => {
+    const size = slot.renderer?.frameSize?.();
+    const box = slot.canvas?.getBoundingClientRect?.();
+    if (!size || !box) return;
+    slot.canvas.classList.toggle("board-mirror", fitFrame(size.w, size.h, box.width, box.height).mirrored);
+  };
   const mount = (slot, kind) => {
     const { canvas, renderer, kind: started } = startRenderer(kind, {
       view: slot.view,
       client,
-      onAck: () => slot.effects.frame(),
+      onAck: () => {
+        fitBoard(slot);
+        slot.effects.frame();
+      },
     });
     const hadFocus = slot.canvas && document.activeElement === slot.canvas;
     if (slot.canvas) slot.canvas.replaceWith(canvas);
@@ -760,7 +772,17 @@ function createBoards(mainHost, childHost, client, store) {
       slot.input.destroy();
     }
     slot.effects.stop();
-    Object.assign(slot, { canvas, renderer, input: attachBoardInput(canvas, { view: slot.view, client }) });
+    slot.fitWatch?.disconnect();
+    Object.assign(slot, {
+      canvas,
+      renderer,
+      input: attachBoardInput(canvas, { view: slot.view, client, getFrameSize: () => slot.renderer?.frameSize?.() ?? null }),
+      // The element can change size without a frame coming: on a page that
+      // is not the one being worked in, its size is only stored.
+      fitWatch: typeof ResizeObserver === "function" ? new ResizeObserver(() => fitBoard(slot)) : null,
+    });
+    slot.fitWatch?.observe(canvas);
+    fitBoard(slot);
     if (hadFocus) canvas.focus({ preventScroll: true });
     paintCursor(slot);
     client?.call?.("board.capabilities", { view: slot.view, fieldDisplay: started === "webgl" })?.catch(() => {});
@@ -794,7 +816,13 @@ function createBoards(mainHost, childHost, client, store) {
   };
   // A tool's short animation (pyfile/board_effects.py), drawn above each board.
   const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
-  for (const slot of Object.values(slots)) slot.effects = new BoardEffects({ canvas: () => slot.canvas ?? null, reducedMotion });
+  for (const slot of Object.values(slots)) {
+    slot.effects = new BoardEffects({
+      canvas: () => slot.canvas ?? null,
+      frameSize: () => slot.renderer?.frameSize?.() ?? null,
+      reducedMotion,
+    });
+  }
   store.on("event", (event) => {
     if (event?.name !== "board.effect") return;
     slots[event.args?.view]?.effects.play(event.args);

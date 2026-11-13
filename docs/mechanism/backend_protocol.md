@@ -18,7 +18,26 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 
 后端起不来时窗口照样打开，网页取 `backend_endpoint` 失败后弹框说明原因。运行中后端异常退出时外壳向主窗口发 `backend-exited`，网页弹框提示重启。
 
-连接地址：`ws://127.0.0.1:<端口>/?token=<随机串>`。token 不对就拒绝。`Origin` 只放行 `tauri://localhost`、`http://tauri.localhost`、`https://tauri.localhost` 和 `http://localhost:<任意端口>`；没有 `Origin` 头的连接放行（测试用）。同一时间只服务一个连接，第二个连接到来时断开旧的。
+连接地址：`ws://127.0.0.1:<端口>/?token=<随机串>`。token 不对就拒绝。`Origin` 只放行 `tauri://localhost`、`http://tauri.localhost`、`https://tauri.localhost` 和 `http://localhost:<任意端口>`；没有 `Origin` 头的连接放行（测试用）。可以同时连着几个页面，后来的不挤掉先来的，见下面「多个页面」。
+
+## 多个页面
+
+一个后端可以同时连着几个页面（例如外壳之外，开发时在浏览器面板和 Chrome 里各开一页），它们看到同一份工程、同一个画面，任何一页的操作所有页面都跟着变。代码：`backend/net/wsserver.*`（连接编号、广播和单发）、`backend/session/backendsession.*`（`PageState`、`setPresenter`、`handleInputMessage`）、`webui/src/board/fit.ts`。测试：`node backend/tests/multi_page.mjs <AnimeAnBackend.exe>`。
+
+| 什么 | 发给谁 |
+|---|---|
+| 调用的回复 | 只发给发起调用的那一页（各页的调用编号各自从 1 数起） |
+| 状态、画板帧、图片、场数据、`event` | 所有页面 |
+| 新页面连上时的全部状态和缓存图片（光标、缩略图） | 只发给新页面；然后两块画板对所有页面重新铺底：后端先让已在的页面释放画板图片（`image.forget`），下一帧是完整帧 |
+
+- **画板只有一个尺寸**，听「操作页」的：第一个连上的页面；之后哪一页在画板上做完一次操作（按下到最后一个键松开，或者滚一下滚轮），哪一页就成为操作页；操作页断开时，在下一轮事件循环由最近操作过的那一页接手；这时有页面正按着指针，就等它松开，由它接手。只把鼠标移过去不算。别的页面报的画板尺寸、纹理板归属（`texture.setHome`）先记在页面名下，轮到它时才生效。
+- **换操作页时视图不跳**：画板中心对着的文档位置不动，缩放乘以两边面积比的平方根，两个窗口能看到的文档面积相同。两个窗口形状相同时，接手的一方看到的画面完全不变；来回交接回到原来的视图。纹理板在子控件框里时照旧按内容自动适配；交接时纹理板换了位置（例如一页放在中央、另一页放在子控件框），它回到那个位置上次的视图，不再缩放。
+- **别的页面按比例显示**：一帧的尺寸和画板元素差到 1 像素以上时（`fitFrame`），网页把画板和动画叠层按比例缩放、居中显示（`board-mirror`，`object-fit: contain`），指针坐标换算回后端画板的坐标再发。在这一页上做完第一次操作它就成为操作页。那第一笔是在操作页的缩放下画的，屏幕像素计的预算（稳定器、拟合容差）按操作页的屏幕算。
+- **一次只有一页拿着指针**：一页按下后，到它最后一个键松开为止，别的页面的指针事件丢弃；按下被丢掉的那一次拖动，后面的移动、松开和中途按下的第二个键也一起丢掉，直到这一页报告没有键按着；滚轮、焦点这类不带按键的消息不结束它。拿着指针的页面断开时，后端在下一轮事件循环替它补一次松开。
+- **场显示能力**（`board.capabilities`）各页各报，所有报过的页面都支持才算支持。
+- **帧的节流**：任何一页确认了最新一帧，后端就发下一帧，一页卡住不拖住别的页面。连着两个以上页面时，积压超过 512 MB，或者积压超过 16 MB 且 60 秒没有进展的页面会被断开；只连一个页面时不断。断开的页面不自动重连：浏览器里的页面弹框说明，要刷新页面重连（外壳里由 `backend-exited` 提示）。
+- 只连一个页面时，行为和以前单连接时相同（新旧对比逐条相同）。唯一的不同：页面在笔按着时断开，那一笔由后端补一次松开收尾，以前是留着没收尾。
+- **限制**：没有外壳的页面打开文件选择框时立刻回答「取消」。外壳的端口和令牌不对外，正常使用时浏览器页面连不上外壳的后端；要是真有外壳页面和浏览器页面连着同一个后端，外壳那边的文件选择流程会被浏览器页面的「取消」抢先结束。
 
 ## 画板不改逻辑
 
@@ -63,7 +82,7 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 - 连接建立后，后端先把全部 `state` 键发一遍。之后只发变了的键，值是该键的完整新值。
 - `image` 文本帧之后紧跟一个二进制帧，内容是 RGBA8 非预乘像素，逐行从上到下。
 - `image` 的 `view` 说明图是哪块画板画的，只有那块画板收下。光标和缩略图不带 `view`，归页面。
-- 画板发过的图由后端记账，每块画板上限 512 MB。超了就从最久没画过的开始发 `image.forget`，网页收到就释放，当前帧画到的图不淘汰。之后再画到时重新发 `image` 帧。后端不留副本，新客户端连上时清零记账，下一帧重新发。
+- 画板发过的图由后端记账，每块画板上限 512 MB。超了就从最久没画过的开始发 `image.forget`，网页收到就释放，当前帧画到的图不淘汰。之后再画到时重新发 `image` 帧。后端不留副本，新页面连上时清零记账（已在的页面同时收到 `image.forget`，见「多个页面」），下一帧重新发。
 - `field` 文本帧之后紧跟一个二进制帧，内容是 `w * h * 4` 个小端 `Float32`（`RGBA32F`），逐行从上到下，每像素为 `(dx, dy, tag, 0)`：位移、层序标记（0 是无效节点）和保留通道。`version` 为全局单调递增序号。场帧只在发送用到该场的 `board` 帧之前发出；同一 `key` 尚未发出的旧值会被新值直接覆盖，等待 `ack` 期间不发送。
 
 ## 绘制指令
@@ -141,7 +160,7 @@ AnimeAnBackend.exe：真实模型、真实画板逻辑、嵌入式 Python（pyfi
 
 ## 调用
 
-方法名在 `backend/session/backendsession.cpp` 的 `dispatchCall`。图层右键走 `layer.contextMenu`（返回菜单项，含 Python 注册的项）和 `layer.contextAction`。纹理板搬迁时调 `texture.setHome`（`home`：`central`、`control`、`parked`，后端保存离开处的缩放与平移、恢复到达处视口并在到达 `control` 时自动适配），脚本按钮行调 `texture.viewButton`（`view`、`name`、`on`；也认 `id`、`checked`）。网页发 `input` 时带 `time`（毫秒），后端写进事件时间戳，稳定器要用它。`board.capabilities`（参数 `{"view":"main"|"child","fieldDisplay":true|false}`）由网页在画板渲染器就绪后上报该视图是否支持场显示，供 `animean_python.ui.field_display_supported(view)` 查询（缺省 `False`，连接断开时清零）。
+方法名在 `backend/session/backendsession.cpp` 的 `dispatchCall`。图层右键走 `layer.contextMenu`（返回菜单项，含 Python 注册的项）和 `layer.contextAction`。纹理板搬迁时调 `texture.setHome`（`home`：`central`、`control`、`parked`，后端保存离开处的缩放与平移、恢复到达处视口并在到达 `control` 时自动适配），脚本按钮行调 `texture.viewButton`（`view`、`name`、`on`；也认 `id`、`checked`）。网页发 `input` 时带 `time`（毫秒），后端写进事件时间戳，稳定器要用它。`board.capabilities`（参数 `{"view":"main"|"child","fieldDisplay":true|false}`）由网页在画板渲染器就绪后上报该视图是否支持场显示，供 `animean_python.ui.field_display_supported(view)` 查询（缺省 `False`；连着几个页面时要所有报过的页面都支持，页面断开时它的那份作废）。
 
 | 调用 | 参数 | 返回 / 说明 |
 |---|---|---|

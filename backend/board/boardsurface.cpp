@@ -53,9 +53,9 @@ void BoardSurface::setImageSink(std::function<void(const String &key, const Imag
         });
 }
 
-void BoardSurface::forgetSentImages()
+void BoardSurface::forgetSentImages(bool tellClients)
 {
-    m_engine->forgetSentImages();
+    m_engine->forgetSentImages(tellClients);
 }
 
 void BoardSurface::setImageBudget(std::int64_t bytes)

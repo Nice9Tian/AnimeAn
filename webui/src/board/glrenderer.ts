@@ -726,6 +726,13 @@ export class GlBoardRenderer {
     return this.fullOps;
   }
 
+  // The board size of the frame on show, in the backend's logical pixels;
+  // null before the first frame. It is not this element's size when the board
+  // follows another page (board/fit.ts).
+  frameSize(): { w: number; h: number } | null {
+    return this.logicalW > 0 && this.logicalH > 0 ? { w: this.logicalW, h: this.logicalH } : null;
+  }
+
   getImage(key: string): unknown {
     return this.images.get(key);
   }

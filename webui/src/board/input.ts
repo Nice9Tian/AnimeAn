@@ -1,4 +1,5 @@
 import type { BackendClient, InputMessage } from "../net.ts";
+import { fitFrame, toBoardPoint, type FrameSize } from "./fit.ts";
 
 export const QT_NO_BUTTON = 0;
 export const QT_LEFT_BUTTON = 1;
@@ -74,6 +75,9 @@ export interface BoardInputOptions {
   client?: BackendClient;
   onInput?: (msg: InputMessage) => void;
   getDpr?: () => number;
+  // The size of the frame on show. When it is not the element's own (the
+  // board follows another page), the pointer is mapped onto it.
+  getFrameSize?: () => FrameSize | null | undefined;
 }
 
 export interface BoardInputHandle {
@@ -103,18 +107,21 @@ export function attachBoardInput(
     canvas.tabIndex = 0;
   }
 
+  // Where the pointer is on the board. The board is the element itself, except
+  // when the frame on show is another page's size: then it lies scaled inside
+  // the element (board/fit.ts) and the point is taken back onto it.
   const localCoords = (e: { clientX?: number; clientY?: number; offsetX?: number; offsetY?: number }) => {
-    if (typeof canvas.getBoundingClientRect === "function" && typeof e.clientX === "number" && typeof e.clientY === "number") {
-      const rect = canvas.getBoundingClientRect();
-      return {
-        x: e.clientX - rect.left,
-        y: e.clientY - rect.top,
-      };
-    }
-    return {
-      x: Number(e.offsetX ?? 0),
-      y: Number(e.offsetY ?? 0),
-    };
+    const hasRect = typeof canvas.getBoundingClientRect === "function";
+    const rect = hasRect ? canvas.getBoundingClientRect() : null;
+    const point =
+      rect && typeof e.clientX === "number" && typeof e.clientY === "number"
+        ? { x: e.clientX - rect.left, y: e.clientY - rect.top }
+        : { x: Number(e.offsetX ?? 0), y: Number(e.offsetY ?? 0) };
+    const frame = options.getFrameSize?.();
+    if (!frame) return point;
+    const boxW = rect ? rect.width : Number(canvas.clientWidth) || 0;
+    const boxH = rect ? rect.height : Number(canvas.clientHeight) || 0;
+    return toBoardPoint(fitFrame(frame.w, frame.h, boxW, boxH), point.x, point.y);
   };
 
   const eventTime = (e: { timeStamp?: number }): number => {

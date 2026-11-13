@@ -74,7 +74,7 @@ AnimeAnBackend.exe（backend/main.cpp）
 | `backend/board/inputevent.h`、`backend/board/cursor.h` | `AnimeCore` 输入事件（`MouseEvent`、`WheelEvent`、`EnterEvent`、`FocusEvent`、`ResizeEvent`）与光标类型（`Cursor`、`CursorShape`） |
 | `backend/board/textpath.*` | `textMetrics`、`textWidth`、`textPath`：用 Win32 GDI `GetGlyphOutlineW` 提取字形轮廓并转成 `AnimeCore::Path` |
 | `backend/platform/signalslot.h`、`eventloop.*`、`timer.*`、`elapsedtimer.h` | 轻量信号（`Signal`）、事件循环（`EventLoop`）、定时器（`Timer`）、高精度计时（`ElapsedTimer`） |
-| `backend/net/wsserver.*` | `WsServer`：基于 WinSock2 的本地单客户端 WebSocket 服务端，校验 token 与 `Origin` |
+| `backend/net/wsserver.*` | `WsServer`：基于 WinSock2 的本地 WebSocket 服务端，可同时连着几个页面（每个连接一个编号，广播或单发），校验 token 与 `Origin` |
 | `theme.*` | `AnimeTheme`：颜色角色的唯一出处，深 / 浅模式（读写 `Settings`），`themeChanged` |
 | `selectionattention.*` | `SelectionAttention`：帧 / 层 / 资产选择的一致性约束 |
 | `projectio.*` | `.anproj` / `.textureview` 的 JSON 序列化与校验 |

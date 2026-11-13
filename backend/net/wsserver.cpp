@@ -25,6 +25,11 @@ constexpr std::uint64_t kMaxMessageSize = 256ULL * 1024ULL * 1024ULL; // 256 MB
 constexpr std::size_t kMaxHandshakeHeaderSize = 64 * 1024;            // 64 KB
 constexpr std::size_t kRecvChunkSize = 64 * 1024;
 constexpr std::size_t kWriteCompactThreshold = 64 * 1024;
+// What may wait unsent for one client while others are connected, see
+// dropIfStalled.
+constexpr std::size_t kMaxWaitingBytes = 512ULL * 1024ULL * 1024ULL;    // 512 MB
+constexpr std::size_t kStalledWaitingBytes = 16ULL * 1024ULL * 1024ULL; // 16 MB
+constexpr std::uint64_t kStalledMs = 60ULL * 1000ULL;
 
 constexpr std::uint8_t kOpcodeContinuation = 0x0;
 constexpr std::uint8_t kOpcodeText = 0x1;
@@ -259,11 +264,11 @@ WsServer::WsServer(const AnimeCore::String &token)
 
 WsServer::~WsServer()
 {
-    if (m_client != kInvalidSocket) {
-        EventLoop::instance().removeSocket(m_client);
-        ::closesocket(static_cast<SOCKET>(m_client));
-        m_client = kInvalidSocket;
+    for (const std::unique_ptr<Client> &client : m_clients) {
+        EventLoop::instance().removeSocket(client->socket);
+        ::closesocket(static_cast<SOCKET>(client->socket));
     }
+    m_clients.clear();
     for (const PendingClient &pending : m_pendingClients) {
         if (pending.socket != kInvalidSocket) {
             EventLoop::instance().removeSocket(pending.socket);
@@ -337,17 +342,57 @@ std::uint16_t WsServer::port() const
 
 void WsServer::sendText(const std::string &data)
 {
-    sendFrame(kOpcodeText, data);
+    // A copy of the ids: a send that fails drops its client on the spot.
+    for (const ClientId id : clients()) {
+        sendFrame(id, kOpcodeText, data);
+    }
 }
 
 void WsServer::sendBinary(const std::string &data)
 {
-    sendFrame(kOpcodeBinary, data);
+    for (const ClientId id : clients()) {
+        sendFrame(id, kOpcodeBinary, data);
+    }
+}
+
+void WsServer::sendText(ClientId client, const std::string &data)
+{
+    sendFrame(client, kOpcodeText, data);
+}
+
+void WsServer::sendBinary(ClientId client, const std::string &data)
+{
+    sendFrame(client, kOpcodeBinary, data);
 }
 
 bool WsServer::hasClient() const
 {
-    return m_client != kInvalidSocket;
+    return !m_clients.empty();
+}
+
+bool WsServer::hasClient(ClientId client) const
+{
+    return findClient(client) != nullptr;
+}
+
+std::size_t WsServer::clientCount() const
+{
+    return m_clients.size();
+}
+
+std::vector<WsServer::ClientId> WsServer::clients() const
+{
+    std::vector<ClientId> ids;
+    ids.reserve(m_clients.size());
+    for (const std::unique_ptr<Client> &client : m_clients) {
+        ids.push_back(client->id);
+    }
+    return ids;
+}
+
+void WsServer::closeClient(ClientId client, std::uint16_t closeCode)
+{
+    dropClient(client, closeCode);
 }
 
 void WsServer::onAcceptReady()
@@ -613,112 +658,111 @@ bool WsServer::tryCompleteHandshake(SocketHandle socket)
         "Sec-WebSocket-Accept: " + acceptKey + "\r\n"
         "\r\n";
 
-    promoteClient(socket, std::move(remainingBuffer));
-    queueWrite(handshakeResponse.data(), handshakeResponse.size());
-    if (m_client != socket) {
-        return true; // The send failed and has already reported the disconnect.
+    // The clients already connected stay: this one joins them.
+    const ClientId id = addClient(socket, std::move(remainingBuffer));
+    queueWrite(id, handshakeResponse.data(), handshakeResponse.size());
+    Client *client = findClient(id);
+    if (!client) {
+        return true; // The send failed; nobody was told it had connected.
     }
 
-    clientConnected();
+    client->announced = true;
+    clientConnected(id);
 
-    if (m_client == socket && !m_readBuffer.empty()) {
-        processFrames(socket);
+    client = findClient(id);
+    if (client && !client->readBuffer.empty()) {
+        processFrames(id);
     }
     return true;
 }
 
-void WsServer::promoteClient(SocketHandle socket, std::string initialBuffer)
+WsServer::Client *WsServer::findClient(ClientId id)
 {
-    if (m_client != kInvalidSocket) {
-        disconnectActiveClient(1000);
+    for (const std::unique_ptr<Client> &client : m_clients) {
+        if (client->id == id) {
+            return client.get();
+        }
     }
+    return nullptr;
+}
 
-    m_client = socket;
-    m_readBuffer = std::move(initialBuffer);
-    m_writeBuffer.clear();
-    m_writeOffset = 0;
-    m_watchingWrite = false;
-    m_inFragment = false;
-    m_fragmentOpcode = 0;
-    m_fragmentBuffer.clear();
+const WsServer::Client *WsServer::findClient(ClientId id) const
+{
+    for (const std::unique_ptr<Client> &client : m_clients) {
+        if (client->id == id) {
+            return client.get();
+        }
+    }
+    return nullptr;
+}
 
-    EventLoop::instance().addSocket(socket, EventLoop::SocketRead, [this, socket](unsigned int events) {
-        onClientSocketEvent(socket, events);
+WsServer::ClientId WsServer::addClient(SocketHandle socket, std::string initialBuffer)
+{
+    auto client = std::make_unique<Client>();
+    const ClientId id = m_nextClientId++;
+    client->id = id;
+    client->socket = socket;
+    client->readBuffer = std::move(initialBuffer);
+    client->lastProgressMs = ::GetTickCount64();
+    m_clients.push_back(std::move(client));
+
+    EventLoop::instance().addSocket(socket, EventLoop::SocketRead, [this, id](unsigned int events) {
+        onClientSocketEvent(id, events);
     });
+    return id;
 }
 
-void WsServer::disconnectActiveClient(std::uint16_t closeCode)
+void WsServer::dropClient(ClientId id, std::uint16_t closeCode)
 {
-    if (m_client == kInvalidSocket) {
+    std::unique_ptr<Client> client;
+    for (auto it = m_clients.begin(); it != m_clients.end(); ++it) {
+        if ((*it)->id == id) {
+            client = std::move(*it);
+            m_clients.erase(it);
+            break;
+        }
+    }
+    if (!client) {
         return;
     }
 
-    const SocketHandle oldClient = m_client;
-    // A close frame sent now would land in the middle of the half-written one.
-    const bool midFrame = m_writeOffset > 0 && m_writeOffset < m_writeBuffer.size();
-    m_client = kInvalidSocket;
-    m_readBuffer.clear();
-    m_writeBuffer.clear();
-    m_writeOffset = 0;
-    m_watchingWrite = false;
-    m_inFragment = false;
-    m_fragmentOpcode = 0;
-    m_fragmentBuffer.clear();
-
-    EventLoop::instance().removeSocket(oldClient);
-    if (closeCode != 0 && !midFrame) {
-        sendCloseFrameImmediate(oldClient, closeCode);
+    EventLoop::instance().removeSocket(client->socket);
+    if (closeCode != 0) {
+        // A close frame sent now would land in the middle of a half-written one.
+        const bool midFrame = client->writeOffset > 0 && client->writeOffset < client->writeBuffer.size();
+        if (!midFrame) {
+            sendCloseFrameImmediate(client->socket, closeCode);
+        }
+        ::shutdown(static_cast<SOCKET>(client->socket), SD_SEND);
     }
-    ::shutdown(static_cast<SOCKET>(oldClient), SD_SEND);
-    ::closesocket(static_cast<SOCKET>(oldClient));
+    ::closesocket(static_cast<SOCKET>(client->socket));
 
-    clientDisconnected();
+    if (client->announced) {
+        clientDisconnected(id);
+    }
 }
 
-void WsServer::onClientDisconnected()
+void WsServer::onClientSocketEvent(ClientId id, unsigned int events)
 {
-    if (m_client == kInvalidSocket) {
-        return;
-    }
-
-    const SocketHandle oldClient = m_client;
-    // A close frame sent now would land in the middle of the half-written one.
-    const bool midFrame = m_writeOffset > 0 && m_writeOffset < m_writeBuffer.size();
-    m_client = kInvalidSocket;
-    m_readBuffer.clear();
-    m_writeBuffer.clear();
-    m_writeOffset = 0;
-    m_watchingWrite = false;
-    m_inFragment = false;
-    m_fragmentOpcode = 0;
-    m_fragmentBuffer.clear();
-
-    EventLoop::instance().removeSocket(oldClient);
-    ::closesocket(static_cast<SOCKET>(oldClient));
-
-    clientDisconnected();
-}
-
-void WsServer::onClientSocketEvent(SocketHandle socket, unsigned int events)
-{
-    if (m_client != socket) {
+    if (!findClient(id)) {
         return;
     }
 
     if (events & EventLoop::SocketWrite) {
-        flushWriteBuffer();
-        if (m_client != socket) {
-            return;
-        }
+        flushWriteBuffer(id);
     }
 
     if (events & (EventLoop::SocketRead | EventLoop::SocketError)) {
+        Client *client = findClient(id);
+        if (!client) {
+            return;
+        }
         char chunk[kRecvChunkSize];
         bool peerClosed = false;
         for (;;) {
-            const int n = ::recv(static_cast<SOCKET>(socket), chunk, static_cast<int>(sizeof(chunk)), 0);
+            const int n = ::recv(static_cast<SOCKET>(client->socket), chunk, static_cast<int>(sizeof(chunk)), 0);
             if (n > 0) {
-                m_readBuffer.append(chunk, static_cast<std::size_t>(n));
+                client->readBuffer.append(chunk, static_cast<std::size_t>(n));
             } else if (n == 0) {
                 peerClosed = true;
                 break;
@@ -730,30 +774,39 @@ void WsServer::onClientSocketEvent(SocketHandle socket, unsigned int events)
             }
         }
 
-        if (!m_readBuffer.empty()) {
-            if (!processFrames(socket)) {
+        if (!client->readBuffer.empty()) {
+            if (!processFrames(id)) {
                 return;
             }
         }
 
-        if (peerClosed && m_client == socket) {
-            onClientDisconnected();
+        if (peerClosed) {
+            dropClient(id, 0);
         }
     }
 }
 
-bool WsServer::processFrames(SocketHandle socket)
+// False when the client is gone by the end, whoever dropped it.
+bool WsServer::processFrames(ClientId id)
 {
     std::size_t offset = 0;
 
-    while (m_client == socket) {
-        const std::size_t avail = m_readBuffer.size() - offset;
+    for (;;) {
+        // Looked up afresh each round: the handlers below hand a message to the
+        // session, and anything it does may have dropped this client.
+        Client *client = findClient(id);
+        if (!client) {
+            return false;
+        }
+        std::string &readBuffer = client->readBuffer;
+
+        const std::size_t avail = readBuffer.size() - offset;
         if (avail < 2) {
             break;
         }
 
         const unsigned char *ptr =
-            reinterpret_cast<const unsigned char *>(m_readBuffer.data()) + offset;
+            reinterpret_cast<const unsigned char *>(readBuffer.data()) + offset;
         const bool fin = (ptr[0] & 0x80u) != 0;
         const std::uint8_t rsv = (ptr[0] & 0x70u);
         const std::uint8_t opcode = (ptr[0] & 0x0Fu);
@@ -761,7 +814,7 @@ bool WsServer::processFrames(SocketHandle socket)
         const std::uint8_t len7 = (ptr[1] & 0x7Fu);
 
         if (rsv != 0) {
-            disconnectActiveClient(1002);
+            dropClient(id, 1002);
             return false;
         }
 
@@ -771,18 +824,18 @@ bool WsServer::processFrames(SocketHandle socket)
             && opcode != kOpcodeClose
             && opcode != kOpcodePing
             && opcode != kOpcodePong) {
-            disconnectActiveClient(1002);
+            dropClient(id, 1002);
             return false;
         }
 
         if (!masked) {
-            disconnectActiveClient(1002);
+            dropClient(id, 1002);
             return false;
         }
 
         const bool isControl = (opcode & 0x08u) != 0;
         if (isControl && (!fin || len7 > 125)) {
-            disconnectActiveClient(1002);
+            dropClient(id, 1002);
             return false;
         }
 
@@ -802,29 +855,29 @@ bool WsServer::processFrames(SocketHandle socket)
             }
             payloadLen = readBe64(ptr + 2);
             if ((payloadLen & (1ULL << 63)) != 0) {
-                disconnectActiveClient(1002);
+                dropClient(id, 1002);
                 return false;
             }
         }
 
         if (payloadLen > kMaxMessageSize) {
-            disconnectActiveClient(1009);
+            dropClient(id, 1009);
             return false;
         }
 
         if (!isControl) {
             if (opcode == kOpcodeContinuation) {
-                if (!m_inFragment) {
-                    disconnectActiveClient(1002);
+                if (!client->inFragment) {
+                    dropClient(id, 1002);
                     return false;
                 }
-                if (static_cast<std::uint64_t>(m_fragmentBuffer.size()) + payloadLen > kMaxMessageSize) {
-                    disconnectActiveClient(1009);
+                if (static_cast<std::uint64_t>(client->fragmentBuffer.size()) + payloadLen > kMaxMessageSize) {
+                    dropClient(id, 1009);
                     return false;
                 }
             } else {
-                if (m_inFragment) {
-                    disconnectActiveClient(1002);
+                if (client->inFragment) {
+                    dropClient(id, 1002);
                     return false;
                 }
             }
@@ -845,65 +898,72 @@ bool WsServer::processFrames(SocketHandle socket)
         }
 
         offset += static_cast<std::size_t>(totalFrameLen);
-        if (offset == m_readBuffer.size()) {
-            m_readBuffer.clear();
+        if (offset == readBuffer.size()) {
+            readBuffer.clear();
             offset = 0;
         }
 
+        // From here on `client`, `readBuffer` and `ptr` may dangle: each branch
+        // ends the round, and the next one looks the client up again.
         if (opcode == kOpcodePing) {
-            sendFrame(kOpcodePong, payload);
+            sendFrame(id, kOpcodePong, payload);
         } else if (opcode == kOpcodePong) {
             // No action required.
         } else if (opcode == kOpcodeClose) {
             if (payload.size() == 1) {
-                disconnectActiveClient(1002);
+                dropClient(id, 1002);
                 return false;
             }
             std::uint16_t closeCode = 1000;
             if (payload.size() >= 2) {
                 closeCode = readBe16(reinterpret_cast<const unsigned char *>(payload.data()));
             }
-            disconnectActiveClient(closeCode);
+            dropClient(id, closeCode);
             return false;
         } else if (opcode == kOpcodeText || opcode == kOpcodeBinary) {
             if (fin) {
                 if (opcode == kOpcodeText) {
-                    textReceived(payload);
+                    textReceived(id, payload);
                 } else {
-                    binaryReceived(payload);
+                    binaryReceived(id, payload);
                 }
             } else {
-                m_inFragment = true;
-                m_fragmentOpcode = opcode;
-                m_fragmentBuffer = std::move(payload);
+                client->inFragment = true;
+                client->fragmentOpcode = opcode;
+                client->fragmentBuffer = std::move(payload);
             }
         } else if (opcode == kOpcodeContinuation) {
-            m_fragmentBuffer.append(payload);
+            client->fragmentBuffer.append(payload);
             if (fin) {
-                std::string completeMessage = std::move(m_fragmentBuffer);
-                m_fragmentBuffer.clear();
-                const std::uint8_t finalOpcode = m_fragmentOpcode;
-                m_inFragment = false;
-                m_fragmentOpcode = 0;
+                std::string completeMessage = std::move(client->fragmentBuffer);
+                client->fragmentBuffer.clear();
+                const std::uint8_t finalOpcode = client->fragmentOpcode;
+                client->inFragment = false;
+                client->fragmentOpcode = 0;
 
                 if (finalOpcode == kOpcodeText) {
-                    textReceived(completeMessage);
+                    textReceived(id, completeMessage);
                 } else {
-                    binaryReceived(completeMessage);
+                    binaryReceived(id, completeMessage);
                 }
             }
         }
     }
 
-    if (m_client == socket && offset > 0) {
-        m_readBuffer.erase(0, offset);
+    Client *client = findClient(id);
+    if (!client) {
+        return false;
     }
-    return m_client == socket;
+    if (offset > 0) {
+        client->readBuffer.erase(0, offset);
+    }
+    return true;
 }
 
-void WsServer::sendFrame(std::uint8_t opcode, const std::string &payload)
+void WsServer::sendFrame(ClientId id, std::uint8_t opcode, const std::string &payload)
 {
-    if (!hasClient()) {
+    Client *client = findClient(id);
+    if (!client) {
         return;
     }
 
@@ -924,11 +984,12 @@ void WsServer::sendFrame(std::uint8_t opcode, const std::string &payload)
         headerSize += 8;
     }
 
-    m_writeBuffer.append(reinterpret_cast<const char *>(header), headerSize);
+    client->writeBuffer.append(reinterpret_cast<const char *>(header), headerSize);
     if (!payload.empty()) {
-        m_writeBuffer.append(payload.data(), payload.size());
+        client->writeBuffer.append(payload.data(), payload.size());
     }
-    flushWriteBuffer();
+    flushWriteBuffer(id);
+    dropIfStalled(id);
 }
 
 void WsServer::sendCloseFrameImmediate(SocketHandle socket, std::uint16_t closeCode)
@@ -943,66 +1004,95 @@ void WsServer::sendCloseFrameImmediate(SocketHandle socket, std::uint16_t closeC
     ::send(static_cast<SOCKET>(socket), reinterpret_cast<const char *>(frame), sizeof(frame), 0);
 }
 
-void WsServer::queueWrite(const char *data, std::size_t size)
+void WsServer::queueWrite(ClientId id, const char *data, std::size_t size)
 {
-    if (!hasClient() || !data || size == 0) {
+    Client *client = findClient(id);
+    if (!client || !data || size == 0) {
         return;
     }
-    m_writeBuffer.append(data, size);
-    flushWriteBuffer();
+    client->writeBuffer.append(data, size);
+    flushWriteBuffer(id);
 }
 
-void WsServer::flushWriteBuffer()
+void WsServer::flushWriteBuffer(ClientId id)
 {
-    if (m_client == kInvalidSocket) {
+    Client *client = findClient(id);
+    if (!client) {
         return;
     }
 
-    const SocketHandle sock = m_client;
-    while (m_writeOffset < m_writeBuffer.size()) {
-        const std::size_t remaining = m_writeBuffer.size() - m_writeOffset;
+    while (client->writeOffset < client->writeBuffer.size()) {
+        const std::size_t remaining = client->writeBuffer.size() - client->writeOffset;
         const int chunk = static_cast<int>(std::min<std::size_t>(remaining, 16 * 1024 * 1024));
-        const int sent = ::send(static_cast<SOCKET>(sock),
-                                m_writeBuffer.data() + m_writeOffset,
+        const int sent = ::send(static_cast<SOCKET>(client->socket),
+                                client->writeBuffer.data() + client->writeOffset,
                                 chunk,
                                 0);
         if (sent > 0) {
-            m_writeOffset += static_cast<std::size_t>(sent);
+            client->writeOffset += static_cast<std::size_t>(sent);
+            client->lastProgressMs = ::GetTickCount64();
         } else if (sent == SOCKET_ERROR) {
             if (::WSAGetLastError() == WSAEWOULDBLOCK) {
                 break;
             }
-            onClientDisconnected();
+            dropClient(id, 0);
             return;
         } else {
             break;
         }
     }
 
-    if (m_writeOffset >= m_writeBuffer.size()) {
-        m_writeBuffer.clear();
-        m_writeOffset = 0;
-        if (m_writeBuffer.capacity() > 1024 * 1024) {
-            m_writeBuffer.shrink_to_fit();
+    if (client->writeOffset >= client->writeBuffer.size()) {
+        client->writeBuffer.clear();
+        client->writeOffset = 0;
+        client->lastProgressMs = ::GetTickCount64();
+        if (client->writeBuffer.capacity() > 1024 * 1024) {
+            client->writeBuffer.shrink_to_fit();
         }
-    } else if (m_writeOffset >= kWriteCompactThreshold && m_writeOffset * 2 >= m_writeBuffer.size()) {
-        m_writeBuffer.erase(0, m_writeOffset);
-        m_writeOffset = 0;
+    } else if (client->writeOffset >= kWriteCompactThreshold
+               && client->writeOffset * 2 >= client->writeBuffer.size()) {
+        client->writeBuffer.erase(0, client->writeOffset);
+        client->writeOffset = 0;
     }
 
-    updateClientPollEvents();
+    updateClientPollEvents(*client);
 }
 
-void WsServer::updateClientPollEvents()
+void WsServer::updateClientPollEvents(Client &client)
 {
-    if (m_client == kInvalidSocket) {
-        return;
-    }
-    const bool needWrite = (m_writeOffset < m_writeBuffer.size());
-    if (needWrite != m_watchingWrite) {
-        m_watchingWrite = needWrite;
+    const bool needWrite = (client.writeOffset < client.writeBuffer.size());
+    if (needWrite != client.watchingWrite) {
+        client.watchingWrite = needWrite;
         const unsigned int events = EventLoop::SocketRead
                                     | (needWrite ? EventLoop::SocketWrite : EventLoop::SocketNone);
-        EventLoop::instance().updateSocket(m_client, events);
+        EventLoop::instance().updateSocket(client.socket, events);
     }
+}
+
+// Everything is sent to every page, so a page that stops reading (a frozen
+// tab, a debugger sitting on a breakpoint) would have its buffer grow for as
+// long as the others keep the backend busy. It is dropped once that is clearly
+// what is happening. The only page left is never dropped: a backend with one
+// page behaves as it did before there could be several.
+bool WsServer::dropIfStalled(ClientId id)
+{
+    if (m_clients.size() < 2) {
+        return false;
+    }
+    const Client *client = findClient(id);
+    if (!client) {
+        return false;
+    }
+    const std::size_t waiting = client->writeBuffer.size() - client->writeOffset;
+    if (waiting == 0) {
+        return false;
+    }
+    const bool tooMuch = waiting > kMaxWaitingBytes;
+    const bool tooLong = waiting > kStalledWaitingBytes
+                         && ::GetTickCount64() - client->lastProgressMs > kStalledMs;
+    if (!tooMuch && !tooLong) {
+        return false;
+    }
+    dropClient(id, 0);
+    return true;
 }

@@ -255,6 +255,14 @@ async function bootstrap(): Promise<void> {
     const wsUrl = await resolveBackendWsUrl();
     if (wsUrl) {
       await client.connect(wsUrl);
+      // A page in a browser has no shell to say the backend went away, and the
+      // backend drops a page that stops reading while other pages are connected.
+      // Nothing reconnects: the page says so instead of looking alive.
+      if (!inShell()) {
+        client.onDisconnect(() => {
+          void messageBox({ title: "AnimeAn", text: "The connection to the drawing engine was lost.\nReload this page to connect again." });
+        });
+      }
       (store as { boards?: { resendSizes(): void } }).boards?.resendSizes();
       (store as { texture?: { announceHome(): void } }).texture?.announceHome();
     }

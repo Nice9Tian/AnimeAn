@@ -54,7 +54,9 @@ public:
     // what the frame just recorded draws: that is what the client is showing.
     void evictImages();
     // A new client holds nothing, so every image goes out again when next drawn.
-    void forgetSentImages();
+    // tellClients: the clients already there are told to drop what they hold,
+    // so that all of them hold what these books say and nothing more.
+    void forgetSentImages(bool tellClients = false);
     void setImageBudget(std::int64_t bytes) { m_imageBudgetBytes = bytes; }
     const AnimeCore::Vector<RecordedOp> &ops() const { return m_ops; }
 

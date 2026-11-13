@@ -208,6 +208,10 @@ export function paintEffect(
 export interface BoardEffectsOptions {
   // The board's canvas right now (a renderer switch replaces it).
   canvas: () => (HTMLCanvasElement & EffectCanvasLike) | null;
+  // The board size of the frame on show. The effect's geometry is in these
+  // pixels; without it the canvas element's own size is taken, which is the
+  // same thing unless the board follows another page (board/fit.ts).
+  frameSize?: () => { w: number; h: number } | null | undefined;
   now?: () => number;
   raf?: (fn: (t: number) => void) => number;
   cancelRaf?: (id: number) => void;
@@ -251,8 +255,7 @@ export class BoardEffects {
     const board = this.opts.canvas();
     if (!board || !board.width || !board.height) return;
     if (typeof board.getClientRects === "function" && board.getClientRects().length === 0) return;
-    const w = board.clientWidth || board.width;
-    const h = board.clientHeight || board.height;
+    const { w, h } = this.boardSize(board);
     const snapshot = document.createElement("canvas");
     snapshot.width = board.width;
     snapshot.height = board.height;
@@ -320,7 +323,15 @@ export class BoardEffects {
     }
     // Right above the board's canvas, whichever canvas that is now.
     if (overlay.previousSibling !== board) board.after(overlay);
+    // Laid out as the board is: scaled to fit when the board is (shell.css).
+    overlay.classList?.toggle("board-mirror", Boolean(board.classList?.contains("board-mirror")));
     return overlay;
+  }
+
+  private boardSize(board: HTMLCanvasElement & EffectCanvasLike): { w: number; h: number } {
+    const frame = this.opts.frameSize?.();
+    if (frame && frame.w > 0 && frame.h > 0) return { w: frame.w, h: frame.h };
+    return { w: board.clientWidth || board.width, h: board.clientHeight || board.height };
   }
 
   private schedule(): void {
@@ -344,7 +355,8 @@ export class BoardEffects {
     const elapsed = now - this.startedAt;
     const duration = Math.max(0, Number(spec.duration) || 0);
     const p = effectProgress(spec.kind ?? "", elapsed, duration);
-    this.paint(p, board.clientWidth || board.width, board.clientHeight || board.height);
+    const { w, h } = this.boardSize(board);
+    this.paint(p, w, h);
     if (elapsed >= duration) {
       this.stop();
       return;
