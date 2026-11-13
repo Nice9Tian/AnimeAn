@@ -41,7 +41,7 @@ public:
     void setCanSendFrame(std::function<bool()> canSend);
     void setImageSink(std::function<void(const AnimeCore::String &key, const AnimeCore::Image &)> sink,
                       std::function<void(const AnimeCore::String &key)> forget);
-    void forgetSentImages();
+    void forgetSentImages(bool tellClients = false);
     void setImageBudget(std::int64_t bytes);
     RecordingDevice *recordingDevice() const { return m_engine.get(); }
     void setCursorSink(std::function<void(const AnimeCore::Cursor &)> sink);

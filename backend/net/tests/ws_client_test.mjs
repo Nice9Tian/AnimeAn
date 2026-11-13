@@ -104,15 +104,19 @@ function waitForClose(ws, timeoutMs = 5000) {
 
 function nextMessage(ws, timeoutMs = 10000) {
     return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('Timed out waiting for WebSocket message')), timeoutMs);
-        ws.addEventListener('message', (ev) => {
+        // Both listeners go once it is settled: a socket asked many times would
+        // otherwise pile up close listeners that never fire.
+        const settle = (finish, value) => {
             clearTimeout(timer);
-            resolve(ev.data);
-        }, { once: true });
-        ws.addEventListener('close', () => {
-            clearTimeout(timer);
-            reject(new Error('WebSocket closed while waiting for message'));
-        }, { once: true });
+            ws.removeEventListener('message', onMessage);
+            ws.removeEventListener('close', onClose);
+            finish(value);
+        };
+        const onMessage = (ev) => settle(resolve, ev.data);
+        const onClose = () => settle(reject, new Error('WebSocket closed while waiting for message'));
+        const timer = setTimeout(() => settle(reject, new Error('Timed out waiting for WebSocket message')), timeoutMs);
+        ws.addEventListener('message', onMessage);
+        ws.addEventListener('close', onClose);
     });
 }
 
@@ -282,21 +286,125 @@ async function runTests() {
             }
             console.log('[PASS] 5. 1000 consecutive small messages echoed in exact order');
 
-            // 6. 第二个连接把第一个挤掉
-            const ws1ClosePromise = waitForClose(ws);
+            // 6. 第二个连接进来，第一个留着
+            const ask = async (socket, text) => {
+                const reply = nextMessage(socket);
+                socket.send(text);
+                return reply;
+            };
+            // Every message a socket gets from now on, in order.
+            const collect = (socket) => {
+                const got = [];
+                socket.addEventListener('message', (ev) => got.push(ev.data));
+                return got;
+            };
+            const settle = () => new Promise((resolve) => setTimeout(resolve, 200));
+
             const ws2 = new WebSocket(`ws://127.0.0.1:${port}/?token=${TOKEN}`);
-            await Promise.all([ws1ClosePromise, waitForOpen(ws2)]);
-            assert.equal(ws.readyState, WebSocket.CLOSED, 'First connection must be closed when second connects');
+            ws2.binaryType = 'arraybuffer';
+            await waitForOpen(ws2);
+            assert.equal(ws.readyState, WebSocket.OPEN, 'The first connection must stay open when a second one connects');
+            assert.equal(await ask(ws, 'clients?'), 'clients:2');
+            assert.equal(await ask(ws2, 'clients?'), 'clients:2');
+            console.log('[PASS] 6. A second connection joins and the first one stays');
 
-            const ws2EchoPromise = nextMessage(ws2);
-            ws2.send('hello-from-ws2');
-            const ws2Reply = await ws2EchoPromise;
-            assert.equal(ws2Reply, 'hello-from-ws2');
+            // 6a. 定向发送只到发的那一个
+            {
+                const got1 = collect(ws);
+                const got2 = collect(ws2);
+                ws.send('only-for-ws1');
+                ws2.send('only-for-ws2');
+                ws2.send(new Uint8Array([1, 2, 3, 4]));
+                await settle();
+                assert.deepEqual(got1, ['only-for-ws1'], 'A reply goes to the client that asked, and to no other');
+                assert.equal(got2.length, 2);
+                assert.equal(got2[0], 'only-for-ws2');
+                assert.deepEqual([...new Uint8Array(got2[1])], [1, 2, 3, 4]);
+                console.log('[PASS] 6a. A message sent to one client reaches only that client');
+            }
 
-            const ws2Closed = waitForClose(ws2);
-            ws2.close();
-            await ws2Closed;
-            console.log('[PASS] 6. Second connection evicted first connection and works normally');
+            // 6b. 广播到每一个，各自的顺序不乱
+            {
+                const got1 = collect(ws);
+                const got2 = collect(ws2);
+                const total = 200;
+                for (let i = 0; i < total; i++) {
+                    (i % 2 === 0 ? ws : ws2).send(`all:${i}`);
+                }
+                ws.send(new TextEncoder().encode('all:binary'));
+                const deadline = Date.now() + 10000;
+                while ((got1.length < total + 1 || got2.length < total + 1) && Date.now() < deadline) {
+                    await settle();
+                }
+                const texts = (got) => got.filter((m) => typeof m === 'string');
+                for (const [name, got] of [['ws1', got1], ['ws2', got2]]) {
+                    assert.equal(got.length, total + 1, `${name} must get every broadcast message`);
+                    const evens = texts(got).filter((m) => Number(m.slice(4)) % 2 === 0);
+                    const odds = texts(got).filter((m) => Number(m.slice(4)) % 2 === 1);
+                    assert.deepEqual(evens, Array.from({ length: total / 2 }, (_, i) => `all:${i * 2}`), `${name}: ws1's messages in order`);
+                    assert.deepEqual(odds, Array.from({ length: total / 2 }, (_, i) => `all:${i * 2 + 1}`), `${name}: ws2's messages in order`);
+                    const binary = got.find((m) => typeof m !== 'string');
+                    assert.equal(new TextDecoder().decode(binary), 'all:binary', `${name} must get the broadcast binary frame`);
+                }
+                console.log('[PASS] 6b. A broadcast reaches every client, each sender\'s messages in order');
+            }
+
+            // 6c. 一个连接出错被断开，其余的不受影响
+            {
+                const { socket: rogue, statusLine } = await rawHttpHandshake({ port, pathWithQuery: `/?token=${TOKEN}` });
+                assert.match(statusLine, /^HTTP\/1\.1 101 /);
+                assert.equal(await ask(ws, 'clients?'), 'clients:3');
+                const rogueClosed = new Promise((resolve) => rogue.on('close', resolve));
+                rogue.write(Buffer.from([0x81, 0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f])); // unmasked: a protocol error
+                await rogueClosed;
+                assert.equal(await ask(ws, 'clients?'), 'clients:2', 'Only the client that broke the protocol is dropped');
+                assert.equal(await ask(ws2, 'still-here'), 'still-here');
+                console.log('[PASS] 6c. A client dropped for a protocol error leaves the others connected');
+            }
+
+            // 6d. 一个连接自己关掉，其余的照常
+            {
+                const ws2Closed = waitForClose(ws2);
+                ws2.close();
+                await ws2Closed;
+                await settle();
+                assert.equal(ws.readyState, WebSocket.OPEN);
+                assert.equal(await ask(ws, 'clients?'), 'clients:1');
+                const got1 = collect(ws);
+                ws.send('all:alone');
+                await settle();
+                assert.deepEqual(got1, ['all:alone'], 'A broadcast with one client left still arrives, once');
+                console.log('[PASS] 6d. A client that leaves is forgotten and the rest carry on');
+            }
+
+            // 6e. 很多连接同时在
+            {
+                const many = [];
+                for (let i = 0; i < 12; i++) {
+                    const extra = new WebSocket(`ws://127.0.0.1:${port}/?token=${TOKEN}`);
+                    await waitForOpen(extra);
+                    many.push(extra);
+                }
+                assert.equal(await ask(ws, 'clients?'), 'clients:13');
+                const inboxes = many.map(collect);
+                ws.send('all:everyone');
+                await settle();
+                for (const inbox of inboxes) {
+                    assert.deepEqual(inbox, ['all:everyone']);
+                }
+                await Promise.all(many.map((extra) => {
+                    const closed = waitForClose(extra);
+                    extra.close();
+                    return closed;
+                }));
+                await settle();
+                assert.equal(await ask(ws, 'clients?'), 'clients:1');
+                console.log('[PASS] 6e. Thirteen clients at once, then back to one');
+            }
+
+            const wsClosed = waitForClose(ws);
+            ws.close();
+            await wsClosed;
         }
 
         // 7. 非法 Origin 被拒（用 net 模块手写握手）

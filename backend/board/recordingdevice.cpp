@@ -322,10 +322,21 @@ void RecordingDevice::evictImages()
     m_cacheKeyToHash.clear();
 }
 
-void RecordingDevice::forgetSentImages()
+void RecordingDevice::forgetSentImages(bool tellClients)
 {
+    AnimeCore::Vector<std::string> held;
+    if (tellClients && m_imageForget) {
+        held.reserve(m_sentImages.size());
+        for (auto it = m_sentImages.cbegin(); it != m_sentImages.cend(); ++it) {
+            held.append(it.key());
+        }
+    }
     m_sentImages.clear();
     m_sentImageBytes = 0;
+    // After the books are cleared: the callback may draw and send again.
+    for (const std::string &key : held) {
+        m_imageForget(key);
+    }
 }
 
 void RecordingDevice::resetFrame()

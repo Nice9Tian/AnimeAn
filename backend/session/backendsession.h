@@ -86,9 +86,45 @@ private:
     PaintOpenGLWidget *boardForView(const String &viewName) const;
     String resolveViewName(const String &viewName) const;
 
-    void onClientConnected();
-    void onClientDisconnected();
+    // One connected page of the web UI: a WsServer client, by its id. Several
+    // may be connected at once and they all show the same picture.
+    using PageId = std::uint64_t;
+
+    struct BoardSizeRequest {
+        int w = 0;
+        int h = 0;
+        double dpr = 1.0;
+        bool valid = false;
+    };
+
+    // What one page asked for. A board has one size and the texture board one
+    // home, and they follow the presenting page (m_presenter); the other
+    // pages' wishes wait here until it is their turn.
+    struct PageState {
+        Hash<String, BoardSizeRequest> boardSizes;   // by view
+        String textureHome;                          // empty until the page says
+        int textureSubControl = -1;                  // -1 until the page says, else 0 or 1
+        Hash<String, bool> fieldDisplay;             // by view, as the page reported it
+        // Views where a press of this page's never reached the board (another
+        // page held the pointer). The rest of that drag is dropped as well.
+        Set<String> swallowedPress;
+        // Order of the last press or wheel that reached a board, 0 for none.
+        std::uint64_t lastActive = 0;
+    };
+
+    void onClientConnected(PageId page);
+    void onClientDisconnected(PageId page);
     void onMessageReceived(const JsonObject &msg);
+
+    // The page whose size and texture home the boards take. It is the one that
+    // last finished a gesture on a board, so the page being worked in is shown
+    // at its own size and the others show the same frame scaled to fit.
+    void setPresenter(PageId page);
+    void applyPresentation(PageId page);
+    void applyBoardSize(const String &view, const BoardSizeRequest &size);
+    void applyTextureHome(const String &home, int subControl);
+    void refreshFieldDisplaySupport();
+    void releasePointerOfDepartedPage(PageId page);
 
     void handleCallMessage(const JsonObject &msg);
     void handleInputMessage(const JsonObject &msg);
@@ -136,7 +172,11 @@ private:
     void scheduleStateFlush();
     void flushDirtyState();
     void sendStateKey(const String &key);
+    // Everything leaves through these three. To every page, or only to
+    // m_sendTo while that is set.
     void sendJson(const JsonObject &obj);
+    void sendText(const std::string &text);
+    void sendBinary(const std::string &data);
     JsonValue buildStateValue(const String &key) const;
 
     JsonObject buildWindowState() const;
@@ -178,6 +218,22 @@ private:
     std::unique_ptr<AnimeanBusiness> m_business;
     std::unique_ptr<PaintOpenGLWidget> m_mainBoard;
     std::unique_ptr<PaintOpenGLWidget> m_childBoard;
+
+    Hash<PageId, PageState> m_pages;
+    // The page whose message is being handled, 0 outside one.
+    PageId m_currentPage = 0;
+    // 0: what is sent goes to every page. Otherwise only to this one.
+    PageId m_sendTo = 0;
+    PageId m_presenter = 0;
+    // The page holding a button down on a board, and where. While it does,
+    // pointer input from the other pages is dropped: two hands in one stroke
+    // would draw a line between them.
+    PageId m_pointerPage = 0;
+    String m_pointerView;
+    int m_pointerButton = 0;
+    PointF m_pointerPos;
+    std::uint64_t m_pointerTime = 0;
+    std::uint64_t m_activityCounter = 0;
 
     Set<String> m_dirtyKeys;
     bool m_stateFlushScheduled = false;

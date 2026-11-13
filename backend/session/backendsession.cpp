@@ -292,6 +292,26 @@ const StringList &allStateKeys()
 // overwrite one of the states above.
 const String kPythonStatePrefix = String("py/");
 
+// Holds a member at a value for one scope and puts back what was there.
+template <typename T>
+class ScopedValue
+{
+public:
+    ScopedValue(T &slot, const T &value)
+        : m_slot(slot)
+        , m_previous(slot)
+    {
+        m_slot = value;
+    }
+    ~ScopedValue() { m_slot = m_previous; }
+    ScopedValue(const ScopedValue &) = delete;
+    ScopedValue &operator=(const ScopedValue &) = delete;
+
+private:
+    T &m_slot;
+    T m_previous;
+};
+
 int frameNameToRow(const String &frameName)
 {
     String digits;
@@ -569,14 +589,15 @@ BackendSession::BackendSession(WsServer *ws)
     m_childBoard->resetHistory(String("Initial"));
 
     if (m_ws) {
-        m_ws->clientConnected.connect([this]() { onClientConnected(); });
-        m_ws->clientDisconnected.connect([this]() { onClientDisconnected(); });
-        m_ws->textReceived.connect([this](const std::string &data) {
+        m_ws->clientConnected.connect([this](const WsServer::ClientId &page) { onClientConnected(page); });
+        m_ws->clientDisconnected.connect([this](const WsServer::ClientId &page) { onClientDisconnected(page); });
+        m_ws->textReceived.connect([this](const WsServer::ClientId &page, const std::string &data) {
             JsonParseError err;
             const JsonDocument doc = JsonDocument::fromJson(data, &err);
             if (err.error != JsonParseError::NoError || !doc.isObject()) {
                 return;
             }
+            const ScopedValue<PageId> from(m_currentPage, page);
             try {
                 onMessageReceived(doc.object());
             } catch (const std::exception &error) {
@@ -1522,43 +1543,202 @@ String BackendSession::resolveViewName(const String &viewName) const
                : String("main");
 }
 
-void BackendSession::onClientConnected()
+void BackendSession::onClientConnected(PageId page)
 {
+    m_pages.insert(page, PageState());
+    if (m_presenter == 0 || !m_pages.contains(m_presenter)) {
+        m_presenter = page;
+    }
+    const bool othersConnected = m_ws && m_ws->clientCount() > 1;
+
     for (auto it = m_fields.begin(); it != m_fields.end(); ++it) {
         it->pending = true;
     }
-    for (auto it = m_cachedImages.cbegin(); it != m_cachedImages.cend(); ++it) {
-        sendImagePacket(it.key(), it.value());
+
+    // What the pages already here are still owed goes out before the new one
+    // is brought up to date; alone, the new page is about to get all of it.
+    if (othersConnected) {
+        flushDirtyState();
+    } else {
+        m_dirtyKeys.clear();
+    }
+    {
+        // Only the page that has just arrived lacks these.
+        const ScopedValue<PageId> onlyTo(m_sendTo, page);
+        for (auto it = m_cachedImages.cbegin(); it != m_cachedImages.cend(); ++it) {
+            sendImagePacket(it.key(), it.value());
+        }
+        for (const String &key : allStateKeys()) {
+            sendStateKey(key);
+        }
+        for (auto it = m_pythonStates.cbegin(); it != m_pythonStates.cend(); ++it) {
+            sendStateKey(it.key());
+        }
     }
 
-    m_dirtyKeys.clear();
-    for (const String &key : allStateKeys()) {
-        sendStateKey(key);
-    }
-    for (auto it = m_pythonStates.cbegin(); it != m_pythonStates.cend(); ++it) {
-        sendStateKey(it.key());
-    }
-
-    if (m_mainBoard) {
-        m_mainBoard->forgetSentImages();
-        m_mainBoard->acknowledgeFrame(m_lastBoardFrameId.value(String("main"), 0));
-        m_mainBoard->resizeSurface(m_mainBoard->width(),
-                                   m_mainBoard->height(),
-                                   m_mainBoard->devicePixelRatioF());
-    }
-    if (m_childBoard) {
-        m_childBoard->forgetSentImages();
-        m_childBoard->acknowledgeFrame(m_lastBoardFrameId.value(String("child"), 0));
-        m_childBoard->resizeSurface(m_childBoard->width(),
-                                    m_childBoard->height(),
-                                    m_childBoard->devicePixelRatioF());
+    // The boards start over for every page. A board keeps one account of the
+    // images its pages hold, so they all have to hold the same ones: the pages
+    // already here drop theirs, and the next frame is a whole one that brings
+    // the images it draws along.
+    for (PaintOpenGLWidget *board : {m_mainBoard.get(), m_childBoard.get()}) {
+        if (!board) {
+            continue;
+        }
+        board->forgetSentImages(othersConnected);
+        board->acknowledgeFrame(m_lastBoardFrameId.value(board->viewName(), 0));
+        board->resizeSurface(board->width(), board->height(), board->devicePixelRatioF());
     }
 }
 
-void BackendSession::onClientDisconnected()
+void BackendSession::onClientDisconnected(PageId page)
 {
-    // Keep session alive and wait for next connection.
+    // The session lives on, with the pages that remain or waiting for the next.
+    if (m_pointerPage == page) {
+        releasePointerOfDepartedPage(page);
+    }
+    m_pages.remove(page);
+    refreshFieldDisplaySupport();
+
+    if (m_presenter != page) {
+        return;
+    }
+    // The page that last worked on a board takes over; the one connected
+    // longest when none has.
+    m_presenter = 0;
+    std::uint64_t latest = 0;
+    if (m_ws) {
+        for (const WsServer::ClientId candidate : m_ws->clients()) {
+            const auto it = m_pages.constFind(candidate);
+            if (it == m_pages.constEnd()) {
+                continue;
+            }
+            if (m_presenter == 0 || it->lastActive > latest) {
+                m_presenter = candidate;
+                latest = it->lastActive;
+            }
+        }
+    }
+    if (m_presenter != 0) {
+        applyPresentation(m_presenter);
+    }
+}
+
+// The page that held a button down has gone, and the stroke it was drawing
+// would stay open: the next page to move its pointer would carry on with it.
+// The release it owed is made up here. Not at once - this can be reached from
+// inside the board's own frame, when sending that frame is what found the page
+// gone - and until it has happened the pointer stays taken.
+void BackendSession::releasePointerOfDepartedPage(PageId page)
+{
+    Timer::singleShot(0, [this, page]() {
+        if (m_pointerPage != page) {
+            return;
+        }
+        const String view = m_pointerView;
+        const AnimeCore::MouseButton button =
+            m_pointerButton != 0 ? static_cast<AnimeCore::MouseButton>(m_pointerButton) : AnimeCore::LeftButton;
+        m_pointerPage = 0;
+        m_pointerView = String();
+        m_pointerButton = 0;
+        if (PaintOpenGLWidget *board = boardForView(view)) {
+            board->injectMouse(AnimeCore::Event::MouseButtonRelease,
+                               m_pointerPos,
+                               button,
+                               AnimeCore::NoButton,
+                               AnimeCore::NoModifier,
+                               m_pointerTime);
+        }
+    });
+}
+
+void BackendSession::setPresenter(PageId page)
+{
+    if (page == m_presenter || !m_pages.contains(page)) {
+        return;
+    }
+    m_presenter = page;
+    applyPresentation(page);
+}
+
+void BackendSession::applyPresentation(PageId page)
+{
+    // A copy: resizing a board can come back into the session.
+    const PageState state = m_pages.value(page);
+    if (!state.textureHome.isEmpty()) {
+        applyTextureHome(state.textureHome, state.textureSubControl);
+    }
+    for (const String &view : {String("main"), String("child")}) {
+        const BoardSizeRequest size = state.boardSizes.value(view);
+        const PaintOpenGLWidget *board = boardForView(view);
+        if (!size.valid || !board) {
+            continue;
+        }
+        if (board->width() == size.w && board->height() == size.h
+            && board->devicePixelRatioF() == size.dpr) {
+            continue;
+        }
+        applyBoardSize(view, size);
+    }
+}
+
+void BackendSession::applyBoardSize(const String &view, const BoardSizeRequest &size)
+{
+    PaintOpenGLWidget *board = boardForView(view);
+    if (!board) {
+        return;
+    }
+    board->resizeSurface(size.w, size.h, size.dpr);
+    if (view == String("child") && m_textureHome == String("control")) {
+        autoFitTextureControlView();
+    }
+    markDirty(view == String("child") ? String("viewport/child")
+                                              : String("viewport/main"));
+}
+
+// subControl: whether the page shows the texture sub-control frame, -1 when it
+// did not say.
+void BackendSession::applyTextureHome(const String &home, int subControl)
+{
+    if (home != m_textureHome) {
+        saveTextureViewSlot(m_textureHome);
+        m_textureHome = home;
+        restoreTextureViewSlot();
+    }
+    if (subControl >= 0) {
+        const bool vis = subControl != 0;
+        if (m_textureSubControlVisible != vis) {
+            m_textureSubControlVisible = vis;
+            markDirty(String("windows"));
+        }
+    } else if (home == String("control") && !m_textureSubControlVisible) {
+        m_textureSubControlVisible = true;
+        markDirty(String("windows"));
+    } else if (home == String("parked") && m_textureSubControlVisible) {
+        m_textureSubControlVisible = false;
+        markDirty(String("windows"));
+    }
+}
+
+// Field display is on only when every page that has said so can draw it: one
+// page that cannot would show the strokes where they are not.
+void BackendSession::refreshFieldDisplaySupport()
+{
     m_fieldDisplaySupported.clear();
+    for (const String &view : {String("main"), String("child")}) {
+        bool reported = false;
+        bool all = true;
+        for (auto it = m_pages.cbegin(); it != m_pages.cend(); ++it) {
+            const auto found = it->fieldDisplay.constFind(view);
+            if (found == it->fieldDisplay.constEnd()) {
+                continue;
+            }
+            reported = true;
+            all = all && *found;
+        }
+        if (reported) {
+            m_fieldDisplaySupported.insert(view, all);
+        }
+    }
 }
 
 void BackendSession::onMessageReceived(const JsonObject &msg)
@@ -1610,6 +1790,9 @@ void BackendSession::handleCallMessage(const JsonObject &msg)
         reply.insert(String("error"), String("Unknown exception during call"));
     }
 
+    // Every page numbers its calls from 1, so an answer means something only
+    // to the page that asked.
+    const ScopedValue<PageId> onlyTo(m_sendTo, m_currentPage);
     sendJson(reply);
 }
 
@@ -1630,6 +1813,75 @@ void BackendSession::handleInputMessage(const JsonObject &msg)
         static_cast<AnimeCore::KeyboardModifiers>(msg.value(String("modifiers")).toInt(0));
     const std::uint64_t timestamp = std::uint64_t(std::max(0.0, msg.value(String("time")).toDouble(0.0)));
 
+    const PageId page = m_currentPage;
+    const auto pageState = m_pages.find(page);
+    const bool knownPage = pageState != m_pages.end();
+
+    // A board has one size, the presenting page's. What the others report is
+    // kept for the day they present.
+    if (kind == String("resize")) {
+        BoardSizeRequest size;
+        size.w = msg.value(String("w")).toInt(msg.value(String("width")).toInt(board->width()));
+        size.h = msg.value(String("h")).toInt(msg.value(String("height")).toInt(board->height()));
+        size.dpr = msg.value(String("dpr")).toDouble(1.0);
+        size.valid = true;
+        if (knownPage) {
+            pageState->boardSizes.insert(view, size);
+        }
+        if (!knownPage || page == m_presenter) {
+            applyBoardSize(view, size);
+        }
+        return;
+    }
+
+    // One page at a time has the pointer. From a press until the last button
+    // is up it belongs to the page that pressed, and what the other pages'
+    // pointers do meanwhile is dropped - with the rest of a drag whose press
+    // was dropped, so the board never sees a release it saw no press for.
+    const int buttonsDown = msg.value(String("buttons")).toInt(0);
+    if (m_pointerPage != 0 && m_pointerPage != page) {
+        if (knownPage) {
+            if (kind == String("press")) {
+                pageState->swallowedPress.insert(view);
+            } else if (kind == String("release") && buttonsDown == 0) {
+                pageState->swallowedPress.remove(view);
+            }
+        }
+        return;
+    }
+    if (knownPage && pageState->swallowedPress.contains(view)) {
+        if (kind == String("release")) {
+            if (buttonsDown == 0) {
+                pageState->swallowedPress.remove(view);
+            }
+            return;
+        }
+        if (kind == String("move") && buttonsDown != 0) {
+            return;
+        }
+        if (kind == String("press") || buttonsDown == 0) {
+            // A new press, or the pointer seen with no button down: that drag is over.
+            pageState->swallowedPress.remove(view);
+        }
+    }
+    const auto holdPointer = [&](int button) {
+        m_pointerPage = page;
+        m_pointerView = view;
+        m_pointerButton = button;
+        m_pointerPos = PointF(x, y);
+        m_pointerTime = timestamp;
+        if (knownPage) {
+            pageState->lastActive = ++m_activityCounter;
+        }
+    };
+    // After a gesture from another page than the presenting one, that page
+    // presents. Never during one: the boards would change size under the pen.
+    const auto gestureDone = [&]() {
+        if (m_pointerPage == 0 && knownPage && page != m_presenter) {
+            setPresenter(page);
+        }
+    };
+
     if (kind == String("press")) {
         AnimeCore::MouseButton button = static_cast<AnimeCore::MouseButton>(msg.value(String("button")).toInt(int(AnimeCore::LeftButton)));
         if (button == AnimeCore::NoButton && !msg.contains(String("button"))) {
@@ -1639,12 +1891,25 @@ void BackendSession::handleInputMessage(const JsonObject &msg)
         if (buttons == AnimeCore::NoButton && !msg.contains(String("buttons"))) {
             buttons = button;
         }
+        holdPointer(int(button));
         board->injectMouse(AnimeCore::Event::MouseButtonPress, PointF(x, y), button, buttons, modifiers, timestamp);
     } else if (kind == String("move")) {
         AnimeCore::MouseButton button = static_cast<AnimeCore::MouseButton>(msg.value(String("button")).toInt(int(AnimeCore::NoButton)));
         AnimeCore::MouseButtons buttons = static_cast<AnimeCore::MouseButtons>(msg.value(String("buttons")).toInt(int(AnimeCore::LeftButton)));
         if (msg.contains(String("buttons"))) {
             buttons = static_cast<AnimeCore::MouseButtons>(msg.value(String("buttons")).toInt(0));
+        }
+        if (m_pointerPage == page && m_pointerView == view) {
+            m_pointerPos = PointF(x, y);
+            m_pointerTime = timestamp;
+        }
+        if (m_pointerPage == page && msg.contains(String("buttons")) && buttonsDown == 0) {
+            // It moves with nothing held: its release never came (lost on the
+            // way, or let go outside the window). The other pages are not kept
+            // waiting for it.
+            m_pointerPage = 0;
+            m_pointerView = String();
+            m_pointerButton = 0;
         }
         board->injectMouse(AnimeCore::Event::MouseMove, PointF(x, y), button, buttons, modifiers, timestamp);
     } else if (kind == String("release")) {
@@ -1654,6 +1919,13 @@ void BackendSession::handleInputMessage(const JsonObject &msg)
         }
         AnimeCore::MouseButtons buttons = static_cast<AnimeCore::MouseButtons>(msg.value(String("buttons")).toInt(int(AnimeCore::NoButton)));
         board->injectMouse(AnimeCore::Event::MouseButtonRelease, PointF(x, y), button, buttons, modifiers, timestamp);
+        // The last button is up: the pointer is anyone's again.
+        if (m_pointerPage == page && buttonsDown == 0) {
+            m_pointerPage = 0;
+            m_pointerView = String();
+            m_pointerButton = 0;
+        }
+        gestureDone();
     } else if (kind == String("doubleClick") || kind == String("dblclick")) {
         AnimeCore::MouseButton button = static_cast<AnimeCore::MouseButton>(msg.value(String("button")).toInt(int(AnimeCore::LeftButton)));
         AnimeCore::MouseButtons buttons = static_cast<AnimeCore::MouseButtons>(msg.value(String("buttons")).toInt(int(button)));
@@ -1662,21 +1934,15 @@ void BackendSession::handleInputMessage(const JsonObject &msg)
         const int dx = msg.value(String("dx")).toInt(0);
         const int dy = msg.value(String("dy")).toInt(0);
         const AnimeCore::MouseButtons buttons = static_cast<AnimeCore::MouseButtons>(msg.value(String("buttons")).toInt(0));
+        if (const auto wheeling = m_pages.find(page); wheeling != m_pages.end()) {
+            wheeling->lastActive = ++m_activityCounter;
+        }
         board->injectWheel(PointF(x, y), Point(dx, dy), modifiers, buttons);
+        gestureDone();
     } else if (kind == String("enter")) {
         board->injectEnter();
     } else if (kind == String("leave")) {
         board->injectLeave();
-    } else if (kind == String("resize")) {
-        const int w = msg.value(String("w")).toInt(msg.value(String("width")).toInt(board->width()));
-        const int h = msg.value(String("h")).toInt(msg.value(String("height")).toInt(board->height()));
-        const double dpr = msg.value(String("dpr")).toDouble(1.0);
-        board->resizeSurface(w, h, dpr);
-        if (view == String("child") && m_textureHome == String("control")) {
-            autoFitTextureControlView();
-        }
-        markDirty(view == String("child") ? String("viewport/child")
-                                                  : String("viewport/main"));
     } else if (kind == String("focus")) {
         const bool focused = msg.value(String("focused")).toBool(true);
         if (focused) {
@@ -2664,23 +2930,19 @@ JsonObject BackendSession::dispatchCall(const String &method, const JsonObject &
             && wanted != String("parked")) {
             return makeError(String("Invalid texture home: %1").arg(wanted));
         }
-        if (wanted != m_textureHome) {
-            saveTextureViewSlot(m_textureHome);
-            m_textureHome = wanted;
-            restoreTextureViewSlot();
+        // Where the texture board lives follows the page's own layout, and two
+        // pages may lay themselves out differently. The presenting page's
+        // answer is the one in force; another page's is kept for when it presents.
+        const int subControl = params.contains(String("subControlVisible"))
+                                   ? (params.value(String("subControlVisible")).toBool() ? 1 : 0)
+                                   : -1;
+        const auto asking = m_pages.find(m_currentPage);
+        if (asking != m_pages.end()) {
+            asking->textureHome = wanted;
+            asking->textureSubControl = subControl;
         }
-        if (params.contains(String("subControlVisible"))) {
-            const bool vis = params.value(String("subControlVisible")).toBool();
-            if (m_textureSubControlVisible != vis) {
-                m_textureSubControlVisible = vis;
-                markDirty(String("windows"));
-            }
-        } else if (wanted == String("control") && !m_textureSubControlVisible) {
-            m_textureSubControlVisible = true;
-            markDirty(String("windows"));
-        } else if (wanted == String("parked") && m_textureSubControlVisible) {
-            m_textureSubControlVisible = false;
-            markDirty(String("windows"));
+        if (asking == m_pages.end() || m_currentPage == m_presenter) {
+            applyTextureHome(wanted, subControl);
         }
         return JsonObject{
             {String("home"), m_textureHome},
@@ -2842,7 +3104,13 @@ JsonObject BackendSession::dispatchCall(const String &method, const JsonObject &
     if (method == String("board.capabilities")) {
         const String targetView = resolveViewName(view);
         const bool fieldDisplay = params.value(String("fieldDisplay")).toBool(false);
-        m_fieldDisplaySupported.insert(targetView, fieldDisplay);
+        const auto reporting = m_pages.find(m_currentPage);
+        if (reporting != m_pages.end()) {
+            reporting->fieldDisplay.insert(targetView, fieldDisplay);
+            refreshFieldDisplaySupport();
+        } else {
+            m_fieldDisplaySupported.insert(targetView, fieldDisplay);
+        }
         return JsonObject{
             {String("view"), targetView},
             {String("fieldDisplay"), fieldDisplay},
@@ -3605,7 +3873,7 @@ void BackendSession::handleFrameSink(const String &viewName, const BoardFrame &f
     payload.append(",\"ops\":");
     payload.append(frame.ops.empty() ? std::string("[]") : frame.ops);
     payload.append("}");
-    m_ws->sendText(payload);
+    sendText(payload);
 }
 
 void BackendSession::handleImageSink(const String &view, const String &key, const AnimeCore::Image &rgbaImg)
@@ -3633,7 +3901,7 @@ void BackendSession::sendFieldPacket(const String &key, const FieldEntry &entry)
         {String("bytes"), static_cast<std::int64_t>(entry.data.size())},
     };
     sendJson(header);
-    m_ws->sendBinary(entry.data);
+    sendBinary(entry.data);
 }
 
 // A field goes out just ahead of the frame of the board that shows it, so the
@@ -3685,7 +3953,7 @@ void BackendSession::sendImagePacket(const String &key, const Image &rgba, const
     }
     sendJson(header);
     if (rgba.bytesPerLine() == w * 4) {
-        m_ws->sendBinary(std::string(reinterpret_cast<const char *>(rgba.constBits()), static_cast<std::size_t>(expectedBytes)));
+        sendBinary(std::string(reinterpret_cast<const char *>(rgba.constBits()), static_cast<std::size_t>(expectedBytes)));
     } else {
         std::string tight;
         tight.resize(expectedBytes);
@@ -3693,7 +3961,7 @@ void BackendSession::sendImagePacket(const String &key, const Image &rgba, const
         for (int y = 0; y < h; ++y) {
             std::memcpy(dst + y * w * 4, rgba.constScanLine(y), static_cast<size_t>(w * 4));
         }
-        m_ws->sendBinary(tight);
+        sendBinary(tight);
     }
 }
 
@@ -3820,7 +4088,31 @@ void BackendSession::sendJson(const JsonObject &obj)
     if (!m_ws || !m_ws->hasClient()) {
         return;
     }
-    m_ws->sendText(JsonDocument(obj).toJson(JsonDocument::Compact));
+    sendText(JsonDocument(obj).toJson(JsonDocument::Compact));
+}
+
+void BackendSession::sendText(const std::string &text)
+{
+    if (!m_ws) {
+        return;
+    }
+    if (m_sendTo != 0) {
+        m_ws->sendText(m_sendTo, text);
+    } else {
+        m_ws->sendText(text);
+    }
+}
+
+void BackendSession::sendBinary(const std::string &data)
+{
+    if (!m_ws) {
+        return;
+    }
+    if (m_sendTo != 0) {
+        m_ws->sendBinary(m_sendTo, data);
+    } else {
+        m_ws->sendBinary(data);
+    }
 }
 
 JsonValue BackendSession::buildStateValue(const String &key) const
