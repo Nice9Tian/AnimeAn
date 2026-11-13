@@ -460,6 +460,20 @@ test("这次运行的名字：不变、只用安全字符，打开的页面带�
   assert.equal(withRunTag("index.html"), `index.html?relay=${tag}`);
 });
 
+test("不给名字的中转用这次运行的频道：主窗口页和页面里临时开的 RelayClient 能接上", async () => {
+  const backend = createMockBackendClient();
+  backend.setCallHandler(async (method) => method);
+  const host = new RelayHost(backend);
+  const client = new RelayClient();
+  try {
+    await client.connect();
+    assert.equal(await client.call("project.saveAs", {}), "project.saveAs");
+  } finally {
+    client.close();
+    host.close();
+  }
+});
+
 test("两个 AnimeAn 各用自己这次运行的频道：调用只到自己的后端，另一个关掉时的 bye 不影响这边", async () => {
   // Real BroadcastChannels: both copies of AnimeAn share one WebView2 profile.
   const backendA = createMockBackendClient();

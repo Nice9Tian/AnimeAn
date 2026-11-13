@@ -946,7 +946,10 @@ export function createChrome(menuEl, statusEl, store, options = {}) {
   const currentWindow = tauri?.window?.getCurrentWindow?.();
   const windowLabel = currentWindow?.label;
   if (typeof tauri?.core?.invoke === "function" && windowLabel) {
-    onMenuArea((rects) => void Promise.resolve(tauri.core.invoke("set_menu_area", { label: windowLabel, rects })).catch(() => {}));
+    const setMenuArea = (rects) => void Promise.resolve(tauri.core.invoke("set_menu_area", { label: windowLabel, rects })).catch(() => {});
+    onMenuArea(setMenuArea);
+    // A reload or a crashed page that had a menu open left its holes behind.
+    setMenuArea([]);
     void Promise.resolve(currentWindow.onMoved?.(() => closePopupMenus())).catch(() => {});
   }
   const text = document.createElement("div");

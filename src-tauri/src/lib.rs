@@ -852,16 +852,19 @@ pub struct TopWindow {
     pub shown: bool,
     pub enabled: bool,
     pub panel: bool,
+    /// A helper popup that never takes the input itself: a tooltip, a picker's
+    /// suggestion list (topmost, tool or not activatable).
+    pub helper: bool,
 }
 
 /// What holds the input for `main` while a modal dialog or a native picker is
 /// up: the topmost shown, enabled window owned by `main` at any depth, panel
-/// windows aside. `windows` runs topmost first. The owner of a modal one is
+/// windows and helper popups aside. `windows` runs topmost first. The owner of a modal one is
 /// disabled, so a dialog under another or under a picker is never picked.
 pub fn modal_target(main: isize, windows: &[TopWindow]) -> Option<isize> {
     windows
         .iter()
-        .find(|w| w.id != main && !w.panel && w.shown && w.enabled && w.root_owner == main)
+        .find(|w| w.id != main && !w.panel && !w.helper && w.shown && w.enabled && w.root_owner == main)
         .map(|w| w.id)
 }
 
@@ -879,7 +882,8 @@ fn focus_modal(app: tauri::AppHandle) -> Result<(), String> {
         use windows_sys::Win32::Foundation::HWND;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             GetAncestor, GetLastActivePopup, GetWindowLongPtrW, GetWindowThreadProcessId, IsWindowVisible,
-            SetForegroundWindow, GA_ROOTOWNER, GWL_STYLE, WS_DISABLED,
+            SetForegroundWindow, GA_ROOTOWNER, GWL_EXSTYLE, GWL_STYLE, WS_DISABLED, WS_EX_NOACTIVATE,
+            WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
         };
         let main = main_win.hwnd().map_err(|e| e.to_string())?.0 as HWND;
         let panels: std::collections::HashSet<isize> = app
@@ -903,6 +907,7 @@ fn focus_modal(app: tauri::AppHandle) -> Result<(), String> {
                     shown: IsWindowVisible(h) != 0,
                     enabled: (GetWindowLongPtrW(h, GWL_STYLE) as u32 & WS_DISABLED) == 0,
                     panel: panels.contains(&(h as isize)),
+                    helper: (GetWindowLongPtrW(h, GWL_EXSTYLE) as u32 & (WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)) != 0,
                 }
             })
             .collect();
@@ -1369,7 +1374,7 @@ mod tests {
     #[test]
     fn test_modal_target() {
         let main = 1;
-        let win = |id, root_owner, shown, enabled, panel| TopWindow { id, root_owner, shown, enabled, panel };
+        let win = |id, root_owner, shown, enabled, panel| TopWindow { id, root_owner, shown, enabled, panel, helper: false };
         // A clicked panel has risen above the dialog: the dialog still holds the input.
         let panel_on_top = [win(5, main, true, true, true), win(7, main, true, true, false), win(main, main, true, false, false)];
         assert_eq!(modal_target(main, &panel_on_top), Some(7));
@@ -1385,6 +1390,9 @@ mod tests {
             win(main, main, true, false, false),
         ];
         assert_eq!(modal_target(main, &picker), Some(6));
+        // The picker's suggestion list or a tooltip sits above the picker: the picker is picked.
+        let dropdown = TopWindow { helper: true, ..win(10, main, true, true, false) };
+        assert_eq!(modal_target(main, &[dropdown, win(6, main, true, true, false), win(main, main, true, false, false)]), Some(6));
         // Nothing shown yet: no target, the caller falls back.
         assert_eq!(modal_target(main, &[win(5, main, true, true, true), win(main, main, true, false, false)]), None);
     }

@@ -74,7 +74,8 @@ export function openRelayChannel(
       (channelOrName as { channelName?: string }).channelName;
     return openRelayChannel(inner);
   }
-  const name = typeof channelOrName === "string" && channelOrName ? channelOrName : DEFAULT_RELAY_CHANNEL;
+  // No name: this run's channel, where this run's main page listens.
+  const name = typeof channelOrName === "string" && channelOrName ? channelOrName : relayChannelName();
   if (typeof BroadcastChannel !== "undefined") {
     return {
       channel: new BroadcastChannel(name) as unknown as RelayChannelLike,

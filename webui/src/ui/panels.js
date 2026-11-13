@@ -628,7 +628,8 @@ export function createMenuBar(root, { onTrigger, onOpen }) {
   function showPopup(item, index, fallbackMenu) {
     const current = menus.find((m) => (m.id && fallbackMenu.id ? m.id === fallbackMenu.id : m.text === fallbackMenu.text)) ?? menus[index] ?? fallbackMenu;
     const r = item.getBoundingClientRect?.() ?? { left: 0, bottom: 0 };
-    popupMenu(current?.children ?? [], r.left, r.bottom, onTrigger);
+    // Refused while the page has no focus: the title must not look open.
+    if (popupMenu(current?.children ?? [], r.left, r.bottom, onTrigger) !== openMenu) return;
     item.classList.add("open");
     openTitle = item;
   }

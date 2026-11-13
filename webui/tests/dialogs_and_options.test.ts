@@ -817,7 +817,7 @@ test("打开的菜单把占的矩形报给外壳：打开、子菜单展开收�
 
 test("页面失焦时关掉菜单，还在等回复的菜单不再打开；回到焦点后照常", async () => {
   await withDom(async ({ body }) => {
-    const { askForMenu, closePopupMenus, pageFocusChanged, popupMenu } = await import("../src/ui/panels.js");
+    const { askForMenu, closePopupMenus, createMenuBar, pageFocusChanged, popupMenu } = await import("../src/ui/panels.js");
     const items = [{ id: "a", text: "A" }];
     try {
       popupMenu(items, 0, 0, () => {});
@@ -828,6 +828,12 @@ test("页面失焦时关掉菜单，还在等回复的菜单不再打开；回�
       assert.equal(wanted(), false, "a menu still waiting for its reply is dropped");
       popupMenu(items, 0, 0, () => {});
       assert.equal(body.querySelector(".qmenu"), null, "and none opens while the page has no focus");
+      const bar = new FakeElement("div");
+      body.append(bar);
+      createMenuBar(bar, { onTrigger() {}, onOpen() {} }).update([{ id: "file", text: "File", children: [{ id: "x", text: "X" }] }]);
+      const title = bar.querySelector(".item")!;
+      title.click();
+      assert.equal(title.classList.contains("open"), false, "a refused menu leaves its title as it was");
       pageFocusChanged(true);
       popupMenu(items, 0, 0, () => {});
       assert.ok(body.querySelector(".qmenu"), "back in focus, menus open again");
