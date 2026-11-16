@@ -16,6 +16,7 @@
 #undef slots
 #include <pybind11/embed.h>
 #include "pythonbind/python_bindings.h"
+#include "pythonbind/python_environment.h"
 namespace py = pybind11;
 #endif
 
@@ -30,15 +31,6 @@ namespace py = pybind11;
 using namespace AnimeCore;
 
 namespace {
-
-void setEnvVar(const char *name, const String &value)
-{
-#ifdef _WIN32
-    _putenv_s(name, value.toLocal8Bit().c_str());
-#else
-    setenv(name, value.toLocal8Bit().c_str(), 1);
-#endif
-}
 
 void pumpEventLoop()
 {
@@ -948,36 +940,9 @@ int main(int argc, char *argv[])
     }
 
 #ifdef ANIMEAN_WITH_PYTHON
-    const String appDir = CoreApplication::applicationDirPath();
-    String pythonHome = String(ANIMEAN_PYTHON_HOME);
-    if (!FileInfo::exists(Dir(pythonHome).filePath(String("python312.dll")))) {
-        pythonHome = Dir(appDir).filePath(String(ANIMEAN_PYTHON_DIR_NAME));
-    }
-
-    // Same order as backend/main.cpp: the source folders before the copies that
-    // sync_pyfiles.ps1 puts beside the exe, and no working-directory entry.
-    StringList pythonPath;
-    if (FileInfo::exists(Dir(String(ANIMEAN_PYFILE_DIR)).filePath(String("hello_world.py")))) {
-        pythonPath << String(ANIMEAN_PYFILE_DIR);
-    }
-    if (FileInfo::exists(Dir(String(ANIMEAN_PYTHONBIND_DIR)).filePath(String("animemodel.py")))) {
-        pythonPath << String(ANIMEAN_PYTHONBIND_DIR);
-    }
-    if (FileInfo::exists(Dir(String(ANIMEAN_OPENTOONZ_TOOLS_DIR)).filePath(String("toonz_to_dict.py")))) {
-        pythonPath << String(ANIMEAN_OPENTOONZ_TOOLS_DIR);
-    }
-    pythonPath << appDir;
-
-    StringList dllPath;
-    dllPath << pythonHome << Dir(pythonHome).filePath(String("DLLs"));
-    const char *existingPath = std::getenv("PATH");
-    if (existingPath && existingPath[0] != '\0') {
-        dllPath << String::fromLocal8Bit(existingPath);
-    }
-
-    setEnvVar("PATH", Dir::toNativeSeparators(dllPath.join(Char(u';'))));
-    setEnvVar("PYTHONHOME", Dir::toNativeSeparators(pythonHome));
-    setEnvVar("PYTHONPATH", Dir::toNativeSeparators(pythonPath.join(Char(u';'))));
+    // The same script folders as the backend, and no working-directory entry
+    // on sys.path. The build's own runtime first: this runs from the build tree.
+    preparePythonEnvironment(PythonRuntimeChoice::PreferConfigured);
 
     py::scoped_interpreter guard(true, 0, nullptr, false);
     py::module_::import("animean_python");

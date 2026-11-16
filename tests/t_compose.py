@@ -16,7 +16,7 @@ import sys
 import types
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT + r"\pyfile")
+sys.path.insert(0, os.path.join(ROOT, "pyfile"))
 sys.modules.setdefault("animean_python", types.ModuleType("animean_python"))
 import auto_mapping as am
 

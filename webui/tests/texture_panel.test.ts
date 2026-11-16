@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { backendEnv, programFileName } from "../../build_scripts/backend_env.mjs";
 import { attachToolsSubControlHost } from "../src/ui/tools.js";
 
 class FakeClassList {
@@ -611,21 +612,19 @@ test("Mapping 工具 subwindow 自动嵌入 Options、手动浮出时不抢、�
 
 test("后端 textureMenus、textureSubControl.surface 与 texture.setHome 两处视口记忆及自动适配", async (t) => {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const exePath = path.resolve(here, "../../build/use/backend/AnimeAnBackend.exe");
+  // Runs against the backend named by ANIMEAN_BACKEND_EXE, or the one a build
+  // into build/use left behind; skipped when there is neither.
+  const exePath = process.env.ANIMEAN_BACKEND_EXE
+    ? path.resolve(process.env.ANIMEAN_BACKEND_EXE)
+    : path.resolve(here, "../../build/use/backend", programFileName("AnimeAnBackend"));
   if (!fs.existsSync(exePath)) {
-    t.skip("AnimeAnBackend.exe not built");
+    t.skip("AnimeAnBackend not built");
     return;
   }
   const token = `tex_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-  const extraPaths = [
-    path.win32.normalize("C:/Qt/6.9.1/mingw_64/bin"),
-    path.win32.normalize("C:/Qt/Tools/mingw1310_64/bin"),
-    path.win32.normalize("C:/Users/admin/Documents/AnimeAn/tools/python312"),
-    path.dirname(exePath),
-  ];
   const child = spawn(exePath, ["--port", "0", "--token", token], {
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, PATH: [...extraPaths, process.env.PATH || process.env.Path || ""].join(";") },
+    env: backendEnv(exePath),
   });
   let ws: WebSocket | null = null;
   try {

@@ -14,11 +14,45 @@ set(ANIMEAN_PYTHONBIND_DIR "${CMAKE_CURRENT_SOURCE_DIR}/pythonbind" CACHE PATH "
 set(ANIMEAN_OPENTOONZ_TOOLS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/opentoonz_tools" CACHE PATH "Directory containing OpenToonz import helper modules.")
 
 if(ANIMEAN_WITH_PYTHON OR ANIMEAN_BUILD_PYTHON_MODULE)
-    set(ANIMEAN_PYTHON_HOME "${CMAKE_CURRENT_SOURCE_DIR}/tools/python312" CACHE PATH "Python runtime used by AnimeAn.")
+    # The Python version a release ships, and the one the wheels in pywheels/
+    # are built for.
+    set(ANIMEAN_PYTHON_VERSION_MAJOR 3)
+    set(ANIMEAN_PYTHON_VERSION_MINOR 12)
+
+    # The Python runtime AnimeAn embeds: a full Python of that version with
+    # headers and its library. On the Windows development machine it is
+    # tools/python312 inside the checkout. A checkout without that folder (a
+    # worktree, a Linux machine) names one with -DANIMEAN_PYTHON_HOME=<folder>
+    # or the environment variable ANIMEAN_PYTHON_HOME.
+    set(ANIMEAN_DEFAULT_PYTHON_HOME "${CMAKE_CURRENT_SOURCE_DIR}/tools/python312")
+    if(NOT EXISTS "${ANIMEAN_DEFAULT_PYTHON_HOME}" AND DEFINED ENV{ANIMEAN_PYTHON_HOME})
+        file(TO_CMAKE_PATH "$ENV{ANIMEAN_PYTHON_HOME}" ANIMEAN_DEFAULT_PYTHON_HOME)
+    endif()
+    set(ANIMEAN_PYTHON_HOME "${ANIMEAN_DEFAULT_PYTHON_HOME}" CACHE PATH "Python runtime used by AnimeAn.")
     set(ANIMEAN_PYTHON_DIR_NAME "python312" CACHE STRING "Python runtime directory name used in deployed AnimeAn packages.")
     if(EXISTS "${ANIMEAN_PYTHON_HOME}")
         set(Python_ROOT_DIR "${ANIMEAN_PYTHON_HOME}")
-        set(Python_EXECUTABLE "${ANIMEAN_PYTHON_HOME}/python.exe")
+        if(CMAKE_CROSSCOMPILING)
+            # Building the Windows programs on another system
+            # (build_scripts/windows_cross_check.sh): the runtime's own
+            # interpreter cannot run here and is not asked. Headers and library
+            # are named directly, and the version is read from the headers.
+            # Only the programs that embed Python are meant to be built this
+            # way; the optional extension module would get its file suffix from
+            # whatever Python this machine has.
+            set(Python_INCLUDE_DIR "${ANIMEAN_PYTHON_HOME}/include")
+            set(Python_LIBRARY "${ANIMEAN_PYTHON_HOME}/libs/python${ANIMEAN_PYTHON_VERSION_MAJOR}${ANIMEAN_PYTHON_VERSION_MINOR}.lib")
+        elseif(WIN32)
+            set(Python_EXECUTABLE "${ANIMEAN_PYTHON_HOME}/python.exe")
+        else()
+            set(Python_EXECUTABLE "${ANIMEAN_PYTHON_HOME}/bin/python3")
+        endif()
+    else()
+        # The build then takes whatever Python CMake finds, which is enough to
+        # check that the code compiles. The programs look for their runtime in
+        # ANIMEAN_PYTHON_HOME when they start, and will not start without it.
+        message(WARNING "ANIMEAN_PYTHON_HOME (${ANIMEAN_PYTHON_HOME}) does not exist: "
+                        "the programs built here will compile but will not find a Python runtime when run.")
     endif()
 
     set(PYBIND11_FINDPYTHON ON)
@@ -44,6 +78,10 @@ if(BUILD_TESTING)
     add_executable(strokefit_tests tests/strokefit_tests.cpp)
     target_link_libraries(strokefit_tests PRIVATE animean_core)
     add_test(NAME strokefit_zoom_invariance COMMAND strokefit_tests)
+
+    add_executable(fileio_tests tests/fileio_tests.cpp)
+    target_link_libraries(fileio_tests PRIVATE animean_corelib)
+    add_test(NAME fileio COMMAND fileio_tests)
 endif()
 
 if(ANIMEAN_BUILD_PYTHON_MODULE)

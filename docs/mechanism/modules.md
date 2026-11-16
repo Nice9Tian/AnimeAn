@@ -11,7 +11,7 @@
 | **后端进程与会话** | `backend/main.cpp`、`backend/session/backendsession.*`、`backend/business/animeanbusiness.*`、`backend/platform/*`、`backend/net/wsserver.*`、`theme.*`、`selectionattention.*` | 嵌入 Python 解释器、WebSocket 协议与脏状态推送（`BackendSession`）、不依赖界面的业务编排（`AnimeanBusiness`：主 / 子画板模型与历史、工具与选项 JSON、图层树重排、帧与时间轴、播放驱动、缩略图渲染、导入导出、历史的全局排序）、颜色角色与主题（`AnimeTheme`）、帧 / 层 / 资产的选择约束（`SelectionAttention`）、事件循环与定时器（`EventLoop`、`Timer`） | 工具语义、界面排版 |
 | **画板** | `openglwidget.*`、`boardbase.h`、`backend/board/*` | 渲染场景与覆盖层（经 `BoardSurface` + `RecordingDevice` 录制成绘制指令表）、视图变换（缩放 / 平移）、交互事件路由（`Tool` 枚举）、控制手柄 / 覆盖层 / 视图按钮机制、hook 事件派发、历史提交、播放缓存、轴向吸附与拟合调用、文字转路径（`textpath.*`） | 任何工具"意味着什么" |
 | **核心模型库** `animean_core` | `algorithm/animemodel.*`、`algorithm/vectorlogic.*`、`algorithm/beziersplit.*`、`algorithm/scenehistory.*`、`algorithm/viewscale.h`、`projectio.*`、`clipreader.*`，建在不依赖 Qt 的 `algorithm/core/` 上 | 场景 / xsheet 数据模型（列、帧、资产、单元格、图层组与 tag、父层、锁定）、矢量几何与笔画拟合、精确贝塞尔劈分、快照式历史、`.anproj` / `.textureview` 的 JSON 读写 | 界面、Python |
-| **基础类型库** `animean_corelib` | `algorithm/core/*`（命名空间 `AnimeCore`） | 字符串（`String`）、容器（`Vector`、`List`、`Map`、`Hash`、`Set`）、几何与变换（`PointF`、`RectF`、`Transform` 等）、颜色与画笔 / 画刷、贝塞尔路径与布尔运算 / 扩边（`Path`、`strokeOutline`、`united` 等）、位图与软件光栅化（`Image`、`Painter`、`RasterDevice`）、JSON、文件与目录、设置持久化（`Settings`，存 `%APPDATA%\AnimeAn\settings.json`） | 业务规则、界面 |
+| **基础类型库** `animean_corelib` | `algorithm/core/*`（命名空间 `AnimeCore`） | 字符串（`String`）、容器（`Vector`、`List`、`Map`、`Hash`、`Set`）、几何与变换（`PointF`、`RectF`、`Transform` 等）、颜色与画笔 / 画刷、贝塞尔路径与布尔运算 / 扩边（`Path`、`strokeOutline`、`united` 等）、位图与软件光栅化（`Image`、`Painter`、`RasterDevice`）、JSON、文件与目录、设置持久化（`Settings`，存 `%APPDATA%\AnimeAn\settings.json`，Linux 上是 `~/.config/AnimeAn/settings.json`）；要问操作系统的调用收在 `native.h` 一层，见 `platform.md` | 业务规则、界面 |
 | **面板兜底配置** | `childrenpanel/tool_controls/*.json` | Python 选项布局不可用时的内建工具（`pen`、`eraser`、`fill`、`connect`）兜底 JSON | 界面控件实现（在 `webui/src/ui/`） |
 | **Python 绑定** | `pythonbind/python_bindings.*`（`animean_python` 模块）、`pythonbind/animemodel.py`（高层封装） | 把模型、几何、`ui` 门面暴露给 Python；把 Python 值转成 `AnimeCore` 类型 | 任何策略 |
 | **工具脚本** | `pyfile/*.py` | 模块装载顺序、hook / 菜单 / 设置 / 视图按钮注册表、工具选项布局、每个工具的行为、Auto Mapping 引擎、第三方库加载 | 渲染、交互事件采集、模型存储 |
@@ -19,7 +19,7 @@
 | **共享轮子** | `algorithm/beziersplit.h` ↔ `pyfile/bezier.py`；`algorithm/viewscale.h` ↔ `pyfile/viewscale.py` | 贝塞尔劈分与求值；屏幕 ↔ 画布换算。两边镜像、唯一实现 | 步长密度策略（留给调用方） |
 | **第三方与运行时** | `external/pybind11`（子模块）、`external/clipper2`、`external/stb`、`tools/python312`（不入库）、`pywheels/`、`pyfile/three_vendor.py` | pybind11；Clipper2 路径布尔与偏移；stb_image / stb_image_write PNG 读写；完整 Python 运行时；钉版本的 wheel；离线 three.js | — |
 | **测试** | `tests/t_*.py`、`tests/test_legacy_suites.py`、`tests/*_tests.cpp`、`tests/core/*`、`backend/board/tests/*`、`backend/platform/tests/*`、`backend/net/tests/*`、`backend/tests/session_smoke.mjs`、`backend/tests/golden/*`、`webui/tests/*` | Python 引擎的无 GUI 回归；C++ 模型 / 文件 / 拟合 / 画板 / 平台 ctest 与 `AnimeCore` 差分测试；后端会话冒烟与新旧录制对比；网页渲染器、输入与面板单测 | — |
-| **构建与同步** | `CMakeLists.txt`、`backend/CMakeLists.txt`、`algorithm/core/CMakeLists.txt`、`build_scripts/agent_build.ps1`、`build_scripts/package_tauri.ps1`、`build_scripts/toolchain_location.ps1`、`sync_pyfiles.ps1`、`setup_python_pybind11.bat` | 配置、编译 `AnimeAnBackend`、构建网页与 Tauri 外壳并打包 `dist\AnimeAn\`、脚本同步、首次环境准备 | — |
+| **构建与同步** | `CMakeLists.txt`、`backend/CMakeLists.txt`、`algorithm/core/CMakeLists.txt`、`build_scripts/agent_build.ps1`、`build_scripts/package_tauri.ps1`、`build_scripts/toolchain_location.ps1`、`build_scripts/backend_env.mjs`、`sync_pyfiles.ps1`、`setup_python_pybind11.bat`；Linux 上 `build_scripts/linux_setup.sh`、`linux_build.sh`、`windows_cross_check.sh`、`mingw_cross.cmake` | 配置、编译 `AnimeAnBackend`、构建网页与 Tauri 外壳并打包 `dist\AnimeAn\`、脚本同步、首次环境准备；Node 脚本启动后端的环境；Linux 上的开发构建和按 Windows 交叉编译的检查 | — |
 
 机制 / 策略成对：`ui.set_overlay` ↔ `overlay_stack`；handle 事件 ↔ `edit_tool` / `transfer_tool` / `connect_tool`；`fillrequest` ↔ `fill_tool`；`visibility` ↔ `visibility_tool`；`ui.set_locked_tools` / `ui.set_fill_paint_mode` ↔ `layer_tool_policy`；`ui.windows` ↔ `window_manager`；调色板控件 ↔ `palette_box` / `tool_colors`。
 
@@ -43,9 +43,10 @@ AnimeAn.exe（src-tauri/src/lib.rs）
 ```
 AnimeAnBackend.exe（backend/main.cpp）
  1. 解析 --port 与 --token；调 AnimeTheme::mode() 从 %APPDATA%\AnimeAn\settings.json 读取保存的深 / 浅色模式
- 2. 定位 Python：PYTHONHOME = exe 旁 python312\，没有则用构建时记下的 tools\python312
+ 2. 定位 Python（pythonbind/python_environment.cpp）：PYTHONHOME = exe 旁 python312\，没有则用构建时记下的运行时
+    （Windows 开发机是 tools\python312，Linux 是 ANIMEAN_PYTHON_HOME 指的目录）
     PYTHONPATH = 源码 pyfile\ → pythonbind\ → opentoonz_tools\（各自存在时）→ exe 目录
-    PATH 前置 python312\ 与 python312\DLLs
+    PATH 前置 python312\ 与 python312\DLLs（Linux 上前置的是运行时的 bin）
  3. 启动嵌入解释器（py::scoped_interpreter，不把工作目录放上 sys.path）
  4. 构造 WsServer 与 BackendSession（内含 AnimeanBusiness 及 main / child 两块 PaintOpenGLWidget 画板，注册 ui 回调）
  5. BackendSession::initializePythonStartup()：
@@ -65,16 +66,16 @@ AnimeAnBackend.exe（backend/main.cpp）
 
 | 文件 | 职责 |
 |---|---|
-| `backend/main.cpp` | 解析 `--port` / `--token`、初始化 `AnimeTheme`、配置 Python 路径与 DLL 路径、启动嵌入解释器、`WsServer` 与 `BackendSession`、打印监听端口、进入 `EventLoop` |
+| `backend/main.cpp` | 解析 `--port` / `--token`、初始化 `AnimeTheme`、配置 Python 环境（`preparePythonEnvironment`）、启动嵌入解释器、`WsServer` 与 `BackendSession`、打印监听端口、进入 `EventLoop` |
 | `backend/session/backendsession.*` | `BackendSession`：WebSocket 消息分发（`dispatchCall`、`handleInputMessage`、`handleAckMessage`）、脏状态合并推送、图片与缩略图二进制帧下发、`ui` 回调桥接、窗口状态表（`m_windowInfos`）、纹理板三处归属（`central` / `control` / `parked`）视口保存与恢复、时间轴停靠方向持久化（`Settings`） |
 | `backend/business/animeanbusiness.*` | `AnimeanBusiness`：不依赖界面的业务编排——主 / 子画板模型与历史、撤销 / 重做全局排序、图层树构建与拖拽重排（`layerRowsForView`、`applyLayerPanelStructure`）、工具切换与锁定、工具选项 JSON 与内建兜底加载（`loadBuiltInToolLayout`）、帧操作与播放驱动、帧缩略图离屏渲染（`renderFrameThumbnail`）、导入导出、Python 全局状态同步与 `initalize.py` 执行 |
 | `openglwidget.*`、`boardbase.h` | `PaintOpenGLWidget`（基类 `PaintBoardBase = BoardSurface`）：场景渲染、覆盖层、控制手柄、视图变换、交互事件与工具路由、hook 派发与订阅掩码、历史提交、播放缓存、无边界画布模式、背景模式、活动板指示 |
 | `backend/board/boardsurface.*` | `BoardSurface`：无界面画板基类（继承 `AnimeCore::PaintDevice`），持有 `RecordingDevice`，把 `update()` 合并成 0 ms 定时调用 `paintGL()`，注入鼠标 / 滚轮 / 尺寸 / 焦点事件，维护视口滚动条状态与光标回调 |
 | `backend/board/recordingdevice.*` | `RecordingDevice`：把 `AnimeCore::Painter` 绘制调用录制成带 64 位哈希的 JSON 指令表与图片帧，计算 `keep` 稳定前缀条数 |
 | `backend/board/inputevent.h`、`backend/board/cursor.h` | `AnimeCore` 输入事件（`MouseEvent`、`WheelEvent`、`EnterEvent`、`FocusEvent`、`ResizeEvent`）与光标类型（`Cursor`、`CursorShape`） |
-| `backend/board/textpath.*` | `textMetrics`、`textWidth`、`textPath`：用 Win32 GDI `GetGlyphOutlineW` 提取字形轮廓并转成 `AnimeCore::Path` |
-| `backend/platform/signalslot.h`、`eventloop.*`、`timer.*`、`elapsedtimer.h` | 轻量信号（`Signal`）、事件循环（`EventLoop`）、定时器（`Timer`）、高精度计时（`ElapsedTimer`） |
-| `backend/net/wsserver.*` | `WsServer`：基于 WinSock2 的本地 WebSocket 服务端，可同时连着几个页面（每个连接一个编号，广播或单发），校验 token 与 `Origin` |
+| `backend/board/textpath.*`、`textglyphs.h`、`textglyphs_gdi.cpp`、`textglyphs_freetype.cpp` | `textMetrics`、`textWidth`、`textPath`：排版、缩放和缓存在 `textpath.cpp`；字形轮廓由系统的字体给，Windows 上用 GDI `GetGlyphOutlineW`，Linux 上用 Fontconfig + FreeType，转成 `AnimeCore::Path` |
+| `backend/platform/signalslot.h`、`eventloop.*`、`timer.*`、`elapsedtimer.h`、`sockets.*`、`process.*` | 轻量信号（`Signal`）、事件循环（`EventLoop`）、定时器（`Timer`）、高精度计时（`ElapsedTimer`）、本机 TCP 套接字（`Sockets`，Winsock 和 POSIX 一份接口）、进程级系统设置（`Process`） |
+| `backend/net/wsserver.*` | `WsServer`：建在 `backend/platform/sockets.*` 上的本地 WebSocket 服务端，可同时连着几个页面（每个连接一个编号，广播或单发），校验 token 与 `Origin` |
 | `theme.*` | `AnimeTheme`：颜色角色的唯一出处，深 / 浅模式（读写 `Settings`），`themeChanged` |
 | `selectionattention.*` | `SelectionAttention`：帧 / 层 / 资产选择的一致性约束 |
 | `projectio.*` | `.anproj` / `.textureview` 的 JSON 序列化与校验 |
@@ -84,8 +85,9 @@ AnimeAnBackend.exe（backend/main.cpp）
 | `algorithm/beziersplit.*` | 精确贝塞尔劈分与路径定位 |
 | `algorithm/scenehistory.*` | 快照式撤销 / 重做，全局序号 |
 | `algorithm/viewscale.h` | 屏幕 ↔ 文档换算 |
-| `algorithm/core/*` | `animean_corelib`（`AnimeCore`）：字符串、容器、几何、颜色、画笔 / 画刷、路径与 Clipper2 布尔 / 扩边、位图与 `Painter` / `RasterDevice`、JSON、文件、设置（`Settings`） |
+| `algorithm/core/*` | `animean_corelib`（`AnimeCore`）：字符串、容器、几何、颜色、画笔 / 画刷、路径与 Clipper2 布尔 / 扩边、位图与 `Painter` / `RasterDevice`、JSON、文件（`file.cpp`、`fileinfo.cpp`，系统调用在 `native_win32.cpp` / `native_posix.cpp`）、环境变量（`environment.h`）、设置（`Settings`） |
 | `childrenpanel/tool_controls/*.json` | 内建工具（`pen`、`eraser`、`fill`、`connect`）的无 Python 兜底选项布局 JSON |
+| `pythonbind/python_environment.*` | `preparePythonEnvironment`：选运行时目录，设 `PYTHONHOME`、`PYTHONPATH` 和 `PATH`；后端和 `board_headless_test` 共用 |
 | `pythonbind/python_bindings.*` | `animean_python`：`SceneModel`、`VectorImage`、`VectorStroke`、`Cell`、`vectorlogic`、`model_pybind`、`get_scene` / `get_current`、`ui` 门面及各回调注册 |
 | `tests/*_tests.cpp`、`tests/core/*_tests.cpp`、`backend/board/tests/*`、`backend/platform/tests/*` | `projectio_tests`、`animemodel_tests`、`strokefit_tests`、`AnimeCore` 差分测试、画板 / 录制器 / 文字路径单测、平台事件循环单测 |
 

@@ -1,26 +1,17 @@
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <windows.h>
-
 #include "wsserver.h"
 
 #include "algorithm/core/image.h"
 #include "platform/eventloop.h"
+#include "platform/sockets.h"
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstring>
 
 namespace {
 
-constexpr std::uintptr_t kInvalidSocket = ~std::uintptr_t(0);
+constexpr std::uintptr_t kInvalidSocket = Sockets::kInvalid;
 constexpr std::uint64_t kMaxMessageSize = 256ULL * 1024ULL * 1024ULL; // 256 MB
 constexpr std::size_t kMaxHandshakeHeaderSize = 64 * 1024;            // 64 KB
 constexpr std::size_t kRecvChunkSize = 64 * 1024;
@@ -38,13 +29,36 @@ constexpr std::uint8_t kOpcodeClose = 0x8;
 constexpr std::uint8_t kOpcodePing = 0x9;
 constexpr std::uint8_t kOpcodePong = 0xA;
 
-void ensureWinsock()
+// Milliseconds on a clock that never goes back; only differences are used.
+std::uint64_t steadyNowMs()
 {
-    static const bool ok = []() {
-        WSADATA wsa{};
-        return ::WSAStartup(MAKEWORD(2, 2), &wsa) == 0;
-    }();
-    (void)ok;
+    const auto sinceEpoch = std::chrono::steady_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(sinceEpoch).count());
+}
+
+// Takes everything the socket has ready and appends it to *into. True when the
+// peer has closed or the connection broke; false when the socket simply has no
+// more for now.
+bool readAvailable(std::uintptr_t socket, std::string *into)
+{
+    char chunk[kRecvChunkSize];
+    for (;;) {
+        std::size_t received = 0;
+        const Sockets::Io result = Sockets::receive(socket, chunk, sizeof(chunk), &received);
+        if (result == Sockets::Io::Ok) {
+            into->append(chunk, received);
+        } else {
+            return result != Sockets::Io::WouldBlock;
+        }
+    }
+}
+
+// One attempt, whatever fits: for the last words to a peer that is being let go.
+void sendOnce(std::uintptr_t socket, const char *data, std::size_t size)
+{
+    std::size_t sent = 0;
+    Sockets::send(socket, data, size, &sent);
 }
 
 std::uint16_t readBe16(const unsigned char *p) noexcept
@@ -259,20 +273,20 @@ bool extractQueryToken(std::string_view requestTarget, std::string *tokenOut)
 WsServer::WsServer(const AnimeCore::String &token)
     : m_token(token)
 {
-    ensureWinsock();
+    Sockets::ensureStarted();
 }
 
 WsServer::~WsServer()
 {
     for (const std::unique_ptr<Client> &client : m_clients) {
         EventLoop::instance().removeSocket(client->socket);
-        ::closesocket(static_cast<SOCKET>(client->socket));
+        Sockets::close(client->socket);
     }
     m_clients.clear();
     for (const PendingClient &pending : m_pendingClients) {
         if (pending.socket != kInvalidSocket) {
             EventLoop::instance().removeSocket(pending.socket);
-            ::closesocket(static_cast<SOCKET>(pending.socket));
+            Sockets::close(pending.socket);
         }
     }
     m_pendingClients.clear();
@@ -283,7 +297,7 @@ void WsServer::closeListener()
 {
     if (m_listenSocket != kInvalidSocket) {
         EventLoop::instance().removeSocket(m_listenSocket);
-        ::closesocket(static_cast<SOCKET>(m_listenSocket));
+        Sockets::close(m_listenSocket);
         m_listenSocket = kInvalidSocket;
     }
     m_port = 0;
@@ -293,41 +307,14 @@ bool WsServer::listen(std::uint16_t port)
 {
     closeListener();
 
-    SOCKET sock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (sock == INVALID_SOCKET) {
+    std::uint16_t boundPort = 0;
+    const SocketHandle listener = Sockets::listenOnLoopback(port, &boundPort);
+    if (listener == kInvalidSocket) {
         return false;
     }
 
-    u_long nonBlocking = 1;
-    if (::ioctlsocket(sock, FIONBIO, &nonBlocking) == SOCKET_ERROR) {
-        ::closesocket(sock);
-        return false;
-    }
-
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port = htons(port);
-
-    if (::bind(sock, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) == SOCKET_ERROR) {
-        ::closesocket(sock);
-        return false;
-    }
-
-    if (::listen(sock, SOMAXCONN) == SOCKET_ERROR) {
-        ::closesocket(sock);
-        return false;
-    }
-
-    sockaddr_in boundAddr{};
-    int boundLen = sizeof(boundAddr);
-    if (::getsockname(sock, reinterpret_cast<sockaddr *>(&boundAddr), &boundLen) == SOCKET_ERROR) {
-        ::closesocket(sock);
-        return false;
-    }
-
-    m_listenSocket = static_cast<SocketHandle>(sock);
-    m_port = ntohs(boundAddr.sin_port);
+    m_listenSocket = listener;
+    m_port = boundPort;
 
     EventLoop::instance().addSocket(m_listenSocket, EventLoop::SocketRead, [this](unsigned int) {
         onAcceptReady();
@@ -398,18 +385,11 @@ void WsServer::closeClient(ClientId client, std::uint16_t closeCode)
 void WsServer::onAcceptReady()
 {
     while (m_listenSocket != kInvalidSocket) {
-        SOCKET accepted = ::accept(static_cast<SOCKET>(m_listenSocket), nullptr, nullptr);
-        if (accepted == INVALID_SOCKET) {
+        const SocketHandle handle = Sockets::acceptClient(m_listenSocket);
+        if (handle == kInvalidSocket) {
             break;
         }
 
-        u_long nonBlocking = 1;
-        ::ioctlsocket(accepted, FIONBIO, &nonBlocking);
-
-        BOOL noDelay = TRUE;
-        ::setsockopt(accepted, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char *>(&noDelay), sizeof(noDelay));
-
-        const SocketHandle handle = static_cast<SocketHandle>(accepted);
         PendingClient pending;
         pending.socket = handle;
         m_pendingClients.push_back(std::move(pending));
@@ -433,22 +413,7 @@ void WsServer::onPendingSocketEvent(SocketHandle socket, unsigned int /*events*/
         return;
     }
 
-    char chunk[kRecvChunkSize];
-    bool peerClosed = false;
-    for (;;) {
-        const int n = ::recv(static_cast<SOCKET>(socket), chunk, static_cast<int>(sizeof(chunk)), 0);
-        if (n > 0) {
-            m_pendingClients[idx].buffer.append(chunk, static_cast<std::size_t>(n));
-        } else if (n == 0) {
-            peerClosed = true;
-            break;
-        } else {
-            if (::WSAGetLastError() != WSAEWOULDBLOCK) {
-                peerClosed = true;
-            }
-            break;
-        }
-    }
+    const bool peerClosed = readAvailable(socket, &m_pendingClients[idx].buffer);
 
     if (tryCompleteHandshake(socket)) {
         return;
@@ -484,7 +449,7 @@ void WsServer::closeAndRemovePending(SocketHandle socket)
     removePending(socket);
     if (socket != kInvalidSocket) {
         EventLoop::instance().removeSocket(socket);
-        ::closesocket(static_cast<SOCKET>(socket));
+        Sockets::close(socket);
     }
 }
 
@@ -533,9 +498,9 @@ void WsServer::rejectHttp(SocketHandle socket, int statusCode, const char *reaso
         "Connection: close\r\n"
         "\r\n";
 
-    ::send(static_cast<SOCKET>(socket), response.data(), static_cast<int>(response.size()), 0);
-    ::shutdown(static_cast<SOCKET>(socket), SD_SEND);
-    ::closesocket(static_cast<SOCKET>(socket));
+    sendOnce(socket, response.data(), response.size());
+    Sockets::shutdownSend(socket);
+    Sockets::close(socket);
 }
 
 bool WsServer::tryCompleteHandshake(SocketHandle socket)
@@ -703,7 +668,7 @@ WsServer::ClientId WsServer::addClient(SocketHandle socket, std::string initialB
     client->id = id;
     client->socket = socket;
     client->readBuffer = std::move(initialBuffer);
-    client->lastProgressMs = ::GetTickCount64();
+    client->lastProgressMs = steadyNowMs();
     m_clients.push_back(std::move(client));
 
     EventLoop::instance().addSocket(socket, EventLoop::SocketRead, [this, id](unsigned int events) {
@@ -733,9 +698,9 @@ void WsServer::dropClient(ClientId id, std::uint16_t closeCode)
         if (!midFrame) {
             sendCloseFrameImmediate(client->socket, closeCode);
         }
-        ::shutdown(static_cast<SOCKET>(client->socket), SD_SEND);
+        Sockets::shutdownSend(client->socket);
     }
-    ::closesocket(static_cast<SOCKET>(client->socket));
+    Sockets::close(client->socket);
 
     if (client->announced) {
         clientDisconnected(id);
@@ -757,22 +722,7 @@ void WsServer::onClientSocketEvent(ClientId id, unsigned int events)
         if (!client) {
             return;
         }
-        char chunk[kRecvChunkSize];
-        bool peerClosed = false;
-        for (;;) {
-            const int n = ::recv(static_cast<SOCKET>(client->socket), chunk, static_cast<int>(sizeof(chunk)), 0);
-            if (n > 0) {
-                client->readBuffer.append(chunk, static_cast<std::size_t>(n));
-            } else if (n == 0) {
-                peerClosed = true;
-                break;
-            } else {
-                if (::WSAGetLastError() != WSAEWOULDBLOCK) {
-                    peerClosed = true;
-                }
-                break;
-            }
-        }
+        const bool peerClosed = readAvailable(client->socket, &client->readBuffer);
 
         if (!client->readBuffer.empty()) {
             if (!processFrames(id)) {
@@ -1001,7 +951,7 @@ void WsServer::sendCloseFrameImmediate(SocketHandle socket, std::uint16_t closeC
     frame[0] = static_cast<unsigned char>(0x80u | kOpcodeClose);
     frame[1] = 2u;
     writeBe16(frame + 2, closeCode);
-    ::send(static_cast<SOCKET>(socket), reinterpret_cast<const char *>(frame), sizeof(frame), 0);
+    sendOnce(socket, reinterpret_cast<const char *>(frame), sizeof(frame));
 }
 
 void WsServer::queueWrite(ClientId id, const char *data, std::size_t size)
@@ -1023,29 +973,27 @@ void WsServer::flushWriteBuffer(ClientId id)
 
     while (client->writeOffset < client->writeBuffer.size()) {
         const std::size_t remaining = client->writeBuffer.size() - client->writeOffset;
-        const int chunk = static_cast<int>(std::min<std::size_t>(remaining, 16 * 1024 * 1024));
-        const int sent = ::send(static_cast<SOCKET>(client->socket),
-                                client->writeBuffer.data() + client->writeOffset,
-                                chunk,
-                                0);
-        if (sent > 0) {
-            client->writeOffset += static_cast<std::size_t>(sent);
-            client->lastProgressMs = ::GetTickCount64();
-        } else if (sent == SOCKET_ERROR) {
-            if (::WSAGetLastError() == WSAEWOULDBLOCK) {
-                break;
-            }
+        const std::size_t chunk = std::min<std::size_t>(remaining, 16 * 1024 * 1024);
+        std::size_t sent = 0;
+        const Sockets::Io result = Sockets::send(client->socket,
+                                                 client->writeBuffer.data() + client->writeOffset,
+                                                 chunk,
+                                                 &sent);
+        if (result == Sockets::Io::Failed) {
             dropClient(id, 0);
             return;
-        } else {
-            break;
         }
+        if (result != Sockets::Io::Ok || sent == 0) {
+            break; // The peer is not taking more right now.
+        }
+        client->writeOffset += sent;
+        client->lastProgressMs = steadyNowMs();
     }
 
     if (client->writeOffset >= client->writeBuffer.size()) {
         client->writeBuffer.clear();
         client->writeOffset = 0;
-        client->lastProgressMs = ::GetTickCount64();
+        client->lastProgressMs = steadyNowMs();
         if (client->writeBuffer.capacity() > 1024 * 1024) {
             client->writeBuffer.shrink_to_fit();
         }
@@ -1089,7 +1037,7 @@ bool WsServer::dropIfStalled(ClientId id)
     }
     const bool tooMuch = waiting > kMaxWaitingBytes;
     const bool tooLong = waiting > kStalledWaitingBytes
-                         && ::GetTickCount64() - client->lastProgressMs > kStalledMs;
+                         && steadyNowMs() - client->lastProgressMs > kStalledMs;
     if (!tooMuch && !tooLong) {
         return false;
     }

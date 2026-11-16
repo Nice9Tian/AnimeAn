@@ -13,17 +13,29 @@ endif()
 
 get_filename_component(ANIMEAN_CORE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 
+# Everything that asks the operating system (files, folders, the environment)
+# is behind native.h, with one implementation per system.
+if(WIN32)
+    set(ANIMEAN_CORE_NATIVE_SOURCE native_win32.cpp)
+else()
+    set(ANIMEAN_CORE_NATIVE_SOURCE native_posix.cpp)
+endif()
+
 add_library(animean_corelib STATIC
     bridge.h
     color.h
     containers.h
+    environment.h
     file.cpp
     file.h
+    fileinfo.cpp
     geometry.h
     image.cpp
     image.h
     json.cpp
     json.h
+    native.h
+    ${ANIMEAN_CORE_NATIVE_SOURCE}
     painter.cpp
     painter.h
     path.cpp
@@ -32,6 +44,7 @@ add_library(animean_corelib STATIC
     pathbool.h
     pathops.cpp
     pathops.h
+    pathtext.h
     rasterdevice.cpp
     rasterdevice.h
     settings.cpp
@@ -77,7 +90,12 @@ target_link_libraries(animean_core PUBLIC animean_corelib)
 # Differential tests: each one links the real Qt type and checks the core type
 # gives the same answer. The tests may use Qt; the library above must not, and
 # since it has no Qt on its include path, a stray include fails the build.
-if(BUILD_TESTING)
+#
+# Windows only: that is where they have been run, and the file and settings
+# tests compare against what Qt answers for Windows paths (C:/...), which Qt
+# on another system reads differently. tests/fileio_tests.cpp is the file test
+# that runs everywhere.
+if(BUILD_TESTING AND WIN32)
     find_package(Qt6 QUIET COMPONENTS Core Gui)
     if(Qt6_FOUND)
         foreach(ANIMEAN_CORE_TEST geometry containers string json path pathops image file settings raster)

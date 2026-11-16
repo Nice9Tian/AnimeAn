@@ -1,11 +1,3 @@
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-
 #include "algorithm/core/color.h"
 #include "algorithm/core/containers.h"
 #include "algorithm/core/file.h"
@@ -16,6 +8,7 @@
 #include "algorithm/core/string.h"
 #include "net/wsserver.h"
 #include "platform/eventloop.h"
+#include "platform/process.h"
 #include "session/backendsession.h"
 #include "theme.h"
 
@@ -32,6 +25,7 @@
 #include <pybind11/embed.h>
 
 #include "pythonbind/python_bindings.h"
+#include "pythonbind/python_environment.h"
 
 namespace py = pybind11;
 
@@ -45,61 +39,13 @@ static AnimeCore::String pythonStartupText()
         return AnimeCore::String("Python error: %1").arg(AnimeCore::String::fromUtf8(error.what()));
     }
 }
-
-static AnimeCore::String getWideEnv(const wchar_t *name)
-{
-    const DWORD needed = ::GetEnvironmentVariableW(name, nullptr, 0);
-    if (needed == 0) {
-        return AnimeCore::String();
-    }
-    std::wstring buf(needed, L'\0');
-    const DWORD written = ::GetEnvironmentVariableW(name, buf.data(), needed);
-    if (written == 0 || written >= needed) {
-        return AnimeCore::String();
-    }
-    buf.resize(written);
-    return AnimeCore::String(std::u16string(buf.begin(), buf.end()));
-}
-
-static void setWideEnv(const wchar_t *name, const AnimeCore::String &value)
-{
-    const std::u16string u16 = value.u16String();
-    const std::wstring wval(u16.begin(), u16.end());
-    ::SetEnvironmentVariableW(name, wval.c_str());
-    ::_wputenv_s(name, wval.c_str());
-}
 #endif
 
 using namespace AnimeCore;
 
-// A windowless process under sustained load counts as background work: Windows
-// moves it to the efficiency cores, where everything takes twice as long, and it
-// stays there. Measured on an i7-14700KF: a bare Python loop 46 ms before, 88 ms
-// after a few seconds of work, 45 ms with this opt-out. Looked up by name because
-// the call only exists from Windows 8 on.
-static void optOutOfPowerThrottling()
-{
-    struct ThrottlingState {
-        ULONG version;
-        ULONG controlMask;
-        ULONG stateMask;
-    };
-    constexpr int kProcessPowerThrottling = 4;
-    constexpr ULONG kExecutionSpeed = 1;
-    using SetInformation = BOOL(WINAPI *)(HANDLE, int, LPVOID, DWORD);
-    const HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
-    const auto set = kernel ? reinterpret_cast<SetInformation>(reinterpret_cast<void *>(
-                                  GetProcAddress(kernel, "SetProcessInformation")))
-                            : nullptr;
-    if (set) {
-        ThrottlingState state{1, kExecutionSpeed, 0};
-        set(GetCurrentProcess(), kProcessPowerThrottling, &state, sizeof(state));
-    }
-}
-
 int main(int argc, char *argv[])
 {
-    optOutOfPowerThrottling();
+    Process::optOutOfPowerThrottling();
     std::uint16_t port = 0;
     String token;
     for (int i = 1; i < argc; ++i) {
@@ -128,41 +74,11 @@ int main(int argc, char *argv[])
 #ifdef ANIMEAN_WITH_PYTHON
     setAnimeanUiTheme(AnimeTheme::modeName(initialThemeMode));
 
-    const String appDir = CoreApplication::applicationDirPath();
-    String pythonHome = Dir(appDir).filePath(String(ANIMEAN_PYTHON_DIR_NAME));
-    if (!FileInfo::exists(Dir(pythonHome).filePath(String("python312.dll")))) {
-        pythonHome = String(ANIMEAN_PYTHON_HOME);
-    }
-
-    // The source folders come before the exe folder when they exist: on the
-    // development machine an edited script wins over the copy beside the exe.
-    // A release folder has no source tree and imports its own copies.
-    StringList pythonPath;
-    if (FileInfo::exists(Dir(String(ANIMEAN_PYFILE_DIR)).filePath(String("hello_world.py")))) {
-        pythonPath << String(ANIMEAN_PYFILE_DIR);
-    }
-    if (FileInfo::exists(Dir(String(ANIMEAN_PYTHONBIND_DIR)).filePath(String("animemodel.py")))) {
-        pythonPath << String(ANIMEAN_PYTHONBIND_DIR);
-    }
-    if (FileInfo::exists(Dir(String(ANIMEAN_OPENTOONZ_TOOLS_DIR)).filePath(String("toonz_to_dict.py")))) {
-        pythonPath << String(ANIMEAN_OPENTOONZ_TOOLS_DIR);
-    }
-    pythonPath << appDir;
-
-    StringList dllPath;
-    dllPath << pythonHome << Dir(pythonHome).filePath(String("DLLs"));
-    const String existingPath = getWideEnv(L"PATH");
-    if (!existingPath.isEmpty()) {
-        dllPath << existingPath;
-    }
-
-    setWideEnv(L"PATH", Dir::toNativeSeparators(dllPath.join(Latin1Char(';'))));
-    setWideEnv(L"PYTHONHOME", Dir::toNativeSeparators(pythonHome));
-    setWideEnv(L"PYTHONPATH", Dir::toNativeSeparators(pythonPath.join(Latin1Char(';'))));
+    preparePythonEnvironment(PythonRuntimeChoice::PreferBundled);
 
     // No working-directory entry at the front of sys.path: started from Explorer
     // the working directory is the exe folder, and that entry would put the
-    // copies beside the exe ahead of the source folders above.
+    // copies beside the exe ahead of the source folders.
     py::scoped_interpreter guard(true, 0, nullptr, false);
 #endif
 

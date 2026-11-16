@@ -1,17 +1,7 @@
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <windows.h>
-
 #include "platform/elapsedtimer.h"
 #include "platform/eventloop.h"
 #include "platform/signalslot.h"
+#include "platform/sockets.h"
 #include "platform/timer.h"
 
 #include <cassert>
@@ -92,7 +82,7 @@ bool testElapsedTimer()
         return false;
     }
 
-    ::Sleep(25);
+    Sockets::sleepMs(25);
     const std::int64_t ms = timer.elapsed();
     const std::int64_t ns = timer.nsecsElapsed();
     if (ms < 15 || ns < 15000000LL || !timer.hasExpired(10) || timer.hasExpired(5000)) {
@@ -282,35 +272,21 @@ bool testSocketReadinessAndFairness()
 {
     EventLoop &loop = EventLoop::instance();
 
-    SOCKET listener = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (listener == INVALID_SOCKET) {
-        std::fprintf(stderr, "Failed to create listener socket\n");
+    std::uint16_t port = 0;
+    const Sockets::Handle listener = Sockets::listenOnLoopback(0, &port);
+    if (listener == Sockets::kInvalid) {
+        std::fprintf(stderr, "Failed to create a listener on the loopback address\n");
         return false;
     }
 
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port = 0;
-
-    if (::bind(listener, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) == SOCKET_ERROR
-        || ::listen(listener, 1) == SOCKET_ERROR) {
-        ::closesocket(listener);
-        std::fprintf(stderr, "Failed to bind/listen\n");
+    const Sockets::Handle client = Sockets::connectToLoopback(port);
+    if (client == Sockets::kInvalid) {
+        Sockets::close(listener);
+        std::fprintf(stderr, "Failed to start a connection to the listener\n");
         return false;
     }
 
-    int addrLen = sizeof(addr);
-    ::getsockname(listener, reinterpret_cast<sockaddr *>(&addr), &addrLen);
-
-    SOCKET client = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    u_long nonBlocking = 1;
-    ::ioctlsocket(listener, FIONBIO, &nonBlocking);
-    ::ioctlsocket(client, FIONBIO, &nonBlocking);
-
-    ::connect(client, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr));
-
-    SOCKET serverPeer = INVALID_SOCKET;
+    Sockets::Handle serverPeer = Sockets::kInvalid;
     std::string received;
     int postChainCount = 0;
 
@@ -326,38 +302,31 @@ bool testSocketReadinessAndFairness()
     };
     loop.post(repostTask);
 
-    loop.addSocket(static_cast<EventLoop::SocketHandle>(listener),
-                   EventLoop::SocketRead,
-                   [&](unsigned int) {
-                       serverPeer = ::accept(listener, nullptr, nullptr);
-                       if (serverPeer == INVALID_SOCKET) {
-                           return;
-                       }
-                       u_long nb = 1;
-                       ::ioctlsocket(serverPeer, FIONBIO, &nb);
-                       loop.removeSocket(static_cast<EventLoop::SocketHandle>(listener));
+    loop.addSocket(listener, EventLoop::SocketRead, [&](unsigned int) {
+        serverPeer = Sockets::acceptClient(listener);
+        if (serverPeer == Sockets::kInvalid) {
+            return;
+        }
+        loop.removeSocket(listener);
 
-                       loop.addSocket(static_cast<EventLoop::SocketHandle>(serverPeer),
-                                      EventLoop::SocketRead,
-                                      [&](unsigned int) {
-                                          char buf[64]{};
-                                          const int n = ::recv(serverPeer, buf, sizeof(buf), 0);
-                                          if (n > 0) {
-                                              received.append(buf, static_cast<std::size_t>(n));
-                                              if (received == "ping-socket") {
-                                                  loop.removeSocket(static_cast<EventLoop::SocketHandle>(serverPeer));
-                                              }
-                                          }
-                                      });
-                   });
+        loop.addSocket(serverPeer, EventLoop::SocketRead, [&](unsigned int) {
+            char buf[64]{};
+            std::size_t got = 0;
+            if (Sockets::receive(serverPeer, buf, sizeof(buf), &got) == Sockets::Io::Ok) {
+                received.append(buf, got);
+                if (received == "ping-socket") {
+                    loop.removeSocket(serverPeer);
+                }
+            }
+        });
+    });
 
-    loop.addSocket(static_cast<EventLoop::SocketHandle>(client),
-                   EventLoop::SocketWrite,
-                   [&](unsigned int) {
-                       const char *msg = "ping-socket";
-                       ::send(client, msg, static_cast<int>(std::strlen(msg)), 0);
-                       loop.removeSocket(static_cast<EventLoop::SocketHandle>(client));
-                   });
+    loop.addSocket(client, EventLoop::SocketWrite, [&](unsigned int) {
+        const char *msg = "ping-socket";
+        std::size_t sent = 0;
+        Sockets::send(client, msg, std::strlen(msg), &sent);
+        loop.removeSocket(client);
+    });
 
     Timer safetyTimeout;
     safetyTimeout.setSingleShot(true);
@@ -369,14 +338,14 @@ bool testSocketReadinessAndFairness()
     const int rc = loop.exec();
     safetyTimeout.stop();
 
-    loop.removeSocket(static_cast<EventLoop::SocketHandle>(listener));
-    loop.removeSocket(static_cast<EventLoop::SocketHandle>(client));
-    if (serverPeer != INVALID_SOCKET) {
-        loop.removeSocket(static_cast<EventLoop::SocketHandle>(serverPeer));
-        ::closesocket(serverPeer);
+    loop.removeSocket(listener);
+    loop.removeSocket(client);
+    if (serverPeer != Sockets::kInvalid) {
+        loop.removeSocket(serverPeer);
+        Sockets::close(serverPeer);
     }
-    ::closesocket(client);
-    ::closesocket(listener);
+    Sockets::close(client);
+    Sockets::close(listener);
 
     if (rc != 0 || received != "ping-socket" || postChainCount < 1) {
         std::fprintf(stderr, "Socket readiness/fairness failed (rc=%d, received='%s', posts=%d)\n",

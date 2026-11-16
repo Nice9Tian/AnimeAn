@@ -22,6 +22,26 @@ PowerShell -ExecutionPolicy Bypass -File ".\build_scripts\agent_build.ps1"
 - Requires outside sandbox: yes
 - Sandbox note: Build verification must run outside the sandbox because CMake/MinGW, Vite (`npm run build`) and Cargo launch compiler and packaging subprocesses.
 
+## On Linux
+
+Linux is a development system only: there is no `dist` package to build there. The commands are in `docs/mechanism/build_deploy.md` under「在 Linux 上开发」.
+
+- Shell: `bash`
+- Build the backend and run the C++ tests:
+
+```bash
+build_scripts/linux_build.sh --test
+```
+
+- After a C++ or CMake change, check that it still builds for Windows:
+
+```bash
+build_scripts/windows_cross_check.sh
+```
+
+- Expected termination logs: `===== LINUX BUILD DONE: ... =====` and `===== WINDOWS CROSS CHECK DONE: ... =====`, both with exit code `0`.
+- The release package and its verification below still need a Windows machine.
+
 ## Verification
 
 - Expected termination log:

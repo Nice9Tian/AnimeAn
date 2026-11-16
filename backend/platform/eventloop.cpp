@@ -1,29 +1,12 @@
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-
-#include <winsock2.h>
-#include <windows.h>
-
 #include "eventloop.h"
+
+#include "sockets.h"
 
 #include <algorithm>
 #include <chrono>
 #include <climits>
 
 namespace {
-
-void ensureWinsockInitialized()
-{
-    static const bool initialized = []() {
-        WSADATA wsaData{};
-        return ::WSAStartup(MAKEWORD(2, 2), &wsaData) == 0;
-    }();
-    (void)initialized;
-}
 
 struct TimerEntry {
     std::uint64_t id = 0;
@@ -68,7 +51,7 @@ struct LoopState {
 
     LoopState()
     {
-        ensureWinsockInitialized();
+        Sockets::ensureStarted();
     }
 
     std::int64_t rawNowMs() const noexcept
@@ -174,71 +157,65 @@ struct LoopState {
             }
         }
 
-        std::vector<WSAPOLLFD> pollFds;
-        std::vector<EventLoop::SocketHandle> pollHandles;
-        pollFds.reserve(sockets.size());
-        pollHandles.reserve(sockets.size());
-
+        std::vector<Sockets::PollItem> pollItems;
+        pollItems.reserve(sockets.size());
         for (const SocketEntry &s : sockets) {
-            short ev = 0;
+            Sockets::PollItem item;
+            item.socket = s.socket;
             if (s.events & EventLoop::SocketRead) {
-                ev |= POLLRDNORM;
+                item.wanted |= Sockets::Readable;
             }
             if (s.events & EventLoop::SocketWrite) {
-                ev |= POLLWRNORM;
+                item.wanted |= Sockets::Writable;
             }
-            if (ev != 0) {
-                WSAPOLLFD pfd{};
-                pfd.fd = static_cast<SOCKET>(s.socket);
-                pfd.events = ev;
-                pfd.revents = 0;
-                pollFds.push_back(pfd);
-                pollHandles.push_back(s.socket);
+            if (item.wanted != 0) {
+                pollItems.push_back(item);
             }
         }
 
-        if (!pollFds.empty()) {
-            const int ret = ::WSAPoll(pollFds.data(), static_cast<ULONG>(pollFds.size()), timeoutMs);
+        if (pollItems.empty()) {
+            // Nothing to wait on at all: still give the CPU back.
+            Sockets::sleepMs(timeoutMs < 0 ? 10 : timeoutMs);
             refreshNowMs();
-            if (ret > 0) {
-                for (std::size_t i = 0; i < pollFds.size(); ++i) {
-                    if (quitRequested) {
-                        break;
-                    }
-                    const short revents = pollFds[i].revents;
-                    if (revents == 0) {
-                        continue;
-                    }
-                    unsigned int fired = EventLoop::SocketNone;
-                    if (revents & (POLLRDNORM | POLLRDBAND | POLLPRI)) {
-                        fired |= EventLoop::SocketRead;
-                    }
-                    if (revents & POLLWRNORM) {
-                        fired |= EventLoop::SocketWrite;
-                    }
-                    if (revents & (POLLERR | POLLHUP | POLLNVAL)) {
-                        fired |= (EventLoop::SocketError | EventLoop::SocketRead);
-                    }
-                    if (fired == EventLoop::SocketNone) {
-                        continue;
-                    }
-                    const EventLoop::SocketHandle handle = pollHandles[i];
-                    EventLoop::SocketCallback cb;
-                    for (const SocketEntry &s : sockets) {
-                        if (s.socket == handle) {
-                            cb = s.callback;
-                            break;
-                        }
-                    }
-                    if (cb) {
-                        cb(fired);
-                    }
+            return;
+        }
+
+        const int ret = Sockets::poll(pollItems.data(), pollItems.size(), timeoutMs);
+        refreshNowMs();
+        if (ret <= 0) {
+            return;
+        }
+        for (const Sockets::PollItem &item : pollItems) {
+            if (quitRequested) {
+                break;
+            }
+            if (item.ready == 0) {
+                continue;
+            }
+            unsigned int fired = EventLoop::SocketNone;
+            if (item.ready & Sockets::Readable) {
+                fired |= EventLoop::SocketRead;
+            }
+            if (item.ready & Sockets::Writable) {
+                fired |= EventLoop::SocketWrite;
+            }
+            // A broken socket is also reported as readable: the read that
+            // follows is what tells its owner the peer has gone.
+            if (item.ready & Sockets::Broken) {
+                fired |= (EventLoop::SocketError | EventLoop::SocketRead);
+            }
+            // Looked up afresh: an earlier callback in this round may have
+            // removed this socket or put another callback on it.
+            EventLoop::SocketCallback cb;
+            for (const SocketEntry &s : sockets) {
+                if (s.socket == item.socket) {
+                    cb = s.callback;
+                    break;
                 }
             }
-        } else {
-            // Nothing to wait on at all: still give the CPU back.
-            ::Sleep(static_cast<DWORD>(timeoutMs < 0 ? 10 : timeoutMs));
-            refreshNowMs();
+            if (cb) {
+                cb(fired);
+            }
         }
     }
 };
@@ -316,7 +293,7 @@ void EventLoop::post(std::function<void()> task)
 
 void EventLoop::addSocket(SocketHandle socket, unsigned int events, SocketCallback callback)
 {
-    ensureWinsockInitialized();
+    Sockets::ensureStarted();
     LoopState &s = state();
     for (SocketEntry &entry : s.sockets) {
         if (entry.socket == socket) {

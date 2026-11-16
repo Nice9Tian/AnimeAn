@@ -11,6 +11,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { backendEnv } from "../../build_scripts/backend_env.mjs";
+
 const exePath = process.argv[2];
 if (!exePath) {
     console.error("Usage: node backend/tests/multi_page.mjs <path-to-AnimeAnBackend.exe>");
@@ -23,18 +25,11 @@ const ownSettingsDir = process.env.ANIMEAN_SETTINGS_DIR
     ? null
     : fs.mkdtempSync(path.join(os.tmpdir(), "animean-multi-page-"));
 
-const extraPaths = [
-    path.win32.normalize("C:/Qt/Tools/mingw1310_64/bin"),
-    path.win32.normalize("C:/Users/admin/Documents/AnimeAn/tools/python312"),
-    path.dirname(path.resolve(exePath)),
-];
 const child = spawn(exePath, ["--port", "0", "--token", token], {
     stdio: ["ignore", "pipe", "pipe"],
-    env: {
-        ...process.env,
-        PATH: [...extraPaths, process.env.PATH || process.env.Path || ""].join(";"),
-        ...(ownSettingsDir ? { ANIMEAN_SETTINGS_DIR: ownSettingsDir } : {}),
-    },
+    env: backendEnv(exePath, {
+        env: ownSettingsDir ? { ANIMEAN_SETTINGS_DIR: ownSettingsDir } : {},
+    }),
 });
 let stdoutBuf = "";
 let stderrBuf = "";

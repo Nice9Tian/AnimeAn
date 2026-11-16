@@ -115,8 +115,20 @@ fn resolve_backend_exe() -> Result<PathBuf, String> {
     let dir = current_exe
         .parent()
         .ok_or_else(|| "Shell executable has no parent directory".to_string())?;
-    Ok(dir.join("AnimeAnBackend.exe"))
+    Ok(dir.join(backend_file_name()))
 }
+
+/// The backend beside the shell: "AnimeAnBackend.exe" on Windows, "AnimeAnBackend" elsewhere.
+pub fn backend_file_name() -> String {
+    format!("AnimeAnBackend{}", std::env::consts::EXE_SUFFIX)
+}
+
+/// What the exit watcher waits on. On Windows a second handle to the backend
+/// process; elsewhere nothing, the watcher asks the child itself.
+#[cfg(windows)]
+type ExitWaitHandle = WinHandle;
+#[cfg(not(windows))]
+type ExitWaitHandle = ();
 
 #[cfg(windows)]
 struct WinHandle(windows_sys::Win32::Foundation::HANDLE);
@@ -250,7 +262,7 @@ impl BackendManager {
         }
     }
 
-    fn spawn_and_wait() -> (Arc<Self>, Option<WinHandle>) {
+    fn spawn_and_wait() -> (Arc<Self>, Option<ExitWaitHandle>) {
         let exe_path = match resolve_backend_exe() {
             Ok(p) => p,
             Err(e) => return (Arc::new(Self::new_failed(e)), None),
@@ -277,6 +289,29 @@ impl BackendManager {
             use std::os::windows::process::CommandExt;
             use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
             cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        // The backend goes when the shell goes, however the shell ends: the job
+        // object does that on Windows, this does it on Linux. The signal follows
+        // the thread that started the child, and that is the main thread here.
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::process::CommandExt;
+            let shell_pid = unsafe { libc::getpid() };
+            unsafe {
+                cmd.pre_exec(move || {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    // The shell may have gone between the fork and the line
+                    // above, and then no signal is coming. (An error made
+                    // from a number: nothing may allocate memory here.)
+                    if libc::getppid() != shell_pid {
+                        return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+                    }
+                    Ok(())
+                });
+            }
         }
 
         let mut child = match cmd.spawn() {
@@ -378,6 +413,8 @@ impl BackendManager {
 
         #[cfg(windows)]
         let wait_handle = duplicate_child_handle(&child).ok();
+        #[cfg(not(windows))]
+        let wait_handle = Some(());
 
         let url = format_ws_url(port, &token);
         let manager = Arc::new(Self {
@@ -488,6 +525,44 @@ fn spawn_exit_watcher(
         let code_opt = if has_code { Some(exit_code) } else { None };
         manager.mark_unexpected_exit(code_opt);
         let _ = app_handle.emit_to("main", "backend-exited", code_opt);
+    });
+}
+
+/// Without a handle to wait on, the watcher looks at the child twice a second.
+#[cfg(not(windows))]
+fn spawn_exit_watcher(
+    app_handle: tauri::AppHandle,
+    manager: Arc<BackendManager>,
+    _wait_handle: ExitWaitHandle,
+) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(500));
+        if manager.shutting_down.load(Ordering::SeqCst) {
+            return;
+        }
+        // Outer None: still running. Inner None: gone, exit code unknown (a
+        // backend ended by a signal has none, and neither has one that
+        // `endpoint()` noticed first and already let go of).
+        let exited: Option<Option<u32>> = {
+            let Ok(mut guard) = manager.inner.lock() else { return };
+            match guard.child.as_mut() {
+                Some(child) => match child.try_wait() {
+                    Ok(Some(status)) => Some(status.code().map(|code| code as u32)),
+                    Ok(None) => None,
+                    Err(_) => Some(None),
+                },
+                None => Some(None),
+            }
+        };
+        if let Some(code_opt) = exited {
+            // The page is told either way, unless the shell is closing down itself.
+            if manager.shutting_down.load(Ordering::SeqCst) {
+                return;
+            }
+            manager.mark_unexpected_exit(code_opt);
+            let _ = app_handle.emit_to("main", "backend-exited", code_opt);
+            return;
+        }
     });
 }
 
@@ -1188,7 +1263,6 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(backend_manager)
         .setup(move |app| {
-            #[cfg(windows)]
             if let Some(wh) = wait_handle {
                 spawn_exit_watcher(app.handle().clone(), manager_for_setup, wh);
             }
