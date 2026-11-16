@@ -7,6 +7,18 @@ endif()
 add_subdirectory(platform)
 add_subdirectory(net)
 
+# Text outlines come from the system's fonts: GDI on Windows, FreeType with
+# Fontconfig elsewhere (board/textglyphs.h).
+if(WIN32)
+    set(ANIMEAN_TEXT_GLYPH_SOURCE board/textglyphs_gdi.cpp)
+    set(ANIMEAN_TEXT_GLYPH_LIBRARIES gdi32)
+else()
+    find_package(Freetype REQUIRED)
+    find_package(Fontconfig REQUIRED)
+    set(ANIMEAN_TEXT_GLYPH_SOURCE board/textglyphs_freetype.cpp)
+    set(ANIMEAN_TEXT_GLYPH_LIBRARIES Freetype::Freetype Fontconfig::Fontconfig)
+endif()
+
 add_library(animean_core_headless STATIC
     ${CMAKE_SOURCE_DIR}/selectionattention.cpp
     ${CMAKE_SOURCE_DIR}/selectionattention.h
@@ -21,6 +33,8 @@ add_library(animean_core_headless STATIC
     board/inputevent.h
     board/recordingdevice.cpp
     board/recordingdevice.h
+    board/textglyphs.h
+    ${ANIMEAN_TEXT_GLYPH_SOURCE}
     board/textpath.cpp
     board/textpath.h
 )
@@ -33,12 +47,24 @@ target_include_directories(animean_core_headless PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/board
 )
 
-target_link_libraries(animean_core_headless PUBLIC animean_core animean_platform gdi32)
+target_link_libraries(animean_core_headless PUBLIC animean_core animean_platform ${ANIMEAN_TEXT_GLYPH_LIBRARIES})
 
 if(ANIMEAN_WITH_PYTHON)
+    # A file every usable runtime folder has, by which the program tells a
+    # bundled runtime from a missing one (pythonbind/python_environment.cpp).
+    # The Windows layout keeps the interpreter DLL at the top; the layout
+    # everywhere else keeps the standard library under lib/pythonX.Y.
+    if(WIN32)
+        set(ANIMEAN_PYTHON_RUNTIME_PROBE "python${ANIMEAN_PYTHON_VERSION_MAJOR}${ANIMEAN_PYTHON_VERSION_MINOR}.dll")
+    else()
+        set(ANIMEAN_PYTHON_RUNTIME_PROBE "lib/python${ANIMEAN_PYTHON_VERSION_MAJOR}.${ANIMEAN_PYTHON_VERSION_MINOR}/os.py")
+    endif()
+
     target_sources(animean_core_headless PRIVATE
         ${CMAKE_SOURCE_DIR}/pythonbind/python_bindings.cpp
         ${CMAKE_SOURCE_DIR}/pythonbind/python_bindings.h
+        ${CMAKE_SOURCE_DIR}/pythonbind/python_environment.cpp
+        ${CMAKE_SOURCE_DIR}/pythonbind/python_environment.h
     )
     target_link_libraries(animean_core_headless PUBLIC pybind11::embed)
     target_compile_definitions(animean_core_headless PUBLIC
@@ -49,6 +75,7 @@ if(ANIMEAN_WITH_PYTHON)
         ANIMEAN_OPENTOONZ_TOOLS_DIR="${ANIMEAN_OPENTOONZ_TOOLS_DIR}"
         ANIMEAN_PYTHON_HOME="${ANIMEAN_PYTHON_HOME}"
         ANIMEAN_PYTHON_DIR_NAME="${ANIMEAN_PYTHON_DIR_NAME}"
+        ANIMEAN_PYTHON_RUNTIME_PROBE="${ANIMEAN_PYTHON_RUNTIME_PROBE}"
     )
 endif()
 
@@ -61,7 +88,7 @@ add_executable(AnimeAnBackend
     session/backendsession.cpp
     session/backendsession.h
 )
-target_link_libraries(AnimeAnBackend PRIVATE animean_core_headless animean_platform ws2_32)
+target_link_libraries(AnimeAnBackend PRIVATE animean_core_headless animean_platform)
 
 add_executable(board_headless_test
     board/tests/board_headless_test.cpp
@@ -75,8 +102,14 @@ add_executable(textpath_tests
 target_link_libraries(textpath_tests PRIVATE animean_core_headless)
 add_dependencies(AnimeAnBackend textpath_tests)
 
-if(ANIMEAN_WITH_PYTHON)
-    foreach(ANIMEAN_PYTHON_DLL python312.dll python3.dll vcruntime140.dll vcruntime140_1.dll)
+# Windows loads the interpreter DLL from beside the program. Elsewhere the
+# program finds the shared library where it was linked from, nothing to copy.
+if(ANIMEAN_WITH_PYTHON AND WIN32)
+    foreach(ANIMEAN_PYTHON_DLL
+            python${ANIMEAN_PYTHON_VERSION_MAJOR}${ANIMEAN_PYTHON_VERSION_MINOR}.dll
+            python${ANIMEAN_PYTHON_VERSION_MAJOR}.dll
+            vcruntime140.dll
+            vcruntime140_1.dll)
         if(EXISTS "${ANIMEAN_PYTHON_HOME}/${ANIMEAN_PYTHON_DLL}")
             add_custom_command(TARGET AnimeAnBackend POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different

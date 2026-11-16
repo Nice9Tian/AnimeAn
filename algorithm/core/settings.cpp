@@ -1,18 +1,8 @@
 #include "algorithm/core/settings.h"
 
+#include "algorithm/core/environment.h"
 #include "algorithm/core/file.h"
-
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#endif
-
-#include <cstdlib>
+#include "algorithm/core/native.h"
 
 namespace AnimeCore {
 
@@ -31,36 +21,18 @@ String trimSlashes(const String &s)
     return out;
 }
 
-String readEnvVar(const wchar_t *name)
-{
-#ifdef _WIN32
-    const DWORD needed = GetEnvironmentVariableW(name, nullptr, 0);
-    if (needed > 0) {
-        std::wstring buf(needed, L'\0');
-        const DWORD written = GetEnvironmentVariableW(name, buf.data(), needed);
-        if (written > 0 && written < needed) {
-            buf.resize(written);
-            return String::fromUtf16(reinterpret_cast<const char16_t *>(buf.data()),
-                                     static_cast<int>(buf.size()));
-        }
-    }
-    if (const wchar_t *val = _wgetenv(name)) {
-        return String::fromUtf16(reinterpret_cast<const char16_t *>(val));
-    }
-#endif
-    return String();
-}
-
+// ANIMEAN_SETTINGS_DIR wins when set (tests point it at a scratch folder). Then
+// the per-user settings folder of the system, then the working folder.
 String resolveSettingsFilePath()
 {
-    const String customDir = readEnvVar(L"ANIMEAN_SETTINGS_DIR").trimmed();
+    const String customDir = environmentVariable(ANIME_STR("ANIMEAN_SETTINGS_DIR")).trimmed();
     if (!customDir.isEmpty()) {
         return Dir::cleanPath(Dir(customDir).filePath(ANIME_STR("settings.json")));
     }
 
-    const String appData = readEnvVar(L"APPDATA").trimmed();
-    if (!appData.isEmpty()) {
-        return Dir::cleanPath(Dir(appData).filePath(ANIME_STR("AnimeAn/settings.json")));
+    const String configDir = Native::userConfigDirectory().trimmed();
+    if (!configDir.isEmpty()) {
+        return Dir::cleanPath(Dir(configDir).filePath(ANIME_STR("AnimeAn/settings.json")));
     }
 
     return Dir::cleanPath(Dir(Dir::currentPath()).filePath(ANIME_STR("AnimeAn/settings.json")));

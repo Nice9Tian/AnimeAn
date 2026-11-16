@@ -41,7 +41,14 @@ public:
     {
         return value(key, JsonValue(defaultValue));
     }
-    JsonValue value(const String &key, std::int64_t defaultValue) const
+    // Both long long and long: std::int64_t is the first on Windows and the
+    // second on 64-bit Linux, and with only one of them a call that passes a
+    // std::int64_t is ambiguous on the other system.
+    JsonValue value(const String &key, long long defaultValue) const
+    {
+        return value(key, JsonValue(defaultValue));
+    }
+    JsonValue value(const String &key, long defaultValue) const
     {
         return value(key, JsonValue(defaultValue));
     }
@@ -71,7 +78,11 @@ public:
     {
         setValue(key, JsonValue(val));
     }
-    void setValue(const String &key, std::int64_t val)
+    void setValue(const String &key, long long val)
+    {
+        setValue(key, JsonValue(val));
+    }
+    void setValue(const String &key, long val)
     {
         setValue(key, JsonValue(val));
     }

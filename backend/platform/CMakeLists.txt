@@ -19,7 +19,11 @@ add_library(animean_platform STATIC
     elapsedtimer.h
     eventloop.cpp
     eventloop.h
+    process.cpp
+    process.h
     signalslot.h
+    sockets.cpp
+    sockets.h
     timer.cpp
     timer.h
 )
@@ -31,8 +35,11 @@ target_include_directories(animean_platform PUBLIC
 
 target_link_libraries(animean_platform PUBLIC
     animean_corelib
-    ws2_32
 )
+if(WIN32)
+    # Winsock, behind sockets.h.
+    target_link_libraries(animean_platform PUBLIC ws2_32)
+endif()
 
 if(BUILD_TESTING)
     add_executable(platform_tests

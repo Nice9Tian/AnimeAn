@@ -26,7 +26,6 @@ target_include_directories(animean_ws PUBLIC
 
 target_link_libraries(animean_ws PUBLIC
     animean_platform
-    ws2_32
 )
 
 add_executable(ws_echo

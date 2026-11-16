@@ -37,6 +37,9 @@ public:
     JsonValue(double n) noexcept;
     JsonValue(int n) noexcept;
     JsonValue(long long n) noexcept;
+    // std::int64_t is long long on Windows and long on 64-bit Linux; with this
+    // every built-in signed integer converts on both.
+    JsonValue(long n) noexcept : JsonValue(static_cast<long long>(n)) {}
     JsonValue(const AnimeCore::String &s);
     JsonValue(AnimeCore::Latin1String s);
     JsonValue(const char *s);
