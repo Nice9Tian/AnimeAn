@@ -5,7 +5,7 @@
 //
 // Usage: node backend/tests/i18n_coverage.mjs <path-to-AnimeAnBackend.exe> [--list]
 import { spawn } from "node:child_process";
-import path from "node:path";
+import { backendEnv } from "../../build_scripts/backend_env.mjs";
 import { language, LANGUAGES, missing, setLanguage, t } from "../../webui/src/i18n/index.js";
 
 const exePath = process.argv[2];
@@ -19,10 +19,7 @@ const TOOLS = ["arrow", "pen", "eraser", "fill", "transfer", "connect"];
 const token = `i18n_${Date.now()}`;
 const child = spawn(exePath, ["--port", "0", "--token", token], {
   stdio: ["ignore", "pipe", "pipe"],
-  env: {
-    ...process.env,
-    PATH: ["C:/Qt/6.9.1/mingw_64/bin", "C:/Qt/Tools/mingw1310_64/bin", path.dirname(path.resolve(exePath)), process.env.PATH].join(";"),
-  },
+  env: backendEnv(exePath),
 });
 
 function finish(code, error) {

@@ -4,6 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { backendEnv } from "../../build_scripts/backend_env.mjs";
+
 const exePath = process.argv[2];
 if (!exePath) {
     console.error("Usage: node backend/tests/session_smoke.mjs <path-to-AnimeAnBackend.exe>");
@@ -12,21 +14,9 @@ if (!exePath) {
 
 const token = `smoke_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
-const extraPaths = [
-    path.win32.normalize("C:/Qt/6.9.1/mingw_64/bin"),
-    path.win32.normalize("C:/Qt/Tools/mingw1310_64/bin"),
-    path.win32.normalize("C:/Users/admin/Documents/AnimeAn/tools/python312"),
-    path.dirname(path.resolve(exePath)),
-];
-const currentPath = process.env.PATH || process.env.Path || "";
-const childEnv = {
-    ...process.env,
-    PATH: [...extraPaths, currentPath].join(";"),
-};
-
 const child = spawn(exePath, ["--port", "0", "--token", token], {
     stdio: ["ignore", "pipe", "pipe"],
-    env: childEnv,
+    env: backendEnv(exePath),
 });
 
 let stdoutBuf = "";

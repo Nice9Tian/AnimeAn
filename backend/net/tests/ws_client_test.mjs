@@ -1,27 +1,16 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
-import path from 'node:path';
 
-const exePath = process.argv[2] || 'build/net/ws_echo.exe';
+import { backendEnv, programFileName } from '../../../build_scripts/backend_env.mjs';
+
+const exePath = process.argv[2] || `build/net/${programFileName('ws_echo')}`;
 const TOKEN = 'test_secret_token_987654';
-
-function buildEnvWithQt() {
-    const qtBins = [
-        'C:/Qt/6.9.1/mingw_64/bin',
-        'C:/Qt/Tools/mingw1310_64/bin',
-    ].map((p) => path.normalize(p));
-
-    const env = { ...process.env };
-    const pathKey = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') || 'PATH';
-    env[pathKey] = [...qtBins, env[pathKey] || ''].join(path.delimiter);
-    return env;
-}
 
 function startServer(executable, token) {
     return new Promise((resolve, reject) => {
         const child = spawn(executable, ['--port', '0', '--token', token], {
-            env: buildEnvWithQt(),
+            env: backendEnv(executable),
             stdio: ['ignore', 'pipe', 'pipe'],
         });
 

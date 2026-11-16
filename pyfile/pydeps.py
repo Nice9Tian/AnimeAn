@@ -10,8 +10,11 @@ directive). This module makes that survive a fresh or offline machine:
 - `ensure(*modules)` self-installs anything missing on FIRST USE, from
   the bundled wheels (`pip --no-index --find-links pywheels`), falling
   back to the network only if no bundled wheel matches. It runs pip in
-  the runtime's own python.exe (sys.executable is the host app inside
-  the embedded interpreter) and retries the import afterwards.
+  the runtime's own interpreter (sys.executable is the host app inside
+  the embedded interpreter) and retries the import afterwards. The
+  bundled wheels are Windows builds; on another system the packages are
+  expected to be in the runtime already, and a missing one comes from
+  the network.
 
 Callers treat it as an import helper:
 
@@ -27,11 +30,16 @@ _ATTEMPTED = set()
 
 
 def _runtime_python():
-    """The embedded runtime's own python.exe (sys.executable is the app)."""
+    """The embedded runtime's own interpreter (sys.executable is the app).
+
+    A Windows runtime keeps python.exe at the top of its folder; the layout
+    everywhere else keeps python3 under bin/.
+    """
     for base in (sys.prefix, sys.exec_prefix):
-        candidate = os.path.join(base, "python.exe")
-        if os.path.isfile(candidate):
-            return candidate
+        for relative in ("python.exe", os.path.join("bin", "python3")):
+            candidate = os.path.join(base, relative)
+            if os.path.isfile(candidate):
+                return candidate
     return None
 
 
@@ -64,7 +72,7 @@ def ensure(module_name, pip_name=None):
     _ATTEMPTED.add(key)
     python = _runtime_python()
     if python is None:
-        print(f"[pydeps] cannot self-install {module_name}: no python.exe "
+        print(f"[pydeps] cannot self-install {module_name}: no interpreter "
               "in the runtime prefix")
         return None
     package = pip_name or module_name

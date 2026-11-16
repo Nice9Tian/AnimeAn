@@ -4,6 +4,8 @@ import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { backendEnv, programFileName } from "../../../build_scripts/backend_env.mjs";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -256,22 +258,27 @@ export function resolveBackendEndpoint(options = {}) {
 }
 
 /**
- * Locate an AnimeAnBackend.exe binary across explicit path, current worktree, or main repo.
+ * Locate an AnimeAnBackend binary across explicit path, current worktree, or main repo.
+ * The file is AnimeAnBackend.exe on Windows and AnimeAnBackend elsewhere.
  * @param {{ explicitExe?: string, repoRoot?: string }} [options]
  * @returns {string|null}
  */
 export function locateBackendExecutable(options = {}) {
   const repoRoot = options.repoRoot || findRepoRoot();
   const { mainRepoRoot } = getToolkitPaths(repoRoot);
+  const exeName = programFileName("AnimeAnBackend");
   const candidates = [
     options.explicitExe,
     process.env.ANIMEAN_BACKEND_EXE,
-    path.join(repoRoot, "build", "Release", "AnimeAnBackend.exe"),
-    path.join(repoRoot, "build", "wt-check", "AnimeAnBackend.exe"),
-    path.join(repoRoot, "dist", "AnimeAn", "AnimeAnBackend.exe"),
-    path.join(mainRepoRoot, "dist", "AnimeAn", "AnimeAnBackend.exe"),
-    path.join(mainRepoRoot, "build", "Release", "AnimeAnBackend.exe"),
-    path.join(mainRepoRoot, "build", "wt-check", "AnimeAnBackend.exe"),
+    path.join(repoRoot, "build", "Release", exeName),
+    path.join(repoRoot, "build", "wt-check", exeName),
+    // The Linux build tree (build_scripts/linux_build.sh); it is run in place.
+    path.join(repoRoot, "build", "linux", "backend", exeName),
+    path.join(repoRoot, "dist", "AnimeAn", exeName),
+    path.join(mainRepoRoot, "dist", "AnimeAn", exeName),
+    path.join(mainRepoRoot, "build", "Release", exeName),
+    path.join(mainRepoRoot, "build", "wt-check", exeName),
+    path.join(mainRepoRoot, "build", "linux", "backend", exeName),
   ].filter(Boolean);
 
   for (const candidate of candidates) {
@@ -284,24 +291,19 @@ export function locateBackendExecutable(options = {}) {
 }
 
 /**
- * Build child process environment variables needed by AnimeAnBackend.exe on Windows.
+ * Build child process environment variables needed to start AnimeAnBackend.
+ * What a build needs around it is in build_scripts/backend_env.mjs; this adds
+ * the Python runtime of this checkout and of the main one (a worktree has none
+ * of its own).
  * @param {string} exePath
  * @param {string} [repoRoot]
  */
 export function buildBackendEnv(exePath, repoRoot = findRepoRoot()) {
   const { mainRepoRoot } = getToolkitPaths(repoRoot);
-  const candidateDirs = [
-    path.dirname(path.resolve(exePath)),
-    path.join(repoRoot, "tools", "python312"),
-    path.join(mainRepoRoot, "tools", "python312"),
-    path.win32.normalize("C:/Qt/Tools/mingw1310_64/bin"),
-    path.win32.normalize("C:/Qt/6.9.1/mingw_64/bin"),
-  ].filter((dir) => fs.existsSync(dir));
-
-  const currentPath = process.env.PATH || process.env.Path || "";
-  const combinedPath = [...new Set(candidateDirs), currentPath].filter(Boolean).join(path.delimiter);
-  return {
-    ...process.env,
-    PATH: combinedPath,
-  };
+  return backendEnv(exePath, {
+    pathFolders: [
+      path.join(repoRoot, "tools", "python312"),
+      path.join(mainRepoRoot, "tools", "python312"),
+    ],
+  });
 }

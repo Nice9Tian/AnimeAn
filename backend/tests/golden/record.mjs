@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import zlib from "node:zlib";
+import { backendEnv } from "../../../build_scripts/backend_env.mjs";
 import { buildScenarios } from "./scenarios.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -12,6 +13,11 @@ const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
 
 function ensureCrlfGoldenFiles() {
+  // Only where a checkout has CRLF files to begin with; elsewhere this would
+  // rewrite the sources on every run.
+  if (process.platform !== "win32") {
+    return;
+  }
   for (const name of ["record.mjs", "compare.mjs", "scenarios.mjs", "hook_recorder.py"]) {
     const filePath = path.join(__dirname, name);
     try {
@@ -271,18 +277,16 @@ async function main() {
 
   const token = "golden_tok_" + crypto.randomBytes(8).toString("hex");
   const backendDir = path.dirname(backendExe);
-  // Hash seeds change the iteration order of QSet and of Python sets, and with it
-  // the order of equally distant onion ghosts, from one start to the next.
-  const env = { ...process.env, QT_HASH_SEED: "0", PYTHONHASHSEED: "0" };
-  const extraPaths = [
-    "C:/Qt/6.9.1/mingw_64/bin",
-    "C:/Qt/Tools/mingw1310_64/bin",
-    "C:/Users/admin/Documents/AnimeAn/tools/python312",
-    backendDir,
-  ].join(path.delimiter);
-  env.PATH = `${extraPaths}${path.delimiter}${env.PATH || ""}`;
-  env.ANIMEAN_GOLDEN_HOOK_LOG = hookLogPath;
-  env.ANIMEAN_GOLDEN_TMP_DIR = tmpDir;
+  const env = backendEnv(backendExe, {
+    env: {
+      // Hash seeds change the iteration order of QSet and of Python sets, and with it
+      // the order of equally distant onion ghosts, from one start to the next.
+      QT_HASH_SEED: "0",
+      PYTHONHASHSEED: "0",
+      ANIMEAN_GOLDEN_HOOK_LOG: hookLogPath,
+      ANIMEAN_GOLDEN_TMP_DIR: tmpDir,
+    },
+  });
 
   const child = spawn(backendExe, ["--port", "0", "--token", token], {
     env,
