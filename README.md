@@ -59,6 +59,21 @@ PowerShell -ExecutionPolicy Bypass -File .\build_scripts\agent_build.ps1
 This builds `AnimeAnBackend`, the web UI and the Tauri shell, and packages
 `dist\AnimeAn\`. Backend-only builds: `docs/mechanism/build_deploy.md`.
 
+### Linux (development only)
+
+The backend, the tests and the shell also build and run on Linux, which makes
+it a place to develop on; the package that ships is still the Windows one.
+Needs CMake, Ninja, a C++17 compiler, the FreeType and Fontconfig development
+files, and a full Python 3.12 named by `ANIMEAN_PYTHON_HOME`.
+
+```bash
+build_scripts/linux_setup.sh          # first time in a checkout
+build_scripts/linux_build.sh --test   # build, then the C++ tests
+build_scripts/windows_cross_check.sh  # does the change still build for Windows?
+```
+
+The full list of tools and commands is in `docs/mechanism/build_deploy.md`.
+
 ### Python Support
 
 Embedded Python support is enabled by default. The project first looks for the

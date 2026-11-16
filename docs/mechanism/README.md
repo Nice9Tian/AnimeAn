@@ -12,7 +12,8 @@
 | `i18n.md` | 界面语言：英文原文作词条的键、模板、实时切换、To 3D、漏翻检查 | 初稿（2026-11-01） |
 | `backend_protocol.md` | Tauri 外壳、后端进程、网页界面之间的连接：消息、绘制指令、增量绘制、状态键 | 初稿 |
 | `field_display.md` | 让图层隔着位移场显示：场的发送和背压、作用域、细分、退路、求解放在哪 | 初稿 |
-| `build_deploy.md` | 构建脚本、脚本同步、测试基线、分支与部署、依赖 wheel | 初稿（同上） |
+| `build_deploy.md` | 构建脚本、脚本同步、测试基线、分支与部署、依赖 wheel；在 Linux 上开发要什么、用什么命令 | 初稿（同上）；Linux 一节 2026-11-17 |
+| `platform.md` | 系统相关的代码收在哪几处（文件、套接字、字形、进程、Python 环境），Windows 和 Linux 上哪些行为不一样 | 初稿（2026-11-17） |
 | `python_binding.md`、`python_binding_zh.md` | Python 绑定 API（英文参考 / 中文说明，中文的「双画板与工具」一节已按现行界面改写） | 2026-09-28 从根目录移入 |
 | `stroke_fitting.md` | 画笔采样、稳定器、拟合预算、实时增量拟合、轴向吸附、按住画直线、擦除与切断 | 初稿（2026-09-28） |
 | `painting_tools.md` | Arrow 编辑模式、Transfer、Connect、Curve、Round Corner、画板动画、每工具颜色与调色板 | 初稿（2026-09-28） |

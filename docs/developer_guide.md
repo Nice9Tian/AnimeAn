@@ -39,7 +39,8 @@
 | 撤销、scriptData | `mechanism/history_scriptdata.md` |
 | 窗口、面板、纹理板归属、主题、洋葱皮 | `mechanism/windows_theme.md` |
 | 工程文件、导入格式 | `mechanism/project_files.md` |
-| 构建、同步脚本、测试、依赖、部署 | `mechanism/build_deploy.md` |
+| 构建、同步脚本、测试、依赖、部署；在 Linux 上开发 | `mechanism/build_deploy.md` |
+| 要问操作系统的 C++ 代码（文件、套接字、字体、进程、环境变量），外壳里分系统的代码 | `mechanism/platform.md` |
 | 模块在哪、启动链、装载顺序 | `mechanism/modules.md` |
 | 术语和界面文案 | `glossary.md` |
 | 新增或修改界面文字、界面语言 | `mechanism/i18n.md`（新文字要进 `zh-CN.json`、`ja.json`） |
@@ -93,13 +94,13 @@
 
 ## 验证
 
-进入 `main` 的代码要过下面的基线。
+进入 `main` 的代码要过下面的基线。表里是 Windows 开发机上的命令；在 Linux 上开发时同一项的命令见 `mechanism/build_deploy.md`「在 Linux 上开发」，其中部署构建和真机验证只能在 Windows 上做。
 
 | 项 | 命令 | 什么时候必跑 |
 |---|---|---|
 | Python 回归（无 GUI） | `py -m unittest discover -s tests`（`test_legacy_suites.py` 把 `t_*.py` 逐个当子测试跑）；单跑 `py tests\t_<名>.py` | 改到 `pyfile/` |
 | 预览帧预算 | `py tests\bench_drag_cost.py --preview --all`（约 3 秒；毫秒预算只在这里测，`t_*.py` 不测毫秒，见 `mechanism/build_deploy.md`）；改到求解或批量取值时再跑 `--all --warm` | 改到 `pyfile/mapping_preview.py`、`pyfile/auto_mapping.py`、`pyfile/gridsolve.py` |
-| C++ 单测 | 配置时 `BUILD_TESTING` 开着，`ctest` 跑 `projectio_roundtrip`、`animemodel_asset_gc`、`strokefit_zoom_invariance`、`board_headless_test`、`textpath_tests`、`platform_tests`；配置时传入 Qt6 路径才会加上和真实 Qt 比较的 `core_*`，见 `mechanism/build_deploy.md` | 改到 `algorithm/`、`projectio.*`、`backend/board/`、`backend/platform/` |
+| C++ 单测 | 配置时 `BUILD_TESTING` 开着，`ctest` 跑 `projectio_roundtrip`、`animemodel_asset_gc`、`strokefit_zoom_invariance`、`fileio`、`board_headless_test`、`textpath_tests`、`platform_tests`；配置时传入 Qt6 路径才会加上和真实 Qt 比较的 `core_*`，见 `mechanism/build_deploy.md` | 改到 `algorithm/`、`projectio.*`、`backend/board/`、`backend/platform/` |
 | 编译检查 | `cmake --build build\wt-check --target AnimeAnBackend --parallel 10`（新 worktree 先 `git submodule update --init --depth 1`） | 改到 C++，合并前 |
 | 后端会话冒烟 | `node backend/tests/session_smoke.mjs <AnimeAnBackend.exe>` | 改到 `backend/`、`openglwidget.*` |
 | 新旧对比 | `node backend/tests/golden/record.mjs --backend <AnimeAnBackend.exe> --out <输出.jsonl>`，再用 `compare.mjs` 比基线，见 `mechanism/build_deploy.md` | 改到后端行为 |
@@ -111,6 +112,7 @@
 | 界面语言覆盖 | `node backend/tests/i18n_coverage.mjs <AnimeAnBackend.exe>` | 改到 C++ 或 Python 发给界面的文字（菜单、选项、设置窗、状态栏） |
 | 后端调试 MCP | `node --test tools/mcp-backend-debug/tests/unit.test.mjs` 与 `node --test tools/mcp-backend-debug/tests/integration.test.mjs` | 改到 `tools/mcp-backend-debug/` |
 | 文档链接 | `py build_scripts\check_doc_links.py`（反引号里的 `.md` 路径都要存在） | 改到 `docs/` 或根目录的 README / AGENTS / CLAUDE |
+| Windows 交叉编译检查（在 Linux 上开发时） | `build_scripts/windows_cross_check.sh`，结束行 `===== WINDOWS CROSS CHECK DONE`；只查编译和链接 | 在 Linux 上改到 C++ 或 CMake，提交前 |
 
 ## 提交与发布
 
