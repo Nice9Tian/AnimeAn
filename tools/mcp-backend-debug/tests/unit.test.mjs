@@ -17,6 +17,7 @@ import {
   writeSessionMetadata,
 } from "../src/discovery.mjs";
 import { createMcpHandler } from "../src/mcp_protocol.mjs";
+import { allocatePorts, assertPortsAllowed, resolveListenHost, urlHost } from "../src/ports.mjs";
 import { encodeRgbaToPng } from "../src/png.mjs";
 import { ToolRegistry } from "../src/registry.mjs";
 import { createDefaultRegistry } from "../src/tools/index.mjs";
@@ -419,4 +420,90 @@ test("isLoopbackHost accepts loopback Host headers only (DNS rebinding guard)", 
   assert.equal(isLoopbackHost("evil.example:19440"), false);
   assert.equal(isLoopbackHost("127.0.0.1.evil.example"), false);
   assert.equal(isLoopbackHost(undefined), false);
+});
+
+function withPortGate(gatePath, fn) {
+  const saved = process.env.ANIMEAN_PORT_GATE;
+  process.env.ANIMEAN_PORT_GATE = gatePath;
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      if (saved === undefined) delete process.env.ANIMEAN_PORT_GATE;
+      else process.env.ANIMEAN_PORT_GATE = saved;
+    });
+}
+
+test("ports: without a port gate, free ports come from the system and every port is allowed", async () => {
+  const missing = path.join(os.tmpdir(), `no-such-port-gate-${process.pid}`);
+  await withPortGate(missing, async () => {
+    const { ports, source } = await allocatePorts(2);
+    assert.equal(source, "system");
+    assert.equal(ports.length, 2);
+    assert(ports.every((p) => Number.isInteger(p) && p > 0));
+    assert.doesNotThrow(() => assertPortsAllowed([1430, 3432]));
+  });
+});
+
+test(
+  "ports: a port gate hands out ports and refuses the ones it does not allow",
+  { skip: process.platform === "win32" && "fake gate is a shell script" },
+  async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-port-gate-"));
+    const gate = path.join(dir, "port-gate");
+    fs.writeFileSync(
+      gate,
+      [
+        "#!/bin/sh",
+        'case "$1" in',
+        '  alloc) echo 20351; echo 20352 ;;',
+        '  check) for p in "$@"; do [ "$p" = 1430 ] && { echo "port 1430 is not yours" >&2; exit 1; }; done ;;',
+        "esac",
+        "exit 0",
+        "",
+      ].join("\n"),
+      { mode: 0o755 }
+    );
+    try {
+      await withPortGate(gate, async () => {
+        assert.deepEqual(await allocatePorts(2), { ports: [20351, 20352], source: "port-gate" });
+        await assert.rejects(allocatePorts(3), /could not allocate 3 ports/);
+        assert.doesNotThrow(() => assertPortsAllowed([20351, 0]));
+        assert.doesNotThrow(() => assertPortsAllowed([0]));
+        assert.throws(() => assertPortsAllowed([20351, 1430]), /port 1430 is not yours[\s\S]*--auto/);
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+);
+
+test("ports: free system ports are distinct", async () => {
+  const missing = path.join(os.tmpdir(), `no-such-port-gate-${process.pid}`);
+  await withPortGate(missing, async () => {
+    const { ports } = await allocatePorts(6);
+    assert.equal(new Set(ports).size, 6);
+  });
+});
+
+test("readActiveSessionFile can return a session whose backend died", () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "dead-backend-session-"));
+  try {
+    fs.mkdirSync(path.join(repo, ".git"));
+    const meta = { wsUrl: "ws://127.0.0.1:1/?token=t", backendPid: spawnSync(process.execPath, ["-e", ""]).pid, vitePid: process.pid };
+    writeSessionMetadata(meta, repo);
+    assert.equal(readActiveSessionFile(repo), null);
+    const recorded = readActiveSessionFile(repo, { requireLiveBackend: false });
+    assert.equal(recorded?.vitePid, process.pid);
+  } finally {
+    clearSessionMetadata(repo);
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("ports: listen host passes through and IPv6 is bracketed in URLs", () => {
+  assert.equal(resolveListenHost(undefined), null);
+  assert.equal(resolveListenHost("100.97.133.92"), "100.97.133.92");
+  assert.equal(urlHost("100.97.133.92"), "100.97.133.92");
+  assert.equal(urlHost("fd7a::1"), "[fd7a::1]");
+  assert.equal(urlHost("localhost"), "localhost");
 });

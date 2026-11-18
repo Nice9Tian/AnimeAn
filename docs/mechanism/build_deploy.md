@@ -88,9 +88,14 @@
 | 外壳 | `cargo test --manifest-path src-tauri/Cargo.toml` |
 | 后端调试 MCP | `node --test tools/mcp-backend-debug/tests/unit.test.mjs`、`integration.test.mjs` |
 | 改动在 Windows 上还编得过吗 | `build_scripts/windows_cross_check.sh`：用 MinGW-w64 把后端和测试程序按 Windows 编译、链接到 `build/windows-cross`。只查编译和链接，产物不运行、不发布 |
-| 手测界面 | `node tools/mcp-backend-debug/cli.mjs start --repo-root .` 起后端和 Vite，用 Chrome 打开输出里的 `chromeUrl`；`node tools/mcp-backend-debug/cli.mjs stop --repo-root .` 停掉 |
+| 手测界面 | `node tools/mcp-backend-debug/cli.mjs start --repo-root . --auto --host tailscale` 起后端和 Vite，用 Chrome 打开输出里的 `chromeUrl`；`node tools/mcp-backend-debug/cli.mjs stop --repo-root .` 停掉。参数见下一段 |
 
-手测时浏览器常在另一台机器上。后端只听 127.0.0.1，页面的来源也必须是 `http://localhost:<端口>`，所以把两个端口都转发过来再开 `chromeUrl`，例如 `ssh -L 1430:localhost:1430 -L 3432:127.0.0.1:3432 <主机>`。几个会话同时开时各用各的端口（`--port`、`--frontend-port`）。
+手测时浏览器常在另一台机器上。后端只听 127.0.0.1，只认 `http://localhost:<端口>` 来源的页面，这一点不为开发放开。有两种开法：
+
+- **让 Vite 对外**：`start --host <地址>`，Vite 改听这个地址（`tailscale` 表示本机的 Tailscale IPv4 地址），页面经 Vite 的代理 `/__backend` 连后端。代理只在加了 `--host` 时开，只放行 `Host` 和 `Origin` 都是这个地址的页面（只比同源挡不住 DNS 重绑定），转给后端时把来源换成 `http://localhost`；令牌照样要。`chromeUrl` 里就是这个地址，别的机器（同一 Tailscale 网络里的电脑、手机）直接打开。页面不是安全上下文（`http://` 加 IP），要 `crypto.randomUUID`、剪贴板这类接口的地方得有退路。
+- **转发端口**：不加 `--host`，把两个端口都转发过来再开 `chromeUrl`，例如 `ssh -L 1430:localhost:1430 -L 3432:127.0.0.1:3432 <主机>`。
+
+几个账号或会话共用一台机器时各用各的端口。`start --auto` 向端口网关要两个端口：本机有 `port-gate`（或环境变量 `ANIMEAN_PORT_GATE` 指的程序）时从本账号的端口段里分，没有时让系统分空闲端口；会话还活着、这次又没指定端口时，沿用它的端口和 `--host` 地址（不带参数再调一次 `start` 不会把页面从别的机器上拉走）。本机有端口网关时，不加 `--auto` 的端口（含默认的 3432、1430）也要过 `port-gate check`，不在本账号段里就拒绝。启动器只复用会话文件里记着、本会话自己起的后端和 Vite；本会话记着的 Vite 和这次要的地址、端口对不上时先停掉它再起新的，后端死了以后 `stop` 也会停掉它；端口被别的进程占着就报错，不去连它。
 
 ### 和 Windows 上不一样的地方
 

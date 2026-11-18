@@ -91,6 +91,14 @@ export const connectionTools = [
           type: "number",
           description: "Vite dev server port (default: 1430).",
         },
+        auto: {
+          type: "boolean",
+          description: "Take both ports from the machine's port gate (port-gate), or free system ports without one (default: false).",
+        },
+        host: {
+          type: "string",
+          description: "Serve the page on this address for a browser on another machine; 'tailscale' is this machine's Tailscale IP. The backend stays on 127.0.0.1.",
+        },
         backendExe: {
           type: "string",
           description: "Optional explicit path to AnimeAnBackend.exe.",
@@ -115,6 +123,8 @@ export const connectionTools = [
         port: args.port,
         token: args.token,
         frontendPort: args.frontendPort,
+        auto: args.auto,
+        host: args.host,
         backendExe: args.backendExe,
         startVite: args.startVite,
         openBrowser: args.openBrowser,

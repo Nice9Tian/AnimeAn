@@ -160,9 +160,12 @@ function readJsonFileSafe(filePath) {
 
 /**
  * Read the most valid active dev session file across worktree and shared git metadata.
+ * By default a session whose backend has died is skipped; the launcher passes
+ * requireLiveBackend: false to find a Vite that outlived its backend.
  * @param {string} [repoRoot]
+ * @param {{ requireLiveBackend?: boolean }} [options]
  */
-export function readActiveSessionFile(repoRoot = findRepoRoot()) {
+export function readActiveSessionFile(repoRoot = findRepoRoot(), { requireLiveBackend = true } = {}) {
   const paths = getToolkitPaths(repoRoot);
   const candidates = [
     { source: "worktree_session_file", filePath: paths.worktreeSessionPath },
@@ -173,7 +176,7 @@ export function readActiveSessionFile(repoRoot = findRepoRoot()) {
     if (!data || typeof data.wsUrl !== "string" || !data.wsUrl.trim()) {
       continue;
     }
-    if (data.backendPid && !isPidAlive(data.backendPid)) {
+    if (requireLiveBackend && data.backendPid && !isPidAlive(data.backendPid)) {
       continue;
     }
     return {

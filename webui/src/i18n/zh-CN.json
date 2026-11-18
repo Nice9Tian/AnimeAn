@@ -349,6 +349,7 @@
   "The drawing engine could not be started.\n{0}": "无法启动绘图引擎。\n{0}",
   "The drawing engine stopped unexpectedly. Changes since the last save are lost.\nClose AnimeAn and start it again.": "绘图引擎意外停止，上次保存之后的修改已经丢失。\n请关闭 AnimeAn 再重新启动。",
   "The connection to the drawing engine was lost.\nReload this page to connect again.": "与绘图引擎的连接断开了。\n请刷新这个页面重新连接。",
+  "This page does not say where the drawing engine is.\nOpen the whole chromeUrl that cli.mjs start printed; it ends in ?ws=…": "这个页面没有写绘图引擎在哪里。\n请打开 cli.mjs start 输出的完整 chromeUrl，它以 ?ws=… 结尾。",
   "The file does not contain scene data.": "文件里没有场景数据。",
   "The imported drawing bounds are ({0}, {1}) {2} x {3}, but the current canvas is {4} x {5}.\nFit it to the current canvas?": "导入的画面范围是 ({0}, {1}) {2} x {3}，但当前画布是 {4} x {5}。\n要缩放到当前画布吗？",
   "The project file does not contain scene data.": "工程文件里没有场景数据。",
