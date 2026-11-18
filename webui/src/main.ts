@@ -265,6 +265,12 @@ async function bootstrap(): Promise<void> {
       }
       (store as { boards?: { resendSizes(): void } }).boards?.resendSizes();
       (store as { texture?: { announceHome(): void } }).texture?.announceHome();
+    } else if (!inShell()) {
+      // Without ?ws= the page would sit there empty, looking alive.
+      void messageBox({
+        title: "AnimeAn",
+        text: "This page does not say where the drawing engine is.\nOpen the whole chromeUrl that cli.mjs start printed; it ends in ?ws=…",
+      });
     }
   } catch (e) {
     console.error("连接后端失败:", e);
