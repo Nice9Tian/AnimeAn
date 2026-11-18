@@ -54,7 +54,7 @@
 
 启动器每次新起后端都生成随机令牌（`-Token` / `--token` 可指定），写进会话文件：后端接受任何 `http://localhost:<端口>` 页面来源，`python.run` 能执行代码，固定的公开令牌等于给本机所有本地网页开门。找到的后端在打包好的 `dist\AnimeAn` 里时，先用 robocopy 镜像到 `.scratch/dev_backend_dist/` 再从那里运行：长时间运行的后端会锁住 `agent_build.ps1` 要替换的文件；副本照样加载编译它的那份源码的 `pyfile\`。
 
-若当前在未单独 `npm install` 的 git worktree 中启动，启动器会自动复用主仓库的 `webui/node_modules` 启动 Vite；且 Chrome URL 使用 `http://localhost:<frontendPort>/?ws=...` 以满足 `WsServer::isOriginAllowed` 校验。加 `--host <地址>` 时页面开在那个地址上，`ws` 指向 Vite 的同源代理 `/__backend`，后端仍只听 127.0.0.1；`--auto` 从端口网关取端口。两者的规则见 `build_deploy.md`「在 Linux 上开发」。会话文件多记 `frontendHost`（`--host` 的地址，没有为 `null`）和 `viteBackendPort`（Vite 代理指向的后端端口）：Vite 只在这两项和端口都对得上、而且是本会话起的时才复用。
+若当前在未单独 `npm install` 的 git worktree 中启动，启动器会自动复用主仓库的 `webui/node_modules` 启动 Vite；且 Chrome URL 使用 `http://localhost:<frontendPort>/?ws=...` 以满足 `WsServer::isOriginAllowed` 校验。加 `--host <地址>` 时页面开在那个地址上，`ws` 指向 Vite 的同源代理 `/__backend`，后端仍只听 127.0.0.1；`--auto` 从端口网关取端口。两者的规则见 `build_deploy.md`「在 Linux 上开发」。会话文件多记 `frontendHost`（`--host` 的地址，没有为 `null`）和 `viteBackendPort`（Vite 代理指向的后端端口）：Vite 只在这两项和端口都对得上、而且是本会话起的时才复用，对不上就先停掉再起；会话文件里的后端已经死了时，启动器和 `stop` 仍按它找到并处理这个 Vite（`readActiveSessionFile(…, { requireLiveBackend: false })`）。
 
 ### 4. 跨 Agent 传输协议与扩展性
 

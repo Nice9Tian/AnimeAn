@@ -27,16 +27,23 @@ function runGate(args) {
   return { status: res.status, stdout: res.stdout || "", stderr: (res.stderr || "").trim() };
 }
 
-function freeSystemPort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const { port } = /** @type {net.AddressInfo} */ (server.address());
-      server.close(() => resolve(port));
-    });
-  });
+/** count distinct free ports: all held open together, so none comes back twice. */
+async function freeSystemPorts(count) {
+  const servers = [];
+  try {
+    for (let i = 0; i < count; i += 1) {
+      const server = net.createServer();
+      server.unref();
+      servers.push(server);
+      await new Promise((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", resolve);
+      });
+    }
+    return servers.map((s) => /** @type {net.AddressInfo} */ (s.address()).port);
+  } finally {
+    await Promise.all(servers.map((s) => new Promise((resolve) => s.close(() => resolve(undefined)))));
+  }
 }
 
 /**
@@ -47,11 +54,7 @@ function freeSystemPort() {
 export async function allocatePorts(count) {
   const res = runGate(["alloc", "-n", String(count)]);
   if (res === null) {
-    const ports = [];
-    for (let i = 0; i < count; i += 1) {
-      ports.push(await freeSystemPort());
-    }
-    return { ports, source: "system" };
+    return { ports: await freeSystemPorts(count), source: "system" };
   }
   const ports = res.stdout.split(/\s+/).filter(Boolean).map(Number);
   if (res.status !== 0 || ports.length !== count || ports.some((p) => !Number.isInteger(p) || p <= 0)) {

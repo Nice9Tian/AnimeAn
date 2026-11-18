@@ -43,7 +43,7 @@ On a machine where the browser runs elsewhere (Linux dev box, phone), serve the 
 node tools/mcp-backend-debug/cli.mjs start --repo-root . --auto --host tailscale
 ```
 
-`--host <addr>` makes Vite listen there and proxy the backend under `/__backend` (same-origin pages only); the backend itself stays on `127.0.0.1`. `--auto` takes both ports from `port-gate` (or `ANIMEAN_PORT_GATE`), or free system ports when there is none. See `docs/mechanism/build_deploy.md`.
+`--host <addr>` makes Vite listen there and proxy the backend under `/__backend` (only for pages whose Host and Origin are that address; the token is still required); the backend itself stays on `127.0.0.1`. A later `start` without ports or `--host` keeps the live session's ports and address. `--auto` takes both ports from `port-gate` (or `ANIMEAN_PORT_GATE`), or free system ports when there is none. See `docs/mechanism/build_deploy.md`.
 
 ### 2. Endpoint Discovery Order
 

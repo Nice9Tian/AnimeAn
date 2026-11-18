@@ -1,7 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
-import net from "node:net";
 import path from "node:path";
 import {
   buildBackendEnv,
@@ -176,16 +175,45 @@ function failIfTaken(isOpen, host, port, what) {
   }
 }
 
+/** @returns {{ target: string, pid: number, stopped: boolean, error?: string }} */
+function killPid(label, pid) {
+  try {
+    process.kill(pid);
+    return { target: label, pid, stopped: true };
+  } catch (err) {
+    return { target: label, pid, stopped: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function waitForPortClosed(host, port, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && (await isTcpPortOpen(host, port, 200))) {
+    await sleep(100);
+  }
+}
+
 /**
- * Backend and frontend ports: the running session's when it is still alive,
- * then the ones asked for, then (with auto) fresh ones from the port gate.
+ * Where Vite serves the page: the address asked for, else (like the ports) the
+ * live session's, so a later start without --host does not pull the page away
+ * from the browser on another machine.
  */
-async function choosePorts(existing, options, startVite) {
-  const sessionAlive = Boolean(existing && isPidAlive(existing.backendPid));
+function chooseHost(live, options, startVite) {
+  if (options.host !== undefined) return resolveListenHost(options.host);
+  const explicitPorts = options.port !== undefined || options.frontendPort !== undefined;
+  return startVite && live && !explicitPorts ? (live.frontendHost ?? null) : null;
+}
+
+/**
+ * Backend and frontend ports: the live session's unless ports were asked for,
+ * then (with auto) fresh ones from the port gate, then the ones asked for or
+ * the defaults, which the port gate must allow.
+ */
+async function choosePorts(live, options, startVite) {
+  const explicit = options.port !== undefined || options.frontendPort !== undefined;
+  if (live && !explicit && live.backendPort && live.frontendPort) {
+    return { backendPort: live.backendPort, frontendPort: live.frontendPort, portSource: "session" };
+  }
   if (options.auto) {
-    if (sessionAlive && existing.backendPort && existing.frontendPort) {
-      return { backendPort: existing.backendPort, frontendPort: existing.frontendPort, portSource: "session" };
-    }
     const { ports, source } = await allocatePorts(2);
     return { backendPort: ports[0], frontendPort: ports[1], portSource: source };
   }
@@ -197,20 +225,20 @@ async function choosePorts(existing, options, startVite) {
 }
 
 /**
- * Reuse the backend recorded in the session file when it still answers,
- * otherwise spawn a fresh one.
+ * Reuse the backend of the live session when it still answers, otherwise
+ * spawn a fresh one.
  */
-async function startOrReuseBackend(existing, paths, { requestedPort, token, backendExe: explicitExe }) {
-  if (existing && isPidAlive(existing.backendPid)) {
+async function startOrReuseBackend(live, paths, { requestedPort, token, backendExe: explicitExe }) {
+  if (live) {
     try {
-      const existingPort = Number(new URL(existing.wsUrl).port);
-      if (existingPort > 0 && (await isTcpPortOpen("127.0.0.1", existingPort, 400))) {
+      const livePort = Number(new URL(live.wsUrl).port);
+      if (livePort > 0 && (await isTcpPortOpen("127.0.0.1", livePort, 400))) {
         return {
-          backendPid: existing.backendPid,
-          backendPort: existingPort,
-          wsUrl: existing.wsUrl,
-          backendExe: existing.backendExe || null,
-          token: existing.token || tokenFromWsUrl(existing.wsUrl) || token,
+          backendPid: live.backendPid,
+          backendPort: livePort,
+          wsUrl: live.wsUrl,
+          backendExe: live.backendExe || null,
+          token: live.token || tokenFromWsUrl(live.wsUrl) || token,
           backendReused: true,
         };
       }
@@ -255,30 +283,38 @@ async function startOrReuseBackend(existing, paths, { requestedPort, token, back
   };
 }
 
+/** The Vite this session recorded, while it still runs; it may outlive its backend. */
+function recordedVite(recorded) {
+  if (!recorded?.vitePid || !isPidAlive(recorded.vitePid)) return null;
+  return {
+    vitePid: recorded.vitePid,
+    viteRoot: recorded.viteRoot || null,
+    frontendPort: recorded.frontendPort,
+    frontendHost: recorded.frontendHost ?? null,
+    viteBackendPort: recorded.viteBackendPort ?? null,
+  };
+}
+
 /**
- * Reuse the Vite this session started when it still listens for the same
- * backend on the same address, otherwise spawn one. With a host, Vite listens
- * there instead of localhost and proxies the backend.
+ * Reuse the Vite this session started when it serves the same address and
+ * port (and, with a host, proxies the same backend). A recorded Vite that does
+ * not match is stopped first, so no Vite is left running unrecorded. With a
+ * host, Vite listens there instead of localhost and proxies the backend.
  */
-async function startOrReuseVite(existing, paths, { frontendPort, host, backendPort }) {
+async function startOrReuseVite(recorded, paths, { frontendPort, host, backendPort }) {
   const listenHost = host || "localhost";
-  const portOpen = await isTcpPortOpen(listenHost, frontendPort, 300);
-  const ours =
-    existing?.vitePid &&
-    isPidAlive(existing.vitePid) &&
-    existing.frontendPort === frontendPort &&
-    (existing.frontendHost ?? null) === host &&
-    existing.viteBackendPort === backendPort;
-  if (portOpen && ours) {
-    return {
-      vitePid: existing.vitePid,
-      viteRoot: existing.viteRoot || null,
-      viteBackendPort: backendPort,
-      viteReused: true,
-      viteReady: true,
-    };
+  const viteBackendPort = host ? backendPort : null;
+  const old = recordedVite(recorded);
+  if (old) {
+    const same = old.frontendPort === frontendPort && old.frontendHost === host && old.viteBackendPort === viteBackendPort;
+    if (same && (await isTcpPortOpen(listenHost, frontendPort, 300))) {
+      const { frontendPort: _port, ...kept } = old;
+      return { ...kept, viteReused: true, viteReady: true };
+    }
+    killPid("vite", old.vitePid);
+    await waitForPortClosed(old.frontendHost || "localhost", old.frontendPort);
   }
-  failIfTaken(portOpen, listenHost, frontendPort, "Frontend");
+  failIfTaken(await isTcpPortOpen(listenHost, frontendPort, 300), listenHost, frontendPort, "Frontend");
 
   const viteRoot = resolveViteRoot(paths.repoRoot);
   const viteScript = path.join(viteRoot, "node_modules", "vite", "bin", "vite.js");
@@ -289,14 +325,11 @@ async function startOrReuseVite(existing, paths, { frontendPort, host, backendPo
   const viteLogPath = path.join(paths.scratchDir, "vite_dev.log");
   const viteFd = fs.openSync(viteLogPath, "w");
   const args = [viteScript, "--port", String(frontendPort), "--strictPort", ...(host ? ["--host", host] : [])];
+  // vite.config.ts turns the backend proxy on only when these are set.
+  const proxyEnv = host ? { ANIMEAN_DEV_HOST: host, ANIMEAN_DEV_BACKEND_PORT: String(backendPort) } : {};
   const viteProc = spawn(process.execPath, args, {
     cwd: viteRoot,
-    env: {
-      ...process.env,
-      ANIMEAN_DEV_BACKEND_PORT: String(backendPort),
-      // Vite answers only host names it knows; IP addresses it always accepts.
-      ...(host && net.isIP(host) === 0 ? { ANIMEAN_DEV_ALLOWED_HOST: host } : {}),
-    },
+    env: { ...process.env, ...proxyEnv },
     detached: true,
     stdio: ["ignore", viteFd, viteFd],
     windowsHide: true,
@@ -307,7 +340,32 @@ async function startOrReuseVite(existing, paths, { frontendPort, host, backendPo
     const vlog = fs.existsSync(viteLogPath) ? fs.readFileSync(viteLogPath, "utf-8") : "";
     throw new Error(`Vite did not listen on ${listenHost}:${frontendPort}.\n${vlog.slice(-2000)}`);
   }
-  return { vitePid: viteProc.pid, viteRoot, viteBackendPort: backendPort, viteReused: false, viteReady: true };
+  return {
+    vitePid: viteProc.pid,
+    viteRoot,
+    frontendHost: host,
+    viteBackendPort,
+    viteReused: false,
+    viteReady: true,
+  };
+}
+
+/**
+ * The Vite part of the session. Without Vite (--no-vite) a Vite this session
+ * already runs is kept and stays recorded, with its own port.
+ */
+async function viteForSession(recorded, paths, { startVite, frontendPort, host, backendPort }) {
+  if (startVite) {
+    const { viteReused, viteReady, ...vite } = await startOrReuseVite(recorded, paths, { frontendPort, host, backendPort });
+    return { vite, frontendPort, viteReused, viteReady };
+  }
+  const kept = recordedVite(recorded);
+  if (!kept) {
+    const none = { vitePid: null, viteRoot: null, frontendHost: null, viteBackendPort: null };
+    return { vite: none, frontendPort, viteReused: false, viteReady: false };
+  }
+  const { frontendPort: keptPort, ...vite } = kept;
+  return { vite, frontendPort: keptPort, viteReused: true, viteReady: true };
 }
 
 function pageUrls(host, frontendPort, backend) {
@@ -332,9 +390,8 @@ export async function startDevEnvironment(options = {}) {
   // page origin and python.run executes code, so a well-known token would let
   // any local web page in.
   const freshToken = String(options.token || randomBytes(16).toString("hex"));
-  const host = resolveListenHost(options.host);
   const startVite = options.startVite !== false;
-  if (host && !startVite) {
+  if (options.host && !startVite) {
     throw new Error("--host serves the page from Vite; it cannot be combined with --no-vite.");
   }
 
@@ -342,27 +399,32 @@ export async function startDevEnvironment(options = {}) {
     await stopDevEnvironment({ repoRoot: paths.repoRoot });
   }
 
-  const existing = readActiveSessionFile(paths.repoRoot);
-  const { backendPort: requestedPort, frontendPort, portSource } = await choosePorts(existing, options, startVite);
+  // The recorded session, even when its backend has died: its Vite may still run.
+  const recorded = readActiveSessionFile(paths.repoRoot, { requireLiveBackend: false });
+  const live = recorded && isPidAlive(recorded.backendPid) ? recorded : null;
+  const host = chooseHost(live, options, startVite);
+  const { backendPort: requestedPort, frontendPort, portSource } = await choosePorts(live, options, startVite);
   const { backendCopiedFrom, backendCopyWarning, backendReused, ...backend } = await startOrReuseBackend(
-    existing,
+    live,
     paths,
     { requestedPort, token: freshToken, backendExe: options.backendExe }
   );
-  const { viteReused, viteReady, ...vite } = startVite
-    ? await startOrReuseVite(existing, paths, { frontendPort, host, backendPort: backend.backendPort })
-    : { vitePid: null, viteRoot: null, viteBackendPort: null, viteReused: false, viteReady: false };
+  const { vite, viteReused, viteReady, ...front } = await viteForSession(recorded, paths, {
+    startVite,
+    frontendPort,
+    host,
+    backendPort: backend.backendPort,
+  });
 
   const meta = {
-    startedAt: existing?.startedAt && backendReused ? existing.startedAt : new Date().toISOString(),
+    startedAt: live?.startedAt && backendReused ? live.startedAt : new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     repoRoot: paths.repoRoot,
     ...backend,
-    frontendPort,
-    frontendHost: host,
+    frontendPort: front.frontendPort,
     ...vite,
-    ...pageUrls(host, frontendPort, backend),
   };
+  Object.assign(meta, pageUrls(meta.frontendHost, meta.frontendPort, backend));
   const sessionFiles = writeSessionMetadata(meta, paths.repoRoot);
   const browserLaunch = options.openBrowser ? openInChrome(meta.chromeUrl) : null;
 
@@ -380,37 +442,24 @@ export async function startDevEnvironment(options = {}) {
 }
 
 /**
- * Stop managed dev backend and Vite processes recorded in the session files.
+ * Stop managed dev backend and Vite processes recorded in the session files,
+ * also when the backend has already died and only Vite is left.
  */
 export async function stopDevEnvironment(options = {}) {
   const paths = getToolkitPaths(options.repoRoot);
-  const existing = readActiveSessionFile(paths.repoRoot);
+  const recorded = readActiveSessionFile(paths.repoRoot, { requireLiveBackend: false });
   const stopped = [];
-
-  if (existing) {
-    for (const [label, pid] of [
-      ["backend", existing.backendPid],
-      ["vite", existing.vitePid],
-    ]) {
-      if (pid && isPidAlive(pid)) {
-        try {
-          process.kill(pid);
-          stopped.push({ target: label, pid, stopped: true });
-        } catch (err) {
-          stopped.push({
-            target: label,
-            pid,
-            stopped: false,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }
+  for (const [label, pid] of [
+    ["backend", recorded?.backendPid],
+    ["vite", recorded?.vitePid],
+  ]) {
+    if (pid && isPidAlive(pid)) {
+      stopped.push(killPid(label, pid));
     }
   }
-
   clearSessionMetadata(paths.repoRoot);
   return {
-    hadSession: Boolean(existing),
+    hadSession: Boolean(recorded),
     stopped,
   };
 }

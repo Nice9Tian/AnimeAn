@@ -477,6 +477,29 @@ test(
   }
 );
 
+test("ports: free system ports are distinct", async () => {
+  const missing = path.join(os.tmpdir(), `no-such-port-gate-${process.pid}`);
+  await withPortGate(missing, async () => {
+    const { ports } = await allocatePorts(6);
+    assert.equal(new Set(ports).size, 6);
+  });
+});
+
+test("readActiveSessionFile can return a session whose backend died", () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "dead-backend-session-"));
+  try {
+    fs.mkdirSync(path.join(repo, ".git"));
+    const meta = { wsUrl: "ws://127.0.0.1:1/?token=t", backendPid: spawnSync(process.execPath, ["-e", ""]).pid, vitePid: process.pid };
+    writeSessionMetadata(meta, repo);
+    assert.equal(readActiveSessionFile(repo), null);
+    const recorded = readActiveSessionFile(repo, { requireLiveBackend: false });
+    assert.equal(recorded?.vitePid, process.pid);
+  } finally {
+    clearSessionMetadata(repo);
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 test("ports: listen host passes through and IPv6 is bracketed in URLs", () => {
   assert.equal(resolveListenHost(undefined), null);
   assert.equal(resolveListenHost("100.97.133.92"), "100.97.133.92");
