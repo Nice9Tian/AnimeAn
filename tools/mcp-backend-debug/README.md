@@ -37,6 +37,14 @@ Useful variants:
 .\dev_chrome.ps1 -Port 0 -FrontendPort 1435 -NoBrowser
 ```
 
+On a machine where the browser runs elsewhere (Linux dev box, phone), serve the page on that machine's Tailscale address and take ports from the port gate:
+
+```bash
+node tools/mcp-backend-debug/cli.mjs start --repo-root . --auto --host tailscale
+```
+
+`--host <addr>` makes Vite listen there and proxy the backend under `/__backend` (same-origin pages only); the backend itself stays on `127.0.0.1`. `--auto` takes both ports from `port-gate` (or `ANIMEAN_PORT_GATE`), or free system ports when there is none. See `docs/mechanism/build_deploy.md`.
+
 ### 2. Endpoint Discovery Order
 
 Every MCP tool and CLI status check discovers the running backend automatically in this order:

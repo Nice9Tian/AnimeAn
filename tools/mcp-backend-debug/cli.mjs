@@ -29,6 +29,9 @@ function printHelp() {
       `  --port <n>            Backend WebSocket port (default: ${DEFAULT_DEV_PORT}; 0 for ephemeral)`,
       "  --token <s>           Backend token (default: a fresh random token per launch)",
       `  --frontend-port <n>   Vite dev port (default: ${DEFAULT_FRONTEND_PORT})`,
+      "  --auto                Take both ports from the port gate (port-gate), or free system ports without one",
+      "  --host <addr>         Serve the page on this address for a browser on another machine",
+      "                        ('tailscale' = this machine's Tailscale IP); the backend stays on 127.0.0.1",
       "  --backend-exe <path>  Explicit path to AnimeAnBackend.exe",
       "  --no-vite             Start backend only without starting Vite",
       "  --open-chrome         Open Chrome to the Vite dev URL after startup",
@@ -55,6 +58,12 @@ function parseFlags(argv) {
       opts.openBrowser = true;
     } else if (arg === "--restart") {
       opts.restart = true;
+    } else if (arg === "--auto") {
+      opts.auto = true;
+    } else if (arg === "--host" && argv[i + 1] !== undefined) {
+      opts.host = argv[++i];
+    } else if (arg.startsWith("--host=")) {
+      opts.host = arg.slice("--host=".length);
     } else if (arg === "--port" && argv[i + 1] !== undefined) {
       opts.port = Number(argv[++i]);
     } else if (arg.startsWith("--port=")) {
@@ -165,6 +174,8 @@ export async function runCli(argv = process.argv.slice(2)) {
       port: opts.port,
       token: opts.token,
       frontendPort: opts.frontendPort,
+      auto: opts.auto,
+      host: opts.host,
       backendExe: opts.backendExe,
       startVite: opts.startVite,
       openBrowser: opts.openBrowser,
